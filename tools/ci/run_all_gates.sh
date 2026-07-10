@@ -35,6 +35,14 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
+# Per-RUN scratch. Two invocations of this script used to write the same /tmp/gate_<svc>.log,
+# so a second run silently overwrote the first one's results and both reported nonsense. The
+# same class of bug as pointing two test processes at one database: shared mutable state that
+# nobody declared. RUN_TMP is cleaned up on exit.
+RUN_TMP="$(mktemp -d 2>/dev/null || echo "/tmp/gates.$$")"
+mkdir -p "$RUN_TMP"
+trap 'rm -rf "$RUN_TMP"' EXIT
+
 PY_DEFAULT="services/_template/.venv/Scripts/python.exe"
 [ -x "$PY_DEFAULT" ] || PY_DEFAULT="services/_template/.venv/bin/python"
 [ -x "$PY_DEFAULT" ] || PY_DEFAULT="python"
@@ -315,10 +323,10 @@ _jobs() {
 fan_out() {
   local prefix="$1" fn="$2" max_override="${3:-}" svc py max running=0
   max="${max_override:-$(_jobs)}"
-  rm -f /tmp/"${prefix}"_*.log.rc 2>/dev/null
+  rm -f "$RUN_TMP/${prefix}"_*.log.rc 2>/dev/null
   for svc in $(services); do
     py="$(py_for "$svc")"
-    "$fn" "$svc" "$py" "/tmp/${prefix}_$svc.log" &
+    "$fn" "$svc" "$py" "$RUN_TMP/${prefix}_$svc.log" &
     running=$((running + 1))
     if [ "$running" -ge "$max" ]; then wait -n 2>/dev/null || wait; running=$((running - 1)); fi
   done
@@ -327,7 +335,12 @@ fan_out() {
 
 _suite_one() {
   local svc="$1" py="$2" log="$3"
-  (cd "services/$svc" && env PYTHONHASHSEED="$PRIMARY_SEED" "$py" -m pytest -q -p no:cacheprovider >"$log" 2>&1)
+  # DATASTORE_TEST_DSN is deliberately CLEARED here. The postgres contract belongs to the
+  # `contracts:postgres` gate, which runs it one service at a time against the database it owns.
+  # Leaving the DSN set made 16 concurrent suites TRUNCATE the same `kv_store` underneath each
+  # other; every service reported errors, and the failures looked like adapter bugs. They were
+  # the harness. Running the same tests twice was never the point of this gate anyway.
+  (cd "services/$svc" && env PYTHONHASHSEED="$PRIMARY_SEED" DATASTORE_TEST_DSN=       "$py" -m pytest -q -p no:cacheprovider >"$log" 2>&1)
   echo "$?" > "$log.rc"
 }
 
@@ -336,11 +349,11 @@ suites() {
   fan_out gate _suite_one
   for svc in $(services); do                 # ordered replay: deterministic, readable
     printf '  --- %s\n' "$svc"
-    status="$(cat "/tmp/gate_$svc.log.rc" 2>/dev/null || echo 1)"
+    status="$(cat "$RUN_TMP/gate_$svc.log.rc" 2>/dev/null || echo 1)"
     if [ "$status" != "0" ]; then
-      echo "      FAILED — tail:"; tail -6 "/tmp/gate_$svc.log" | sed 's/^/        /'; rc=1
+      echo "      FAILED — tail:"; tail -6 "$RUN_TMP/gate_$svc.log" | sed 's/^/        /'; rc=1
     else
-      tail -1 "/tmp/gate_$svc.log" | sed 's/^/      /'
+      tail -1 "$RUN_TMP/gate_$svc.log" | sed 's/^/      /'
     fi
   done
   return $rc
@@ -370,11 +383,11 @@ security_gate() {
   local svc rc=0 status
   fan_out sec _security_one "$_SECURITY_JOBS"
   for svc in $(services); do
-    status="$(cat "/tmp/sec_$svc.log.rc" 2>/dev/null || echo 1)"
+    status="$(cat "$RUN_TMP/sec_$svc.log.rc" 2>/dev/null || echo 1)"
     if [ "$status" = "0" ]; then
       printf '      %-22s PASS\n' "$svc"
     else
-      printf '      %-22s FAIL\n' "$svc"; tail -8 "/tmp/sec_$svc.log" | sed 's/^/        /'; rc=1
+      printf '      %-22s FAIL\n' "$svc"; tail -8 "$RUN_TMP/sec_$svc.log" | sed 's/^/        /'; rc=1
     fi
   done
   return $rc
@@ -406,14 +419,14 @@ contracts_postgres() {
       echo "        install the postgres extra:  $py -m pip install asyncpg"
       rc=1; continue
     fi
-    if (cd "services/$svc" && env PYTHONHASHSEED="$PRIMARY_SEED" "$py" -m pytest -q -p no:cacheprovider tests/contracts/ >/tmp/pg_$svc.log 2>&1); then
-      printf '      %-22s %s\n' "$svc" "$(tail -1 /tmp/pg_$svc.log)"
+    if (cd "services/$svc" && env PYTHONHASHSEED="$PRIMARY_SEED" "$py" -m pytest -q -p no:cacheprovider tests/contracts/ >$RUN_TMP/pg_$svc.log 2>&1); then
+      printf '      %-22s %s\n' "$svc" "$(tail -1 $RUN_TMP/pg_$svc.log)"
     else
-      printf '      %-22s FAIL\n' "$svc"; tail -6 "/tmp/pg_$svc.log" | sed 's/^/        /'; rc=1
+      printf '      %-22s FAIL\n' "$svc"; tail -6 "$RUN_TMP/pg_$svc.log" | sed 's/^/        /'; rc=1
     fi
   done
   # Prove the postgres params were actually exercised, not silently skipped.
-  if grep -qi "skipped" /tmp/pg_*.log 2>/dev/null; then
+  if grep -qi "skipped" $RUN_TMP/pg_*.log 2>/dev/null; then
     echo "  a postgres contract param was SKIPPED — DATASTORE_TEST_DSN is not reaching the tests"
     return 1
   fi
