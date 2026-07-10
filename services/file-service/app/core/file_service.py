@@ -24,13 +24,15 @@ class TypeNotAllowed(Exception):
 
 class FileService:
     def __init__(self, *, repo: FileRepository, object_store, scanner, signed_url,
-                 max_upload_bytes: int, allowed_content_types: frozenset[str]) -> None:
+                 max_upload_bytes: int, allowed_content_types: frozenset[str],
+                 max_page_limit: int = 100) -> None:
         self._repo = repo
         self._store = object_store
         self._scanner = scanner
         self._signed = signed_url
         self._max = max_upload_bytes
         self._allowed = allowed_content_types
+        self._max_page = max_page_limit
 
     async def upload(self, *, tenant: str, owner: str, filename: str,
                      content_type: str, data: bytes) -> FileObject:
@@ -57,8 +59,16 @@ class FileService:
         f = await self.get(file_id)
         return f, await self._store.get(f.sha256)
 
-    async def list(self, tenant: str, limit: int = 100) -> list[dict]:
-        return await self._repo.list(tenant, limit)
+    async def list(self, tenant: str, limit: int = 100,
+                   after: str | None = None) -> dict[str, Any]:
+        """A page of one tenant's files, plus the cursor for the next.
+
+        The limit is CLAMPED here. A caller does not get to choose 1 000 000 — that is how the
+        whole table ended up in memory in the first place.
+        """
+        limit = max(1, min(int(limit), self._max_page))
+        rows, next_cursor = await self._repo.list(tenant, limit=limit, after=after)
+        return {"files": rows, "count": len(rows), "next": next_cursor}
 
     async def delete(self, file_id: str) -> dict[str, Any]:
         f = await self.get(file_id)

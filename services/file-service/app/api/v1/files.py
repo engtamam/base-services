@@ -3,7 +3,7 @@
 # =============================================================================
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status, Query
 from starlette.responses import Response
 
 from app.api.auth import Principal, require_user
@@ -31,6 +31,7 @@ def build_files(request: Request) -> FileService:
         repo=FileRepository(c.datastore), object_store=c.object_store,
         scanner=c.scanner, signed_url=c.signed_url,
         max_upload_bytes=s.MAX_UPLOAD_BYTES, allowed_content_types=s.allowed_content_types,
+        max_page_limit=s.MAX_PAGE_LIMIT,
     )
 
 
@@ -65,6 +66,23 @@ async def upload(request: Request, principal: Principal = Depends(require_user),
     except Rejected:
         raise HTTPException(422, "REJECTED")
     return f.to_dict()
+
+
+@router.get("", dependencies=[Depends(rate_limit)])
+async def list_files(request: Request, principal: Principal = Depends(require_user),
+                     limit: int = Query(default=100, ge=1, le=1000),
+                     after: str | None = Query(default=None, max_length=512)) -> dict:
+    """This tenant's files, newest first, keyset-paged.
+
+    The tenant is taken from the token, never from a parameter, and the filter is pushed into
+    the datastore: the cost of this call is the size of the PAGE, not the size of the table.
+
+    `limit` is clamped server-side; `after` is the opaque cursor from the previous response.
+    A cursor is not an offset — an offset silently skips a row when a file is uploaded between
+    two pages.
+    """
+    svc = build_files(request)
+    return await svc.list(principal.tenant or "", limit=limit, after=after)
 
 
 @router.get("/{file_id}/metadata")

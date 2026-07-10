@@ -6,7 +6,10 @@ from app.ports.datastore import DataStore
 
 _FILES = "files"
 _REFS = "blob_refs"   # sha256 -> {count}
-_SCAN = 1_000_000
+
+# There is deliberately no _SCAN constant any more. It was 1_000_000: not a limit, a scan
+# wearing a limit's clothes. Every row of every tenant crossed the process boundary so that a
+# hundred could be returned — and past the cap the answer was silently, arbitrarily wrong.
 
 
 class FileRepository:
@@ -21,10 +24,14 @@ class FileRepository:
         row = await self._store.get(_FILES, file_id)
         return FileObject.from_dict(row) if row else None
 
-    async def list(self, tenant: str, limit: int = 100) -> list[dict]:
-        rows = [r for r in await self._store.list(_FILES, _SCAN) if r.get("tenant") == tenant]
-        rows.sort(key=lambda r: r.get("created", ""), reverse=True)
-        return rows[:limit]
+    async def list(self, tenant: str, limit: int = 100,
+                   after: str | None = None) -> tuple[list[dict], str | None]:
+        """One tenant's files, newest first. The filter is pushed into the store.
+
+        Cost is proportional to what is RETURNED, not to what everyone else has stored.
+        """
+        return await self._store.find(_FILES, {"tenant": tenant}, limit=limit, after=after,
+                                      sort=("created", "desc"))
 
     async def delete(self, file_id: str) -> None:
         await self._store.delete(_FILES, file_id)

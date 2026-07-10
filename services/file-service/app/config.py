@@ -111,6 +111,11 @@ class Settings(BaseSettings):
     def allowed_content_types(self) -> frozenset[str]:
         return frozenset(t.strip().lower() for t in self.ALLOWED_CONTENT_TYPES.split(",") if t.strip())
 
+    # ── paging (Phase 28) ────────────────────────────────────────────────────
+    # The server clamps what a caller may ask for. `limit=1_000_000` is how a whole table
+    # ended up in memory; a bound is not a suggestion.
+    MAX_PAGE_LIMIT: int = 100
+
     @property
     def egress_allowed_hosts(self) -> frozenset[str]:
         return frozenset(
