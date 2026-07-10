@@ -150,10 +150,26 @@ def gate_container() -> tuple[str, str]:
     """
     if shutil.which("trivy") is None:
         return SKIP, "trivy not installed"
+
     r = _run(["trivy", "fs", "--quiet", "--scanners", "misconfig",
               "--severity", "HIGH,CRITICAL", "--exit-code", "1", "--skip-dirs", ".venv",
               str(ROOT)], timeout=300)
-    return (PASS if r.returncode == 0 else FAIL), "trivy fs misconfig HIGH/CRITICAL"
+    if r.returncode == 0:
+        return PASS, "trivy fs misconfig HIGH/CRITICAL"
+
+    # `FAIL` with no evidence is an accusation, not a finding. trivy exits non-zero both when it
+    # finds a misconfiguration and when it cannot run at all -- a cold checks-bundle, a corrupted
+    # cache, a rate-limited download. Those are different facts and the operator has to be able
+    # to tell them apart without re-running the gate by hand.
+    detail = (r.stdout + r.stderr).strip()
+    transient = any(k in detail.lower() for k in (
+        "failed to download", "unable to initialize", "connection", "timeout", "rate limit",
+        "too many requests", "database", "bundle", "context deadline exceeded"))
+    if transient:
+        return SKIP, f"trivy could not run (not a finding): {detail.splitlines()[-1][:80]}"
+
+    first = next((ln for ln in detail.splitlines() if ln.strip()), "")
+    return FAIL, f"trivy fs misconfig HIGH/CRITICAL — {first[:90]}"
 
 
 def _module(name: str) -> bool:

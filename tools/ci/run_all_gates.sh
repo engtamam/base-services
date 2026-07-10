@@ -112,15 +112,47 @@ wired_skip() {
   fi
 }
 
-# ── service discovery: nothing is hardcoded ─────────────────────────────────
+# ── unit discovery: nothing is hardcoded, and nothing is assumed ────────────
+#
+# WHERE to look and WHAT marks a unit are config, not code. Point the runner at another repo's
+# layout and it works; nobody edits this file to gate their own tree.
+#
+#   GATE_UNITS_DIR    directory holding the units        (default: services)
+#   GATE_UNIT_MARKER  subdirectory that marks a unit     (default: app)
+#   GATE_UNIT_SKIP    space-separated units to ignore    (default: _template)
+UNITS_DIR="${GATE_UNITS_DIR:-services}"
+UNIT_MARKER="${GATE_UNIT_MARKER:-app}"
+UNIT_SKIP="${GATE_UNIT_SKIP:-_template}"
+
 services() {
-  local d
-  for d in services/*/; do
+  local d skip hit
+  for d in "$UNITS_DIR"/*/; do
+    [ -d "$d" ] || continue
     d="${d%/}"; d="${d##*/}"
-    [ "$d" = "_template" ] && continue
-    [ -d "services/$d/app" ] || continue
+    hit=0
+    for skip in $UNIT_SKIP; do [ "$d" = "$skip" ] && hit=1; done
+    [ "$hit" = "1" ] && continue
+    [ -d "$UNITS_DIR/$d/$UNIT_MARKER" ] || continue
     printf '%s\n' "$d"
   done
+}
+
+# A gate that iterates an EMPTY set passes. Loudly, in green, having done nothing.
+#
+# Pointed at a repo with no `services/`, this script printed "ALL RUNNABLE GATES PASSED" while
+# running zero tests and zero scanners. That is not a missing feature; it is the same defect
+# every gate here exists to catch, sitting inside the thing that catches them. Discovery finding
+# nothing is a CONFIGURATION ERROR, never a clean run.
+require_units() {
+  local n
+  n="$(services | grep -c . || true)"
+  if [ "${n:-0}" -eq 0 ]; then
+    echo "  FATAL: discovered 0 units under '$UNITS_DIR/' (marker: '$UNIT_MARKER/')." >&2
+    echo "         Every per-unit gate would iterate an empty set and report PASS." >&2
+    echo "         Set GATE_UNITS_DIR / GATE_UNIT_MARKER for this repo's layout." >&2
+    return 1
+  fi
+  return 0
 }
 
 # Which interpreter runs a service's tests.
@@ -346,6 +378,7 @@ _suite_one() {
 
 suites() {
   local svc rc=0 status
+  require_units || return 1
   fan_out gate _suite_one
   for svc in $(services); do                 # ordered replay: deterministic, readable
     printf '  --- %s\n' "$svc"
@@ -381,6 +414,17 @@ _SECURITY_JOBS=4
 
 security_gate() {
   local svc rc=0 status
+  require_units || return 1
+
+  # Warm trivy's checks bundle ONCE, serially, before anything fans out. On a cold runner the
+  # first scan downloads it; four scanners racing that download made the FIRST service (and only
+  # the first) report a HIGH/CRITICAL misconfiguration that does not exist. The finding was the
+  # download, not the Dockerfile. Same shape as 18 concurrent pip-audit calls hammering PyPI:
+  # parallelism over a shared external resource, reported as a defect in the code.
+  if command -v trivy >/dev/null 2>&1; then
+    trivy fs --quiet --scanners misconfig --exit-code 0 tools/ci >/dev/null 2>&1 || true
+  fi
+
   fan_out sec _security_one "$_SECURITY_JOBS"
   for svc in $(services); do
     status="$(cat "$RUN_TMP/sec_$svc.log.rc" 2>/dev/null || echo 1)"
@@ -404,6 +448,7 @@ want "contracts:postgres" && banner "contracts:postgres — the DataStore contra
 concurrency. Set DATASTORE_TEST_DSN; CI provides a postgres service."
 contracts_postgres() {
   local svc py rc=0
+  require_units || return 1
   for svc in $(services); do
     [ -f "services/$svc/tests/contracts/test_datastore_contract.py" ] || continue
     py="$(py_for "$svc")"
