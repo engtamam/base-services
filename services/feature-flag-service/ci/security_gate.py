@@ -89,8 +89,11 @@ def gate_cve() -> tuple[str, str]:
 
 
 def gate_sbom() -> tuple[str, str]:
+    # The ACTIVE interpreter's environment, not a hardcoded `.venv` path. Locally that is the
+    # service's venv; in CI the service is pip-installed into the runner's python and no .venv
+    # exists at all — pointing at one made this gate fail in CI and only in CI.
     try:
-        r = _run([PY, "-m", "cyclonedx_py", "environment", str(ROOT / ".venv"),
+        r = _run([PY, "-m", "cyclonedx_py", "environment", sys.prefix,
                   "--output-format", "JSON", "-o", "sbom.cdx.json"], timeout=180)
     except subprocess.TimeoutExpired:
         return SKIP, "cyclonedx timed out"
