@@ -4,7 +4,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from app.core import cursor as _cursor
+from app.adapters.datastore import cursor as _cursor
 from app.ports.datastore import SORT_DIRECTIONS
 from app.ports.errors import ConfigError
 

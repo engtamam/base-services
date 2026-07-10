@@ -19,7 +19,7 @@ import asyncio
 import pytest
 
 from app.adapters.datastore.memory import MemoryDataStore
-from app.core import cursor as _cursor
+from app.adapters.datastore import cursor as _cursor
 from app.core.file_repository import FileRepository
 from app.core.models import FileObject
 from app.ports.errors import ConfigError
