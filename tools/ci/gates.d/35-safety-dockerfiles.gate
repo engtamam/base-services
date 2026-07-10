@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+gate_name="safety:dockerfiles"
+gate_desc="every service builds the context it COPYs"
+gate_protects="A Dockerfile can be correct, its files can all exist, and the build still fails
+with '\"/README.md\": not found' because .dockerignore excludes a file the
+Dockerfile COPYs. Every service had *.md in .dockerignore and every Dockerfile
+COPYs README.md, because pyproject declares readme=README.md and pip install
+needs it. The image jobs would fail AFTER the gates go green. Static: no docker
+required, so it runs on any machine and costs nothing."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_dockerfiles.py"
+gate_units=1
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_dockerfiles.py; }
+
+# A gate that cannot fail is decoration. Prove it catches a COPY of an excluded file.
+gate_selftest() {
+  local svc="$RUN_TMP/svc"
+  mkdir -p "$svc"
+  printf 'FROM x\nCOPY README.md ./\n' > "$svc/Dockerfile"
+  printf 'hi\n' > "$svc/README.md"
+  printf '*.md\n' > "$svc/.dockerignore"
+  ! "$PY" -c "
+import sys, pathlib
+sys.path.insert(0, 'tools/ci')
+import check_dockerfiles as c
+svc = pathlib.Path('$svc')
+sys.exit(0 if c.dockerignore_excludes(svc, 'README.md') else 1)
+" >/dev/null 2>&1
+}

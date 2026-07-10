@@ -12,3 +12,5 @@ __pycache__/
 !.env.example
 tests/
 *.md
+# keep README.md: pyproject readme= needs it; the build COPYs it
+!README.md

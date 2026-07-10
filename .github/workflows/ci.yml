@@ -65,6 +65,10 @@ jobs:
         continue-on-error: true
         run: bash tools/ci/run_all_gates.sh --verify
 
+      # gates: safety:dockerfiles
+      - name: "safety:dockerfiles — every service builds the context it COPYs"
+        run: python tools/ci/check_dockerfiles.py
+
       # gates: safety:actions
       - name: "safety:actions — every action a workflow uses actually exists"
         run: python tools/ci/check_action_refs.py
