@@ -1,17 +1,24 @@
 PROPRIETARY SOFTWARE LICENSE
 ============================
 
-Copyright (c) 2026 <COPYRIGHT HOLDER>. All rights reserved.
+Copyright (c) 2026. All rights reserved.
 
-  ^ REPLACE THIS before the first push. Use the legal person who owns the code:
-    your full legal name, or the company that will hold the rights. A copyright
-    line naming the wrong entity is worse than none — it is evidence against you
-    in the dispute it was meant to win.
+Unpublished proprietary work of the owner of this repository (the "Owner").
+
+Copyright subsists in this Software from the moment of its creation and is not
+conditional on this notice, on registration, or on the naming of the Owner. The
+Owner's identity is evidenced by the version control history of this repository
+and by the account under which it is hosted.
+
+  Note for the Owner: when a legal entity exists to hold these rights — you
+  personally, or a company — name it on the line above. A named holder is who a
+  licensee pays, and who a court can identify. Until then the right is yours,
+  but harder to assert.
 
 This software and its source code, documentation, configuration, container
 images, and all accompanying materials (collectively, the "Software") are the
-exclusive property of the copyright holder and are protected by copyright law
-and international treaties.
+exclusive property of the Owner and are protected by copyright law and
+international treaties.
 
 THIS IS NOT OPEN SOURCE SOFTWARE.
 
@@ -27,29 +34,32 @@ disclosure made in error, confers no right of use.
 
 RESERVED RIGHTS
 ---------------
-The copyright holder retains all rights, including the exclusive right to use
-the Software in the copyright holder's own products and services.
+The Owner retains all rights, including the exclusive right to use the Software
+in the Owner's own products and services.
 
 Any use of the Software by any other party requires a separate, prior, written
-licence agreement signed by the copyright holder. No implied licence, estoppel,
-or course of dealing shall be construed to grant any right.
+licence agreement signed by the Owner. No implied licence, estoppel, or course
+of dealing shall be construed to grant any right. Nothing in this notice, and no
+absence of a named holder within it, shall be construed as a waiver, dedication
+to the public domain, or abandonment of any right.
 
 THIRD-PARTY COMPONENTS
 ----------------------
 The Software depends on third-party open-source components, each governed by
 its own licence. Those licences apply to those components only and grant no
 rights in the Software itself. Dependency licences are enforced in CI to be
-permissive (MIT, BSD, Apache-2.0, ISC, PSF); see ci/check_licenses.py.
+permissive (MIT, BSD, Apache-2.0, ISC, PSF); see services/*/ci/check_licenses.py.
 
 NO WARRANTY
 -----------
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER
+OWNER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER
 IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 CONTACT
 -------
-Licensing enquiries: ahom59816@gmail.com
+Licensing enquiries: open an issue on this repository, or contact the account
+under which it is hosted.

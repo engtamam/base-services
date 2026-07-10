@@ -8,8 +8,13 @@ world can read, clone and copy the source, and the licence only tells them they 
 
 ## One-time setup
 
-1. **Put your name in the licence.** `LICENSE` says `<COPYRIGHT HOLDER>`. Replace it with the
-   legal person who owns the code — you, or the company that will hold the rights.
+1. **The licence is deliberately nameless.** Copyright exists from the moment the code is
+   written; it is not conditional on a notice, on registration, or on naming the holder. The
+   Owner is evidenced by the git history and the hosting account.
+
+   Name a holder on the copyright line as soon as one exists — you personally, or a company.
+   A named holder is who a licensee pays and who a court can identify. Until then the right is
+   yours, but harder to assert.
 
 2. **Create a PRIVATE repository** on GitHub. Do not use "public" and rely on the licence.
 
