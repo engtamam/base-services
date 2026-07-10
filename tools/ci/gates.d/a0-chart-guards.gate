@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+gate_name="chart:guards"
+gate_desc="the chart refuses to render a mistake"
+gate_protects="scale-out on memory drivers (per-pod caches silently serve stale reads), HPA
+without cpu requests (utilization is a % OF THE REQUEST, so it never scales), PDB
+on a singleton (a node drain hangs forever), /internal exposed, an unpinned image,
+an inert values key."
+gate_needs="helm python"
+gate_env=""
+gate_subject="tests/deploy"
+gate_units=0
+gate_slow=1
+
+gate_main() { env PYTHONHASHSEED="$PRIMARY_SEED" "$PY" -m pytest tests/deploy -q -p no:cacheprovider; }

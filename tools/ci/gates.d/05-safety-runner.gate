@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+gate_name="safety:runner"
+gate_desc="the gate runner's own guards, run before it judges anything"
+gate_protects="This runner decides what blocks a merge, and every failure it has had was the
+same shape: it reported success while checking nothing. Pointed at a repo with no
+units it printed ALL GATES PASSED. Its own metadata parser then read gate_units=1
+as empty and disabled the check that would have caught that. Test the judge first.
+
+Also runs scripts/tests/, which existed for months and which NO gate ever ran."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/tests"
+gate_units=0
+gate_slow=0
+
+gate_main() {
+  "$PY" -m pytest -q -p no:cacheprovider tools/ci/tests || return 1
+  # scripts/tests/ shipped the generator's 24 tests and the product-config guards. Nothing ran
+  # them. A test nobody runs is a comment with a docstring.
+  [ -d scripts/tests ] && { "$PY" -m pytest -q -p no:cacheprovider scripts/tests || return 1; }
+  return 0
+}
+
+# A gate that cannot fail is decoration. Prove this one refuses an empty unit set, which is the
+# precise bug that started this phase.
+gate_selftest() {
+  local empty="$RUN_TMP/selftest-no-units"
+  mkdir -p "$empty"
+  ! ( GATE_UNITS_DIR="$empty" UNITS_DIR="$empty" require_units >/dev/null 2>&1 )
+}

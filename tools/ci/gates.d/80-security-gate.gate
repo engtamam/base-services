@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+gate_name="security-gate"
+gate_desc="licenses / SAST / secrets / CVEs / SBOM / misconfig, per unit"
+gate_protects="Under --strict (what CI runs) a scanner that is not installed FAILS the gate.
+Locally it runs unstrict: a developer without trivy should not be blocked by a
+scanner CI is responsible for providing."
+gate_needs="python"
+gate_env=""
+gate_subject=""
+gate_units=1
+gate_slow=1
+
+# `pip-audit` is NETWORK-bound, not CPU-bound: it queries the PyPI advisory database. Eighteen at
+# once made PyPI return a malformed body to one of them, and the gate went red for a reason that
+# had nothing to do with the code. Four at a time is still ~4x faster than serial, and polite.
+# A gate that fans out must declare what it shares. This one shares PyPI.
+_SECURITY_JOBS=4
+
+_security_one() {
+  local svc="$1" py="$2" log="$3" args=()
+  [ "${STRICT:-0}" = "1" ] && args+=(--strict)
+  (cd "$UNITS_DIR/$svc" && "$py" ci/security_gate.py "${args[@]}" >"$log" 2>&1)
+  echo "$?" > "$log.rc"
+}
+
+gate_main() {
+  local svc rc=0 status
+
+  # Warm trivy's checks bundle ONCE, serially, before anything fans out: a cold bundle is
+  # downloaded on first use, and the gate must not race itself for it.
+  if command -v trivy >/dev/null 2>&1; then
+    trivy fs --quiet --scanners misconfig --exit-code 0 tools/ci >/dev/null 2>&1 || true
+  fi
+
+  fan_out sec _security_one "$_SECURITY_JOBS"
+  for svc in $(services); do
+    status="$(cat "$RUN_TMP/sec_$svc.log.rc" 2>/dev/null || echo 1)"
+    if [ "$status" = "0" ]; then
+      printf '      %-22s PASS\n' "$svc"
+    else
+      printf '      %-22s FAIL\n' "$svc"; tail -8 "$RUN_TMP/sec_$svc.log" | sed 's/^/        /'; rc=1
+    fi
+  done
+  return $rc
+}

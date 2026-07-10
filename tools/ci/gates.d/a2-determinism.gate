@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+gate_name="determinism"
+gate_desc="helm template is pure: same input, byte-identical output, offline"
+gate_protects="Two renders must be byte-identical and must succeed with no cluster reachable.
+Otherwise \`helm diff\` lies and GitOps flaps forever."
+gate_needs="helm"
+gate_env=""
+gate_subject="deploy/services/*.values.yaml"
+gate_units=0
+gate_slow=1
+
+gate_main() {
+  local f n a b rc=0
+  for f in deploy/services/*.values.yaml; do
+    n="$(basename "$f" .values.yaml)"
+    a="$("$HELM" template "$n" deploy/chart -f "$f" 2>/dev/null)"
+    b="$(KUBECONFIG=/nonexistent "$HELM" template "$n" deploy/chart -f "$f" 2>/dev/null)"
+    if [ -z "$a" ] || [ "$a" != "$b" ]; then
+      echo "      $n: render is not deterministic/offline (a \`lookup\` crept in?)"; rc=1
+    fi
+  done
+  [ $rc -eq 0 ] && echo "      every chart render is byte-identical and needs no cluster"
+  return $rc
+}

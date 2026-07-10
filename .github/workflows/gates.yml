@@ -1,0 +1,126 @@
+# =============================================================================
+# gates.yml — the gate runner, as a REUSABLE workflow.
+#
+# A downstream repository's entire CI becomes:
+#
+#     jobs:
+#       gates:
+#         uses: engtamam/base-services/.github/workflows/gates.yml@v0.1.0
+#         with:
+#           gates_dir: tools/ci/gates.d      # THEIR gates, not ours
+#           units_dir: packages              # THEIR layout
+#           unit_marker: src
+#
+# Kobo copied two hundred lines because they could not call them. Copies drift within a month,
+# and the copy is the one that goes stale on the day it matters. Nothing here is specific to
+# base-services: gates are discovered from `gates_dir`, units from `units_dir`.
+#
+# The caller supplies the infra its own gates need. `--strict` means a gate whose tool is
+# missing FAILS rather than skips, so "we installed helm" is a proven fact and not a comment.
+# =============================================================================
+name: gates
+
+on:
+  workflow_call:
+    inputs:
+      gates_dir:
+        description: "Directory of *.gate files to discover"
+        type: string
+        default: "tools/ci/gates.d"
+      units_dir:
+        description: "Directory holding the independently-testable units"
+        type: string
+        default: "services"
+      unit_marker:
+        description: "Subdirectory that marks a directory as a unit"
+        type: string
+        default: "app"
+      unit_skip:
+        description: "Space-separated units to ignore (e.g. a copy-me template)"
+        type: string
+        default: "_template"
+      python_version:
+        type: string
+        default: "3.12"
+      strict:
+        description: "A wired-but-skipped gate becomes a FAILURE"
+        type: boolean
+        default: true
+      needs_postgres:
+        type: boolean
+        default: true
+      needs_helm:
+        type: boolean
+        default: true
+      needs_trivy:
+        type: boolean
+        default: true
+      install_command:
+        description: "How to install this repository's units (runs at the repo root)"
+        type: string
+        default: |
+          python -m pip install --upgrade pip
+          pip install pytest pyyaml asyncpg jsonschema
+          for d in services/*/; do pip install -e "$d[dev,ci]" -q; done
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    name: run_all_gates.sh${{ inputs.strict && ' --strict' || '' }}
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: ${{ inputs.needs_postgres && 'postgres:16.4-alpine' || '' }}
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci -d ci_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+
+    env:
+      # Discovery is CONFIG, not code. The runner gates whatever repository it is pointed at.
+      GATE_GATES_DIR: ${{ inputs.gates_dir }}
+      GATE_UNITS_DIR: ${{ inputs.units_dir }}
+      GATE_UNIT_MARKER: ${{ inputs.unit_marker }}
+      GATE_UNIT_SKIP: ${{ inputs.unit_skip }}
+      DATASTORE_TEST_DSN: ${{ inputs.needs_postgres && 'postgresql://ci:ci@127.0.0.1:5432/ci_test' || '' }}
+      PYTHON: python
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # safety:secrets diffs against the merge-base
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - uses: azure/setup-helm@v4
+        if: inputs.needs_helm
+        with:
+          version: v3.16.4
+
+      - name: Install Trivy
+        if: inputs.needs_trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin
+
+      - name: Install the units
+        run: ${{ inputs.install_command }}
+
+      # A gate that cannot fail is decoration, and gates.d makes decoration cheap to add.
+      # --verify runs each gate's selftest against a known-bad input. It reports, it does not
+      # block: a gate without a selftest is a debt, not a defect.
+      - name: "prove the gates can fail (--verify)"
+        continue-on-error: true
+        run: bash tools/ci/run_all_gates.sh --verify
+
+      - name: run_all_gates.sh
+        run: bash tools/ci/run_all_gates.sh ${{ inputs.strict && '--strict' || '' }}

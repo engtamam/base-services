@@ -52,6 +52,19 @@ jobs:
       - name: safety:secrets — no credential material in the diff
         run: bash tools/ci/run_all_gates.sh --only safety:secrets
 
+      # gates: safety:runner
+      - name: "safety:runner — the gate runner's own guards, plus scripts/tests"
+        run: |
+          python -m pip install --quiet pytest jsonschema
+          bash tools/ci/run_all_gates.sh --only safety:runner
+
+      # A gate that cannot fail is decoration, and gates.d makes decoration cheap.
+      # Reports which gates have proven they can fail. Does not block: a missing
+      # selftest is a debt, not a defect.
+      - name: "prove the gates can fail (--verify)"
+        continue-on-error: true
+        run: bash tools/ci/run_all_gates.sh --verify
+
       # gates: safety:ci-parity
       - name: safety:ci-parity — this workflow runs exactly the gates the script defines
         run: python tools/ci/check_ci_parity.py

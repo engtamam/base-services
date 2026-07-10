@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+gate_name="chart:render"
+gate_desc="every unit's values file renders"
+gate_protects="A values file that cannot render is a service that cannot deploy. The chart is
+generic; the values are generated. Both must agree."
+gate_needs="helm"
+gate_env=""
+gate_subject="deploy/services/*.values.yaml"
+gate_units=0
+gate_slow=1
+
+gate_main() {
+  local f n rc=0
+  for f in deploy/services/*.values.yaml; do
+    n="$(basename "$f" .values.yaml)"
+    if ! "$HELM" template "$n" deploy/chart -f "$f" >/dev/null 2>&1; then
+      echo "      $n FAILED to render"; rc=1
+    fi
+  done
+  [ $rc -eq 0 ] && echo "      all $(ls deploy/services/*.values.yaml | wc -l) services render"
+  return $rc
+}

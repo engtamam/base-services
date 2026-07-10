@@ -10,6 +10,11 @@ Two failure modes this catches, both of which look green:
 This is the same class of defect as a config knob nobody reads: the thing is
 declared, documented, and inert. We already guard that in every service; the CI
 deserves the same treatment.
+
+It used to compare THREE places: described in `--list`, implemented in the script, run by the
+workflow. Kobo asked us to check all three. We deleted the third instead -- a gate's description
+now lives in its own gate file, beside its command, so "implemented but never described" cannot
+be expressed. Do not gate a class of bug you can make unrepresentable.
 """
 from __future__ import annotations
 
@@ -19,6 +24,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "ci" / "run_all_gates.sh"
+GATES_DIR = ROOT / "tools" / "ci" / "gates.d"
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 
 # Gates the workflow deliberately does not name individually because the strict
@@ -27,20 +33,26 @@ WORKFLOW_EXEMPT: set[str] = set()
 
 
 def gates_from_script() -> set[str]:
-    """Read the `--list` block straight from the script.
+    """Every gate DISCOVERED in gates.d/, read from each file's `gate_name`.
 
-    Deliberately does NOT shell out: on Windows `bash` may resolve to WSL, and a meta-gate
-    that cannot run on a maintainer's machine is a meta-gate nobody runs before pushing.
+    Deliberately does NOT shell out: on Windows `bash` may resolve to WSL, and a meta-gate that
+    cannot run on a maintainer's machine is a meta-gate nobody runs before pushing.
     """
-    text = SCRIPT.read_text(encoding="utf-8")
-    m = re.search(r"cat <<'LIST'\n(.*?)\nLIST\n", text, re.DOTALL)
-    if not m:
-        print("FAIL: could not find the `--list` block in run_all_gates.sh")
+    if not GATES_DIR.is_dir():
+        print(f"FAIL: no gates directory at {GATES_DIR.relative_to(ROOT).as_posix()}")
         raise SystemExit(1)
-    # A gate line looks like:  "  name:with-colons   description..."
-    return {g.group(1) for g in
-            (re.match(r"^  ([a-z][a-z0-9:_-]+)\s{2,}\S", line) for line in m.group(1).splitlines())
-            if g}
+
+    names: set[str] = set()
+    for path in sorted(GATES_DIR.glob("*.gate")):
+        text = path.read_text(encoding="utf-8")
+        m = re.search(r'^gate_name="([^"]+)"', text, re.MULTILINE)
+        if not m:
+            # A gate file with no name is a gate the runner lists as "" and nobody notices is
+            # missing from the workflow.
+            print(f"FAIL: {path.name} declares no gate_name")
+            raise SystemExit(1)
+        names.add(m.group(1))
+    return names
 
 
 def gates_from_workflow() -> set[str]:
@@ -94,18 +106,18 @@ def main() -> int:
     script = gates_from_script()
     workflow = gates_from_workflow()
     if not script:
-        print("FAIL: could not parse any gate from `--list`.")
+        print("FAIL: gates.d/ contains no gates. The runner would check nothing and exit 0.")
         return 1
 
     missing = script - workflow - WORKFLOW_EXEMPT
     unknown = workflow - script
 
     if missing:
-        print("FAIL: gates defined in run_all_gates.sh but never run by CI:")
+        print("FAIL: gates defined in gates.d/ but never run by CI:")
         for g in sorted(missing):
             print(f"    - {g}")
         print("  A gate CI does not run protects nothing. Add it to the workflow,")
-        print("  or delete it from the script.")
+        print("  or delete its file from gates.d/.")
     if unknown:
         print("FAIL: the workflow runs gates that do not exist:")
         for g in sorted(unknown):
@@ -115,7 +127,7 @@ def main() -> int:
     if missing or unknown:
         return 1
 
-    print(f"  workflow and script agree on all {len(script)} gates: "
+    print(f"  workflow and gates.d/ agree on all {len(script)} gates: "
           f"{', '.join(sorted(script))}")
     return 0
 

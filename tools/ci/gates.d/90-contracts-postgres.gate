@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+gate_name="contracts:postgres"
+gate_desc="the DataStore contract against a REAL database"
+gate_protects="The in-memory adapter's asyncio.Lock serialises writers instead of letting them
+race, so incr_if_below (quota) and cas (money) are only meaningful here. Sixteen
+of eighteen services once had NO postgres param at all: the gate fails on a SKIPPED
+param, and a param nobody wrote is never skipped."
+gate_needs="python"
+gate_env="DATASTORE_TEST_DSN"
+gate_subject=""
+gate_units=1
+gate_slow=1
+
+# SERIAL, on purpose. This gate OWNS the database: its fixtures TRUNCATE. Two units running at
+# once would delete each other's rows mid-test, and the failures would read as adapter bugs.
+gate_main() {
+  local svc py rc=0
+  for svc in $(services); do
+    [ -f "$UNITS_DIR/$svc/tests/contracts/test_datastore_contract.py" ] || continue
+    py="$(py_for "$svc")"
+    # `local == CI` is the promise this runner makes. py_for prefers a unit's OWN venv, and
+    # nothing checked that venv can run what it is about to be asked to run. identity-service
+    # had one without the postgres extra: its params errored, the run reported a SKIP, and CI
+    # stayed green because CI pip-installs the extras. Name the interpreter, not the tracebacks.
+    if ! (cd "$UNITS_DIR/$svc" && "$py" -c "import asyncpg" >/dev/null 2>&1); then
+      printf '      %-22s FAIL  (its interpreter cannot import asyncpg)\n' "$svc"
+      echo "        $py"
+      echo "        install the postgres extra:  $py -m pip install asyncpg"
+      rc=1; continue
+    fi
+    if (cd "$UNITS_DIR/$svc" && env PYTHONHASHSEED="$PRIMARY_SEED" "$py" -m pytest -q -p no:cacheprovider tests/contracts/ >"$RUN_TMP/pg_$svc.log" 2>&1); then
+      printf '      %-22s %s\n' "$svc" "$(tail -1 "$RUN_TMP/pg_$svc.log")"
+    else
+      printf '      %-22s FAIL\n' "$svc"; tail -6 "$RUN_TMP/pg_$svc.log" | sed 's/^/        /'; rc=1
+    fi
+  done
+  # Prove the postgres params were actually exercised, not silently skipped.
+  if grep -qi "skipped" "$RUN_TMP"/pg_*.log 2>/dev/null; then
+    echo "  a postgres contract param was SKIPPED — DATASTORE_TEST_DSN is not reaching the tests"
+    return 1
+  fi
+  return $rc
+}

@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+gate_name="safety:product"
+gate_desc="product identity is valid and its frozen identifiers have not moved"
+gate_protects="Changing jwtIssuer rejects every live token. Changing linkNs breaks every share
+link ever sent. Changing signatureDomain invalidates every signed artifact, forever.
+Changing rolloutSalt silently re-buckets every user out of their feature-flag group.
+--strict: a schema check skipped for a missing jsonschema is a FAILURE, not a pass."
+gate_needs="python"
+gate_env=""
+gate_subject="scripts/check_product_config.py"
+gate_units=0
+gate_slow=0
+
+gate_main() {
+  # The guard tests run FIRST. This freeze has failed silently twice — once because its baseline
+  # never existed, once because `"MIGRATION:" in body` let the commit that DOCUMENTED the rule
+  # disarm it. Both times the gate printed a green line. Test the guard, then run it.
+  "$PY" -m pytest -q -p no:cacheprovider scripts/tests/test_product_config.py || return 1
+  "$PY" scripts/check_product_config.py --strict
+}

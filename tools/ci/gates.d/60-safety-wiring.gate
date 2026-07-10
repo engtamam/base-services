@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+gate_name="safety:wiring"
+gate_desc="product identity reaches a real Settings field"
+gate_protects="A config nothing reads is a document, not configuration. A mapping to JWT_ISSUER
+when the field is TOKEN_ISSUER deploys perfectly clean, is never read, and ships
+the product under the wrong issuer. Also refuses stale generated values files."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_product_wiring.py"
+gate_units=0
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_product_wiring.py; }

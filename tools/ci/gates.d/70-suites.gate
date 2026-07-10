@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+gate_name="suites"
+gate_desc="every unit's pytest suite, under a pinned hash seed"
+gate_protects="Runs under PYTHONHASHSEED so a dict-ordering bug cannot hide. Units are
+independent by construction, so their suites fan out across every core."
+gate_needs="python"
+gate_env=""
+gate_subject=""
+gate_units=1
+gate_slow=1
+
+_suite_one() {
+  local svc="$1" py="$2" log="$3"
+  # DATASTORE_TEST_DSN is deliberately CLEARED. The postgres contract belongs to the
+  # `contracts:postgres` gate, which runs it one unit at a time against the database it OWNS.
+  # Leaving the DSN set made 16 concurrent suites TRUNCATE the same table underneath each other;
+  # every service reported errors, and the failures looked like adapter bugs. They were the
+  # harness. A gate that fans out must declare what it shares — this one shares nothing.
+  (cd "$UNITS_DIR/$svc" && env PYTHONHASHSEED="$PRIMARY_SEED" DATASTORE_TEST_DSN= \
+      "$py" -m pytest -q -p no:cacheprovider >"$log" 2>&1)
+  echo "$?" > "$log.rc"
+}
+
+gate_main() {
+  local svc rc=0 status
+  fan_out gate _suite_one
+  for svc in $(services); do                 # ordered replay: deterministic, readable
+    printf '  --- %s\n' "$svc"
+    status="$(cat "$RUN_TMP/gate_$svc.log.rc" 2>/dev/null || echo 1)"
+    if [ "$status" != "0" ]; then
+      echo "      FAILED — tail:"; tail -6 "$RUN_TMP/gate_$svc.log" | sed 's/^/        /'; rc=1
+    else
+      tail -1 "$RUN_TMP/gate_$svc.log" | sed 's/^/      /'
+    fi
+  done
+  return $rc
+}

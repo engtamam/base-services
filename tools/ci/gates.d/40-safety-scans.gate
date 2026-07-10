@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+gate_name="safety:scans"
+gate_desc="no unexplained full-collection read on a request path"
+gate_protects="A scan on a request path costs the size of every tenant's data, and past its cap
+it returns an ARBITRARY subset, not a truncated one. A tenant can see none of its
+own rows and nothing errors. Every surviving scan_all() must carry a '# sweeper:'
+note saying why reading every row IS the operation — a deliberate sweeper and a
+forgotten request path look identical from outside."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_scan_discipline.py"
+gate_units=1
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_scan_discipline.py; }
