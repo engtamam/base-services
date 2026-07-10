@@ -150,6 +150,26 @@ GATES (each blocks merge on failure). `--strict` also blocks on a SKIP.
                       (d) the config-knob guard. New services inherit the bar
                       automatically; exceptions live in a SHRINKING allowlist.
 
+  safety:scans        Every scan_all() on a request path is a bug: it costs the
+                      size of every tenant's data, and past its cap it returns an
+                      ARBITRARY subset, not a truncated one. Each surviving call
+                      must carry a `# sweeper:` note saying why reading every row
+                      IS the operation. A deliberate sweeper and a forgotten
+                      request path look identical from outside; this is what
+                      tells them apart.
+
+  safety:product      config/product.json (or the example) is well-formed, ships every
+                      customer-visible string in every supported locale, and its
+                      FROZEN identifiers still match the committed lock. Changing
+                      jwtIssuer / linkNs / signatureDomain rejects every live token,
+                      breaks every share link, and invalidates every signature ever
+                      made. A rebrand must not be able to do that by accident.
+
+  safety:wiring       Product identity actually reaches a service, and only through
+                      knobs that exist. A mapping to JWT_ISSUER when the field is
+                      TOKEN_ISSUER deploys clean, is never read, and ships the wrong
+                      issuer. Also refuses stale generated values files.
+
   suites              Every service's pytest suite, under a pinned hash seed.
 
   security-gate       Every service's ci/security_gate.py: permissive licenses,
@@ -238,7 +258,34 @@ coverage_services() {
 run "coverage:services" -- coverage_services
 
 # =============================================================================
-# GATE 4 — suites   (every service's tests, pinned hash seed)
+# GATE 4 — safety:scans   (no unexplained full-collection read on a request path)
+# =============================================================================
+want "safety:scans" && banner "safety:scans — no unexplained full-collection read on a request path" "Every surviving scan_all() must say, in a '# sweeper:' note, why reading every row IS the job."
+safety_scans() {
+  "$PY" tools/ci/check_scan_discipline.py
+}
+run "safety:scans" -- safety_scans
+
+# =============================================================================
+# GATE 5 — safety:product   (identity is config; frozen identifiers are not)
+# =============================================================================
+want "safety:product" && banner "safety:product — product identity is well-formed and its frozen identifiers have not moved" "--strict: a schema check skipped for a missing jsonschema is a FAILURE, not a pass."
+safety_product() {
+  "$PY" scripts/check_product_config.py --strict
+}
+run "safety:product" -- safety_product
+
+# =============================================================================
+# GATE 6 — safety:wiring   (a config nothing reads is a document, not configuration)
+# =============================================================================
+want "safety:wiring" && banner "safety:wiring — product identity reaches a real Settings field" "Mapped env vars must exist on the service; generated values files must be current."
+safety_wiring() {
+  "$PY" tools/ci/check_product_wiring.py
+}
+run "safety:wiring" -- safety_wiring
+
+# =============================================================================
+# GATE 7 — suites   (every service's tests, pinned hash seed)
 # =============================================================================
 want "suites" && banner "suites — every service's pytest suite" \
 "Runs under PYTHONHASHSEED=$PRIMARY_SEED so a dict-ordering bug cannot hide."
@@ -258,7 +305,7 @@ suites() {
 run "suites" -- suites
 
 # =============================================================================
-# GATE 5 — security-gate   (per service, --strict: no skipped scanner)
+# GATE 8 — security-gate   (per service, --strict: no skipped scanner)
 # =============================================================================
 want "security-gate" && banner "security-gate — licenses / SAST / secrets / CVEs, per service" \
 "Under --strict (what CI runs) a scanner that is not installed FAILS the gate.
@@ -280,7 +327,7 @@ security_gate() {
 run "security-gate" -- security_gate
 
 # =============================================================================
-# GATE 6 — contracts:postgres
+# GATE 9 — contracts:postgres
 # The atomic primitives cannot be proven on the memory adapter, where an
 # asyncio.Lock serialises writers instead of letting them race.
 # =============================================================================
@@ -316,7 +363,7 @@ elif want "contracts:postgres"; then
 fi
 
 # =============================================================================
-# GATE 7/8/9 — the chart. Needs helm.
+# GATE 10/11/12 — the chart. Needs helm.
 # =============================================================================
 chart_guards()  { env PYTHONHASHSEED="$PRIMARY_SEED" "$PY" -m pytest tests/deploy -q -p no:cacheprovider; }
 

@@ -1,0 +1,38 @@
+{
+  "_readme": [
+    "THE FROZEN IDENTIFIERS. This file is COMMITTED. config/product.json is not.",
+    "",
+    "That asymmetry is the whole point. The freeze check compares the identifiers in your",
+    "product.json against this lock. Before this file existed the check compared product.json",
+    "against its own previous commit — and since product.json is never committed, `git show`",
+    "returned nothing and the check skipped, silently, on every run. The rule its own docstring",
+    "called 'the check that matters' had never once executed.",
+    "",
+    "These values are written into data your customers already hold, and into artifacts you",
+    "have already signed:",
+    "",
+    "  jwtIssuer        change it and every live session and refresh token is rejected",
+    "  linkNs           change it and every share link you have ever sent stops resolving",
+    "  signatureDomain  change it and every signed artifact fails verification, forever",
+    "  eventNs          change it and consumers filtering on the old namespace go deaf",
+    "  userAgent        change it and whoever allow-listed you stops seeing you",
+    "",
+    "TO REBRAND: edit `identity` and `brand` in product.json. Leave these alone.",
+    "",
+    "To change one anyway: edit BOTH product.json and this lock, and put a line beginning",
+    "'MIGRATION:' in the commit body saying why and what the compatibility window is. The",
+    "versioned identifiers (linkNs, signatureDomain) may only move forward by bumping the",
+    "suffix — acme.link.v1 -> acme.link.v2 — never by editing the stem, so that old artifacts",
+    "keep verifying against the old value.",
+    "",
+    "Empty strings below mean 'not yet chosen'. Fill them when you fill product.json; from that",
+    "commit on, they are frozen."
+  ],
+
+  "jwtIssuer": "",
+  "linkNs": "",
+  "signatureDomain": "",
+  "eventNs": "",
+  "userAgent": "",
+  "rolloutSalt": ""
+}

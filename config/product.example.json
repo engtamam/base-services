@@ -1,0 +1,122 @@
+{
+  "$schema": "./product.schema.json",
+  "_readme": [
+    "COPY THIS FILE to config/product.json and fill it in. Never commit the filled copy —",
+    "same rule as .env.example. An empty string renders as a visible placeholder rather than",
+    "silently shipping the wrong name.",
+    "",
+    "This is the ONE place a product's identity lives. Nothing else in the codebase says the",
+    "product's name. Renaming the product is an edit to this file, not a search-and-replace",
+    "across every service.",
+    "",
+    "THREE LEVELS. Never mix them:",
+    "  1. THIS FILE          build-time identity. Name, brand, legal entity. Same in every environment.",
+    "  2. env vars           runtime wiring. URLs, hosts, keys. Different per environment.",
+    "  3. tenant-service     per-customer white-label branding. Different per tenant.",
+    "",
+    "Validate with:  python scripts/check_product_config.py",
+    "",
+    "Everything under `identifiers` is FROZEN. Read the note inside it before touching it."
+  ],
+  "identity": {
+    "_help": "slug is the lowercase machine name; it appears in file names and CLI output, never in a service name, a table, or a token. legalName is the registered entity exactly as on the commercial registration — leave it empty until incorporation and it will render as a visible placeholder.",
+    "slug": "",
+    "name": "",
+    "legalName": "",
+    "tagline": {
+      "en": "",
+      "ar": ""
+    },
+    "description": {
+      "en": "",
+      "ar": ""
+    }
+  },
+  "urls": {
+    "_help": "https only. Any read-only or externally-shared portal MUST be its own origin, never a path on the main app — a separate origin cannot be reached by a flag flip or a routing bug. Optional keys may be omitted entirely; do not leave a broken URL behind.",
+    "marketing": "https://example.com",
+    "app": "https://app.example.com",
+    "admin": "https://admin.example.com"
+  },
+  "support": {
+    "_help": "securityEmail is required and published for vulnerability disclosure. An auditor, a researcher, and a customer's procurement team will all look for it.",
+    "email": "",
+    "salesEmail": "",
+    "securityEmail": "",
+    "phone": ""
+  },
+  "brand": {
+    "_help": "Colors live in the token file referenced by tokensRef — never here, and never in code. Paths are relative to the repository root.",
+    "tokensRef": "brand/tokens/colors.json",
+    "logo": {
+      "light": "brand/logo/logo-light.svg",
+      "dark": "brand/logo/logo-dark.svg",
+      "mark": "brand/logo/mark.svg",
+      "favicon": "brand/logo/favicon.svg"
+    },
+    "wordmark": "",
+    "documentFooter": {
+      "en": "",
+      "ar": ""
+    }
+  },
+  "locale": {
+    "_help": "Every customer-visible string ships in every supported language from day one; bilingual is never bolted on later. `rtl` must be a subset of `supported`. currencyMinorUnits: SAR/USD = 2, KWD/BHD/OMR = 3. Money is stored as an integer in these units — a float loses a minor unit per operation and breaks reconciliation.",
+    "default": "en",
+    "supported": [
+      "en",
+      "ar"
+    ],
+    "rtl": [
+      "ar"
+    ],
+    "timezone": "UTC",
+    "currency": "USD",
+    "currencyMinorUnits": 2
+  },
+  "legal": {
+    "_help": "entityCountry is ISO 3166-1 alpha-2. A Saudi VAT number is 15 digits beginning with 3 — wrong here means wrong on every e-invoice you issue. Leave empty until registered.",
+    "entityCountry": "",
+    "commercialRegistration": "",
+    "vatNumber": "",
+    "address": {
+      "en": "",
+      "ar": ""
+    },
+    "termsUrl": "https://example.com/terms",
+    "privacyUrl": "https://example.com/privacy",
+    "dpoEmail": ""
+  },
+  "identifiers": {
+    "_frozen": [
+      "DO NOT CHANGE THESE WHEN THE PRODUCT IS RENAMED.",
+      "",
+      "They are not cosmetic. They are written into data your customers already hold, and into",
+      "artifacts you have already signed. A rebrand that edits one of these is a data-loss event",
+      "that no test will catch, because the new value is perfectly well-formed.",
+      "",
+      "  jwtIssuer      change it and every live session and refresh token is rejected",
+      "  linkNs         change it and every share link you have ever sent stops resolving",
+      "  signatureDomain  change it and every signed artifact fails verification, forever",
+      "",
+      "A signed artifact is immutable. Its signature domain is immutable with it.",
+      "",
+      "TO REBRAND: edit `identity` and `brand`. Leave this block alone.",
+      "",
+      "If one genuinely must change, it is a data migration with a compatibility window — never",
+      "a config edit. Versioned identifiers move forward by bumping the version suffix",
+      "(`.v1` -> `.v2`); old artifacts keep verifying against the old value. The CI check",
+      "enforces this and requires a `MIGRATION:` line in the commit body."
+    ],
+    "jwtIssuer": "",
+    "linkNs": "",
+    "signatureDomain": "",
+    "eventNs": "",
+    "userAgent": "",
+    "rolloutSalt": ""
+  },
+  "services": {
+    "_help": "Internal service names carry NO product name, on purpose. `billing`, never `acme-billing`. A rename must never touch a service name, a database name, a table, a JSON key, a log field, or a header. The schema and the CI check both reject a service name containing the product slug.",
+    "names": []
+  }
+}

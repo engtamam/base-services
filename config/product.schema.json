@@ -1,0 +1,217 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://base-services/config/product/1.0",
+  "title": "Product configuration",
+  "description": "Build-time product identity for a platform built on base-services. The ONE place the product name, brand, and legal entity live, so a rename is an edit to one file rather than a search-and-replace across every service. Runtime wiring belongs in env vars; per-customer white-label belongs in tenant-service branding. Copy product.example.json to product.json, fill it, and never commit the filled copy. Validated by scripts/check_product_config.py so a bad edit fails at lint, not in production.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["identity", "urls", "support", "brand", "locale", "legal", "identifiers", "services"],
+
+  "properties": {
+    "$schema": { "type": "string" },
+    "_readme": { "$ref": "#/$defs/prose" },
+
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slug", "name", "tagline", "description"],
+      "properties": {
+        "_help": { "type": "string" },
+        "slug": {
+          "type": "string",
+          "pattern": "^$|^[a-z][a-z0-9-]{1,30}$",
+          "description": "Lowercase machine name. Appears in file names and CLI output only — never in a service name, a database, a table, or a token. Empty is allowed in product.example.json; the CI check rejects it in a real product.json."
+        },
+        "name": {
+          "type": "string",
+          "description": "The product name as a human reads it. Empty renders as a visible placeholder rather than silently shipping the wrong name; the CI check rejects it in a real product.json."
+        },
+        "legalName": {
+          "type": "string",
+          "description": "Registered legal entity, exactly as on the commercial registration, including the legal suffix. May be empty until incorporation."
+        },
+        "tagline": { "$ref": "#/$defs/i18nText" },
+        "description": { "$ref": "#/$defs/i18nText" }
+      }
+    },
+
+    "urls": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/httpsUrl" },
+      "required": ["app"],
+      "description": "https only. A read-only or externally-shared portal must be its own origin, never a path on the main app — a separate origin cannot be reached by a flag flip or a routing bug.",
+      "properties": {
+        "_help": { "type": "string" },
+        "marketing": { "$ref": "#/$defs/httpsUrl" },
+        "app": { "$ref": "#/$defs/httpsUrl" },
+        "admin": { "$ref": "#/$defs/httpsUrl" },
+        "docs": { "$ref": "#/$defs/httpsUrl" },
+        "status": { "$ref": "#/$defs/httpsUrl" }
+      }
+    },
+
+    "support": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["email", "securityEmail"],
+      "properties": {
+        "_help": { "type": "string" },
+        "email": { "$ref": "#/$defs/emailOrEmpty" },
+        "salesEmail": { "$ref": "#/$defs/emailOrEmpty" },
+        "securityEmail": {
+          "$ref": "#/$defs/emailOrEmpty",
+          "description": "Published for vulnerability disclosure. A researcher, an auditor, and a customer's procurement team will all look for it. The CI check rejects an empty value in a real product.json."
+        },
+        "phone": { "type": "string" }
+      }
+    },
+
+    "brand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tokensRef", "logo", "wordmark"],
+      "properties": {
+        "_help": { "type": "string" },
+        "tokensRef": {
+          "type": "string",
+          "description": "Path to the color token file. Colors live there, never here, and never in code."
+        },
+        "logo": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["light", "dark", "mark", "favicon"],
+          "properties": {
+            "light": { "type": "string" },
+            "dark": { "type": "string" },
+            "mark": { "type": "string" },
+            "favicon": { "type": "string" }
+          }
+        },
+        "wordmark": { "type": "string" },
+        "documentFooter": { "$ref": "#/$defs/i18nText" }
+      }
+    },
+
+    "locale": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["default", "supported", "rtl", "timezone", "currency", "currencyMinorUnits"],
+      "properties": {
+        "_help": { "type": "string" },
+        "default": { "$ref": "#/$defs/locale" },
+        "supported": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/locale" }
+        },
+        "rtl": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/locale" },
+          "description": "Right-to-left locales. Must be a subset of `supported` — enforced by the CI check, which a schema cannot express."
+        },
+        "timezone": { "type": "string", "minLength": 1, "description": "IANA name, e.g. UTC or Asia/Riyadh." },
+        "currency": { "type": "string", "pattern": "^[A-Z]{3}$", "description": "ISO 4217." },
+        "currencyMinorUnits": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3,
+          "description": "SAR/USD = 2. KWD/BHD/OMR = 3. Money is stored as an integer in these units; a float loses a minor unit per operation and breaks reconciliation."
+        }
+      }
+    },
+
+    "legal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entityCountry", "termsUrl", "privacyUrl"],
+      "properties": {
+        "_help": { "type": "string" },
+        "entityCountry": { "type": "string", "pattern": "^$|^[A-Z]{2}$", "description": "ISO 3166-1 alpha-2. Empty until incorporation." },
+        "commercialRegistration": { "type": "string" },
+        "vatNumber": {
+          "type": "string",
+          "pattern": "^$|^3[0-9]{14}$",
+          "description": "Saudi VAT number: 15 digits beginning with 3. Empty until registered. Wrong here means wrong on every e-invoice zatca-service issues."
+        },
+        "address": { "$ref": "#/$defs/i18nText" },
+        "termsUrl": { "$ref": "#/$defs/httpsUrl" },
+        "privacyUrl": { "$ref": "#/$defs/httpsUrl" },
+        "dpoEmail": { "$ref": "#/$defs/emailOrEmpty" }
+      }
+    },
+
+    "identifiers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jwtIssuer", "linkNs", "signatureDomain", "eventNs", "userAgent", "rolloutSalt"],
+      "description": "FROZEN. These values are written into data a customer already holds and artifacts already signed. A rebrand edits `identity` and `brand` and leaves this block untouched. Changing a value here is a data migration with a compatibility window, never a config edit. scripts/check_product_config.py pins these against the previous commit and fails the build unless the commit body carries a `MIGRATION:` line.",
+      "properties": {
+        "_frozen": { "$ref": "#/$defs/prose" },
+        "jwtIssuer": {
+          "type": "string",
+          "pattern": "^$|^[a-z][a-z0-9._-]{1,40}$",
+          "description": "Change it and every live session and refresh token is rejected."
+        },
+        "linkNs": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9.]+\\.v[0-9]+$",
+          "description": "Namespace for externally shared links. Change it and every link ever sent stops resolving. Versioned: move forward by bumping the suffix."
+        },
+        "signatureDomain": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9.]+\\.v[0-9]+$",
+          "description": "Domain-separation string for signed artifacts. Change it and every signed artifact fails verification, forever. A signed artifact is immutable; so is its signature domain. Versioned: a new value means a new suffix, and old artifacts keep verifying against the old one."
+        },
+        "eventNs": { "type": "string", "pattern": "^$|^[a-z][a-z0-9-]{1,30}$" },
+        "userAgent": { "type": "string" },
+        "rolloutSalt": {
+          "type": "string",
+          "description": "Salts the feature-flag rollout hash. Change it and EVERY user re-buckets: a customer inside a 10% rollout is silently moved out, and one who never saw the feature is moved in. No error is raised. Frozen for the same reason a signature domain is."
+        }
+      }
+    },
+
+    "services": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["names"],
+      "properties": {
+        "_help": { "type": "string" },
+        "names": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{1,30}$",
+            "description": "Service names carry no product name. `billing`, never `acme-billing`. The CI check rejects any name containing the product slug — a schema cannot see that, because it does not know the slug."
+          }
+        }
+      }
+    }
+  },
+
+  "$defs": {
+    "prose": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Human notes. Stripped before the object is compared or consumed."
+    },
+    "i18nText": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "type": "string" },
+      "propertyNames": { "$ref": "#/$defs/locale" },
+      "description": "One entry per supported locale. Every customer-visible string ships in every language from day one; bilingual is never bolted on later. The CI check verifies the keys match locale.supported."
+    },
+    "httpsUrl": {
+      "type": "string",
+      "pattern": "^https://",
+      "description": "https only. A shared link over http is not evidence of anything."
+    },
+    "email": { "type": "string", "format": "email", "minLength": 1 },
+    "emailOrEmpty": { "type": "string", "anyOf": [{ "const": "" }, { "format": "email" }] },
+    "locale": { "type": "string", "pattern": "^[a-z]{2}(-[A-Z]{2})?$" }
+  }
+}

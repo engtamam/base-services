@@ -60,6 +60,20 @@ jobs:
       - name: coverage:services — every service carries the guards we require
         run: python tools/ci/check_service_coverage.py
 
+      # gates: safety:scans
+      - name: "safety:scans — no unexplained full-collection read on a request path"
+        run: python tools/ci/check_scan_discipline.py
+
+      # gates: safety:product
+      - name: "safety:product — product identity valid; frozen identifiers unmoved"
+        run: |
+          python -m pip install --quiet jsonschema
+          python scripts/check_product_config.py --strict
+
+      # gates: safety:wiring
+      - name: "safety:wiring — product identity reaches a real Settings field"
+        run: python tools/ci/check_product_wiring.py
+
   # ───────────────────────────────────────────────────────────────────────────
   # SUITES — one job per DISCOVERED service, each against a REAL postgres.
   # The in-memory adapter's asyncio.Lock hides every race a database has to

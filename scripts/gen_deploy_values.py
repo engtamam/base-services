@@ -15,6 +15,8 @@ from __future__ import annotations
 import pathlib
 import sys
 
+import product        # config/product.json -> per-service env. See scripts/product.py.
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SERVICES_DIR = ROOT / "services"
 OUT_DIR = ROOT / "deploy" / "services"
@@ -100,7 +102,7 @@ networkPolicy:
 
 metrics:
   serviceMonitor: true
-{ingress_block}{cron_block}"""
+{env_block}{ingress_block}{cron_block}"""
 
 INGRESS_BLOCK = """
 ingress:
@@ -120,7 +122,24 @@ ingress:
 """
 
 
-def render(name: str) -> str:
+def _env_block(name: str, cfg: dict) -> str:
+    """Product identity, as env vars. Generated — never hand-edited.
+
+    The chart renders these into a ConfigMap, and tests/deploy/test_chart_guards.py refuses any
+    key that is not a real field on this service's Settings. An empty product value is omitted
+    rather than emitted as "", because an empty ConfigMap entry overrides the service's own
+    default with nothing.
+    """
+    env = product.env_for(name, cfg)
+    if not env:
+        return ""
+    lines = ["", "# From config/product.json — regenerate with scripts/gen_deploy_values.py.",
+             "# Do not hand-edit: `identifiers` are frozen and guarded by safety:product.", "env:"]
+    lines += [f"  {k}: {v!r}".replace("'", '"') for k, v in sorted(env.items())]
+    return "\n".join(lines) + "\n"
+
+
+def render(name: str, cfg: dict) -> str:
     internet = name in INTERNET_EGRESS
     note = ""
     if internet:
@@ -138,6 +157,7 @@ def render(name: str) -> str:
 
     return TEMPLATE.format(
         name=name, registry=REGISTRY, digest=PLACEHOLDER_DIGEST,
+        env_block=_env_block(name, cfg),
         ingress_ns="ingress" if name in PUBLIC_INGRESS else '""',
         internet=str(internet).lower(), internet_note=note,
         ingress_block=ingress_block, cron_block=cron_block,
@@ -146,11 +166,17 @@ def render(name: str) -> str:
 
 def main() -> int:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+    cfg, source = product.load()
     names = sorted(p.name for p in SERVICES_DIR.iterdir()
                    if p.is_dir() and p.name != "_template" and (p / "app").is_dir())
     for name in names:
-        (OUT_DIR / f"{name}.values.yaml").write_text(render(name), encoding="utf-8")
+        # newline="\n": .gitattributes mandates LF, and CRLF in a generated file makes the
+        # determinism gate see a diff that is not there.
+        (OUT_DIR / f"{name}.values.yaml").write_text(
+            render(name, cfg), encoding="utf-8", newline="\n")
+    wired = sum(1 for n in names if product.env_for(n, cfg))
     print(f"wrote {len(names)} values files to {OUT_DIR}")
+    print(f"product identity from {source.name}: {wired} service(s) inherited env values")
     return 0
 
 

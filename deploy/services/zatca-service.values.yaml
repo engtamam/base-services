@@ -44,6 +44,11 @@ networkPolicy:
 metrics:
   serviceMonitor: true
 
+# From config/product.json — regenerate with scripts/gen_deploy_values.py.
+# Do not hand-edit: `identifiers` are frozen and guarded by safety:product.
+env:
+  CURRENCY: "USD"
+
 # No ingress: reached service-to-service on the internal tier only.
 ingress:
   enabled: false

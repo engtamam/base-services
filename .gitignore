@@ -67,3 +67,14 @@ desktop.ini
 scratch/
 tmp/
 *.log
+
+# local multi-service test env (not a service .venv)
+.venv-test/
+
+# parallel test runner output
+.test-logs/
+
+# The filled product config. Same rule as .env: the EXAMPLE is committed, the real
+# one is not. It carries the legal entity, VAT number and support contacts.
+# config/product.identifiers.lock.json IS committed — the freeze needs a baseline.
+config/product.json
