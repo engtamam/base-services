@@ -77,7 +77,10 @@ jobs:
       - name: Install every service
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pyyaml asyncpg
+          # jsonschema: safety:product runs --strict, where a missing schema validator
+          # is a FAILURE, not a skipped note. It arrived transitively before; a gate
+          # must not depend on another package's dependency tree.
+          pip install pytest pyyaml asyncpg jsonschema
           for d in services/*/; do pip install -e "$d[dev,ci]" -q; done
       - name: run_all_gates.sh --strict
         run: bash tools/ci/run_all_gates.sh --strict
