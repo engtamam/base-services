@@ -30,6 +30,7 @@ def build_audit(request: Request) -> AuditService:
         repo=AuditRepository(c.datastore), integrity=c.integrity, exporters=exporters,
         default_format=s.EXPORTER_DEFAULT, partition_mode=s.AUDIT_PARTITION,
         query_limit=s.AUDIT_QUERY_LIMIT,
+        export_limit=s.AUDIT_EXPORT_LIMIT,
     )
 
 

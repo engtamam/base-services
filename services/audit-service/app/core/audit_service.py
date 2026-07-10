@@ -15,13 +15,17 @@ from app.core.models import AuditEvent, new_id, now
 
 class AuditService:
     def __init__(self, *, repo: AuditRepository, integrity, exporters: dict,
-                 default_format: str, partition_mode: str, query_limit: int) -> None:
+                 default_format: str, partition_mode: str, query_limit: int,
+                 export_limit: int = 100_000) -> None:
         self._repo = repo
         self._integrity = integrity
         self._exporters = exporters
         self._default_format = default_format
         self._mode = partition_mode
         self._query_limit = query_limit
+        # An export used to ask for 1 000 000 rows — the constant that started all of this.
+        # Bounded, and the bound is configuration.
+        self._export_limit = export_limit
 
     def _partition(self, tenant: str) -> str:
         return (tenant or "global") if self._mode == "tenant" else "global"
@@ -41,11 +45,40 @@ class AuditService:
         return evt
 
     async def query(self, filters: dict[str, Any], limit: int | None = None) -> list[dict]:
-        return await self._repo.query(filters, limit or self._query_limit)
+        """Query is scoped to a PARTITION, because that is what the datastore can index on.
+
+        In tenant-partition mode a tenant's events live in its own partition, so the filter is
+        pushed down there. A platform caller with no tenant filter must be answered across
+        partitions — from the tiny _META list, never by scanning the events.
+        """
+        limit = limit or self._query_limit
+        tenant = filters.get("tenant")
+
+        if self._mode != "tenant" or tenant:
+            return await self._repo.query(filters, limit, self._partition(tenant or ""))
+
+        out: list[dict] = []
+        for partition in await self._repo.partitions():
+            out.extend(await self._repo.query(filters, limit, partition))
+            if len(out) >= limit:
+                break
+        out.sort(key=lambda r: r["seq"], reverse=True)
+        return out[:limit]
 
     # ── integrity verify (tamper detection) ──────────────────────────────────
     async def verify(self, partition: str = "global") -> dict:
+        """Walk the whole chain, or say so. Never report clean on a partial walk.
+
+        `iterate()` pages to exhaustion, so a truncated read is no longer possible. But the
+        guarantee we sell is that a PASS means the whole chain was checked, so it is asserted
+        against the independently-maintained head rather than assumed: the last event's seq must
+        be the head seq, its hash must be the head hash, and the count must match.
+
+        A tamper-evident log that verifies part of itself is worse than no log.
+        """
         events = await self._repo.iterate(partition)
+        head_seq, head_hash = await self._repo.head(partition)
+
         prev = ""
         for e in events:
             if e.get("prev_hash", "") != prev:
@@ -55,11 +88,28 @@ class AuditService:
                 return {"ok": False, "checked": len(events), "first_bad_seq": e["seq"],
                         "reason": "content tampered (hash mismatch)"}
             prev = e["hash"]
+
+        # The chain read must REACH THE HEAD the writer recorded. If it stops short, we read
+        # only part of the log — the exact failure that used to pass silently.
+        #
+        # Note what is NOT asserted: `len(events) == head_seq`. Retention purge deliberately
+        # removes an old PREFIX of the chain, so the count is legitimately less than the head
+        # sequence. A hole in the middle is caught by the prev_hash walk; a missing tail is
+        # caught below.
+        if head_seq and not events:
+            return {"ok": False, "checked": 0, "first_bad_seq": None,
+                    "reason": f"read no events, head is at seq {head_seq}"}
+        if head_seq and events and events[-1]["seq"] != head_seq:
+            return {"ok": False, "checked": len(events), "first_bad_seq": events[-1]["seq"],
+                    "reason": "chain does not reach the recorded head (truncated or reordered)"}
+        if head_hash and prev != head_hash:
+            return {"ok": False, "checked": len(events), "first_bad_seq": None,
+                    "reason": "final hash does not match the recorded head hash"}
         return {"ok": True, "checked": len(events), "first_bad_seq": None}
 
     # ── export ─────────────────────────────────────────────────────────────────
     async def export(self, filters: dict[str, Any], fmt: str | None = None) -> tuple[str, bytes]:
-        events = await self.query(filters, 1_000_000)
+        events = await self.query(filters, self._export_limit)
         exporter = self._exporters.get(fmt or self._default_format) or self._exporters[self._default_format]
         return exporter.export(events)
 

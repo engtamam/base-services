@@ -111,6 +111,9 @@ class Settings(BaseSettings):
     def audit_subscribe_topics(self) -> list[str]:
         return [t.strip() for t in self.AUDIT_SUBSCRIBE_TOPICS.split(",") if t.strip()]
 
+    # Bounds an export. A request must not be able to ask for the whole table.
+    AUDIT_EXPORT_LIMIT: int = 100_000
+
     @property
     def egress_allowed_hosts(self) -> frozenset[str]:
         return frozenset(

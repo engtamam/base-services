@@ -182,3 +182,54 @@ pattern **is** reachable in services that do expose list routes. The endpoint no
 **Remaining:** 28.7 (11 services, 57 call sites) · 28.8 (the ledger balance — the one that
 computes **wrong money** from a truncated scan) · 28.9 (the guard test that stops `scan_all`
 returning to a request path).
+
+---
+
+## 9. Release notes — what changed, and what was left on purpose
+
+*"A deliberate sweeper and a forgotten request path look identical from outside."* So here is
+the list.
+
+### Migrated
+
+| Service | Repository | What changed |
+| --- | --- | --- |
+| **file-service** | `FileRepository.list` | `find({"tenant": t})`, keyset-paged. `_SCAN` deleted. A `GET /api/v1/files` route now exists — there was none. |
+| **audit-service** | `AuditRepository.iterate` | **The chain read.** Pages to exhaustion in `seq` order. No cap. |
+| | `AuditRepository.query` | Equality filters pushed down; `since`/`until` post-filter over pages, never over the table. |
+| | `AuditRepository.partitions` | Reads the tiny `audit_meta` collection (one row per partition) instead of scanning every event to collect a handful of strings. |
+| | `AuditService.verify` | Now **cannot report clean on a partial walk** (see below). |
+| | `AuditService.export` | Was `query(filters, 1_000_000)`. Now bounded by `AUDIT_EXPORT_LIMIT`. |
+
+### `scan_all` calls kept on purpose
+
+| Where | Why |
+| --- | --- |
+| `AuditRepository.partitions` → `scan_all("audit_meta", 10_000)` | one row per partition, not per event. A partition list is bounded by the number of tenants, and there is no filter to push down. |
+
+Nothing else in audit-service touches `scan_all`. `list()` remains as a deprecated alias so
+existing sweepers in the other services keep working while they are migrated.
+
+### Not yet migrated — still scanning
+
+billing (10) · compliance (9) · feature-flag (9) · job (6) · webhook (6) · analytics (4) ·
+connector (4) · notification (3) · authz (2) · wallet (2) · zatca (2) · identity (1) ·
+search (1) · tenant (1). Their `list()` calls are unchanged and still read the whole
+collection. Nothing got slower; nothing got safer.
+
+**`LedgerStore.record()` (billing) remains the most serious of these**: it sums a truncated
+scan to compute a running **balance** and writes it into an immutable row. `find()` does not
+fix it — it needs a materialized balance, as wallet-service already has.
+
+### Two things `verify()` now guarantees
+
+1. The chain is walked to **exhaustion**, in `seq` order, on both adapters.
+2. A pass means the walk **reached the head** the writer recorded. It no longer asserts
+   `count == head_seq`, because retention purge deliberately removes an old prefix — a hole in
+   the middle is caught by the `prev_hash` walk, a missing tail by the head check.
+
+**Why the ordering needed a new field.** In Postgres `value->>'seq'` is **text**, so `'10'`
+sorts before `'9'` and the chain is walked out of order — verification fails at the second
+event on an intact chain. Events now carry `_seq_key`, a zero-padded `seq`, which sorts
+identically as text in both adapters. Verified on a real PostgreSQL: 1 500 events, contiguous
+and ascending, tamper at seq 750 caught.
