@@ -1,0 +1,6 @@
+# service.spec.toml — the record of how this service was generated.
+name = "wallet-service"
+description = "Optional prepaid wallet: multi-fund balance, holds, ledger, expiry sweeps"
+port = 8017
+
+[drivers]

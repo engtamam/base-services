@@ -1,0 +1,6 @@
+# service.spec.toml — the record of how this service was generated.
+name = "billing-service"
+description = "Billing, subscriptions & payments (KSA + international)"
+port = 8009
+
+[drivers]

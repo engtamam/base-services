@@ -1,0 +1,20 @@
+{{- $replicas := int (include "base-service.effectiveReplicas" .) -}}
+{{- if and .Values.podDisruptionBudget.enabled (gt $replicas 1) }}
+{{/*
+A PodDisruptionBudget is rendered ONLY when there is more than one replica.
+
+`minAvailable: 1` on a single-replica workload can never be satisfied while that one pod
+is evicted, so `kubectl drain` — and therefore every node upgrade — hangs forever. A
+singleton is a deliberate choice (e.g. a single-concurrency worker); it must not carry a
+budget that blocks maintenance.
+*/}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "base-service.fullname" . }}
+  labels: {{- include "base-service.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels: {{- include "base-service.selectorLabels" . | nindent 6 }}
+{{- end }}

@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "base-service values",
+  "description": "additionalProperties:false everywhere — a mistyped key is a render ERROR, not a silent no-op.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["service", "image", "replicas", "drivers", "resources"],
+  "properties": {
+    "nameOverride": { "type": "string" },
+    "fullnameOverride": { "type": "string" },
+
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "port"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "digest"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "pullPolicy": { "enum": ["IfNotPresent", "Always", "Never"] },
+        "pullSecrets": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+
+    "replicas": { "type": "integer", "minimum": 1 },
+
+    "drivers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["datastore", "cache", "eventbus", "queue", "ratelimiter"],
+      "properties": {
+        "datastore": { "enum": ["memory", "postgres"] },
+        "cache": { "enum": ["memory", "redis"] },
+        "eventbus": { "enum": ["memory", "redis"] },
+        "queue": { "enum": ["memory", "redis"] },
+        "ratelimiter": { "enum": ["memory", "redis"] }
+      }
+    },
+
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requests"],
+      "properties": {
+        "requests": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cpu": { "type": "string" },
+            "memory": { "type": "string" }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "cpu is intentionally absent: the chart rejects a CPU limit.",
+          "properties": {
+            "memory": { "type": "string" }
+          }
+        }
+      }
+    },
+
+    "autoscaling": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minReplicas": { "type": "integer", "minimum": 1 },
+        "maxReplicas": { "type": "integer", "minimum": 1 },
+        "targetCPUUtilizationPercentage": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "scaleDownStabilizationSeconds": { "type": "integer", "minimum": 0 }
+      }
+    },
+
+    "podDisruptionBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minAvailable": { "type": "integer", "minimum": 1 }
+      }
+    },
+
+    "probes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "startupFailureThreshold": { "type": "integer", "minimum": 1 },
+        "periodSeconds": { "type": "integer", "minimum": 1 },
+        "timeoutSeconds": { "type": "integer", "minimum": 1 },
+        "livenessFailureThreshold": { "type": "integer", "minimum": 1 }
+      }
+    },
+
+    "terminationGracePeriodSeconds": { "type": "integer", "minimum": 0 },
+    "preStopSleepSeconds": { "type": "integer", "minimum": 0 },
+
+    "ingress": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "className": { "type": "string" },
+        "host": { "type": "string" },
+        "paths": { "type": "array", "items": { "type": "string" } },
+        "annotations": { "type": "object" },
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "secretName": { "type": "string" }
+          }
+        }
+      }
+    },
+
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "ingressFromNamespace": { "type": "string" },
+        "egress": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "dns": { "type": "boolean" },
+            "datastore": { "type": "boolean" },
+            "internet": { "type": "boolean" }
+          }
+        }
+      }
+    },
+
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "serviceMonitor": { "type": "boolean" },
+        "interval": { "type": "string" }
+      }
+    },
+
+    "env": {
+      "type": "object",
+      "additionalProperties": { "type": ["string", "integer", "boolean"] }
+    },
+    "existingSecret": { "type": "string" },
+
+    "cronJobs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "schedule", "path"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "schedule": { "type": "string", "minLength": 1 },
+          "path": { "type": "string", "pattern": "^/internal/" }
+        }
+      }
+    },
+
+    "podAntiAffinity": { "enum": ["soft", "hard", "off"] },
+    "topologySpread": { "type": "boolean" },
+    "nodeSelector": { "type": "object" },
+    "tolerations": { "type": "array" },
+    "priorityClassName": { "type": "string" },
+    "podAnnotations": { "type": "object" },
+    "podLabels": { "type": "object" }
+  }
+}

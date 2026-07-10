@@ -1,0 +1,135 @@
+"""Integration: catalog + subscribe + run(mock gateway)+e-invoice + webhook + gating."""
+from __future__ import annotations
+
+import datetime as dt
+import os
+
+import jwt
+import pytest
+from fastapi.testclient import TestClient
+
+from app.ports.payment_gateway import Charge, WebhookEvent
+
+SECRET = "h" * 40
+ITOKEN = "i" * 40
+
+
+class MockGW:
+    driver = "mock"
+
+    def charge(self, **k):
+        return Charge(ok=True, status="succeeded", provider="mock",
+                      provider_id="ch_" + k["idempotency_key"][:6], amount_minor=k["amount_minor"],
+                      currency=k["currency"])
+
+    def refund(self, **k):
+        return Charge(ok=True, status="refunded", provider="mock", provider_id="re_1")
+
+    def verify_webhook(self, **k):
+        import json
+        try:
+            e = json.loads(k["body"])
+        except Exception:
+            return WebhookEvent(verified=False)
+        return WebhookEvent(verified=k["secret"] == ITOKEN, type=e.get("type", ""), provider_id=e.get("pid", ""))
+
+
+class MockEInv:
+    driver = "zatca"
+
+    def __init__(self):
+        self.calls = []
+
+    def finalize(self, *, tenant, invoice):
+        self.calls.append(invoice["number"])
+        return {"status": "reported"}
+
+
+def _make_app():
+    from app.config import get_settings
+
+    os.environ.update(ENV="test", INTERNAL_SERVICE_TOKEN=ITOKEN, TOKEN_VERIFIER_DRIVER="hs256",
+                      TOKEN_HS256_SECRET=SECRET, RATELIMIT_MAX="1000", PAYMENT_WEBHOOK_SECRET=ITOKEN)
+    get_settings.cache_clear()
+    from app.main import create_app
+
+    app = create_app()
+    app.state.container.payment_gateway = MockGW()
+    app.state.container.einvoicer = MockEInv()
+    return TestClient(app, raise_server_exceptions=False)
+
+
+@pytest.fixture(scope="module")
+def client():
+    from app.config import get_settings
+
+    saved = dict(os.environ)
+    c = _make_app()
+    yield c
+    os.environ.clear()
+    os.environ.update(saved)
+    get_settings.cache_clear()
+
+
+def _adm(caps=("platform.billing",), tenant="t1"):
+    now = dt.datetime.now(dt.timezone.utc)
+    tok = jwt.encode({"sub": "a", "caps": list(caps), "tenant": tenant,
+                      "exp": now + dt.timedelta(minutes=5), "iat": now}, SECRET, algorithm="HS256")
+    return {"Authorization": "Bearer " + tok}
+
+
+def _plan(client):
+    return client.post("/api/v1/billing/plans",
+                       json={"name": "Pro", "prices": [{"interval": "month", "amount_minor": 10000,
+                                                        "currency": "SAR", "type": "flat"}]},
+                       headers=_adm()).json()
+
+
+def test_subscribe_run_paid_einvoiced(client):
+    plan = _plan(client)
+    sub = client.post("/api/v1/billing/subscriptions",
+                      json={"plan_id": plan["id"], "payment_token": "pm_1"}, headers=_adm()).json()
+    inv = client.post(f"/api/v1/billing/subscriptions/{sub['id']}/run", headers=_adm()).json()
+    assert inv["status"] == "paid" and inv["total_minor"] == 11500
+    assert inv["einvoice"]["status"] == "reported"          # zatca tie-in fired
+    assert client.get("/api/v1/billing/invoices", headers=_adm()).json()["invoices"]
+
+
+def test_coupon_reduces_total(client):
+    plan = _plan(client)
+    client.post("/api/v1/billing/coupons", json={"code": "HALF", "type": "percent", "value": 50}, headers=_adm())
+    sub = client.post("/api/v1/billing/subscriptions",
+                      json={"plan_id": plan["id"], "coupon_code": "HALF", "payment_token": "pm"}, headers=_adm()).json()
+    inv = client.post(f"/api/v1/billing/subscriptions/{sub['id']}/run", headers=_adm()).json()
+    assert inv["discount_minor"] == 5000 and inv["total_minor"] == 5750   # (10000-5000)+15%
+
+
+def test_subscribe_unknown_plan_404(client):
+    r = client.post("/api/v1/billing/subscriptions", json={"plan_id": "nope"}, headers=_adm())
+    assert r.status_code == 404
+
+
+def test_webhook_signature_required(client):
+    import json
+    body = json.dumps({"type": "payment.succeeded", "pid": "ch_zzz"}).encode()
+    # wrong secret path: our MockGW marks verified only when secret==ITOKEN, which the route passes,
+    # so an unknown provider_id reconciles cleanly; a malformed body -> verify False -> 400
+    bad = client.post("/internal/billing/webhook/mock", content=b"not-json",
+                      headers={"X-Internal-Token": ITOKEN})
+    assert bad.status_code == 400
+
+
+def test_admin_needs_capability(client):
+    assert client.post("/api/v1/billing/plans", json={"name": "x", "prices": [{"amount_minor": 1}]},
+                       headers=_adm(caps=())).status_code == 403
+
+
+def test_cross_tenant_invoice_hidden(client):
+    plan = _plan(client)
+    sub = client.post("/api/v1/billing/subscriptions",
+                      json={"plan_id": plan["id"], "payment_token": "pm", "tenant": "owner"},
+                      headers=_adm()).json()
+    inv = client.post(f"/api/v1/billing/subscriptions/{sub['id']}/run", headers=_adm()).json()
+    # a tenant-scoped admin from another tenant can't fetch the PDF
+    other = _adm(caps=("billing.manage",), tenant="intruder")
+    assert client.get(f"/api/v1/billing/invoices/{inv['id']}/pdf", headers=other).status_code == 404

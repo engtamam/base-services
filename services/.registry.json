@@ -1,0 +1,19 @@
+{
+  "analytics-service": 8016,
+  "api-gateway": 8004,
+  "audit-service": 8005,
+  "authz-service": 8007,
+  "billing-service": 8009,
+  "compliance-service": 8014,
+  "connector-service": 8015,
+  "feature-flag-service": 8010,
+  "file-service": 8006,
+  "identity-service": 8001,
+  "job-service": 8012,
+  "notification-service": 8002,
+  "search-service": 8013,
+  "tenant-service": 8003,
+  "wallet-service": 8017,
+  "webhook-service": 8011,
+  "zatca-service": 8008
+}

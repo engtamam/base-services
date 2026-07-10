@@ -1,0 +1,165 @@
+{{- include "base-service.guards" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "base-service.fullname" . }}
+  labels: {{- include "base-service.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  # When the HPA is enabled we OMIT replicas entirely: setting it here makes every
+  # `helm upgrade` reset the count the HPA just chose, causing a scale-down flap.
+  replicas: {{ .Values.replicas }}
+  {{- end }}
+  selector:
+    matchLabels: {{- include "base-service.selectorLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0        # never drop below the current capacity mid-rollout
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        {{- include "base-service.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}{{- toYaml . | nindent 8 }}{{- end }}
+      annotations:
+        # Roll the pods when config changes; without this a ConfigMap edit is invisible
+        # until something else happens to restart the pod.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}{{- toYaml . | nindent 8 }}{{- end }}
+    spec:
+      serviceAccountName: {{ include "base-service.fullname" . }}
+      # None of these services talk to the Kubernetes API. Don't hand them a token.
+      automountServiceAccountToken: false
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      # Endpoint removal is asynchronous. preStop holds the pod open long enough for
+      # kube-proxy/ingress to stop routing to it — otherwise every deploy serves 502s.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      {{- if ne .Values.podAntiAffinity "off" }}
+      affinity:
+        podAntiAffinity:
+          {{- if eq .Values.podAntiAffinity "hard" }}
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels: {{- include "base-service.selectorLabels" . | nindent 18 }}
+          {{- else }}
+          # Two "HA" replicas on one node is not HA. Soft by default so a single-node
+          # K3s box still schedules.
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels: {{- include "base-service.selectorLabels" . | nindent 20 }}
+          {{- end }}
+      {{- end }}
+      {{- if .Values.topologySpread }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {{- include "base-service.selectorLabels" . | nindent 14 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ include "base-service.name" . }}
+          image: {{ include "base-service.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "base-service.fullname" . }}
+            {{- if .Values.existingSecret }}
+            - secretRef:
+                name: {{ .Values.existingSecret }}
+            {{- end }}
+          env:
+            # Explicit env WINS over envFrom. A re-apply can therefore never silently fall
+            # back to a weaker driver left behind in a stale Secret.
+            - name: DATASTORE_DRIVER
+              value: {{ .Values.drivers.datastore | quote }}
+            - name: CACHE_DRIVER
+              value: {{ .Values.drivers.cache | quote }}
+            - name: EVENTBUS_DRIVER
+              value: {{ .Values.drivers.eventbus | quote }}
+            - name: QUEUE_DRIVER
+              value: {{ .Values.drivers.queue | quote }}
+            - name: RATELIMITER_DRIVER
+              value: {{ .Values.drivers.ratelimiter | quote }}
+            - name: PORT
+              value: {{ .Values.service.port | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            # readOnlyRootFilesystem without a writable /tmp crash-loops on first write.
+            - name: tmp
+              mountPath: /tmp
+          # A slow first boot (schema migration, cold cache) must not be killed by liveness.
+          # startupProbe holds liveness off for startupFailureThreshold x periodSeconds.
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: {{ .Values.probes.periodSeconds }}
+            failureThreshold: {{ .Values.probes.startupFailureThreshold }}
+            timeoutSeconds: {{ .Values.probes.timeoutSeconds }}
+          # LIVENESS -> /healthz. It touches NO dependency (proven by the service's
+          # tests/integration/test_probe_contract.py). Pointing this at /readyz would turn
+          # one slow Postgres moment into a fleet-wide restart storm.
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: {{ .Values.probes.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.livenessFailureThreshold }}
+          # READINESS -> /readyz. It DOES probe dependencies: a pod with a dead DB leaves
+          # the Service endpoints but is NOT restarted.
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: {{ .Values.probes.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.timeoutSeconds }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep {{ .Values.preStopSleepSeconds }}"]
+          resources:
+            requests:
+              {{- with .Values.resources.requests.cpu }}
+              cpu: {{ . | quote }}
+              {{- end }}
+              {{- with .Values.resources.requests.memory }}
+              memory: {{ . | quote }}
+              {{- end }}
+            {{- if .Values.resources.limits }}
+            limits:
+              {{- with .Values.resources.limits.memory }}
+              memory: {{ . | quote }}
+              {{- end }}
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}

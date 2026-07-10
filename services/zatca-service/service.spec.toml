@@ -1,0 +1,6 @@
+# service.spec.toml — the record of how this service was generated.
+name = "zatca-service"
+description = "KSA ZATCA Fatoora e-invoicing"
+port = 8008
+
+[drivers]

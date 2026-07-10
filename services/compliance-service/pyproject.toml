@@ -1,0 +1,73 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+# compliance-service — rename when cloning this template.
+name = "compliance-service"
+version = "0.1.0"
+description = "Self-contained, plug-and-play FastAPI service (base-services template)."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = "Apache-2.0"
+authors = [{ name = "base-services" }]
+
+# Runtime dependencies — PERMISSIVE LICENSES ONLY (MIT/BSD/Apache-2.0/ISC).
+#   fastapi            MIT
+#   uvicorn            BSD-3-Clause
+#   pydantic           MIT
+#   pydantic-settings  MIT
+#   prometheus-client  Apache-2.0
+#   pyjwt              MIT          (JWT verify — vetted crypto, never hand-rolled)
+#   cryptography      Apache-2.0/BSD (pulled by pyjwt[crypto], for RS256)
+# Logging uses the Python stdlib (no extra dep) to keep the attack surface minimal.
+dependencies = [
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.30,<1.0",
+    "pydantic>=2.7,<3.0",
+    "pydantic-settings>=2.3,<3.0",
+    "prometheus-client>=0.20,<1.0",
+    "pyjwt[crypto]>=2.8,<3.0",
+]
+
+[project.optional-dependencies]
+# Infra adapter extras — install only what a service actually uses (lean base,
+# smaller attack surface). ALL PERMISSIVE.
+#   asyncpg   MIT/Apache | redis MIT | aioboto3 Apache-2.0 | hvac Apache-2.0
+postgres = ["asyncpg>=0.29,<1.0"]
+redis = ["redis>=5.0,<6.0"]
+s3 = ["aioboto3>=13.0,<15.0"]
+vault = ["hvac>=2.0,<3.0"]
+
+# Dev/test — PERMISSIVE ONLY.
+#   pytest   MIT
+#   httpx    BSD-3-Clause  (drives FastAPI TestClient)
+dev = [
+    "pytest>=9.0.3,<10.0",
+    "httpx>=0.27,<1.0",
+]
+
+# CI security tools — PERMISSIVE ONLY.
+#   bandit         Apache-2.0  (SAST)
+#   pip-audit      Apache-2.0  (dependency CVE scan)
+#   detect-secrets Apache-2.0  (secret scan)
+#   cyclonedx-bom  Apache-2.0  (SBOM)
+ci = [
+    "bandit>=1.7,<2.0",
+    "pip-audit>=2.7,<3.0",
+    "detect-secrets>=1.5,<2.0",
+    "cyclonedx-bom>=4.0,<7.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.bandit]
+# SAST scans app/ only (not tests/). Justified skips:
+#   B104 — HOST binds 0.0.0.0 by operator config (deploy behind a proxy), not a hardcoded exposure.
+exclude_dirs = ["tests", ".venv"]
+skips = ["B104"]

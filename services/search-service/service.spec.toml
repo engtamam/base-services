@@ -1,0 +1,6 @@
+# service.spec.toml — the record of how this service was generated.
+name = "search-service"
+description = "Tenant-isolated full-text search: BM25, facets, Arabic-aware, cached"
+port = 8013
+
+[drivers]

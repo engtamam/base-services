@@ -1,0 +1,124 @@
+{{- if .Values.networkPolicy.enabled }}
+{{/*
+================================================================================
+Default-deny, for the SERVICES themselves — not just for disposable Jobs.
+
+CNI CAVEAT, stated plainly: a NetworkPolicy is only enforced by a CNI that
+implements it. Stock K3s ships FLANNEL, which does NOT enforce NetworkPolicy —
+on a stock cluster these objects are INERT and traffic FAILS OPEN.
+
+So `deploy/k3s/bootstrap.sh` installs a policy-capable CNI (Calico), and
+`deploy/k3s/preflight.sh` PROVES enforcement before the platform reports itself
+healthy: it deploys a denied pod, attempts a connection, and requires it to be
+refused. Checking that a Calico pod *exists* only proves it was installed — not
+that this policy is enforced on this pod.
+
+Egress is deny-by-default; each `allow` below is additive and opt-in.
+================================================================================
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "base-service.fullname" . }}-default-deny
+  labels: {{- include "base-service.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "base-service.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress: []      # nothing may reach this pod...
+  egress: []       # ...and it may reach nothing. The allows below add back.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "base-service.fullname" . }}-allow
+  labels: {{- include "base-service.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "base-service.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Peer services in this namespace (the internal tier, still token-guarded).
+    - from:
+        - podSelector: {}
+      ports:
+        - port: http
+          protocol: TCP
+    {{- if .Values.networkPolicy.ingressFromNamespace }}
+    # The ingress controller (Traefik), typically in its own namespace.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingressFromNamespace }}
+      ports:
+        - port: http
+          protocol: TCP
+    {{- end }}
+    # Prometheus scrapes /metrics cluster-internally — never through the Ingress.
+    {{- if .Values.metrics.serviceMonitor }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: http
+          protocol: TCP
+    {{- end }}
+  egress:
+    {{- if .Values.networkPolicy.egress.dns }}
+    # DNS. Without this every hostname lookup hangs, including to Postgres.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- end }}
+    {{- if .Values.networkPolicy.egress.datastore }}
+    # Postgres / Redis in this namespace, by label. Nothing else.
+    - to:
+        - podSelector:
+            matchLabels:
+              base-services/role: datastore
+      ports:
+        - port: 5432
+          protocol: TCP
+        - port: 6379
+          protocol: TCP
+    {{- end }}
+    # Peer services (service-to-service calls on the internal tier).
+    - to:
+        - podSelector: {}
+      ports:
+        - port: {{ .Values.service.port }}
+          protocol: TCP
+    {{- if .Values.networkPolicy.egress.internet }}
+    # Third-party egress: ONLY for services that must call out (webhook, connector,
+    # notification, billing, zatca). Their in-app SSRF guards (DNS resolve + IP pinning,
+    # cloud-metadata denial) still apply — this is the second layer, not the only one.
+    #
+    # RFC1918 + link-local + metadata addresses stay excluded here too, so a compromised
+    # pod cannot pivot to the cluster network or 169.254.169.254 even if the app guard
+    # were bypassed.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16      # link-local, incl. 169.254.169.254 cloud metadata
+              - 127.0.0.0/8
+      ports:
+        - port: 443
+          protocol: TCP
+        - port: 80
+          protocol: TCP
+    {{- end }}
+{{- end }}

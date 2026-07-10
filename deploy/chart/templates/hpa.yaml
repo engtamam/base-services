@@ -1,0 +1,33 @@
+{{- if .Values.autoscaling.enabled }}
+{{/*
+Rendered only when autoscaling is on — and `guardHpaNeedsRequests` has already refused
+to get here without a resources.requests.cpu, because utilization is a percentage of
+the request and an HPA without one reports `<unknown>/70%` forever.
+
+The HPA also needs metrics-server in the cluster; `deploy/k3s/bootstrap.sh` installs it
+and `preflight.sh` asserts the metrics API answers.
+*/}}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "base-service.fullname" . }}
+  labels: {{- include "base-service.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "base-service.fullname" . }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+  behavior:
+    scaleDown:
+      # Don't flap pods away on a brief dip in traffic.
+      stabilizationWindowSeconds: {{ .Values.autoscaling.scaleDownStabilizationSeconds }}
+{{- end }}

@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "base-service.fullname" . }}
+  labels: {{- include "base-service.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector: {{- include "base-service.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "base-service.fullname" . }}
+  labels: {{- include "base-service.labels" . | nindent 4 }}
+# These services never call the Kubernetes API; the token would be pure attack surface.
+automountServiceAccountToken: false

@@ -1,0 +1,39 @@
+# =============================================================================
+# file-service — Self-describing service manifest
+# -----------------------------------------------------------------------------
+# A machine-readable descriptor so a gateway/platform can discover what this
+# service is, what it exposes, which ports (adapters) it uses, and which events
+# it emits/consumes. Served at GET /internal/manifest. Phase 1: ports/events are
+# empty; later phases populate them.
+# =============================================================================
+from __future__ import annotations
+
+from typing import Any
+
+from app.config import Settings
+
+
+def build_manifest(
+    settings: Settings, ports: list[dict[str, str]] | None = None
+) -> dict[str, Any]:
+    return {
+        "name": settings.SERVICE_NAME,
+        "version": settings.SERVICE_VERSION,
+        "env": settings.ENV,
+        "capabilities": ["files.upload", "files.read"],
+        "endpoints": [
+            {"path": "/healthz", "tier": "public", "method": "GET"},
+            {"path": "/readyz", "tier": "public", "method": "GET"},
+            {"path": "/metrics", "tier": "public", "method": "GET"},
+            {"path": "/internal/health", "tier": "internal", "method": "GET"},
+            {"path": "/internal/manifest", "tier": "internal", "method": "GET"},
+            {"path": "/api/v1/files", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/files/{id}", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/files/{id}/metadata", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/files/{id}/signed-url", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/files/{id}", "tier": "user", "method": "DELETE"},
+            {"path": "/files/signed/{token}", "tier": "public", "method": "GET"},
+        ],
+        "ports": ports or [],  # port -> driver, from the composition root
+        "events": {"emitted": [], "consumed": []},
+    }

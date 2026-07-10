@@ -1,0 +1,133 @@
+# =============================================================================
+# base-service — safe defaults.
+#
+# The defaults deploy ONE replica with in-memory drivers: correct, but not scalable.
+# To scale out you MUST move every stateful port to a shared driver — see `drivers`.
+# The chart refuses to render an unsafe combination rather than letting you find out
+# from wrong numbers in production.
+# =============================================================================
+
+# ── Identity ────────────────────────────────────────────────────────────────
+service:
+  name: ""                 # REQUIRED, e.g. "analytics-service" (must equal Settings.SERVICE_NAME)
+  port: 8000
+
+nameOverride: ""
+fullnameOverride: ""
+
+# ── Image — digest-pinned. A `:latest` tag with IfNotPresent silently redeploys
+#    the image already on the node, so the image is ALWAYS resolved by digest.
+#    There is deliberately no `tag` knob: nothing would read it, and a config value
+#    nobody reads is a lie in a config file. Record the tag in git, not here.
+image:
+  repository: ""           # REQUIRED, e.g. ghcr.io/base-services/analytics-service
+  digest: ""               # REQUIRED, e.g. sha256:abc123...
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# ── Scale ───────────────────────────────────────────────────────────────────
+# replicas > 1 requires SHARED drivers below. Our generation-keyed caches invalidate by
+# bumping a counter in the cache; an in-memory cache is per-pod, so pod A's write never
+# invalidates pod B's cache. That returns stale numbers, silently, only under load.
+replicas: 1
+
+drivers:
+  datastore: memory        # memory | postgres
+  cache: memory            # memory | redis
+  eventbus: memory         # memory | redis
+  queue: memory            # memory | redis
+  ratelimiter: memory      # memory | redis
+
+# ── Resources ───────────────────────────────────────────────────────────────
+# memory limit == request (OOM protection, no overcommit surprise).
+# NO cpu limit on purpose: a CPU limit throttles a latency-sensitive service to enforce a
+# number nobody asked for. Set `requests.cpu` so the scheduler and the HPA can do their jobs.
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 128Mi          # cpu limit is rejected by the chart
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+  scaleDownStabilizationSeconds: 300
+
+podDisruptionBudget:
+  enabled: true            # rendered ONLY when effective replicas > 1
+  minAvailable: 1
+
+# ── Probes ──────────────────────────────────────────────────────────────────
+# liveness -> /healthz (never touches a dependency), readiness -> /readyz (does).
+# The paths are NOT configurable: pointing liveness at /readyz turns one slow DB moment
+# into a fleet-wide restart storm.
+probes:
+  startupFailureThreshold: 90   # x periodSeconds = first-boot budget (migrations, cold caches)
+  periodSeconds: 5
+  timeoutSeconds: 5             # NOT the 1s default: probes on a busy node exceed 1s
+  livenessFailureThreshold: 6
+
+# Endpoint removal is asynchronous: without a preStop pause the pod stops accepting
+# connections while the Service still routes to it — 502s on every single deploy.
+terminationGracePeriodSeconds: 30
+preStopSleepSeconds: 5
+
+# ── Networking ──────────────────────────────────────────────────────────────
+ingress:
+  enabled: false
+  className: traefik
+  host: ""
+  # Only the user tier is ever exposed. /internal/* is protected by a shared token and
+  # /metrics leaks operational detail — neither belongs on the internet. The chart rejects
+  # any path outside /api/v1.
+  paths:
+    - /api/v1
+  annotations: {}
+  tls:
+    enabled: true
+    secretName: ""
+
+networkPolicy:
+  enabled: true            # default-deny ingress AND egress; allows below are additive
+  ingressFromNamespace: "" # e.g. "ingress" — where Traefik runs; empty = same namespace only
+  egress:
+    dns: true              # kube-dns; needed by almost everything
+    datastore: true        # postgres/redis in this namespace
+    # Outbound to the public internet. TRUE only for services that must call third parties
+    # (webhook, connector, notification, billing, zatca). Their SSRF guards still apply.
+    internet: false
+
+metrics:
+  serviceMonitor: false    # scrapes /metrics cluster-internally (never via Ingress)
+  interval: 30s
+
+# ── Config & secrets ────────────────────────────────────────────────────────
+# Non-secret Settings knobs. Every key MUST be a real field on that service's Settings:
+# Kubernetes happily sets an env var nobody reads, so a typo deploys clean and is ignored.
+env: {}
+
+# Secrets are referenced, never inlined. Provide a Secret (sealed-secrets / ExternalSecret)
+# holding INTERNAL_SERVICE_TOKEN, DATASTORE_DSN, CACHE_URL, TOKEN_* etc.
+existingSecret: ""
+
+# ── Scheduled maintenance ───────────────────────────────────────────────────
+# Retention/prune endpoints exist in the services and have no caller without these.
+# Each entry POSTs to an /internal path with the internal token.
+cronJobs: []
+#  - name: prune-raw
+#    schedule: "17 3 * * *"
+#    path: /internal/analytics/prune-raw
+
+# ── Scheduling ──────────────────────────────────────────────────────────────
+# Two "HA" replicas on the same node is not HA.
+podAntiAffinity: soft      # soft | hard | off
+topologySpread: true
+nodeSelector: {}
+tolerations: []
+priorityClassName: ""
+
+podAnnotations: {}
+podLabels: {}

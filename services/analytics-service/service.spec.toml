@@ -1,0 +1,6 @@
+# service.spec.toml — the record of how this service was generated.
+name = "analytics-service"
+description = "Event analytics: idempotent ingest, rollups, HLL uniques, mergeable percentiles"
+port = 8016
+
+[drivers]

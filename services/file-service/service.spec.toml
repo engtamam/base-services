@@ -1,0 +1,6 @@
+# service.spec.toml — the record of how this service was generated.
+name = "file-service"
+description = "Files: upload, storage, signed URLs"
+port = 8006
+
+[drivers]

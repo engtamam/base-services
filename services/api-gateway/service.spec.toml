@@ -1,0 +1,6 @@
+# service.spec.toml — the record of how this service was generated.
+name = "api-gateway"
+description = "Edge gateway: routing, auth, rate-limit"
+port = 8004
+
+[drivers]

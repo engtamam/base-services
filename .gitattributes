@@ -1,0 +1,34 @@
+# =============================================================================
+# Line endings.
+#
+# The repo is authored on Windows and runs on ubuntu-latest. A shell script
+# checked out with CRLF fails on Linux with `bad interpreter: /usr/bin/env
+# bash^M` — the gate script would die before running a single gate. So text is
+# normalised to LF in the repository, and the files that MUST be LF on disk say
+# so explicitly.
+# =============================================================================
+
+* text=auto eol=lf
+
+# Executable / interpreted: a lone \r is fatal.
+*.sh        text eol=lf
+*.py        text eol=lf
+Makefile    text eol=lf
+*.mk        text eol=lf
+
+# Kubernetes / Helm / CI: parsed by Linux tooling.
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.tpl       text eol=lf
+*.toml      text eol=lf
+*.json      text eol=lf
+
+Dockerfile  text eol=lf
+*.md        text eol=lf
+
+# Binary — never touch.
+*.png       binary
+*.jpg       binary
+*.gz        binary
+*.zip       binary
+*.pdf       binary

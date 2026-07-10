@@ -1,0 +1,6 @@
+# service.spec.toml — the record of how this service was generated.
+name = "audit-service"
+description = "Central append-only audit log"
+port = 8005
+
+[drivers]

@@ -1,0 +1,21 @@
+{{/*
+Non-secret Settings knobs only.
+
+Every key in `.Values.env` must be a real field on this service's Settings.
+Kubernetes will happily set an env var that nobody reads, so `MAX_GROUP` instead of
+`MAX_GROUPS` deploys perfectly clean, is silently ignored, and surfaces months later as a
+wrong number. tests/deploy/test_chart_guards.py imports each service's Settings and diffs.
+
+Secrets NEVER appear here — use `existingSecret` (sealed-secrets / ExternalSecret).
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "base-service.fullname" . }}
+  labels: {{- include "base-service.labels" . | nindent 4 }}
+data:
+  SERVICE_NAME: {{ .Values.service.name | quote }}
+  ENV: "production"
+  {{- range $k, $v := .Values.env }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}

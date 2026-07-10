@@ -1,0 +1,6 @@
+# service.spec.toml — the record of how this service was generated.
+name = "connector-service"
+description = "Third-party integrations: OAuth2, spec-driven sync, encrypted creds"
+port = 8015
+
+[drivers]

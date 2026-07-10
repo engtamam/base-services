@@ -1,0 +1,6 @@
+# service.spec.toml — the record of how this service was generated.
+name = "compliance-service"
+description = "PDPL/GDPR: consent, DSAR, legal hold, RoPA, breach register"
+port = 8014
+
+[drivers]

@@ -1,0 +1,55 @@
+PROPRIETARY SOFTWARE LICENSE
+============================
+
+Copyright (c) 2026 <COPYRIGHT HOLDER>. All rights reserved.
+
+  ^ REPLACE THIS before the first push. Use the legal person who owns the code:
+    your full legal name, or the company that will hold the rights. A copyright
+    line naming the wrong entity is worse than none — it is evidence against you
+    in the dispute it was meant to win.
+
+This software and its source code, documentation, configuration, container
+images, and all accompanying materials (collectively, the "Software") are the
+exclusive property of the copyright holder and are protected by copyright law
+and international treaties.
+
+THIS IS NOT OPEN SOURCE SOFTWARE.
+
+NO LICENSE IS GRANTED
+---------------------
+No permission is granted to any person or entity to use, copy, modify, merge,
+publish, distribute, sublicense, sell, host, deploy, or create derivative works
+from the Software, in whole or in part, in any form or by any means.
+
+Possession of a copy of the Software, by any means including but not limited to
+receipt of a repository clone, a container image, a build artifact, or a
+disclosure made in error, confers no right of use.
+
+RESERVED RIGHTS
+---------------
+The copyright holder retains all rights, including the exclusive right to use
+the Software in the copyright holder's own products and services.
+
+Any use of the Software by any other party requires a separate, prior, written
+licence agreement signed by the copyright holder. No implied licence, estoppel,
+or course of dealing shall be construed to grant any right.
+
+THIRD-PARTY COMPONENTS
+----------------------
+The Software depends on third-party open-source components, each governed by
+its own licence. Those licences apply to those components only and grant no
+rights in the Software itself. Dependency licences are enforced in CI to be
+permissive (MIT, BSD, Apache-2.0, ISC, PSF); see ci/check_licenses.py.
+
+NO WARRANTY
+-----------
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+CONTACT
+-------
+Licensing enquiries: ahom59816@gmail.com

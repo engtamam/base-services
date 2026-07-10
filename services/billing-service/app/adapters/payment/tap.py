@@ -1,0 +1,57 @@
+"""Tap (KSA/GCC) — verified: POST /v2/charges, Bearer sk, JSON, amount in MAJOR
+units (decimal), source {id: token}. Refund POST /v2/refunds."""
+from __future__ import annotations
+
+from app.adapters.billing_http import bearer, post_json
+from app.adapters.payment._common import constant_eq, hmac_sha256_hex, major
+from app.ports.payment_gateway import Charge, GatewayUnavailable, WebhookEvent
+
+_OK = {"CAPTURED", "AUTHORIZED"}
+
+
+class TapGateway:
+    driver = "tap"
+
+    def __init__(self, api_key: str, base: str = "", webhook_secret: str = "", **_) -> None:
+        if not api_key:
+            raise GatewayUnavailable("PAYMENT_API_KEY (Tap secret key) required")
+        self._h = {"Authorization": bearer(api_key)}
+        self._base = (base or "https://api.tap.company").rstrip("/")
+        self._whsec = webhook_secret
+
+    def charge(self, *, amount_minor, currency, token, idempotency_key, description="", metadata=None):
+        body = {"amount": float(major(amount_minor, currency)), "currency": currency.upper(),
+                "description": description, "reference": {"transaction": idempotency_key},
+                "source": {"id": token}, "metadata": metadata or {}}
+        code, resp = post_json(f"{self._base}/v2/charges", body, self._h)
+        if code == 0:
+            raise GatewayUnavailable("Tap unreachable")
+        status = str(resp.get("status", "FAILED")).upper()
+        return Charge(ok=status in _OK, status="succeeded" if status in _OK else "failed",
+                      provider="tap", provider_id=str(resp.get("id", "")),
+                      amount_minor=int(amount_minor), currency=currency,
+                      error="" if status in _OK else str((resp.get("response") or {}).get("message", status)))
+
+    def refund(self, *, provider_id, amount_minor=None):
+        body = {"charge_id": provider_id, "reason": "requested_by_customer"}
+        if amount_minor is not None:
+            body["amount"] = float(major(amount_minor, "SAR"))
+        code, resp = post_json(f"{self._base}/v2/refunds", body, self._h)
+        if code == 0:
+            raise GatewayUnavailable("Tap unreachable")
+        ok = str(resp.get("status", "")).upper() in ("REFUNDED", "PENDING")
+        return Charge(ok=ok, status="refunded" if ok else "failed", provider="tap",
+                      provider_id=str(resp.get("id", provider_id)))
+
+    def verify_webhook(self, *, headers, body, secret):
+        # Tap posts a 'hashstring' header = HMAC-SHA256 of a field digest; verify best-effort.
+        verified = constant_eq(headers.get("hashstring", ""), hmac_sha256_hex(secret or self._whsec, body))
+        import json
+        try:
+            evt = json.loads(body.decode())
+        except Exception:
+            evt = {}
+        status = str(evt.get("status", "")).upper()
+        kind = "payment.succeeded" if status in _OK else "refund" if status == "REFUNDED" \
+            else "payment.failed"
+        return WebhookEvent(verified=verified, type=kind, provider_id=str(evt.get("id", "")))

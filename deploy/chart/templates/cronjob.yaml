@@ -1,0 +1,82 @@
+{{- if .Values.cronJobs }}
+{{- if not .Values.existingSecret }}
+{{- fail (printf "%s defines cronJobs but no existingSecret: the internal endpoints require INTERNAL_SERVICE_TOKEN, and it must never be inlined in a ConfigMap." .Values.service.name) }}
+{{- end }}
+{{/*
+Scheduled maintenance callers.
+
+Retention/prune endpoints exist in the services and have NO caller without these —
+`/internal/analytics/prune-raw`, `/internal/audit/enforce-retention`, compliance sweeps.
+An unenforced retention policy is a compliance finding, not a missing feature.
+
+The job runs the SERVICE'S OWN digest-pinned image and uses the Python stdlib, so there is
+no second image to pin, scan and keep CVE-free just to make an HTTP request.
+*/}}
+{{- $root := . }}
+{{- range .Values.cronJobs }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "base-service.fullname" $root }}-{{ .name }}
+  labels: {{- include "base-service.labels" $root | nindent 4 }}
+spec:
+  schedule: {{ .schedule | quote }}
+  concurrencyPolicy: Forbid          # a slow sweep must never overlap itself
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      template:
+        metadata:
+          labels: {{- include "base-service.selectorLabels" $root | nindent 12 }}
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: {{ include "base-service.fullname" $root }}
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: call
+              image: {{ include "base-service.image" $root }}
+              imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              env:
+                - name: TARGET_URL
+                  value: "http://{{ include "base-service.fullname" $root }}:{{ $root.Values.service.port }}{{ .path }}"
+                - name: INTERNAL_SERVICE_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $root.Values.existingSecret }}
+                      key: INTERNAL_SERVICE_TOKEN
+              command: ["python", "-c"]
+              args:
+                - |
+                  import os, sys, urllib.request
+                  req = urllib.request.Request(
+                      os.environ["TARGET_URL"], method="POST", data=b"",
+                      headers={"X-Internal-Token": os.environ["INTERNAL_SERVICE_TOKEN"],
+                               "Content-Type": "application/json"})
+                  with urllib.request.urlopen(req, timeout=300) as r:
+                      body = r.read().decode()
+                      print(f"{r.status} {body}")
+                      # Any non-2xx raises above; a 2xx with a failure body is still a failure
+                      # we want visible, so the Job's exit code mirrors the HTTP status.
+                      sys.exit(0 if 200 <= r.status < 300 else 1)
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 64Mi
+                limits:
+                  memory: 128Mi
+{{- end }}
+{{- end }}

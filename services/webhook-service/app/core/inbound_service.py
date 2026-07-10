@@ -1,0 +1,70 @@
+"""Inbound webhooks — verify, replay-protect, dedupe, persist, publish. Then return 200 fast.
+
+HOT PATH: every third-party event (Stripe, GitHub, a payment gateway) lands here. We do
+the minimum synchronously — verify the signature, dedupe, one write, publish — and let
+subscribers do the work off the EventBus. No scans, exactly one write.
+
+Security:
+  • the signature covers a **timestamp**, and we reject anything outside the tolerance
+    window → a captured payload cannot be replayed later.
+  • dedupe is keyed on the **provider's event id**, never a body hash: two distinct events
+    can carry byte-identical bodies (e.g. two `ping`s), and hashing would silently drop one.
+  • an unverified payload is never persisted or published.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+from app.core.models import InboundEvent, iso, new_id
+from app.core.stores import InboundStore
+
+
+class InboundRejected(Exception):
+    """Signature invalid, stale, or malformed. The caller returns 400 — never 5xx."""
+
+
+class InboundService:
+    def __init__(self, *, store: InboundStore, signer, secrets: dict[str, list[str]],
+                 tolerance_seconds: int = 300, max_payload_bytes: int = 1_048_576,
+                 dedupe_ttl_seconds: int = 86_400, event_bus=None) -> None:
+        self._store = store
+        self._signer = signer
+        self._secrets = secrets            # source → [secret, previous] (rotation)
+        self._tolerance = tolerance_seconds
+        self._max = max_payload_bytes
+        self._dedupe_ttl = dedupe_ttl_seconds
+        self._bus = event_bus
+
+    async def ingest(self, *, source: str, body: bytes, signature: str,
+                     provider_event_id: str, payload: dict, now: int) -> dict[str, Any]:
+        if len(body) > self._max:
+            raise InboundRejected("PAYLOAD_TOO_LARGE")
+
+        secrets = self._secrets.get(source) or []
+        if not secrets:
+            raise InboundRejected("UNKNOWN_SOURCE")       # fail-closed: no secret → no trust
+
+        if not self._signer.verify(body=body, header=signature, secrets=secrets,
+                                   timestamp=now, tolerance_seconds=self._tolerance):
+            raise InboundRejected("INVALID_SIGNATURE")    # covers replay (stale timestamp)
+
+        if not provider_event_id:
+            raise InboundRejected("MISSING_EVENT_ID")
+
+        if await self._store.seen(source, provider_event_id, now=now, ttl_seconds=self._dedupe_ttl):
+            return {"accepted": True, "duplicate": True, "provider_event_id": provider_event_id}
+
+        ev = InboundEvent(id=new_id("in_"), source=source, provider_event_id=provider_event_id,
+                          payload=payload, received=iso(), received_ts=float(now))
+        await self._store.record(ev)                      # the ONE write
+        await self._publish(source, ev)
+        return {"accepted": True, "duplicate": False, "id": ev.id,
+                "provider_event_id": provider_event_id}
+
+    async def _publish(self, source: str, ev: InboundEvent) -> None:
+        if self._bus is None:
+            return
+        try:
+            await self._bus.publish(f"inbound.{source}", ev.to_dict())
+        except Exception:
+            pass          # the event is already durably stored; a bus outage never 500s the provider

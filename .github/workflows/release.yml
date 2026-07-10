@@ -1,0 +1,266 @@
+# =============================================================================
+# base-services — RELEASE
+#
+# Triggered by a version tag (v1.2.3). Publishes THREE things, in this order,
+# and refuses to publish any of them if the gates are red:
+#
+#   1. container images   one per service, pushed to GHCR **by digest**
+#   2. pinned values      deploy/services/*.values.yaml rewritten with those
+#                         digests, and PROVEN to render against the chart
+#   3. a GitHub Release   with the pinned values + checksums attached
+#
+# Why digests. The chart refuses an unpinned image: `:latest` with
+# imagePullPolicy: IfNotPresent silently redeploys whatever is already on the
+# node. A release is not "images were pushed" — it is "these exact digests, and
+# the chart renders with them". `pin_digests.py --verify` is the gate.
+#
+# PRIVATE BY DEFAULT. The images inherit the repository's visibility. If the
+# repo is private, so are the packages. Do not flip a package to public unless
+# you intend to give the code away — the LICENSE grants nobody any rights.
+# =============================================================================
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version to build (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write        # create the GitHub Release
+  packages: write        # push to GHCR
+  id-token: write        # provenance attestation
+  attestations: write
+
+env:
+  PYTHON_VERSION: "3.12"
+  REGISTRY: ghcr.io
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # A release must never ship code the merge gates would have blocked.
+  # ───────────────────────────────────────────────────────────────────────────
+  gates:
+    name: gates must be green
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16.4-alpine
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci -d ci_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATASTORE_TEST_DSN: postgresql://ci:ci@127.0.0.1:5432/ci_test
+      PYTHON: python
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin
+      - name: Install every service
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pyyaml asyncpg
+          for d in services/*/; do pip install -e "$d[dev,ci]" -q; done
+      - name: run_all_gates.sh --strict
+        run: bash tools/ci/run_all_gates.sh --strict
+
+  discover:
+    name: discover services
+    needs: gates
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.find.outputs.services }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: find
+        run: |
+          svcs=$(find services -maxdepth 2 -name Dockerfile -printf '%h\n' \
+                 | sed 's|^services/||' | sort | jq -R -s -c 'split("\n")[:-1]')
+          echo "services=$svcs" >> "$GITHUB_OUTPUT"
+          echo "Discovered: $svcs"
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # IMAGES — one job per service. Each emits its digest as an artifact so the
+  # pinning job can assemble them. The digest is what a deployment consumes;
+  # the tag is only a human label.
+  # ───────────────────────────────────────────────────────────────────────────
+  images:
+    name: image ${{ matrix.service }}
+    needs: discover
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.discover.outputs.services) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: v
+        run: |
+          ref="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "version=${ref}" >> "$GITHUB_OUTPUT"
+          echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (by digest)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: services/${{ matrix.service }}
+          push: true
+          provenance: true
+          sbom: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.v.outputs.owner }}/${{ matrix.service }}:${{ steps.v.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.v.outputs.version }}
+            org.opencontainers.image.licenses=Proprietary
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Signed, verifiable proof that THIS digest was built from THIS commit by
+      # this workflow. Without it a digest is just a number someone typed.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ steps.v.outputs.owner }}/${{ matrix.service }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Scan the published image (CVE gate)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ steps.v.outputs.owner }}/${{ matrix.service }}@${{ steps.build.outputs.digest }}
+          severity: HIGH,CRITICAL
+          exit-code: "1"          # a vulnerable image is not released
+          ignore-unfixed: true
+
+      - name: Record the digest
+        run: |
+          mkdir -p digests
+          printf '%s' '${{ steps.build.outputs.digest }}' > "digests/${{ matrix.service }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.service }}
+          path: digests/${{ matrix.service }}
+          retention-days: 1
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # PIN — turn the digests into deployable values, and PROVE they render.
+  # ───────────────────────────────────────────────────────────────────────────
+  publish:
+    name: pin digests + publish release
+    needs: [discover, images]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          path: digests
+          merge-multiple: true
+
+      - name: Assemble the digest map
+        id: map
+        run: |
+          python - <<'PY'
+          import json, pathlib
+          out = {p.name: p.read_text().strip() for p in pathlib.Path("digests").iterdir() if p.is_file()}
+          pathlib.Path("digests.json").write_text(json.dumps(out, indent=2))
+          print(json.dumps(out, indent=2))
+          PY
+          echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Pin the digests into deploy values
+        run: |
+          python tools/release/pin_digests.py \
+            --digests digests.json \
+            --registry ${{ env.REGISTRY }}/${{ steps.map.outputs.owner }} \
+            --out deploy/pinned
+
+      - name: Verify NOTHING is left unpinned
+        run: python tools/release/pin_digests.py --verify deploy/pinned
+
+      - name: Prove the chart renders with the REAL digests
+        run: |
+          set -e
+          for f in deploy/pinned/*.values.yaml; do
+            n=$(basename "$f" .values.yaml)
+            helm template "$n" deploy/chart -f "$f" > /dev/null
+            echo "  renders: $n"
+          done
+
+      - name: Package the release artifact
+        run: |
+          ref="${{ github.event.inputs.tag || github.ref_name }}"
+          cp LICENSE deploy/pinned/LICENSE
+          tar -czf "deploy-pinned-${ref}.tar.gz" -C deploy pinned chart
+          sha256sum "deploy-pinned-${ref}.tar.gz" digests.json > checksums.txt
+          cat checksums.txt
+
+      - name: Publish the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          files: |
+            deploy-pinned-*.tar.gz
+            digests.json
+            checksums.txt
+          body: |
+            **Proprietary software. All rights reserved. See LICENSE — no licence is granted.**
+
+            Container images (GHCR, private unless the repository is public):
+            `${{ env.REGISTRY }}/${{ steps.map.outputs.owner }}/<service>@<digest>`
+
+            `deploy-pinned-*.tar.gz` contains the chart and the values files pinned to the
+            exact digests published by this release. Deploy with:
+
+            ```bash
+            tar xzf deploy-pinned-*.tar.gz
+            helm upgrade --install wallet-service ./chart -f pinned/wallet-service.values.yaml
+            ```
+
+            Every digest carries a signed build-provenance attestation. Verify with:
+
+            ```bash
+            gh attestation verify oci://${{ env.REGISTRY }}/${{ steps.map.outputs.owner }}/wallet-service@<digest> \
+              --repo ${{ github.repository }}
+            ```

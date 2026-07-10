@@ -1,0 +1,229 @@
+# =============================================================================
+# base-services — MONOREPO CI
+#
+# SINGLE SOURCE OF TRUTH: tools/ci/run_all_gates.sh. This workflow installs the
+# infra the script would otherwise skip (postgres, helm, trivy) and then runs it
+# with --strict, where a SKIPPED gate is a FAILED gate. That is the whole trick:
+# "we installed the database" becomes something CI PROVES, not something a YAML
+# comment asserts. `safety:ci-parity` keeps this file and that script in step.
+#
+# Run any of it locally, before pushing — local == CI:
+#     tools/ci/run_all_gates.sh              # everything runnable here
+#     tools/ci/run_all_gates.sh --list       # what each gate protects
+#     tools/ci/run_all_gates.sh --profile quick
+#
+# Each service is self-contained, so each is built and checked independently.
+# Services are DISCOVERED, never listed: a new service is gated the day it lands.
+# =============================================================================
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  PYTHONHASHSEED: "0"          # a dict-ordering bug must not hide behind luck
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # META — the gates that keep the other gates honest. Seconds, not minutes.
+  # ───────────────────────────────────────────────────────────────────────────
+  meta:
+    name: meta-gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # the secret guard needs a merge-base
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: safety:secrets — no credential material in the diff
+        run: bash tools/ci/run_all_gates.sh --only safety:secrets
+
+      # gates: safety:ci-parity
+      - name: safety:ci-parity — this workflow runs exactly the gates the script defines
+        run: python tools/ci/check_ci_parity.py
+
+      # gates: coverage:services
+      - name: coverage:services — every service carries the guards we require
+        run: python tools/ci/check_service_coverage.py
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # SUITES — one job per DISCOVERED service, each against a REAL postgres.
+  # The in-memory adapter's asyncio.Lock hides every race a database has to
+  # serialise itself, so `incr_if_below` and `cas` can only be proven here.
+  # ───────────────────────────────────────────────────────────────────────────
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.find.outputs.services }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: find
+        name: Discover services
+        run: |
+          svcs=$(find services -maxdepth 2 -name pyproject.toml -printf '%h\n' \
+                 | sed 's|^services/||' | sort | jq -R -s -c 'split("\n")[:-1]')
+          echo "services=$svcs" >> "$GITHUB_OUTPUT"
+          echo "Discovered: $svcs"
+
+  test-and-gate:
+    name: ${{ matrix.service }}
+    needs: discover
+    if: needs.discover.outputs.services != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.discover.outputs.services) }}
+
+    services:
+      postgres:
+        image: postgres:16.4-alpine
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci -d ci_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+
+    env:
+      DATASTORE_TEST_DSN: postgresql://ci:ci@127.0.0.1:5432/ci_test
+
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install (runtime + dev + ci)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,ci]"
+          pip install asyncpg      # the postgres extra: the contract must run for real
+
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin
+
+      # gates: suites
+      - name: suites — pytest
+        run: python -m pytest -q -p no:cacheprovider
+
+      # gates: contracts:postgres
+      - name: contracts:postgres — and PROVE the postgres params were not skipped
+        run: |
+          if [ ! -f tests/contracts/test_datastore_contract.py ]; then
+            echo "no datastore contract in this service"; exit 0
+          fi
+          out=$(python -m pytest tests/contracts/ -q -p no:cacheprovider 2>&1 | tail -3)
+          echo "$out"
+          if echo "$out" | grep -qi "skipped"; then
+            echo "::error::a postgres contract param was SKIPPED — DATASTORE_TEST_DSN never reached the tests"
+            exit 1
+          fi
+
+      # gates: security-gate
+      - name: security-gate — licenses / SAST / secrets / CVEs (strict: no skips)
+        run: python ci/security_gate.py --strict
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # CHART — the deploy chart must refuse to render a mistake, and must render
+  # the same bytes twice with no cluster reachable.
+  # ───────────────────────────────────────────────────────────────────────────
+  chart:
+    name: chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      - name: Install test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pyyaml
+
+      - name: chart:guards — the chart refuses to render a mistake
+        run: bash tools/ci/run_all_gates.sh --only chart:guards
+
+      - name: chart:render — every service's values renders
+        run: bash tools/ci/run_all_gates.sh --only chart:render
+
+      - name: determinism — helm template is byte-identical and needs no cluster
+        run: bash tools/ci/run_all_gates.sh --only determinism
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # GATES — the strict run, and the job that blocks the merge. A gate whose
+  # infra is missing FAILS here rather than skipping, so a green badge means
+  # every wired gate actually executed.
+  # ───────────────────────────────────────────────────────────────────────────
+  gates:
+    name: run_all_gates.sh --strict (merge blocker)
+    needs: [meta, test-and-gate, chart]
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16.4-alpine
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci -d ci_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATASTORE_TEST_DSN: postgresql://ci:ci@127.0.0.1:5432/ci_test
+      PYTHON: python
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin
+
+      - name: Install every service (self-contained, so each installs itself)
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pyyaml asyncpg
+          for d in services/*/; do
+            pip install -e "$d[dev,ci]" -q
+          done
+
+      - name: Show what each gate protects
+        run: bash tools/ci/run_all_gates.sh --list
+
+      - name: run_all_gates.sh --strict
+        run: bash tools/ci/run_all_gates.sh --strict

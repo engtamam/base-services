@@ -1,0 +1,69 @@
+# =============================================================================
+# base-services — .gitignore
+#
+# The first rule matters most: a virtualenv is ~108 MB and there are 18 of them.
+# The second matters more: a credential committed once is a credential rotated,
+# not a commit reverted. `tools/ci/run_all_gates.sh --only safety:secrets`
+# refuses a diff that introduces one; this stops it reaching the diff at all.
+# =============================================================================
+
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# ── Virtualenvs (one per service; never committed) ──────────────────────────
+.venv/
+venv/
+ENV/
+
+# ── Test / tooling caches ───────────────────────────────────────────────────
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+
+# ── Secrets. Nothing here is ever "just for local dev". ─────────────────────
+.env
+.env.*
+!.env.example
+!.env.sample
+.secrets
+*.pem
+*.key
+!**/testdata/**/*.pem          # fixtures, if any, must be explicit
+id_rsa*
+*.p12
+*.pfx
+.detect-secrets.baseline.local
+
+# ── Runtime state written by the services ───────────────────────────────────
+.objectstore/
+*.sqlite
+*.sqlite3
+*.db
+
+# ── Build / release artifacts ───────────────────────────────────────────────
+sbom.json
+sbom.xml
+*.tar.gz
+deploy/pinned/
+
+# ── Editors / OS ────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Local scratch ───────────────────────────────────────────────────────────
+scratch/
+tmp/
+*.log

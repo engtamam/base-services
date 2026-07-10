@@ -1,0 +1,6 @@
+# service.spec.toml — the record of how this service was generated.
+name = "authz-service"
+description = "Authorization: RBAC + ABAC policy engine"
+port = 8007
+
+[drivers]

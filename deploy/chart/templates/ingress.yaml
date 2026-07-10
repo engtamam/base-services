@@ -1,0 +1,36 @@
+{{- if .Values.ingress.enabled }}
+{{/*
+Only the user tier is exposed. `guardIngressPaths` has already refused any path outside
+/api/v1: the internal tier is protected by a shared service token (fine between pods,
+not fine on the internet) and /metrics leaks operational detail. A bare "/" exposes both.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "base-service.fullname" . }}
+  labels: {{- include "base-service.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      secretName: {{ .Values.ingress.tls.secretName | default (printf "%s-tls" (include "base-service.fullname" .)) }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          {{- range .Values.ingress.paths }}
+          - path: {{ . }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "base-service.fullname" $ }}
+                port:
+                  name: http
+          {{- end }}
+{{- end }}

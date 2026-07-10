@@ -1,0 +1,7 @@
+# service.spec.toml — the record of how this service was generated.
+name = "identity-service"
+description = "Identity, auth and tokens"
+port = 8001
+
+[drivers]
+token_verifier = "hs256"

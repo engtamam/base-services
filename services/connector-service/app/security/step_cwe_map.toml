@@ -1,0 +1,26 @@
+# =============================================================================
+# connector-service — Step -> CWE map (self-guard configuration)
+# Which CWE weakness classes + checks apply to each kind of step. This is DATA,
+# not code (zero-hardcoded): tune a service's risk posture without touching code.
+# Override path via CWE_STEP_MAP_FILE; otherwise this bundled default is used.
+# =============================================================================
+
+[steps.db_query]
+cwe = ["CWE-89"]
+checks = ["parameterized"]
+
+[steps.egress]
+cwe = ["CWE-918"]
+checks = ["ssrf_allowlist"]
+
+[steps.file_write]
+cwe = ["CWE-22"]
+checks = ["safe_object_key"]
+
+[steps.file_read]
+cwe = ["CWE-22"]
+checks = ["safe_object_key"]
+
+[steps.respond]
+cwe = ["CWE-200", "CWE-532"]
+checks = ["no_secret_leak"]

@@ -1,0 +1,6 @@
+# service.spec.toml — the record of how this service was generated.
+name = "job-service"
+description = "Background jobs + scheduler: leased, retried, dead-lettered, cron"
+port = 8012
+
+[drivers]

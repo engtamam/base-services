@@ -1,0 +1,6 @@
+# service.spec.toml — the record of how this service was generated.
+name = "feature-flag-service"
+description = "Feature flags, versioned config & maintenance mode"
+port = 8010
+
+[drivers]

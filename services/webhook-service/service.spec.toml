@@ -1,0 +1,6 @@
+# service.spec.toml — the record of how this service was generated.
+name = "webhook-service"
+description = "Outbound + inbound webhooks: signed, retried, circuit-broken, SSRF-guarded"
+port = 8011
+
+[drivers]
