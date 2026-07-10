@@ -65,6 +65,12 @@ jobs:
         continue-on-error: true
         run: bash tools/ci/run_all_gates.sh --verify
 
+      # gates: safety:actions
+      - name: "safety:actions — every action a workflow uses actually exists"
+        run: python tools/ci/check_action_refs.py
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       # gates: safety:ci-parity
       - name: safety:ci-parity — this workflow runs exactly the gates the script defines
         run: python tools/ci/check_ci_parity.py

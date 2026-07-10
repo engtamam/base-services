@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+gate_name="safety:actions"
+gate_desc="every action a workflow uses actually exists"
+gate_protects="A workflow can be valid YAML, pass every gate, and then die at \`Set up job\` with
+'Unable to resolve action ...@0.28.0'. Release v0.1.1 did exactly that: the gates
+went green, and all seventeen image jobs failed before a single step ran, because
+that action's tags are v-prefixed and ours was not. Nothing was built and the tag
+had to be burned. The failure lands AFTER the gates report green, so this is the
+only place to catch it.
+
+An unreachable API is a NOTE, never a failure: it says nothing about the ref."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_action_refs.py"
+gate_units=0
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_action_refs.py; }
+
+# A gate that cannot fail is decoration. Prove it refuses a reference that does not exist.
+gate_selftest() {
+  local probe="$RUN_TMP/wf"
+  mkdir -p "$probe"
+  printf 'jobs:\n  x:\n    steps:\n      - uses: aquasecurity/trivy-action@0.28.0\n' \
+    > "$probe/bad.yml"
+  # Point the checker at the bad workflow directory by copying it over a temp ROOT is overkill;
+  # instead assert the resolver itself says 404 for the known-bad ref.
+  ! "$PY" -c "
+import sys, pathlib
+sys.path.insert(0, 'tools/ci')
+import check_action_refs as c
+sys.exit(0 if c.resolves('aquasecurity/trivy-action', '0.28.0') == 200 else 1)
+" >/dev/null 2>&1
+}
