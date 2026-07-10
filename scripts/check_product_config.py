@@ -62,8 +62,10 @@ FROZEN = ("jwtIssuer", "linkNs", "signatureDomain", "eventNs", "userAgent",
 VERSIONED = ("linkNs", "signatureDomain")
 _VERSIONED_RE = re.compile(r"^(?P<stem>[a-z0-9.]+)\.v(?P<n>\d+)$")
 
-# A commit that intends to change a frozen identifier must say so, in the commit body.
+# A commit that intends to change a frozen identifier must say so, in the commit body — on a
+# line of its own, beginning at column zero, followed by a reason. See _commit_allows_migration.
 MIGRATION_MARKER = "MIGRATION:"
+_MIGRATION_MIN_REASON = 10       # "MIGRATION: x" is not a reason; the compatibility window is
 
 # Blocks that are one string per locale.
 I18N_PATHS = (
@@ -169,6 +171,11 @@ def check_i18n(cfg: dict) -> None:
 
 
 # ── 4. frozen identifiers ────────────────────────────────────────────────────────
+def _lock_rel() -> str:
+    """The lock's repo-relative path, or its bare name when it lives outside ROOT (tests)."""
+    return LOCK.relative_to(ROOT).as_posix() if LOCK.is_relative_to(ROOT) else LOCK.name
+
+
 def _read_lock() -> dict | None:
     """The COMMITTED frozen identifiers. See config/product.identifiers.lock.json."""
     try:
@@ -179,7 +186,7 @@ def _read_lock() -> dict | None:
 
 def _previous_lock() -> dict | None:
     """The lock as of the last commit — to catch someone editing the lock itself."""
-    raw = _git("show", f"HEAD:{LOCK.relative_to(ROOT).as_posix()}")
+    raw = _git("show", f"HEAD:{_lock_rel()}")
     if raw is None:
         return None
     try:
@@ -189,7 +196,28 @@ def _previous_lock() -> dict | None:
 
 
 def _commit_allows_migration() -> bool:
-    return MIGRATION_MARKER in (_git("log", "-1", "--format=%B") or "")
+    """True only if the commit body carries a MIGRATION: DIRECTIVE, not a mention of one.
+
+    This was `MIGRATION_MARKER in body` — a substring search over the whole message. Any commit
+    whose body mentioned the string anywhere granted itself the exemption, including a commit
+    that merely *documented the rule*. The commit that introduced this lock did exactly that:
+    its body reads "...requires a MIGRATION: line in the commit body", so on that commit the
+    freeze was disarmed and a silent change to `signatureDomain` passed with exit 0.
+
+    A guard that the act of explaining it can disable is not a guard.
+
+    So the marker must begin a line, at column zero — a prose sentence that happens to name it
+    is indented, quoted, or mid-sentence — and it must be followed by an actual reason. An empty
+    `MIGRATION:` is someone reaching for the exemption without saying why.
+    """
+    body = _git("log", "-1", "--format=%B") or ""
+    for line in body.splitlines():
+        if not line.startswith(MIGRATION_MARKER):
+            continue                      # indented or mid-sentence: prose, not a directive
+        reason = line[len(MIGRATION_MARKER):].strip()
+        if len(reason) >= _MIGRATION_MIN_REASON:
+            return True
+    return False
 
 
 def _check_version_bump(key: str, old: str, new: str) -> None:
@@ -233,7 +261,7 @@ def check_frozen(cfg: dict) -> None:
     current = _strip_meta(cfg.get("identifiers", {}))
     lock = _read_lock()
     if lock is None:
-        fail(f"{LOCK.relative_to(ROOT).as_posix()} is missing or unreadable — the frozen "
+        fail(f"{_lock_rel()} is missing or unreadable — the frozen "
              f"identifiers have no baseline, so nothing is frozen")
         return
 

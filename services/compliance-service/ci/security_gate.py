@@ -108,13 +108,25 @@ def gate_sbom() -> tuple[str, str]:
 
 
 def gate_container() -> tuple[str, str]:
-    # trivy fs scans the filesystem (deps + Dockerfile misconfig) — no Docker needed.
+    """Dockerfile MISCONFIGURATION only. Dependency CVEs are `cve (pip-audit)`'s job.
+
+    This used to pass `--scanners vuln,misconfig` and its comment claimed it covered
+    "deps + Dockerfile misconfig". It never scanned a single dependency. Trivy's pip scanner
+    reads `requirements.txt` / `poetry.lock` / `uv.lock`; we ship `pyproject.toml` with no
+    lockfile, so trivy resolved zero packages and reported clean. Verified both ways: a canary
+    tree pinning `jinja2==2.10` + `requests==2.19.1` yields two HIGH CVEs and exit 1, while
+    every service here yields `targets scanned: NONE`.
+
+    A scan that finds nothing and a scan that scans nothing print the same green line. Naming
+    the scanner honestly is the fix — `pip-audit` already audits the installed environment,
+    which is what actually ships in the image.
+    """
     if shutil.which("trivy") is None:
         return SKIP, "trivy not installed"
-    r = _run(["trivy", "fs", "--quiet", "--scanners", "vuln,misconfig",
+    r = _run(["trivy", "fs", "--quiet", "--scanners", "misconfig",
               "--severity", "HIGH,CRITICAL", "--exit-code", "1", "--skip-dirs", ".venv",
               str(ROOT)], timeout=300)
-    return (PASS if r.returncode == 0 else FAIL), "trivy fs HIGH/CRITICAL"
+    return (PASS if r.returncode == 0 else FAIL), "trivy fs misconfig HIGH/CRITICAL"
 
 
 def _module(name: str) -> bool:
@@ -128,7 +140,7 @@ GATES = [
     ("secret-scan", gate_secrets),
     ("cve (pip-audit)", gate_cve),
     ("sbom", gate_sbom),
-    ("container (trivy)", gate_container),
+    ("container (trivy misconfig)", gate_container),
 ]
 
 

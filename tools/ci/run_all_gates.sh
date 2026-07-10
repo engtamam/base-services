@@ -271,6 +271,10 @@ run "safety:scans" -- safety_scans
 # =============================================================================
 want "safety:product" && banner "safety:product — product identity is well-formed and its frozen identifiers have not moved" "--strict: a schema check skipped for a missing jsonschema is a FAILURE, not a pass."
 safety_product() {
+  # The guard tests run FIRST. The freeze has failed silently twice — once because its baseline
+  # never existed, once because `"MIGRATION:" in body` let the commit that documented the rule
+  # disarm it. Both times the gate printed a green line. Test the guard, then run it.
+  "$PY" -m pytest -q -p no:cacheprovider scripts/tests/test_product_config.py || return 1
   "$PY" scripts/check_product_config.py --strict
 }
 run "safety:product" -- safety_product
@@ -339,6 +343,18 @@ contracts_postgres() {
   for svc in $(services); do
     [ -f "services/$svc/tests/contracts/test_datastore_contract.py" ] || continue
     py="$(py_for "$svc")"
+    # `local == CI` is the promise this script makes. py_for prefers a SERVICE'S OWN venv, and
+    # nothing checked that venv can run what it is about to be asked to run. identity-service
+    # had one without the `postgres` extra: its postgres params errored, the run reported a
+    # SKIP, and CI stayed green because CI pip-installs the extras. Say which interpreter is
+    # short, and which service, instead of leaving a wall of import errors.
+    if ! (cd "services/$svc" && "$py" -c "import asyncpg" >/dev/null 2>&1); then
+      printf '      %-22s FAIL  (its interpreter cannot import asyncpg)
+' "$svc"
+      echo "        $py"
+      echo "        install the postgres extra:  $py -m pip install asyncpg"
+      rc=1; continue
+    fi
     if (cd "services/$svc" && env PYTHONHASHSEED="$PRIMARY_SEED" "$py" -m pytest -q -p no:cacheprovider tests/contracts/ >/tmp/pg_$svc.log 2>&1); then
       printf '      %-22s %s\n' "$svc" "$(tail -1 /tmp/pg_$svc.log)"
     else
