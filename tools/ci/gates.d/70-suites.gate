@@ -7,7 +7,9 @@ gate_needs="python"
 gate_env=""
 gate_subject=""
 gate_units=1
+# the CI matrix runs this gate PER SERVICE; the strict aggregator skips it (see in_profile)
 gate_slow=1
+gate_matrix=1
 
 _suite_one() {
   local svc="$1" py="$2" log="$3"

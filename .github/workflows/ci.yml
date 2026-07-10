@@ -45,6 +45,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            services/*/pyproject.toml
 
       - name: Install meta-gate deps
         run: python -m pip install --upgrade pip pyyaml
@@ -109,13 +112,29 @@ jobs:
       services: ${{ steps.find.outputs.services }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # change detection needs the base commit reachable
       - id: find
-        name: Discover services
+        name: Discover changed services
         run: |
-          svcs=$(find services -maxdepth 2 -name pyproject.toml -printf '%h\n' \
-                 | sed 's|^services/||' | sort | jq -R -s -c 'split("\n")[:-1]')
+          # Only rebuild/retest what a change actually affects. A change confined to one
+          # service selects only it; a change to the chart, tools/, a workflow, the _template
+          # seed, or a root file selects EVERY service. When the base cannot be resolved, the
+          # answer is every service — the default is never "skip". See changed_services.py.
+          base=""
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+          elif [ -n "${{ github.event.before }}" ] && \
+               [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            base="${{ github.event.before }}"
+          fi
+          if [ -z "$base" ]; then
+            svcs=$(python tools/ci/changed_services.py --base HEAD --all-if-empty)
+          else
+            svcs=$(python tools/ci/changed_services.py --base "$base")
+          fi
           echo "services=$svcs" >> "$GITHUB_OUTPUT"
-          echo "Discovered: $svcs"
+          echo "Selected: $svcs"
 
   test-and-gate:
     name: ${{ matrix.service }}
@@ -153,6 +172,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            services/*/pyproject.toml
 
       - name: Install (runtime + dev + ci)
         run: |
@@ -198,6 +220,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            services/*/pyproject.toml
       - uses: azure/setup-helm@v4
         with:
           version: v3.16.4
@@ -246,6 +271,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            services/*/pyproject.toml
       - uses: azure/setup-helm@v4
         with:
           version: v3.16.4
@@ -270,4 +298,4 @@ jobs:
         run: bash tools/ci/run_all_gates.sh --list
 
       - name: run_all_gates.sh --strict
-        run: bash tools/ci/run_all_gates.sh --strict
+        run: bash tools/ci/run_all_gates.sh --strict --profile aggregate

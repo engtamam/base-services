@@ -67,6 +67,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            services/*/pyproject.toml
       - uses: azure/setup-helm@v4
         with:
           version: v3.16.4
@@ -165,7 +168,16 @@ jobs:
 
       # Signed, verifiable proof that THIS digest was built from THIS commit by
       # this workflow. Without it a digest is just a number someone typed.
+      #
+      # BEST-EFFORT ON A PRIVATE REPO. GitHub's attestation API refuses user-owned PRIVATE
+      # repositories ("Feature not available ... make this repository public"). Our standing
+      # rule is that this repo stays private — a public image ships your source in its layers,
+      # and a public repo hands over the source outright. So the private rule wins: attestation
+      # is attempted and, if the platform refuses, the release proceeds without it. The instant
+      # the repo (or an org migration) makes this available, it starts working with no change
+      # here. The CVE scan below is NOT best-effort — a vulnerable image is never released.
       - name: Attest build provenance
+        continue-on-error: true
         uses: actions/attest-build-provenance@v2
         with:
           subject-name: ${{ env.REGISTRY }}/${{ steps.v.outputs.owner }}/${{ matrix.service }}
@@ -203,6 +215,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            services/*/pyproject.toml
       - uses: azure/setup-helm@v4
         with:
           version: v3.16.4

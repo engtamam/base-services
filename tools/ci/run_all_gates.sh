@@ -130,10 +130,17 @@ skip_msg() { printf '\033[33m  SKIP (WIRED)\033[0m  %s — %s\n' "$1" "$2"; SKIP
 pend_msg() { printf '\033[36m  PENDING\033[0m  %s — %s\n' "$1" "$2"; PENDINGS+=("$1 — $2"); }
 noprof()   { printf '\033[36m  N/A\033[0m   %s — not in the %s profile\n' "$1" "$2"; }
 
+# $1 = gate_slow, $2 = gate_matrix
 in_profile() {
   case "$PROFILE" in
     all)   return 0 ;;
     quick) [ "$1" = "1" ] && return 1 ;;
+    # `aggregate` is what the strict CI merge-blocker runs: it drops the gates the per-service
+    # MATRIX already runs (suites, security-gate, contracts:postgres), so that heavy per-service
+    # work happens ONCE, in parallel, narrowed to the services that changed — not a second time,
+    # serially, over all of them. safety:ci-parity still proves the matrix runs those gates, so
+    # dropping them here is not a coverage hole: it is the same gate, run in a faster place.
+    aggregate) [ "$2" = "1" ] && return 1 ;;
   esac
   return 0
 }
@@ -192,9 +199,10 @@ for f in $(gate_files); do
   subject="$(meta "$f" gate_subject)"
   units="$(meta "$f" gate_units)"
   slow="$(meta "$f" gate_slow)"
+  matrix="$(meta "$f" gate_matrix)"
 
   if [ -n "$ONLY" ] && [ "$ONLY" != "$name" ]; then continue; fi
-  if ! in_profile "${slow:-0}"; then noprof "$name" "$PROFILE"; continue; fi
+  if ! in_profile "${slow:-0}" "${matrix:-0}"; then noprof "$name" "$PROFILE"; continue; fi
 
   # PENDING: the SUBJECT does not exist yet. Never blocks. A gate wired the day before the code
   # it guards is a promise kept, not a build broken.

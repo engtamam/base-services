@@ -9,7 +9,9 @@ gate_needs="python"
 gate_env="DATASTORE_TEST_DSN"
 gate_subject=""
 gate_units=1
+# the CI matrix runs this gate PER SERVICE; the strict aggregator skips it (see in_profile)
 gate_slow=1
+gate_matrix=1
 
 # SERIAL, on purpose. This gate OWNS the database: its fixtures TRUNCATE. Two units running at
 # once would delete each other's rows mid-test, and the failures would read as adapter bugs.
