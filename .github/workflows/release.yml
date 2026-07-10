@@ -92,10 +92,23 @@ jobs:
       - uses: actions/checkout@v4
       - id: find
         run: |
+          # `_template` carries a Dockerfile (it is the copy-me seed) but is NOT a service:
+          # it has no deploy values file, so publishing an image for it would leak the seed
+          # as a package AND fail the pinning step. A release publishes only what deploys.
           svcs=$(find services -maxdepth 2 -name Dockerfile -printf '%h\n' \
-                 | sed 's|^services/||' | sort | jq -R -s -c 'split("\n")[:-1]')
+                 | sed 's|^services/||' \
+                 | grep -v '^_template$' \
+                 | sort | jq -R -s -c 'split("\n")[:-1]')
           echo "services=$svcs" >> "$GITHUB_OUTPUT"
           echo "Discovered: $svcs"
+
+          # Fail fast: every publishable service must have a values file to pin into.
+          for s in $(echo "$svcs" | jq -r '.[]'); do
+            if [ ! -f "deploy/services/$s.values.yaml" ]; then
+              echo "::error::$s has a Dockerfile but no deploy/services/$s.values.yaml"
+              exit 1
+            fi
+          done
 
   # ───────────────────────────────────────────────────────────────────────────
   # IMAGES — one job per service. Each emits its digest as an artifact so the

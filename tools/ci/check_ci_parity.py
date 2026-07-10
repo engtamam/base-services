@@ -54,9 +54,41 @@ def gates_from_workflow() -> set[str]:
     return {g for g in named if g}
 
 
+def workflows_parse() -> list[str]:
+    """A workflow that is not valid YAML does not run AT ALL — GitHub skips it silently.
+
+    This gate used to read ci.yml as text, so it happily confirmed "the workflow runs every
+    gate" about a file GitHub was refusing to load. An unquoted `name:` containing `: ` was
+    enough. Parse every workflow, so the gates cannot be green about a CI that never ran.
+    """
+    try:
+        import yaml
+    except ImportError:
+        return ["pyyaml is not installed — cannot verify the workflows are valid YAML"]
+
+    problems: list[str] = []
+    for path in sorted((ROOT / ".github" / "workflows").glob("*.y*ml")):
+        try:
+            loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except yaml.YAMLError as exc:
+            problems.append(f"{path.name} is not valid YAML: {exc}")
+            continue
+        if not isinstance(loaded, dict) or "jobs" not in loaded:
+            problems.append(f"{path.name} has no `jobs:` — it defines nothing")
+    return problems
+
+
 def main() -> int:
     if not WORKFLOW.exists():
         print(f"FAIL: no workflow at {WORKFLOW.relative_to(ROOT)} — the gates run nowhere.")
+        return 1
+
+    broken = workflows_parse()
+    if broken:
+        print("FAIL: a workflow will not run:")
+        for b in broken:
+            print(f"    - {b}")
+        print("  GitHub skips an unparseable workflow silently. A green checkout means nothing.")
         return 1
 
     script = gates_from_script()
