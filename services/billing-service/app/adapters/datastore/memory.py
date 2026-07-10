@@ -96,6 +96,20 @@ class MemoryDataStore:
             bucket[key] = {"n": after}
             return True, after
 
+    async def cas(self, collection: str, key: str, expected_version: int,
+                  value: dict[str, Any]) -> bool:
+        """See the port docstring. The compare and the swap are one indivisible step."""
+        async with self._lock:
+            bucket = self._data.setdefault(collection, {})
+            current = bucket.get(key)
+            current_version = int(current.get("version", 0)) if current else 0
+            if current_version != int(expected_version):
+                return False                                  # someone else wrote first
+            stored = copy.deepcopy(value)
+            stored["version"] = current_version + 1
+            bucket[key] = stored
+            return True
+
     async def health(self) -> bool:
         return True
 

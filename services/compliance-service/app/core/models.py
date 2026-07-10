@@ -13,6 +13,15 @@ DSAR_TYPES = (ACCESS, EXPORT, ERASURE, CORRECTION)
 PENDING, VERIFIED, IN_PROGRESS, COMPLETED, REFUSED = (
     "pending", "verified", "in_progress", "completed", "refused")
 
+# The statuses in which a DSAR is still OPEN, named POSITIVELY.
+#
+# The idempotency lookup used to ask `status not in (completed, refused)`. Expressed that way, a
+# status added later is open by default: a `cancelled` DSAR would be returned as the caller's
+# existing open request, and the new one would never be created. Listing the open states means a
+# new status is closed until someone decides otherwise. It is also the only form the datastore's
+# equality filter can push down.
+OPEN_DSAR_STATUSES = (PENDING, VERIFIED, IN_PROGRESS)
+
 
 def new_id(prefix: str = "") -> str:
     return f"{prefix}{uuid.uuid4().hex}"

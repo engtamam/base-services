@@ -58,7 +58,9 @@ class TenantRepository:
         return tenant
 
     async def list(self, limit: int = 100) -> list[dict]:
-        return await self._store.list(_TENANTS, limit)
+        # sweeper: this IS the tenant catalogue. There is no tenant to scope it by, and it is
+        # reachable only by a platform operator. Bounded by the caller's limit.
+        return await self._store.scan_all(_TENANTS, limit)
 
     async def delete(self, tenant: Tenant) -> None:
         await self._store.delete(_TENANTS, tenant.id)

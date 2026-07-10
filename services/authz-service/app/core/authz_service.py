@@ -155,7 +155,7 @@ class AuthzService:
         cached = await self._cache_get(key)
         if cached is not None:
             return cached
-        policies = await self._policies.list(tenant, 1_000_000)
+        policies = await self._policies.all_for(tenant)
         await self._cache_set(key, policies)
         return policies
 

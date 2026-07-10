@@ -40,6 +40,12 @@ class CountingStore(MemoryDataStore):
     def __init__(self):
         super().__init__()
         self.reads = self.writes = self.scans = self.cas_calls = 0
+        self.rows_returned = 0
+
+    async def find(self, collection, where, **kw):
+        rows, nxt = await super().find(collection, where, **kw)
+        self.rows_returned += len(rows)
+        return rows, nxt
 
     async def get(self, c, k):
         self.reads += 1
@@ -49,9 +55,9 @@ class CountingStore(MemoryDataStore):
         self.writes += 1
         return await super().put(c, k, v)
 
-    async def list(self, c, limit=100):
+    async def scan_all(self, c, limit=100):
         self.scans += 1
-        return await super().list(c, limit)
+        return await super().scan_all(c, limit)
 
     async def cas(self, c, k, ev, v):
         self.cas_calls += 1
@@ -147,13 +153,36 @@ def test_reserve_and_confirm_never_scan():
     assert st.scans == 0, "the hold path scanned the datastore"
 
 
-def test_the_sweepers_may_scan_they_are_cron_not_the_hot_path():
+def test_the_sweepers_do_not_scan_even_though_they_are_cron():
+    """A sweeper is allowed to be slow. It is not allowed to be O(every hold ever placed).
+
+    This test used to assert the opposite — `scans >= 1`, "documented and deliberate". It was
+    deliberate, and it was still wrong: the holds a sweeper can act on are the ACTIVE ones, a
+    small and shrinking set, while the settled ones will never match again and grow forever.
+    """
     st = CountingStore()
     w = _svc(st)
     run(w.credit(tenant="t", fund="cash", amount=10_000, source="c"))
     st.scans = 0
     run(w.sweep_holds())
-    assert st.scans >= 1          # documented and deliberate
+    run(w.sweep_grants())
+    assert st.scans == 0, "a sweeper read a collection whole instead of filtering on state"
+
+
+def test_the_hold_sweeper_does_not_read_settled_holds():
+    """Its cost tracks the ACTIVE holds, not the history of confirmed ones."""
+    def rows_read(settled: int) -> int:
+        st = CountingStore()
+        w = _svc(st)
+        run(w.credit(tenant="t", fund="cash", amount=10_000_000, source="c"))
+        for _ in range(settled):                      # holds that are done and will never expire
+            h = run(w.reserve(tenant="t", net=1, source="r"))
+            run(w.confirm(hold_id=h["hold_id"]))
+        st.rows_returned = 0
+        run(w.sweep_holds())
+        return st.rows_returned
+
+    assert rows_read(2) == rows_read(200), "the sweeper's cost grows with settled holds"
 
 
 def test_every_settings_field_is_consumed_somewhere():

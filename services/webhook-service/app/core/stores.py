@@ -16,7 +16,11 @@ _ENDPOINTS = "endpoints"
 _EVENTS = "events"
 _DELIVERIES = "deliveries"
 _INBOUND = "inbound"
-_SCAN = 1_000_000
+
+# Deliveries outnumber everything else here by orders of magnitude: one row per endpoint per
+# event, kept for the retry history. Nothing may read that collection whole.
+_SWEEP_PAGE = 500
+_INBOUND_MAX = 50_000
 
 
 class EndpointStore:
@@ -81,10 +85,10 @@ class EndpointStore:
         row = await self._store.get(_ENDPOINTS, endpoint_id)
         return Endpoint.from_dict(row) if row else None
 
-    async def list(self, tenant: str, limit: int = 100) -> list[dict]:
-        rows = [r for r in await self._store.list(_ENDPOINTS, _SCAN) if r.get("tenant") == tenant]
-        rows.sort(key=lambda r: r.get("created", ""))
-        return rows[:limit]
+    async def list(self, tenant: str, limit: int = 100, after: str | None = None) -> list[dict]:
+        rows, _ = await self._store.find(_ENDPOINTS, {"tenant": tenant}, limit=limit, after=after,
+                                         sort=("created", "asc"))
+        return rows
 
     # ── the HOT PATH ──────────────────────────────────────────────────────────
     async def subscribers(self, tenant: str, event_type: str) -> list[Endpoint]:
@@ -93,8 +97,13 @@ class EndpointStore:
         cached = await self._cache_get(key)
         if cached is not None:
             return [Endpoint.from_dict(r) for r in cached]
-        rows = [r for r in await self._store.list(_ENDPOINTS, _SCAN)
-                if r.get("tenant") == tenant and r.get("enabled")]
+        # The tenant and the enabled flag are pushed into the datastore. The event-type match
+        # stays here: `subscribes_to` understands wildcards (`invoice.*`), which an equality
+        # filter cannot express — but it now runs over one tenant's enabled endpoints, not over
+        # every endpoint of every tenant. On a cache miss this used to be a full-table scan on
+        # the delivery hot path, i.e. once per event.
+        rows, _ = await self._store.find(_ENDPOINTS, {"tenant": tenant, "enabled": True},
+                                         limit=_SWEEP_PAGE, sort=("created", "asc"))
         matched = [r for r in rows if Endpoint.from_dict(r).subscribes_to(event_type)]
         await self._cache_set(key, matched)
         return [Endpoint.from_dict(r) for r in matched]
@@ -126,25 +135,41 @@ class DeliveryStore:
         row = await self._store.get(_DELIVERIES, delivery_id)
         return Delivery.from_dict(row) if row else None
 
-    async def list(self, tenant: str, *, status: str | None = None, limit: int = 100) -> list[dict]:
-        rows = [r for r in await self._store.list(_DELIVERIES, _SCAN) if r.get("tenant") == tenant]
+    async def list(self, tenant: str, *, status: str | None = None, limit: int = 100,
+                   after: str | None = None) -> list[dict]:
+        where: dict[str, Any] = {"tenant": tenant}
         if status:
-            rows = [r for r in rows if r.get("status") == status]
-        rows.sort(key=lambda r: r.get("created", ""), reverse=True)
-        return rows[:limit]
+            where["status"] = status
+        rows, _ = await self._store.find(_DELIVERIES, where, limit=limit, after=after,
+                                         sort=("created", "desc"))
+        return rows
 
     async def dead_letters(self, tenant: str, limit: int = 100) -> list[dict]:
         return await self.list(tenant, status=DEAD, limit=limit)
 
     async def due(self, now: float, limit: int = 100) -> list[Delivery]:
-        out = [Delivery.from_dict(r) for r in await self._store.list(_DELIVERIES, _SCAN)
-               if r.get("status") in ("queued", "failed") and r.get("next_retry_at") is not None
-               and float(r["next_retry_at"]) <= now]
+        """The retry queue. `status` is pushed down; the due time is compared here.
+
+        This is the sweeper, but it must not read DELIVERED rows — those are the overwhelming
+        majority and they are never due. Filtering to the two retryable statuses first is what
+        keeps the queue proportional to the backlog rather than to the history.
+        """
+        out: list[Delivery] = []
+        cursor = None
+        while len(out) < limit:
+            rows, cursor = await self._store.find(_DELIVERIES, {"status": ["queued", "failed"]},
+                                                  limit=_SWEEP_PAGE, after=cursor,
+                                                  sort=("created", "asc"))
+            out.extend(Delivery.from_dict(r) for r in rows
+                       if r.get("next_retry_at") is not None and float(r["next_retry_at"]) <= now)
+            if not cursor:
+                break
         return out[:limit]
 
     async def by_event(self, event_id: str, limit: int = 100) -> list[Delivery]:
-        return [Delivery.from_dict(r) for r in await self._store.list(_DELIVERIES, _SCAN)
-                if r.get("event_id") == event_id][:limit]
+        rows, _ = await self._store.find(_DELIVERIES, {"event_id": event_id}, limit=limit,
+                                         sort=("created", "asc"))
+        return [Delivery.from_dict(r) for r in rows]
 
 
 class InboundStore:
@@ -171,9 +196,13 @@ class InboundStore:
         await self._store.put(_INBOUND, self._key(ev.source, ev.provider_event_id), ev.to_dict())
         return ev
 
-    async def list(self, source: str | None = None, limit: int = 100) -> list[dict]:
-        rows = await self._store.list(_INBOUND, _SCAN)
+    async def list(self, source: str | None = None, limit: int = 100,
+                   after: str | None = None) -> list[dict]:
         if source:
-            rows = [r for r in rows if r.get("source") == source]
+            rows, _ = await self._store.find(_INBOUND, {"source": source}, limit=limit,
+                                             after=after, sort=("received", "desc"))
+            return rows
+        # sweeper: an operator inspecting inbound traffic across every source. Bounded.
+        rows = await self._store.scan_all(_INBOUND, _INBOUND_MAX)
         rows.sort(key=lambda r: r.get("received", ""), reverse=True)
         return rows[:limit]

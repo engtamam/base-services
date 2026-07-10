@@ -231,6 +231,35 @@ class PostgresDataStore:
             return False, int((current or {}).get("n", 0))
         return True, int(row)
 
+    async def cas(self, collection: str, key: str, expected_version: int,
+                  value: dict[str, Any]) -> bool:
+        """Compare-and-swap decided by the DATABASE, not by this process.
+
+        `expected_version=0` is an INSERT that must not clobber an existing row, so it uses
+        `ON CONFLICT DO NOTHING` rather than an upsert. Otherwise it is a single UPDATE whose
+        WHERE clause pins the version: concurrent writers serialise on the row and the loser
+        changes nothing.
+        """
+        pool = await self._ensure()
+        expected = int(expected_version)
+        stored = dict(value)
+        stored["version"] = expected + 1
+        payload = json.dumps(stored)
+        async with pool.acquire() as con:
+            if expected == 0:
+                res = await con.execute(
+                    f"INSERT INTO {_TABLE} (collection, key, value) VALUES ($1,$2,$3) "  # nosec B608 - _TABLE is a trusted constant; values parameterized
+                    "ON CONFLICT (collection, key) DO NOTHING",
+                    collection, key, payload,
+                )
+                return res.endswith("1")
+            res = await con.execute(
+                f"UPDATE {_TABLE} SET value=$3 WHERE collection=$1 AND key=$2 "  # nosec B608 - _TABLE is a trusted constant; values parameterized
+                "AND COALESCE((value->>'version')::bigint, 0) = $4",
+                collection, key, payload, expected,
+            )
+        return res.endswith("1")
+
     async def health(self) -> bool:
         try:
             pool = await self._ensure()

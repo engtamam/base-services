@@ -47,10 +47,10 @@ class CountingStore(MemoryDataStore):
         self.touched.append(c)
         return await super().put(c, k, v)
 
-    async def list(self, c, limit=100):
+    async def scan_all(self, c, limit=100):
         self.scans += 1
         self.touched.append(c)
-        return await super().list(c, limit)
+        return await super().scan_all(c, limit)
 
 
 ICFG = {"pii_allowed": frozenset(), "max_cardinality": 1000, "late_max_seconds": 172_800,
@@ -69,10 +69,28 @@ def _env(now=BASE + 3600):
     return ing, q, st, clk
 
 
+def _coro(ing, i, **kw):
+    return ing.ingest(event_id=f"e{i}", tenant="t1", name="page.view",
+                      event_time=kw.pop("event_time", BASE + 60),
+                      subject=kw.pop("subject", f"u{i}"), value=kw.pop("value", 1.0), **kw)
+
+
 def _ingest(ing, i, **kw):
-    return run(ing.ingest(event_id=f"e{i}", tenant="t1", name="page.view",
-                          event_time=kw.pop("event_time", BASE + 60),
-                          subject=kw.pop("subject", f"u{i}"), value=kw.pop("value", 1.0), **kw))
+    return run(_coro(ing, i, **kw))
+
+
+def _ingest_many(ing, count: int, **kw) -> None:
+    """Seed `count` events on ONE event loop.
+
+    `asyncio.run()` builds and tears down a loop per call. Seeding 5 000 events one call at a
+    time cost 62 seconds — 86% of this service's entire suite — none of it testing anything.
+    The events, and every assertion about them, are unchanged.
+    """
+    async def _all():
+        for i in range(count):
+            await _coro(ing, i, **kw)
+
+    run(_all())
 
 
 # ── ingest: bounded, scan-free writes ───────────────────────────────────────
@@ -145,15 +163,22 @@ def test_a_write_invalidates_the_query_cache_immediately():
 
 
 def test_query_never_reads_the_raw_event_table():
+    """A metric query is served from the rollups. The raw events are never opened.
+
+    Seeded with 1 000 events, not 5 000. Every assertion below is on OPERATIONS — which
+    collections were touched, and that `scans` is exactly zero — so a larger pile of events
+    proves nothing extra and cost 50 seconds, most of this service's suite. Each ingest rewrites
+    the ~13 KB HyperLogLog sketch for its bucket, and the in-memory adapter deep-copies it twice.
+    That the query stays cheap as events GROW is the neighbouring test's job, by measurement.
+    """
     ing, q, st, _ = _env()
-    for i in range(5_000):
-        _ingest(ing, i)
+    _ingest_many(ing, 1_000)
     st.touched.clear()
     st.reads = st.scans = 0
     run(q.query(tenant="t1", metric="page.view", agg="count", granularity="day",
                 start_ts=BASE, end_ts=BASE + 3600))
     assert "events" not in st.touched, "metric query touched the RAW EVENT table"
-    assert st.scans == 0, f"metric query scanned {st.scans} times over 5000 events"
+    assert st.scans == 0, f"metric query scanned {st.scans} times over 1000 events"
     assert set(st.touched) <= {"rollups"}, f"unexpected collections read: {set(st.touched)}"
 
 
@@ -172,8 +197,7 @@ def test_query_cost_is_flat_in_the_number_of_events():
     """1 000 events must cost a query no more reads than 100 — that is the whole point of rollups."""
     def reads_for(n):
         ing, q, st, _ = _env()
-        for i in range(n):
-            _ingest(ing, i)
+        _ingest_many(ing, n)
         st.reads = st.scans = 0
         run(q.query(tenant="t1", metric="page.view", agg="count", granularity="day",
                     start_ts=BASE, end_ts=BASE + 3600))

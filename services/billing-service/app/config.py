@@ -147,6 +147,12 @@ class Settings(BaseSettings):
     # a closed tax period.
     SETTLEMENT_MAX_BACKDATE_DAYS: int = 90
 
+    # The ledger balance is advanced under compare-and-swap. Losers retry with FULL JITTER;
+    # without the backoff, 50 concurrent charges on one tenant exhausted the retries against a
+    # real PostgreSQL and raised LEDGER_CONTENTION. Defaults set from that measurement.
+    LEDGER_CAS_MAX_RETRIES: int = 20
+    LEDGER_CAS_BACKOFF_MS: int = 12           # base for the full-jitter backoff; 0 = no sleep
+
     @property
     def settlement_methods(self) -> dict[str, bool]:
         """{method: requires_issuer}. Fail-fast on nonsense — never a silent default."""

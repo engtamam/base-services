@@ -148,12 +148,30 @@ scan — is the reason this phase is not a performance ticket.
 
 ---
 
-**STATUS: 🟡 PRIMITIVE DONE + file-service migrated. 11 services and the ledger remain.**
+**STATUS: 🟢 COMPLETE. All 17 services migrated (28.1–28.11). `_SCAN` exists nowhere.**
 
-Done (28.1–28.6, 28.10): `core/cursor.py` (opaque keyset), `find()` + `scan_all()` on the port,
-memory adapter, postgres adapter with pushdown and its own indexes, `_SCAN` deleted from
-file-service, a `GET /api/v1/files` route that pages by cursor, `MAX_PAGE_LIMIT` clamped
-server-side, 16 new tests. file-service: 157 green.
+Done: the opaque keyset cursor (at `app/adapters/datastore/cursor.py` — *not* `app/core/`, which
+search-service already owns for its ranking cursor), `find()` + `scan_all()` on the port, the
+memory adapter, the postgres adapter with pushdown and its own matching indexes, every request
+path in every service, the materialized ledger balance with `reconcile()`, and a new
+`safety:scans` gate (10 gates now; `safety:ci-parity` proves the script and the workflow agree).
+
+Full suite: **3 026 passing** across 18 test roots, 23 skipped (infra-gated).
+
+Four defects were found by doing the migration, none of them performance:
+
+* **identity** `revoke_family` — a truncated revoke leaves a stolen refresh token valid.
+* **authz** — the PDP compiled its policy set with a `1_000_000` limit *argument*; grep could
+  never have found it, and the gate did on its first run.
+* **compliance** `add_proof` — pushing the sort into the datastore removed the accidental
+  stability of Python's sort, so same-tick consent proofs came back in uuid order. A regulator
+  would have been shown a withdrawal preceding the grant it followed.
+* **billing** `LedgerStore.record` — a running balance summed from a truncated scan and written
+  into an immutable row.
+
+And one in the tests themselves: ten `test_hot_path.py` counting fakes hooked `list()`. When
+production moved to `scan_all()` they kept passing while measuring nothing — the same silent
+failure as the asyncpg guard test that stopped testing once asyncpg was installed.
 
 **Verified on real PostgreSQL (100 000 rows, 20 tenants):**
 
@@ -188,38 +206,86 @@ returning to a request path).
 ## 9. Release notes — what changed, and what was left on purpose
 
 *"A deliberate sweeper and a forgotten request path look identical from outside."* So here is
-the list.
+the list. Every service is migrated. Every surviving full read is named below, and carries a
+`# sweeper:` note in the code that the `safety:scans` gate refuses to let anyone remove.
 
-### Migrated
+### Migrated — request paths that no longer read the whole collection
 
-| Service | Repository | What changed |
+| Service | Repository / method | What changed |
 | --- | --- | --- |
-| **file-service** | `FileRepository.list` | `find({"tenant": t})`, keyset-paged. `_SCAN` deleted. A `GET /api/v1/files` route now exists — there was none. |
-| **audit-service** | `AuditRepository.iterate` | **The chain read.** Pages to exhaustion in `seq` order. No cap. |
-| | `AuditRepository.query` | Equality filters pushed down; `since`/`until` post-filter over pages, never over the table. |
-| | `AuditRepository.partitions` | Reads the tiny `audit_meta` collection (one row per partition) instead of scanning every event to collect a handful of strings. |
-| | `AuditService.verify` | Now **cannot report clean on a partial walk** (see below). |
-| | `AuditService.export` | Was `query(filters, 1_000_000)`. Now bounded by `AUDIT_EXPORT_LIMIT`. |
+| **file-service** | `FileRepository.list` | `find({"tenant": t})`, keyset-paged. A `GET /api/v1/files` route now exists — there was none. |
+| **audit-service** | `iterate` / `query` / `verify` / `export` | The chain read pages to exhaustion in `seq` order, uncapped. `verify()` cannot report clean on a partial walk. |
+| **billing-service** | `LedgerStore.record` | **The worst bug in the batch.** It summed a truncated scan to compute a running balance and wrote the result into an immutable row. The balance is now a materialized projection advanced under compare-and-swap, and `reconcile()` proves it equals the sum of the rows. |
+| | `LedgerStore.list` / `reconcile` | Tenant-scoped `find()`, paged. |
+| | `_Repo.list_tenant` | One `find()` — inherited by invoices, subscriptions, payments, settlements. |
+| | `SubscriptionStore.active_for` | **Entitlement hot path.** Tenant + status pushed down. Past the old cap it could tell a paying customer it had no subscription. |
+| | `PaymentStore.by_provider_id` | Webhook resolution by indexed lookup. An empty `provider_id` now matches nothing *before* the query, not inside the loop. |
+| | `UsageStore.aggregate` | Was quadratic in customers: every usage row of every tenant, once per subscription per metric. Now one series, paged. |
+| | `SettlementStore.for_invoice` | `find({"invoice_id": …})`. |
+| **compliance-service** | all nine reads | Consent, consent **proof**, DSARs, legal holds, RoPA, breaches, data map. Every one was reading every other data subject's records to answer for one. |
+| | `HoldStore.active_for` | **Fail-closed path.** A truncated read here concludes "no legal hold" and erases data the law required kept. |
+| | `DsarStore.open_for` | The idempotency lookup asked `status NOT IN (completed, refused)`. Inverted to the positive `OPEN_DSAR_STATUSES`, so a status added later is *closed* by default rather than silently *open*. |
+| **identity-service** | `RefreshStore.revoke_family` | **The sharpest one.** The response to a detected token reuse. It scanned a million tokens across all users and filtered in Python; past the cap it revoked an *arbitrary* subset, reported success, and left the attacker's stolen token working. Now pushed down and paged to exhaustion. |
+| **authz-service** | `PolicyStore.all_for` (new) | The PDP compiled its policy set from `list(tenant, 1_000_000)`. Had a tenant ever exceeded it, the PDP would have made access decisions from an arbitrary subset of its own policies. Pages to exhaustion now. |
+| | `RoleStore.list` / `PolicyStore.list` | Tenant-scoped. |
+| **webhook-service** | `EndpointStore.subscribers` | **Delivery hot path**, once per event on a cache miss. Tenant + `enabled` pushed down; the wildcard match (`invoice.*`) stays in Python because equality cannot express it — but over one tenant's endpoints. |
+| | `DeliveryStore.due` | Reads the two retryable statuses, not the delivered history that dwarfs them. |
+| | `DeliveryStore.list` / `by_event`, `InboundStore.list(source)` | Scoped. |
+| **feature-flag-service** | `FlagStore.list` / `stale`, `ConfigStore.history` / `list` | `history` read every version of every key to return one key's. |
+| **job-service** | `JobStore.list`, `ScheduleStore.enabled` | Whatever the caller filtered by is pushed down. |
+| **analytics-service** | `EventStore.for_tenant`, `ReportStore.list` | A funnel used to be computed over an arbitrary sample of the *wrong customers'* events. |
+| **connector-service** | connections, specs, runs, DLQ | All four tenant-scoped. |
+| **notification-service** | `InAppStore.feed` | `FEED_SCAN_LIMIT` now bounds *this user's* recent items, not how many of everyone's items were read to find them. |
+| **wallet-service** | `sweep_holds` / `sweep_grants` | Read the ACTIVE holds/grants — the small, shrinking set they can act on — not every hold ever placed. |
+| **zatca-service** | `_rows`, `due_for_retry` | One taxpayer's invoices, never another's. The resubmission sweeper reads the backlog, not the archive. |
+| **tenant-service** | `list` | Kept (see below). |
 
-### `scan_all` calls kept on purpose
+### `scan_all` calls kept on purpose — 18 of them, and why
 
-| Where | Why |
+| Where | Why reading every row IS the operation |
 | --- | --- |
-| `AuditRepository.partitions` → `scan_all("audit_meta", 10_000)` | one row per partition, not per event. A partition list is bounded by the number of tenants, and there is no filter to push down. |
+| `audit-service` `partitions` → `audit_meta` | One row per partition, not per event. **The only `scan_all` in audit-service.** |
+| `billing-service` `PlanStore.all` | The plan **catalogue**: one row per plan, not per tenant. No tenant to scope by. |
+| `job-service` `due_index` / `leased_index` | `jobs_due` and `jobs_leased` hold one row per *claimable* / *in-flight* job and are emptied as jobs finish. Reading them whole is how a worker finds work. |
+| `job-service` `counts`, `list()` unfiltered | Operator metrics and the operator's queue view. Not reachable from a tenant route. |
+| `job-service` `ScheduleStore.list` | The cron catalogue. |
+| `feature-flag-service` flags (archived) / segments / maintenance | Global catalogues. A deployment with 10 000 feature flags has a different problem than a slow read. |
+| `analytics-service` `prune_before` | **Retention.** Visiting every event is the job. |
+| `analytics-service` `scan_prefix` | A *prefix* match is not equality, and `find()` speaks equality only by design. Reads pre-aggregated rollups, never raw events. |
+| `webhook-service` `InboundStore.list()` unfiltered | An operator inspecting inbound traffic across sources. |
+| `notification-service` templates / deliveries | Global template catalogue; operator delivery view. |
+| `tenant-service` `list` | This *is* the tenant catalogue. There is no tenant to scope it by. |
 
-Nothing else in audit-service touches `scan_all`. `list()` remains as a deprecated alias so
-existing sweepers in the other services keep working while they are migrated.
+Every one is bounded by a named constant (`_CATALOG_MAX`, `_INDEX_MAX`, `_PRUNE_MAX`, …) between
+1 000 and 100 000 — one to three orders of magnitude below the old blanket `1_000_000`. The point
+is not that the smaller number is safe. It is that a truncation at 10 000 catalogue rows is a
+paging bug an operator *sees*, while a truncation at 1 000 000 tenant rows is an arbitrary subset
+a *customer* sees.
 
-### Not yet migrated — still scanning
+### The constant is gone everywhere
 
-billing (10) · compliance (9) · feature-flag (9) · job (6) · webhook (6) · analytics (4) ·
-connector (4) · notification (3) · authz (2) · wallet (2) · zatca (2) · identity (1) ·
-search (1) · tenant (1). Their `list()` calls are unchanged and still read the whole
-collection. Nothing got slower; nothing got safer.
+`_SCAN = 1_000_000` no longer exists in any service, and `1_000_000` may not appear as a literal
+in any `app/core/` file. `authz-service` was passing it as a *limit argument* rather than storing
+it in a constant — grep would never have found that. The gate did.
 
-**`LedgerStore.record()` (billing) remains the most serious of these**: it sums a truncated
-scan to compute a running **balance** and writes it into an immutable row. `find()` does not
-fix it — it needs a materialized balance, as wallet-service already has.
+### The new gate: `safety:scans`
+
+`tools/ci/check_scan_discipline.py`, wired into `run_all_gates.sh` and `ci.yml` (10 gates now, and
+`safety:ci-parity` proves both agree). It parses the AST of every `app/core/` file and fails on:
+
+1. a `scan_all()` with no `# sweeper:` justification,
+2. a scan bound above 100 000,
+3. `find(collection, {})` — an empty filter is a cross-tenant leak one typo away,
+4. the literal `1_000_000` anywhere in code (docstrings and comments may name it).
+
+It found problems in **12 of 17 services** on its first run, including the authz one above.
+
+### What the tests could not have caught, and now can
+
+The counting fakes in ten `test_hot_path.py` files hooked `list()`. When production moved to
+`scan_all()` they kept passing while measuring nothing — the same silent failure as the asyncpg
+guard test that stopped testing once asyncpg was installed. They now hook `scan_all()`, and
+`job-service`'s benchmark caught the first regression within a minute of the change.
 
 ### Two things `verify()` now guarantees
 
@@ -233,3 +299,10 @@ sorts before `'9'` and the chain is walked out of order — verification fails a
 event on an intact chain. Events now carry `_seq_key`, a zero-padded `seq`, which sorts
 identically as text in both adapters. Verified on a real PostgreSQL: 1 500 events, contiguous
 and ascending, tamper at seq 750 caught.
+
+### Migration caveat for a live deployment
+
+Chains written before this phase carry no `_seq_key`, and rows written before it carry no
+`created` where a repository now sorts by one. No data exists yet, so nothing is being asked of
+anyone — but a deployment that predates this phase needs a one-time backfill before `verify()`
+will walk its chain.

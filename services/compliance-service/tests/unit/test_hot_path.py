@@ -34,9 +34,9 @@ class CountingStore(MemoryDataStore):
         self.writes += 1
         return await super().put(c, k, v)
 
-    async def list(self, c, limit=100):
+    async def scan_all(self, c, limit=100):
         self.reads += 1
-        return await super().list(c, limit)
+        return await super().scan_all(c, limit)
 
 
 def _svc(st, cache):
@@ -81,7 +81,29 @@ def test_grant_writes_consent_plus_one_proof():
     svc = _svc(st, cache)
     st.writes = 0
     run(svc.grant(tenant="t1", subject="u1", purpose="m"))
-    assert st.writes == 2      # the consent record + one append-only proof. Nothing else.
+    # The consent record, one append-only proof, and the proof's per-subject sequence counter.
+    # The counter is what makes two proofs written in the same clock tick come back in the order
+    # they were written (see ConsentStore.add_proof). A consent grant is a rare, deliberate,
+    # auditable event — not a hot path — and the order of the evidence is worth one more write.
+    assert st.writes == 3
+
+
+def test_proofs_written_in_one_clock_tick_come_back_in_write_order():
+    """The regulator's question is "did they consent before we processed?" — order is the answer.
+
+    With a frozen clock every proof shares an `at`, so ordering falls to the datastore's `id`
+    tie-break. A random uuid would make that arbitrary, and a withdrawal could sort before the
+    grant it followed.
+    """
+    st, cache = CountingStore(), MemoryCache()
+    svc = _svc(st, cache)
+    for _ in range(5):
+        run(svc.grant(tenant="t1", subject="u1", purpose="m", notice_version="v1"))
+        run(svc.withdraw(tenant="t1", subject="u1", purpose="m"))
+
+    proofs = run(svc.history(tenant="t1", subject="u1"))["proofs"]
+    assert [p["action"] for p in proofs] == ["granted", "withdrawn"] * 5
+    assert len({p["at"] for p in proofs}) == 1, "the clock did not actually tie; test proves nothing"
 
 
 def test_every_settings_field_is_consumed_somewhere():

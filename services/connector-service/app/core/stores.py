@@ -9,7 +9,6 @@ _SPECS = "provider_specs"
 _RUNS = "sync_runs"
 _DLQ = "sync_dlq"
 _SEEN = "sync_seen"        # per-record idempotency: key -> 1
-_SCAN = 1_000_000
 
 
 class ConnectionStore:
@@ -24,9 +23,10 @@ class ConnectionStore:
         row = await self._store.get(_CONN, connection_id)
         return Connection.from_dict(row) if row else None
 
-    async def list(self, tenant: str, limit: int = 100) -> list[dict]:
-        rows = [r for r in await self._store.list(_CONN, _SCAN) if r.get("tenant") == tenant]
-        return rows[:limit]
+    async def list(self, tenant: str, limit: int = 100, after: str | None = None) -> list[dict]:
+        rows, _ = await self._store.find(_CONN, {"tenant": tenant}, limit=limit, after=after,
+                                         sort=("created", "desc"))
+        return rows
 
     async def delete(self, connection_id: str) -> None:
         await self._store.delete(_CONN, connection_id)
@@ -44,8 +44,10 @@ class SpecStore:
         row = await self._store.get(_SPECS, spec_id)
         return ProviderSpec.from_dict(row) if row else None
 
-    async def list(self, tenant: str, limit: int = 100) -> list[dict]:
-        return [r for r in await self._store.list(_SPECS, _SCAN) if r.get("tenant") == tenant][:limit]
+    async def list(self, tenant: str, limit: int = 100, after: str | None = None) -> list[dict]:
+        rows, _ = await self._store.find(_SPECS, {"tenant": tenant}, limit=limit, after=after,
+                                         sort=("created", "desc"))
+        return rows
 
     async def delete(self, spec_id: str) -> None:
         await self._store.delete(_SPECS, spec_id)
@@ -63,10 +65,10 @@ class RunStore:
         row = await self._store.get(_RUNS, run_id)
         return SyncRun.from_dict(row) if row else None
 
-    async def list(self, tenant: str, limit: int = 100) -> list[dict]:
-        rows = [r for r in await self._store.list(_RUNS, _SCAN) if r.get("tenant") == tenant]
-        rows.sort(key=lambda r: r.get("started_at", 0), reverse=True)
-        return rows[:limit]
+    async def list(self, tenant: str, limit: int = 100, after: str | None = None) -> list[dict]:
+        rows, _ = await self._store.find(_RUNS, {"tenant": tenant}, limit=limit, after=after,
+                                         sort=("started_at", "desc"))
+        return rows
 
 
 class DlqStore:
@@ -77,8 +79,10 @@ class DlqStore:
         await self._store.put(_DLQ, rec.id, rec.to_dict())
         return rec
 
-    async def list(self, tenant: str, limit: int = 100) -> list[dict]:
-        return [r for r in await self._store.list(_DLQ, _SCAN) if r.get("tenant") == tenant][:limit]
+    async def list(self, tenant: str, limit: int = 100, after: str | None = None) -> list[dict]:
+        rows, _ = await self._store.find(_DLQ, {"tenant": tenant}, limit=limit, after=after,
+                                         sort=("created", "desc"))
+        return rows
 
     async def remove(self, record_id: str) -> None:
         await self._store.delete(_DLQ, record_id)

@@ -40,7 +40,7 @@ _LEDGER = "ledger"
 _HOLDS = "holds"
 _GRANTS = "grants"
 _IDEMPO = "wallet_idempo"
-_SCAN = 1_000_000
+_SWEEP_PAGE = 500        # the sweepers page; they never read a collection whole
 
 
 class WalletError(Exception):
@@ -347,7 +347,26 @@ class WalletService:
         await self._remember(tenant, REFUND, source, result)
         return result
 
-    # ── sweepers (cron; scans are fine here, they are not the hot path) ─────────
+    # ── sweepers (cron, not the hot path - but still not a full-table read) ─────
+    async def _active(self, collection: str, state: str, limit: int) -> list[dict[str, Any]]:
+        """The rows a sweeper can act on: those still in `state`.
+
+        A sweeper is allowed to be slow. It is not allowed to be O(every hold ever placed) when
+        the ones it can act on are the small, shrinking set of ACTIVE ones - the rest were
+        settled long ago and will never match again. `state` is pushed into the datastore; the
+        expiry comparison is a time range and stays in the caller.
+        """
+        out: list[dict[str, Any]] = []
+        cursor = None
+        while len(out) < limit:
+            rows, cursor = await self._store.find(collection, {"state": state},
+                                                  limit=_SWEEP_PAGE, after=cursor,
+                                                  sort=("expires_at", "asc"))
+            out.extend(rows)
+            if not cursor:
+                break
+        return out
+
     async def sweep_holds(self) -> dict[str, Any]:
         """Release holds whose owner never came back.
 
@@ -358,10 +377,10 @@ class WalletService:
         now = self._clock.now()
         limit = int(self._cfg["hold_sweep_limit"])
         swept = freed = 0
-        for row in await self._store.list(_HOLDS, _SCAN):
+        for row in await self._active(_HOLDS, HOLD_ACTIVE, limit):
             if swept >= limit:
                 break
-            if row.get("state") != HOLD_ACTIVE or float(row.get("expires_at", 0)) > now:
+            if float(row.get("expires_at", 0)) > now:
                 continue
             hold = Hold.from_dict(row)
             if hold.counted:
@@ -378,11 +397,10 @@ class WalletService:
         now = self._clock.now()
         limit = int(self._cfg["grant_sweep_limit"])
         expired = clawed = 0
-        for row in await self._store.list(_GRANTS, _SCAN):
+        for row in await self._active(_GRANTS, "active", limit):
             if expired >= limit:
                 break
-            if row.get("state") != "active" or not row.get("expires_at") \
-                    or float(row["expires_at"]) > now:
+            if not row.get("expires_at") or float(row["expires_at"]) > now:
                 continue
             grant = Grant.from_dict(row)
             w = await self._wallet(grant.tenant)

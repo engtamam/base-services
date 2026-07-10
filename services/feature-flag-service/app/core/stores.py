@@ -11,7 +11,12 @@ _SEGMENTS = "segments"
 _CONFIG = "config"               # head pointer: <key>::<env>
 _CONFIG_VERSIONS = "config_versions"   # append-only: <key>::<env>::<version>
 _MAINTENANCE = "maintenance"
-_SCAN = 1_000_000
+
+# Flags, segments, config keys and maintenance modules are a global CATALOGUE: one row per flag,
+# not one per tenant or per evaluation. A deployment with 10 000 feature flags has a different
+# problem than a slow read. The bound is a blast radius, not a page.
+_CATALOG_MAX = 10_000
+_SWEEP_PAGE = 500
 
 
 class FlagStore:
@@ -27,9 +32,12 @@ class FlagStore:
         return Flag.from_dict(row) if row else None
 
     async def list(self, limit: int = 500, include_archived: bool = False) -> list[dict]:
-        rows = await self._store.list(_FLAGS, _SCAN)
-        if not include_archived:
-            rows = [r for r in rows if not r.get("archived")]
+        if include_archived:
+            # sweeper: the whole catalogue, archived flags included. Global, not tenant-scoped.
+            rows = await self._store.scan_all(_FLAGS, _CATALOG_MAX)
+        else:
+            rows, _ = await self._store.find(_FLAGS, {"archived": False}, limit=limit,
+                                             sort=("key", "asc"))
         rows.sort(key=lambda r: r.get("key", ""))
         return rows[:limit]
 
@@ -52,9 +60,19 @@ class FlagStore:
         return True
 
     async def stale(self, older_than: float, limit: int = 500) -> list[dict]:
-        """Flags never evaluated, or not evaluated since `older_than` — cleanup candidates."""
-        out = [r for r in await self._store.list(_FLAGS, _SCAN)
-               if not r.get("archived") and float(r.get("last_evaluated", 0) or 0) < older_than]
+        """Flags never evaluated, or not evaluated since `older_than` - cleanup candidates.
+
+        `archived` is pushed down; the staleness cutoff is a range the equality filter cannot
+        express, so it is applied here over the LIVE flags only.
+        """
+        out: list[dict] = []
+        cursor = None
+        while True:
+            rows, cursor = await self._store.find(_FLAGS, {"archived": False}, limit=_SWEEP_PAGE,
+                                                  after=cursor, sort=("key", "asc"))
+            out.extend(r for r in rows if float(r.get("last_evaluated", 0) or 0) < older_than)
+            if not cursor:
+                break
         out.sort(key=lambda r: float(r.get("last_evaluated", 0) or 0))
         return out[:limit]
 
@@ -74,7 +92,8 @@ class SegmentStore:
         return Segment.from_dict(row) if row else None
 
     async def list(self, limit: int = 500) -> list[dict]:
-        return (await self._store.list(_SEGMENTS, _SCAN))[:limit]
+        # sweeper: the segment catalogue is global and small - one row per named audience.
+        return (await self._store.scan_all(_SEGMENTS, _CATALOG_MAX))[:limit]
 
     async def delete(self, key: str) -> None:
         await self._store.delete(_SEGMENTS, key)
@@ -108,8 +127,9 @@ class ConfigStore:
         return ConfigEntry.from_dict(row) if row else None
 
     async def history(self, key: str, *, env: str = "", limit: int = 100) -> list[dict]:
-        rows = [r for r in await self._store.list(_CONFIG_VERSIONS, _SCAN)
-                if r.get("key") == key and r.get("env", "") == env]
+        """One key's version history. Was a scan of EVERY version of EVERY key."""
+        rows, _ = await self._store.find(_CONFIG_VERSIONS, {"key": key, "env": env},
+                                         limit=limit, sort=("created", "desc"))
         rows.sort(key=lambda r: int(r.get("version", 0)), reverse=True)
         return rows[:limit]
 
@@ -121,7 +141,8 @@ class ConfigStore:
         return await self.put(key, old["value"], env=env, actor=actor)
 
     async def list(self, env: str = "", limit: int = 500) -> list[dict]:
-        rows = [r for r in await self._store.list(_CONFIG, _SCAN) if r.get("env", "") == env]
+        """The head pointers for one environment. `env=""` is the global scope, not "any"."""
+        rows, _ = await self._store.find(_CONFIG, {"env": env}, limit=limit, sort=("key", "asc"))
         rows.sort(key=lambda r: r.get("key", ""))
         return rows[:limit]
 
@@ -140,4 +161,5 @@ class MaintenanceStore:
         return Maintenance.from_dict(row) if row else Maintenance(module=module)
 
     async def all(self) -> list[dict]:
-        return await self._store.list(_MAINTENANCE, _SCAN)
+        # sweeper: one row per module under maintenance. Reading them all IS the operation.
+        return await self._store.scan_all(_MAINTENANCE, _CATALOG_MAX)

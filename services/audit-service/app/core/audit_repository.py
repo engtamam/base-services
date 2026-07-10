@@ -43,6 +43,9 @@ class AuditRepository:
 
         This used to scan every event in the store to collect a handful of distinct strings.
         """
+        # sweeper: `audit_meta` holds ONE row per partition (a handful), not one per event.
+        # This is the only scan_all() left in this service, and it is why `iterate()` and
+        # `query()` never touch the event table without a partition to scope them.
         rows = await self._store.scan_all(_META, _META_MAX)
         return sorted({r.get("partition", "global") for r in rows if r.get("partition")})
 

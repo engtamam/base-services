@@ -12,7 +12,9 @@ from app.ports.datastore import DataStore
 _INVOICES = "zatca_invoices"
 _SETTINGS = "zatca_settings"
 _INDEX = "zatca_index"           # head::<tenant> and num::<tenant>::<number> — O(1) lookups
-_SCAN = 1_000_000
+
+_PAGE = 500
+_TENANT_MAX = 100_000     # a bounded read of ONE taxpayer's invoices
 
 
 def _now() -> str:
@@ -31,8 +33,17 @@ class InvoiceStore:
         row = await self._store.get(_INVOICES, invoice_id)
         return ZatcaInvoice.from_dict(row) if row else None
 
-    async def _rows(self, tenant: str) -> list[dict]:
-        return [r for r in await self._store.list(_INVOICES, _SCAN) if r.get("tenant") == tenant]
+    async def _rows(self, tenant: str, limit: int = _TENANT_MAX) -> list[dict]:
+        """One taxpayer's invoices. Never another taxpayer's."""
+        out: list[dict] = []
+        cursor = None
+        while len(out) < limit:
+            rows, cursor = await self._store.find(_INVOICES, {"tenant": tenant}, limit=_PAGE,
+                                                  after=cursor, sort=("created", "asc"))
+            out.extend(rows)
+            if not cursor:
+                break
+        return out[:limit]
 
     async def by_number(self, tenant: str, number: str) -> ZatcaInvoice | None:
         idx = await self._store.get(_INDEX, f"num::{tenant}::{number}")   # O(1)
@@ -55,11 +66,24 @@ class InvoiceStore:
         return [ZatcaInvoice.from_dict(r).public() for r in rows[:limit]]
 
     async def due_for_retry(self, now_ts: float, limit: int = 100) -> list[ZatcaInvoice]:
-        out = []
-        for r in await self._store.list(_INVOICES, _SCAN):
-            nra = r.get("next_retry_at")
-            if r.get("status") in ("pending", "signed", "submitted") and nra is not None and nra <= now_ts:
-                out.append(ZatcaInvoice.from_dict(r))
+        """Invoices not yet cleared by ZATCA and ready for another attempt.
+
+        The three unfinished statuses are pushed down, so the resubmission sweeper reads the
+        backlog rather than every invoice the taxpayer has ever issued. `next_retry_at` is a
+        time comparison and stays here.
+        """
+        out: list[ZatcaInvoice] = []
+        cursor = None
+        while len(out) < limit:
+            rows, cursor = await self._store.find(
+                _INVOICES, {"status": ["pending", "signed", "submitted"]},
+                limit=_PAGE, after=cursor, sort=("created", "asc"))
+            for r in rows:
+                nra = r.get("next_retry_at")
+                if nra is not None and nra <= now_ts:
+                    out.append(ZatcaInvoice.from_dict(r))
+            if not cursor:
+                break
         return out[:limit]
 
     async def chain_links(self, tenant: str) -> list[dict]:

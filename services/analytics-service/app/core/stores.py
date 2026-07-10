@@ -13,7 +13,12 @@ _ROLLUPS = "rollups"
 _SEEN = "event_seen"        # idempotency: event_id -> 1
 _CARD = "dim_cardinality"   # "<tenant>|<metric>|<dim>" -> {values: [...]}
 _REPORTS = "reports"
-_SCAN = 1_000_000
+
+# Events are the highest-volume collection in the platform. Only retention may read it whole.
+_PAGE = 500
+_EXPORT_MAX = 100_000     # a bounded export, not "everything that exists"
+_PRUNE_MAX = 100_000      # one retention pass; the next tick takes the next batch
+_ROLLUP_MAX = 100_000     # pre-aggregated buckets, not raw events
 
 
 class EventStore:
@@ -30,15 +35,29 @@ class EventStore:
     async def mark_seen(self, event_id: str) -> None:
         await self._store.put(_SEEN, event_id, {"id": event_id})
 
-    async def for_tenant(self, tenant: str, limit: int = _SCAN) -> list[dict]:
-        """Raw scan — funnels / retention / export only, never a metric query."""
-        rows = [r for r in await self._store.list(_EVENTS, _SCAN) if r.get("tenant") == tenant]
-        rows.sort(key=lambda r: r.get("event_time", 0))
-        return rows[:limit]
+    async def for_tenant(self, tenant: str, limit: int = _EXPORT_MAX) -> list[dict]:
+        """One tenant's raw events, oldest first - funnels / retention / export only.
+
+        Never a metric query: those are served from the rollups. It used to read every tenant's
+        events to answer for one, and past the cap it answered with an arbitrary subset - a
+        funnel computed over a random sample of the wrong customers' events.
+        """
+        out: list[dict] = []
+        cursor = None
+        while len(out) < limit:
+            rows, cursor = await self._store.find(_EVENTS, {"tenant": tenant}, limit=_PAGE,
+                                                  after=cursor, sort=("event_time", "asc"))
+            out.extend(rows)
+            if not cursor:
+                break
+        return out[:limit]
 
     async def prune_before(self, cutoff: float) -> int:
+        """Retention. Deletes every event older than the cutoff, for every tenant."""
         removed = 0
-        for r in await self._store.list(_EVENTS, _SCAN):
+        # sweeper: retention runs on a timer and its job IS to visit every event. It is the one
+        # place a full read of this collection is the operation rather than a mistake.
+        for r in await self._store.scan_all(_EVENTS, _PRUNE_MAX):
             if float(r.get("event_time", 0)) < cutoff:
                 await self._store.delete(_EVENTS, r["id"])
                 removed += 1
@@ -66,9 +85,12 @@ class RollupStore:
                 out.append(Rollup.from_dict(row))
         return out
 
-    async def scan_prefix(self, prefix: str, limit: int = _SCAN) -> list[Rollup]:
-        """Group-by needs every dim-combination in a bucket — still rollups, never raw events."""
-        return [Rollup.from_dict(r) for r in await self._store.list(_ROLLUPS, _SCAN)
+    async def scan_prefix(self, prefix: str, limit: int = _ROLLUP_MAX) -> list[Rollup]:
+        """Group-by needs every dim-combination in a bucket - still rollups, never raw events."""
+        # sweeper: a PREFIX match is not equality, and find() deliberately speaks equality only.
+        # Rollups are pre-aggregated (one row per bucket per dim-combination), which is exactly
+        # why the query path reads them instead of the events.
+        return [Rollup.from_dict(r) for r in await self._store.scan_all(_ROLLUPS, _ROLLUP_MAX)
                 if str(r.get("key", "")).startswith(prefix)][:limit]
 
 
@@ -108,8 +130,10 @@ class ReportStore:
         row = await self._store.get(_REPORTS, report_id)
         return ReportDef.from_dict(row) if row else None
 
-    async def list(self, tenant: str, limit: int = 100) -> list[dict]:
-        return [r for r in await self._store.list(_REPORTS, _SCAN) if r.get("tenant") == tenant][:limit]
+    async def list(self, tenant: str, limit: int = 100, after: str | None = None) -> list[dict]:
+        rows, _ = await self._store.find(_REPORTS, {"tenant": tenant}, limit=limit, after=after,
+                                         sort=("created", "desc"))
+        return rows
 
     async def delete(self, report_id: str) -> None:
         await self._store.delete(_REPORTS, report_id)

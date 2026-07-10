@@ -65,6 +65,19 @@ class DataStore(Protocol):
         """
         ...
 
+    async def cas(self, collection: str, key: str, expected_version: int,
+                  value: dict[str, Any]) -> bool:
+        """Compare-and-swap on `value["version"]`. True if written, False if someone raced us.
+
+        A wallet spend mutates SEVERAL funds at once and appends a ledger row, so a
+        single-counter increment cannot express it. `get` then `put` is a lost update: two
+        spenders read the same balance and the second overwrites the first, giving away money.
+
+        `expected_version=0` means "create only if absent".
+        The caller re-reads and retries on False.
+        """
+        ...
+
     async def health(self) -> bool: ...
 
     async def close(self) -> None: ...

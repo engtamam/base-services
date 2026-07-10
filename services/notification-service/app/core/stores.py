@@ -30,7 +30,8 @@ class TemplateStore:
         return Template.from_dict(row) if row else None
 
     async def list(self, limit: int = 100) -> list[dict]:
-        return await self._store.list(_TEMPLATES, limit)
+        # sweeper: the template catalogue is global - one row per template, not per tenant.
+        return await self._store.scan_all(_TEMPLATES, limit)
 
 
 class PreferenceStore:
@@ -55,7 +56,9 @@ class DeliveryStore:
         return d
 
     async def list(self, limit: int = 100) -> list[dict]:
-        return await self._store.list(_DELIVERIES, limit)
+        # sweeper: an operator's view of recent delivery attempts across every tenant. Bounded
+        # by the caller's limit, and not reachable from any tenant-facing route.
+        return await self._store.scan_all(_DELIVERIES, limit)
 
     # ── idempotency (at-least-once callers must not double-send) ───────────────
     async def idempotent_get(self, key: str, *, now: float, ttl: int) -> dict | None:
@@ -82,7 +85,11 @@ class InAppStore:
 
     async def feed(self, user: str, limit: int | None = None) -> list[dict]:
         limit = limit or self._page_size
-        rows = [r for r in await self._store.list(_INAPP, self._scan_limit) if r.get("user") == user]
+        # One user's feed. `FEED_SCAN_LIMIT` is now the window this read considers - the most
+        # recent N of THIS user's items - rather than the number of everybody's items it had to
+        # read through to find them.
+        rows, _ = await self._store.find(_INAPP, {"user": user}, limit=self._scan_limit,
+                                         sort=("ts", "desc"))
         # stable two-pass: newest first, then unread first (ISO timestamps sort lexically)
         rows.sort(key=lambda r: r.get("ts", ""), reverse=True)
         rows.sort(key=lambda r: bool(r.get("read", False)))

@@ -7,7 +7,7 @@ from app.ports.datastore import DataStore
 _ROLES = "roles"
 _POLICIES = "policies"
 _ASSIGN = "assignments"
-_SCAN = 1_000_000
+_PAGE = 500          # the policy set pages; it is never read with a million-row limit
 
 
 class RoleStore:
@@ -22,9 +22,10 @@ class RoleStore:
         row = await self._store.get(_ROLES, role_id)
         return Role.from_dict(row) if row else None
 
-    async def list(self, tenant: str, limit: int = 100) -> list[dict]:
-        rows = [r for r in await self._store.list(_ROLES, _SCAN) if r.get("tenant") == tenant]
-        return rows[:limit]
+    async def list(self, tenant: str, limit: int = 100, after: str | None = None) -> list[dict]:
+        rows, _ = await self._store.find(_ROLES, {"tenant": tenant}, limit=limit, after=after,
+                                         sort=("name", "asc"))
+        return rows
 
     async def delete(self, role_id: str) -> None:
         await self._store.delete(_ROLES, role_id)
@@ -42,10 +43,36 @@ class PolicyStore:
         row = await self._store.get(_POLICIES, policy_id)
         return Policy.from_dict(row) if row else None
 
-    async def list(self, tenant: str, limit: int = 100) -> list[dict]:
-        rows = [r for r in await self._store.list(_POLICIES, _SCAN) if r.get("tenant") == tenant]
+    async def list(self, tenant: str, limit: int = 100, after: str | None = None) -> list[dict]:
+        """A tenant's policies, highest priority first.
+
+        The decision path does NOT call this - it reads the compiled, cached policy set. This is
+        the admin view, and it no longer reads every other tenant's policies to build it.
+        """
+        rows, _ = await self._store.find(_POLICIES, {"tenant": tenant}, limit=limit, after=after,
+                                         sort=("created", "desc"))
         rows.sort(key=lambda r: r.get("priority", 0), reverse=True)
-        return rows[:limit]
+        return rows
+
+    async def all_for(self, tenant: str) -> list[dict]:
+        """EVERY policy of one tenant, for the PDP to compile and cache.
+
+        The decision path needs the whole set - a policy it does not see is a DENY it does not
+        apply, or an ALLOW it wrongly grants. So this pages to exhaustion rather than passing a
+        limit large enough to look like "all": that limit was 1_000_000, and had a tenant ever
+        exceeded it the PDP would have made decisions from an arbitrary subset of its policies,
+        silently.
+        """
+        out: list[dict] = []
+        cursor = None
+        while True:
+            rows, cursor = await self._store.find(_POLICIES, {"tenant": tenant}, limit=_PAGE,
+                                                  after=cursor, sort=("created", "desc"))
+            out.extend(rows)
+            if not cursor:
+                break
+        out.sort(key=lambda r: r.get("priority", 0), reverse=True)
+        return out
 
     async def delete(self, policy_id: str) -> None:
         await self._store.delete(_POLICIES, policy_id)

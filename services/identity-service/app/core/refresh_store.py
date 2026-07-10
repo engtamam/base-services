@@ -10,6 +10,7 @@ import datetime as _dt
 from app.ports.datastore import DataStore
 
 _COLL = "refresh_tokens"
+_PAGE = 500                # revocation pages to exhaustion; this is the page, not a cap
 
 
 def _now_ts() -> float:
@@ -47,11 +48,32 @@ class RefreshStore:
             await self._store.put(_COLL, jti, row)
 
     async def revoke_family(self, user_id: str) -> int:
-        """Revoke EVERY refresh token for a user — the response to a detected token reuse."""
+        """Revoke EVERY refresh token for a user - the response to a detected token reuse.
+
+        This is a SECURITY path, and the old implementation was the most dangerous read in the
+        repository. It scanned up to a million refresh tokens across every user and filtered in
+        Python. A `LIMIT` without an `ORDER BY` does not return the first N rows; it returns an
+        arbitrary N. Past that cap, "revoke every token for this user" would revoke SOME of
+        them, report success, and leave the attacker's stolen token working.
+
+        Now the user and the not-yet-revoked state are pushed into the datastore, and the loop
+        pages to exhaustion. It revokes all of them, or it raises. It never reports a number it
+        did not do.
+        """
         revoked = 0
-        for row in await self._store.list(_COLL, 1_000_000):
-            if row.get("user_id") == user_id and not row.get("revoked") and row.get("jti"):
+        cursor = None
+        while True:
+            rows, cursor = await self._store.find(_COLL, {"user_id": user_id, "revoked": False},
+                                                  limit=_PAGE, after=cursor, sort=("jti", "asc"))
+            for row in rows:
+                if not row.get("jti"):
+                    continue
                 row["revoked"] = True
                 await self._store.put(_COLL, row["jti"], row)
                 revoked += 1
+            if not cursor:
+                break
+            # Revoked rows drop out of the filter as we write them, so the keyset cursor is
+            # what keeps this terminating: it advances past the rows already visited rather
+            # than re-reading a set that is shrinking underneath it.
         return revoked

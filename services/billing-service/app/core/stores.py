@@ -1,13 +1,26 @@
 """Repositories over the generic DataStore (tenant-scoped) + sequential invoice numbers."""
 from __future__ import annotations
 
+import asyncio
+import random
 from typing import Any
 
 from app.core.models import (Coupon, Invoice, Payment, Plan, Settlement, Subscription, iso,
                              new_id, now_ts)
 from app.ports.datastore import DataStore
 
-_SCAN = 1_000_000
+# Bounds for the few reads that legitimately cross every tenant: the plan CATALOGUE (tens of
+# rows, not one per tenant) and the billing SWEEPERS, which are cron jobs whose whole job is to
+# visit every row. Each such call is marked `# sweeper:` and says why. Nothing on a request path
+# may call scan_all() — a guard test enforces it. These are three orders of magnitude below the
+# old blanket 1_000_000, so a truncation is a paging bug the operator sees, not a silent
+# arbitrary subset a customer sees.
+_CATALOG_MAX = 1_000
+_SWEEP_PAGE = 500
+
+
+class LedgerContention(Exception):
+    """Too much contention on one tenant's balance. NOTHING was written; the caller may retry."""
 
 
 class _Repo:
@@ -26,10 +39,16 @@ class _Repo:
     async def delete(self, key: str) -> None:
         await self._store.delete(self.collection, key)
 
-    async def list_tenant(self, tenant: str, limit: int = 100) -> list[dict]:
-        rows = [r for r in await self._store.list(self.collection, _SCAN) if r.get("tenant") == tenant]
-        rows.sort(key=lambda r: r.get("created", ""), reverse=True)
-        return rows[:limit]
+    async def list_tenant(self, tenant: str, limit: int = 100,
+                          after: str | None = None) -> list[dict]:
+        """One tenant's rows, newest first. The filter is pushed into the datastore.
+
+        This read used to cost the size of EVERY tenant's data, and past the scan cap it
+        returned an arbitrary subset of the caller's own rows.
+        """
+        rows, _ = await self._store.find(self.collection, {"tenant": tenant},
+                                         limit=limit, after=after, sort=("created", "desc"))
+        return rows
 
 
 async def bump_generation(cache, scope: str) -> None:
@@ -67,7 +86,9 @@ class PlanStore(_Repo):
         return Plan.from_dict(r) if r else None
 
     async def all(self, limit: int = 100) -> list[dict]:
-        return (await self._store.list(self.collection, _SCAN))[:limit]
+        # sweeper: the plan CATALOGUE is global and small (one row per plan, not per tenant).
+        # There is no tenant to scope by; reading it whole is the operation, not a shortcut.
+        return (await self._store.scan_all(self.collection, _CATALOG_MAX))[:limit]
 
 
 class CouponStore(_Repo):
@@ -103,20 +124,36 @@ class SubscriptionStore(_Repo):
         return await self.list_tenant(tenant, limit)
 
     async def active_for(self, tenant: str) -> dict | None:
-        """The tenant's active/trialing subscription.
+        """The tenant's active/trialing subscription. Indexed lookup, one row.
 
-        Still a scan today (the generic DataStore has no secondary index), which is exactly
-        why `_active_limits` caches the RESULT by generation instead of calling this per
-        request. A real deployment replaces this repo with an indexed query.
+        This is on the entitlement hot path. It used to read every subscription of every tenant
+        and filter in Python — and past the cap, a tenant with an active subscription could be
+        told it had none, which fails a paying customer's request closed. Both the tenant and
+        the status are pushed into the datastore now; the cache in front of it is an
+        optimisation, no longer the only thing keeping the read affordable.
         """
-        for r in await self._store.list(self.collection, _SCAN):
-            if r.get("tenant") == tenant and r.get("status") in ("active", "trialing"):
-                return r
-        return None
+        rows, _ = await self._store.find(self.collection,
+                                         {"tenant": tenant, "status": ["active", "trialing"]},
+                                         limit=1, sort=("created", "desc"))
+        return rows[0] if rows else None
 
     async def due(self, now: float, limit: int = 100) -> list[Subscription]:
-        out = [Subscription.from_dict(r) for r in await self._store.list(self.collection, _SCAN)
-               if r.get("status") in ("active", "trialing") and float(r.get("current_period_end", 0)) <= now]
+        """Subscriptions whose period has ended. The renewal sweeper's queue.
+
+        `status` is pushed down; `current_period_end` is a numeric range the equality-only
+        filter cannot express, so it is compared here — over the ACTIVE subscriptions only,
+        paged, never over cancelled history.
+        """
+        out: list[Subscription] = []
+        cursor = None
+        while len(out) < limit:
+            rows, cursor = await self._store.find(
+                self.collection, {"status": ["active", "trialing"]},
+                limit=_SWEEP_PAGE, after=cursor, sort=("created", "asc"))
+            out.extend(Subscription.from_dict(r) for r in rows
+                       if float(r.get("current_period_end", 0)) <= now)
+            if not cursor:
+                break
         return out[:limit]
 
 
@@ -154,15 +191,33 @@ class PaymentStore(_Repo):
         return Payment.from_dict(r) if r else None
 
     async def by_provider_id(self, provider_id: str) -> Payment | None:
-        for r in await self._store.list(self.collection, _SCAN):
-            if r.get("provider_id") == provider_id and provider_id:
-                return Payment.from_dict(r)
-        return None
+        """Resolve a gateway webhook to its payment. On the webhook hot path.
+
+        An empty `provider_id` must match NOTHING. It used to be guarded by an `and provider_id`
+        inside the loop; here the guard comes first, because `find({"provider_id": ""})` would
+        happily return every payment that never reached a gateway.
+        """
+        if not provider_id:
+            return None
+        rows, _ = await self._store.find(self.collection, {"provider_id": provider_id}, limit=1)
+        return Payment.from_dict(rows[0]) if rows else None
 
     async def due(self, now: float, limit: int = 100) -> list[Payment]:
-        out = [Payment.from_dict(r) for r in await self._store.list(self.collection, _SCAN)
-               if r.get("status") == "failed" and r.get("next_retry_at") is not None
-               and float(r["next_retry_at"]) <= now]
+        """Failed payments ready for another attempt. The dunning sweeper's queue.
+
+        `status` is pushed down; `next_retry_at` is a time comparison, done here over the failed
+        payments only — not over every successful payment ever taken.
+        """
+        out: list[Payment] = []
+        cursor = None
+        while len(out) < limit:
+            rows, cursor = await self._store.find(self.collection, {"status": "failed"},
+                                                  limit=_SWEEP_PAGE, after=cursor,
+                                                  sort=("created", "asc"))
+            out.extend(Payment.from_dict(r) for r in rows
+                       if r.get("next_retry_at") is not None and float(r["next_retry_at"]) <= now)
+            if not cursor:
+                break
         return out[:limit]
 
 
@@ -174,20 +229,78 @@ class LedgerStore(_Repo):
     """
     collection = "ledger"
 
+    _BALANCES = "ledger_balances"      # tenant -> {balance_minor, version}
+
+    def __init__(self, store: DataStore, *, cas_max_retries: int = 20,
+                 cas_backoff_ms: int = 12) -> None:
+        super().__init__(store)
+        self._retries = int(cas_max_retries)
+        self._backoff_ms = int(cas_backoff_ms)
+
+    async def balance(self, tenant: str) -> int:
+        row = await self._store.get(self._BALANCES, tenant)
+        return int((row or {}).get("balance_minor", 0))
+
     async def record(self, *, tenant: str, kind: str, amount_minor: int, currency: str,
                      invoice_id: str = "", source: str = "", period: str = "") -> dict:
-        rows = [r for r in await self._store.list(self.collection, _SCAN) if r.get("tenant") == tenant]
-        balance = sum(int(r.get("amount_minor", 0)) for r in rows) + int(amount_minor)
-        entry = {"id": new_id("led_"), "tenant": tenant, "kind": kind, "amount_minor": int(amount_minor),
+        """Append a row and advance the MATERIALIZED balance atomically.
+
+        This used to read every ledger row for the tenant and sum them — on every write. Past
+        the scan cap the sum was taken over an arbitrary subset, so `balance_after` was not a
+        slow balance. It was a WRONG one, written into an immutable row and sold as the
+        reconciliation source of truth.
+
+        The balance is now a projection maintained under compare-and-swap, exactly as
+        wallet-service does, and `reconcile()` proves it equals the sum of the rows.
+
+        Losers back off with FULL JITTER before retrying. Without it, every loser re-reads in
+        the same instant and collides again: measured against real PostgreSQL, 50 concurrent
+        charges on one tenant exhausted all 20 retries and raised. Nothing was written — a
+        losing CAS changes nothing by construction — but it is a failure the caller should
+        never have seen. The in-memory adapter cannot show this: its `asyncio.Lock` serialises
+        the writers instead of letting them race.
+        """
+        delta = int(amount_minor)
+        for attempt in range(self._retries):
+            if attempt and self._backoff_ms:
+                cap = min(self._backoff_ms * (2 ** (attempt - 1)), self._backoff_ms * 32)
+                await asyncio.sleep(random.uniform(0, cap) / 1000.0)  # noqa: S311 - jitter, not crypto
+            row = await self._store.get(self._BALANCES, tenant)
+            version = int((row or {}).get("version", 0))
+            balance = int((row or {}).get("balance_minor", 0)) + delta
+            if await self._store.cas(self._BALANCES, tenant, version,
+                                     {"tenant": tenant, "balance_minor": balance}):
+                break
+        else:
+            raise LedgerContention("LEDGER_CONTENTION")
+
+        entry = {"id": new_id("led_"), "tenant": tenant, "kind": kind, "amount_minor": delta,
                  "currency": currency, "invoice_id": invoice_id, "source": source, "period": period,
                  "balance_after": balance, "created": iso()}
         await self.put(entry["id"], entry)
         return entry
 
-    async def list(self, tenant: str, limit: int = 100) -> list[dict]:
-        rows = [r for r in await self._store.list(self.collection, _SCAN) if r.get("tenant") == tenant]
-        rows.sort(key=lambda r: r.get("created", ""))
-        return rows[-limit:]
+    async def list(self, tenant: str, limit: int = 100, after: str | None = None) -> list[dict]:
+        """Newest first, paged. The tenant filter is pushed into the datastore."""
+        rows, _ = await self._store.find(self.collection, {"tenant": tenant},
+                                         limit=limit, after=after, sort=("created", "desc"))
+        return list(reversed(rows))          # callers expect oldest-first within the page
+
+    async def reconcile(self, tenant: str) -> dict:
+        """Prove the projection equals the truth. Pages the ledger; never a capped scan."""
+        total, cursor = 0, None
+        entries = 0
+        while True:
+            rows, cursor = await self._store.find(self.collection, {"tenant": tenant},
+                                                  limit=500, after=cursor, sort=("created", "asc"))
+            for r in rows:
+                total += int(r.get("amount_minor", 0))
+                entries += 1
+            if not cursor:
+                break
+        stored = await self.balance(tenant)
+        return {"tenant": tenant, "consistent": stored == total, "stored": stored,
+                "derived": total, "entries": entries}
 
 
 class IdempotencyStore(_Repo):
@@ -212,11 +325,23 @@ class UsageStore(_Repo):
 
     async def aggregate(self, subscription_id: str, metric: str,
                         start: float, end: float) -> int:
-        total = 0
-        for r in await self._store.list(self.collection, _SCAN):
-            if (r.get("subscription_id") == subscription_id and r.get("metric") == metric
-                    and start <= float(r.get("ts", 0)) < end):
-                total += int(r.get("quantity", 0))
+        """Metered usage for one subscription in one period.
+
+        Runs at invoice time for every subscription. It used to read EVERY usage row of every
+        tenant, once per subscription per metric — quadratic in customers. Now the subscription
+        and the metric are pushed into the datastore and only that series is paged; the period
+        window is a range the equality filter cannot express, so it is applied here.
+        """
+        total, cursor = 0, None
+        while True:
+            rows, cursor = await self._store.find(
+                self.collection, {"subscription_id": subscription_id, "metric": metric},
+                limit=_SWEEP_PAGE, after=cursor, sort=("created", "asc"))
+            for r in rows:
+                if start <= float(r.get("ts", 0)) < end:
+                    total += int(r.get("quantity", 0))
+            if not cursor:
+                break
         return total
 
 
@@ -260,7 +385,7 @@ class SettlementStore(_Repo):
         return Settlement.from_dict(r) if r else None
 
     async def for_invoice(self, invoice_id: str, limit: int = 100) -> list[dict]:
-        rows = [r for r in await self._store.list(self.collection, _SCAN)
-                if r.get("invoice_id") == invoice_id]
-        rows.sort(key=lambda r: r.get("created", ""))
-        return rows[:limit]
+        """The settlements recorded against one invoice, oldest first."""
+        rows, _ = await self._store.find(self.collection, {"invoice_id": invoice_id},
+                                         limit=limit, sort=("created", "asc"))
+        return rows

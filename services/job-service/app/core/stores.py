@@ -17,7 +17,13 @@ _DUE = "jobs_due"            # job_id -> {next_run_at, priority, tenant, queue}
 _LEASED = "jobs_leased"     # job_id -> {lease_expires} — reclaim reads this, never scans
 _UNIQUE = "jobs_unique"      # unique_key / idempotency_key -> {job_id, ts}
 _SCHEDULES = "schedules"
-_SCAN = 1_000_000
+
+# The indexes below hold one row per CLAIMABLE / IN-FLIGHT job, not one per job ever enqueued.
+# That is the whole reason they exist, so reading them whole is the operation. The bound is a
+# blast radius, not a page: if a deployment ever has 50 000 simultaneously-due jobs, the sweeper
+# should be visibly truncating rather than quietly reading a million rows.
+_INDEX_MAX = 50_000
+_SCHEDULE_MAX = 10_000
 
 
 class JobStore:
@@ -34,23 +40,36 @@ class JobStore:
         return Job.from_dict(row) if row else None
 
     async def list(self, *, tenant: str | None = None, queue: str | None = None,
-                   status: str | None = None, limit: int = 100) -> list[dict]:
-        rows = await self._store.list(_JOBS, _SCAN)
-        if tenant is not None:
-            rows = [r for r in rows if r.get("tenant") == tenant]
-        if queue is not None:
-            rows = [r for r in rows if r.get("queue") == queue]
-        if status is not None:
-            rows = [r for r in rows if r.get("status") == status]
-        rows.sort(key=lambda r: r.get("created", 0), reverse=True)
-        return rows[:limit]
+                   status: str | None = None, limit: int = 100,
+                   after: str | None = None) -> list[dict]:
+        """Filtered job list. Whatever the caller filtered by is pushed into the datastore.
+
+        Every filter used to be applied in Python after reading the whole job table. A tenant
+        asking for its own five jobs paid for everyone's history, and past the cap it could be
+        shown none of its own.
+
+        An unfiltered call is an operator listing the queue. It is bounded and marked as such.
+        """
+        where = {k: v for k, v in (("tenant", tenant), ("queue", queue), ("status", status))
+                 if v is not None}
+        if not where:
+            # sweeper: an operator's unfiltered queue view. There is no tenant to scope by.
+            rows = await self._store.scan_all(_JOBS, _INDEX_MAX)
+            rows.sort(key=lambda r: r.get("created", 0), reverse=True)
+            return rows[:limit]
+        rows, _ = await self._store.find(_JOBS, where, limit=limit, after=after,
+                                         sort=("created", "desc"))
+        return rows
 
     async def dead_letters(self, tenant: str | None = None, limit: int = 100) -> list[dict]:
         return await self.list(tenant=tenant, status=DEAD, limit=limit)
 
     async def counts(self) -> dict[str, int]:
+        """Operator metrics: how many jobs in each status, across all tenants."""
         out: dict[str, int] = {}
-        for r in await self._store.list(_JOBS, _SCAN):
+        # sweeper: counting every job IS the operation. Not on any request path - the
+        # metrics endpoint calls it on a timer.
+        for r in await self._store.scan_all(_JOBS, _INDEX_MAX):
             out[r.get("status", "?")] = out.get(r.get("status", "?"), 0) + 1
         return out
 
@@ -66,7 +85,9 @@ class JobStore:
     async def due_index(self) -> list[dict]:
         """The claimable set. In a KV store this lists the SMALL index, not the job table;
         a SQL adapter would serve this from an index on (queue, next_run_at, priority)."""
-        return await self._store.list(_DUE, _SCAN)
+        # sweeper: `jobs_due` holds one row per CLAIMABLE job and is emptied as jobs are
+        # claimed. Reading it whole is how the worker finds work; it is not the job table.
+        return await self._store.scan_all(_DUE, _INDEX_MAX)
 
     async def index_leased(self, job: Job) -> None:
         await self._store.put(_LEASED, job.id, {"job_id": job.id, "lease_expires": job.lease_expires})
@@ -76,7 +97,9 @@ class JobStore:
 
     async def leased_index(self) -> list[dict]:
         """In-flight jobs, for lease-expiry reclaim — indexed, never a job-table scan."""
-        return await self._store.list(_LEASED, _SCAN)
+        # sweeper: `jobs_leased` holds one row per IN-FLIGHT job. The reclaimer's whole job is
+        # to look at all of them and expire the dead leases.
+        return await self._store.scan_all(_LEASED, _INDEX_MAX)
 
     # ── idempotency / uniqueness ────────────────────────────────────────────────
     async def unique_get(self, key: str, *, now: float, ttl: int) -> str | None:
@@ -111,8 +134,16 @@ class ScheduleStore:
         await self._store.delete(_SCHEDULES, schedule_id)
 
     async def list(self, limit: int = 100) -> list[dict]:
-        return (await self._store.list(_SCHEDULES, _SCAN))[:limit]
+        # sweeper: the schedule catalogue is global and small - one row per cron entry.
+        return (await self._store.scan_all(_SCHEDULES, _SCHEDULE_MAX))[:limit]
 
     async def enabled(self) -> list[Schedule]:
-        return [Schedule.from_dict(r) for r in await self._store.list(_SCHEDULES, _SCAN)
-                if r.get("enabled")]
+        """The schedules the ticker must consider. Runs on a timer, not on a request."""
+        rows, cursor = [], None
+        while True:
+            page, cursor = await self._store.find(_SCHEDULES, {"enabled": True},
+                                                  limit=500, after=cursor, sort=("id", "asc"))
+            rows.extend(page)
+            if not cursor:
+                break
+        return [Schedule.from_dict(r) for r in rows]

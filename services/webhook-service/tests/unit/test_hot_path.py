@@ -42,9 +42,9 @@ class CountingStore(MemoryDataStore):
         self.reads += 1
         return await super().get(c, k)
 
-    async def list(self, c, limit=100):
+    async def scan_all(self, c, limit=100):
         self.scans += 1
-        return await super().list(c, limit)
+        return await super().scan_all(c, limit)
 
 
 class Transport:
