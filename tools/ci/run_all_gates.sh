@@ -293,12 +293,51 @@ run "safety:wiring" -- safety_wiring
 # =============================================================================
 want "suites" && banner "suites — every service's pytest suite" \
 "Runs under PYTHONHASHSEED=$PRIMARY_SEED so a dict-ordering bug cannot hide."
-suites() {
-  local svc py rc=0
+# Services are INDEPENDENT — that is the point of the architecture — so their suites and their
+# scanners have no reason to run one after another. Serially these two gates were the long pole:
+# 18 pytest processes, each paying ~1.5s just importing FastAPI, plus 18 pip-audit calls that
+# each wait on the network.
+#
+# Output is collected per service and replayed IN SERVICE ORDER after the join, so a parallel
+# run reads exactly like a serial one. A log interleaved by 18 writers is a log nobody reads,
+# and a gate nobody reads is a gate nobody trusts.
+_jobs() {
+  local n
+  n="$(nproc 2>/dev/null || echo 4)"
+  [ "$n" -gt 2 ] && n=$((n - 2))          # leave the machine usable
+  [ "$n" -gt 16 ] && n=16
+  [ "$n" -lt 1 ] && n=1
+  echo "$n"
+}
+
+# fan_out <log-prefix> <fn>: run FN for every service, at most _jobs at a time.
+# FN receives (service, python, logfile) and writes its exit code to <logfile>.rc.
+fan_out() {
+  local prefix="$1" fn="$2" max_override="${3:-}" svc py max running=0
+  max="${max_override:-$(_jobs)}"
+  rm -f /tmp/"${prefix}"_*.log.rc 2>/dev/null
   for svc in $(services); do
     py="$(py_for "$svc")"
+    "$fn" "$svc" "$py" "/tmp/${prefix}_$svc.log" &
+    running=$((running + 1))
+    if [ "$running" -ge "$max" ]; then wait -n 2>/dev/null || wait; running=$((running - 1)); fi
+  done
+  wait
+}
+
+_suite_one() {
+  local svc="$1" py="$2" log="$3"
+  (cd "services/$svc" && env PYTHONHASHSEED="$PRIMARY_SEED" "$py" -m pytest -q -p no:cacheprovider >"$log" 2>&1)
+  echo "$?" > "$log.rc"
+}
+
+suites() {
+  local svc rc=0 status
+  fan_out gate _suite_one
+  for svc in $(services); do                 # ordered replay: deterministic, readable
     printf '  --- %s\n' "$svc"
-    if ! (cd "services/$svc" && env PYTHONHASHSEED="$PRIMARY_SEED" "$py" -m pytest -q -p no:cacheprovider >/tmp/gate_$svc.log 2>&1); then
+    status="$(cat "/tmp/gate_$svc.log.rc" 2>/dev/null || echo 1)"
+    if [ "$status" != "0" ]; then
       echo "      FAILED — tail:"; tail -6 "/tmp/gate_$svc.log" | sed 's/^/        /'; rc=1
     else
       tail -1 "/tmp/gate_$svc.log" | sed 's/^/      /'
@@ -315,12 +354,24 @@ want "security-gate" && banner "security-gate — licenses / SAST / secrets / CV
 "Under --strict (what CI runs) a scanner that is not installed FAILS the gate.
 Locally it runs unstrict: a developer without trivy installed should not be
 blocked by a scanner CI is responsible for providing."
-security_gate() {
-  local svc py rc=0 args=()
+_security_one() {
+  local svc="$1" py="$2" log="$3" args=()
   [ "$STRICT" = 1 ] && args+=(--strict)
+  (cd "services/$svc" && "$py" ci/security_gate.py "${args[@]}" >"$log" 2>&1)
+  echo "$?" > "$log.rc"
+}
+
+# `pip-audit` is NETWORK-bound, not CPU-bound: it queries the PyPI advisory database. Eighteen at
+# once made PyPI return a malformed body to one of them, and the gate went red for a reason that
+# had nothing to do with the code. Four at a time is still ~4x faster than serial, and polite.
+_SECURITY_JOBS=4
+
+security_gate() {
+  local svc rc=0 status
+  fan_out sec _security_one "$_SECURITY_JOBS"
   for svc in $(services); do
-    py="$(py_for "$svc")"
-    if (cd "services/$svc" && "$py" ci/security_gate.py "${args[@]}" >/tmp/sec_$svc.log 2>&1); then
+    status="$(cat "/tmp/sec_$svc.log.rc" 2>/dev/null || echo 1)"
+    if [ "$status" = "0" ]; then
       printf '      %-22s PASS\n' "$svc"
     else
       printf '      %-22s FAIL\n' "$svc"; tail -8 "/tmp/sec_$svc.log" | sed 's/^/        /'; rc=1

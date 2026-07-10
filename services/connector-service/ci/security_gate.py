@@ -15,6 +15,7 @@ import argparse
 import json
 import shutil
 import subprocess
+import time
 import sys
 from pathlib import Path
 
@@ -71,20 +72,46 @@ def gate_secrets() -> tuple[str, str]:
     return PASS, f"{len(current)} known, 0 new"
 
 
+# A remote advisory DB can fail in ways that say nothing about this code. Distinguish those from
+# a real finding, or the gate becomes noise and someone starts re-running it until it is green.
+#
+# `jsondecodeerror` earned its place here: once the gate script began running the 18 services
+# CONCURRENTLY, 18 simultaneous pip-audit calls made PyPI hand one of them a malformed body.
+# Serially it never happened. Parallelism did not find a bug in the code; it found a bug in what
+# we were willing to call a vulnerability.
+_TRANSIENT = (
+    "connection", "temporary failure", "timed out", "network", "resolve",
+    "jsondecodeerror", "expecting value", "502", "503", "504", "rate limit",
+    "too many requests", "remote end closed",
+)
+_CVE_ATTEMPTS = 3
+
+
 def gate_cve() -> tuple[str, str]:
     if shutil.which("pip-audit") is None and not _module("pip_audit"):
         return SKIP, "pip-audit not installed"
-    try:
-        r = _run([PY, "-m", "pip_audit", "--progress-spinner", "off"], timeout=180)
-    except subprocess.TimeoutExpired:
-        return SKIP, "pip-audit timed out (offline?)"
-    out = (r.stdout + r.stderr).lower()
-    if "no known vulnerabilities" in out:
-        return PASS, "no known vulnerabilities"
-    if "known vulnerabilit" in out:
-        return FAIL, "known vulnerability found"
-    if any(k in out for k in ("connection", "temporary failure", "timed out", "network", "resolve")):
-        return SKIP, "advisory DB unreachable (offline)"
+
+    out = ""
+    for attempt in range(_CVE_ATTEMPTS):
+        try:
+            r = _run([PY, "-m", "pip_audit", "--progress-spinner", "off"], timeout=180)
+        except subprocess.TimeoutExpired:
+            return SKIP, "pip-audit timed out (offline?)"
+        out = (r.stdout + r.stderr).lower()
+
+        # A real answer, either way. Never retried: a vulnerability does not go away.
+        if "no known vulnerabilities" in out:
+            return PASS, "no known vulnerabilities"
+        if "known vulnerabilit" in out:
+            return FAIL, "known vulnerability found"
+
+        if any(k in out for k in _TRANSIENT):
+            if attempt < _CVE_ATTEMPTS - 1:
+                time.sleep(2 ** attempt)          # 1s, 2s — enough for a rate limiter to forget us
+                continue
+            return SKIP, "advisory DB unreachable (offline)"
+        break
+
     return (PASS if r.returncode == 0 else FAIL), out.strip().splitlines()[-1] if out.strip() else ""
 
 
