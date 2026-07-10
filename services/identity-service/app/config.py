@@ -65,9 +65,9 @@ class Settings(BaseSettings):
     QUEUE_URL: str = ""
 
     OBJECTSTORE_DRIVER: str = "local"
-    OBJECTSTORE_ROOT: str = "/tmp/objectstore"  # local driver; under the chart's
-    #                                            writable /tmp mount, not the read-only
-    #                                            root. production uses s3 + a bucket.
+    # nosec B108 — /tmp is where the chart mounts a WRITABLE volume under readOnlyRootFilesystem;
+    # this is the object store's data dir, not an insecure shared-temp file. Production uses s3.
+    OBJECTSTORE_ROOT: str = "/tmp/objectstore"  # nosec B108
     OBJECTSTORE_BUCKET: str = ""  # s3 driver
     OBJECTSTORE_ENDPOINT_URL: str = ""  # s3-compatible endpoint (config allowlist)
 
@@ -102,6 +102,11 @@ class Settings(BaseSettings):
 
     # ── identity-service (Phase 6) — all config-driven, zero-hardcoded ──────
     PASSWORD_HASHER_DRIVER: str = "argon2"      # argon2 | bcrypt
+
+    # How users identify themselves at login. `username` reproduces the historical
+    # behavior exactly; `email` validates the address and folds case so one address is
+    # one account. A new adapter (phone, a federated provider) is a new value here.
+    IDENTITY_LOGIN_FIELD: str = "username"       # username | email
     TOKEN_ISSUER_DRIVER: str = "null"           # null(deny) | hs256 | rs256 (identity SIGNS)
     TOKEN_SIGNING_SECRET: str = ""              # hs256 signing secret (>=32)
     TOKEN_PRIVATE_KEY: str = ""                 # rs256 PEM private key

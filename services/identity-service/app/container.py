@@ -37,6 +37,8 @@ from app.config import Settings
 from app.ports.cache import Cache
 from app.ports.datastore import DataStore
 from app.ports.errors import ConfigError
+from app.adapters.login_identifier import EmailIdentifier, UsernameIdentifier
+from app.ports.login_identifier import LoginIdentifier
 from app.ports.event_bus import EventBus
 from app.ports.object_store import ObjectStore
 from app.ports.queue import Queue
@@ -110,6 +112,10 @@ _MFA: dict[str, Builder] = {
     "null": lambda s: NullMfa(),
     "totp": lambda s: TotpMfa(s.MFA_ISSUER_NAME, s.MFA_TOTP_WINDOW),
 }
+_LOGIN_IDENTIFIER: dict[str, Builder] = {
+    "username": lambda s: UsernameIdentifier(),
+    "email": lambda s: EmailIdentifier(),
+}
 
 
 def _pick(registry: dict[str, Builder], driver: str, port_name: str, settings: Settings) -> Any:
@@ -136,6 +142,7 @@ class Container:
     password_hasher: Any = None
     token_issuer: Any = None
     mfa: Any = None
+    login_identifier: LoginIdentifier = None  # type: ignore[assignment]
 
     def describe(self) -> list[dict[str, str]]:
         """[{port, driver}] for the service manifest."""
@@ -150,7 +157,7 @@ class Container:
             {"port": "rate_limiter", "driver": self.rate_limiter.driver},
             {"port": "telemetry", "driver": self.telemetry.driver},
         ]
-        for name in ("password_hasher", "token_issuer", "mfa"):
+        for name in ("password_hasher", "token_issuer", "mfa", "login_identifier"):
             adapter = getattr(self, name)
             if adapter is not None:
                 rows.append({"port": name, "driver": adapter.driver})
@@ -191,4 +198,6 @@ def build_container(settings: Settings) -> Container:
         password_hasher=_pick(_PASSWORD_HASHER, settings.PASSWORD_HASHER_DRIVER, "password_hasher", settings),
         token_issuer=_pick(_TOKEN_ISSUER, settings.TOKEN_ISSUER_DRIVER, "token_issuer", settings),
         mfa=_pick(_MFA, settings.MFA_DRIVER, "mfa", settings),
+        login_identifier=_pick(_LOGIN_IDENTIFIER, settings.IDENTITY_LOGIN_FIELD,
+                               "login_identifier", settings),
     )

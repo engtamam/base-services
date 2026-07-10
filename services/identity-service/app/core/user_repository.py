@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from app.core.models import User
 from app.ports.datastore import DataStore
+from app.ports.login_identifier import LoginIdentifier
 
 _USERS = "users"
 _INDEX = "users_by_username"
@@ -17,12 +18,14 @@ class UserExists(Exception):
 
 
 class UserRepository:
-    def __init__(self, store: DataStore) -> None:
+    def __init__(self, store: DataStore, identifier: LoginIdentifier) -> None:
         self._store = store
+        self._id = identifier          # owns normalization; the index key comes from it
 
-    @staticmethod
-    def _index_key(tenant: str, username: str) -> str:
-        return f"{tenant}::{username.lower()}"
+    def _index_key(self, tenant: str, raw: str) -> str:
+        # Uniqueness AND lookup both key on the SAME normalized form, so two spellings of one
+        # identity cannot become two accounts. This replaced a hardcoded `.lower()`.
+        return f"{tenant}::{self._id.normalize(raw)}"
 
     async def create(self, user: User) -> User:
         idx = self._index_key(user.tenant, user.username)

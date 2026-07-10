@@ -23,9 +23,10 @@ class WeakPassword(Exception):
 
 class AuthService:
     def __init__(self, *, users: UserRepository, refresh: RefreshStore, hasher,
-                 issuer, verifier, mfa, access_ttl: int, refresh_ttl: int,
+                 issuer, verifier, mfa, identifier, access_ttl: int, refresh_ttl: int,
                  min_password_len: int = DEFAULT_MIN_PASSWORD_LEN, lockout=None) -> None:
         self._users = users
+        self._identifier = identifier
         self._refresh = refresh
         self._hasher = hasher
         self._issuer = issuer
@@ -41,10 +42,11 @@ class AuthService:
     # ── registration ────────────────────────────────────────────────────────
     async def register(self, tenant: str, username: str, password: str,
                        caps: list[str] | None = None, roles: list[str] | None = None) -> User:
+        self._identifier.validate(username)          # a malformed email is a 400, not a stored row
         if len(password) < self._min_pw:
             raise WeakPassword(f"password must be >= {self._min_pw} characters")
         user = User(
-            id=new_id(), tenant=tenant, username=username,
+            id=new_id(), tenant=tenant, username=self._identifier.display(username),
             password_hash=self._hasher.hash(password),
             caps=list(caps or []), roles=list(roles or []),
         )

@@ -15,6 +15,7 @@ from app.api.deps import get_guard
 from app.api.ratelimit import rate_limit
 from app.config import get_settings
 from app.core.auth_service import AuthService, WeakPassword
+from app.ports.errors import ValidationError
 from app.core.login_attempts import LoginAttemptStore
 from app.core.refresh_store import RefreshStore
 from app.core.user_repository import UserExists, UserRepository
@@ -57,9 +58,10 @@ def _svc(request: Request) -> AuthService:
     c = request.app.state.container
     s = get_settings()
     return AuthService(
-        users=UserRepository(c.datastore), refresh=RefreshStore(c.datastore),
+        users=UserRepository(c.datastore, c.login_identifier), refresh=RefreshStore(c.datastore),
         hasher=c.password_hasher, issuer=c.token_issuer, verifier=c.token_verifier,
-        mfa=c.mfa, access_ttl=s.ACCESS_TTL_SECONDS, refresh_ttl=s.REFRESH_TTL_SECONDS,
+        mfa=c.mfa, identifier=c.login_identifier,
+        access_ttl=s.ACCESS_TTL_SECONDS, refresh_ttl=s.REFRESH_TTL_SECONDS,
         min_password_len=s.PASSWORD_MIN_LENGTH,
         lockout=LoginAttemptStore(c.datastore, max_attempts=s.LOGIN_MAX_ATTEMPTS,
                                   window_seconds=s.LOGIN_ATTEMPT_WINDOW_SECONDS,
@@ -75,6 +77,8 @@ async def register(request: Request, body: RegisterIn) -> dict:
     svc = _svc(request)
     try:
         user = await svc.register(body.tenant, body.username, body.password, body.caps, body.roles)
+    except ValidationError:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "INVALID_IDENTIFIER")
     except UserExists:
         raise HTTPException(status.HTTP_409_CONFLICT, "USERNAME_TAKEN")
     except WeakPassword:
@@ -113,7 +117,7 @@ async def logout(request: Request, body: RefreshIn) -> dict:
 @router.get("/me")
 async def me(request: Request, principal: Principal = Depends(require_user),
              guard=Depends(get_guard)) -> dict:
-    user = await UserRepository(request.app.state.container.datastore).get(principal.subject)
+    user = await UserRepository(request.app.state.container.datastore, request.app.state.container.login_identifier).get(principal.subject)
     if user is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
     async with guard.step("respond") as step:
@@ -125,7 +129,7 @@ async def me(request: Request, principal: Principal = Depends(require_user),
 @router.post("/change-password")
 async def change_password(request: Request, body: ChangePwIn,
                           principal: Principal = Depends(require_user)) -> dict:
-    repo = UserRepository(request.app.state.container.datastore)
+    repo = UserRepository(request.app.state.container.datastore, request.app.state.container.login_identifier)
     user = await repo.get(principal.subject)
     if user is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
@@ -143,7 +147,7 @@ async def mfa_enroll(request: Request, principal: Principal = Depends(require_us
     c = request.app.state.container
     if not c.mfa.enabled:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "MFA_DISABLED")
-    repo = UserRepository(c.datastore)
+    repo = UserRepository(c.datastore, c.login_identifier)
     user = await repo.get(principal.subject)
     if user is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
@@ -157,7 +161,7 @@ async def mfa_enroll(request: Request, principal: Principal = Depends(require_us
 async def mfa_verify(request: Request, body: MfaVerifyIn,
                      principal: Principal = Depends(require_user)) -> dict:
     c = request.app.state.container
-    repo = UserRepository(c.datastore)
+    repo = UserRepository(c.datastore, c.login_identifier)
     user = await repo.get(principal.subject)
     if user is None or not user.mfa_secret:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "MFA_NOT_ENROLLED")

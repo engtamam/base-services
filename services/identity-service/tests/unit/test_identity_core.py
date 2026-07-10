@@ -6,6 +6,7 @@ import asyncio
 import pytest
 
 from app.adapters.datastore.memory import MemoryDataStore
+from app.adapters.login_identifier import UsernameIdentifier
 from app.adapters.mfa.null import NullMfa
 from app.adapters.password_hasher.argon2 import Argon2Hasher
 from app.adapters.token_issuer.hs256 import HS256Issuer
@@ -24,9 +25,9 @@ def run(c):
 def _svc():
     store = MemoryDataStore()
     return AuthService(
-        users=UserRepository(store), refresh=RefreshStore(store),
+        users=UserRepository(store, UsernameIdentifier()), refresh=RefreshStore(store),
         hasher=Argon2Hasher(), issuer=HS256Issuer(SEC), verifier=HS256Verifier(SEC),
-        mfa=NullMfa(), access_ttl=900, refresh_ttl=3600,
+        mfa=NullMfa(), identifier=UsernameIdentifier(), access_ttl=900, refresh_ttl=3600,
     )
 
 

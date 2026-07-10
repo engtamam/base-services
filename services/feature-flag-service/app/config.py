@@ -65,9 +65,9 @@ class Settings(BaseSettings):
     QUEUE_URL: str = ""
 
     OBJECTSTORE_DRIVER: str = "local"
-    OBJECTSTORE_ROOT: str = "/tmp/objectstore"  # local driver; under the chart's
-    #                                            writable /tmp mount, not the read-only
-    #                                            root. production uses s3 + a bucket.
+    # nosec B108 — /tmp is where the chart mounts a WRITABLE volume under readOnlyRootFilesystem;
+    # this is the object store's data dir, not an insecure shared-temp file. Production uses s3.
+    OBJECTSTORE_ROOT: str = "/tmp/objectstore"  # nosec B108
     OBJECTSTORE_BUCKET: str = ""  # s3 driver
     OBJECTSTORE_ENDPOINT_URL: str = ""  # s3-compatible endpoint (config allowlist)
 

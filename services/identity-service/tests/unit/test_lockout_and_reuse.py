@@ -8,6 +8,7 @@ import re
 import pytest
 
 from app.adapters.datastore.memory import MemoryDataStore
+from app.adapters.login_identifier import UsernameIdentifier
 from app.core.auth_service import AuthService
 from app.core.login_attempts import LoginAttemptStore
 from app.core.refresh_store import RefreshStore
@@ -50,8 +51,8 @@ class Verifier:
 
 def _svc(st, verifier=None, max_attempts=3):
     lockout = LoginAttemptStore(st, max_attempts=max_attempts, window_seconds=900, lockout_seconds=900)
-    return AuthService(users=UserRepository(st), refresh=RefreshStore(st), hasher=Hasher(),
-                       issuer=Issuer(), verifier=verifier or Verifier(), mfa=None,
+    return AuthService(users=UserRepository(st, UsernameIdentifier()), refresh=RefreshStore(st), hasher=Hasher(),
+                       issuer=Issuer(), verifier=verifier or Verifier(), mfa=None, identifier=UsernameIdentifier(),
                        access_ttl=900, refresh_ttl=3600, min_password_len=4, lockout=lockout)
 
 

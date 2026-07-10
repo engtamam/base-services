@@ -24,3 +24,10 @@ class Unavailable(PortError):
 
 class InvalidToken(PortError):
     """A token failed verification (bad signature, expired, wrong iss/aud, ...)."""
+
+
+class ValidationError(PortError):
+    """An input value is malformed — e.g. a login identifier that is not a valid email.
+
+    Distinct from ConfigError (a boot/wiring fault): this is a bad REQUEST, surfaced as 400.
+    """
