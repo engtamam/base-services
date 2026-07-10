@@ -14,10 +14,12 @@ WORKDIR /build
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Install only runtime dependencies (not dev/ci) for a lean, low-CVE image.
+# Install runtime + the infra extras the deploy VALUES select (postgres, redis).
+# An image that lacks the driver its own values default to boots straight into ConfigError;
+# safety:image-runtime gates exactly that. dev/ci stay out for a lean, low-CVE image.
 COPY pyproject.toml README.md ./
 COPY app ./app
-RUN pip install .
+RUN pip install ".[postgres,redis]"
 
 # ── Final: slim runtime, non-root ───────────────────────────────────────────
 FROM python:3.12-slim AS runtime

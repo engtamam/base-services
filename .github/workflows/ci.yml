@@ -72,6 +72,10 @@ jobs:
       - name: "safety:dockerfiles — every service builds the context it COPYs"
         run: python tools/ci/check_dockerfiles.py
 
+      # gates: safety:image-runtime
+      - name: "safety:image-runtime — the image can run the config its values ship"
+        run: python tools/ci/check_image_runtime.py
+
       # gates: safety:actions
       - name: "safety:actions — every action a workflow uses actually exists"
         run: python tools/ci/check_action_refs.py

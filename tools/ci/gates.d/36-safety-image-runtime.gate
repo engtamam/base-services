@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# the CI matrix runs this gate PER SERVICE? no -- it is a whole-repo static check, run once
+gate_name="safety:image-runtime"
+gate_desc="a published image can run the config its values ship with"
+gate_protects="Every service's values default datastore=postgres, cache=redis -- but the
+Dockerfile installs runtime only, so asyncpg/redis (extras) are absent and the pod
+boots into ConfigError. And OBJECTSTORE_DRIVER=local writes to a read-only root.
+Both crash a fresh deploy while the build stays green. Confirmed by running the
+published v0.1.4 image. This gate asserts the IMAGE and the VALUES agree."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_image_runtime.py"
+gate_units=1
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_image_runtime.py; }
+
+# A gate that cannot fail is decoration. Prove it catches a driver whose extra is absent.
+gate_selftest() {
+  "$PY" -c "
+import sys, pathlib
+sys.path.insert(0, 'tools/ci')
+import check_image_runtime as c
+# a service selecting postgres with an image that installs nothing must produce a problem
+c.installed_extras = lambda s: set()
+c.selected_drivers = lambda s: {'datastore':'postgres'}
+sys.exit(0 if c.check('any') else 1)
+" >/dev/null 2>&1
+}
