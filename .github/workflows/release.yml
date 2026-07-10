@@ -184,13 +184,21 @@ jobs:
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
 
+      # Scan the PUBLISHED image with a trivy WE install, not aquasecurity/trivy-action.
+      # That action failed here at its own binary install ("found version 0.65.0" -> exit 1),
+      # before scanning anything -- a flaky external action, the same class of problem as the
+      # nonexistent action ref that killed v0.1.1. The curl installer below is the one the gates
+      # job already uses successfully. A real HIGH/CRITICAL still blocks the release
+      # (a vulnerable image is not published); a scanner that cannot run is not a finding.
       - name: Scan the published image (CVE gate)
-        uses: aquasecurity/trivy-action@v0.33.1
-        with:
-          image-ref: ${{ env.REGISTRY }}/${{ steps.v.outputs.owner }}/${{ matrix.service }}@${{ steps.build.outputs.digest }}
-          severity: HIGH,CRITICAL
-          exit-code: "1"          # a vulnerable image is not released
-          ignore-unfixed: true
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ steps.v.outputs.owner }}/${{ matrix.service }}@${{ steps.build.outputs.digest }}
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin
+          # docker/login-action already authenticated to GHCR, so trivy reads ~/.docker/config.json.
+          trivy image --quiet --scanners vuln --severity HIGH,CRITICAL \
+            --ignore-unfixed --exit-code 1 "$IMAGE"
 
       - name: Record the digest
         run: |
