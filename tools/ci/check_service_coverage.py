@@ -43,6 +43,27 @@ def _has_test_named(service: pathlib.Path, *needles: str) -> bool:
     return False
 
 
+def _contract_runs_against_postgres(service: pathlib.Path) -> bool:
+    """The DataStore contract must ALSO run against a real postgres, not just memory.
+
+    Sixteen services shipped a contract file whose only parameter was `MemoryDataStore`. They
+    passed, quickly, and proved that the in-memory adapter agrees with itself — while its
+    `asyncio.Lock` serialises every writer a real database has to let race.
+
+    `contracts:postgres` could not see it. That gate fails when a postgres param is SKIPPED, and
+    a param that was never defined is never skipped. An absent test does not fail; it is simply
+    absent, and a green board looks the same either way.
+    """
+    contract = service / "tests" / "contracts" / "test_datastore_contract.py"
+    if not contract.is_file():
+        return False
+    try:
+        text = contract.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    return "DATASTORE_TEST_DSN" in text and "PostgresDataStore" in text
+
+
 REQUIREMENTS = {
     "probe-contract": lambda s: (s / "tests/integration/test_probe_contract.py").exists(),
     "hot-path-guard": lambda s: _has_test_named(
@@ -50,6 +71,7 @@ REQUIREMENTS = {
         (s / "tests/unit").glob("test_*hot_path*.py")),
     "knob-guard": lambda s: _has_test_named(s, "test_every_settings_field_is_consumed_somewhere"),
     "deploy-values": lambda s: (DEPLOY_VALUES / f"{s.name}.values.yaml").exists(),
+    "postgres-contract": lambda s: _contract_runs_against_postgres(s),
 }
 
 # ── The SHRINKING known-gaps allowlist ──────────────────────────────────────

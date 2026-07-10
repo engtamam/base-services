@@ -120,3 +120,122 @@ def test_incr_if_below_serialises_concurrent_callers(store):
     results = run(race())          # the session loop: a pooled adapter needs its own loop
     assert sum(1 for ok, _ in results if ok) == 25
     assert run(store.get("c", "seats")) == {"n": 25}
+
+
+# ── find(): the primitive that replaced the full-collection scan ─────────────
+# These must hold IDENTICALLY on both adapters. Where they do not, a repository that passes its
+# unit tests against the memory store is wrong in production and nothing says so.
+
+
+def _seed_rows(store, collection="rows"):
+    for i in range(6):
+        run(store.put(collection, f"k{i}", {"id": f"k{i}", "tenant": "t1" if i < 4 else "t2",
+                                            "status": "open" if i % 2 == 0 else "done",
+                                            "created": f"2026-01-{i + 1:02d}"}))
+
+
+def test_find_pushes_the_filter_down(store):
+    _seed_rows(store)
+    rows, _ = run(store.find("rows", {"tenant": "t1"}, limit=100))
+    assert {r["id"] for r in rows} == {"k0", "k1", "k2", "k3"}
+
+
+def test_find_supports_membership(store):
+    _seed_rows(store)
+    rows, _ = run(store.find("rows", {"tenant": "t1", "status": ["open", "done"]}, limit=100))
+    assert len(rows) == 4
+
+
+def test_find_refuses_an_empty_filter(store):
+    """`find(c, {})` would return every tenant's rows — a leak one typo away."""
+    from app.ports.errors import ConfigError
+
+    with pytest.raises(ConfigError):
+        run(store.find("rows", {}))
+
+
+def test_find_refuses_an_unknown_sort_direction(store):
+    from app.ports.errors import ConfigError
+
+    with pytest.raises(ConfigError):
+        run(store.find("rows", {"tenant": "t1"}, sort=("created", "sideways")))
+
+
+def test_find_orders_both_ways(store):
+    _seed_rows(store)
+    asc, _ = run(store.find("rows", {"tenant": "t1"}, limit=10, sort=("created", "asc")))
+    desc, _ = run(store.find("rows", {"tenant": "t1"}, limit=10, sort=("created", "desc")))
+    assert [r["id"] for r in asc] == ["k0", "k1", "k2", "k3"]
+    assert [r["id"] for r in desc] == ["k3", "k2", "k1", "k0"]
+
+
+def test_find_pages_without_overlap_or_gap(store):
+    _seed_rows(store)
+    seen, cursor = [], None
+    while True:
+        page, cursor = run(store.find("rows", {"tenant": "t1"}, limit=2, after=cursor))
+        seen.extend(r["id"] for r in page)
+        if not cursor:
+            break
+    assert sorted(seen) == ["k0", "k1", "k2", "k3"]
+    assert len(seen) == len(set(seen))
+
+
+def test_find_returns_no_cursor_on_the_last_page(store):
+    _seed_rows(store)
+    rows, cursor = run(store.find("rows", {"tenant": "t1"}, limit=100))
+    assert len(rows) == 4 and cursor is None
+
+
+def test_a_row_inserted_between_pages_is_never_skipped(store):
+    """An OFFSET would skip one here. A keyset cursor cannot."""
+    _seed_rows(store)
+    page1, cursor = run(store.find("rows", {"tenant": "t1"}, limit=2))       # newest two
+    run(store.put("rows", "new", {"id": "new", "tenant": "t1", "status": "open",
+                                  "created": "2026-12-31"}))                 # arrives at the top
+    page2, _ = run(store.find("rows", {"tenant": "t1"}, limit=4, after=cursor))
+    ids = [r["id"] for r in page1] + [r["id"] for r in page2]
+    assert len(ids) == len(set(ids)), "a row came back twice"
+    assert {"k0", "k1"} <= set(ids), "a row was skipped"
+
+
+def test_rows_sharing_a_sort_value_do_not_straddle_a_page_boundary(store):
+    """Without the id tie-break the order is not total, and a page boundary drops a row."""
+    for i in range(6):
+        run(store.put("tied", f"t{i}", {"id": f"t{i}", "tenant": "t1", "created": "same"}))
+    seen, cursor = [], None
+    while True:
+        page, cursor = run(store.find("tied", {"tenant": "t1"}, limit=2, after=cursor))
+        seen.extend(r["id"] for r in page)
+        if not cursor:
+            break
+    assert sorted(seen) == [f"t{i}" for i in range(6)]
+
+
+def test_a_corrupt_cursor_restarts_rather_than_crashing(store):
+    _seed_rows(store)
+    rows, _ = run(store.find("rows", {"tenant": "t1"}, after="not-a-real-cursor"))
+    assert len(rows) == 4
+
+
+def test_find_returns_an_isolated_copy(store):
+    _seed_rows(store)
+    rows, _ = run(store.find("rows", {"tenant": "t1"}, limit=1))
+    rows[0]["tenant"] = "MUTATED"
+    again, _ = run(store.find("rows", {"tenant": "t1"}, limit=1))
+    assert again[0]["tenant"] == "t1"
+
+
+def test_find_on_an_absent_field_matches_nothing(store):
+    """An "operator" is just a field name that does not exist. Nothing is evaluated."""
+    _seed_rows(store)
+    rows, _ = run(store.find("rows", {"$ne": "t1"}, limit=10))
+    assert rows == []
+
+
+def test_scan_all_is_deterministic_when_truncated(store):
+    """It may truncate — it must not truncate ARBITRARILY. The old list() had no ORDER BY."""
+    _seed_rows(store)
+    first = [r["id"] for r in run(store.scan_all("rows", 3))]
+    second = [r["id"] for r in run(store.scan_all("rows", 3))]
+    assert first == second and len(first) == 3
