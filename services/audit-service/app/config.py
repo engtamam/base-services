@@ -116,6 +116,19 @@ class Settings(BaseSettings):
     # Bounds an export. A request must not be able to ask for the whole table.
     AUDIT_EXPORT_LIMIT: int = 100_000
 
+    # A raw identity hashed into the chain is PERMANENT — verify() breaks if you redact it later.
+    # fold (default): audit pseudonymises for you, so PII cannot land no matter what a caller
+    # forgets. enforce: refuse the write. off: legacy passthrough (unsafe, never the default).
+    AUDIT_PII_MODE: str = "fold"          # fold | enforce | off
+
+    # WHICH fields are personal is a PLATFORM decision, not ours. A Saudi platform needs
+    # national_id/iqama; a health platform needs mrn. Hardcoding one culture's idea of PII into a
+    # plug-and-play platform is exactly the assumption this codebase refuses to make.
+    AUDIT_PII_FIELDS: str = "email,phone,name,username,address,ip,national_id,iqama,passport"
+
+    # Salts the subject pseudonym. FROZEN — see config/product.identifiers.lock.json.
+    PII_SALT: str = ""
+
     @property
     def egress_allowed_hosts(self) -> frozenset[str]:
         return frozenset(

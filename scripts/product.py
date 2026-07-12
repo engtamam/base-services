@@ -46,6 +46,9 @@ EXAMPLE = ROOT / "config" / "product.example.json"
 # service -> {ENV_VAR: dotted path into product.json}
 # Every ENV_VAR here must be a field on that service's Settings, or the chart guard fails.
 WIRING: dict[str, dict[str, str]] = {
+    "audit-service": {
+        "PII_SALT": "identifiers.piiSalt",   # frozen: re-maps every pseudonym in the chain
+    },
     "search-service": {
         "PII_SALT": "identifiers.piiSalt",   # frozen: re-maps every pseudonym
     },

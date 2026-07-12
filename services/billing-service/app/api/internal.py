@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from app.api.v1.billing import build_billing, build_usage
 from app.config import Settings, get_settings
+from app.core.erasure import BillingErasure
 from app.manifest import build_manifest
 
 router = APIRouter(prefix="/internal", tags=["internal"])
@@ -126,3 +127,22 @@ async def internal_manifest(
     if guard is not None:
         manifest["security"] = {"cwe_guard": guard.report()}
     return manifest
+
+
+class EraseIn(BaseModel):
+    tenant: str
+    subject: str
+
+
+@router.post("/privacy/erase", dependencies=[Depends(require_internal_token)])
+async def erase_subject(request: Request, body: EraseIn) -> dict:
+    """Billing deletes NOTHING — the invoice is a legal record. It pseudonymises the buyer.
+
+    The financial fact survives for the tax inspector; the human does not. The receipt quotes the
+    retention period back to the person, so "we kept it" is an answer with a law attached.
+    """
+    c = request.app.state.container
+    s = get_settings()
+    eraser = BillingErasure(store=c.datastore, pii_salt=s.PII_SALT,
+                            retention_years=s.INVOICE_RETENTION_YEARS)
+    return await eraser.erase(body.tenant, body.subject)

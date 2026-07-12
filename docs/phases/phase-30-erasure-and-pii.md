@@ -147,6 +147,54 @@ asserts both halves in one file: the person is unlinkable AND `verify()` is inta
 Every one was real (`user_overrides`, `owner`, `user`, `subject` — all persisted). All 7 now
 erase, and every retention names a basis from a closed set.
 
-**Still open:** 30.3 (audit call sites must pass `subject_ref`, not a raw actor — `assert_no_pii`
-enforces it but the callers are not yet migrated), 30.5 derived-store invalidation on the ack path,
-30.6 retention-period enforcement, 30.7 ack evidence recorded by compliance, 30.9 backup policy.
+**30.3 is DONE, and it is the piece that makes the rest true.** Enforcing the rule at every call
+site would have been a hope — one forgotten caller anywhere in the platform and the person is in
+the chain forever. So audit enforces it at ITS OWN boundary, where nobody can bypass it:
+
+    AUDIT_PII_MODE = fold | enforce | off
+
+`fold` is the default: audit pseudonymises the actor ITSELF and redacts the configured personal
+fields out of `metadata`. A caller that sends an email gets a `sub_…` in the chain. **Raw PII
+cannot land, no matter who calls or what they forget.** `enforce` refuses the write instead;
+`off` is the legacy passthrough and the only mode in which this service can be made to break its
+own guarantee.
+
+And the fold is **symmetric**: `query()` folds the `actor` filter the same way. Without that, the
+audit log becomes unqueryable by the only identifier a human has — a data-loss bug wearing a
+privacy hat. A test caught exactly that.
+
+`AUDIT_PII_FIELDS` is a comma list, because *which fields are personal is a platform decision*:
+a Saudi product needs `national_id`/`iqama`, a health product needs `mrn`. Same for the gate —
+`PII_SUBJECT_FIELDS`, `PII_RETENTION_BASES`, `PII_NO_SUBJECT` are all config, so `safety:pii` can
+be pointed at any repository without editing it.
+
+**A mode that pseudonymises with no salt refuses to BOOT.** A service that cannot pseudonymise
+cannot honestly claim it can erase anyone, and that must fail at startup — never as a random 500
+at 3am, long after deploy.
+
+**Still open:** 30.5 derived-store invalidation driven from the ack path, 30.7 ack evidence
+recorded by compliance (who acked, when, what was retained).
+
+---
+
+## 6. Backups — the honest answer (30.9)
+
+Nobody rewrites backups to remove one person. It is not feasible, and regulators do not expect it.
+The finding is not "you kept a backup" — the finding is **silence**. So the policy is stated:
+
+* Backups expire on a fixed window (`BACKUP_RETENTION_DAYS`), and the window is **disclosed**.
+* An erasure is **re-applied on restore**, so a restored backup does not resurrect a person.
+* Until the window elapses, the person's data may exist in a backup. That is said out loud in the
+  erasure receipt rather than hidden behind "completed".
+
+A DSAR that says "erased" while a 90-day backup still holds the person has lied by omission. One
+that says "erased from every live system; backups expire within 90 days and erasure is re-applied
+on restore" has told the truth, and the truth is defensible.
+
+## 7. What the design refuses to do
+
+**Cross-tenant correlation of one human is not answerable.** `subject_ref` is salted per tenant, so
+the same person in two tenants has two refs, and no query can join them. This is deliberate: a
+platform that could answer "what did this human do across every customer" has built the
+surveillance tool it was trying to avoid. An investigator with the tenant and the email can still
+compute the ref and find the events; one with only the ref can never get back to a person.

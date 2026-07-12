@@ -10,6 +10,7 @@ import os
 
 # Must be set before any `app.*` import triggers config validation.
 os.environ.setdefault("ENV", "test")
+os.environ.setdefault("PII_SALT", "test-pii-salt-not-a-real-one")
 os.environ.setdefault("INTERNAL_SERVICE_TOKEN", "t" * 40)
 os.environ.setdefault("BODY_LIMIT_BYTES", "2048")
 os.environ.setdefault("REQUEST_TIMEOUT_MS", "30000")

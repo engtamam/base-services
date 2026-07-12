@@ -155,6 +155,14 @@ class Settings(BaseSettings):
     LEDGER_CAS_MAX_RETRIES: int = 20
     LEDGER_CAS_BACKOFF_MS: int = 12           # base for the full-jitter backoff; 0 = no sleep
 
+    # Salts the subject pseudonym on a retained tax invoice. FROZEN — see the identifier lock.
+    PII_SALT: str = ""
+
+    # How long a tax invoice must survive. ZATCA/KSA is 6; several EU states are 10. It is a
+    # PLATFORM/jurisdiction decision, never ours — so it is config, and it is quoted back to the
+    # person in the erasure receipt rather than asserted in a docstring nobody reads.
+    INVOICE_RETENTION_YEARS: int = 10
+
     @property
     def settlement_methods(self) -> dict[str, bool]:
         """{method: requires_issuer}. Fail-fast on nonsense — never a silent default."""

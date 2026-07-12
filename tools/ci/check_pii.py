@@ -25,6 +25,7 @@ So, for every service:
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 import sys
@@ -32,21 +33,43 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SERVICES = ROOT / "services"
 
-# A service whose code contains one of these is holding a data subject.
-_SUBJECT_MARKERS = (
-    re.compile(r'^\s*subject\s*:', re.MULTILINE),          # a dataclass field
-    re.compile(r'["\']subject["\']\s*:'),                   # a dict key
-    re.compile(r'\bget_by_username\b'),
-    re.compile(r'^\s*owner\s*:', re.MULTILINE),
-)
+# PLUG-AND-PLAY. What names a data subject, and what bases may justify keeping their data, are
+# PLATFORM decisions — a Saudi product keys on `national_id`/`iqama`, a health product on `mrn`,
+# and a bank may retain under a basis we have never heard of. Hardcoding one company's vocabulary
+# into a gate meant to be pointed at any repository is the assumption this codebase refuses.
+#
+#   PII_SUBJECT_FIELDS   comma list; a persisted field of one of these names = holds a subject
+#   PII_RETENTION_BASES  comma list; the closed set a service may retain under
+#   PII_NO_SUBJECT       comma list; services that legitimately hold no data subject
+_ENV_SUBJECT_FIELDS = os.environ.get("PII_SUBJECT_FIELDS", "subject,owner,user,actor")
+_ENV_BASES = os.environ.get("PII_RETENTION_BASES", "")
+_ENV_NO_SUBJECT = os.environ.get("PII_NO_SUBJECT", "api-gateway")
+
+
+def _csv(raw: str) -> set[str]:
+    return {x.strip() for x in (raw or "").split(",") if x.strip()}
+
+# A service whose code PERSISTS a field named in PII_SUBJECT_FIELDS is holding a data subject.
+# Built from config, so a platform whose subject key is `national_id` or `mrn` is covered without
+# editing this file.
+def _subject_markers() -> tuple[re.Pattern, ...]:
+    pats: list[re.Pattern] = [re.compile(r"\bget_by_username\b")]
+    for field in sorted(_csv(_ENV_SUBJECT_FIELDS)):
+        f = re.escape(field)
+        pats.append(re.compile(rf"^\s*{f}\s*:", re.MULTILINE))    # a dataclass field
+        pats.append(re.compile(rf"[\"']{f}[\"']\s*:"))            # a persisted dict key
+    return tuple(pats)
+
+
+_SUBJECT_MARKERS = _subject_markers()
 
 # The only bases anyone may retain data under. Inventing a new one is how "we kept it" becomes
 # unfalsifiable.
-_ALLOWED_BASES = {"tax_retention", "legal_hold", "security_audit", "consent_proof",
-                  "delivery_proof", "fraud_prevention"}
+_ALLOWED_BASES = ({"tax_retention", "legal_hold", "security_audit", "consent_proof",
+                   "delivery_proof", "fraud_prevention"} | _csv(_ENV_BASES))
 
 # Services that legitimately hold NO data subject (infra / routing only).
-_NO_SUBJECT = {"api-gateway"}
+_NO_SUBJECT = _csv(_ENV_NO_SUBJECT)
 
 
 def holds_subject(svc: pathlib.Path) -> str | None:

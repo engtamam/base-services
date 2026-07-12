@@ -16,9 +16,12 @@ from app.core.models import AuditEvent, new_id, now
 class AuditService:
     def __init__(self, *, repo: AuditRepository, integrity, exporters: dict,
                  default_format: str, partition_mode: str, query_limit: int,
-                 export_limit: int = 100_000) -> None:
+                 export_limit: int = 100_000, pii_policy=None) -> None:
         self._repo = repo
         self._integrity = integrity
+        # Applied at THIS boundary, where no caller can bypass it. A rule that relies on
+        # every call site remembering is a hope, not a rule.
+        self._pii = pii_policy
         self._exporters = exporters
         self._default_format = default_format
         self._mode = partition_mode
@@ -33,6 +36,9 @@ class AuditService:
     # ── record (append-only) ──────────────────────────────────────────────────
     async def record(self, *, service: str, action: str, actor: str = "", resource: str = "",
                      tenant: str = "", ip: str = "", metadata: dict[str, Any] | None = None) -> AuditEvent:
+        if self._pii is not None:
+            actor, ip, metadata = self._pii.apply(tenant=tenant, actor=actor, ip=ip,
+                                                  metadata=metadata)
         partition = self._partition(tenant)
         seq, head = await self._repo.head(partition)
         evt = AuditEvent(
@@ -53,6 +59,27 @@ class AuditService:
         """
         limit = limit or self._query_limit
         tenant = filters.get("tenant")
+
+        # FOLD THE QUERY THE SAME WAY WE FOLDED THE WRITE.
+        #
+        # Writes pseudonymise `actor`, so a caller asking for `actor=alice@x.com` would match
+        # nothing and the audit log would become unqueryable by the only identifier a human has.
+        # The fold has to be symmetric or the feature is a data-loss bug wearing a privacy hat.
+        #
+        # After the subject is erased this still works: the ref is a pure function of (salt,
+        # tenant, subject), so an investigator who still knows the email can find the events —
+        # and one who does not can never turn the ref back into a person.
+        # Fold with EXACTLY the tenant the write used (record() defaults it to ""), or the two
+        # sides disagree and the query silently returns nothing.
+        #
+        # Caveat, stated rather than hidden: the ref is tenant-scoped, so an actor query that names
+        # no tenant can only match events that were recorded without one. Cross-tenant "what did
+        # this human do everywhere" is not answerable by design — that correlation is precisely the
+        # privacy leak the per-tenant salt exists to prevent.
+        actor = filters.get("actor")
+        if self._pii is not None and actor:
+            folded, _, _ = self._pii.apply(tenant=tenant or "", actor=actor, ip="", metadata=None)
+            filters = {**filters, "actor": folded}
 
         if self._mode != "tenant" or tenant:
             return await self._repo.query(filters, limit, self._partition(tenant or ""))

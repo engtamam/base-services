@@ -18,6 +18,7 @@ from app.adapters.exporter.ndjson_exporter import NdjsonExporter
 from app.config import get_settings
 from app.core.audit_repository import AuditRepository
 from app.core.audit_service import AuditService
+from app.core.pii_policy import PiiPolicy, parse_fields
 
 router = APIRouter(prefix="/api/v1/audit", tags=["audit"])
 
@@ -31,6 +32,11 @@ def build_audit(request: Request) -> AuditService:
         default_format=s.EXPORTER_DEFAULT, partition_mode=s.AUDIT_PARTITION,
         query_limit=s.AUDIT_QUERY_LIMIT,
         export_limit=s.AUDIT_EXPORT_LIMIT,
+        # Applied before the event is hashed. Without this the pseudonym rule is a hope: one
+        # forgotten call site anywhere in the platform puts a person in the chain forever.
+        pii_policy=PiiPolicy(mode=s.AUDIT_PII_MODE,
+                             fields=parse_fields(s.AUDIT_PII_FIELDS),
+                             salt=s.PII_SALT),
     )
 
 
