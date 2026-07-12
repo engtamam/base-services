@@ -41,46 +41,15 @@ env:
 
 jobs:
   # ───────────────────────────────────────────────────────────────────────────
-  # Don't run the gates twice. A tag points at a commit that CI already validated
-  # on the branch push. If a `ci` run SUCCEEDED for this exact SHA, trust it and
-  # skip the ~5-minute re-run. The default is always to RUN the gates: only a
-  # proven-green CI run for this precise commit turns them off. No green run, an
-  # API hiccup, or any doubt -> run them. Same fail-safe rule as change detection.
-  # ───────────────────────────────────────────────────────────────────────────
-  gate-check:
-    name: trust a green CI, else run the gates
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-    outputs:
-      run_gates: ${{ steps.decide.outputs.run_gates }}
-    steps:
-      - name: Did `ci` already pass for this exact commit?
-        id: decide
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          sha="${{ github.sha }}"
-          run="true"                          # default: RUN the gates
-          if resp=$(gh api "repos/${{ github.repository }}/actions/runs?head_sha=$sha&per_page=100" 2>/dev/null); then
-            ok=$(echo "$resp" | jq '[.workflow_runs[] | select(.name=="ci" and .conclusion=="success")] | length')
-            [ "${ok:-0}" -ge 1 ] && run="false"
-          fi
-          echo "run_gates=$run" >> "$GITHUB_OUTPUT"
-          if [ "$run" = "false" ]; then
-            echo "::notice::A green ci run exists for $sha — trusting it, skipping the gate re-run."
-          else
-            echo "::notice::No proven-green ci run for $sha — running the full gates."
-          fi
-
-  # ───────────────────────────────────────────────────────────────────────────
   # A release must never ship code the merge gates would have blocked.
-  # Runs only when gate-check could not prove CI already passed for this commit.
+  #
+  # These ALWAYS run. We tried trusting a green CI run for the same commit to save ~9
+  # minutes; it worked, and then GitHub propagated the resulting `skipped` transitively
+  # and v0.2.0 published NOTHING while reporting success. The saving was not worth a
+  # release that can silently ship nothing. A tag proves itself, every time.
   # ───────────────────────────────────────────────────────────────────────────
   gates:
     name: gates must be green
-    needs: gate-check
-    if: needs.gate-check.outputs.run_gates == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -126,13 +95,7 @@ jobs:
 
   discover:
     name: discover services
-    # `gates` is skipped when CI already proved this commit green. Proceed when it PASSED or was
-    # SKIPPED, but never when it FAILED. Without `always()` a skipped dependency skips this too.
-    needs: [gate-check, gates]
-    if: >-
-      always() &&
-      needs.gate-check.result == 'success' &&
-      (needs.gates.result == 'success' || needs.gates.result == 'skipped')
+    needs: gates
     runs-on: ubuntu-latest
     outputs:
       services: ${{ steps.find.outputs.services }}
@@ -165,15 +128,7 @@ jobs:
   # ───────────────────────────────────────────────────────────────────────────
   images:
     name: image ${{ matrix.service }}
-    # `gates` is skipped when CI already proved this commit, and GitHub propagates a skip
-    # TRANSITIVELY: without always(), this job skips too, even though `discover` succeeded.
-    # v0.2.0 reported SUCCESS having built nothing. A release that publishes no image is not a
-    # release — the empty set must never pass green.
-    needs: [discover, gates]
-    if: >-
-      always() &&
-      needs.discover.result == 'success' &&
-      (needs.gates.result == 'success' || needs.gates.result == 'skipped')
+    needs: discover
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -267,10 +222,6 @@ jobs:
   publish:
     name: pin digests + publish release
     needs: [discover, images]
-    if: >-
-      always() &&
-      needs.discover.result == 'success' &&
-      needs.images.result == 'success' 
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

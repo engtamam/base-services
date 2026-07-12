@@ -2,13 +2,14 @@
 # =============================================================================
 # release.sh — push, WAIT for CI to go green on this exact commit, then tag.
 #
-# The release workflow skips its ~9-minute gate re-run only when a `ci` run has
-# already SUCCEEDED for the tagged commit (see release.yml's gate-check job).
-# Tag before CI finishes and the release cannot trust anything, so it runs the
-# full gates itself — slow, and exactly the thing the dedup was meant to avoid.
+# The release ALWAYS runs its own gates — we do not skip them. (We tried: trusting a
+# green CI for the same commit saved ~9 minutes, then GitHub propagated the resulting
+# `skipped` transitively and v0.2.0 published NOTHING while reporting success. A
+# release that can silently ship nothing is not worth nine minutes.)
 #
-# This script enforces the right order: push -> wait for green -> tag. It never
-# tags a commit CI has not proven, and never tags one CI has FAILED.
+# This script is still the right way to cut one: it refuses to tag a commit CI has
+# not proven, and refuses outright to tag one CI has FAILED. Tagging a red commit
+# just to watch the release fail again wastes far more than it saves.
 #
 #   scripts/release.sh v0.1.6
 #   scripts/release.sh v0.1.6 --dry-run     # do everything except create/push the tag
@@ -112,4 +113,4 @@ fi
 echo "==> tagging $VERSION"
 git tag -a "$VERSION" -m "$MSG" || die "tag failed"
 git push origin "$VERSION" || die "tag push failed"
-echo "==> $VERSION pushed. The release will trust the green ci and skip the gate re-run."
+echo "==> $VERSION pushed. The release will run the full gates and publish."
