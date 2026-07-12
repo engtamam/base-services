@@ -114,6 +114,11 @@ class Settings(BaseSettings):
     HLL_PRECISION: int = 12                  # 2^12 registers ≈ 1.6% error
     HISTOGRAM_BUCKETS: int = 128             # log-spaced buckets; 128 @1.25x covers 1e-3 .. 1e9
     PII_ALLOWED_PROPERTIES: str = ""         # comma list; empty = allow all non-PII-suspect keys
+
+    # Salts the subject pseudonym written into every IMMUTABLE record (audit chain, ledgers,
+    # invoices). FROZEN — see config/product.identifiers.lock.json. Change it and every pseudonym
+    # re-maps: the history orphans and an erasure can no longer prove it erased the right person.
+    PII_SALT: str = ""
     RAW_RETENTION_DAYS: int = 90             # raw events pruned after this (rollups persist)
     ANALYTICS_LIST_LIMIT: int = 100
 

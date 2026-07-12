@@ -116,6 +116,11 @@ class Settings(BaseSettings):
     MAINTENANCE_BYPASS_SUBJECTS: str = ""     # comma list — reach the system during maintenance
     STALE_FLAG_DAYS: int = 90                 # not evaluated in N days → candidate for cleanup
     CONFIG_ENV: str = ""                      # env-scoped config overrides win over global
+
+    # Salts the subject pseudonym written into every IMMUTABLE record (audit chain, ledgers,
+    # invoices). FROZEN — see config/product.identifiers.lock.json. Change it and every pseudonym
+    # re-maps: the history orphans and an erasure can no longer prove it erased the right person.
+    PII_SALT: str = ""
     FLAG_LIST_LIMIT: int = 500
 
     @property

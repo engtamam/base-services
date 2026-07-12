@@ -107,6 +107,11 @@ class Settings(BaseSettings):
     # behavior exactly; `email` validates the address and folds case so one address is
     # one account. A new adapter (phone, a federated provider) is a new value here.
     IDENTITY_LOGIN_FIELD: str = "username"       # username | email
+
+    # Salts the subject pseudonym written into every IMMUTABLE record (audit chain, ledgers,
+    # invoices). FROZEN — see config/product.identifiers.lock.json. Change it and every pseudonym
+    # re-maps: the history orphans and an erasure can no longer prove it erased the right person.
+    PII_SALT: str = ""
     TOKEN_ISSUER_DRIVER: str = "null"           # null(deny) | hs256 | rs256 (identity SIGNS)
     TOKEN_SIGNING_SECRET: str = ""              # hs256 signing secret (>=32)
     TOKEN_PRIVATE_KEY: str = ""                 # rs256 PEM private key

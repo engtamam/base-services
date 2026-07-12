@@ -145,7 +145,7 @@
     "identifiers": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["jwtIssuer", "linkNs", "signatureDomain", "eventNs", "userAgent", "rolloutSalt"],
+      "required": ["jwtIssuer", "linkNs", "signatureDomain", "eventNs", "userAgent", "rolloutSalt", "piiSalt"],
       "description": "FROZEN. These values are written into data a customer already holds and artifacts already signed. A rebrand edits `identity` and `brand` and leaves this block untouched. Changing a value here is a data migration with a compatibility window, never a config edit. scripts/check_product_config.py pins these against the previous commit and fails the build unless the commit body carries a `MIGRATION:` line.",
       "properties": {
         "_frozen": { "$ref": "#/$defs/prose" },
@@ -169,6 +169,10 @@
         "rolloutSalt": {
           "type": "string",
           "description": "Salts the feature-flag rollout hash. Change it and EVERY user re-buckets: a customer inside a 10% rollout is silently moved out, and one who never saw the feature is moved in. No error is raised. Frozen for the same reason a signature domain is."
+        },
+        "piiSalt": {
+          "type": "string",
+          "description": "Salts the subject pseudonym written into every IMMUTABLE record (audit hash-chain, money ledgers, tax invoices). Change it and every pseudonym re-maps: the audit history orphans, and an erasure can no longer prove it erased the right person. Frozen for the same reason a signature domain is."
         }
       }
     },

@@ -76,6 +76,10 @@ jobs:
       - name: "safety:image-runtime — the image can run the config its values ship"
         run: python tools/ci/check_image_runtime.py
 
+      # gates: safety:pii
+      - name: "safety:pii — a service that holds a person can erase them"
+        run: python tools/ci/check_pii.py
+
       # gates: safety:actions
       - name: "safety:actions — every action a workflow uses actually exists"
         run: python tools/ci/check_action_refs.py

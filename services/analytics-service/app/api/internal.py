@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from app.config import Settings, get_settings
+from app.core.erasure import AnalyticsErasure
 from app.core.ingest_service import IngestService
 from app.core.stores import CardinalityStore, EventStore, RollupStore
 from app.manifest import build_manifest
@@ -104,3 +105,20 @@ async def internal_manifest(
     if guard is not None:
         manifest["security"] = {"cwe_guard": guard.report()}
     return manifest
+
+class EraseIn(BaseModel):
+    tenant: str
+    subject: str
+
+
+@router.post("/privacy/erase", dependencies=[Depends(require_internal_token)])
+async def erase_subject(request: Request, body: EraseIn) -> dict:
+    """Erase a data subject. Called by compliance-service during a DSAR fan-out.
+
+    Returns the ack: what was erased, and what was RETAINED with its legal basis. Idempotent —
+    a DSAR retries, so erasing an already-erased subject must not fail.
+    """
+    c = request.app.state.container
+    s = get_settings()
+    eraser = AnalyticsErasure(store=c.datastore, pii_salt=s.PII_SALT)
+    return await eraser.erase(body.tenant, body.subject)

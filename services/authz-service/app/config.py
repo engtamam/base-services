@@ -102,6 +102,11 @@ class Settings(BaseSettings):
 
     # ── authz-service (Phase 12) — all config-driven ───────────────────────
     POLICY_ENGINE_DRIVER: str = "combined"   # rbac | abac | combined
+
+    # Salts the subject pseudonym written into every IMMUTABLE record (audit chain, ledgers,
+    # invoices). FROZEN — see config/product.identifiers.lock.json. Change it and every pseudonym
+    # re-maps: the history orphans and an erasure can no longer prove it erased the right person.
+    PII_SALT: str = ""
     DENY_OVERRIDES: bool = True               # a matching deny beats any allow
     WILDCARD_CAPS: bool = True                # "files.*" matches "files.read"
     AUTHZ_LIST_LIMIT: int = 100

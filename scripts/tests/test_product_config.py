@@ -118,3 +118,35 @@ def test_the_shipped_lock_covers_every_frozen_identifier():
     lock = json.loads(cpc.LOCK.read_text(encoding="utf-8"))
     missing = [k for k in cpc.FROZEN if k not in lock]
     assert not missing, f"the lock does not pin {missing} — they are frozen in name only"
+
+
+def test_adding_a_new_empty_frozen_key_is_not_a_rotation(monkeypatch, tmp_path):
+    """A frozen identifier that did not exist, added as "", breaks nothing — nothing used it.
+
+    Requiring a MIGRATION: note to *introduce* a frozen key would mean every new one arrives with
+    a migration note that migrates nothing. That is how a guard becomes noise.
+    """
+    lock = tmp_path / "lock.json"
+    lock.write_text(json.dumps({k: "" for k in cpc.FROZEN}), encoding="utf-8")
+    monkeypatch.setattr(cpc, "LOCK", lock)
+    # the PREVIOUS lock simply did not have piiSalt yet
+    previous = {k: "" for k in cpc.FROZEN if k != "piiSalt"}
+    monkeypatch.setattr(cpc, "_previous_lock", lambda: previous)
+    _with_body(monkeypatch, "an ordinary commit, no migration note")
+
+    cpc.check_frozen(_cfg())
+    assert not cpc._errors, "adding an empty frozen key was treated as a rotation"
+
+
+def test_rotating_an_existing_frozen_value_still_needs_a_migration(monkeypatch, tmp_path):
+    """The rule above must not become a loophole: a real value change still blocks."""
+    values = {k: "" for k in cpc.FROZEN} | {"signatureDomain": "acme.sig.v2"}
+    lock = tmp_path / "lock.json"
+    lock.write_text(json.dumps(values), encoding="utf-8")
+    monkeypatch.setattr(cpc, "LOCK", lock)
+    monkeypatch.setattr(cpc, "_previous_lock",
+                        lambda: {k: "" for k in cpc.FROZEN} | {"signatureDomain": "acme.sig.v1"})
+    _with_body(monkeypatch, "an ordinary commit, no migration note")
+
+    cpc.check_frozen(_cfg(signatureDomain="acme.sig.v2"))
+    assert cpc._errors, "signatureDomain rotated without a migration note and the gate allowed it"

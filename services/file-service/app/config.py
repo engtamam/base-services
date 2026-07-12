@@ -107,6 +107,11 @@ class Settings(BaseSettings):
     SCANNER_DRIVER: str = "none"             # none | magic | clamav
     SIGNED_URL_DRIVER: str = "hmac"          # hmac | s3
     SIGNED_URL_SECRET: str = ""              # required for hmac (falls back to INTERNAL token)
+
+    # Salts the subject pseudonym written into every IMMUTABLE record (audit chain, ledgers,
+    # invoices). FROZEN — see config/product.identifiers.lock.json. Change it and every pseudonym
+    # re-maps: the history orphans and an erasure can no longer prove it erased the right person.
+    PII_SALT: str = ""
     SIGNED_URL_TTL_SECONDS: int = 300
 
     @property

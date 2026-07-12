@@ -10,7 +10,10 @@ import hmac
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
+from pydantic import BaseModel
+
 from app.config import Settings, get_settings
+from app.core.erasure import FileErasure
 from app.manifest import build_manifest
 
 router = APIRouter(prefix="/internal", tags=["internal"])
@@ -48,3 +51,20 @@ async def internal_manifest(
     if guard is not None:
         manifest["security"] = {"cwe_guard": guard.report()}
     return manifest
+
+class EraseIn(BaseModel):
+    tenant: str
+    subject: str
+
+
+@router.post("/privacy/erase", dependencies=[Depends(require_internal_token)])
+async def erase_subject(request: Request, body: EraseIn) -> dict:
+    """Erase a data subject. Called by compliance-service during a DSAR fan-out.
+
+    Returns the ack: what was erased, and what was RETAINED with its legal basis. Idempotent —
+    a DSAR retries, so erasing an already-erased subject must not fail.
+    """
+    c = request.app.state.container
+    s = get_settings()
+    eraser = FileErasure(store=c.datastore, object_store=c.object_store, pii_salt=s.PII_SALT)
+    return await eraser.erase(body.tenant, body.subject)

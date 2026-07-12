@@ -46,11 +46,28 @@ EXAMPLE = ROOT / "config" / "product.example.json"
 # service -> {ENV_VAR: dotted path into product.json}
 # Every ENV_VAR here must be a field on that service's Settings, or the chart guard fails.
 WIRING: dict[str, dict[str, str]] = {
+    "search-service": {
+        "PII_SALT": "identifiers.piiSalt",   # frozen: re-maps every pseudonym
+    },
+    "file-service": {
+        "PII_SALT": "identifiers.piiSalt",   # frozen: re-maps every pseudonym
+    },
+    "compliance-service": {
+        "PII_SALT": "identifiers.piiSalt",   # frozen: re-maps every pseudonym
+    },
+    "authz-service": {
+        "PII_SALT": "identifiers.piiSalt",   # frozen: re-maps every pseudonym
+    },
+    "analytics-service": {
+        "PII_SALT": "identifiers.piiSalt",   # frozen: re-maps every pseudonym
+    },
     "identity-service": {
+        "PII_SALT": "identifiers.piiSalt",
         "TOKEN_ISSUER": "identifiers.jwtIssuer",       # frozen: rejects every live token
         "MFA_ISSUER_NAME": "identity.name",            # not frozen: just the label in the app
     },
     "feature-flag-service": {
+        "PII_SALT": "identifiers.piiSalt",
         "ROLLOUT_SALT": "identifiers.rolloutSalt",     # frozen: re-buckets every user
     },
     "billing-service": {
@@ -60,6 +77,7 @@ WIRING: dict[str, dict[str, str]] = {
         "CURRENCY": "locale.currency",
     },
     "notification-service": {
+        "PII_SALT": "identifiers.piiSalt",
         "DEFAULT_LOCALE": "locale.default",
     },
     "tenant-service": {

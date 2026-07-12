@@ -113,7 +113,8 @@
     "signatureDomain": "",
     "eventNs": "",
     "userAgent": "",
-    "rolloutSalt": ""
+    "rolloutSalt": "",
+    "piiSalt": ""
   },
   "services": {
     "_help": "Internal service names carry NO product name, on purpose. `billing`, never `acme-billing`. A rename must never touch a service name, a database name, a table, a JSON key, a log field, or a header. The schema and the CI check both reject a service name containing the product slug.",

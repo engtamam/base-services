@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from app.api.v1.audit import build_audit
 from app.config import Settings, get_settings
+from app.core.erasure import AuditErasure
 from app.manifest import build_manifest
 
 router = APIRouter(prefix="/internal", tags=["internal"])
@@ -76,3 +77,19 @@ async def internal_manifest(
     if guard is not None:
         manifest["security"] = {"cwe_guard": guard.report()}
     return manifest
+
+
+class EraseIn(BaseModel):
+    tenant: str
+    subject: str
+
+
+@router.post("/privacy/erase", dependencies=[Depends(require_internal_token)])
+async def erase_subject(request: Request, body: EraseIn) -> dict:
+    """Audit erases NOTHING — and says so, with a basis, and proves the chain still verifies.
+
+    The events carry a pseudonym, not an identity. Once identity-service deletes the linkage they
+    name nobody. Redacting them instead would break the hash chain from that seq onward, which is
+    the one thing this service exists to make impossible.
+    """
+    return await AuditErasure(audit=build_audit(request)).erase(body.tenant, body.subject)

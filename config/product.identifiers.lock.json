@@ -34,5 +34,6 @@
   "signatureDomain": "",
   "eventNs": "",
   "userAgent": "",
-  "rolloutSalt": ""
+  "rolloutSalt": "",
+  "piiSalt": ""
 }

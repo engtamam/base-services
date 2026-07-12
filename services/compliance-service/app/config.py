@@ -111,6 +111,11 @@ class Settings(BaseSettings):
     BREACH_NOTIFY_HOURS: int = 72            # GDPR/PDPL breach notification clock
     DSAR_VERIFICATION_TTL_SECONDS: int = 86_400
     DATA_RESIDENCY_DEFAULT: str = "SA"       # ISO country of primary storage
+
+    # Salts the subject pseudonym written into every IMMUTABLE record (audit chain, ledgers,
+    # invoices). FROZEN — see config/product.identifiers.lock.json. Change it and every pseudonym
+    # re-maps: the history orphans and an erasure can no longer prove it erased the right person.
+    PII_SALT: str = ""
     COMPLIANCE_LIST_LIMIT: int = 100
 
     @property

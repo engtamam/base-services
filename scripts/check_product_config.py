@@ -56,7 +56,7 @@ LOCK = ROOT / "config" / "product.identifiers.lock.json"
 
 # Written into data a customer already holds. See config/product.example.json -> identifiers._frozen
 FROZEN = ("jwtIssuer", "linkNs", "signatureDomain", "eventNs", "userAgent",
-          "rolloutSalt")
+          "rolloutSalt", "piiSalt")
 
 # Of those, the ones that may only ever move forward by a version bump.
 VERSIONED = ("linkNs", "signatureDomain")
@@ -283,7 +283,13 @@ def check_frozen(cfg: dict) -> None:
         note("the lock has no previous commit yet — nothing to compare it against")
         return
 
-    changed = {k for k in FROZEN if previous.get(k) != lock.get(k)}
+    # ADDING a new frozen identifier is not ROTATING one. A key that did not exist in the previous
+    # lock and is empty ("not yet chosen") in the new one breaks nothing: no record anywhere was
+    # written with it, so nothing can orphan. Only a key whose VALUE moves — including from empty
+    # to chosen once data exists, and any change to a non-empty value — is a migration.
+    changed = {k for k in FROZEN
+               if previous.get(k) != lock.get(k)
+               and not (k not in previous and not lock.get(k))}
     if not changed:
         return
 

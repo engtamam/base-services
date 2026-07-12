@@ -158,6 +158,11 @@ class Settings(BaseSettings):
     SMS_WEBHOOK_URL: str = ""    # host must be in EGRESS_ALLOWED_HOSTS (SSRF)
     SMS_WEBHOOK_BEARER: str = ""
 
+    # Salts the subject pseudonym written into every IMMUTABLE record (audit chain, ledgers,
+    # invoices). FROZEN — see config/product.identifiers.lock.json. Change it and every pseudonym
+    # re-maps: the history orphans and an erasure can no longer prove it erased the right person.
+    PII_SALT: str = ""
+
     @property
     def email_chain(self) -> list[str]:
         return [c.strip() for c in self.EMAIL_CHAIN.split(",") if c.strip()]

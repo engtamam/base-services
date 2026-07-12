@@ -11,7 +11,11 @@ import hmac
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from app.config import Settings, get_settings
+from app.core.erasure import IdentityErasure
+from app.core.refresh_store import RefreshStore
+from app.core.user_repository import UserRepository
 from app.manifest import build_manifest
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 
@@ -48,3 +52,27 @@ async def internal_manifest(
     if guard is not None:
         manifest["security"] = {"cwe_guard": guard.report()}
     return manifest
+
+
+class EraseIn(BaseModel):
+    tenant: str
+    subject: str
+
+
+@router.post("/privacy/erase", dependencies=[Depends(require_internal_token)])
+async def erase_subject(request: Request, body: EraseIn) -> dict:
+    """Erase a data subject. Called by compliance-service during a DSAR fan-out.
+
+    identity owns the pseudonym LINKAGE, so this is the call that actually makes the person
+    unlinkable everywhere else. Idempotent: a retry on an already-erased subject returns the same
+    shape rather than failing, because a DSAR retries.
+    """
+    c = request.app.state.container
+    s = get_settings()
+    eraser = IdentityErasure(
+        users=UserRepository(c.datastore, c.login_identifier),
+        refresh=RefreshStore(c.datastore),
+        store=c.datastore,
+        pii_salt=s.PII_SALT,
+    )
+    return await eraser.erase(body.tenant, body.subject)

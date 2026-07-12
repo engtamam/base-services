@@ -49,3 +49,12 @@ class UserRepository:
         user.touch()
         await self._store.put(_USERS, user.id, user.to_dict())
         return user
+
+    async def delete(self, user: User) -> None:
+        """Remove the user AND the lookup index — the index IS the linkage.
+
+        Deleting the row but leaving the index would leave `tenant::alice@x.com -> id` behind:
+        the person's email, still stored, still enumerable. The index must go first.
+        """
+        await self._store.delete(_INDEX, self._index_key(user.tenant, user.username))
+        await self._store.delete(_USERS, user.id)

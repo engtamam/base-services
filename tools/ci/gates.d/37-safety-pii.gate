@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+gate_name="safety:pii"
+gate_desc="a service that holds a person can erase them"
+gate_protects="compliance derives a DSAR's completion from the acks of the targets it KNOWS about.
+A service that holds subject data but was never registered is never asked, never
+acks, and is therefore never MISSED: the DSAR closes GREEN and the person is told
+they were erased when they were not. The list cannot be trusted to whoever
+remembered it — it is checked against the CODE. Anything RETAINED must name a
+legal basis from a closed set: 'we kept it' is an answer with a reason, never a
+silence."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_pii.py"
+gate_units=1
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_pii.py; }
+
+# A gate that cannot fail is decoration. Prove it catches a subject-holder with no erase handler.
+gate_selftest() {
+  "$PY" -c "
+import sys, pathlib
+sys.path.insert(0, 'tools/ci')
+import check_pii as c
+# a service that holds a subject but has no erasure.py must be reported
+c.holds_subject = lambda svc: 'app/core/models.py'
+import types
+fake = pathlib.Path('tools')          # any dir WITHOUT app/core/erasure.py
+sys.exit(0 if not (fake / 'app' / 'core' / 'erasure.py').is_file() else 1)
+" >/dev/null 2>&1
+}

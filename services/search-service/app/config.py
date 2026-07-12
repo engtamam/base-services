@@ -104,6 +104,11 @@ class Settings(BaseSettings):
     # (opensearch/meilisearch backends are a documented follow-up — their config knobs
     #  ship WITH the adapter, never before it, so no knob is ever unwired.)
     SEARCH_INDEX_DRIVER: str = "builtin"    # builtin | null
+
+    # Salts the subject pseudonym written into every IMMUTABLE record (audit chain, ledgers,
+    # invoices). FROZEN — see config/product.identifiers.lock.json. Change it and every pseudonym
+    # re-maps: the history orphans and an erasure can no longer prove it erased the right person.
+    PII_SALT: str = ""
     SEARCH_CACHE_TTL_SECONDS: int = 30      # hot path: result cache
     DEFAULT_PAGE_SIZE: int = 20
     MAX_PAGE_SIZE: int = 100
