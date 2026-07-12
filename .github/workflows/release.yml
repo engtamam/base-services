@@ -165,7 +165,15 @@ jobs:
   # ───────────────────────────────────────────────────────────────────────────
   images:
     name: image ${{ matrix.service }}
-    needs: discover
+    # `gates` is skipped when CI already proved this commit, and GitHub propagates a skip
+    # TRANSITIVELY: without always(), this job skips too, even though `discover` succeeded.
+    # v0.2.0 reported SUCCESS having built nothing. A release that publishes no image is not a
+    # release — the empty set must never pass green.
+    needs: [discover, gates]
+    if: >-
+      always() &&
+      needs.discover.result == 'success' &&
+      (needs.gates.result == 'success' || needs.gates.result == 'skipped')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -259,6 +267,10 @@ jobs:
   publish:
     name: pin digests + publish release
     needs: [discover, images]
+    if: >-
+      always() &&
+      needs.discover.result == 'success' &&
+      needs.images.result == 'success' 
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -345,3 +357,32 @@ jobs:
             gh attestation verify oci://${{ env.REGISTRY }}/${{ steps.map.outputs.owner }}/wallet-service@<digest> \
               --repo ${{ github.repository }}
             ```
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # A RELEASE THAT PUBLISHED NOTHING IS NOT A SUCCESSFUL RELEASE.
+  #
+  # v0.2.0 reported SUCCESS having built zero images: `gates` was skipped (correctly —
+  # CI had already proved the commit), GitHub propagated that skip transitively, and
+  # every downstream job skipped. A skipped job does not fail a run, so the whole
+  # release went green having done nothing at all.
+  #
+  # It is the same defect the gate runner had: a loop over an empty set passes, loudly,
+  # in green. The fix is the same: make the empty case FATAL and say so out loud.
+  # ───────────────────────────────────────────────────────────────────────────
+  verify-published:
+    name: a release must actually publish
+    needs: [discover, images, publish]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse a release that shipped nothing
+        run: |
+          echo "discover: ${{ needs.discover.result }}"
+          echo "images:   ${{ needs.images.result }}"
+          echo "publish:  ${{ needs.publish.result }}"
+          if [ "${{ needs.images.result }}" != "success" ]              || [ "${{ needs.publish.result }}" != "success" ]; then
+            echo "::error::This tag published NO images. A skipped job does not fail a run, so the"
+            echo "::error::release would otherwise have reported success having done nothing."
+            exit 1
+          fi
+          echo "images built and release published."
