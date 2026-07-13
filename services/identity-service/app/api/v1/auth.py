@@ -17,6 +17,7 @@ from app.config import get_settings
 from app.core.auth_service import AuthService, WeakPassword
 from app.ports.errors import ValidationError
 from app.core.login_attempts import LoginAttemptStore
+from app.core.membership import MembershipStore
 from app.core.refresh_store import RefreshStore
 from app.core.user_repository import UserExists, UserRepository
 
@@ -66,6 +67,9 @@ def _svc(request: Request) -> AuthService:
         lockout=LoginAttemptStore(c.datastore, max_attempts=s.LOGIN_MAX_ATTEMPTS,
                                   window_seconds=s.LOGIN_ATTEMPT_WINDOW_SECONDS,
                                   lockout_seconds=s.LOGIN_LOCKOUT_SECONDS),
+        # Off (the default) => None => every path in AuthService behaves exactly as it did
+        # before Phase 31. The multi-tenant routes 404 rather than half-exist.
+        memberships=MembershipStore(c.datastore) if s.IDENTITY_MULTI_TENANT else None,
     )
 
 

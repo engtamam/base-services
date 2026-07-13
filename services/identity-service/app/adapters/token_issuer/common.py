@@ -4,6 +4,13 @@ from __future__ import annotations
 import datetime as _dt
 from typing import Any
 
+# Claims the SIGNER owns. `extra` is a caller-supplied dict, and it used to be merged with a plain
+# `payload.update(extra)` — so an `extra` carrying "sub" or "type" would silently rewrite who the
+# token is for and what it is allowed to do. Nothing does that today; the mint path is the last
+# place in this codebase to leave a loaded gun lying around on the argument that nobody has picked
+# it up yet. A caller that tries now gets a crash, not a forged token.
+_RESERVED = frozenset({"sub", "iat", "exp", "type", "iss", "aud"})
+
 
 def encode(
     *, key: str, algorithm: str, subject: str, issuer: str, audience: str,
@@ -23,5 +30,11 @@ def encode(
     if audience:
         payload["aud"] = audience
     if extra:
+        collision = _RESERVED.intersection(extra)
+        if collision:
+            raise ValueError(
+                f"refusing to sign: claims {sorted(collision)} are owned by the signer and may "
+                f"not be overridden by a caller"
+            )
         payload.update(extra)
     return jwt.encode(payload, key, algorithm=algorithm)

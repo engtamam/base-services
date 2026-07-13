@@ -127,6 +127,16 @@ class Settings(BaseSettings):
     LOGIN_ATTEMPT_WINDOW_SECONDS: int = 900      # window the failures are counted in
     LOGIN_LOCKOUT_SECONDS: int = 900            # how long the account stays locked
 
+    # ── multi-tenant membership (Phase 31) ──────────────────────────────────
+    # One person, many companies: a freelancer with two clients gets ONE login and a key to
+    # each door — never one view of both. Default OFF: a single-tenant product behaves exactly
+    # as it does today, byte for byte. This is not a migration anybody is forced into.
+    IDENTITY_MULTI_TENANT: bool = False
+    # Switching from a low-trust tenant to a high-trust one on an existing session widens the
+    # blast radius if that session was stolen. On, a switch requires MFA re-proof. Default off
+    # is a CHOICE (see phase-31 T10) — written down, not assumed.
+    IDENTITY_TENANT_SWITCH_REAUTH: bool = False
+
     @property
     def egress_allowed_hosts(self) -> frozenset[str]:
         return frozenset(

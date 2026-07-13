@@ -21,9 +21,22 @@ class RefreshStore:
     def __init__(self, store: DataStore) -> None:
         self._store = store
 
-    async def issue(self, jti: str, user_id: str, exp_ts: float) -> None:
-        await self._store.put(_COLL, jti, {"jti": jti, "user_id": user_id,
-                                           "exp": exp_ts, "revoked": False})
+    async def issue(self, jti: str, user_id: str, exp_ts: float,
+                    tenant: str | None = None) -> None:
+        """Record a refresh token, and — once a person can span tenants — WHICH tenant it is for.
+
+        A refresh row used to store `user_id` and no tenant at all. That is fine while a user IS
+        a tenant, and it becomes the most dangerous line in the service the moment they are not:
+        refresh would mint a fresh access token for whichever tenant it felt like, including one
+        the person was removed from last week. The tenant is written down here so that refresh can
+        re-verify the membership is still current (see AuthService.refresh, T4).
+
+        `tenant=None` is the single-tenant path, unchanged.
+        """
+        row = {"jti": jti, "user_id": user_id, "exp": exp_ts, "revoked": False}
+        if tenant:
+            row["tenant"] = tenant
+        await self._store.put(_COLL, jti, row)
 
     async def is_active(self, jti: str) -> bool:
         return await self.status(jti) == "active"
@@ -40,6 +53,11 @@ class RefreshStore:
     async def user_of(self, jti: str) -> str | None:
         row = await self._store.get(_COLL, jti)
         return row.get("user_id") if row else None
+
+    async def tenant_of(self, jti: str) -> str | None:
+        """The tenant this refresh token was minted for. None on the single-tenant path."""
+        row = await self._store.get(_COLL, jti)
+        return row.get("tenant") if row else None
 
     async def revoke(self, jti: str) -> None:
         row = await self._store.get(_COLL, jti)

@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+gate_name="safety:tenancy"
+gate_desc="a token carries exactly ONE tenant, and only one it is entitled to"
+gate_protects="Sixteen services read the 'tenant' claim out of an access token and scope every
+query, every row and every invoice to it. They are RIGHT to trust it — that trust
+is the whole architecture. It also means the MINT is the only place the tenant is
+ever checked; everywhere else it is simply believed.
+
+So if the check at the mint is deleted, weakened or routed around, nothing
+downstream can tell. Every other gate in this repository stays green while one
+company reads another's data. No test fails. No alert fires. That is the entire
+threat: it is silent.
+
+Five rules: the tenant comes from the membership row and never from the request;
+every mint goes through the guard, including refresh (a fired contractor must not
+keep minting); one tenant per token, never a list; no tenant-scoped route may
+touch a global person's credentials (an admin at ONE company would own the
+freelancer's access to every OTHER); and the person model carries no authority at
+all — privilege-on-the-person is unrepresentable, not merely unused."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_tenancy.py"
+gate_units=1
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_tenancy.py; }
+
+# A gate that cannot fail is decoration. This one is MUTATION-TESTED: the selftest writes a correct
+# service, confirms it passes, then breaks it once per rule and demands the gate go red every time.
+# A surviving mutation means that rule is not enforced and the green is a lie.
+gate_selftest() { "$PY" tools/ci/selftest_tenancy.py >/dev/null 2>&1; }

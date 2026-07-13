@@ -80,6 +80,10 @@ jobs:
       - name: "safety:pii — a service that holds a person can erase them"
         run: python tools/ci/check_pii.py
 
+      # gates: safety:tenancy
+      - name: "safety:tenancy — a token carries exactly ONE tenant, and only one it is entitled to"
+        run: python tools/ci/check_tenancy.py
+
       # gates: safety:actions
       - name: "safety:actions — every action a workflow uses actually exists"
         run: python tools/ci/check_action_refs.py
