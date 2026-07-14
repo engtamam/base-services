@@ -137,6 +137,13 @@ class Settings(BaseSettings):
             h.strip().lower() for h in self.EGRESS_ALLOWED_HOSTS.split(",") if h.strip()
         )
 
+    # The status a REJECTED target-ack answers with. 409: the DSAR exists, but this service is
+    # not one of its targets — a conflict with the job's state, not a malformed request. What is
+    # NOT configurable is that it is a 4xx: a refusal must never be indistinguishable from success.
+    COMPLIANCE_ACK_REJECT_STATUS: int = 409
+    # The DSAR itself does not exist. Config too — what is NOT configurable is that both are 4xx.
+    COMPLIANCE_ACK_NOTFOUND_STATUS: int = 404
+
     # ── Derived helpers ─────────────────────────────────────────────────────
     @property
     def is_test(self) -> bool:

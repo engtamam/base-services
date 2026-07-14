@@ -25,7 +25,8 @@ def build_authz(request: Request) -> AuthzService:
     return AuthzService(roles=RoleStore(c.datastore), policies=PolicyStore(c.datastore),
                         assignments=AssignmentStore(c.datastore), engine=c.policy_engine,
                         list_limit=s.AUTHZ_LIST_LIMIT, cache=c.cache,
-                        cache_ttl=s.AUTHZ_CACHE_TTL_SECONDS)
+                        cache_ttl=s.AUTHZ_CACHE_TTL_SECONDS,
+                        role_lookup=s.AUTHZ_ROLE_LOOKUP, unknown_role=s.AUTHZ_UNKNOWN_ROLE)
 
 
 def _op_tenant(principal: Principal, body_tenant: str | None = None) -> str:

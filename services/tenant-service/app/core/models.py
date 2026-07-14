@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 STATUSES = ("pending", "active", "suspended", "deleted")
+PENDING, ACTIVE, SUSPENDED, DELETED = STATUSES
 
 
 def now() -> str:
@@ -30,6 +31,9 @@ class Tenant:
     custom_terms: str = ""
     created_at: str = field(default_factory=now)
     updated_at: str = field(default_factory=now)
+    # Set only on a TOMBSTONE. Its presence is the fact a peer that missed `tenant.deleted` needs
+    # to be able to READ — see TenantRepository.tombstone().
+    deleted_at: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -38,16 +42,22 @@ class Tenant:
             "branding": self.branding, "config": self.config,
             "custom_terms": self.custom_terms,
             "created_at": self.created_at, "updated_at": self.updated_at,
+            "deleted_at": self.deleted_at,
         }
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Tenant":
+        # `slug` and `name` are .get(), not d[...], because a TOMBSTONE deliberately drops them:
+        # a tenant delete is often an erasure, and the marker proving they are gone must not be a
+        # copy of them. Only `id` is truly required — it is the key.
         return cls(
-            id=d["id"], slug=d["slug"], name=d["name"], status=d.get("status", "pending"),
+            id=d["id"], slug=d.get("slug", ""), name=d.get("name", ""),
+            status=d.get("status", "pending"),
             isolation_mode=d.get("isolation_mode", "shared-row"),
             domains=list(d.get("domains") or []), branding=dict(d.get("branding") or {}),
             config=dict(d.get("config") or {}), custom_terms=d.get("custom_terms", ""),
             created_at=d.get("created_at", now()), updated_at=d.get("updated_at", now()),
+            deleted_at=d.get("deleted_at", ""),
         )
 
     def public(self) -> dict[str, Any]:

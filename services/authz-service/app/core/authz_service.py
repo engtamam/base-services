@@ -13,13 +13,30 @@ from typing import Any
 
 from app.core.models import Assignment, Policy, Role, new_id
 from app.core.stores import AssignmentStore, PolicyStore, RoleStore
+from app.ports.errors import ConfigError
 from app.ports.policy_engine import Decision
+
+# How a role reference is resolved. Callers naturally hold the NAME (`compliance-manager` is what
+# a human assigned); only authz knows the generated id. Accepting both is what makes the common
+# mistake simply work.
+BY_ID, BY_NAME, BY_BOTH = "id", "name", "both"
+ROLE_LOOKUPS = (BY_ID, BY_NAME, BY_BOTH)
+
+# What to do with a role we cannot resolve. REJECT is the default: empty capabilities must mean
+# "he holds none", never "I did not understand you".
+REJECT, IGNORE = "reject", "ignore"
+UNKNOWN_ROLE_MODES = (REJECT, IGNORE)
+
+
+class UnknownRole(Exception):
+    """A role reference resolved to nothing. Answered 4xx — never 200 with an empty set."""
 
 
 class AuthzService:
     def __init__(self, *, roles: RoleStore, policies: PolicyStore,
                  assignments: AssignmentStore, engine, list_limit: int = 100,
-                 cache=None, cache_ttl: int = 30) -> None:
+                 cache=None, cache_ttl: int = 30,
+                 role_lookup: str = BY_BOTH, unknown_role: str = REJECT) -> None:
         self._roles = roles
         self._policies = policies
         self._assign = assignments
@@ -27,6 +44,14 @@ class AuthzService:
         self._limit = list_limit
         self._cache = cache
         self._ttl = cache_ttl
+        if role_lookup not in ROLE_LOOKUPS:
+            raise ConfigError(f"unknown AUTHZ_ROLE_LOOKUP {role_lookup!r} — "
+                              f"allowed: {', '.join(ROLE_LOOKUPS)}")
+        if unknown_role not in UNKNOWN_ROLE_MODES:
+            raise ConfigError(f"unknown AUTHZ_UNKNOWN_ROLE {unknown_role!r} — "
+                              f"allowed: {', '.join(UNKNOWN_ROLE_MODES)}")
+        self._role_lookup = role_lookup
+        self._unknown_role = unknown_role
 
     # ── cache (generation-keyed; a PAP write bumps the tenant generation) ───────
     async def _gen(self, tenant: str) -> str:
@@ -162,19 +187,48 @@ class AuthzService:
         """
         caps: set[str] = set()
         gen = await self._gen(tenant)
-        for role_id in roles or []:
-            key = f"authz:rc:{gen}:{tenant}:{role_id}"
+        for ref in roles or []:
+            key = f"authz:rc:{gen}:{tenant}:{ref}"
             cached = await self._cache_get(key)
             if cached is not None:
                 caps |= set(cached)
                 continue
-            role = await self._roles.get(role_id)
-            # The tenant check is the wall: a role id from another company expands to nothing,
-            # so a forged/copied role name cannot import that company's privileges into this one.
-            granted = set(role.capabilities) if role and role.tenant == tenant else set()
+            role = await self._resolve_role(tenant, ref)
+            if role is None:
+                # EMPTY MUST MEAN "HE HOLDS NONE" — NEVER "I DID NOT UNDERSTAND YOU".
+                #
+                # This used to skip silently, so an unresolvable role contributed nothing and the
+                # caller got 200 with an empty capability set: a correct answer to a question
+                # asked in the wrong vocabulary. Identity then minted a token that could do
+                # nothing and every screen 403'd, with no error anywhere to explain why.
+                #
+                # Now it is loud. Identity fails CLOSED on our 4xx, so the operator sees a
+                # refusal instead of a user who mysteriously cannot do their job.
+                if self._unknown_role == REJECT:
+                    raise UnknownRole(ref)
+                await self._cache_set(key, [])
+                continue
+            granted = set(role.capabilities)
             await self._cache_set(key, sorted(granted))
             caps |= granted
         return caps
+
+    async def _resolve_role(self, tenant: str, ref: str) -> Role | None:
+        """A role reference is an id or a NAME. Callers naturally hold the name.
+
+        The tenant check is the wall, and it applies to BOTH lookups: a role belonging to another
+        company resolves to nothing here, so a copied id or a duplicated name cannot import that
+        company's privileges into this one.
+        """
+        if self._role_lookup in (BY_ID, BY_BOTH):
+            role = await self._roles.get(ref)
+            if role is not None and role.tenant == tenant:
+                return role
+        if self._role_lookup in (BY_NAME, BY_BOTH):
+            role = await self._roles.by_name(tenant, ref)
+            if role is not None:
+                return role
+        return None
 
     async def effective(self, subject: str, tenant: str,
                         extra_caps: list[str] | None = None,

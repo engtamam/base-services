@@ -22,6 +22,21 @@ class RoleStore:
         row = await self._store.get(_ROLES, role_id)
         return Role.from_dict(row) if row else None
 
+    async def by_name(self, tenant: str, name: str) -> Role | None:
+        """Resolve a role by its NAME within one tenant.
+
+        Callers naturally hold the name — `compliance-manager` is what a human assigned and what
+        the membership row carries. Only authz knows the generated id. Without this, passing a
+        name where an id was expected silently resolved to nothing, and the caller got a correct
+        answer to a question asked in the wrong vocabulary.
+
+        Pushed down to the store, scoped to the tenant: a role name from another company can never
+        resolve here, so a copied name cannot import that company's privileges.
+        """
+        rows, _ = await self._store.find(_ROLES, {"tenant": tenant, "name": name}, limit=1,
+                                         sort=("name", "asc"))
+        return Role.from_dict(rows[0]) if rows else None
+
     async def list(self, tenant: str, limit: int = 100, after: str | None = None) -> list[dict]:
         rows, _ = await self._store.find(_ROLES, {"tenant": tenant}, limit=limit, after=after,
                                          sort=("name", "asc"))

@@ -56,7 +56,21 @@ async def target_ack(request: Request, dsar_id: str, body: AckIn) -> dict:
     """A service confirms it erased/exported its slice. Completion is derived from these."""
     res = await build_dsar(request).ack_target(dsar_id, body.service, body.category)
     if not res["ok"]:
-        raise HTTPException(404 if res["reason"] == "NOT_FOUND" else 400, res["reason"])
+        # A REFUSAL MUST NEVER WEAR A SUCCESS CODE. If this returned 200 with {"ok": false},
+        # raise_for_status() would pass, the caller would ack the job, the target would never
+        # flip, and the DSAR would hang for ever while every log line said OK — a false "she was
+        # erased", which is the worst lie this service could tell. It has always raised; this
+        # only sharpens WHICH refusal it is.
+        #
+        #   NOT_FOUND      -> 404  the DSAR does not exist
+        #   UNKNOWN_TARGET -> 409  the DSAR exists, but this service/category is not one of its
+        #                          targets. That is a CONFLICT with the job's state, not a
+        #                          malformed request — 400 told the caller to fix its syntax when
+        #                          the syntax was fine.
+        s = get_settings()
+        code = (s.COMPLIANCE_ACK_NOTFOUND_STATUS if res["reason"] == "NOT_FOUND"
+                else s.COMPLIANCE_ACK_REJECT_STATUS)
+        raise HTTPException(code, res["reason"])
     return res
 
 

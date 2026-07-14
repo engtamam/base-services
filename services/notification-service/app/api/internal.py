@@ -61,6 +61,25 @@ async def internal_notify(request: Request, body: NotifyIn) -> dict:
     )
 
 
+@router.post("/notifications/drain", dependencies=[Depends(require_internal_token)])
+async def drain_queue(request: Request) -> dict:
+    """Re-attempt every queued delivery whose backoff has expired.
+
+    A retry nobody runs is not a retry — `queued` would just be a prettier word for `lost`. Drive
+    this from the chart's cronJobs (it exists for exactly this), or any scheduler:
+
+        cronJobs:
+          - name: notify-drain
+            schedule: "*/1 * * * *"
+            path: /internal/notifications/drain
+
+    Idempotent and safe to run concurrently-ish: each delivery carries its own next_attempt_ts, so
+    a tick that arrives early simply skips it.
+    """
+    s = get_settings()
+    return await build_notifier(request).drain(limit=s.NOTIFY_DRAIN_LIMIT)
+
+
 @router.get("/manifest", dependencies=[Depends(require_internal_token)])
 async def internal_manifest(
     request: Request, settings: Settings = Depends(get_settings)

@@ -6,6 +6,7 @@ import os
 
 import jwt
 import pytest
+
 from fastapi.testclient import TestClient
 
 SECRET = "h" * 40
@@ -93,8 +94,22 @@ def test_lifecycle_and_export(client):
     assert client.post(f"/api/v1/tenants/{tid}/reactivate", headers=_platform()).json()["status"] == "active"
     exp = client.get(f"/api/v1/tenants/{tid}/export", headers=_platform())
     assert exp.status_code == 200 and exp.json()["tenant"]["slug"] == "beta"
-    assert client.delete(f"/api/v1/tenants/{tid}", headers=_platform()).json()["purged"] is True
-    assert client.get(f"/api/v1/tenants/{tid}", headers=_platform()).status_code == 404
+    # A delete leaves a TOMBSTONE, not a hole. The row is not purged, because `tenant.deleted` is
+    # published at most once and a peer that missed it must still be able to LEARN the tenant is
+    # gone — by reading. (This assertion used to demand `purged is True` and a 404, which is the
+    # behaviour the tombstone exists to remove.)
+    deleted = client.delete(f"/api/v1/tenants/{tid}", headers=_platform()).json()
+    assert deleted["purged"] is False
+    assert deleted["status"] == "deleted" and deleted["deleted_at"]
+
+    # An operator can still see WHAT was deleted and WHEN — a delete that leaves no record is not
+    # an audit trail, it is an amnesia.
+    admin = client.get(f"/api/v1/tenants/{tid}", headers=_platform())
+    assert admin.status_code == 200 and admin.json()["status"] == "deleted"
+    # And a PEER can read the tombstone and learn the truth, which is the whole point.
+    peer = client.get(f"/internal/tenants/{tid}", headers=_internal())
+    assert peer.status_code == 200
+    assert peer.json()["status"] == "deleted"
 
 
 def test_tenant_self_scoped(client):

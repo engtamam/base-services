@@ -60,6 +60,22 @@ class DeliveryStore:
         # by the caller's limit, and not reachable from any tenant-facing route.
         return await self._store.scan_all(_DELIVERIES, limit)
 
+    async def due(self, status: str, limit: int) -> list[Delivery]:
+        """Deliveries waiting for another attempt. Pushed down by status — never a scan.
+
+        The caller filters on `next_attempt_ts` in Python: the DataStore `where` is equality-only
+        by design (no operators means nothing to inject), so "is it time yet" cannot be pushed
+        down. That is fine — the set is already narrowed to `queued`, which is a small, bounded
+        set even during an outage, and it shrinks as the queue drains.
+        """
+        rows, _ = await self._store.find(_DELIVERIES, {"status": status}, limit=limit,
+                                         sort=("ts", "asc"))
+        return [Delivery.from_dict(r) for r in rows]
+
+    async def save(self, d: Delivery) -> Delivery:
+        await self._store.put(_DELIVERIES, d.id, d.to_dict())
+        return d
+
     # ── idempotency (at-least-once callers must not double-send) ───────────────
     async def idempotent_get(self, key: str, *, now: float, ttl: int) -> dict | None:
         row = await self._store.get(_IDEMPO, key)

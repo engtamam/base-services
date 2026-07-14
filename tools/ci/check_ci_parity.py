@@ -26,6 +26,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "ci" / "run_all_gates.sh"
 GATES_DIR = ROOT / "tools" / "ci" / "gates.d"
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+WORKFLOWS_DIR = ROOT / ".github" / "workflows"
 
 # Gates the workflow deliberately does not name individually because the strict
 # full-suite step covers them. Must stay EMPTY unless justified here, in words.
@@ -90,6 +91,39 @@ def workflows_parse() -> list[str]:
     return problems
 
 
+# The REAL INFRA a gate needs, and the env var that proves it was provided. `ci` and `release` run
+# the same gates — but they are different workflows, and a gate is only as good as the environment
+# it runs in.
+#
+# THIS EXISTS BECAUSE OF A REAL FAILURE. MinIO was added to `ci` and not to `release`. Both ran the
+# same ObjectStore contract; in `ci` it ran against a real server and passed, in `release` it
+# SKIPPED, and `--strict` turned the skip into a failure. The tag was refused. Same gates, different
+# environments — the check "passed" because it was looking at a different thing than anyone thought.
+#
+# Comparing which gates a workflow runs is not enough. What they run AGAINST has to match too.
+REQUIRED_INFRA = {
+    "DATASTORE_TEST_DSN": "a real postgres (the contracts gate proves the param did not skip)",
+    "OBJECTSTORE_TEST_ENDPOINT": "a real S3-compatible server (MinIO) for the ObjectStore contract",
+}
+
+
+def infra_parity() -> list[str]:
+    """Every workflow that runs the gates must provide every piece of infra the gates need."""
+    problems = []
+    for wf in sorted(WORKFLOWS_DIR.glob("*.yml")):
+        body = wf.read_text(encoding="utf-8")
+        # Only workflows that actually run the gate runner or the per-service suites.
+        if "run_all_gates.sh" not in body:
+            continue
+        for var, why in REQUIRED_INFRA.items():
+            if var not in body:
+                problems.append(
+                    f"{wf.name} runs the gates but never sets {var} — it needs {why}. "
+                    f"The gate will SKIP there and pass here, and under --strict a skip is a "
+                    f"failure: the two workflows disagree about what was proven.")
+    return problems
+
+
 def main() -> int:
     if not WORKFLOW.exists():
         print(f"FAIL: no workflow at {WORKFLOW.relative_to(ROOT)} — the gates run nowhere.")
@@ -101,6 +135,13 @@ def main() -> int:
         for b in broken:
             print(f"    - {b}")
         print("  GitHub skips an unparseable workflow silently. A green checkout means nothing.")
+        return 1
+
+    infra = infra_parity()
+    if infra:
+        print("FAIL: the workflows run the same gates against DIFFERENT infrastructure:")
+        for i in infra:
+            print(f"    - {i}")
         return 1
 
     script = gates_from_script()

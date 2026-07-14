@@ -49,6 +49,17 @@ on:
       needs_postgres:
         type: boolean
         default: true
+      # An S3-compatible server (MinIO) for the ObjectStore contract. Without it that contract
+      # param SKIPS — and under --strict a skip is a FAILURE. This input exists because `ci` had
+      # MinIO and `release` did not: the same gate, run against different infrastructure, passed in
+      # one and failed in the other. safety:ci-parity now refuses that divergence.
+      needs_objectstore:
+        type: boolean
+        default: true
+      objectstore_image:
+        description: "PINNED. `latest` moves, and a release that cannot be rebuilt is not one."
+        type: string
+        default: "minio/minio:RELEASE.2025-04-22T22-12-26Z"
       needs_helm:
         type: boolean
         default: true
@@ -90,12 +101,29 @@ jobs:
       GATE_UNIT_MARKER: ${{ inputs.unit_marker }}
       GATE_UNIT_SKIP: ${{ inputs.unit_skip }}
       DATASTORE_TEST_DSN: ${{ inputs.needs_postgres && 'postgresql://ci:ci@127.0.0.1:5432/ci_test' || '' }}
+      OBJECTSTORE_TEST_ENDPOINT: ${{ inputs.needs_objectstore && 'http://127.0.0.1:9000' || '' }}
+      OBJECTSTORE_TEST_BUCKET: contract
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_DEFAULT_REGION: us-east-1
       PYTHON: python
 
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0        # safety:secrets diffs against the merge-base
+
+      # A `services:` container cannot pass MinIO's required `server /data` argument — there is no
+      # `command:` key — so it must be started as a step.
+      - name: Start MinIO (ObjectStore contract)
+        if: ${{ inputs.needs_objectstore }}
+        run: |
+          docker run -d --name minio -p 9000:9000             -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin             "${{ inputs.objectstore_image }}" server /data
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:9000/minio/health/live; then echo ready; exit 0; fi
+            sleep 2
+          done
+          echo "::error::MinIO never became healthy"; docker logs minio; exit 1
 
       - uses: actions/setup-python@v5
         with:

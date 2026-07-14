@@ -9,7 +9,13 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.core.models import Tenant, new_id
+from app.core.models import DELETED, Tenant, new_id
+from app.ports.errors import ConfigError
+
+# How a delete behaves. The PLATFORM decides; we enforce. `tombstone` is the default because the
+# event bus is at-most-once and a purge makes the deletion unlearnable to anyone who missed it.
+TOMBSTONE, PURGE = "tombstone", "purge"
+DELETE_MODES = (TOMBSTONE, PURGE)
 from app.core.tenant_repository import TenantRepository
 from app.ports.event_bus import Event
 
@@ -23,7 +29,9 @@ class InvalidSlug(Exception):
 class TenantService:
     def __init__(self, *, repo: TenantRepository, isolation, resolver, event_bus,
                  default_isolation: str, default_locale: str, default_timezone: str,
-                 default_calendar: str, slug_min: int, slug_max: int) -> None:
+                 default_calendar: str, slug_min: int, slug_max: int,
+                 delete_mode: str = "tombstone",
+                 tombstone_fields: tuple[str, ...] = ()) -> None:
         self._repo = repo
         self._isolation = isolation
         self._resolver = resolver
@@ -34,6 +42,11 @@ class TenantService:
         self._default_calendar = default_calendar
         self._slug_min = slug_min
         self._slug_max = slug_max
+        if delete_mode not in DELETE_MODES:
+            raise ConfigError(
+                f"unknown TENANT_DELETE_MODE {delete_mode!r} — allowed: {', '.join(DELETE_MODES)}")
+        self._delete_mode = delete_mode
+        self._tombstone_fields = tuple(tombstone_fields)
 
     def _validate_slug(self, slug: str) -> str:
         if not (self._slug_min <= len(slug) <= self._slug_max) or not _SLUG_RE.match(slug):
@@ -103,9 +116,29 @@ class TenantService:
         return tenant
 
     async def delete(self, tenant: Tenant) -> dict:
-        await self._repo.delete(tenant)   # purge this service's tenant records
-        await self._emit("tenant.deleted", tenant)  # peers purge their own data
-        return {"status": "deleted", "tenant_id": tenant.id, "purged": True}
+        """Delete the tenant, and leave something a peer can READ that says so.
+
+        `tenant.deleted` is published AT MOST ONCE — the bus has no outbox, no retry and no replay
+        (see the EventBus port). A peer that is restarting when it fires never hears about it. If
+        the row is also purged, there is then nothing left to ask: GET /internal/tenants/{id} 404s
+        for ever, peers fail OPEN on 404 (an unknown tenant is usually an onboarding gap, not a
+        punishment), and a deleted tenant stays writable permanently.
+
+        A read is self-healing. A missed event is wrong for ever. So the default is a TOMBSTONE:
+        the tenant is gone, and the fact that it is gone is still readable.
+
+        `purge` remains available for the deployment that genuinely wants the row destroyed — but
+        it is a choice made with eyes open, not the default nobody noticed.
+        """
+        if self._delete_mode == PURGE:
+            await self._repo.delete(tenant)
+            await self._emit("tenant.deleted", tenant)
+            return {"status": DELETED, "tenant_id": tenant.id, "purged": True}
+
+        stone = await self._repo.tombstone(tenant, keep=self._tombstone_fields)
+        await self._emit("tenant.deleted", tenant)   # a HINT that saves peers a round trip
+        return {"status": DELETED, "tenant_id": stone.id, "purged": False,
+                "deleted_at": stone.deleted_at}
 
     # ── offboarding / scope ────────────────────────────────────────────────────
     async def export(self, tenant: Tenant) -> dict:

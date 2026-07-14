@@ -14,6 +14,7 @@ from app.api.deps import get_guard
 from app.config import get_settings
 from app.core.models import Preference, Template
 from app.core.notifier import NotificationService
+from app.core.retry import RetryPolicy
 from app.core.stores import (
     DeliveryStore, InAppStore, PreferenceStore, TemplateStore,
 )
@@ -33,6 +34,12 @@ def build_notifier(request: Request) -> NotificationService:
         email=c.email, sms=c.sms, renderer=c.renderer,
         email_from=s.EMAIL_FROM, default_locale=s.DEFAULT_LOCALE,
         dedupe_ttl_seconds=s.NOTIFY_DEDUPE_TTL_SECONDS,
+        delivery_mode=s.NOTIFY_DELIVERY_MODE,
+        retry=RetryPolicy(
+            max_attempts=s.NOTIFY_MAX_ATTEMPTS,
+            base_ms=s.NOTIFY_BACKOFF_BASE_MS, max_ms=s.NOTIFY_BACKOFF_MAX_MS,
+            retryable=s.notify_retryable, permanent=s.notify_permanent,
+            unknown_is_retryable=s.NOTIFY_UNKNOWN_ERROR_RETRYABLE),
     )
 
 

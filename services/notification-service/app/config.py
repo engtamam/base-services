@@ -190,6 +190,41 @@ class Settings(BaseSettings):
             h.strip().lower() for h in self.EGRESS_ALLOWED_HOSTS.split(",") if h.strip()
         )
 
+    # ── delivery: an outage must DELAY a message, not destroy it ────────────
+    # The send used to be inline: if the provider was down, the delivery was recorded "failed" and
+    # that was the end of it. A five-minute outage silently destroyed every message sent during it.
+    #
+    #   queued  (default) a failed send that COULD succeed is re-queued with a jittered backoff and
+    #           retried by the drain worker. An outage delays the message.
+    #   inline  the old behaviour: one attempt, then "failed". Kept for a deployment that genuinely
+    #           wants it — with eyes open, not by accident.
+    NOTIFY_DELIVERY_MODE: str = "queued"        # queued | inline
+    NOTIFY_MAX_ATTEMPTS: int = 5                # then DEAD_LETTER — findable, not silently lost
+    NOTIFY_BACKOFF_BASE_MS: int = 1_000
+    NOTIFY_BACKOFF_MAX_MS: int = 300_000        # 5 min ceiling; a doubling series runs away fast
+    NOTIFY_DRAIN_LIMIT: int = 100               # deliveries re-attempted per tick
+
+    # WHAT COUNTS AS RETRYABLE IS A PLATFORM DECISION. One provider says "throttled", another says
+    # "rate_limited", a Saudi SMS gateway may say something we have never seen. Substring match,
+    # case-insensitive, on the recorded error. PERMANENT wins over RETRYABLE: spending money to
+    # re-send to a bad number is worse than giving up on one message a human can resend.
+    NOTIFY_RETRYABLE_ERRORS: str = (
+        "timeout,timederror,connection,unavailable,throttl,rate,502,503,504,send failed")
+    NOTIFY_PERMANENT_ERRORS: str = (
+        "invalid,malformed,not found,unknown channel,unsubscrib,blocked,suppress,400,401,403,404")
+    # An error nobody classified. Retrying the unknown risks burning quota; giving up on it risks
+    # losing a message. The default is to RETRY — the ceiling and the dead-letter bound the cost,
+    # and a lost message has no bound at all.
+    NOTIFY_UNKNOWN_ERROR_RETRYABLE: bool = True
+
+    @property
+    def notify_retryable(self) -> tuple[str, ...]:
+        return tuple(x.strip() for x in self.NOTIFY_RETRYABLE_ERRORS.split(",") if x.strip())
+
+    @property
+    def notify_permanent(self) -> tuple[str, ...]:
+        return tuple(x.strip() for x in self.NOTIFY_PERMANENT_ERRORS.split(",") if x.strip())
+
     # ── Derived helpers ─────────────────────────────────────────────────────
     @property
     def is_test(self) -> bool:

@@ -85,7 +85,12 @@ def test_lifecycle_emits_events():
     run(svc.reactivate(t))
     run(svc.delete(t))
     assert bus.events == ["tenant.created", "tenant.suspended", "tenant.reactivated", "tenant.deleted"]
-    assert run(svc.get(t.id)) is None  # purged
+    # NOT purged: a TOMBSTONE. `tenant.deleted` is published at most once, so a peer that missed
+    # it must still be able to learn the truth by READING. A read is self-healing; a missed event
+    # is wrong for ever. And the marker is not a copy of the tenant — the name and slug are gone.
+    stone = run(svc.get(t.id))
+    assert stone is not None and stone.status == "deleted" and stone.deleted_at
+    assert stone.name == "" and stone.slug == ""
 
 
 def test_export_and_scope():

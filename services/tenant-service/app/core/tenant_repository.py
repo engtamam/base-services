@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from app.adapters.resolver.resolvers import normalize_host
-from app.core.models import Tenant
+from app.core.models import DELETED, Tenant, now as _now
 from app.ports.datastore import DataStore
 
 _TENANTS = "tenants"
@@ -63,7 +63,38 @@ class TenantRepository:
         return await self._store.scan_all(_TENANTS, limit)
 
     async def delete(self, tenant: Tenant) -> None:
+        """PURGE. The row is gone and nothing can ever learn it existed. See `tombstone()`."""
         await self._store.delete(_TENANTS, tenant.id)
         await self._store.delete(_SLUGS, tenant.slug)
         for host in map(normalize_host, tenant.domains):
             await self._store.delete(_DOMAINS, host)
+
+    async def tombstone(self, tenant: Tenant, *, keep: tuple[str, ...]) -> Tenant:
+        """Delete the tenant, but leave a MARKER that says so.
+
+        A purge and a fire-and-forget bus are a bad pair. `tenant.deleted` is published at most
+        once (see the EventBus port): a peer that is restarting when it fires never hears about it,
+        and after the purge there is nothing left to ask — GET /internal/tenants/{id} just 404s,
+        for ever. Peers fail OPEN on 404, and reasonably so (an unknown tenant is usually an
+        onboarding gap, not a punishment), so the deleted tenant stays writable permanently.
+
+        The tombstone makes the fact READABLE. A peer that missed the event learns the truth the
+        next time it looks. A read is self-healing; a missed event is wrong for ever.
+
+        The tombstone keeps only what `keep` allows. That matters: a tenant delete is often an
+        ERASURE, so the marker proving they are gone must not itself be a copy of them. The
+        identifiers stay; the name, the branding, the config and the domains do not.
+
+        The slug and domain indexes ARE released — the tenant no longer answers on its host, and
+        the slug can be taken by someone new. Only the id-keyed marker survives.
+        """
+        row = {k: v for k, v in tenant.to_dict().items() if k in keep}
+        row["id"] = tenant.id                      # the id is the key; it is never optional
+        row["status"] = DELETED
+        row["deleted_at"] = _now()
+
+        await self._store.put(_TENANTS, tenant.id, row)
+        await self._store.delete(_SLUGS, tenant.slug)
+        for host in map(normalize_host, tenant.domains):
+            await self._store.delete(_DOMAINS, host)
+        return Tenant.from_dict(row)

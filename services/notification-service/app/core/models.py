@@ -64,15 +64,38 @@ class Delivery:
     recipient: str
     channel: str
     template_key: str
-    status: str            # sent | failed | suppressed
+    # queued | sending | sent | suppressed | failed | dead_letter
+    #
+    # `failed` and `dead_letter` are both terminal and deliberately NOT the same thing:
+    #   failed       asking again would fail identically (bad address, missing template)
+    #   dead_letter  it could have worked, we retried, we ran out of patience
+    # Collapsing them hides which outages actually cost us messages.
+    status: str
     provider: str = ""
     error: str = ""
+    attempts: int = 0                  # how many sends were tried
+    next_attempt_ts: float = 0.0       # when the next one may run (backoff + full jitter)
+    payload: dict[str, Any] = field(default_factory=dict)   # what a worker needs to re-send
     ts: str = field(default_factory=now)
 
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "recipient": self.recipient, "channel": self.channel,
                 "template_key": self.template_key, "status": self.status,
-                "provider": self.provider, "error": self.error, "ts": self.ts}
+                "provider": self.provider, "error": self.error,
+                "attempts": self.attempts, "next_attempt_ts": self.next_attempt_ts,
+                "payload": self.payload, "ts": self.ts}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "Delivery":
+        return cls(
+            id=d["id"], recipient=d["recipient"], channel=d["channel"],
+            template_key=d["template_key"], status=d["status"],
+            provider=d.get("provider", ""), error=d.get("error", ""),
+            attempts=int(d.get("attempts", 0)),
+            next_attempt_ts=float(d.get("next_attempt_ts", 0.0)),
+            payload=dict(d.get("payload") or {}),
+            ts=d.get("ts", now()),
+        )
 
 
 @dataclass

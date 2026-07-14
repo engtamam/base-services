@@ -39,7 +39,71 @@ env:
   PYTHON_VERSION: "3.12"
   REGISTRY: ghcr.io
 
+  # HOW A RELEASE SATISFIES ITSELF THAT THE GATES ARE GREEN.
+  #
+  #   verify  (default) ASSERT, via the API, that the `ci` run for THIS EXACT COMMIT concluded
+  #           success — and FAIL if it did not. release.sh already refuses to tag an unproven
+  #           commit, so the tag can only exist on a commit CI has proved. Re-deriving that fact
+  #           costs ~9 minutes and proves nothing new. Seconds instead.
+  #   rerun   run every gate again from scratch (the repo-wide gates + a 17-way per-service
+  #           matrix). Slower, and it trusts nothing at all.
+  #   both    verify AND rerun. The belt-and-braces default for a nervous release.
+  #
+  # WHY THIS IS SAFE, AND WHY v0.2.0 WAS NOT. v0.2.0 "trusted CI" by SKIPPING the gate job — and
+  # GitHub propagates a skip transitively, so `images` skipped, `publish` skipped, and a skipped
+  # job does not fail a run. It shipped nothing and reported success.
+  #
+  # The difference is not the trust. It is that `verify` FAILS when CI was not green, and a
+  # failure blocks everything downstream, where a skip did not. Downstream jobs below check the
+  # result EXPLICITLY (`success` or `skipped`), so a disabled re-run can never be mistaken for a
+  # passed one.
+  #
+  # SET IT AS A REPOSITORY VARIABLE, not here: a job-level `if:` cannot read `env`, only `vars`.
+  #
+  #     gh variable set RELEASE_GATE_MODE --body both      # re-prove everything as well
+  #     gh variable set RELEASE_GATE_MODE --body rerun     # re-prove everything, only
+  #     gh variable delete RELEASE_GATE_MODE               # back to the default: verify
+  #
+  # UNSET is the default, and the default is `verify` — the fast path, and the safe one: the tag
+  # cannot exist on a commit CI did not prove, and verify-ci-green FAILS if it somehow does. The
+  # matrix stays in the file, switchable back on from one variable the day it earns its keep.
+
 jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # PROVE THE COMMIT WAS GREEN — in seconds, not minutes.
+  #
+  # `release.sh` already refuses to tag a commit CI has not proved. This asserts that
+  # independently, at release time, from the API: the `ci` run for THIS EXACT SHA must have
+  # concluded `success`. If it did not, this job FAILS — and a failure blocks everything
+  # downstream. (v0.2.0's mistake was expressing the same trust as a SKIP, which does not.)
+  # ───────────────────────────────────────────────────────────────────────────
+  verify-ci-green:
+    name: ci was green for this commit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The ci run for this SHA must have concluded success
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          echo "commit under release: $SHA"
+          runs=$(gh api "repos/${{ github.repository }}/actions/runs?head_sha=$SHA&per_page=50"                    --jq '[.workflow_runs[] | select(.name=="ci")]')
+          count=$(echo "$runs" | jq 'length')
+          if [ "$count" = "0" ]; then
+            echo "::error::no ci run exists for $SHA. A tag must sit on a commit CI has PROVED."
+            exit 1
+          fi
+          status=$(echo "$runs" | jq -r '.[0].status')
+          concl=$(echo "$runs" | jq -r '.[0].conclusion')
+          echo "ci: status=$status conclusion=$concl"
+          if [ "$status" != "completed" ] || [ "$concl" != "success" ]; then
+            echo "::error::ci for $SHA is '$status/$concl', not a completed success."
+            echo "::error::Refusing to release a commit that has not been proved green."
+            exit 1
+          fi
+          echo "ci was green for $SHA — the gates already ran on this exact tree."
+
   # ───────────────────────────────────────────────────────────────────────────
   # A release must never ship code the merge gates would have blocked.
   #
@@ -50,6 +114,10 @@ jobs:
   # ───────────────────────────────────────────────────────────────────────────
   gates:
     name: gates must be green
+    # Only when the mode asks for a re-run. When it does not, this job is SKIPPED — and the
+    # downstream `if:` treats a skip as acceptable ONLY because it also treats a FAILURE as fatal.
+    # That explicitness is the whole lesson of v0.2.0.
+    if: ${{ vars.RELEASE_GATE_MODE == 'rerun' || vars.RELEASE_GATE_MODE == 'both' }}
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -64,6 +132,15 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       DATASTORE_TEST_DSN: postgresql://ci:ci@127.0.0.1:5432/ci_test
+      # The release runs the SAME gates as ci, so it needs the SAME real infra. It runs them
+      # --strict, where a SKIPPED gate is a FAILED gate — so a missing MinIO does not quietly
+      # degrade the release, it stops it. (It did: v0.4.2's gates failed here, `images` and
+      # `publish` skipped, and `a release must actually publish` went red. The guard worked.)
+      OBJECTSTORE_TEST_ENDPOINT: http://127.0.0.1:9000
+      OBJECTSTORE_TEST_BUCKET: contract
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_DEFAULT_REGION: us-east-1
       PYTHON: python
     steps:
       - uses: actions/checkout@v4
@@ -82,6 +159,17 @@ jobs:
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
             | sh -s -- -b /usr/local/bin
+      - name: Start MinIO (the ObjectStore contract runs against a REAL S3-compatible server)
+        run: |
+          docker run -d --name minio -p 9000:9000             -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin             "$MINIO_IMAGE" server /data
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:9000/minio/health/live; then echo "minio ready"; exit 0; fi
+            sleep 2
+          done
+          echo "::error::MinIO never became healthy"; docker logs minio; exit 1
+        env:
+          MINIO_IMAGE: "minio/minio:RELEASE.2025-04-22T22-12-26Z"
+
       - name: Install every service
         run: |
           python -m pip install --upgrade pip
@@ -89,13 +177,108 @@ jobs:
           # is a FAILURE, not a skipped note. It arrived transitively before; a gate
           # must not depend on another package's dependency tree.
           pip install pytest pyyaml asyncpg jsonschema
-          for d in services/*/; do pip install -e "$d[dev,ci]" -q; done
-      - name: run_all_gates.sh --strict
-        run: bash tools/ci/run_all_gates.sh --strict
+          for d in services/*/; do pip install -e "$d[dev,ci,s3]" -q; done
+      # --profile aggregate drops the three PER-SERVICE gates (suites, security-gate,
+      # contracts:postgres). They are NOT skipped — they run in the `gates-matrix` job below, 17
+      # of them at once, which is exactly how ci runs them. Running them serially here cost 9 of
+      # this job's 10 minutes and proved nothing extra.
+      #
+      # `--strict` still means a SKIPPED gate is a FAILED gate. We are parallelising the gates,
+      # not trusting anyone that they passed.
+      - name: run_all_gates.sh --strict (repo-wide gates)
+        run: bash tools/ci/run_all_gates.sh --strict --profile aggregate
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # The PER-SERVICE gates, 17 at once. Same gates, same --strict, one job each —
+  # a release must run them, but it need not run them one after another.
+  # ───────────────────────────────────────────────────────────────────────────
+  gates-matrix:
+    name: gates ${{ matrix.service }}
+    # The per-service gates, 17 at once. Kept so a release CAN re-prove everything from scratch —
+    # and switchable off from one repo variable the day it earns nothing.
+    if: ${{ vars.RELEASE_GATE_MODE == 'rerun' || vars.RELEASE_GATE_MODE == 'both' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - analytics-service
+          - api-gateway
+          - audit-service
+          - authz-service
+          - billing-service
+          - compliance-service
+          - connector-service
+          - feature-flag-service
+          - file-service
+          - identity-service
+          - job-service
+          - notification-service
+          - search-service
+          - tenant-service
+          - wallet-service
+          - webhook-service
+          - zatca-service
+    services:
+      postgres:
+        image: postgres:16.4-alpine
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci -d ci_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATASTORE_TEST_DSN: postgresql://ci:ci@127.0.0.1:5432/ci_test
+      OBJECTSTORE_TEST_ENDPOINT: http://127.0.0.1:9000
+      OBJECTSTORE_TEST_BUCKET: contract
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_DEFAULT_REGION: us-east-1
+      MINIO_IMAGE: "minio/minio:RELEASE.2025-04-22T22-12-26Z"
+      PYTHON: python
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000             -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin             "$MINIO_IMAGE" server /data
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:9000/minio/health/live; then echo ready; exit 0; fi
+            sleep 2
+          done
+          echo "::error::MinIO never became healthy"; docker logs minio; exit 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: services/*/pyproject.toml
+      - name: Install ${{ matrix.service }}
+        working-directory: services/${{ matrix.service }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,ci,s3]"
+      - name: suites + security-gate + contracts (strict)
+        env:
+          GATE_ONLY_UNIT: ${{ matrix.service }}
+        run: |
+          bash tools/ci/run_all_gates.sh --strict             --only suites --only security-gate --only contracts:postgres
 
   discover:
     name: discover services
-    needs: gates
+    needs: [verify-ci-green, gates, gates-matrix]
+    # EXPLICIT, because GitHub's default is the trap: a `needs` job that SKIPS skips its dependents
+    # too, silently, and a skipped job does not fail a run. That is precisely how v0.2.0 published
+    # nothing and called it success.
+    #
+    # So: verify-ci-green MUST have succeeded. The two re-run jobs may be `skipped` (the mode
+    # turned them off) or `success` — but never `failure` or `cancelled`.
+    if: >-
+      always() &&
+      needs.verify-ci-green.result == 'success' &&
+      (needs.gates.result == 'success' || needs.gates.result == 'skipped') &&
+      (needs.gates-matrix.result == 'success' || needs.gates-matrix.result == 'skipped')
     runs-on: ubuntu-latest
     outputs:
       services: ${{ steps.find.outputs.services }}

@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, s
 from pydantic import BaseModel, Field
 
 from app.api.v1.authz import build_authz
+from app.core.authz_service import UnknownRole
 from app.config import Settings, get_settings
 from app.core.erasure import AuthzErasure
 from app.manifest import build_manifest
@@ -73,7 +74,16 @@ async def internal_effective(request: Request, subject: str = Query(...),
     a caller that trusted it would mint tokens with no capabilities at all.
     """
     held = [r.strip() for r in roles.split(",") if r.strip()]
-    caps = await build_authz(request).effective(subject, tenant, roles=held)
+    try:
+        caps = await build_authz(request).effective(subject, tenant, roles=held)
+    except UnknownRole as exc:
+        # EMPTY MUST MEAN "HE HOLDS NONE" — NEVER "I DID NOT UNDERSTAND YOU".
+        #
+        # Returning 200 with [] for a role we could not resolve is a correct answer to a question
+        # asked in the wrong vocabulary. Identity would then mint a token that can do nothing, and
+        # every screen would 403 with no error anywhere explaining why. Identity fails CLOSED on
+        # this 400, so the operator sees a refusal instead of a user who mysteriously cannot work.
+        raise HTTPException(get_settings().AUTHZ_UNKNOWN_ROLE_STATUS, f"UNKNOWN_ROLE: {exc}")
     return {"subject": subject, "tenant": tenant, "capabilities": sorted(caps)}
 
 

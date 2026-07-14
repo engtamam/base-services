@@ -28,8 +28,19 @@ UNITS_DIR="${GATE_UNITS_DIR:-services}"
 UNIT_MARKER="${GATE_UNIT_MARKER:-app}"
 UNIT_SKIP="${GATE_UNIT_SKIP:-_template}"
 
+# GATE_ONLY_UNIT restricts discovery to ONE unit, so a CI matrix can fan the per-service gates out
+# across 17 runners instead of grinding through them one after another in a single job. It is a
+# FILTER, never a skip: every unit still runs its gates, in some job, and `require_units` still
+# treats an empty result as fatal — so a typo'd unit name is a hard error, not a quiet green.
 services() {
   local d skip hit
+  if [ -n "${GATE_ONLY_UNIT:-}" ]; then
+    if [ -d "$UNITS_DIR/$GATE_ONLY_UNIT/$UNIT_MARKER" ]; then
+      printf '%s
+' "$GATE_ONLY_UNIT"
+    fi
+    return 0
+  fi
   for d in "$UNITS_DIR"/*/; do
     [ -d "$d" ] || continue
     d="${d%/}"; d="${d##*/}"

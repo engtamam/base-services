@@ -125,6 +125,37 @@ class Settings(BaseSettings):
     SLUG_MAX_LEN: int = 48
     TENANT_LIST_LIMIT: int = 100
 
+    # ── delete semantics ────────────────────────────────────────────────────
+    # The event bus is AT-MOST-ONCE (see the EventBus port). A peer that misses `tenant.deleted`
+    # has no way to ever learn the tenant is gone if the row was purged — GET /internal/tenants/{id}
+    # 404s for ever, peers fail OPEN on 404, and a deleted tenant stays writable permanently.
+    #
+    #   tombstone  (default) the row survives with status=deleted + deleted_at, so a peer that
+    #              missed the event LEARNS THE TRUTH ON ITS NEXT READ. A read is self-healing.
+    #   purge      the row is destroyed. Only for a deployment that truly wants that, eyes open.
+    TENANT_DELETE_MODE: str = "tombstone"        # tombstone | purge
+    # What a tombstone may CARRY. A tenant delete is often an ERASURE, so the marker proving they
+    # are gone must not itself be a copy of them: no name, no branding, no config, no domains.
+    # `id`, `status` and `deleted_at` are always written and need not be listed.
+    TENANT_TOMBSTONE_FIELDS: str = "created_at"
+    # NOTE: there is deliberately no TENANT_TOMBSTONE_RETENTION_DAYS knob. Purging a tombstone
+    # after N days is not built, and a knob whose only effect is to look like a feature is worse
+    # than an honest absence — the config-knob guard caught exactly that and was right to.
+
+    # Fields the INTERNAL tenant read exposes to peers. `branding` is here so a render path (a PDF
+    # with the customer's logo) does not have to mint a token with a cross-tenant admin capability
+    # just to fetch a logo — least privilege: the smaller capability must be enough for the
+    # smaller job.
+    TENANT_INTERNAL_FIELDS: str = "id,slug,status,branding,config,deleted_at"
+
+    @property
+    def tombstone_fields(self) -> tuple[str, ...]:
+        return tuple(f.strip() for f in self.TENANT_TOMBSTONE_FIELDS.split(",") if f.strip())
+
+    @property
+    def internal_fields(self) -> tuple[str, ...]:
+        return tuple(f.strip() for f in self.TENANT_INTERNAL_FIELDS.split(",") if f.strip())
+
     @property
     def egress_allowed_hosts(self) -> frozenset[str]:
         return frozenset(

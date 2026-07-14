@@ -131,6 +131,17 @@ class Settings(BaseSettings):
             h.strip().lower() for h in self.EGRESS_ALLOWED_HOSTS.split(",") if h.strip()
         )
 
+    # How a role reference is resolved. Callers naturally hold the NAME (`compliance-manager` is
+    # what a human assigned and what a membership row carries); only authz knows the generated id.
+    AUTHZ_ROLE_LOOKUP: str = "both"          # id | name | both
+    # What to do with a role we cannot resolve. `reject` answers 4xx. `ignore` restores the old
+    # behaviour — 200 with an empty capability set — which is a correct answer to a question asked
+    # in the wrong vocabulary, and mints a token that can do nothing while every screen 403s.
+    AUTHZ_UNKNOWN_ROLE: str = "reject"       # reject | ignore
+    # The status an unresolvable role answers with. Config; what is NOT configurable is that it is
+    # not a 200 with an empty capability set.
+    AUTHZ_UNKNOWN_ROLE_STATUS: int = 400
+
     # ── Derived helpers ─────────────────────────────────────────────────────
     @property
     def is_test(self) -> bool:
