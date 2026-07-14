@@ -144,10 +144,47 @@ class AuthzService:
         await self._cache_set(key, sorted(caps))
         return caps
 
+    async def _role_caps(self, tenant: str, roles: list[str]) -> set[str]:
+        """Expand roles the CALLER holds into capabilities. Cached per (tenant, role).
+
+        This is what makes a role a role. Identity owns "Sara is a compliance-manager at acme" —
+        it is a fact about her employment, and it lives on her membership row. Authz owns "a
+        compliance-manager may do X, Y, Z" — that is policy, and it lives here. Identity passes
+        the roles in; we say what they mean.
+
+        Without this, the two stores each hold half of an answer and neither can give it: authz
+        can only expand roles that were separately assigned INTO authz, which nothing does, so it
+        would return the empty set for every real user on the platform.
+
+        A role that does not exist, or belongs to another tenant, contributes NOTHING. It is never
+        an error the caller can use to discover which roles exist in someone else's company, and it
+        never silently grants.
+        """
+        caps: set[str] = set()
+        gen = await self._gen(tenant)
+        for role_id in roles or []:
+            key = f"authz:rc:{gen}:{tenant}:{role_id}"
+            cached = await self._cache_get(key)
+            if cached is not None:
+                caps |= set(cached)
+                continue
+            role = await self._roles.get(role_id)
+            # The tenant check is the wall: a role id from another company expands to nothing,
+            # so a forged/copied role name cannot import that company's privileges into this one.
+            granted = set(role.capabilities) if role and role.tenant == tenant else set()
+            await self._cache_set(key, sorted(granted))
+            caps |= granted
+        return caps
+
     async def effective(self, subject: str, tenant: str,
-                        extra_caps: list[str] | None = None) -> set[str]:
+                        extra_caps: list[str] | None = None,
+                        roles: list[str] | None = None) -> set[str]:
         # extra_caps come from the request token, so they are unioned AFTER the cached set.
-        return await self._subject_caps(subject, tenant) | set(extra_caps or [])
+        # `roles` are the roles the CALLER (identity) holds for this subject — the input side of
+        # "roles are the input, caps are derived".
+        return (await self._subject_caps(subject, tenant)
+                | await self._role_caps(tenant, roles or [])
+                | set(extra_caps or []))
 
     async def _tenant_policies(self, tenant: str) -> list[dict]:
         gen = await self._gen(tenant)

@@ -36,6 +36,16 @@ spec:
           restartPolicy: OnFailure
           serviceAccountName: {{ include "base-service.fullname" $root }}
           automountServiceAccountToken: false
+          {{- /* The cronJob pulls the SAME image as the Deployment, so it needs the same pull
+                 secret. Omitting it works perfectly on a public registry and fails on every
+                 private one — and it fails on the scheduler tick, not at deploy time, so the
+                 release goes green and the job simply never runs. */}}
+          {{- with $root.Values.image.pullSecrets }}
+          imagePullSecrets:
+            {{- range . }}
+            - name: {{ . }}
+            {{- end }}
+          {{- end }}
           securityContext:
             runAsNonRoot: true
             runAsUser: 10001

@@ -91,6 +91,8 @@ _TELEMETRY: dict[str, Builder] = {
 }
 
 # ── identity-service registries ─────────────────────────────────────────────
+from app.adapters.caps_resolver.authz import AuthzCaps
+from app.adapters.caps_resolver.membership import MembershipCaps
 from app.adapters.mfa.null import NullMfa
 from app.adapters.mfa.totp import TotpMfa
 from app.adapters.password_hasher.argon2 import Argon2Hasher
@@ -115,6 +117,19 @@ _MFA: dict[str, Builder] = {
 _LOGIN_IDENTIFIER: dict[str, Builder] = {
     "username": lambda s: UsernameIdentifier(),
     "email": lambda s: EmailIdentifier(),
+}
+_CAPS_RESOLVER: dict[str, Builder] = {
+    # Roles are the input; capabilities are derived. `membership` keeps them on the row (no authz
+    # needed, but a role means whatever it meant the day you were hired). `authz` derives them, so
+    # editing a role changes what everyone holding it may do, on their next mint.
+    "membership": lambda s: MembershipCaps(),
+    "authz": lambda s: AuthzCaps(
+        s.AUTHZ_URL, s.AUTHZ_INTERNAL_TOKEN,
+        timeout_ms=s.AUTHZ_TIMEOUT_MS, ttl_seconds=s.AUTHZ_CAPS_TTL_SECONDS,
+        path=s.AUTHZ_EFFECTIVE_PATH,
+        token_header=s.AUTHZ_TOKEN_HEADER, caps_field=s.AUTHZ_CAPS_FIELD,
+        subject_param=s.AUTHZ_SUBJECT_PARAM, tenant_param=s.AUTHZ_TENANT_PARAM,
+        roles_param=s.AUTHZ_ROLES_PARAM, roles_sep=s.AUTHZ_ROLES_SEPARATOR),
 }
 
 
@@ -143,6 +158,7 @@ class Container:
     token_issuer: Any = None
     mfa: Any = None
     login_identifier: LoginIdentifier = None  # type: ignore[assignment]
+    caps_resolver: Any = None
 
     def describe(self) -> list[dict[str, str]]:
         """[{port, driver}] for the service manifest."""
@@ -198,6 +214,7 @@ def build_container(settings: Settings) -> Container:
         password_hasher=_pick(_PASSWORD_HASHER, settings.PASSWORD_HASHER_DRIVER, "password_hasher", settings),
         token_issuer=_pick(_TOKEN_ISSUER, settings.TOKEN_ISSUER_DRIVER, "token_issuer", settings),
         mfa=_pick(_MFA, settings.MFA_DRIVER, "mfa", settings),
+        caps_resolver=_pick(_CAPS_RESOLVER, settings.IDENTITY_CAPS_SOURCE, "caps_resolver", settings),
         login_identifier=_pick(_LOGIN_IDENTIFIER, settings.IDENTITY_LOGIN_FIELD,
                                "login_identifier", settings),
     )

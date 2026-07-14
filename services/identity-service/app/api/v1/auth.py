@@ -20,6 +20,7 @@ from app.core.login_attempts import LoginAttemptStore
 from app.core.invites import InviteStore
 from app.core.membership import MembershipStore
 from app.core.refresh_store import RefreshStore
+from app.ports.caps_resolver import CapsUnavailable
 from app.core.user_repository import UserExists, UserRepository
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
@@ -72,6 +73,8 @@ def _svc(request: Request) -> AuthService:
         # before Phase 31. The multi-tenant routes 404 rather than half-exist.
         memberships=MembershipStore(c.datastore) if s.IDENTITY_MULTI_TENANT else None,
         invites=InviteStore(c.datastore) if s.IDENTITY_MULTI_TENANT else None,
+        # Roles are the input; capabilities are derived. The resolver decides where from.
+        caps_resolver=c.caps_resolver if s.IDENTITY_MULTI_TENANT else None,
     )
 
 
@@ -108,7 +111,13 @@ async def login(request: Request, body: LoginIn) -> dict:
 
 @router.post("/refresh")
 async def refresh(request: Request, body: RefreshIn) -> dict:
-    tokens = await _svc(request).refresh(body.refresh_token)
+    try:
+        tokens = await _svc(request).refresh(body.refresh_token)
+    except CapsUnavailable:
+        # Refresh MINTS, so it resolves capabilities too — and it must fail the same way. A 401
+        # here would be a lie: the session is fine, the capability authority is down. A client that
+        # believes 401 logs the user out and sends them to a login page that will also 503.
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "CAPS_UNAVAILABLE")
     if tokens is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "INVALID_REFRESH")
     return tokens

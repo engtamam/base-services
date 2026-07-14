@@ -31,7 +31,33 @@
 1. **Zero new deps.** Policies are structured JSON; evaluation is a small pure interpreter (stdlib only). Storage is the `DataStore` port.
 2. **Safe conditions, not code.** ABAC conditions are a restricted JSON DSL (`all`/`any`/`not`, `{attr, op, value}`) evaluated against a flat context dict. Values prefixed `$` are references resolved from context. **No `eval`, no expressions** → immune to policy injection (CWE-94/95).
 3. **Deny-overrides** by default: any matching `deny` beats any `allow`; ties broken by `priority`.
-4. **The PDP is the product.** The gateway and services call `/internal/authz/check`; identity can call `/internal/authz/effective` to embed caps in tokens.
+4. **The PDP is the product.** The gateway and services call `/internal/authz/check`; identity calls `/internal/authz/effective` to embed caps in tokens when `IDENTITY_CAPS_SOURCE=authz`.
+
+### The identity → authz call (built in Phase 32)
+
+For a long time this document described that call **as if it existed**, and it did not: identity
+read `caps` straight off the membership row and `roles` granted nothing, so an admin editing a role
+changed nothing for anybody who already held it. A role that means whatever it meant on the day you
+were hired is not a role; it is a label. The doc was aspiration written in the present tense — the
+worst kind, because it stops anyone from noticing the gap.
+
+**Who owns what.** Identity owns *"Sara is a compliance-manager at acme"* — a fact about her
+employment, which lives on her membership row. Authz owns *"a compliance-manager may do X, Y, Z"* —
+policy, which lives here. **Roles are the input; capabilities are derived.**
+
+```
+GET /internal/authz/effective?subject=&tenant=&roles=a,b   ->  {"capabilities": [...]}
+```
+
+The `roles` parameter is why this works. Without it, `effective()` could only expand roles assigned
+separately *into authz* — which nothing does — so it would return the empty set for every real user
+on the platform, and an identity that trusted it would mint tokens with no capabilities at all: a
+green deploy and a dead platform.
+
+**It fails closed.** If authz is unreachable, identity mints **no token** (503) rather than a token
+with zero capabilities. A zero-cap token looks exactly like a permissions bug, and the way a
+permissions bug gets "fixed" is by granting capabilities by hand — so a brief authz outage would
+quietly become a permanent over-grant that nobody ever revokes.
 
 ---
 

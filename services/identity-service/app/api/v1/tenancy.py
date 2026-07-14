@@ -22,6 +22,7 @@ from app.api.ratelimit import rate_limit
 from app.api.v1.auth import _svc
 from app.config import get_settings
 from app.core.auth_service import CredentialNotYours, WeakPassword
+from app.ports.caps_resolver import CapsUnavailable
 from app.core.tenancy import NoTenantClaim, TenantAccessDenied, tenant_of
 from app.ports.errors import InvalidToken, ValidationError
 
@@ -263,6 +264,12 @@ async def select_tenant(request: Request, body: TenantIn) -> dict:
 
     try:
         return await svc.select_tenant(person, body.tenant)
+    except CapsUnavailable:
+        # The capability authority is down. We refuse the login rather than mint a token with no
+        # capabilities: a zero-cap token looks exactly like a permissions bug, and support "fixes"
+        # those by granting caps by hand — so an outage would quietly become a permanent
+        # over-grant. 503 says "come back", which is true and reversible.
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "CAPS_UNAVAILABLE")
     except TenantAccessDenied:
         # ONE answer (T6). "No such tenant" and "you are not a member" are the same 403, because
         # telling them apart tells a competitor which of their rivals your consultant works for.

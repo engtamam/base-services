@@ -60,9 +60,20 @@ async def internal_check(request: Request, body: CheckIn) -> dict:
 
 @router.get("/authz/effective", dependencies=[Depends(require_internal_token)])
 async def internal_effective(request: Request, subject: str = Query(...),
-                             tenant: str = Query(default="")) -> dict:
-    """Resolve a subject's effective capabilities (for identity to embed in tokens)."""
-    caps = await build_authz(request).effective(subject, tenant)
+                             tenant: str = Query(default=""),
+                             roles: str = Query(default="")) -> dict:
+    """Resolve a subject's effective capabilities (for identity to embed in tokens).
+
+    `roles` is a comma-separated list of the roles the CALLER holds for this subject — identity
+    owns who holds which role (it is a fact about employment, and it lives on the membership row);
+    authz owns what a role MEANS. Identity passes the roles in; we expand them.
+
+    Without the `roles` input this endpoint could only expand roles assigned separately INTO authz,
+    which nothing does — so it would return the empty set for every real user on the platform, and
+    a caller that trusted it would mint tokens with no capabilities at all.
+    """
+    held = [r.strip() for r in roles.split(",") if r.strip()]
+    caps = await build_authz(request).effective(subject, tenant, roles=held)
     return {"subject": subject, "tenant": tenant, "capabilities": sorted(caps)}
 
 

@@ -526,3 +526,44 @@ def test_values_schema_rejects_unknown_keys_everywhere():
                 check(v, f"{where}.{k}")
 
     check(schema)
+
+
+def test_every_pod_spawning_kind_carries_the_pull_secret():
+    """A pull secret on the Deployment but not the CronJob is a private-registry outage that
+    passes every test.
+
+    The CronJob pulls the SAME image as the Deployment. Omit `imagePullSecrets` there and it works
+    perfectly on a public registry and fails on every private one — and it fails on the SCHEDULER
+    TICK, not at deploy time. So `helm install` goes green, the pods are Running, and the job
+    quietly never runs. Nobody finds out until the thing the job was supposed to do did not happen.
+
+    So the rule is not "the deployment has it". It is: ANY kind that spawns a pod has it.
+    """
+    rendered = render(
+        "--set", "image.pullSecrets={regcred}",
+        # The chart refuses cronJobs without a secret to carry INTERNAL_SERVICE_TOKEN — its own
+        # guard, and a correct one. Satisfy it so we can test the pull secret.
+        "--set", "existingSecret=app-secrets",
+        "--set", "cronJobs[0].name=tick",
+        "--set", "cronJobs[0].schedule=*/5 * * * *",
+        "--set", "cronJobs[0].path=/internal/tick",
+    )
+    pod_kinds = {"Deployment", "CronJob", "Job", "StatefulSet", "DaemonSet"}
+    seen = {}
+    for d in docs(rendered):
+        if not d or d.get("kind") not in pod_kinds:
+            continue
+        # Walk to the podSpec wherever this kind happens to keep it.
+        spec = d["spec"]
+        for hop in ("jobTemplate", "template"):
+            while hop in spec:
+                spec = spec[hop]["spec"] if "spec" in spec[hop] else spec[hop]
+        names = [s.get("name") for s in (spec.get("imagePullSecrets") or [])]
+        seen[d["kind"]] = names
+
+    assert "CronJob" in seen, "the CronJob did not render — this guard would be vacuous"
+    for kind, names in seen.items():
+        assert names == ["regcred"], (
+            f"{kind} does not carry image.pullSecrets — it cannot pull from a private registry, "
+            f"and on a CronJob that failure only appears on the scheduler tick"
+        )

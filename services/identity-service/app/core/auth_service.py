@@ -41,7 +41,7 @@ class AuthService:
     def __init__(self, *, users: UserRepository, refresh: RefreshStore, hasher,
                  issuer, verifier, mfa, identifier, access_ttl: int, refresh_ttl: int,
                  min_password_len: int = DEFAULT_MIN_PASSWORD_LEN, lockout=None,
-                 memberships=None, invites=None) -> None:
+                 memberships=None, invites=None, caps_resolver=None) -> None:
         self._users = users
         self._identifier = identifier
         self._refresh = refresh
@@ -57,6 +57,7 @@ class AuthService:
         # behaves exactly as it did before Phase 31. Multi-tenancy is opt-in, not a migration.
         self._memberships = memberships
         self._invites = invites            # InviteStore | None (invite mode)
+        self._caps = caps_resolver         # CapsResolver | None (None => membership caps)
         # Precomputed dummy hash so a missing user costs the same as a real one.
         self._dummy_hash = hasher.hash("timing-equalizer")
 
@@ -270,7 +271,20 @@ class AuthService:
         Note there is no `tenant` parameter. The tenant is read off the membership, never off the
         request (T1), so a caller cannot smuggle one past the check even by mistake.
         """
-        claims = claims_for(person, membership)          # raises TenantAccessDenied if not current
+        # Roles are the INPUT; capabilities are DERIVED. Resolved for THIS tenant and no other, so
+        # an admin at her own company is still a read-only contractor at the bank (T3).
+        #
+        # If the authority cannot be reached this RAISES and no token is minted. That is
+        # deliberate: minting a token with no capabilities would look exactly like a permissions
+        # bug, and the way a permissions bug gets "fixed" is by granting capabilities by hand — so
+        # a brief authz outage would quietly become a permanent over-grant nobody revokes.
+        caps = None
+        if self._caps is not None:
+            caps = await self._caps.resolve(
+                subject=person.id, tenant=membership.tenant,
+                roles=list(membership.roles), caps=list(membership.caps))
+
+        claims = claims_for(person, membership, caps)    # raises TenantAccessDenied if not current
         access = self._issuer.issue_access(person.id, claims, self._access_ttl)
         jti = new_id()
         refresh = self._issuer.issue_refresh(person.id, jti, self._refresh_ttl)

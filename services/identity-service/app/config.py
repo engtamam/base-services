@@ -160,6 +160,29 @@ class Settings(BaseSettings):
     IDENTITY_MEMBER_ADD_MODE: str = "invite"     # invite | password
     IDENTITY_INVITE_TTL_SECONDS: int = 604_800   # 7 days; an invite that never expires is a spare key
 
+    # ── where a member's capabilities come from ─────────────────────────────
+    # identity owns "Sara is a compliance-manager at acme" — a fact about her employment.
+    # authz owns "a compliance-manager may do X, Y, Z"     — policy.
+    # Roles are the INPUT; capabilities are DERIVED.
+    #
+    #   membership  (default) caps are read off the membership row. No authz-service needed — but
+    #               editing a role later changes nothing for anyone who already holds it.
+    #   authz       caps are resolved from authz at mint. Edit the role, everyone's caps follow.
+    IDENTITY_CAPS_SOURCE: str = "membership"     # membership | authz
+    AUTHZ_URL: str = ""                          # e.g. http://authz-service:8080
+    AUTHZ_INTERNAL_TOKEN: str = ""               # the internal-tier token authz requires
+    AUTHZ_TIMEOUT_MS: int = 2000                 # mint is a hot path; it may not hang on authz
+    AUTHZ_CAPS_TTL_SECONDS: int = 60             # cache; ALSO the role-change propagation window
+    # The WIRE is config too, so identity can point at any authority that answers this question —
+    # behind a gateway that renames things, or a different implementation entirely.
+    AUTHZ_EFFECTIVE_PATH: str = "internal/authz/effective"
+    AUTHZ_TOKEN_HEADER: str = "X-Internal-Token"
+    AUTHZ_CAPS_FIELD: str = "capabilities"       # the field the caps come back in
+    AUTHZ_SUBJECT_PARAM: str = "subject"
+    AUTHZ_TENANT_PARAM: str = "tenant"
+    AUTHZ_ROLES_PARAM: str = "roles"
+    AUTHZ_ROLES_SEPARATOR: str = ","
+
     @property
     def egress_allowed_hosts(self) -> frozenset[str]:
         return frozenset(

@@ -43,13 +43,19 @@ class NoTenantClaim(Exception):
     """A token arrived without a tenant. It is rejected, not treated as a wildcard (T8)."""
 
 
-def claims_for(person: Person, membership: Membership) -> dict[str, Any]:
+def claims_for(person: Person, membership: Membership,
+               caps: list[str] | None = None) -> dict[str, Any]:
     """The ONLY function that may put a tenant into a token.
 
     Note what it does not accept: a requested tenant. There is no parameter for one. The tenant is
     read off the membership we verified, so a request cannot smuggle one past the check even if a
     future caller forgets to validate — the mistake is unrepresentable rather than merely
     discouraged.
+
+    `caps` are the RESOLVED capabilities (see the CapsResolver port). They still describe authority
+    in exactly one tenant — the resolver is asked about this membership's tenant and no other — so
+    T3 holds regardless of where the caps came from. When no resolver is wired the membership's own
+    caps are used, which is the behaviour identity has always had.
     """
     if not membership.active:
         raise TenantAccessDenied()
@@ -58,8 +64,8 @@ def claims_for(person: Person, membership: Membership) -> dict[str, Any]:
         raise TenantAccessDenied()
     return {
         "tenant": membership.tenant,      # <- from the ROW, never from the request
-        "caps": list(membership.caps),    # <- authority is per-door (T3)
-        "roles": list(membership.roles),
+        "caps": list(membership.caps if caps is None else caps),   # authority is per-door (T3)
+        "roles": list(membership.roles),  # the INPUT that derived the caps — never authority itself
     }
 
 
