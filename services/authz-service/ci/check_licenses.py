@@ -13,6 +13,10 @@
 from __future__ import annotations
 
 import sys
+import os
+import pathlib
+import re
+
 from importlib import metadata
 
 ALLOW, WARN, FORBID, UNKNOWN = "ALLOW", "WARN", "FORBID", "UNKNOWN"
@@ -90,6 +94,32 @@ def classify_distribution(name: str, candidates: list[str]) -> tuple[str, str]:
     return UNKNOWN, detail
 
 
+# OUR OWN package. It is the PRODUCT, not a dependency of itself.
+#
+# This checker enforces one rule: every DEPENDENCY must be permissive, because a copyleft one can
+# force us to publish our source. The opposite rule governs the product — it is proprietary, and
+# /LICENSE grants nothing (safety:own-license enforces that).
+#
+# The two rules point in opposite directions, and the day the product stopped declaring itself
+# Apache-2.0, this checker found `LicenseRef-Proprietary` in the installed distributions and
+# reported the product as a forbidden dependency. It was right about the licence and wrong about
+# what it was looking at. A service is not its own supplier.
+
+
+def _own_package_name() -> str:
+    """The `name = ` in this service's pyproject — derived, never typed twice."""
+    pp = pathlib.Path(__file__).resolve().parents[1] / "pyproject.toml"
+    if pp.is_file():
+        m = re.search(r'^\s*name\s*=\s*"([^"]+)"', pp.read_text(encoding="utf-8"),
+                      re.MULTILINE)
+        if m:
+            return m.group(1).strip().lower()
+    return ""
+
+
+_OWN = os.environ.get("OWN_PACKAGE", "") or _own_package_name()
+
+
 def scan() -> list[tuple[str, str, str, str]]:
     results: list[tuple[str, str, str, str]] = []
     seen: set[str] = set()
@@ -97,6 +127,8 @@ def scan() -> list[tuple[str, str, str, str]]:
         name = dist.metadata["Name"]
         if not name or name.lower() in seen:
             continue
+        if _OWN and name.lower() == _OWN:
+            continue                     # the product, not a dependency
         seen.add(name.lower())
         verdict, detail = classify_distribution(name, _candidates(dist))
         results.append((name, dist.version, verdict, detail))

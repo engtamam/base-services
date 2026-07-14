@@ -69,7 +69,10 @@ _QUEUE: dict[str, Builder] = {
 _OBJECTSTORE: dict[str, Builder] = {
     "local": lambda s: LocalObjectStore(s.OBJECTSTORE_ROOT),
     "memory": lambda s: MemoryObjectStore(),
-    "s3": lambda s: S3ObjectStore(s.OBJECTSTORE_BUCKET, s.OBJECTSTORE_ENDPOINT_URL),
+    "s3": lambda s: S3ObjectStore(
+        s.OBJECTSTORE_BUCKET, s.OBJECTSTORE_ENDPOINT_URL,
+        access_key=s.OBJECTSTORE_ACCESS_KEY, secret_key=s.OBJECTSTORE_SECRET_KEY,
+        region=s.OBJECTSTORE_REGION, force_path_style=s.OBJECTSTORE_FORCE_PATH_STYLE),
 }
 _SECRETS: dict[str, Builder] = {
     "env": lambda s: EnvSecrets(),

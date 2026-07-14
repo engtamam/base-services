@@ -70,6 +70,19 @@ class Settings(BaseSettings):
     OBJECTSTORE_ROOT: str = "/tmp/objectstore"  # nosec B108
     OBJECTSTORE_BUCKET: str = ""  # s3 driver
     OBJECTSTORE_ENDPOINT_URL: str = ""  # s3-compatible endpoint (config allowlist)
+    # Any S3-compatible store — AWS S3, MinIO, or a Saudi cloud's object storage. There is no
+    # separate "minio driver": MinIO speaks S3, so it IS the s3 driver, pointed at your endpoint.
+    #
+    # Leave the keys EMPTY on AWS to use the ambient chain (IAM role / instance profile) — that is
+    # strictly safer than static keys, so it stays the default. Set them for MinIO or anywhere the
+    # ambient chain does not exist.
+    OBJECTSTORE_ACCESS_KEY: str = ""
+    OBJECTSTORE_SECRET_KEY: str = ""
+    OBJECTSTORE_REGION: str = ""          # boto refuses to sign without one; MinIO ignores it
+    # THE MINIO KNOB. Boto defaults to virtual-host addressing (https://bucket.host/key), which
+    # needs a wildcard DNS record. MinIO and most on-prem stores serve path-style
+    # (https://host/bucket/key) and simply fail to resolve otherwise.
+    OBJECTSTORE_FORCE_PATH_STYLE: bool = False
 
     SECRETS_DRIVER: str = "env"
     SECRETS_FILE: str = ""  # file driver: path to a KEY=VALUE file
