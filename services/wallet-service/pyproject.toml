@@ -13,7 +13,7 @@ requires-python = ">=3.12,<3.13"
 # granted, and use requires a signed agreement. (Its DEPENDENCIES must still be
 # permissive; that is a different rule, enforced by ci/check_licenses.py.)
 license = "LicenseRef-Proprietary"
-authors = [{ name = "base-services" }]
+authors = [{ name = "Tamam Alahdal" }]
 
 # Runtime dependencies — PERMISSIVE LICENSES ONLY (MIT/BSD/Apache-2.0/ISC).
 #   fastapi            MIT

@@ -35,6 +35,10 @@ SERVICES = ROOT / "services"
 # licensed, or relicensed, the answer changes — and it must change in ONE place, not eighteen.
 EXPECTED = os.environ.get("OWN_LICENSE", "LicenseRef-Proprietary")
 
+# The copyright holder. Config, because this is the line that changes when a company is formed to
+# hold the rights — and on that day it must change in ONE place, with an assignment in writing.
+OWNER = os.environ.get("OWNER", "Tamam Alahdal")
+
 # Declaring any of these on OUR OWN package is a grant to the world. They are correct for a
 # dependency and catastrophic for the product.
 GRANTS = {"apache-2.0", "mit", "bsd-3-clause", "bsd-2-clause", "isc", "mpl-2.0",
@@ -74,11 +78,20 @@ def main() -> int:
         return 1
 
     if (ROOT / "LICENSE").is_file():
-        body = (ROOT / "LICENSE").read_text(encoding="utf-8").lower()
+        raw = (ROOT / "LICENSE").read_text(encoding="utf-8")
+        body = raw.lower()
         if "not open source" not in body and "no license is granted" not in body:
             problems.append(
                 "LICENSE no longer says the software is proprietary — if that is deliberate, "
                 "change OWN_LICENSE too, so the two cannot disagree")
+        # A named holder is who a licensee PAYS and who a court can IDENTIFY. Copyright exists
+        # without the name, but an unnamed owner has to prove who they are before they can enforce
+        # anything — and that proof gets harder, not easier, with time.
+        if OWNER and OWNER.lower() not in body:
+            problems.append(
+                f"LICENSE does not name {OWNER!r} as the copyright holder — an unnamed owner is "
+                f"harder to assert and harder to pay (set OWNER if the holder changed, e.g. when "
+                f"a company is formed and the rights are assigned to it IN WRITING)")
     else:
         problems.append("there is no LICENSE file at the repo root — silence is not a reservation")
 

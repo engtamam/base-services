@@ -78,3 +78,9 @@ tmp/
 # one is not. It carries the legal entity, VAT number and support contacts.
 # config/product.identifiers.lock.json IS committed — the freeze needs a baseline.
 config/product.json
+
+# ── Legal ───────────────────────────────────────────────────────────────────
+# Executed agreements name real counterparties and real fees. They do not belong
+# in a source repository, and a signed PDF committed by mistake cannot be unsent —
+# it lives in the history of every clone that ever pulled it.
+/legal/
