@@ -21,6 +21,7 @@ from app.api.auth import Principal, require_cap
 from app.api.ratelimit import rate_limit
 from app.api.v1.auth import _svc
 from app.config import get_settings
+from app.core.auth_service import CredentialNotYours, WeakPassword
 from app.core.tenancy import NoTenantClaim, TenantAccessDenied, tenant_of
 from app.ports.errors import InvalidToken, ValidationError
 
@@ -33,6 +34,99 @@ members_router = APIRouter(prefix="/api/v1/tenancy", tags=["tenancy"])
 def _members_cap():
     """Resolved per request, so the capability name is config and not import-time furniture."""
     return require_cap(get_settings().IDENTITY_MEMBERS_READ_CAP)
+
+
+def _write_cap():
+    return require_cap(get_settings().IDENTITY_MEMBERS_WRITE_CAP)
+
+
+async def _caller_tenant(request: Request, dep) -> tuple[Principal, str]:
+    """The caller, and the tenant they are ACTUALLY in — off the token, never off the request."""
+    principal: Principal = await dep(request)
+    try:
+        return principal, tenant_of(principal.raw)
+    except NoTenantClaim:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "NO_TENANT")
+
+
+class AddMemberIn(BaseModel):
+    identifier: str = Field(min_length=1, max_length=256)
+    roles: list[str] = Field(default_factory=list)
+    caps: list[str] = Field(default_factory=list)
+    # Only ever honoured in `password` mode for a person who does not exist yet. For anyone who
+    # already exists it is REFUSED, not ignored — see AuthService.add_member (T2).
+    password: str | None = Field(default=None, max_length=256)
+
+
+class ClaimIn(BaseModel):
+    token: str = Field(min_length=1, max_length=512)
+    password: str = Field(min_length=1, max_length=256)  # core enforces the minimum length
+
+
+@members_router.post("/members", status_code=status.HTTP_201_CREATED,
+                     dependencies=[Depends(rate_limit)])
+async def add_member(request: Request, body: AddMemberIn) -> dict:
+    """Staff THIS tenant. Admin-gated; the tenant comes off the token.
+
+    If the person already exists we grant a membership and touch nothing else — their credential
+    is the key to every other company they work for, and an admin here has no claim on it (T2).
+    """
+    s = get_settings()
+    _, tenant = await _caller_tenant(request, _write_cap())
+    svc = _svc(request)
+    try:
+        m, invite = await svc.add_member(
+            tenant, body.identifier, roles=body.roles, caps=body.caps, password=body.password,
+            mode=s.IDENTITY_MEMBER_ADD_MODE, invite_ttl=s.IDENTITY_INVITE_TTL_SECONDS)
+    except ValidationError:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "INVALID_IDENTIFIER")
+    except WeakPassword:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "WEAK_PASSWORD")
+    except CredentialNotYours:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "CANNOT_SET_EXISTING_PERSON_CREDENTIAL")
+    except TenantAccessDenied:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "TENANT_ACCESS_DENIED")
+
+    out = {"member": m.public() | {"person_id": m.person_id, "caps": m.caps}}
+    if invite:
+        # Returned EXACTLY once and never stored in the clear. If the admin loses it, the invite is
+        # reissued — it is not recoverable, by design.
+        out["invite_token"] = invite
+    return out
+
+
+@members_router.delete("/members/{person_id}", dependencies=[Depends(rate_limit)])
+async def remove_member(request: Request, person_id: str) -> dict:
+    """Revoke ONE membership. The person survives — she still works somewhere else.
+
+    Deleting the Person from a single company's admin panel would remove her from every other
+    company on the platform. This revokes a key, not a human.
+    """
+    _, tenant = await _caller_tenant(request, _write_cap())
+    removed = await _svc(request).remove_member(tenant, person_id)
+    if not removed:
+        # Same answer whether they are in another tenant or do not exist at all: a 404 that
+        # distinguished the two would let an admin probe for who works elsewhere (T6).
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_A_MEMBER")
+    return {"removed": True, "person_id": person_id, "tenant": tenant}
+
+
+@router.post("/person/claim", dependencies=[Depends(rate_limit)])
+async def claim_invite(request: Request, body: ClaimIn) -> dict:
+    """The invited human sets their OWN password. No token, no admin, no session — just the invite.
+
+    Single-use: redeeming consumes it. An invite that worked twice would be a password reset for
+    anyone who ever saw the link.
+    """
+    svc = _svc(request)
+    try:
+        person = await svc.claim_invite(body.token, body.password)
+    except WeakPassword:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "WEAK_PASSWORD")
+    if person is None:
+        # Unknown, expired, already used, or for a person who has since claimed: one answer.
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "INVALID_INVITE")
+    return {"person": person.public()}
 
 
 @members_router.get("/members", dependencies=[Depends(rate_limit)])

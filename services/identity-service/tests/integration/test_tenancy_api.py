@@ -269,6 +269,267 @@ def test_members_route_absent_when_multi_tenant_is_off(env):
     assert off.get("/api/v1/tenancy/members").status_code == 404
 
 
+# ── the write side: an admin staffs a tenant ─────────────────────────────────
+def _admin(client):
+    """An acme admin holding both directory capabilities."""
+    import asyncio
+
+    from app.core.membership import Membership, MembershipStore, Person
+
+    c = client.app.state.container
+    ms = MembershipStore(c.datastore)
+
+    async def _go():
+        await ms.create_person(Person(id="boss", identifier="boss@acme",
+                                      password_hash=c.password_hasher.hash("correct-horse-battery")))
+        await ms.grant(Membership(person_id="boss", tenant="acme",
+                                  caps=["members:read", "members:write"]))
+    asyncio.run(_go())
+    return {"Authorization": f"Bearer {_token(client, 'boss@acme')}"}
+
+
+def test_add_member_then_the_directory_shows_them(mt):
+    """The gap the memo is about: a fresh deployment could only ever answer {"members": []}."""
+    tok = _admin(mt)
+    r = mt.post("/api/v1/tenancy/members",
+                json={"identifier": "newhire@acme", "roles": ["engineer"]}, headers=tok)
+    assert r.status_code == 201
+    assert r.json()["invite_token"], "invite mode returns the token exactly once"
+
+    listed = mt.get("/api/v1/tenancy/members", headers=tok).json()["members"]
+    assert {m["identifier"] for m in listed} == {"boss@acme", "newhire@acme"}
+
+
+def test_an_invited_person_cannot_log_in_until_they_claim(mt):
+    tok = _admin(mt)
+    mt.post("/api/v1/tenancy/members", json={"identifier": "newhire@acme"}, headers=tok)
+
+    # The admin created the account and cannot authenticate as it — there IS no password yet.
+    r = mt.post("/api/v1/auth/person/login",
+                json={"username": "newhire@acme", "password": "correct-horse-battery"})
+    assert r.status_code == 401
+
+
+def test_claim_sets_the_persons_own_password_and_activates_them(mt):
+    tok = _admin(mt)
+    invite = mt.post("/api/v1/tenancy/members",
+                     json={"identifier": "newhire@acme"}, headers=tok).json()["invite_token"]
+
+    claimed = mt.post("/api/v1/auth/person/claim",
+                      json={"token": invite, "password": "her-own-secret-99"})
+    assert claimed.status_code == 200
+
+    ok = mt.post("/api/v1/auth/person/login",
+                 json={"username": "newhire@acme", "password": "her-own-secret-99"})
+    assert ok.status_code == 200
+    assert ok.json()["memberships"][0]["tenant"] == "acme"
+
+
+def test_an_invite_works_exactly_once(mt):
+    """A replayable invite is a password reset for anyone who ever saw the link."""
+    tok = _admin(mt)
+    invite = mt.post("/api/v1/tenancy/members",
+                     json={"identifier": "newhire@acme"}, headers=tok).json()["invite_token"]
+
+    assert mt.post("/api/v1/auth/person/claim",
+                   json={"token": invite, "password": "her-own-secret-99"}).status_code == 200
+    stolen = mt.post("/api/v1/auth/person/claim",
+                     json={"token": invite, "password": "attackers-password-99"})
+    assert stolen.status_code == 400
+
+    # And the person's real password still works — the replay changed nothing.
+    assert mt.post("/api/v1/auth/person/login",
+                   json={"username": "newhire@acme",
+                         "password": "her-own-secret-99"}).status_code == 200
+
+
+def test_a_garbage_invite_is_refused(mt):
+    _admin(mt)
+    assert mt.post("/api/v1/auth/person/claim",
+                   json={"token": "not-a-real-token", "password": "whatever-99"}).status_code == 400
+
+
+# ── T2 — the boundary that does not move, in any mode ────────────────────────
+def test_an_admin_cannot_set_the_password_of_an_existing_person(mt):
+    """THE attack multi-tenancy creates. `freelancer` already works at rival-corp. An acme admin
+    adding her must not be able to choose her password — it is the key to rival-corp."""
+    import asyncio
+
+    from app.core.membership import Membership, MembershipStore, Person
+
+    tok = _admin(mt)
+    c = mt.app.state.container
+    ms = MembershipStore(c.datastore)
+
+    async def _go():
+        await ms.create_person(Person(id="f1", identifier="freelancer@x",
+                                      password_hash=c.password_hasher.hash("her-real-password-1")))
+        await ms.grant(Membership(person_id="f1", tenant="rival-corp"))
+    asyncio.run(_go())
+
+    r = mt.post("/api/v1/tenancy/members",
+                json={"identifier": "freelancer@x", "password": "password-i-chose-99"}, headers=tok)
+    assert r.status_code == 403, "refused, not silently ignored — a silent ignore teaches them it worked"
+
+    # Her password is untouched: she still gets into rival-corp with the one SHE set.
+    login = mt.post("/api/v1/auth/person/login",
+                    json={"username": "freelancer@x", "password": "her-real-password-1"})
+    assert login.status_code == 200
+
+
+def test_adding_an_existing_person_grants_only_a_membership(mt):
+    import asyncio
+
+    from app.core.membership import Membership, MembershipStore, Person
+
+    tok = _admin(mt)
+    c = mt.app.state.container
+    ms = MembershipStore(c.datastore)
+
+    async def _go():
+        await ms.create_person(Person(id="f1", identifier="freelancer@x",
+                                      password_hash=c.password_hasher.hash("her-real-password-1")))
+        await ms.grant(Membership(person_id="f1", tenant="rival-corp", caps=["admin"]))
+    asyncio.run(_go())
+
+    r = mt.post("/api/v1/tenancy/members",
+                json={"identifier": "freelancer@x", "roles": ["contractor"]}, headers=tok)
+    assert r.status_code == 201
+    # No invite: she already has an account, and it is not acme's to hand out.
+    assert "invite_token" not in r.json()
+
+    listed = mt.get("/api/v1/tenancy/members", headers=tok).json()["members"]
+    hers = [m for m in listed if m["identifier"] == "freelancer@x"][0]
+    assert hers["roles"] == ["contractor"]
+    assert hers["caps"] == [], "her admin cap at rival-corp does NOT follow her into acme (T3)"
+
+
+# ── removal revokes a key, not a human ───────────────────────────────────────
+def test_remove_member_revokes_here_and_leaves_her_other_company_alone(mt):
+    import asyncio
+
+    from app.core.membership import Membership, MembershipStore, Person
+
+    tok = _admin(mt)
+    c = mt.app.state.container
+    ms = MembershipStore(c.datastore)
+
+    async def _go():
+        await ms.create_person(Person(id="f1", identifier="freelancer@x",
+                                      password_hash=c.password_hasher.hash("her-real-password-1")))
+        await ms.grant(Membership(person_id="f1", tenant="rival-corp"))
+        await ms.grant(Membership(person_id="f1", tenant="acme"))
+    asyncio.run(_go())
+
+    assert mt.delete("/api/v1/tenancy/members/f1", headers=tok).status_code == 200
+
+    listed = mt.get("/api/v1/tenancy/members", headers=tok).json()["members"]
+    assert all(m["identifier"] != "freelancer@x" for m in listed)
+
+    # She still works at rival-corp: the Person survived, and so did that membership.
+    login = mt.post("/api/v1/auth/person/login",
+                    json={"username": "freelancer@x", "password": "her-real-password-1"})
+    assert login.status_code == 200
+    assert {m["tenant"] for m in login.json()["memberships"]} == {"rival-corp"}
+
+
+def test_an_admin_cannot_remove_someone_from_another_tenant(mt):
+    """`rival` works only at rival-corp. An acme admin naming her id must not reach her."""
+    import asyncio
+
+    from app.core.membership import Membership, MembershipStore, Person
+
+    tok = _admin(mt)
+    c = mt.app.state.container
+    ms = MembershipStore(c.datastore)
+
+    async def _go():
+        await ms.create_person(Person(id="r1", identifier="ceo@rival",
+                                      password_hash=c.password_hasher.hash("rival-password-1")))
+        await ms.grant(Membership(person_id="r1", tenant="rival-corp"))
+    asyncio.run(_go())
+
+    r = mt.delete("/api/v1/tenancy/members/r1", headers=tok)
+    assert r.status_code == 404, "and a 404 that differed from 'no such person' would leak who works where"
+
+    # Untouched.
+    login = mt.post("/api/v1/auth/person/login",
+                    json={"username": "ceo@rival", "password": "rival-password-1"})
+    assert {m["tenant"] for m in login.json()["memberships"]} == {"rival-corp"}
+
+
+def test_write_requires_the_write_capability(mt):
+    """A reader may look at the staff list. A reader may not hire."""
+    import asyncio
+
+    from app.core.membership import Membership, MembershipStore, Person
+
+    c = mt.app.state.container
+    ms = MembershipStore(c.datastore)
+
+    async def _go():
+        await ms.create_person(Person(id="ro", identifier="reader@acme",
+                                      password_hash=c.password_hasher.hash("correct-horse-battery")))
+        await ms.grant(Membership(person_id="ro", tenant="acme", caps=["members:read"]))
+    asyncio.run(_go())
+    tok = {"Authorization": f"Bearer {_token(mt, 'reader@acme')}"}
+
+    assert mt.post("/api/v1/tenancy/members",
+                   json={"identifier": "x@acme"}, headers=tok).status_code == 403
+    assert mt.delete("/api/v1/tenancy/members/ro", headers=tok).status_code == 403
+    assert mt.get("/api/v1/tenancy/members", headers=tok).status_code == 200
+
+
+def test_write_requires_a_token(mt):
+    _admin(mt)
+    assert mt.post("/api/v1/tenancy/members", json={"identifier": "x@acme"}).status_code == 401
+
+
+# ── password mode: the platform's choice, enforced ───────────────────────────
+def test_password_mode_lets_an_admin_set_an_initial_password_for_a_NEW_person(env):
+    c = env(IDENTITY_MULTI_TENANT="true", IDENTITY_MEMBER_ADD_MODE="password")
+    tok = _admin(c)
+
+    r = c.post("/api/v1/tenancy/members",
+               json={"identifier": "newhire@acme", "password": "initial-password-99"}, headers=tok)
+    assert r.status_code == 201
+    assert "invite_token" not in r.json(), "no invite in password mode"
+
+    assert c.post("/api/v1/auth/person/login",
+                  json={"username": "newhire@acme",
+                        "password": "initial-password-99"}).status_code == 200
+
+
+def test_password_mode_still_cannot_touch_an_EXISTING_person(env):
+    """T2 is not a mode. It holds in both."""
+    import asyncio
+
+    from app.core.membership import Membership, MembershipStore, Person
+
+    c = env(IDENTITY_MULTI_TENANT="true", IDENTITY_MEMBER_ADD_MODE="password")
+    tok = _admin(c)
+    cont = c.app.state.container
+    ms = MembershipStore(cont.datastore)
+
+    async def _go():
+        await ms.create_person(Person(id="f1", identifier="freelancer@x",
+                                      password_hash=cont.password_hasher.hash("her-real-password-1")))
+        await ms.grant(Membership(person_id="f1", tenant="rival-corp"))
+    asyncio.run(_go())
+
+    r = c.post("/api/v1/tenancy/members",
+               json={"identifier": "freelancer@x", "password": "password-i-chose-99"}, headers=tok)
+    assert r.status_code == 403
+
+
+def test_an_unknown_add_mode_fails_at_boot(env):
+    """A typo must not silently select `password` and hand every admin other people's passwords."""
+    import pydantic
+
+    with pytest.raises((pydantic.ValidationError, ValueError)):
+        env(IDENTITY_MULTI_TENANT="true", IDENTITY_MEMBER_ADD_MODE="invit")
+
+
 # ── T10 — step-up on switch, stated not assumed ──────────────────────────────
 def test_t10_reauth_on_switch_refuses_a_bare_session_when_enabled(env):
     """On, a stolen session may not widen itself into a higher-trust tenant by merely asking."""

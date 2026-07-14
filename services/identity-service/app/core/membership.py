@@ -32,7 +32,13 @@ from typing import Any
 
 from app.core.models import _now, new_id
 
-ACTIVE, SUSPENDED = "active", "suspended"
+ACTIVE, SUSPENDED, PENDING = "active", "suspended", "pending"
+
+# A person an admin created but who has not set a password yet. No password hashes to this, so no
+# password authenticates as them — the sentinel is checked BEFORE the hasher, because a hasher
+# handed a non-hash may raise, and a 500 on the login path is an oracle that says "this identifier
+# exists and is unclaimed".
+UNUSABLE_PASSWORD = "!unusable"
 
 _PERSONS = "persons"
 _MEMBERSHIPS = "memberships"          # key: "<person_id>::<tenant>"  -> O(1), never scanned
@@ -145,6 +151,13 @@ class MembershipStore:
     async def person_by_identifier(self, identifier: str) -> Person | None:
         idx = await self._store.get(_PERSON_INDEX, identifier)
         return await self.person(idx["id"]) if idx else None
+
+    async def save_person(self, p: Person) -> Person:
+        """Persist an EXISTING person. Never touches the identifier index — a rename is a
+        different operation with a different threat model, and it is not this one."""
+        p.updated_at = _now()
+        await self._store.put(_PERSONS, p.id, p.to_dict())
+        return p
 
     async def delete_person(self, p: Person) -> None:
         await self._store.delete(_PERSON_INDEX, p.identifier)

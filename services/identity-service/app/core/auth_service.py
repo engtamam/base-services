@@ -9,7 +9,13 @@ from __future__ import annotations
 
 import datetime as _dt
 
-from app.core.membership import ACTIVE, Membership, Person
+from app.core.membership import (
+    ACTIVE,
+    PENDING,
+    UNUSABLE_PASSWORD,
+    Membership,
+    Person,
+)
 from app.core.models import User, new_id
 from app.core.refresh_store import RefreshStore
 from app.core.tenancy import TenantAccessDenied, authorize_tenant, claims_for
@@ -18,16 +24,24 @@ from app.ports.errors import InvalidToken
 
 DEFAULT_MIN_PASSWORD_LEN = 8  # fallback default; real value comes from config
 
+# How a person who does not exist yet gets a password. The PLATFORM decides; we enforce.
+INVITE, PASSWORD = "invite", "password"
+ADD_MODES = (INVITE, PASSWORD)
+
 
 class WeakPassword(Exception):
     pass
+
+
+class CredentialNotYours(Exception):
+    """A tenant admin tried to set the credential of a person who already exists (T2)."""
 
 
 class AuthService:
     def __init__(self, *, users: UserRepository, refresh: RefreshStore, hasher,
                  issuer, verifier, mfa, identifier, access_ttl: int, refresh_ttl: int,
                  min_password_len: int = DEFAULT_MIN_PASSWORD_LEN, lockout=None,
-                 memberships=None) -> None:
+                 memberships=None, invites=None) -> None:
         self._users = users
         self._identifier = identifier
         self._refresh = refresh
@@ -42,6 +56,7 @@ class AuthService:
         # MembershipStore | None. None => IDENTITY_MULTI_TENANT is off and every path below
         # behaves exactly as it did before Phase 31. Multi-tenancy is opt-in, not a migration.
         self._memberships = memberships
+        self._invites = invites            # InviteStore | None (invite mode)
         # Precomputed dummy hash so a missing user costs the same as a real one.
         self._dummy_hash = hasher.hash("timing-equalizer")
 
@@ -119,7 +134,13 @@ class AuthService:
         if self._lockout and await self._lockout.is_locked(source, ident):
             return None
         person = await self._memberships.person_by_identifier(ident)
-        if person is None:
+        if person is None or person.password_hash == UNUSABLE_PASSWORD:
+            # An INVITED person who has not claimed their account has no password that works, and
+            # they must look exactly like a person who does not exist: same timing, same answer.
+            # Otherwise login becomes an oracle for "this identifier exists and is unclaimed" —
+            # which is precisely the account worth attacking, since nobody is watching it yet.
+            # The sentinel is checked BEFORE the hasher: a hasher handed a non-hash may raise, and
+            # a 500 here would be the loudest oracle of all.
             self._hasher.verify(password, self._dummy_hash)   # equalize timing (CWE-204)
             if self._lockout:
                 await self._lockout.record_failure(source, ident)
@@ -132,6 +153,115 @@ class AuthService:
             return None
         if self._lockout:
             await self._lockout.reset(source, ident)
+        return person
+
+    # ── the directory's write side: an admin staffs a tenant ──────────────────
+    async def add_member(self, tenant: str, identifier: str, *, roles=None, caps=None,
+                         password: str | None = None, mode: str = INVITE,
+                         invite_ttl: int = 0) -> tuple[Membership, str | None]:
+        """Add someone to THIS tenant. Returns the membership and, in invite mode, a one-time token.
+
+        THE HARD BOUNDARY, and it holds in every mode:
+
+            If the person ALREADY EXISTS, we grant a membership and touch NOTHING ELSE.
+
+        Not their password, not their MFA, not their identifier, not their status. The freelancer
+        being added to your company already works for two others; their credential is the key to
+        those companies too, and an admin here has no claim on it (T2, CWE-640). Adding someone to
+        your company is a statement about YOUR company, not about them.
+
+        For a person who does not exist yet, the platform chooses:
+
+          invite   (default) the person is created with an UNUSABLE password and a one-time token
+                   is returned once. The human sets their own password; the admin never knows it.
+          password the admin sets an initial password. Simpler, and it lets an admin pre-register
+                   an identifier they do not control — see invites.py. Opt-in, eyes open.
+        """
+        if self._memberships is None:
+            raise RuntimeError("IDENTITY_MULTI_TENANT is off — no membership store is wired")
+        if not tenant:
+            raise TenantAccessDenied()
+
+        self._identifier.validate(identifier)
+        ident = self._identifier.display(identifier)
+        person = await self._memberships.person_by_identifier(ident)
+        invite: str | None = None
+
+        if person is None:
+            if mode == PASSWORD:
+                if not password or len(password) < self._min_pw:
+                    raise WeakPassword(f"password must be >= {self._min_pw} characters")
+                pw_hash, status = self._hasher.hash(password), ACTIVE
+            else:
+                # The admin creates the account and cannot log into it. That is the point.
+                pw_hash, status = UNUSABLE_PASSWORD, PENDING
+            person = await self._memberships.create_person(Person(
+                id=new_id(), identifier=ident, password_hash=pw_hash, status=status))
+            if mode == INVITE:
+                invite = await self._invites.issue(person.id, tenant, invite_ttl)
+        elif password is not None:
+            # An admin supplying a password for a person who already exists is either confused or
+            # attacking. There is no reading of it that is safe, so it is refused rather than
+            # quietly ignored — a silent ignore teaches them it worked.
+            raise CredentialNotYours(
+                "this person already exists; a tenant admin may grant them a membership but may "
+                "never set their password — it unlocks every other company they work for"
+            )
+
+        existing = await self._memberships.membership(person.id, tenant)
+        if existing is not None:
+            return existing, None            # idempotent: adding twice is not an escalation
+
+        m = await self._memberships.grant(Membership(
+            person_id=person.id, tenant=tenant,
+            caps=list(caps or []), roles=list(roles or []),
+            # A membership for a person who has not claimed their account yet is PENDING: it shows
+            # in the directory (the manager can see who they invited) but mints no token, because
+            # `Membership.active` is what the mint checks.
+            status=PENDING if person.status == PENDING else ACTIVE,
+        ))
+        return m, invite
+
+    async def remove_member(self, tenant: str, person_id: str) -> bool:
+        """Revoke ONE membership. The person survives — she still works somewhere else.
+
+        Deleting the Person here would delete her access to every other company on the platform,
+        from one company's admin panel. Revoking is a statement about this tenant and no other.
+        Refresh re-verifies membership (T4), so this bites within the access-token TTL.
+        """
+        if self._memberships is None:
+            raise RuntimeError("IDENTITY_MULTI_TENANT is off — no membership store is wired")
+        if not tenant or not person_id:
+            raise TenantAccessDenied()
+        if await self._memberships.membership(person_id, tenant) is None:
+            return False
+        await self._memberships.revoke(person_id, tenant)
+        return True
+
+    async def claim_invite(self, token: str, password: str) -> Person | None:
+        """The invited human sets their OWN password. Single-use; the admin never sees it."""
+        if self._memberships is None or self._invites is None:
+            raise RuntimeError("IDENTITY_MULTI_TENANT is off — no membership store is wired")
+        if len(password) < self._min_pw:
+            raise WeakPassword(f"password must be >= {self._min_pw} characters")
+
+        row = await self._invites.redeem(token)      # consumed here: an invite works exactly once
+        if row is None:
+            return None
+        person = await self._memberships.person(str(row.get("person_id", "")))
+        if person is None or person.status != PENDING:
+            # Only a PENDING person may be claimed. Otherwise a stale invite for someone who has
+            # since set a password would be a password reset for whoever kept the link.
+            return None
+
+        person.password_hash = self._hasher.hash(password)
+        person.status = ACTIVE
+        await self._memberships.save_person(person)
+
+        m = await self._memberships.membership(person.id, str(row.get("tenant", "")))
+        if m is not None and m.status == PENDING:
+            m.status = ACTIVE
+            await self._memberships.grant(m)
         return person
 
     async def issue_tenant_tokens(self, person: Person, membership: Membership) -> dict:

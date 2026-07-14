@@ -143,8 +143,22 @@ class Settings(BaseSettings):
     # The capability NAME is config: what a platform calls "may see the staff list" is a platform's
     # decision (`members:read`, `hr.view`, `admin`), not ours.
     IDENTITY_MEMBERS_READ_CAP: str = "members:read"
+    IDENTITY_MEMBERS_WRITE_CAP: str = "members:write"   # staffing a tenant is a bigger deal than reading it
     IDENTITY_MEMBERS_PAGE_SIZE: int = 50         # default page
     IDENTITY_MEMBERS_MAX_PAGE_SIZE: int = 200    # a caller may not ask for the whole company at once
+
+    # How a person who does not exist yet gets a password. The PLATFORM decides; we enforce.
+    #
+    #   invite    (default, secure) the admin creates the account and CANNOT log into it. A
+    #             one-time token is returned once and the human sets their own password.
+    #   password  the admin sets an initial password. Simpler — and it lets an admin pre-register
+    #             an identifier they do not control (`cfo@bank.com`) with a password they know,
+    #             then own that login when the real human is hired. Opt-in, eyes open.
+    #
+    # In BOTH modes an admin may never set the credential of a person who ALREADY exists: it is
+    # the key to every other company that person works for (T2).
+    IDENTITY_MEMBER_ADD_MODE: str = "invite"     # invite | password
+    IDENTITY_INVITE_TTL_SECONDS: int = 604_800   # 7 days; an invite that never expires is a spare key
 
     @property
     def egress_allowed_hosts(self) -> frozenset[str]:
@@ -169,6 +183,19 @@ class Settings(BaseSettings):
         lowered = v.strip().lower()
         if lowered.startswith("placeholder") or lowered in {"changeme", "change_me"}:
             raise ValueError("INTERNAL_SERVICE_TOKEN is a placeholder — set a real secret")
+        return v
+
+    @field_validator("IDENTITY_MEMBER_ADD_MODE")
+    @classmethod
+    def _known_add_mode(cls, v: str) -> str:
+        # A typo'd mode must not silently fall back to a default. `IDENTITY_MEMBER_ADD_MODE=invit`
+        # quietly selecting `password` would hand every tenant admin the ability to choose other
+        # people's passwords — the exact thing the invite mode exists to prevent. Fail at BOOT.
+        allowed = ("invite", "password")
+        if v not in allowed:
+            raise ValueError(
+                f"unknown IDENTITY_MEMBER_ADD_MODE {v!r} — allowed: {', '.join(allowed)}"
+            )
         return v
 
 
