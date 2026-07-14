@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+gate_name="safety:own-license"
+gate_desc="the product is proprietary; only its dependencies are permissive"
+gate_protects="Two rules point in OPPOSITE directions, and confusing them gives the product away.
+A DEPENDENCY must be permissive — a copyleft one can force us to publish our
+source. The SERVICE ITSELF must be proprietary: /LICENSE grants nothing, and use
+requires a signed per-company agreement.
+
+Every service declared license = \"Apache-2.0\" in its pyproject. That is not a
+typo, it is the most permissive GRANT there is — use, modify, redistribute, SELL.
+And it does not stay in the repo: it is baked into the wheel METADATA and the
+image layers. A licensee whose lawyer reads 'License: Apache-2.0' in the artifact
+they were handed has a real argument they were granted it, while /LICENSE — in a
+private repo they never saw — says the opposite. A contract that contradicts
+itself is argued in the direction of whoever holds the copy."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_own_license.py"
+gate_units=1
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_own_license.py; }
+
+# A gate that cannot fail is decoration. Prove it rejects a permissive self-declaration.
+gate_selftest() {
+  "$PY" - <<'PY' >/dev/null 2>&1
+import re, subprocess, sys, pathlib, tempfile, shutil, os
+root = pathlib.Path.cwd()
+pp = root / "services" / "identity-service" / "pyproject.toml"
+orig = pp.read_text(encoding="utf-8")
+try:
+    pp.write_text(re.sub(r'^license = .*$', 'license = "Apache-2.0"', orig,
+                         count=1, flags=re.M), encoding="utf-8")
+    r = subprocess.run([sys.executable, "tools/ci/check_own_license.py"], capture_output=True)
+    sys.exit(0 if r.returncode != 0 else 1)   # it MUST reject the grant
+finally:
+    pp.write_text(orig, encoding="utf-8")
+PY
+}

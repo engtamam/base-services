@@ -9,7 +9,10 @@ version = "0.1.0"
 description = "Self-contained, plug-and-play FastAPI service (base-services template)."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
-license = "Apache-2.0"
+# Proprietary. The SERVICE is not open source — see /LICENSE: no licence is
+# granted, and use requires a signed agreement. (Its DEPENDENCIES must still be
+# permissive; that is a different rule, enforced by ci/check_licenses.py.)
+license = "LicenseRef-Proprietary"
 authors = [{ name = "base-services" }]
 
 # Runtime dependencies — PERMISSIVE LICENSES ONLY (MIT/BSD/Apache-2.0/ISC).
