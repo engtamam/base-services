@@ -137,6 +137,15 @@ class Settings(BaseSettings):
     # is a CHOICE (see phase-31 T10) — written down, not assumed.
     IDENTITY_TENANT_SWITCH_REAUTH: bool = False
 
+    # Identity owns who works where. Without a directory here, every product service grows its own
+    # copy of a person — and a second person to erase when they ask to be forgotten.
+    #
+    # The capability NAME is config: what a platform calls "may see the staff list" is a platform's
+    # decision (`members:read`, `hr.view`, `admin`), not ours.
+    IDENTITY_MEMBERS_READ_CAP: str = "members:read"
+    IDENTITY_MEMBERS_PAGE_SIZE: int = 50         # default page
+    IDENTITY_MEMBERS_MAX_PAGE_SIZE: int = 200    # a caller may not ask for the whole company at once
+
     @property
     def egress_allowed_hosts(self) -> frozenset[str]:
         return frozenset(

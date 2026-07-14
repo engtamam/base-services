@@ -21,7 +21,7 @@ from app.api import health, internal, metrics
 from app.api.errors import register_error_handlers
 from app.api.health import register_readiness_check
 from app.api.v1 import router as v1_router
-from app.api.v1.tenancy import router as tenancy_router
+from app.api.v1.tenancy import members_router, router as tenancy_router
 from app.config import get_settings
 from app.container import build_container
 from app.middleware import (
@@ -106,6 +106,7 @@ def create_app() -> FastAPI:
     # at all and the deployment 404s them, rather than exposing a feature it has no store for.
     if settings.IDENTITY_MULTI_TENANT:
         app.include_router(tenancy_router)
+        app.include_router(members_router)
 
     return app
 

@@ -35,6 +35,25 @@ def _extract_principal(claims: dict[str, Any]) -> Principal:
     )
 
 
+def require_cap(cap: str):
+    """Deny-by-default capability gate.
+
+    The capability STRING is passed in rather than written here, because what a platform calls
+    "may see the staff list" is a platform's decision — `members:read`, `hr.view`, `admin`. It
+    comes from config; this only enforces it.
+
+    Deny-by-default in the literal sense: a token with no `caps` claim has an empty frozenset and
+    is refused. Absent authority is never assumed authority.
+    """
+    async def _dep(request: Request) -> Principal:
+        principal = await require_user(request)
+        if cap not in principal.caps:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="FORBIDDEN")
+        return principal
+
+    return _dep
+
+
 async def require_user(request: Request) -> Principal:
     auth = request.headers.get("authorization", "")
     if not auth.startswith("Bearer "):

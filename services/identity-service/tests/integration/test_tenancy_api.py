@@ -172,6 +172,103 @@ def test_switch_without_any_proof_is_401(mt):
     assert mt.post("/api/v1/auth/tenant", json={"tenant": "own-shop"}).status_code == 401
 
 
+# ── the directory: who works HERE ────────────────────────────────────────────
+def _seed_two_companies(client):
+    """Two companies, three people. `boss` is an admin at acme ONLY."""
+    import asyncio
+
+    from app.core.membership import Membership, MembershipStore, Person
+
+    c = client.app.state.container
+    ms = MembershipStore(c.datastore)
+    h = c.password_hasher.hash("correct-horse-battery")
+
+    async def _go():
+        for pid, ident in (("boss", "boss@acme"), ("dev", "dev@acme"), ("rival", "ceo@rival")):
+            await ms.create_person(Person(id=pid, identifier=ident, password_hash=h))
+        await ms.grant(Membership(person_id="boss", tenant="acme", caps=["members:read"]))
+        await ms.grant(Membership(person_id="dev", tenant="acme", roles=["engineer"]))
+        await ms.grant(Membership(person_id="rival", tenant="rival-corp", caps=["members:read"]))
+
+    asyncio.run(_go())
+    return ms
+
+
+def _token(client, ident):
+    r = client.post("/api/v1/auth/person/login",
+                    json={"username": ident, "password": "correct-horse-battery"})
+    tenant = r.json()["memberships"][0]["tenant"]
+    r = client.post("/api/v1/auth/tenant", json={
+        "username": ident, "password": "correct-horse-battery", "tenant": tenant})
+    return r.json()["access_token"]
+
+
+def test_members_lists_only_this_tenant(mt):
+    _seed_two_companies(mt)
+    r = mt.get("/api/v1/tenancy/members",
+               headers={"Authorization": f"Bearer {_token(mt, 'boss@acme')}"})
+    assert r.status_code == 200
+    body = r.json()
+
+    assert body["tenant"] == "acme"
+    assert {m["identifier"] for m in body["members"]} == {"boss@acme", "dev@acme"}, \
+        "the rival's CEO is not on acme's staff list"
+    # Identity owns the directory — but it owns no secrets it is willing to hand out.
+    for m in body["members"]:
+        assert "password_hash" not in m and "mfa_secret" not in m
+
+
+def test_members_cannot_be_asked_for_another_tenant(mt):
+    """A ?tenant= would be T1 wearing a different hat: every admin enumerating every company.
+    The tenant comes off the token, so the parameter is simply ignored."""
+    _seed_two_companies(mt)
+    r = mt.get("/api/v1/tenancy/members?tenant=rival-corp",
+               headers={"Authorization": f"Bearer {_token(mt, 'boss@acme')}"})
+    assert r.status_code == 200
+    assert r.json()["tenant"] == "acme"
+    assert all(m["identifier"] != "ceo@rival" for m in r.json()["members"])
+
+
+def test_members_requires_the_capability(mt):
+    """`dev` is a real member of acme with a valid token — and no members:read cap."""
+    _seed_two_companies(mt)
+    r = mt.get("/api/v1/tenancy/members",
+               headers={"Authorization": f"Bearer {_token(mt, 'dev@acme')}"})
+    assert r.status_code == 403
+
+
+def test_members_requires_a_token(mt):
+    _seed_two_companies(mt)
+    assert mt.get("/api/v1/tenancy/members").status_code == 401
+
+
+def test_members_paginates_with_a_cursor(env):
+    c = env(IDENTITY_MULTI_TENANT="true", IDENTITY_MEMBERS_PAGE_SIZE="1")
+    _seed_two_companies(c)
+    tok = {"Authorization": f"Bearer {_token(c, 'boss@acme')}"}
+
+    first = c.get("/api/v1/tenancy/members", headers=tok).json()
+    assert len(first["members"]) == 1 and first["next"]
+
+    second = c.get(f"/api/v1/tenancy/members?after={first['next']}", headers=tok).json()
+    seen = {m["identifier"] for m in first["members"] + second["members"]}
+    assert seen == {"boss@acme", "dev@acme"}, "the cursor must advance, not repeat"
+
+
+def test_members_page_size_is_capped(env):
+    """A caller may not ask for the whole company in one request."""
+    c = env(IDENTITY_MULTI_TENANT="true", IDENTITY_MEMBERS_MAX_PAGE_SIZE="1")
+    _seed_two_companies(c)
+    r = c.get("/api/v1/tenancy/members?limit=1000",
+              headers={"Authorization": f"Bearer {_token(c, 'boss@acme')}"})
+    assert len(r.json()["members"]) == 1
+
+
+def test_members_route_absent_when_multi_tenant_is_off(env):
+    off = env(IDENTITY_MULTI_TENANT="false")
+    assert off.get("/api/v1/tenancy/members").status_code == 404
+
+
 # ── T10 — step-up on switch, stated not assumed ──────────────────────────────
 def test_t10_reauth_on_switch_refuses_a_bare_session_when_enabled(env):
     """On, a stolen session may not widen itself into a higher-trust tenant by merely asking."""

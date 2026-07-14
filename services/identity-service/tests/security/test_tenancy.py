@@ -334,6 +334,40 @@ def test_t9_a_suspended_membership_gets_no_token_for_that_tenant_only():
     assert [t["tenant"] for t in issuer.minted] == ["own-shop"]
 
 
+# ── the directory pages without losing people ────────────────────────────────
+def test_members_cursor_survives_identical_timestamps():
+    """The bug this test exists for: `created_at` is NOT unique.
+
+    Grant several memberships in the same instant and they all tie. The keyset cursor breaks ties
+    on `id` — and a row with no `id` ties at "" against every other row, so the cursor cannot
+    advance past the collision and the page silently drops members. A staff directory that quietly
+    omits people is worse than one that fails outright: nobody goes looking for a name they never
+    saw missing.
+    """
+    _, ms, _, _ = build()
+    for i in range(5):
+        run(ms.grant(Membership(person_id=f"p{i}", tenant="acme")))
+    run(ms.grant(Membership(person_id="outsider", tenant="rival-corp")))
+
+    seen, after, pages = set(), None, 0
+    while pages < 10:
+        rows, after = run(ms.members("acme", limit=2, after=after))
+        seen.update(m.person_id for m in rows)
+        pages += 1
+        if not after:
+            break
+
+    assert seen == {"p0", "p1", "p2", "p3", "p4"}, "every member of acme, exactly once"
+    assert "outsider" not in seen
+
+
+def test_members_refuses_an_empty_tenant():
+    """An empty `where` matches every membership in every company. That is not a query."""
+    _, ms, _, _ = build()
+    with pytest.raises(ValueError):
+        run(ms.members("", limit=10))
+
+
 # ── the signer owns its claims ───────────────────────────────────────────────
 def test_extra_claims_cannot_overwrite_sub_or_type():
     """`payload.update(extra)` would let a caller rewrite who the token is for. The mint path is

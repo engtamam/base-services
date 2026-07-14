@@ -85,9 +85,23 @@ class Membership:
     def active(self) -> bool:
         return self.status == ACTIVE
 
+    @property
+    def id(self) -> str:
+        """The row's unique, stable identity — and the SORT TIE-BREAK.
+
+        A membership is one person in one tenant, so (person_id, tenant) already identifies it.
+        This is not decoration: paging is keyset-ordered by `created_at`, which is NOT unique —
+        grant two memberships in the same instant and they tie. The datastore breaks that tie on
+        `id`, and a row with no `id` ties at "" against every other row, so the cursor cannot
+        advance past the collision. The page silently drops members, and a directory that quietly
+        omits people is worse than one that fails.
+        """
+        return f"{self.person_id}::{self.tenant}"
+
     def to_dict(self) -> dict[str, Any]:
-        return {"person_id": self.person_id, "tenant": self.tenant, "caps": self.caps,
-                "roles": self.roles, "status": self.status, "created_at": self.created_at}
+        return {"id": self.id, "person_id": self.person_id, "tenant": self.tenant,
+                "caps": self.caps, "roles": self.roles, "status": self.status,
+                "created_at": self.created_at}
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Membership":
@@ -155,3 +169,24 @@ class MembershipStore:
         rows, _ = await self._store.find(_MEMBERSHIPS, {"person_id": person_id},
                                          limit=limit, sort=("created_at", "asc"))
         return [Membership.from_dict(r) for r in rows]
+
+    async def members(self, tenant: str, *, limit: int,
+                      after: str | None = None) -> tuple[list[Membership], str | None]:
+        """Everyone who works HERE — one tenant, paginated.
+
+        Identity owns who works where. Without this, every product service grows its own user
+        directory: a second copy of a person, and a second person to erase when they ask to be
+        forgotten.
+
+        The tenant is pushed into the datastore, never filtered in Python — a filter in Python is
+        a scan of every membership on the platform, and `safety:scans` refuses it on a request
+        path. `after` is the opaque keyset cursor; it is never an offset.
+        """
+        if not tenant:
+            # An empty `where` would match everything — every membership in every company. There
+            # is no legitimate caller for that, so it is not a query, it is an accident.
+            raise ValueError("members() requires a tenant — an empty filter is every company")
+        rows, cursor = await self._store.find(_MEMBERSHIPS, {"tenant": tenant},
+                                              limit=limit, after=after,
+                                              sort=("created_at", "asc"))
+        return [Membership.from_dict(r) for r in rows], cursor

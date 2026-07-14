@@ -14,16 +14,67 @@ to check (T8). So we do not create one.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
+from app.api.auth import Principal, require_cap
 from app.api.ratelimit import rate_limit
 from app.api.v1.auth import _svc
 from app.config import get_settings
-from app.core.tenancy import TenantAccessDenied
+from app.core.tenancy import NoTenantClaim, TenantAccessDenied, tenant_of
 from app.ports.errors import InvalidToken, ValidationError
 
 router = APIRouter(prefix="/api/v1/auth", tags=["tenancy"])
+
+# The directory lives under its own prefix: it is not an auth flow, it is a read of who works here.
+members_router = APIRouter(prefix="/api/v1/tenancy", tags=["tenancy"])
+
+
+def _members_cap():
+    """Resolved per request, so the capability name is config and not import-time furniture."""
+    return require_cap(get_settings().IDENTITY_MEMBERS_READ_CAP)
+
+
+@members_router.get("/members", dependencies=[Depends(rate_limit)])
+async def list_members(
+    request: Request,
+    limit: int | None = Query(default=None, ge=1),
+    after: str | None = Query(default=None),
+) -> dict:
+    """Who works HERE. Admin-gated, one tenant, paginated.
+
+    THE TENANT IS NOT A PARAMETER. It is read off the caller's token — the same membership row the
+    mint verified. A `?tenant=` on a directory read is T1 wearing a different hat: it would let any
+    admin enumerate the staff of any company on the platform, and it would look like a feature.
+
+    A caller with no tenant claim is REJECTED, never widened to "all tenants" (T8).
+    """
+    s = get_settings()
+    principal: Principal = await _members_cap()(request)
+    try:
+        tenant = tenant_of(principal.raw)
+    except NoTenantClaim:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "NO_TENANT")
+
+    page = min(limit or s.IDENTITY_MEMBERS_PAGE_SIZE, s.IDENTITY_MEMBERS_MAX_PAGE_SIZE)
+    store = _svc(request).memberships
+    rows, cursor = await store.members(tenant, limit=page, after=after)
+
+    members = []
+    for m in rows:
+        person = await store.person(m.person_id)
+        members.append({
+            "person_id": m.person_id,
+            # The login identifier — the ONLY person field here. A password hash or an MFA secret
+            # has no business in a list an admin can read, and a person who no longer exists is
+            # reported as absent rather than silently skipped.
+            "identifier": person.identifier if person else None,
+            "roles": m.roles,
+            "caps": m.caps,
+            "status": m.status,
+            "since": m.created_at,
+        })
+    return {"tenant": tenant, "members": members, "next": cursor}
 
 
 class PersonLoginIn(BaseModel):
