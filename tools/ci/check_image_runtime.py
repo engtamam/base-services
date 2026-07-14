@@ -107,6 +107,46 @@ def objectstore_root(service: str) -> str:
     return _config_default(service, "OBJECTSTORE_ROOT") or "./.objectstore"
 
 
+def required_extras(service: str) -> dict[str, str]:
+    """Every extra this service's adapters can demand at runtime -> where it was found.
+
+    Read from the code, not from a list a human maintains: `lazy.load(module, "extra")` is the ONE
+    place an adapter says "I need something the image may not have". If it is reachable from the
+    registry, config can select it, and then it must be installable.
+    """
+    found: dict[str, str] = {}
+    adapters = SERVICES / service / "app" / "adapters"
+    if not adapters.is_dir():
+        return found
+    for py in sorted(adapters.rglob("*.py")):
+        if py.name == "lazy.py":                 # the definition of load(), not a use of it
+            continue
+        for m in re.finditer(r"""load\(\s*["'][^"']+["']\s*,\s*["']([a-z0-9_-]+)["']""",
+                             py.read_text(encoding="utf-8")):
+            found.setdefault(m.group(1), py.relative_to(SERVICES / service).as_posix())
+    return found
+
+
+def excluded_extras(service: str) -> set[str]:
+    """Extras a service DELIBERATELY does not ship in its image, declared in pyproject:
+
+        # image-excludes: clamav, ld    (heavy native deps; opt-in build)
+
+    The escape hatch exists because "ship everything" is not always right — a scanner daemon or a
+    vendor SDK can be large or drag native code into an image most deployments never use. But it
+    must be a sentence somebody wrote, in the repo, next to the dependency. That is the whole
+    difference between a lean image and a broken one.
+    """
+    pp = SERVICES / service / "pyproject.toml"
+    if not pp.is_file():
+        return set()
+    out: set[str] = set()
+    for m in re.finditer(r"^#\s*image-excludes:\s*(.+)$", pp.read_text(encoding="utf-8"),
+                         re.MULTILINE):
+        out.update(e.strip() for e in m.group(1).split(",") if e.strip())
+    return out
+
+
 def check(service: str) -> list[str]:
     problems: list[str] = []
     installed = installed_extras(service)
@@ -127,6 +167,37 @@ def check(service: str) -> list[str]:
                 f"{service}: values select {key}={driver!r} but the image installs no "
                 f"'{extra}' extra — the pod boots into ConfigError. "
                 f"pip install \".[{extra}]\" in the Dockerfile, or default {key} to memory.")
+
+    # C: every extra the image COULD need must be in the image — not merely the ones today's
+    #    values happen to select.
+    #
+    #    Check A asks "does the image support the config we ship?". That is the wrong question, and
+    #    it is why identity shipped a caps-resolver driver whose dependency was not in the image:
+    #    IDENTITY_CAPS_SOURCE is a plain env knob, not a key in the values `drivers:` block, so A
+    #    never looked at it. The check passed because it was reading an incomplete list — the same
+    #    failure this repository keeps producing.
+    #
+    #    The right question is "does the image support the config a CUSTOMER can set?". They run
+    #    OUR published image. If they flip a documented knob to a driver in our own registry and the
+    #    pod crash-loops on a missing extra, they cannot fix it — they would have to fork the
+    #    Dockerfile. A driver that is selectable but not installable is a lie in the config surface.
+    #
+    #    So the list is derived from the CODE: every `load(module, extra)` an adapter can reach.
+    #    Nobody has to remember to update it.
+    excluded = excluded_extras(service)
+    for extra, where in required_extras(service).items():
+        if extra in excluded:
+            # Deliberately not shipped, and SAID SO in one place. The driver still fails closed at
+            # boot with a clear ConfigError naming the extra — the point of this gate is that the
+            # omission is a decision somebody wrote down, never an accident nobody noticed.
+            continue
+        if extra not in installed:
+            problems.append(
+                f"{service}: an adapter can require the '{extra}' extra ({where}) but the image "
+                f"never installs it — the driver is SELECTABLE and not INSTALLABLE, so a customer "
+                f"who sets it crash-loops on a config knob they were invited to set, and cannot "
+                f"fix it without forking the image. Add it to the Dockerfile's pip install, or "
+                f"delete the adapter.")
 
     # B: a local objectstore must write under a writable mount, given readOnlyRootFilesystem.
     if drivers.get("objectstore") == "local":
@@ -154,8 +225,8 @@ def main() -> int:
     if problems:
         print(f"\nimage-runtime: FAIL — {len(problems)} image(s) cannot run the config they ship")
         return 1
-    print(f"image-runtime: PASS — {len(services)} services: the image installs every driver its "
-          f"values select, and no local store writes onto a read-only root")
+    print(f"image-runtime: PASS — {len(services)} services: every driver a customer can SELECT is "
+          f"one the image can actually RUN, and no local store writes onto a read-only root")
     return 0
 
 
