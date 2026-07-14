@@ -34,6 +34,13 @@ permissions:
   packages: write        # push to GHCR
   id-token: write        # provenance attestation
   attestations: write
+  # READ THE CI RUN FOR THIS COMMIT. An explicit `permissions:` block sets everything it does NOT
+  # list to `none`, so the token could not read /actions/runs and verify-ci-green got a 403.
+  #
+  # It failed CLOSED — nothing published on a check it could not perform, and `a release must
+  # actually publish` went red. That is the correct outcome and the reason both guards exist: a
+  # release that cannot PROVE the commit was green must not ship it.
+  actions: read
 
 env:
   PYTHON_VERSION: "3.12"
