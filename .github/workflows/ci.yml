@@ -30,6 +30,9 @@ permissions:
 env:
   PYTHONHASHSEED: "0"          # a dict-ordering bug must not hide behind luck
   PYTHON_VERSION: "3.12"
+  # S3-compatible server the ObjectStore contract runs against. PINNED: `latest` moves, and a
+  # release that cannot be rebuilt byte-for-byte is not a release.
+  MINIO_IMAGE: "minio/minio:RELEASE.2025-04-22T22-12-26Z"
 
 jobs:
   # ───────────────────────────────────────────────────────────────────────────
@@ -176,6 +179,12 @@ jobs:
 
     env:
       DATASTORE_TEST_DSN: postgresql://ci:ci@127.0.0.1:5432/ci_test
+      # The s3 adapter is held to the ObjectStore contract against a REAL S3-compatible server.
+      OBJECTSTORE_TEST_ENDPOINT: http://127.0.0.1:9000
+      OBJECTSTORE_TEST_BUCKET: contract
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_DEFAULT_REGION: us-east-1
 
     defaults:
       run:
@@ -183,6 +192,22 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      # MinIO speaks the S3 API, so it exercises the SAME s3 adapter that holds customer files in
+      # production. Without it the s3 contract param SKIPS — and contracts:postgres fails on a
+      # skip, correctly: an adapter nobody tested is an adapter nobody has proved.
+      #
+      # Started as a STEP, not a `services:` container, because a service container has no
+      # `command:` key and `minio/minio` needs `server /data` as an argument — it would exit at
+      # once. The image is PINNED: `latest` is a moving target and a release must be reproducible.
+      - name: Start MinIO (S3-compatible, for the ObjectStore contract)
+        run: |
+          docker run -d --name minio -p 9000:9000             -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin             ${{ env.MINIO_IMAGE }} server /data
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:9000/minio/health/live; then echo "minio ready"; exit 0; fi
+            sleep 2
+          done
+          echo "::error::MinIO never became healthy"; docker logs minio; exit 1
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -195,7 +220,7 @@ jobs:
       - name: Install (runtime + dev + ci)
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,ci]"
+          pip install -e ".[dev,ci,s3]"   # s3: the ObjectStore contract runs against a REAL MinIO
           pip install asyncpg      # the postgres extra: the contract must run for real
 
       - name: Install Trivy
@@ -216,7 +241,7 @@ jobs:
           out=$(python -m pytest tests/contracts/ -q -p no:cacheprovider 2>&1 | tail -3)
           echo "$out"
           if echo "$out" | grep -qi "skipped"; then
-            echo "::error::a postgres contract param was SKIPPED — DATASTORE_TEST_DSN never reached the tests"
+            echo "::error::a contract param was SKIPPED — the real-infra DSN/endpoint never reached the tests"
             exit 1
           fi
 
@@ -307,7 +332,7 @@ jobs:
           # must not depend on another package's dependency tree.
           pip install pytest pyyaml asyncpg jsonschema
           for d in services/*/; do
-            pip install -e "$d[dev,ci]" -q
+            pip install -e "$d[dev,ci,s3]" -q
           done
 
       - name: Show what each gate protects
