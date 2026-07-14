@@ -75,7 +75,11 @@ class FileService:
         await self._repo.delete(file_id)
         remaining = await self._repo.decr_ref(f.sha256)
         blob_removed = False
-        if remaining == 0:
+        # Delete the blob ONLY under an atomic claim: `claim_blob_delete` removes the ref row iff it
+        # is still zero. If a concurrent upload re-referenced this content between our decrement and
+        # here, the claim fails and we leave the bytes — that owner's file must not vanish. Because
+        # upload writes the blob before it increments, a re-upload has already restored the bytes.
+        if remaining == 0 and await self._repo.claim_blob_delete(f.sha256):
             await self._store.delete(f.sha256)
             blob_removed = True
         return {"deleted": True, "blob_removed": blob_removed}

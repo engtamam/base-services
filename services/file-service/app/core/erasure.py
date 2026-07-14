@@ -42,18 +42,18 @@ class FileErasure:
                 await self._store.delete(_FILES, r["id"])
                 deleted += 1
                 if sha:
-                    # decrement the ref-count; only drop the blob when nobody else points at it
-                    refs = await self._store.get(_REFS, sha)
-                    count = int((refs or {}).get("count", 1)) - 1
-                    if count <= 0:
-                        await self._store.delete(_REFS, sha)
-                        if self._objects is not None:
-                            try:
-                                await self._objects.delete(sha)
-                            except Exception:   # noqa: BLE001 — a missing blob is already erased
-                                pass
-                    else:
-                        await self._store.put(_REFS, sha, {"count": count})
+                    # Atomic decrement, then delete the blob ONLY under a confirmed-zero claim. The
+                    # old code was a get()+put() race that could delete a blob a SECOND owner still
+                    # references — the erasure receipt would then claim bytes were gone that a live
+                    # tenant was about to lose, or would leak them forever. "A file shared by two
+                    # owners must not vanish for the other one" is exactly what the claim protects.
+                    remaining = await self._store.incr(_REFS, sha, -1)
+                    if remaining == 0 and await self._store.del_if_zero(_REFS, sha) \
+                            and self._objects is not None:
+                        try:
+                            await self._objects.delete(sha)
+                        except Exception:   # noqa: BLE001 — a missing blob is already erased
+                            pass
             if not cursor:
                 break
 

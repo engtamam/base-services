@@ -84,6 +84,35 @@ class PostgresDataStore:
             )
         return res.endswith("1")
 
+    async def incr(self, collection: str, key: str, delta: int) -> int:
+        """Atomic counter — the database decides, not this process.
+
+        Upsert the row and add `delta` in a single statement; `GREATEST(...,0)` clamps a
+        ref-count at zero. Concurrent writers serialise on the row, so no increment is ever lost.
+        """
+        pool = await self._ensure()
+        async with pool.acquire() as con:
+            row = await con.fetchrow(
+                f"INSERT INTO {_TABLE} (collection, key, value) "  # nosec B608 - _TABLE is a trusted constant; values parameterized
+                "VALUES ($1,$2, jsonb_build_object('count', GREATEST($3::bigint, 0))) "
+                "ON CONFLICT (collection, key) DO UPDATE SET value = jsonb_build_object("
+                "  'count', GREATEST(COALESCE((%s.value->>'count')::bigint, 0) + $3::bigint, 0)) "
+                "RETURNING (value->>'count')::bigint AS count" % _TABLE,
+                collection, key, int(delta),
+            )
+        return int(row["count"])
+
+    async def del_if_zero(self, collection: str, key: str) -> bool:
+        """Delete the row only while it is atomically confirmed zero — the gate for blob deletion."""
+        pool = await self._ensure()
+        async with pool.acquire() as con:
+            res = await con.execute(
+                f"DELETE FROM {_TABLE} WHERE collection=$1 AND key=$2 "  # nosec B608 - _TABLE is a trusted constant; values parameterized
+                "AND COALESCE((value->>'count')::bigint, 0) = 0",
+                collection, key,
+            )
+        return res.endswith("1")
+
     async def find(
         self,
         collection: str,

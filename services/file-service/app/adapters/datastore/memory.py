@@ -1,6 +1,7 @@
 """In-memory DataStore — zero infra. Deep-copies values to avoid aliasing."""
 from __future__ import annotations
 
+import asyncio
 import copy
 from typing import Any
 
@@ -14,6 +15,10 @@ class MemoryDataStore:
 
     def __init__(self) -> None:
         self._data: dict[str, dict[str, dict[str, Any]]] = {}
+        # Serialises the atomic counter ops below. In one process asyncio is cooperative, but an
+        # `await` between a counter's read and its write is exactly where the lost-update race
+        # lives, so the read-decide-write runs under the lock as one critical section.
+        self._lock = asyncio.Lock()
 
     async def get(self, collection: str, key: str) -> dict[str, Any] | None:
         row = self._data.get(collection, {}).get(key)
@@ -24,6 +29,23 @@ class MemoryDataStore:
 
     async def delete(self, collection: str, key: str) -> bool:
         return self._data.get(collection, {}).pop(key, None) is not None
+
+    async def incr(self, collection: str, key: str, delta: int) -> int:
+        async with self._lock:
+            bucket = self._data.setdefault(collection, {})
+            n = int(bucket.get(key, {}).get("count", 0)) + int(delta)
+            n = max(0, n)                       # a ref-count is never negative
+            bucket[key] = {"count": n}
+            return n
+
+    async def del_if_zero(self, collection: str, key: str) -> bool:
+        async with self._lock:
+            bucket = self._data.get(collection, {})
+            row = bucket.get(key)
+            if row is not None and int(row.get("count", 0)) == 0:
+                del bucket[key]
+                return True
+            return False
 
     @staticmethod
     def _matches(row: dict[str, Any], where: dict[str, Any]) -> bool:

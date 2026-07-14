@@ -34,6 +34,28 @@ class DataStore(Protocol):
 
     async def delete(self, collection: str, key: str) -> bool: ...
 
+    async def incr(self, collection: str, key: str, delta: int) -> int:
+        """Add `delta` to an integer counter and return the NEW value — ONE indivisible step.
+
+        A ref-count built from get()+put() is a read-modify-write race: two concurrent uploads of
+        the same content both read `n`, both write `n+1`, and one increment is lost — so the count
+        undershoots and the blob is deleted while an owner still points at it. This op moves the
+        add inside the store, where concurrent callers serialise on the row. The counter never goes
+        below zero (a decrement past 0 clamps), and the row is created at `delta` if absent.
+        """
+        ...
+
+    async def del_if_zero(self, collection: str, key: str) -> bool:
+        """Delete the counter row IFF it is exactly zero. Return True only if THIS call removed it.
+
+        This is what makes deleting the blob safe. The deleter decrements to 0, then calls this: if
+        a concurrent uploader has already bumped the count back above 0, it returns False and the
+        blob is kept. Only the caller that atomically removes the zero row may delete the blob —
+        and because upload writes the blob BEFORE incrementing, a re-upload restores the bytes. No
+        owner ever loses referenced bytes.
+        """
+        ...
+
     async def find(
         self,
         collection: str,

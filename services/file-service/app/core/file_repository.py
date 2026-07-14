@@ -38,16 +38,19 @@ class FileRepository:
 
     # ── content-addressed ref-count ───────────────────────────────────────────
     async def incr_ref(self, key: str) -> int:
-        row = await self._store.get(_REFS, key)
-        count = int(row["count"]) + 1 if row else 1
-        await self._store.put(_REFS, key, {"count": count})
-        return count
+        """One more owner points at this blob. Atomic — no lost increment under concurrent upload."""
+        return await self._store.incr(_REFS, key, +1)
 
     async def decr_ref(self, key: str) -> int:
-        row = await self._store.get(_REFS, key)
-        count = int(row["count"]) - 1 if row else 0
-        if count <= 0:
-            await self._store.delete(_REFS, key)
-            return 0
-        await self._store.put(_REFS, key, {"count": count})
-        return count
+        """One fewer owner. Atomic, and never negative. Returns the remaining count.
+
+        Note it does NOT delete the blob at zero — the caller must gate that on `claim_blob_delete`,
+        so a concurrent uploader that re-references the blob keeps it alive.
+        """
+        return await self._store.incr(_REFS, key, -1)
+
+    async def claim_blob_delete(self, key: str) -> bool:
+        """May I delete this blob? True only if the ref-count is atomically confirmed zero AND this
+        call is the one that removed the row. A concurrent re-upload makes it False, so the bytes
+        an owner still references are never deleted."""
+        return await self._store.del_if_zero(_REFS, key)

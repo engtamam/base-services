@@ -69,6 +69,49 @@ def test_delete(store):
     assert run(store.get("things", "a")) is None
 
 
+def test_incr_and_del_if_zero_semantics(store):
+    """Every adapter offers a real atomic counter — the ref-count depends on it. (Semantics here;
+    the CONCURRENCY proof is the postgres-gated test below, run in a single loop.)"""
+    c = "counters"
+    run(store.delete(c, "x"))
+    assert run(store.incr(c, "x", 1)) == 1
+    assert run(store.incr(c, "x", 5)) == 6
+    assert run(store.incr(c, "x", -2)) == 4
+    assert run(store.get(c, "x"))["count"] == 4
+    assert run(store.incr(c, "x", -100)) == 0            # never negative
+
+    run(store.incr(c, "x", 3))
+    assert run(store.del_if_zero(c, "x")) is False       # count 3 -> kept
+    run(store.incr(c, "x", -3))                          # now 0
+    assert run(store.del_if_zero(c, "x")) is True
+    assert run(store.get(c, "x")) is None
+
+
+@pytest.mark.skipif(not _PG_DSN, reason="set DATASTORE_TEST_DSN to prove postgres atomicity")
+def test_postgres_counter_is_atomic_under_real_concurrency():
+    """The peer's exact caveat: does postgres serialise concurrent increments? 300 concurrent +1
+    across REAL connections must land exactly 300 — a get()+put() would lose some. Own single loop
+    + own store so asyncpg's loop-bound pool is happy."""
+    import asyncio
+
+    from app.adapters.datastore.postgres import PostgresDataStore
+
+    async def body():
+        # Build the store INSIDE this loop so asyncpg's loop-bound pool is created here, not on the
+        # throwaway loop _postgres() uses for its TRUNCATE.
+        s = PostgresDataStore(_PG_DSN)
+        try:
+            await s.delete("counters", "race")
+            await asyncio.gather(*[s.incr("counters", "race", 1) for _ in range(300)])
+            assert (await s.get("counters", "race"))["count"] == 300
+            await asyncio.gather(*[s.incr("counters", "race", -1) for _ in range(300)])
+            wins = await asyncio.gather(*[s.del_if_zero("counters", "race") for _ in range(20)])
+            assert sum(wins) == 1, "more than one caller claimed the zero row — CAS is not atomic"
+        finally:
+            await s.close()
+    asyncio.run(body())
+
+
 def test_list_and_collection_isolation(store):
     run(store.put("c1", "a", {"n": 1}))
     run(store.put("c1", "b", {"n": 2}))
