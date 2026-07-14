@@ -319,6 +319,19 @@ jobs:
   images:
     name: image ${{ matrix.service }}
     needs: discover
+    # EXPLICIT, for the same reason `discover` is — and this is where the lesson had to be learned
+    # TWICE. A job with no `if:` defaults to `success()`, and GitHub evaluates that across the whole
+    # ANCESTOR CHAIN, not just its direct `needs`. `gates` is an ancestor of `images` through
+    # `discover`; when the mode skipped it, `images` skipped too — even though `discover` succeeded
+    # and printed all 17 services.
+    #
+    # A skip is not a failure, so nothing went red until `a release must actually publish` did. That
+    # guard is the only reason this was caught instead of shipping an empty release for the second
+    # time. Every job downstream of an optional one now states its condition OUT LOUD.
+    if: >-
+      always() &&
+      needs.discover.result == 'success' &&
+      needs.discover.outputs.services != '[]'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -412,6 +425,11 @@ jobs:
   publish:
     name: pin digests + publish release
     needs: [discover, images]
+    # Same trap, same explicit answer: `images` must have SUCCEEDED — not merely "not failed".
+    if: >-
+      always() &&
+      needs.discover.result == 'success' &&
+      needs.images.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
