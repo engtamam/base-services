@@ -20,13 +20,19 @@ a host belongs to. Peers ask, then react to lifecycle **events** — no code cou
 | Tier | Method · Path | Cap | Purpose |
 |------|---------------|-----|---------|
 | internal | `GET /internal/tenants/resolve?host=` | token | host → tenant (+ scope + config) |
-| internal | `GET /internal/tenants/{id}` | token | tenant config + scope |
+| internal | `GET /internal/tenants/{id}` | token | tenant config + scope + **branding** (so a render path needs no admin cap) |
 | platform | `POST /api/v1/tenants` | `platform.tenants` | provision |
 | platform | `GET /api/v1/tenants` · `GET /{id}` | `platform.tenants` | list / read |
 | platform | `PUT /{id}/config` · `PUT /{id}/branding` | `platform.tenants` | update |
-| platform | `POST /{id}/suspend` · `/reactivate` · `DELETE /{id}` | `platform.tenants` | lifecycle |
+| platform | `POST /{id}/suspend` · `/reactivate` · `DELETE /{id}` | `platform.tenants` | lifecycle (**delete leaves a tombstone** — a peer that missed the event still learns it by reading) |
 | platform | `GET /{id}/export` | `platform.tenants` | offboarding export |
 | tenant | `GET /api/v1/tenant` · `PUT /tenant/config|branding` | `tenant.manage` | **own tenant only** |
+
+> **Delete = tombstone by default.** The event bus is at-most-once, so a purged tenant is
+> unlearnable to any peer that missed `tenant.deleted`. `TENANT_DELETE_MODE=tombstone` (default)
+> keeps a `status: deleted` marker — not a copy of the tenant (name/branding/domains are dropped,
+> since a delete is often an erasure). `TENANT_TOMBSTONE_FIELDS` / `TENANT_INTERNAL_FIELDS` tune
+> what a tombstone carries and what the internal read exposes. `purge` remains available, eyes open.
 
 ## Plug-and-play (config only)
 
@@ -65,3 +71,25 @@ pytest -q ; python ci/security_gate.py
 
 Actual schema/db creation (peers do it from the returned scope) · branded login UI
 (consumer's job) · usage-metering enforcement (billing) · DNS/TLS provisioning (infra).
+
+## Rate limiting (every request, config-driven)
+
+Sliding-window (GCRA) limiter — **no boundary burst**, and **atomic** (a check-and-increment race
+cannot exceed the limit). Every response carries `RateLimit-Limit/Remaining/Reset`; a 429 also
+carries `Retry-After`. On a Redis outage it **degrades to a per-pod limiter** (coarser, still
+limiting) rather than failing open or 500-ing.
+
+| Choice | Env knob | Options / example |
+|--------|----------|-------------------|
+| Backend | `RATELIMITER_DRIVER` | `memory`(per-pod) · `redis`(shared) |
+| Budget | `RATELIMIT_MAX` / `RATELIMIT_WINDOW_SECONDS` | e.g. `100` / `60` |
+| Key | `RATELIMIT_KEY_PARTS` | `subject,ip` · add `tenant`/`route` |
+| Per-route budgets | `RATELIMIT_ROUTES` | `[{"prefix","class","limit","window_s","cost"}]` |
+| Only count failures | `RATELIMIT_COUNT_STATUSES` | e.g. `401` (a 403 will not lock a user out) |
+| On Redis outage | `RATELIMIT_DEGRADE` | `local`(default) · `closed` · `open` |
+
+Operator unblock (never `FLUSHALL`): `POST /internal/ratelimit/unblock {"key":"<key>"}`.
+
+> The public edge (Caddy) is generated from `deploy/edge/edge.json` by `tools/edge/render.py` —
+> one config source, injection-refused, HSTS only under TLS, non-root container. `nginx` is a
+> future renderer of the same shape.

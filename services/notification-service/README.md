@@ -26,12 +26,19 @@ each vendor's official docs.
 | Tier | Method · Path | Purpose |
 |------|---------------|---------|
 | internal | `POST /internal/notify` (X-Internal-Token) | service-to-service send |
+| internal | `POST /internal/notifications/drain` | worker tick: re-attempt queued deliveries |
 | user | `GET /api/v1/notifications` | in-app feed (unread first) |
 | user | `POST /api/v1/notifications/{id}/read` | mark read |
 | user | `GET/PUT /api/v1/notifications/preferences` | channel/event opt-out |
 | admin | `POST/GET /api/v1/templates` (`notifications.templates` cap) | manage templates |
 
-`POST /internal/notify` body: `{recipient, channel, template_key, locale?, variables?, user_id?, event?}`.
+`POST /internal/notify` body: `{recipient, channel, template_key, locale?, variables?, user_id?, event?, idempotency_key?}`.
+
+> **An outage delays a message, it does not lose it.** `NOTIFY_DELIVERY_MODE=queued` (default): a
+> failed send is classified (retryable vs permanent), backed off with full jitter, retried by the
+> drain worker, and **dead-lettered** after `NOTIFY_MAX_ATTEMPTS` (distinct from `failed`). Point a
+> CronJob at `/internal/notifications/drain`. The `idempotency_key` dedupes retries — including
+> while a message is still queued — so she never gets two.
 
 ## Templates & preferences
 
@@ -75,3 +82,25 @@ pytest -q ; python ci/security_gate.py
 
 Push (FCM/APNs) · web-push · outbound signed webhooks (webhook-service) · open/click +
 bounce tracking · DKIM/SPF/DMARC (DNS/infra).
+
+## Rate limiting (every request, config-driven)
+
+Sliding-window (GCRA) limiter — **no boundary burst**, and **atomic** (a check-and-increment race
+cannot exceed the limit). Every response carries `RateLimit-Limit/Remaining/Reset`; a 429 also
+carries `Retry-After`. On a Redis outage it **degrades to a per-pod limiter** (coarser, still
+limiting) rather than failing open or 500-ing.
+
+| Choice | Env knob | Options / example |
+|--------|----------|-------------------|
+| Backend | `RATELIMITER_DRIVER` | `memory`(per-pod) · `redis`(shared) |
+| Budget | `RATELIMIT_MAX` / `RATELIMIT_WINDOW_SECONDS` | e.g. `100` / `60` |
+| Key | `RATELIMIT_KEY_PARTS` | `subject,ip` · add `tenant`/`route` |
+| Per-route budgets | `RATELIMIT_ROUTES` | `[{"prefix","class","limit","window_s","cost"}]` |
+| Only count failures | `RATELIMIT_COUNT_STATUSES` | e.g. `401` (a 403 will not lock a user out) |
+| On Redis outage | `RATELIMIT_DEGRADE` | `local`(default) · `closed` · `open` |
+
+Operator unblock (never `FLUSHALL`): `POST /internal/ratelimit/unblock {"key":"<key>"}`.
+
+> The public edge (Caddy) is generated from `deploy/edge/edge.json` by `tools/edge/render.py` —
+> one config source, injection-refused, HSTS only under TLS, non-root container. `nginx` is a
+> future renderer of the same shape.

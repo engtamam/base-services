@@ -68,3 +68,25 @@ pytest -q ; python ci/security_gate.py
 
 Thumbnails / preview (Pillow → optional `ThumbnailGenerator`) · chunked / resumable
 uploads · S3 presigned URLs · CDN / image transforms.
+
+## Rate limiting (every request, config-driven)
+
+Sliding-window (GCRA) limiter — **no boundary burst**, and **atomic** (a check-and-increment race
+cannot exceed the limit). Every response carries `RateLimit-Limit/Remaining/Reset`; a 429 also
+carries `Retry-After`. On a Redis outage it **degrades to a per-pod limiter** (coarser, still
+limiting) rather than failing open or 500-ing.
+
+| Choice | Env knob | Options / example |
+|--------|----------|-------------------|
+| Backend | `RATELIMITER_DRIVER` | `memory`(per-pod) · `redis`(shared) |
+| Budget | `RATELIMIT_MAX` / `RATELIMIT_WINDOW_SECONDS` | e.g. `100` / `60` |
+| Key | `RATELIMIT_KEY_PARTS` | `subject,ip` · add `tenant`/`route` |
+| Per-route budgets | `RATELIMIT_ROUTES` | `[{"prefix","class","limit","window_s","cost"}]` |
+| Only count failures | `RATELIMIT_COUNT_STATUSES` | e.g. `401` (a 403 will not lock a user out) |
+| On Redis outage | `RATELIMIT_DEGRADE` | `local`(default) · `closed` · `open` |
+
+Operator unblock (never `FLUSHALL`): `POST /internal/ratelimit/unblock {"key":"<key>"}`.
+
+> The public edge (Caddy) is generated from `deploy/edge/edge.json` by `tools/edge/render.py` —
+> one config source, injection-refused, HSTS only under TLS, non-root container. `nginx` is a
+> future renderer of the same shape.

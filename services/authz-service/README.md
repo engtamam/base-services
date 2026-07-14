@@ -40,7 +40,7 @@ a malicious policy value like `__import__('os')` is compared as a literal, never
 | Tier | Method · Path | Purpose |
 |------|---------------|---------|
 | internal | `POST /internal/authz/check` | **decide** (PDP) |
-| internal | `GET /internal/authz/effective?subject=&tenant=` | effective caps (for identity to embed in tokens) |
+| internal | `GET /internal/authz/effective?subject=&tenant=&roles=a,b` | effective caps for identity to embed in tokens — **pass the roles you hold** (id or name); an unknown role is a 400, never a silent empty set |
 | user | `POST/GET /api/v1/roles`, `GET/PUT/DELETE /api/v1/roles/{id}` | manage roles (PAP) |
 | user | `POST/GET/DELETE /api/v1/policies` | manage ABAC policies |
 | user | `PUT/GET /api/v1/subjects/{sub}/roles` | assign roles/direct caps |
@@ -76,3 +76,25 @@ pytest -q ; python ci/security_gate.py
 
 Casbin / OPA engine adapters · policy simulation / what-if · richer built-in attribute
 resolvers (time, geo — callers pass them in `attributes` today).
+
+## Rate limiting (every request, config-driven)
+
+Sliding-window (GCRA) limiter — **no boundary burst**, and **atomic** (a check-and-increment race
+cannot exceed the limit). Every response carries `RateLimit-Limit/Remaining/Reset`; a 429 also
+carries `Retry-After`. On a Redis outage it **degrades to a per-pod limiter** (coarser, still
+limiting) rather than failing open or 500-ing.
+
+| Choice | Env knob | Options / example |
+|--------|----------|-------------------|
+| Backend | `RATELIMITER_DRIVER` | `memory`(per-pod) · `redis`(shared) |
+| Budget | `RATELIMIT_MAX` / `RATELIMIT_WINDOW_SECONDS` | e.g. `100` / `60` |
+| Key | `RATELIMIT_KEY_PARTS` | `subject,ip` · add `tenant`/`route` |
+| Per-route budgets | `RATELIMIT_ROUTES` | `[{"prefix","class","limit","window_s","cost"}]` |
+| Only count failures | `RATELIMIT_COUNT_STATUSES` | e.g. `401` (a 403 will not lock a user out) |
+| On Redis outage | `RATELIMIT_DEGRADE` | `local`(default) · `closed` · `open` |
+
+Operator unblock (never `FLUSHALL`): `POST /internal/ratelimit/unblock {"key":"<key>"}`.
+
+> The public edge (Caddy) is generated from `deploy/edge/edge.json` by `tools/edge/render.py` —
+> one config source, injection-refused, HSTS only under TLS, non-root container. `nginx` is a
+> future renderer of the same shape.
