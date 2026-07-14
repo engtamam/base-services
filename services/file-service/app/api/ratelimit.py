@@ -10,8 +10,9 @@
 # =============================================================================
 from __future__ import annotations
 
-from fastapi import HTTPException, Request, Response, status
+from fastapi import Depends, HTTPException, Request, Response, status
 
+from app.api.auth import Principal, _extract_principal
 from app.config import get_settings
 from app.core.ratelimit_policy import RateLimitPolicy
 
@@ -40,19 +41,43 @@ def _count_statuses(request: Request) -> frozenset[int]:
     return raw
 
 
-def _identity(request: Request) -> tuple[str | None, str | None, str | None]:
-    principal = getattr(request.state, "principal", None)
-    subject = getattr(principal, "subject", None) if principal else None
-    tenant = getattr(principal, "tenant", None) if principal else None
-    ip = request.client.host if request.client else None
-    return subject, ip, tenant
+async def optional_principal(request: Request) -> "Principal | None":
+    """Resolve the caller from the bearer token — or None. NEVER 401s.
+
+    The limiter must NOT read `request.state.principal`. That attribute is set by the auth
+    dependency, and FastAPI runs a route's decorator dependencies (where `rate_limit` usually
+    lives) BEFORE its parameter dependencies (where auth usually lives) — so the limiter would see
+    `None`, the subject would silently drop out of the key, and everyone behind one office NAT would
+    share an IP bucket, with no symptom until a customer complains. Ordering you don't control is a
+    bug you can't see.
+
+    By taking THIS as its own dependency, the limiter forces FastAPI to resolve the subject before
+    the limiter body runs, whatever order the route lists things in. The trap is made
+    unrepresentable, not merely avoided.
+
+    Optional because the limiter also guards UNAUTHENTICATED routes (`/login`): a missing or invalid
+    token is a legitimate `None` that falls back to IP-keying — a deliberate fallback, never an
+    accidental one.
+    """
+    auth = request.headers.get("authorization", "")
+    scheme, _, token = auth.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        return None
+    try:
+        claims = request.app.state.container.token_verifier.verify(token)
+    except Exception:
+        return None
+    return _extract_principal(claims)
 
 
-async def rate_limit(request: Request, response: Response) -> None:
+async def rate_limit(request: Request, response: Response,
+                     principal: "Principal | None" = Depends(optional_principal)) -> None:
     limiter = request.app.state.container.rate_limiter
     policy = _policy(request)
     cls = policy.classify(request.url.path)
-    subject, ip, tenant = _identity(request)
+    subject = getattr(principal, "subject", None) if principal else None
+    tenant = getattr(principal, "tenant", None) if principal else None
+    ip = request.client.host if request.client else None
     key = policy.key(cls, subject=subject, ip=ip, tenant=tenant)
 
     try:

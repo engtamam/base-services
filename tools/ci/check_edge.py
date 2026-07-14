@@ -109,11 +109,56 @@ def main() -> int:
     # R6 — a per-pod rate limiter with more than one replica is a false limit.
     problems += _check_replica_limiter()
 
+    # R7 — the limiter must not read request.state.principal to build its key.
+    problems += _check_limiter_key_source()
+
     if problems:
         return _fail(problems)
     print("safety:edge OK — the edge validates, refuses injection, hardens the container, and its "
           "rate limit does not silently multiply with scale")
     return 0
+
+
+def _check_limiter_key_source() -> list[str]:
+    """R7 / phase-32 T-ordering. The rate-limit key must NOT be built from
+    `request.state.principal`.
+
+    That attribute is set by the auth dependency, and FastAPI runs a route's decorator
+    dependencies (where `rate_limit` lives) BEFORE its parameter dependencies (where auth lives).
+    So a limiter that reads `request.state.principal` sees `None` on any authenticated route, the
+    subject silently drops out of the key, and everyone behind one office NAT shares an IP bucket —
+    with no symptom until a customer complains. A peer hit exactly this in production.
+
+    The subject must come from the limiter's OWN resolved dependency, so ordering cannot break it.
+    This gate makes the old pattern unrepresentable.
+    """
+    import ast
+    out = []
+    for svc in sorted((ROOT / "services").glob("*/app/api/ratelimit.py")):
+        try:
+            tree = ast.parse(svc.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError):
+            continue
+        # An AST walk, so a docstring that MENTIONS request.state.principal (to warn against it) is
+        # not mistaken for a code read of it. We look for the attribute chain `.state.principal` and
+        # for getattr(<...>.state, "principal", ...) — the two ways to spell the same mistake.
+        bad = False
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Attribute) and n.attr == "principal" \
+                    and isinstance(n.value, ast.Attribute) and n.value.attr == "state":
+                bad = True
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "getattr" \
+                    and len(n.args) >= 2 and isinstance(n.args[0], ast.Attribute) \
+                    and n.args[0].attr == "state" \
+                    and isinstance(n.args[1], ast.Constant) and n.args[1].value == "principal":
+                bad = True
+        if bad:
+            rel = svc.relative_to(ROOT).as_posix()
+            out.append(f"R7: {rel} reads request.state.principal for its key — that is set by the "
+                       f"auth dependency, which FastAPI may run AFTER the limiter. The subject "
+                       f"vanishes and one NAT shares a bucket. Resolve the subject inside the "
+                       f"limiter (its own optional dependency) instead.")
+    return out
 
 
 def _check_replica_limiter() -> list[str]:

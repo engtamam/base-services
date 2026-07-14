@@ -90,6 +90,10 @@ limiting) rather than failing open or 500-ing.
 | Only count failures | `RATELIMIT_COUNT_STATUSES` | e.g. `401` (a 403 will not lock a user out) |
 | On Redis outage | `RATELIMIT_DEGRADE` | `local`(default) · `closed` · `open` |
 
+> The subject is resolved **inside** the limiter (its own optional dependency), not read from
+> pre-set request state — so an authenticated request keys per-subject regardless of the route's
+> dependency order. No "one office NAT shares a bucket" surprise. Enforced by `safety:edge`.
+
 Operator unblock (never `FLUSHALL`): `POST /internal/ratelimit/unblock {"key":"<key>"}`.
 
 > The public edge (Caddy) is generated from `deploy/edge/edge.json` by `tools/edge/render.py` —

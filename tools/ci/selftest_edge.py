@@ -55,6 +55,9 @@ MUTATIONS = {
     "R6 per-pod limiter at scale": (
         "deploy/services/edge-svc.values.yaml", None,
         "replicas: 3\nRATELIMITER_DRIVER: memory\n"),      # None find => create file
+    "R7 limiter reads request.state.principal": (
+        "services/x/app/api/ratelimit.py", None,
+        "principal = getattr(request.state, 'principal', None)\n"),   # None find => create file
 }
 
 
