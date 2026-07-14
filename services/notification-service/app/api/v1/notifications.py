@@ -34,6 +34,7 @@ def build_notifier(request: Request) -> NotificationService:
         email=c.email, sms=c.sms, renderer=c.renderer,
         email_from=s.EMAIL_FROM, default_locale=s.DEFAULT_LOCALE,
         dedupe_ttl_seconds=s.NOTIFY_DEDUPE_TTL_SECONDS,
+        dedupe_states=s.notify_dedupe_states,
         delivery_mode=s.NOTIFY_DELIVERY_MODE,
         retry=RetryPolicy(
             max_attempts=s.NOTIFY_MAX_ATTEMPTS,

@@ -152,18 +152,21 @@ async def list_members(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "NO_TENANT")
 
     page = min(limit or s.IDENTITY_MEMBERS_PAGE_SIZE, s.IDENTITY_MEMBERS_MAX_PAGE_SIZE)
-    store = _svc(request).memberships
-    rows, cursor = await store.members(tenant, limit=page, after=after)
+    return await list_members_of(_svc(request).memberships, tenant, page, after)
 
+
+async def list_members_of(store, tenant: str, page: int, after: str | None) -> dict:
+    """Build the member directory for ONE tenant. Shared by the user-facing route (tenant off the
+    token) and the internal route (tenant an explicit parameter). The projection is identical, so a
+    background job and an admin see exactly the same fields — never a password hash or an MFA secret,
+    which have no business in a directory read whoever is asking."""
+    rows, cursor = await store.members(tenant, limit=page, after=after)
     members = []
     for m in rows:
         person = await store.person(m.person_id)
         members.append({
             "person_id": m.person_id,
-            # The login identifier — the ONLY person field here. A password hash or an MFA secret
-            # has no business in a list an admin can read, and a person who no longer exists is
-            # reported as absent rather than silently skipped.
-            "identifier": person.identifier if person else None,
+            "identifier": person.identifier if person else None,   # a gone person -> absent, not skipped
             "roles": m.roles,
             "caps": m.caps,
             "status": m.status,

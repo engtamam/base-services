@@ -26,9 +26,15 @@ CHANNELS = ("email", "sms", "inapp")
 # How a send is attempted. The PLATFORM decides; we enforce.
 INLINE, QUEUED_MODE = "inline", "queued"
 DELIVERY_MODES = (INLINE, QUEUED_MODE)
-# Terminal outcomes we must NOT repeat on a retry. A 'failed' send is deliberately
-# excluded so a genuine retry after a transient error still goes through.
-_DEDUPE_STATES = ("sent", "suppressed")
+
+# Outcomes an idempotency key must REMEMBER, so a retry with the same key does not create a second
+# delivery. The DEFAULT includes `queued`, which is the fix for the reported duplicate: a message
+# goes to the queue when the provider is down, and if the caller's retry (or a sweep) calls /notify
+# again with the same key before the drain runs, remembering only terminal states would start a
+# SECOND queued delivery — both then drain, and she gets two. `failed` stays OUT of the default so a
+# genuine retry after a permanent failure may try again. The set is CONFIG (NOTIFY_DEDUPE_STATES),
+# because "which outcomes are final enough to dedupe" is a platform's call, not a constant.
+_DEFAULT_DEDUPE_STATES = ("sent", "suppressed", "queued")
 
 
 class NotificationService:
@@ -36,6 +42,7 @@ class NotificationService:
                  deliveries: DeliveryStore, inapp: InAppStore,
                  email, sms, renderer, email_from: str, default_locale: str,
                  dedupe_ttl_seconds: int = 86_400,
+                 dedupe_states: tuple[str, ...] = _DEFAULT_DEDUPE_STATES,
                  retry: RetryPolicy | None = None,
                  delivery_mode: str = INLINE, clock=time.time) -> None:
         self._templates = templates
@@ -48,6 +55,7 @@ class NotificationService:
         self._email_from = email_from
         self._default_locale = default_locale
         self._dedupe_ttl = dedupe_ttl_seconds
+        self._dedupe_states = tuple(dedupe_states)
         if delivery_mode not in DELIVERY_MODES:
             raise ValueError(f"unknown NOTIFY_DELIVERY_MODE {delivery_mode!r} — "
                              f"allowed: {', '.join(DELIVERY_MODES)}")
@@ -163,7 +171,7 @@ class NotificationService:
 
     async def _finish(self, idempotency_key: str | None, result: dict) -> dict:
         """Remember a terminal-success result so a retry with the same key won't re-send."""
-        if idempotency_key and result.get("status") in _DEDUPE_STATES:
+        if idempotency_key and result.get("status") in self._dedupe_states:
             await self._deliveries.remember_idempotent(idempotency_key, result, time.time())
         return result
 

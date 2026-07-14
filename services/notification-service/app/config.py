@@ -122,6 +122,14 @@ class Settings(BaseSettings):
     FEED_PAGE_SIZE: int = 100           # in-app feed items returned per request
     FEED_SCAN_LIMIT: int = 1000         # max rows scanned to build a user's feed
     NOTIFY_DEDUPE_TTL_SECONDS: int = 86_400   # idempotency window (retry won't re-send)
+    # Which delivery outcomes an idempotency key remembers, so a retry with the same key returns the
+    # existing delivery instead of creating a second. `queued` is included by default: a message
+    # queued during a provider outage must dedupe a caller's retry, or the drain sends it twice.
+    NOTIFY_DEDUPE_STATES: str = "sent,suppressed,queued"
+
+    @property
+    def notify_dedupe_states(self) -> tuple[str, ...]:
+        return tuple(x.strip() for x in self.NOTIFY_DEDUPE_STATES.split(",") if x.strip())
     HTTP_TIMEOUT_SECONDS: int = 15      # outbound provider HTTP/SMTP timeout
     EMAIL_CHAIN: str = "console"        # e.g. "resend,console" (try resend, fall back)
     # sms providers: console | twilio | unifonic (KSA) | taqnyat (KSA)

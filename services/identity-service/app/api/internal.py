@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import hmac
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 
+from app.api.v1.tenancy import list_members_of
 from app.config import Settings, get_settings
+from app.core.membership import MembershipStore
 from app.core.erasure import IdentityErasure
 from app.core.refresh_store import RefreshStore
 from app.core.user_repository import UserRepository
@@ -96,3 +98,28 @@ async def ratelimit_unblock(request: Request, body: UnblockIn) -> dict:
     """
     await request.app.state.container.rate_limiter.reset(body.key)
     return {"unblocked": True, "key": body.key}
+
+
+@router.get("/tenancy/members", dependencies=[Depends(require_internal_token)])
+async def internal_members(request: Request, tenant: str = Query(..., min_length=1),
+                           limit: int | None = Query(default=None, ge=1),
+                           after: str | None = Query(default=None)) -> dict:
+    """The member directory for a background JOB — no user JWT required.
+
+    The user-facing read gates on a `members:read` CAPABILITY and takes the tenant off the caller's
+    token, which is exactly right for a person clicking a screen and wrong for a service. A document
+    renderer, an export worker, a billing sweep — these hold the INTERNAL token, not a user JWT with
+    caps, so they had no way to enumerate a tenant's members at all.
+
+    Here the tenant IS a parameter, and that is safe precisely because the caller is internal: it
+    holds the platform's service token and is trusted to name the tenant it is working for. It is
+    REQUIRED (min_length=1) — there is deliberately no "all tenants" value, so a bug that forgets to
+    set it fails loudly rather than dumping every company's staff. The projection is the same one the
+    admin route uses: identifier, roles, caps, status — never a credential.
+    """
+    if not get_settings().IDENTITY_MULTI_TENANT:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "MULTI_TENANT_DISABLED")
+    s = get_settings()
+    page = min(limit or s.IDENTITY_MEMBERS_PAGE_SIZE, s.IDENTITY_MEMBERS_MAX_PAGE_SIZE)
+    store = MembershipStore(request.app.state.container.datastore)
+    return await list_members_of(store, tenant, page, after)
