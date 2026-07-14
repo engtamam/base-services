@@ -15,7 +15,7 @@ from app.core.erasure import IdentityErasure
 from app.core.refresh_store import RefreshStore
 from app.core.user_repository import UserRepository
 from app.manifest import build_manifest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 
@@ -76,3 +76,23 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
         pii_salt=s.PII_SALT,
     )
     return await eraser.erase(body.tenant, body.subject)
+
+
+class UnblockIn(BaseModel):
+    key: str = Field(min_length=1, max_length=256)
+
+
+@router.post("/ratelimit/unblock", dependencies=[Depends(require_internal_token)])
+async def ratelimit_unblock(request: Request, body: UnblockIn) -> dict:
+    """Clear ONE rate-limit key. The operator's 3am remedy.
+
+    Someone WILL be locked out by a misconfigured limit or a shared NAT. If the only tool is
+    FLUSHALL, the operator uses it and takes every other limit on the platform down with it. This
+    clears exactly one key and nothing else — the surgical alternative to the sledgehammer.
+
+    The key is the composite key the policy built (e.g. `auth|s:<subject>`); an operator reads it
+    off the throttled response's logs. It is internal-token gated: unblocking a limit is a platform
+    action, not a tenant one.
+    """
+    await request.app.state.container.rate_limiter.reset(body.key)
+    return {"unblocked": True, "key": body.key}

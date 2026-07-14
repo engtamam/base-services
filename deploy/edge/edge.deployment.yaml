@@ -1,0 +1,70 @@
+# =============================================================================
+# The edge (Caddy) — the ONE container that talks to the whole internet.
+#
+# Both source repos run Caddy as root with a writable filesystem and no dropped
+# capabilities (Security-tools' installer/k8s/50-caddy.yaml has no securityContext
+# at all). This does not. The edge is the most exposed container in the cluster,
+# so it gets the STRICTEST posture, not an exemption for being important.
+#
+# The Caddyfile is a ConfigMap RENDERED from deploy/edge/edge.json (tools/edge/
+# render.py), never hand-edited — the cert, the routing host, and the URLs a client
+# calls must not be able to drift apart. Every value in it was validated before
+# rendering (tools/edge/validate.py, phase-32 T1).
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: edge
+  labels: { app: edge }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: edge }
+  template:
+    metadata:
+      labels: { app: edge }
+    spec:
+      # NET_BIND_SERVICE only if you truly bind :80/:443 in-pod. Behind a Service/Ingress the pod
+      # listens high and needs no privileged port, so we drop everything and add nothing back.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: caddy
+          # PINNED by digest. `caddy:2-alpine` is a moving tag, and a release that cannot be
+          # rebuilt byte-for-byte is not a release. Replace with the digest you actually deploy.
+          image: caddy:2.8.4-alpine@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          ports:
+            - { name: http, containerPort: 8080 }
+          volumeMounts:
+            # The rendered Caddyfile, read-only.
+            - { name: config, mountPath: /etc/caddy, readOnly: true }
+            # ACME account + issued certs. This one MUST persist: lose it and every cert is
+            # re-issued on the next boot, which walks straight into Let's Encrypt's rate limits.
+            - { name: data, mountPath: /data }
+            # Caddy's autosave config + scratch. Writable, ephemeral.
+            - { name: caddy-config, mountPath: /config }
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 256Mi }
+      volumes:
+        - name: config
+          configMap: { name: edge-caddyfile }
+        - name: caddy-config
+          emptyDir: {}
+        # In production, replace with a PersistentVolumeClaim so the ACME certs survive a restart.
+        - name: data
+          emptyDir: {}

@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+gate_name="safety:edge"
+gate_desc="the edge terminates TLS for every request — a mistake here is an open door"
+gate_protects="The edge is the ONE machine every request on the platform touches, and it
+terminates TLS. Its config is not data — a Caddyfile is a configuration
+language — so an operator-supplied hostname interpolated into it can inject a
+whole extra site block that proxies traffic to an attacker, TLS-terminated with
+our own cert, looking exactly like us. Neither source repo (ammar, Security-tools)
+guards this.
+
+Six rules: every interpolated value is VALIDATED; a hostname carrying a Caddyfile
+metacharacter is REFUSED, never escaped; HSTS appears only when TLS is really on;
+the rendered config PARSES; the edge container is non-root, drops ALL caps and has
+a read-only root filesystem (both repos run Caddy as root); and a per-pod rate
+limiter with replicas>1 is a FAILURE, because the limit silently multiplies with
+scale and you believe in it."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_edge.py"
+gate_units=1
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_edge.py; }
+
+# A gate that cannot fail is decoration. Mutation-tested: a correct edge passes, then five breaks
+# (one per rule) each turn it red.
+gate_selftest() { "$PY" tools/ci/selftest_edge.py >/dev/null 2>&1; }

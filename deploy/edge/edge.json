@@ -1,0 +1,20 @@
+{
+  "_comment": "THE one source of truth for the edge. The Caddyfile is RENDERED from this (tools/edge/render.py) and is never hand-edited: the cert, the routing host and the URLs a client calls must not be able to drift apart. Every value here is validated before it is interpolated — see tools/edge/validate.py and phase-32 T1.",
+
+  "driver": "caddy",
+
+  "domain": "localhost",
+  "tls": false,
+  "http_port": 8080,
+  "acme_email": "ops@example.com",
+
+  "_routes": "Longest prefix wins — the renderer sorts, so listing order cannot create a shadowing bug. strip_prefix uses Caddy's handle_path (the prefix is removed before forwarding).",
+  "routes": [
+    { "path": "/api/v1/auth/*", "upstream": "identity-service:8000" },
+    { "path": "/api/v1/tenancy/*", "upstream": "identity-service:8000" },
+    { "path": "/api/*", "upstream": "api-gateway:8000" }
+  ],
+
+  "_fallback": "The SPA. Remove this block and the edge answers 404 for anything unrouted, explicitly, rather than letting Caddy choose.",
+  "fallback": { "root": "/srv/ui" }
+}

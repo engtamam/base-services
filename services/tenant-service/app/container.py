@@ -85,7 +85,8 @@ _TOKEN: dict[str, Builder] = {
 }
 _RATELIMITER: dict[str, Builder] = {
     "memory": lambda s: MemoryRateLimiter(s.RATELIMIT_MAX, s.RATELIMIT_WINDOW_SECONDS),
-    "redis": lambda s: RedisRateLimiter(s.RATELIMIT_URL, s.RATELIMIT_MAX, s.RATELIMIT_WINDOW_SECONDS),
+    "redis": lambda s: RedisRateLimiter(s.RATELIMIT_URL, s.RATELIMIT_MAX, s.RATELIMIT_WINDOW_SECONDS,
+                                        degrade=s.RATELIMIT_DEGRADE),
 }
 _TELEMETRY: dict[str, Builder] = {
     "stdout": lambda s: StdoutTelemetry(),

@@ -103,6 +103,10 @@ class Settings(BaseSettings):
     RATELIMIT_URL: str = ""
     RATELIMIT_MAX: int = 100
     RATELIMIT_WINDOW_SECONDS: int = 60
+    RATELIMIT_DEGRADE: str = "local"            # local | closed | open
+    RATELIMIT_KEY_PARTS: str = "subject,ip"     # subject | ip | tenant | route (comma list)
+    RATELIMIT_ROUTES: str = ""                  # JSON: [{"prefix","class","limit","window_s","cost"}]
+    RATELIMIT_COUNT_STATUSES: str = ""          # e.g. "401" for a login surface; comma list
 
     TELEMETRY_DRIVER: str = "stdout"
 

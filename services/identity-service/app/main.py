@@ -97,6 +97,12 @@ def create_app() -> FastAPI:
     # ── Error handlers (safe, generic) ──────────────────────────────────────
     register_error_handlers(app)
 
+    # Refund a counted-surface request whose final status did not count (T6). No-op unless
+    # RATELIMIT_COUNT_STATUSES is set, so it costs nothing for services that do not use it.
+    from app.api.ratelimit import build_policy, register_ratelimit_refund
+    app.state.ratelimit_policy = build_policy(settings)
+    register_ratelimit_refund(app)
+
     # ── Routers: public -> internal -> user ─────────────────────────────────
     app.include_router(health.router)
     app.include_router(metrics.router)

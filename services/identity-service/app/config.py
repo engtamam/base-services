@@ -103,6 +103,21 @@ class Settings(BaseSettings):
     RATELIMIT_URL: str = ""
     RATELIMIT_MAX: int = 100
     RATELIMIT_WINDOW_SECONDS: int = 60
+    # What the redis limiter does when Redis cannot be reached. `local` degrades to a per-pod
+    # limiter with the same policy — coarser, but alive and still limiting. `closed` denies all
+    # (the limiter becomes the outage); `open` allows all (the limit is gone). See phase-32 T4.
+    RATELIMIT_DEGRADE: str = "local"            # local | closed | open
+    # How a request becomes a key. Composite: each present part contributes, so an authenticated
+    # request buckets per subject (fair) and an anonymous one falls through to the IP. Behind a NAT,
+    # `ip` alone is one bucket for a whole office — add `subject`/`tenant` to split it. See T7.
+    RATELIMIT_KEY_PARTS: str = "subject,ip"     # subject | ip | tenant | route (comma list)
+    # Per-route budgets. First matching prefix (longest first) wins; unmatched uses RATELIMIT_MAX.
+    # A login surface must be far stricter than a health check, so this is config, not a constant.
+    RATELIMIT_ROUTES: str = ""                  # JSON: [{"prefix","class","limit","window_s","cost"}]
+    # Which HTTP statuses count as a "failed attempt" on a counted surface. ammar's insight: a
+    # correct password on an account pending approval returns 403 and must NOT count, or the user is
+    # locked out while waiting for the approval that would let them in. Empty = count every request.
+    RATELIMIT_COUNT_STATUSES: str = ""          # e.g. "401" for a login surface; comma list
 
     TELEMETRY_DRIVER: str = "stdout"
 

@@ -1,0 +1,33 @@
+{
+	auto_https off
+}
+
+http://localhost:8080 {
+	encode gzip zstd
+
+	header {
+		-Server
+		Permissions-Policy "geolocation=(), microphone=(), camera=()"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+	}
+
+	handle /api/v1/tenancy/* {
+		reverse_proxy identity-service:8000
+	}
+
+	handle /api/v1/auth/* {
+		reverse_proxy identity-service:8000
+	}
+
+	handle /api/* {
+		reverse_proxy api-gateway:8000
+	}
+
+	handle {
+		root * /srv/ui
+		try_files {path} /index.html
+		file_server
+	}
+}
