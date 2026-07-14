@@ -174,6 +174,37 @@ def test_per_call_limit_override():
     assert res[1:].count(True) == 2, "the override limit of 2 applied, not the default 100"
 
 
+def test_a_fresh_key_is_allowed_at_a_large_clock_value():
+    """Regression: a fresh key must ALWAYS be admitted, whatever the clock reads.
+
+    The first cut computed `tat + interval - window` and compared to now — adding then subtracting
+    off a large clock value. At limit==1 (interval == window) float64 rounding tipped `allow_at`
+    an epsilon above `now`, denying a fresh key. It passed on a freshly-booted machine and flaked
+    on CI, because the bug depends on the MAGNITUDE of the clock.
+    """
+    # Sweep many fractional clock values across the range monotonic()*1000 spans on a real host.
+    # The old `tat + interval - window <= now` formulation could deny a fresh key at SOME of these
+    # (magnitude-dependent float rounding); the relative-time formulation cannot at ANY of them.
+    clocks = [c + f for c in (1e5, 1e7, 1e9, 1e11, 1e13)
+              for f in (0.0, 0.001, 0.5, 0.999, 12345.678)]
+    for lim in (1, 2, 5, 100):
+        for clk in clocks:
+            d = sw.check(0.0, clk, limit=lim, window_ms=60_000)
+            assert d.allowed, f"a fresh key denied at limit={lim}, clock={clk!r} — cancellation bug"
+
+
+def test_unique_keys_never_collide_at_any_clock(monkeypatch):
+    """The exact test that flaked: 5 unique keys at limit 1, all allowed — with the clock forced
+    to a large value so the regression cannot hide behind a small local monotonic()."""
+    import app.adapters.rate_limiter.memory as mem
+    rl = mem.MemoryRateLimiter(max_requests=1, window_seconds=60)
+    monkeypatch.setattr(rl, "_now", lambda: 5_000_000_000.123)
+
+    async def go():
+        return [await rl.allow(f"k{i}") for i in range(5)]
+    assert run(go()) == [True] * 5
+
+
 def test_bad_inputs_are_refused():
     with pytest.raises(ValueError):
         sw.check(0.0, 0, limit=0, window_ms=1000)

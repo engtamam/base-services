@@ -51,25 +51,29 @@ def check(tat: float, now_ms: float, *, limit: int, window_ms: int, cost: int = 
     interval = window_ms / limit
 
     tat = max(tat, now_ms)
-    new_tat = tat + cost * interval
 
-    # You may run at most `window_ms` ahead of now — i.e. `limit` intervals of credit. Past that,
-    # you are asking for budget the window has not yet handed back.
-    allow_at = new_tat - window_ms
+    # Work in RELATIVE time (`debt` = how far the TAT is ahead of now), NEVER absolute.
+    #
+    # The obvious formulation — `allow_at = tat + cost*interval - window_ms; if allow_at <= now` —
+    # adds `interval` to a large clock value and subtracts `window_ms` back off it. When the clock
+    # is large (monotonic()*1000 on a long-lived host) and interval == window (the limit==1 case),
+    # float64 rounding makes the result land an epsilon ABOVE `now`, and a FRESH key is denied. It
+    # passed locally (small clock) and flaked on CI (larger clock) — a magnitude-dependent bug, the
+    # worst kind. Comparing the two SMALL quantities below has no such cancellation.
+    debt = tat - now_ms                      # current credit debt, bounded by window_ms
+    headroom = window_ms - cost * interval   # how much debt we may take on for this request
 
-    if allow_at <= now_ms:
-        # Allowed. How many MORE fit before we hit the ceiling: the remaining head-room, in
-        # whole requests. This is what the RateLimit-Remaining header should report.
-        head_room_ms = (now_ms + window_ms) - new_tat
-        remaining = int(head_room_ms // interval)
-        reset_ms = int(new_tat - now_ms)          # when this key's credit fully clears
+    if debt <= headroom:
+        new_tat = tat + cost * interval
+        remaining = int((headroom - debt) // interval)
+        reset_ms = int(debt + cost * interval)     # when this key's credit fully clears
         return Decision(True, remaining, 0, new_tat, reset_ms)
 
     # Denied. The state is NOT advanced (a rejected request must not push the TAT further out, or a
     # client hammering a throttled key would extend its own lockout forever). retry_after is exactly
-    # when the next single request of this cost would be admitted.
-    retry_after = int(allow_at - now_ms) + 1
-    reset_ms = int(tat - now_ms)
+    # when the next single request of this cost would be admitted: when `debt` falls to `headroom`.
+    retry_after = int(debt - headroom) + 1
+    reset_ms = int(debt)
     return Decision(False, 0, retry_after, tat, reset_ms)
 
 
