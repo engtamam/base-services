@@ -127,6 +127,16 @@ class Settings(BaseSettings):
     UPSTREAM_TIMEOUT_SECONDS: int = 15
     DEFAULT_CACHE_TTL: int = 0               # per-route cache_ttl overrides this
 
+    # ── admin control panel (Phase 33) — the catalog aggregator ─────────────
+    # Which services the panel polls for their declared admin_actions. CONFIG ONLY — never a
+    # request value (an aggregator that fans out to a caller-named host is an SSRF console).
+    #   name=base_url, comma-separated. A customer's own product service is added here, and it
+    #   appears in the panel the moment it answers /internal/manifest with an admin_actions array.
+    #   e.g. tenant-service=http://tenant-service:8080,acme-billing=http://acme-billing:9000
+    ADMIN_SERVICES: str = ""
+    ADMIN_CATALOG_TTL: int = 60              # cache the merged catalog (admin-time read, not hot path)
+    ADMIN_CATALOG_CAP: str = "platform.admin"  # capability required to OPEN the panel at all
+
     @property
     def egress_allowed_hosts(self) -> frozenset[str]:
         return frozenset(

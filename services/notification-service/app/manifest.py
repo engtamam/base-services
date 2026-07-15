@@ -13,6 +13,17 @@ from typing import Any
 from app.config import Settings
 
 
+def _admin_actions() -> list[dict[str, Any]]:
+    """This service's declared admin actions (docs/contracts/admin-actions.schema.json), or [] if it
+    declares none. Opt-in: a service with no app/admin_actions.py simply exposes nothing to the
+    panel. The panel is a map — these decide what is SHOWN, never what an operator may DO."""
+    try:
+        from app.admin_actions import ADMIN_ACTIONS
+    except Exception:
+        return []
+    return list(ADMIN_ACTIONS)
+
+
 def build_manifest(
     settings: Settings, ports: list[dict[str, str]] | None = None
 ) -> dict[str, Any]:
@@ -37,4 +48,5 @@ def build_manifest(
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         "events": {"emitted": [], "consumed": []},
+        "admin_actions": _admin_actions(),
     }

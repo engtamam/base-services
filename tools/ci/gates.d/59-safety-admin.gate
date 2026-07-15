@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+gate_name="safety:admin"
+gate_desc="the admin panel is a map, never the authority — declarations must be true and safe"
+gate_protects="A platform admin panel is a master key. Each service DECLARES its admin actions
+(app/admin_actions.py); the gateway aggregates them and renders forms an operator
+submits. A declaration that lies — an action whose route does not exist, or that
+claims a capability the route does not enforce — makes the panel misrepresent what
+an operator may do. A declaration carrying a scheme/host turns the aggregator into
+an SSRF/redirect console into the cluster.
+
+So every declaration is checked against the CODE: the route exists (the manifest is
+the source of truth), the path is relative, the method is allow-listed, and the
+capability is one the service actually advertises. The panel decides what is SHOWN;
+the owning route still re-checks the capability on every call."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_admin.py"
+gate_units=1
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_admin.py; }
+
+# A gate that cannot fail is decoration. Mutation-tested: a correct declaration passes, then five
+# breaks (one per rule) each turn it red.
+gate_selftest() { "$PY" tools/ci/selftest_admin.py >/dev/null 2>&1; }

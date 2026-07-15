@@ -13,6 +13,17 @@ from typing import Any
 from app.config import Settings
 
 
+def _admin_actions() -> list[dict[str, Any]]:
+    """This service's declared admin actions (docs/contracts/admin-actions.schema.json), or [] if it
+    declares none. Opt-in: a service with no app/admin_actions.py simply exposes nothing to the
+    panel. The panel is a map — these decide what is SHOWN, never what an operator may DO."""
+    try:
+        from app.admin_actions import ADMIN_ACTIONS
+    except Exception:
+        return []
+    return list(ADMIN_ACTIONS)
+
+
 def build_manifest(
     settings: Settings, ports: list[dict[str, str]] | None = None
 ) -> dict[str, Any]:
@@ -20,7 +31,11 @@ def build_manifest(
         "name": settings.SERVICE_NAME,
         "version": settings.SERVICE_VERSION,
         "env": settings.ENV,
-        "capabilities": ["identity.register", "identity.login", "identity.refresh"],
+        # `members:read`/`members:write` guard the multi-tenant directory (Phase 31). Advertised
+        # here so the admin panel can gate its member actions on them — the cap NAMES default to
+        # these and are overridable via IDENTITY_MEMBERS_READ_CAP / _WRITE_CAP.
+        "capabilities": ["identity.register", "identity.login", "identity.refresh",
+                         "members:read", "members:write"],
         "endpoints": [
             {"path": "/healthz", "tier": "public", "method": "GET"},
             {"path": "/readyz", "tier": "public", "method": "GET"},
@@ -35,7 +50,14 @@ def build_manifest(
             {"path": "/api/v1/auth/change-password", "tier": "user", "method": "POST"},
             {"path": "/api/v1/auth/mfa/enroll", "tier": "user", "method": "POST"},
             {"path": "/api/v1/auth/mfa/verify", "tier": "user", "method": "POST"},
+            # Multi-tenant directory (Phase 31) — mounted when IDENTITY_MULTI_TENANT is on.
+            {"path": "/api/v1/tenancy/members", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/tenancy/members", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/tenancy/members/{person_id}", "tier": "user", "method": "DELETE"},
+            {"path": "/internal/tenancy/members", "tier": "internal", "method": "GET"},
+            {"path": "/internal/ratelimit/unblock", "tier": "internal", "method": "POST"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         "events": {"emitted": [], "consumed": []},
+        "admin_actions": _admin_actions(),
     }

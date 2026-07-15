@@ -91,6 +91,10 @@ jobs:
       - name: "safety:edge — the edge terminates TLS for every request; a mistake is an open door"
         run: python tools/ci/check_edge.py
 
+      # gates: safety:admin
+      - name: "safety:admin — the admin panel is a map, never the authority"
+        run: python tools/ci/check_admin.py
+
       # gates: safety:tenancy
       - name: "safety:tenancy — a token carries exactly ONE tenant, and only one it is entitled to"
         run: python tools/ci/check_tenancy.py

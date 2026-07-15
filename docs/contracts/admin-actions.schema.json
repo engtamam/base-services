@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://base-services/contracts/admin-actions.schema.json",
+  "title": "admin_actions",
+  "description": "A service declares the admin operations it supports, in its own /internal/manifest, under an `admin_actions` array. The platform admin panel aggregates these across every service. THE PANEL IS A MAP, NEVER THE AUTHORITY: `capability` is declared only so the panel can hide a button the caller could not use; the owning service re-checks it on every call. Any service in any language that emits this shape appears in the panel automatically.",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["id", "label", "method", "path", "capability"],
+    "properties": {
+      "id": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_.-]{1,63}$",
+        "description": "Stable, service-unique id, e.g. `tenant.suspend`. The panel keys on it."
+      },
+      "label": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 120,
+        "description": "Human text for the button. UNTRUSTED — the renderer MUST escape it (a third-party service's label is stored-XSS otherwise; see phase-33 T4)."
+      },
+      "method": {
+        "type": "string",
+        "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+        "description": "Allow-list only. Anything else is refused by safety:admin."
+      },
+      "path": {
+        "type": "string",
+        "pattern": "^/[A-Za-z0-9._~/{}-]*$",
+        "description": "A RELATIVE path on the DECLARING service. No scheme, no host, no query. The aggregator always invokes it at that service's discovered address — a declaration cannot name an arbitrary URL (SSRF; see phase-33 T2/T4)."
+      },
+      "capability": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_.:*-]{1,63}$",
+        "description": "The capability the OWNING ROUTE already enforces. Declared so the panel filters what it shows; never a substitute for the server-side check."
+      },
+      "params": {
+        "type": "array",
+        "description": "Form fields. Become inputs in the panel.",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "in", "type"],
+          "properties": {
+            "name": { "type": "string", "pattern": "^[a-z][a-zA-Z0-9_]{0,63}$" },
+            "in": { "type": "string", "enum": ["path", "query", "body"] },
+            "type": { "type": "string", "enum": ["string", "integer", "number", "boolean", "enum", "object"] },
+            "required": { "type": "boolean", "default": false },
+            "enum": { "type": "array", "items": { "type": "string" } },
+            "label": { "type": "string", "maxLength": 120 },
+            "help": { "type": "string", "maxLength": 240 }
+          }
+        }
+      },
+      "confirm": {
+        "type": "boolean",
+        "default": false,
+        "description": "The renderer requires an explicit re-confirm before submitting. UX only."
+      },
+      "danger": {
+        "type": "boolean",
+        "default": false,
+        "description": "Destructive/irreversible. Rendered distinctly and implies confirm. UX only — the server still enforces the capability."
+      },
+      "group": {
+        "type": "string",
+        "maxLength": 60,
+        "description": "Optional section label for grouping actions in the panel."
+      }
+    }
+  }
+}
