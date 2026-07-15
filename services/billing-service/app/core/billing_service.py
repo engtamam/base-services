@@ -446,6 +446,16 @@ class BillingService:
                 inv.settled_minor = settled_after
                 await self._mark_paid(inv, paid_at=stl.paid_at, source=f"{method}:{reference}")
                 einvoice_finalized = True
+                # Re-activate the entitlement, exactly as the gateway webhook does when a card
+                # payment lands (see the reconcile path). An enterprise invoice that lapsed to
+                # `past_due` and is then paid by bank transfer must turn the subscription back on —
+                # otherwise the invoice reads `paid` while the entitlement stays off, which is the
+                # invoice-and-entitlement-disagree split an off-gateway payment is meant to close.
+                if inv.subscription_id:
+                    sub = await self._subs.fetch(inv.subscription_id)
+                    if sub and sub.status == "past_due":
+                        sub.status = "active"
+                        await self._subs.save(sub)
 
         status = await self.invoice_state(inv.id)
         return {"settlement": stl.to_dict(), "invoice_status": status,

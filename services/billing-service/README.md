@@ -83,10 +83,28 @@ webhook (signature-verified) → reconcile paid/failed/refunded (idempotent)
 | user | `POST /api/v1/billing/usage` | record metered usage |
 | user | `GET /api/v1/billing/invoices` · `/{id}/pdf` | invoices + PDF |
 | user | `POST /api/v1/billing/payments/{id}/refund` · `/dunning/run` | refund / dunning |
+| user | `POST /api/v1/billing/invoices/{id}/settle` | **off-gateway settlement** (bank transfer / cheque) |
 | internal | `POST /internal/billing/webhook/{provider}` | gateway webhook (signature = auth) |
 | internal | `POST /internal/billing/dunning` | run the dunning sweep |
 
 Admin = `platform.billing` (cross-tenant) / `billing.manage` (own tenant); customer = `billing.self`.
+
+### Off-gateway settlement (bank transfer / cheque — the KSA default)
+
+Aramco vendors buy on a PO and pay by **bank transfer** against a ZATCA tax invoice, not a card.
+`POST /invoices/{id}/settle` closes an invoice from a payment that never touched a gateway:
+
+- Identity is `(method, issuer, reference)` — the same wire (e.g. `bank_transfer` / `alrajhi` /
+  `TRX-9001`) can never settle twice, even across two admins or two tranches landing together.
+- Uses the bank's **value date** as `paid_at` (not `now()`), so the ZATCA invoice files in the
+  right tax period and revenue is recognised in the right month.
+- Supports **partial** settlement with a tolerance; the last tranche within tolerance closes it.
+- On close it marks the invoice paid, finalizes the e-invoice **and reactivates a `past_due`
+  subscription** — exactly as a gateway webhook does, so the invoice and the entitlement never
+  disagree.
+
+Config: `SETTLEMENT_METHODS`, `SETTLEMENT_ALLOW_PARTIAL`, `SETTLEMENT_TOLERANCE_MINOR`,
+`SETTLEMENT_MAX_BACKDATE_DAYS`. The entitlement in billing stays the one source of truth.
 
 ## ZATCA tie-in
 

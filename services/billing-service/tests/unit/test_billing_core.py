@@ -14,7 +14,9 @@ from app.core.stores import (CouponStore, InvoiceStore, PaymentStore, PlanStore,
 from app.ports.payment_gateway import Charge, GatewayUnavailable, WebhookEvent
 
 CFG = {"currency": "SAR", "trial_days": 0, "vat_rate": "0.15", "dunning_base_hours": 24,
-       "dunning_max_attempts": 3, "grace_days": 7, "list_limit": 100, "reverse_charge": False}
+       "dunning_max_attempts": 3, "grace_days": 7, "list_limit": 100, "reverse_charge": False,
+       "settlement_methods": {"bank_transfer": True, "cheque": True}, "settlement_allow_partial": True,
+       "settlement_tolerance_minor": 0, "settlement_max_backdate_days": 3650}
 
 
 def run(c):
@@ -102,10 +104,11 @@ class NullPdf:
 
 
 def _svc(st, gw, einv=None):
-    from app.core.stores import IdempotencyStore, LedgerStore
+    from app.core.stores import IdempotencyStore, LedgerStore, SettlementStore
     return BillingService(plans=PlanStore(st), coupons=CouponStore(st), subs=SubscriptionStore(st),
                           invoices=InvoiceStore(st), payments=PaymentStore(st), usage=UsageStore(st),
                           ledger=LedgerStore(st), idempo=IdempotencyStore(st),
+                          settlements=SettlementStore(st),
                           gateway=gw, tax=VatCalculator("0.15"), einvoicer=einv or MockEInv(),
                           pdf=NullPdf(), config=CFG)
 
@@ -223,3 +226,31 @@ def test_null_gateway_fails_closed():
     from app.adapters.payment.null import NullGateway
     with pytest.raises(GatewayUnavailable):
         NullGateway().charge(amount_minor=100, currency="SAR", token="x", idempotency_key="k")
+
+
+def test_settling_a_past_due_invoice_reactivates_the_subscription():
+    """An enterprise invoice lapses to past_due, then a BANK TRANSFER settles it off-gateway.
+    The subscription must turn back on — otherwise the invoice reads `paid` while the entitlement
+    stays off, the exact invoice/entitlement split off-gateway settlement exists to close."""
+    st = MemoryDataStore()
+    b = _svc(st, MockGW(ok=False))
+    _, sub = _plan_sub(b)
+    run(b.run_cycle(sub.id))
+    pay = run(PaymentStore(st).list_tenant("t1", 10))[0]
+    pid = pay["id"]
+    for _ in range(CFG["dunning_max_attempts"] + 1):
+        p = run(PaymentStore(st).fetch(pid))
+        if p.next_retry_at is None:
+            break
+        p.next_retry_at = 0
+        run(PaymentStore(st).save(p))
+        run(b.dunning_sweep())
+    assert run(SubscriptionStore(st).fetch(sub.id)).status == "past_due"
+
+    # the invoice the cycle raised
+    inv = run(InvoiceStore(st).list_tenant("t1", 10))[0]
+    res = run(b.settle(invoice_id=inv["id"], method="bank_transfer", issuer="alrajhi",
+                       reference="TRX-9001", amount_minor=inv["total_minor"], paid_at=__import__("time").time()))
+    assert res["invoice_status"] in ("paid", "settled")
+    assert run(SubscriptionStore(st).fetch(sub.id)).status == "active", \
+        "a bank transfer paid the invoice but the entitlement stayed off"
