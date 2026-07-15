@@ -1,0 +1,173 @@
+openapi: 3.1.0
+info:
+  title: Platform Admin Panel — Catalog API
+  version: 0.5.0
+  description: |
+    One call powers the platform admin panel: `GET /api/v1/admin/catalog`. It returns every admin
+    action the CALLING operator may perform, grouped by service, across every service listed in the
+    gateway's `ADMIN_SERVICES` config — our 17 services and a customer's own product service alike.
+
+    The panel is a MAP, never the AUTHORITY. The catalog tells a front end what to render; every
+    action is still re-authorized server-side at its own route when invoked. A front end must treat
+    the catalog as advice about what to show, never as proof that a call will succeed.
+
+    ## How a front end uses it
+    1. `GET /api/v1/admin/catalog` with the operator's JWT (the same bearer token used everywhere).
+    2. Render each `services[].actions[]` as a button/form. Use `group` for sections, `params` for
+       the form fields, `confirm`/`danger` to gate destructive ones behind a confirmation.
+    3. To invoke an action, call `{method} {path}` on the SAME gateway origin, substituting `{...}`
+       path params and sending `params` marked `in: body|query`. The gateway proxies to the service.
+    4. `unreachable[]` lists services that did not answer — show them as degraded, not missing.
+
+    ## Security model (phase 33)
+    - The internal service token never reaches the browser; the aggregator holds it server-side.
+    - Discovery is config (`ADMIN_SERVICES`), never a request parameter — no SSRF console.
+    - A service's declaration is untrusted input: methods are allow-listed and paths must be
+      relative (no scheme/host, no protocol-relative `//host`) or the action is dropped.
+    - The catalog is filtered to the caller's capabilities, so it cannot enumerate controls the
+      operator may not use. Opening it at all requires `ADMIN_CATALOG_CAP` (default `platform.admin`).
+
+servers:
+  - url: /
+    description: The api-gateway origin (same origin the browser app is served behind).
+
+paths:
+  /api/v1/admin/catalog:
+    get:
+      operationId: getAdminCatalog
+      summary: Every admin action the calling operator may perform, grouped by service.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The filtered catalog.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Catalog"
+              examples:
+                twoServices:
+                  $ref: "#/components/examples/twoServices/value"
+        "401":
+          description: No/invalid operator token.
+        "403":
+          description: The operator lacks ADMIN_CATALOG_CAP (may not open the panel at all).
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: The operator's own JWT, carrying their capabilities.
+
+  schemas:
+    Catalog:
+      type: object
+      required: [services, unreachable]
+      properties:
+        services:
+          type: array
+          items: { $ref: "#/components/schemas/ServiceBlock" }
+        unreachable:
+          type: array
+          description: Names of configured services that did not answer — render as degraded.
+          items: { type: string }
+    ServiceBlock:
+      type: object
+      required: [service, actions]
+      properties:
+        service:
+          type: string
+          description: The service name from ADMIN_SERVICES (a stable slug, e.g. "billing-service").
+        actions:
+          type: array
+          items: { $ref: "#/components/schemas/Action" }
+    Action:
+      type: object
+      required: [id, label, method, path, capability, confirm, danger]
+      properties:
+        id:
+          type: string
+          description: Stable action id, e.g. "billing.void_invoice".
+        label:
+          type: string
+          description: Human label to render on the control.
+        method:
+          type: string
+          enum: [GET, POST, PUT, PATCH, DELETE]
+        path:
+          type: string
+          description: |
+            RELATIVE path to call on the gateway origin, e.g. "/api/v1/invoices/{id}/void".
+            Never carries a scheme or host — the gateway routes it to the owning service.
+        capability:
+          type: string
+          description: The capability the route re-checks. The caller already holds it (the catalog is filtered).
+        group:
+          type: string
+          description: Optional UI section, e.g. "Invoices".
+        confirm:
+          type: boolean
+          description: Show a confirmation step before invoking. True whenever danger is true.
+        danger:
+          type: boolean
+          description: Destructive/irreversible — style prominently.
+        params:
+          type: array
+          items: { $ref: "#/components/schemas/Param" }
+    Param:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        in:
+          type: string
+          enum: [path, query, body]
+        type:
+          type: string
+          enum: [string, number, boolean, enum, object]
+        required: { type: boolean }
+        enum:
+          type: array
+          items: { type: string }
+        help: { type: string }
+
+  examples:
+    twoServices:
+      value:
+        services:
+          - service: billing-service
+            actions:
+              - id: billing.list_invoices
+                label: List invoices
+                method: GET
+                path: /api/v1/invoices
+                capability: platform.billing
+                group: Invoices
+                confirm: false
+                danger: false
+              - id: billing.void_invoice
+                label: Void an invoice
+                method: POST
+                path: /api/v1/invoices/{id}/void
+                capability: platform.billing
+                group: Invoices
+                confirm: true
+                danger: true
+                params:
+                  - { name: id, in: path, type: string, required: true }
+          - service: audit-service
+            actions:
+              - id: audit.verify
+                label: Verify log integrity (hash chain)
+                method: GET
+                path: /api/v1/audit/verify
+                capability: platform.audit
+                group: Audit
+                confirm: false
+                danger: false
+                params:
+                  - { name: partition, in: query, type: string, required: false }
+        unreachable:
+          - search-service

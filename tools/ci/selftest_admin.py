@@ -73,6 +73,15 @@ def main() -> int:
             else:
                 print(f"  ok   {name} — caught")
 
+        # R6: valid declaration, but the manifest never emits the admin_actions key (false green).
+        app = base / "services" / "x-service" / "app"
+        (app / "admin_actions.py").write_text(GOOD_ACTIONS, encoding="utf-8")
+        (app / "manifest.py").write_text(MANIFEST.replace('"admin_actions": [],', ""), encoding="utf-8")
+        if run_gate(base) == 0:
+            failures.append("R6 manifest omits admin_actions"); print("  FAIL R6 manifest omits admin_actions — SURVIVED")
+        else:
+            print("  ok   R6 manifest omits admin_actions — caught")
+
     if failures:
         print(f"\nsafety:admin selftest FAILED: {len(failures)} mutation(s) survived.")
         return 1

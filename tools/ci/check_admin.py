@@ -65,6 +65,29 @@ def _literal_from_module(path: pathlib.Path, name: str):
     return None
 
 
+def _manifest_wires_admin(svc: pathlib.Path) -> bool:
+    """Does manifest.py actually EMIT an `admin_actions` key in the dict it returns?
+
+    The gate reads admin_actions.py and manifest.py independently, so a declaration can be valid while
+    the manifest never emits it — the panel would then show nothing and the gate would stay green
+    (a false green). This closes that: the returned dict must carry an `admin_actions` key. We accept
+    any value (the helper is `_admin_actions()`); we only insist the wire exists.
+    """
+    man = svc / "app" / "manifest.py"
+    if not man.is_file():
+        return False
+    try:
+        tree = ast.parse(man.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict):
+            for k in node.keys:
+                if isinstance(k, ast.Constant) and k.value == "admin_actions":
+                    return True
+    return False
+
+
 def _manifest_facts(svc: pathlib.Path) -> tuple[set[tuple[str, str]], set[str]]:
     """(routes, capabilities) the service ADVERTISES, read from its manifest builder's literals.
 
@@ -106,6 +129,10 @@ def check_service(svc: pathlib.Path, problems: list[str]) -> None:
     actions = _literal_from_module(decl, "ADMIN_ACTIONS")
     if actions is None:
         problems.append(f"{svc.name}: app/admin_actions.py has no static ADMIN_ACTIONS list")
+        return
+    if not _manifest_wires_admin(svc):
+        problems.append(f"{svc.name}: declares admin_actions but manifest.py never emits an "
+                        f"'admin_actions' key — the panel would show nothing (a false green)")
         return
     routes, caps = _manifest_facts(svc)
     seen_ids: set[str] = set()

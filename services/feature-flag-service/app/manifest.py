@@ -47,6 +47,7 @@ def build_manifest(
             {"path": "/api/v1/flags/stale", "tier": "user", "method": "GET"},
             {"path": "/api/v1/flags/{key}", "tier": "user", "method": "DELETE"},
             {"path": "/api/v1/flags/{key}/overrides", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/flags/{key}/overrides", "tier": "user", "method": "DELETE"},
             {"path": "/api/v1/flags/evaluate", "tier": "user", "method": "POST"},
             {"path": "/api/v1/segments", "tier": "user", "method": "POST"},
             {"path": "/api/v1/segments", "tier": "user", "method": "GET"},

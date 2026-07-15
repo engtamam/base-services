@@ -138,6 +138,40 @@ enumerate its admin routes, declare them, and note any gap.
 | 33.18 | **api-gateway** — rate-limit unblock, route health (and it hosts the aggregator) |
 | 33.19 | The panel spec: a reference renderer contract (the UI is the consumer's job, but we ship the OpenAPI + a worked example so any front end can build it) |
 
+### Outcome — DONE (v0.5.0)
+
+All 17 services declare `app/admin_actions.py`, gate `safety:admin` green, each service's own suite
+passing. **120 admin actions total**, every one verified by the gate to map to a real route with a
+real, advertised capability. Spec shipped: [`admin-panel.openapi.yaml`](../contracts/admin-panel.openapi.yaml)
++ [`admin-panel-guide.md`](../contracts/admin-panel-guide.md).
+
+Counts, and where the review corrected the planned one-liner above (the plan guessed; the code is truth):
+
+| Service | Actions | Note from the actual route review |
+| --- | --- | --- |
+| compliance-service | 17 | Far bigger than "open a DSAR": legal holds, RoPA/data-map, breaches, consent — all `platform.compliance`. |
+| feature-flag-service | 16 | Flags + segments + remote config (history/rollback) + the global maintenance switch. |
+| webhook-service | 12 | Endpoints + secret rotation + deliveries/replay/sweep + dead-letters. |
+| billing-service | 11 | |
+| authz-service | 10 | The control plane — role/policy CRUD + subject assignment, edits are danger+confirm. |
+| analytics-service | 9 | Ad-hoc query/funnel/retention/export + saved-report CRUD. Ingestion stays internal-only. |
+| connector-service | 9 | Specs + connections + sync/runs. |
+| zatca-service | 9 | Settings + onboarding (production = danger) + invoices + chain-verify. |
+| job-service | 8 | Schedules + jobs + replay/cancel/stats. Queue mechanics stay internal-only. |
+| tenant-service | 7 | |
+| identity-service | 3 | Only the member directory is operator-scoped; credentials are never an operator action. |
+| search-service | 3 | Query/suggest/stats; indexing stays internal-only. |
+| audit-service | 2 | **Not read-only as planned** — it has a `platform.audit` retention purge (danger+confirm). Append stays internal-only. |
+| notification-service | 2 | Only template management is operator-scoped; an inbox is `_SELF`, and drain is internal-only. |
+| wallet-service | 2 | Read-only: money moves *only* via internal routes, so the panel can show funds but never move them. |
+| file-service | 0 | Explicit empty declaration — every route is `_SELF` self-service; no operator surface exists. |
+| api-gateway | 0 | Explicit empty declaration — it *hosts* the catalog aggregator; it is not a panel target. |
+
+Rule applied throughout: **internal-token** routes (service-to-service) and **`_SELF`** routes (a
+person's own data) are never panel actions; only `platform.*` / `*.manage` / `*.read` operator routes
+are declared. Two services legitimately have zero and say so explicitly, so the absence is reviewed,
+not forgotten.
+
 ## 3. Out of scope
 
 **The UI itself.** We ship the catalog API and the contract; the actual admin front end is the
