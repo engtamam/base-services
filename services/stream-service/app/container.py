@@ -112,9 +112,11 @@ _PTZ: dict[str, Builder] = {
     "null": lambda s: NullPtzController(),
     # "onvif": built in 35.10
 }
+from app.adapters.stream.ffmpeg_motion import FfmpegMotionDetector
+
 _MOTION: dict[str, Builder] = {
     "none": lambda s: NoneMotionDetector(),
-    # "ffmpeg-scene": built in 35.9
+    "ffmpeg-scene": lambda s: FfmpegMotionDetector(s.FFMPEG_PATH),
 }
 _DISCOVERY: dict[str, Builder] = {
     "none": lambda s: NoneDiscovery(),

@@ -60,10 +60,16 @@ async def sweep_sessions(request: Request) -> dict:
     whose engine process died is reaped. Without a caller, the guards are only advisory.
     """
     from app.api.v1.stream import build_stream_service
+    from app.core.stores import TriggerStore
+    c = request.app.state.container
+    s = get_settings()
     svc = build_stream_service(request)
     shipped = await svc.ship_live_recordings()   # move completed segments off the node first
+    motion = await svc.poll_motion(c.motion, TriggerStore(c.datastore),
+                                   debounce_s=s.MOTION_DEBOUNCE_SECONDS)
     result = await svc.enforce_and_reconcile()
     result.update(shipped)
+    result.update(motion)
     return result
 
 

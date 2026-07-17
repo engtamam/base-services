@@ -70,6 +70,25 @@ def test_start_produces_hls_and_recording_then_stops_clean(clip, tmp_path):
     assert any(f.startswith("rec_") for f in files)   # a recording segment landed
 
 
+def test_ffmpeg_motion_detects_a_scene_cut_but_not_a_static_clip(tmp_path):
+    from app.adapters.stream.ffmpeg_motion import FfmpegMotionDetector
+    det = FfmpegMotionDetector(_FF, threshold=0.1)
+
+    cut = str(tmp_path / "cut.mp4")
+    subprocess.run([_FF, "-nostdin", "-hide_banner", "-loglevel", "error",
+                    "-f", "lavfi", "-i", "color=c=black:s=320x240:d=1:r=15",
+                    "-f", "lavfi", "-i", "color=c=white:s=320x240:d=1:r=15",
+                    "-filter_complex", "[0][1]concat=n=2:v=1", "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p", cut, "-y"], check=True)
+    static = str(tmp_path / "static.mp4")
+    subprocess.run([_FF, "-nostdin", "-hide_banner", "-loglevel", "error",
+                    "-f", "lavfi", "-i", "color=c=blue:s=320x240:d=2:r=15",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", static, "-y"], check=True)
+
+    assert run(det._scene_score(cut)) >= 0.1          # the black→white cut is a scene change
+    assert run(det._scene_score(static)) < 0.1        # a single-colour clip is not
+
+
 def test_real_segments_ship_to_the_sink_and_become_a_recording(clip, tmp_path):
     """End-to-end recording pipeline with REAL media: ffmpeg writes rec_ segments, the shipper moves
     them to the sink and records them. Connects the two independently-verified halves."""

@@ -13,7 +13,7 @@ from app.config import get_settings
 from app.core.sealing import redact_url
 from app.core.ssrf import SsrfBlocked
 from app.core.recording import RecordingShipper
-from app.core.stores import RecordingStore, SessionStore, SourceStore
+from app.core.stores import RecordingStore, SessionStore, SourceStore, TriggerStore
 from app.core.stream_service import (
     QuotaExceeded, SourceNotFound, StreamConfig, StreamService,
 )
@@ -118,6 +118,37 @@ async def probe_source(request: Request, source_id: str,
         raise HTTPException(400, "SOURCE_URL_BLOCKED")
     return {"codec": probe.codec, "width": probe.width, "height": probe.height, "fps": probe.fps,
             "has_audio": probe.has_audio, "ptz_capable": probe.ptz_capable, "ok": probe.ok}
+
+
+class TriggerIn(BaseModel):
+    on: str = Field(pattern="^(motion|online|offline)$")
+    do: list[str] = Field(default_factory=list)
+    debounce_s: int = Field(default=30, ge=0)
+    targets: dict = Field(default_factory=dict)
+
+
+@router.get("/sources/{source_id}/triggers", dependencies=[Depends(_READ)])
+async def get_triggers(request: Request, source_id: str,
+                       p: Principal = Depends(require_user)) -> dict:
+    svc = build_stream_service(request)
+    try:
+        await svc.get_source(source_id, tenant=p.tenant or "")   # tenant-scope check
+    except SourceNotFound:
+        raise HTTPException(404, "NOT_FOUND")
+    return {"triggers": await TriggerStore(request.app.state.container.datastore).get(source_id)}
+
+
+@router.put("/sources/{source_id}/triggers", dependencies=[Depends(_MANAGE)])
+async def set_triggers(request: Request, source_id: str, body: list[TriggerIn],
+                       p: Principal = Depends(require_user)) -> dict:
+    svc = build_stream_service(request)
+    try:
+        await svc.get_source(source_id, tenant=p.tenant or "")
+    except SourceNotFound:
+        raise HTTPException(404, "NOT_FOUND")
+    triggers = [t.model_dump() for t in body]
+    await TriggerStore(request.app.state.container.datastore).put(source_id, p.tenant or "", triggers)
+    return {"triggers": triggers}
 
 
 @router.delete("/sources/{source_id}", dependencies=[Depends(_MANAGE)])

@@ -46,6 +46,8 @@ def build_manifest(
             {"path": "/api/v1/sources/{id}", "tier": "user", "method": "GET"},
             {"path": "/api/v1/sources/{id}", "tier": "user", "method": "DELETE"},
             {"path": "/api/v1/sources/{id}/probe", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/sources/{id}/triggers", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/sources/{id}/triggers", "tier": "user", "method": "PUT"},
             {"path": "/api/v1/sessions", "tier": "user", "method": "POST"},
             {"path": "/api/v1/sessions", "tier": "user", "method": "GET"},
             {"path": "/api/v1/sessions/{id}", "tier": "user", "method": "GET"},

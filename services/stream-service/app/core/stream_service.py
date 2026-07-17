@@ -230,6 +230,41 @@ class StreamService:
             return "error"       # heartbeat missed → zombie; reconcile confirms, this is the backstop
         return ""
 
+    async def poll_motion(self, detector, triggers, *, debounce_s: int) -> dict[str, int]:
+        """Poll motion for live sessions and fire triggers (debounced) as EventBus events.
+
+        Loose-coupled: a motion event is published as `stream.motion.detected` with the source's
+        declared actions; webhook-service / notification-service consume it. Debounce prevents a
+        scene of continuous movement from flooding downstream.
+        """
+        from app.ports.stream_types import EngineHandle
+        fired = 0
+        cursor = None
+        while True:
+            batch, cursor = await self._sessions.iter_live(limit=200, after=cursor)
+            for sess in batch:
+                odir = sess.placement.get("output_dir")
+                if not odir:
+                    continue
+                handle = EngineHandle(id=sess.placement.get("handle_id", ""), output_dir=odir)
+                events = await detector.poll(sess.id, handle)
+                if not events:
+                    continue
+                last = _epoch(sess.stats.get("last_motion_at", ""))
+                if last and (self._clock() - last) < debounce_s:
+                    continue                             # debounced
+                sess.stats["last_motion_at"] = self._now_iso()
+                await self._sessions.save(sess)
+                trigs = await triggers.get(sess.source_id)
+                actions = sorted({a for t in trigs if t.get("on") == "motion" for a in t.get("do", [])})
+                await self._publish("stream.motion.detected", {
+                    "session_id": sess.id, "tenant": sess.tenant, "source_id": sess.source_id,
+                    "score": events[0].score, "actions": actions})
+                fired += 1
+            if not cursor:
+                break
+        return {"motion": fired}
+
     async def ship_live_recordings(self) -> dict[str, int]:
         """Ship completed recording segments for every live recording session (sweep-driven)."""
         if self._shipper is None:
@@ -328,11 +363,14 @@ class StreamService:
         return (_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(seconds=ttl)).isoformat()
 
     async def _emit(self, topic: str, sess: Session) -> None:
+        await self._publish(topic, {"session_id": sess.id, "tenant": sess.tenant,
+                                    "source_id": sess.source_id, "status": sess.status,
+                                    "reason": sess.reason})
+
+    async def _publish(self, topic: str, payload: dict) -> None:
         if self._events is not None:
             try:
-                await self._events.publish(topic, {"session_id": sess.id, "tenant": sess.tenant,
-                                                    "source_id": sess.source_id, "status": sess.status,
-                                                    "reason": sess.reason})
+                await self._events.publish(topic, payload)
             except Exception:   # noqa: BLE001 — telemetry must never break a stream
                 pass
 
