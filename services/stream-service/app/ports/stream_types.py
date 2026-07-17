@@ -21,6 +21,7 @@ class EngineSpec:
     record_segment_seconds: int = 60
     record_format: str = "fmp4"
     has_audio: bool = True
+    webrtc_whip_url: str = ""       # if set (webrtc output), the engine WHIP-publishes here
 
 
 @dataclass(frozen=True)

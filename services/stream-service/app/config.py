@@ -162,6 +162,9 @@ class Settings(BaseSettings):
     HLS_LOW_LATENCY: bool = False
     WEBRTC_ENABLED: bool = False
     WEBRTC_MAX_VIEWERS_PER_SESSION: int = 25
+    # The media server the engine WHIP-publishes to and the browser WHEP-subscribes from (e.g.
+    # http://mediamtx:8889). Media flows engine → this server → browser, never through the app.
+    WEBRTC_MEDIA_BASE_URL: str = ""
     TURN_URLS: str = ""                           # comma list; media egress for WebRTC across NAT
     TURN_SECRET: str = ""                         # sealed
     SNAPSHOT_MIN_INTERVAL_SECONDS: int = 1
@@ -210,6 +213,16 @@ class Settings(BaseSettings):
     @property
     def turn_urls(self) -> list[str]:
         return [u.strip() for u in self.TURN_URLS.split(",") if u.strip()]
+
+    @property
+    def transcode_profiles(self) -> dict:
+        import json
+        if not self.TRANSCODE_PROFILES.strip():
+            return {}
+        try:
+            return json.loads(self.TRANSCODE_PROFILES)
+        except json.JSONDecodeError:
+            return {}
 
     def assert_stream_config_ok(self) -> None:
         """Boot guards: refuse footgun postures in production, fail-fast (never at first stream)."""

@@ -38,11 +38,10 @@ class FfmpegStreamEngine:
         args += ["-i", spec.source_url]
         return args
 
-    async def start(self, spec: EngineSpec) -> EngineHandle:
-        os.makedirs(spec.output_dir, exist_ok=True)
+    def build_args(self, spec: EngineSpec) -> list[str]:
+        """The full ffmpeg argv for a session — pure, so it can be asserted without spawning."""
         args = [self._ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error",
                 *self._input_args(spec)]
-
         wrote_output = False
         if "hls" in spec.outputs:
             playlist = os.path.join(spec.output_dir, "index.m3u8")
@@ -58,11 +57,21 @@ class FfmpegStreamEngine:
                      "-segment_time", str(spec.record_segment_seconds),
                      "-reset_timestamps", "1", seg]
             wrote_output = True
+        if "webrtc" in spec.outputs and spec.webrtc_whip_url:
+            # WHIP-publish to the media server; the browser subscribes via WHEP there. The bytes go
+            # engine → media server → browser, NEVER through this service.
+            args += ["-map", "0:v?", "-map", "0:a?", "-c:v", "libx264", "-tune", "zerolatency",
+                     "-c:a", "opus", "-f", "whip", spec.webrtc_whip_url]
+            wrote_output = True
         if not wrote_output:
             # snapshot/thumbnail-only session: keep the connection open writing periodic frames.
             args += ["-map", "0:v?", "-f", "image2", "-r", "1/5",
                      os.path.join(spec.output_dir, "thumb_%08d.jpg")]
+        return args
 
+    async def start(self, spec: EngineSpec) -> EngineHandle:
+        os.makedirs(spec.output_dir, exist_ok=True)
+        args = self.build_args(spec)
         proc = await asyncio.create_subprocess_exec(
             *args, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
         self._seq += 1

@@ -108,9 +108,12 @@ _STREAM_ENGINE: dict[str, Builder] = {
     "null": lambda s: NullStreamEngine(),
     "ffmpeg": lambda s: FfmpegStreamEngine(s.FFMPEG_PATH),
 }
+from app.adapters.stream.onvif_discovery import OnvifDiscovery
+from app.adapters.stream.onvif_ptz import OnvifPtzController
+
 _PTZ: dict[str, Builder] = {
     "null": lambda s: NullPtzController(),
-    # "onvif": built in 35.10
+    "onvif": lambda s: OnvifPtzController(move_timeout_seconds=s.PTZ_MOVE_TIMEOUT_SECONDS),
 }
 from app.adapters.stream.ffmpeg_motion import FfmpegMotionDetector
 
@@ -120,11 +123,14 @@ _MOTION: dict[str, Builder] = {
 }
 _DISCOVERY: dict[str, Builder] = {
     "none": lambda s: NoneDiscovery(),
-    # "onvif-ws": built in 35.10
+    "onvif-ws": lambda s: OnvifDiscovery(),
 }
 _MEDIA_EGRESS: dict[str, Builder] = {
     "direct": lambda s: DirectMediaEgress(),
     "turn": lambda s: TurnMediaEgress(s.turn_urls, s.TURN_SECRET),
+}
+_SIGNED_PLAYBACK: dict[str, Builder] = {
+    "hmac": lambda s: HmacSignedPlayback(_playback_secret(s)),
 }
 
 
@@ -255,7 +261,7 @@ def build_container(settings: Settings) -> Container:
         motion=_pick(_MOTION, settings.MOTION_DRIVER, "motion", settings),
         discovery=_pick(_DISCOVERY, settings.DISCOVERY_DRIVER, "discovery", settings),
         recording_sink=_recording_sink(settings),
-        signed_playback=HmacSignedPlayback(_playback_secret(settings)),
         media_egress=_pick(_MEDIA_EGRESS, settings.MEDIA_EGRESS_DRIVER, "media_egress", settings),
+        signed_playback=_pick(_SIGNED_PLAYBACK, settings.SIGNED_PLAYBACK_DRIVER, "signed_playback", settings),
         sealer=Sealer(_seal_key(settings)),
     )

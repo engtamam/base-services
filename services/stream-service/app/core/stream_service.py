@@ -41,7 +41,21 @@ class StreamConfig:
                  lease_seconds: int, viewer_grace_s: int, one_session_per_source: bool,
                  max_concurrent_global: int, max_concurrent_per_tenant: int,
                  allowed_hosts, allow_private: bool, playback_ttl: int,
-                 output_root: str) -> None:
+                 output_root: str, webrtc_enabled: bool = False, webrtc_media_base: str = "",
+                 hls_segment_seconds: int = 2, hls_window_segments: int = 5,
+                 record_segment_seconds: int = 60, record_format: str = "fmp4",
+                 connect_timeout_s: int = 20, reconnect_max: int = 20,
+                 reconnect_backoff_ms: int = 500, webrtc_max_viewers: int = 25) -> None:
+        self.webrtc_enabled = webrtc_enabled
+        self.webrtc_media_base = webrtc_media_base.rstrip("/")
+        self.hls_segment_seconds = hls_segment_seconds
+        self.hls_window_segments = hls_window_segments
+        self.record_segment_seconds = record_segment_seconds
+        self.record_format = record_format
+        self.connect_timeout_s = connect_timeout_s
+        self.reconnect_max = reconnect_max
+        self.reconnect_backoff_ms = reconnect_backoff_ms
+        self.webrtc_max_viewers = webrtc_max_viewers
         self.default_mode = default_mode
         self.default_outputs = default_outputs
         self.max_duration_s = max_duration_s
@@ -62,7 +76,8 @@ class StreamService:
     def __init__(self, *, sources: SourceStore, sessions: SessionStore, placer, engine,
                  sealer: Sealer, signed_playback, cfg: StreamConfig,
                  clock: Callable[[], float] = time.time, events=None,
-                 shipper=None, record_ext: str = "mp4") -> None:
+                 shipper=None, record_ext: str = "mp4", media_egress=None) -> None:
+        self._egress = media_egress
         self._sources = sources
         self._sessions = sessions
         self._placer = placer
@@ -122,8 +137,15 @@ class StreamService:
             outputs=outputs or list(self._cfg.default_outputs),
             profile=profile or src.default_profile,
             guards=self._resolve_guards(guards), status=LIVE, started_at=self._now_iso())
+        whip = ""
+        if "webrtc" in sess.outputs and self._cfg.webrtc_enabled and self._cfg.webrtc_media_base:
+            whip = f"{self._cfg.webrtc_media_base}/{sess.id}/whip"
         spec = EngineSpec(source_url=url, transport=src.transport, outputs=tuple(sess.outputs),
-                          output_dir=f"{self._cfg.output_root}/{sess.id}", profile=src.default_profile)
+                          output_dir=f"{self._cfg.output_root}/{sess.id}", profile=src.default_profile,
+                          webrtc_whip_url=whip, hls_segment_seconds=self._cfg.hls_segment_seconds,
+                          hls_window_segments=self._cfg.hls_window_segments,
+                          record_segment_seconds=self._cfg.record_segment_seconds,
+                          record_format=self._cfg.record_format)
         placement = await self._placer.start(sess.id, spec)
         sess.placement = {"placer": placement.placer, "worker_id": placement.worker_id,
                           "handle_id": placement.handle.id, "output_dir": spec.output_dir}
@@ -351,8 +373,12 @@ class StreamService:
         if "hls" in sess.outputs:
             tok = self._signed.sign(tenant=sess.tenant, session_id=sess.id, output="hls", ttl=ttl)
             out["hls"] = {"playlist_url": f"/media/hls/{sess.id}/index.m3u8?token={tok}"}
-        if "webrtc" in sess.outputs:
-            out["webrtc"] = {"offer_url": f"/api/v1/sessions/{sess.id}/webrtc/offer"}
+        if "webrtc" in sess.outputs and self._cfg.webrtc_enabled and self._cfg.webrtc_media_base:
+            # The browser subscribes to the media server's WHEP endpoint directly (media not through
+            # the app), with ICE servers (TURN) from the egress adapter.
+            ice = self._egress.ice_servers() if self._egress is not None else []
+            out["webrtc"] = {"whep_url": f"{self._cfg.webrtc_media_base}/{sess.id}/whep",
+                             "ice_servers": ice}
         if "snapshot" in sess.outputs or "hls" in sess.outputs:
             tok = self._signed.sign(tenant=sess.tenant, session_id=sess.id, output="snapshot", ttl=ttl)
             out["snapshot_url"] = f"/media/snapshot/{sess.id}?token={tok}"

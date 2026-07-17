@@ -37,13 +37,19 @@ def build_stream_service(request: Request) -> StreamService:
         max_concurrent_global=s.STREAM_MAX_CONCURRENT_SESSIONS_GLOBAL,
         max_concurrent_per_tenant=s.STREAM_MAX_CONCURRENT_SESSIONS_PER_TENANT,
         allowed_hosts=s.stream_allowed_hosts, allow_private=s.STREAM_ALLOW_PRIVATE,
-        playback_ttl=s.PLAYBACK_URL_TTL_SECONDS, output_root=s.OBJECTSTORE_ROOT + "/hls")
+        playback_ttl=s.PLAYBACK_URL_TTL_SECONDS, output_root=s.OBJECTSTORE_ROOT + "/hls",
+        webrtc_enabled=s.WEBRTC_ENABLED, webrtc_media_base=s.WEBRTC_MEDIA_BASE_URL,
+        hls_segment_seconds=s.HLS_SEGMENT_SECONDS, hls_window_segments=s.HLS_WINDOW_SEGMENTS,
+        record_segment_seconds=s.RECORD_SEGMENT_SECONDS, record_format=s.RECORD_FORMAT,
+        connect_timeout_s=s.SESSION_START_TIMEOUT_SECONDS, reconnect_max=s.RECONNECT_MAX,
+        reconnect_backoff_ms=s.RECONNECT_BACKOFF_MS, webrtc_max_viewers=s.WEBRTC_MAX_VIEWERS_PER_SESSION)
     shipper = RecordingShipper(sink=c.recording_sink, recordings=RecordingStore(c.datastore))
     return StreamService(
         sources=SourceStore(c.datastore), sessions=SessionStore(c.datastore),
         placer=c.session_placer, engine=c.stream_engine, sealer=c.sealer,
         signed_playback=c.signed_playback, cfg=cfg, events=c.event_bus,
-        shipper=shipper, record_ext=_REC_EXT.get(s.RECORD_FORMAT, "mp4"))
+        shipper=shipper, record_ext=_REC_EXT.get(s.RECORD_FORMAT, "mp4"),
+        media_egress=c.media_egress)
 
 
 # ── request bodies ────────────────────────────────────────────────────────────
@@ -238,6 +244,71 @@ async def get_playback(request: Request, session_id: str,
         return await build_stream_service(request).playback(session_id, tenant=p.tenant or "")
     except SourceNotFound:
         raise HTTPException(404, "NOT_FOUND")
+
+
+# ── PTZ ────────────────────────────────────────────────────────────────────────
+class PtzMove(BaseModel):
+    pan: float = Field(default=0.0, ge=-1, le=1)
+    tilt: float = Field(default=0.0, ge=-1, le=1)
+    zoom: float = Field(default=0.0, ge=-1, le=1)
+    mode: str = Field(default="continuous", pattern="^(continuous|relative|absolute)$")
+
+
+async def _ptz_source(request: Request, source_id: str, tenant: str) -> dict:
+    svc = build_stream_service(request)
+    try:
+        src = await svc.get_source(source_id, tenant=tenant)
+    except SourceNotFound:
+        raise HTTPException(404, "NOT_FOUND")
+    # The plaintext (unsealed) creds/host are needed to reach the camera — never returned to a client.
+    return {"onvif": src.onvif, "url": svc._sealer.unseal(src.url_sealed)}
+
+
+@router.post("/sources/{source_id}/ptz/move", dependencies=[Depends(_MANAGE)])
+async def ptz_move(request: Request, source_id: str, body: PtzMove,
+                   p: Principal = Depends(require_user)) -> dict:
+    src = await _ptz_source(request, source_id, p.tenant or "")
+    try:
+        await request.app.state.container.ptz.move(src, pan=body.pan, tilt=body.tilt,
+                                                   zoom=body.zoom, mode=body.mode)
+    except NotImplementedError:
+        raise HTTPException(409, "PTZ_UNSUPPORTED")
+    return {"moving": True}
+
+
+@router.post("/sources/{source_id}/ptz/stop", dependencies=[Depends(_MANAGE)])
+async def ptz_stop(request: Request, source_id: str, p: Principal = Depends(require_user)) -> dict:
+    src = await _ptz_source(request, source_id, p.tenant or "")
+    try:
+        await request.app.state.container.ptz.stop(src)
+    except NotImplementedError:
+        raise HTTPException(409, "PTZ_UNSUPPORTED")
+    return {"stopped": True}
+
+
+@router.get("/sources/{source_id}/ptz/presets", dependencies=[Depends(_READ)])
+async def ptz_presets(request: Request, source_id: str,
+                      p: Principal = Depends(require_user)) -> dict:
+    src = await _ptz_source(request, source_id, p.tenant or "")
+    return {"presets": await request.app.state.container.ptz.presets(src)}
+
+
+@router.post("/sources/{source_id}/ptz/goto/{preset_token}", dependencies=[Depends(_MANAGE)])
+async def ptz_goto(request: Request, source_id: str, preset_token: str,
+                   p: Principal = Depends(require_user)) -> dict:
+    src = await _ptz_source(request, source_id, p.tenant or "")
+    try:
+        await request.app.state.container.ptz.goto(src, preset_token)
+    except NotImplementedError:
+        raise HTTPException(409, "PTZ_UNSUPPORTED")
+    return {"moving": True}
+
+
+@router.post("/discovery", dependencies=[Depends(_MANAGE), Depends(rate_limit)])
+async def discover(request: Request, p: Principal = Depends(require_user)) -> dict:
+    cams = await request.app.state.container.discovery.discover()
+    return {"cameras": [{"name": c.name, "url": c.url, "kind": c.kind, "onvif_host": c.onvif_host}
+                        for c in cams]}
 
 
 # ── recordings ────────────────────────────────────────────────────────────────
