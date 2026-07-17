@@ -31,6 +31,8 @@ dependencies = [
     "pydantic-settings>=2.3,<3.0",
     "prometheus-client>=0.20,<1.0",
     "pyjwt[crypto]>=2.8,<3.0",
+    # httpx is a RUNTIME dep: the file-service recording sink posts segments over HTTP. BSD-3-Clause.
+    "httpx>=0.27,<1.0",
 ]
 
 [project.optional-dependencies]
