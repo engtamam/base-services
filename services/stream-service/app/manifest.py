@@ -39,6 +39,7 @@ def build_manifest(
             {"path": "/internal/health", "tier": "internal", "method": "GET"},
             {"path": "/internal/manifest", "tier": "internal", "method": "GET"},
             {"path": "/internal/stream/sweep", "tier": "internal", "method": "POST"},
+            {"path": "/internal/stream/retention", "tier": "internal", "method": "POST"},
             {"path": "/internal/stream/sessions/{id}/heartbeat", "tier": "internal", "method": "POST"},
             {"path": "/api/v1/sources", "tier": "user", "method": "POST"},
             {"path": "/api/v1/sources", "tier": "user", "method": "GET"},

@@ -54,6 +54,12 @@ CRONS: dict[str, list[tuple[str, str, str]]] = {
         ("reclaim", "*/5 * * * *", "/internal/jobs/reclaim"),
     ],
     "webhook-service": [("sweep", "*/5 * * * *", "/internal/webhooks/sweep")],
+    # Without the sweep, a session past its guards (max_duration/idle/lease) or a zombie engine would
+    # run forever; without retention, recordings would grow without bound.
+    "stream-service": [
+        ("sweep", "*/1 * * * *", "/internal/stream/sweep"),
+        ("retention", "17 3 * * *", "/internal/stream/retention"),
+    ],
     "zatca-service": [("sweep", "*/10 * * * *", "/internal/zatca/sweep")],
     # Without these the wallet's holds never expire: a client that dies between reserve and
     # confirm strands a customer's credits forever, while the balance still displays them.

@@ -186,6 +186,32 @@ class StreamService:
         return {"stopped": stopped, "reaped_dead": dead,
                 "killed_orphans": len(res.killed_orphans)}
 
+    async def enforce_retention(self, *, days: int, recordings, sink, limit: int = 200) -> dict[str, int]:
+        """Delete recordings older than `days`, releasing each segment's bytes in the sink.
+
+        A LOCKED recording (legal hold) is never touched — the store's iter_expired already filters
+        them. Bounded, off-request. Idempotent: a deleted recording just isn't found next time.
+        """
+        import datetime as _dt
+        cutoff = (_dt.datetime.fromtimestamp(self._clock(), _dt.timezone.utc)
+                  - _dt.timedelta(days=days)).isoformat()
+        deleted = segments = 0
+        cursor = None
+        while True:
+            batch, cursor = await recordings.iter_expired(cutoff, limit=limit, after=cursor)
+            for rec in batch:
+                for seg in rec.segments:
+                    try:
+                        await sink.delete(seg.get("ref", ""))
+                        segments += 1
+                    except Exception:   # noqa: BLE001
+                        pass
+                await recordings.delete(rec.id)
+                deleted += 1
+            if not cursor:
+                break
+        return {"deleted_recordings": deleted, "deleted_segments": segments}
+
     # ── helpers ──────────────────────────────────────────────────────────────────
     def _guard_breached(self, sess: Session) -> str:
         g = sess.guards

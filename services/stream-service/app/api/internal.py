@@ -74,3 +74,16 @@ async def heartbeat(request: Request, session_id: str, body: HeartbeatIn) -> dic
     from app.api.v1.stream import build_stream_service
     sess = await build_stream_service(request).heartbeat(session_id, stats=body.stats or None)
     return sess.public_dict() if sess is not None else {"status": "gone"}
+
+
+@router.post("/stream/retention", dependencies=[Depends(require_internal_token)])
+async def enforce_retention(request: Request) -> dict:
+    """Delete recordings past RETENTION_DAYS (legal-held ones are exempt). CronJob-driven."""
+    from app.api.v1.stream import build_stream_service
+    from app.core.stores import RecordingStore
+    c = request.app.state.container
+    s = get_settings()
+    svc = build_stream_service(request)
+    return await svc.enforce_retention(days=s.RETENTION_DAYS,
+                                       recordings=RecordingStore(c.datastore),
+                                       sink=c.recording_sink)
