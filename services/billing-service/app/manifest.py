@@ -55,6 +55,7 @@ def build_manifest(
             {"path": "/api/v1/billing/plans", "tier": "user", "method": "GET"},
             {"path": "/api/v1/billing/coupons", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/subscriptions", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/billing/subscriptions", "tier": "user", "method": "GET"},
             {"path": "/api/v1/billing/subscriptions/{id}/change", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/subscriptions/{id}/cancel", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/subscriptions/{id}/run", "tier": "user", "method": "POST"},

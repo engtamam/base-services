@@ -1,0 +1,41 @@
+"""billing-service — end-user (self-service) actions: a customer's OWN billing.
+
+The `_SELF` routes (billing.self / billing.manage / platform.billing): browse plans, subscribe,
+change or cancel my plan, view my subscriptions, invoices (and their PDFs), and my usage. Every one is
+scoped to the caller's tenant/subscription from the token — a customer only ever sees their own money.
+Operator-only surfaces (create plans/coupons, refund, settle a bank transfer, run dunning, migrate
+terms, the ledger) enforce platform.billing / billing.manage and live in admin_actions, not here.
+`billing.self` is the advertised self-service capability. The app is a map — each route re-checks its
+capability and re-scopes to the caller on every call.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+
+USER_ACTIONS: list[dict[str, Any]] = [
+    {"id": "billing.plans", "label": "Browse plans", "method": "GET",
+     "path": "/api/v1/billing/plans", "capability": "billing.self", "group": "Plan"},
+    {"id": "billing.my_subscriptions", "label": "My subscription", "method": "GET",
+     "path": "/api/v1/billing/subscriptions", "capability": "billing.self", "group": "Plan"},
+    {"id": "billing.subscribe", "label": "Subscribe to a plan", "method": "POST",
+     "path": "/api/v1/billing/subscriptions", "capability": "billing.self", "group": "Plan",
+     "confirm": True,
+     "params": [{"name": "plan_id", "in": "body", "type": "string", "required": True}]},
+    {"id": "billing.change_plan", "label": "Change my plan", "method": "POST",
+     "path": "/api/v1/billing/subscriptions/{id}/change", "capability": "billing.self", "group": "Plan",
+     "confirm": True,
+     "params": [{"name": "id", "in": "path", "type": "string", "required": True},
+                {"name": "plan_id", "in": "body", "type": "string", "required": True}]},
+    {"id": "billing.cancel", "label": "Cancel my plan", "method": "POST",
+     "path": "/api/v1/billing/subscriptions/{id}/cancel", "capability": "billing.self", "group": "Plan",
+     "danger": True, "confirm": True,
+     "params": [{"name": "id", "in": "path", "type": "string", "required": True}]},
+    {"id": "billing.my_invoices", "label": "My invoices", "method": "GET",
+     "path": "/api/v1/billing/invoices", "capability": "billing.self", "group": "Invoices"},
+    {"id": "billing.invoice_pdf", "label": "Download an invoice", "method": "GET",
+     "path": "/api/v1/billing/invoices/{id}/pdf", "capability": "billing.self", "group": "Invoices",
+     "params": [{"name": "id", "in": "path", "type": "string", "required": True}]},
+    {"id": "billing.my_usage", "label": "My usage", "method": "GET",
+     "path": "/api/v1/billing/usage", "capability": "billing.self", "group": "Usage"},
+]
