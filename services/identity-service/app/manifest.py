@@ -46,7 +46,7 @@ def build_manifest(
         # here so the admin panel can gate its member actions on them — the cap NAMES default to
         # these and are overridable via IDENTITY_MEMBERS_READ_CAP / _WRITE_CAP.
         "capabilities": ["identity.register", "identity.login", "identity.refresh",
-                         "members:read", "members:write"],
+                         "identity.self", "members:read", "members:write"],
         "endpoints": [
             {"path": "/healthz", "tier": "public", "method": "GET"},
             {"path": "/readyz", "tier": "public", "method": "GET"},
