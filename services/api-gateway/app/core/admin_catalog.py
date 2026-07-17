@@ -109,10 +109,15 @@ async def build_catalog(
     targets: list[ServiceTarget],
     caller_caps: frozenset[str],
     fetch_manifest: Callable[[ServiceTarget], Awaitable[dict[str, Any] | None]],
+    field: str = "admin_actions",
 ) -> dict[str, Any]:
     """Fan out, merge, filter. `fetch_manifest` is injected so this stays pure and testable — no
     network here, no clock, no token. A target that fails to answer is skipped and REPORTED, never
-    silently dropped (a missing service should be visible, not invisible)."""
+    silently dropped (a missing service should be visible, not invisible).
+
+    `field` selects which declaration to aggregate: `admin_actions` (the operator panel) or
+    `user_actions` (the end-user app). The validation, capability filtering, and anti-SSRF rules are
+    identical — only the manifest key differs."""
     services: list[dict[str, Any]] = []
     unreachable: list[str] = []
     for t in targets:
@@ -123,7 +128,7 @@ async def build_catalog(
         if manifest is None:
             unreachable.append(t.name)
             continue
-        raw = manifest.get("admin_actions") or []
+        raw = manifest.get(field) or []
         actions = []
         for a in raw:
             v = _valid_action(a)

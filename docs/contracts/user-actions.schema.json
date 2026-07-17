@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://base-services/contracts/user-actions.schema.json",
+  "title": "user_actions",
+  "description": "A service declares the END-USER (self-service) operations it supports, in its own /internal/manifest, under a `user_actions` array. The platform APP panel (GET /api/v1/app/catalog) aggregates these across every service, filtered to the actions the CALLER's own capabilities allow — the user's app, exactly as `admin_actions` is the operator's panel. Same shape, same rules; the difference is only WHICH routes you declare here: a user's own self-service routes (their files, their profile, their subscription), never platform-operator routes. THE PANEL IS A MAP, NEVER THE AUTHORITY: `capability` is declared only so the app hides a control the caller could not use; the owning service re-checks it, and re-scopes to the caller's tenant/identity, on every call. Any service in any language that emits this shape appears in the user app automatically.",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["id", "label", "method", "path", "capability"],
+    "properties": {
+      "id": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_.-]{1,63}$",
+        "description": "Stable, service-unique id, e.g. `files.upload`. The app keys on it."
+      },
+      "label": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 120,
+        "description": "Human text for the control. UNTRUSTED — the renderer MUST escape it (a third-party service's label is stored-XSS otherwise)."
+      },
+      "method": {
+        "type": "string",
+        "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+        "description": "Allow-list only. Anything else is refused by safety:user-actions."
+      },
+      "path": {
+        "type": "string",
+        "pattern": "^/[A-Za-z0-9._~/{}-]*$",
+        "description": "A RELATIVE path on the DECLARING service. No scheme, no host, no query. The aggregator always invokes it at that service's discovered address — a declaration cannot name an arbitrary URL (SSRF)."
+      },
+      "capability": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_.:*-]{1,63}$",
+        "description": "The capability the OWNING ROUTE already enforces. Declared so the app filters what it shows; never a substitute for the server-side check and tenant/identity re-scoping."
+      },
+      "params": {
+        "type": "array",
+        "description": "Form fields. Become inputs in the app.",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "in", "type"],
+          "properties": {
+            "name": { "type": "string", "pattern": "^[a-z][a-zA-Z0-9_]{0,63}$" },
+            "in": { "type": "string", "enum": ["path", "query", "body"] },
+            "type": { "type": "string", "enum": ["string", "integer", "number", "boolean", "enum", "object"] },
+            "required": { "type": "boolean", "default": false },
+            "enum": { "type": "array", "items": { "type": "string" } },
+            "label": { "type": "string", "maxLength": 120 },
+            "help": { "type": "string", "maxLength": 240 }
+          }
+        }
+      },
+      "confirm": {
+        "type": "boolean",
+        "default": false,
+        "description": "The renderer requires an explicit re-confirm before submitting. UX only."
+      },
+      "danger": {
+        "type": "boolean",
+        "default": false,
+        "description": "Destructive/irreversible for the user (e.g. delete my account). Rendered distinctly and implies confirm. UX only."
+      },
+      "group": {
+        "type": "string",
+        "maxLength": 60,
+        "description": "Optional section label for grouping actions in the app."
+      }
+    }
+  }
+}

@@ -95,6 +95,10 @@ jobs:
       - name: "safety:admin — the admin panel is a map, never the authority"
         run: python tools/ci/check_admin.py
 
+      # gates: safety:user-actions
+      - name: "safety:user-actions — the end-user app catalog is a map, never the authority"
+        run: python tools/ci/check_user_actions.py
+
       # gates: safety:tenancy
       - name: "safety:tenancy — a token carries exactly ONE tenant, and only one it is entitled to"
         run: python tools/ci/check_tenancy.py

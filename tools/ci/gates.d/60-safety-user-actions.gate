@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+gate_name="safety:user-actions"
+gate_desc="the end-user app catalog is a map, never the authority — declarations must be true and safe"
+gate_protects="The end-user app (GET /api/v1/app/catalog) is the user-facing twin of the admin
+panel. Each service DECLARES its self-service actions (app/user_actions.py); the
+gateway aggregates them, filtered to the caller's own capabilities, and renders the
+controls a user submits. A declaration that lies — a route that does not exist, or a
+capability the route does not enforce — makes the app misrepresent what a user may
+do; a scheme/host in the path is an SSRF/redirect.
+
+Same rules as safety:admin (shared in _actions_gate.py): the route exists, the path
+is relative, the method is allow-listed, the capability is advertised, and the
+manifest emits the field. The app decides what is SHOWN; the owning route re-checks
+the capability AND re-scopes to the caller's own tenant/identity on every call."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_user_actions.py"
+gate_units=1
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_user_actions.py; }
+
+# A gate that cannot fail is decoration. Mutation-tested: a correct declaration passes, then each
+# rule-break turns it red.
+gate_selftest() { "$PY" tools/ci/selftest_user_actions.py >/dev/null 2>&1; }
