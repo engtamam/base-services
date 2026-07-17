@@ -24,6 +24,17 @@ def _admin_actions() -> list[dict[str, Any]]:
     return list(ADMIN_ACTIONS)
 
 
+def _user_actions() -> list[dict[str, Any]]:
+    """This service's declared end-user (self-service) actions
+    (docs/contracts/user-actions.schema.json), or [] if it declares none. Opt-in: aggregated into
+    GET /api/v1/app/catalog. The app is a map — these decide what is SHOWN, never what a user may DO."""
+    try:
+        from app.user_actions import USER_ACTIONS
+    except Exception:
+        return []
+    return list(USER_ACTIONS)
+
+
 def build_manifest(
     settings: Settings, ports: list[dict[str, str]] | None = None
 ) -> dict[str, Any]:
@@ -58,4 +69,5 @@ def build_manifest(
         "ports": ports or [],  # port -> driver, from the composition root
         "events": {"emitted": [], "consumed": []},
         "admin_actions": _admin_actions(),
+        "user_actions": _user_actions(),
     }
