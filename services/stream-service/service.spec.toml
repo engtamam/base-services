@@ -1,0 +1,8 @@
+# service.spec.toml — the record of how this service was generated.
+name = "stream-service"
+description = "Live camera / RTSP ingest, control, record, and view (HLS/WebRTC/snapshot)"
+port = 8018
+
+[drivers]
+queue = "redis"
+object_store = "s3"

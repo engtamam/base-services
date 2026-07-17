@@ -12,6 +12,7 @@
   "job-service": 8012,
   "notification-service": 8002,
   "search-service": 8013,
+  "stream-service": 8018,
   "tenant-service": 8003,
   "wallet-service": 8017,
   "webhook-service": 8011,
