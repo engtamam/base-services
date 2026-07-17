@@ -39,6 +39,7 @@ from app.security.step_map import load_step_map
 def create_app() -> FastAPI:
     # Fail-fast: this raises (and aborts startup) if the environment is invalid.
     settings = get_settings()
+    settings.assert_large_scan_ok()   # refuse LARGE_UPLOAD_SCAN=skip in production
     configure_logging(settings.SERVICE_NAME, settings.ENV, settings.LOG_LEVEL)
     logger = get_logger("app.main")
 

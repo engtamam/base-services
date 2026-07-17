@@ -14,6 +14,8 @@ from pydantic import BaseModel
 
 from app.config import Settings, get_settings
 from app.core.erasure import FileErasure
+from app.core.scan_worker import ScanWorker
+from app.core.upload_session import UploadSessionStore
 from app.manifest import build_manifest
 
 router = APIRouter(prefix="/internal", tags=["internal"])
@@ -55,6 +57,41 @@ async def internal_manifest(
 class EraseIn(BaseModel):
     tenant: str
     subject: str
+
+
+@router.post("/files/scan", dependencies=[Depends(require_internal_token)])
+async def drain_scan_queue(request: Request) -> dict:
+    """Hash + scan every staged large upload waiting in the queue, then finalize each session.
+
+    Driven by a CronJob (the platform pattern for background sweeps). Idempotent: a session already
+    finalized is skipped, so a re-run never double-processes.
+    """
+    from app.api.v1.files import build_files   # local import avoids a route<->route import cycle
+    c = request.app.state.container
+    s = get_settings()
+    files = build_files(request)
+    worker = ScanWorker(files=files, sessions=UploadSessionStore(c.datastore),
+                        object_store=c.object_store, scanner=c.scanner, queue=c.queue,
+                        scan_queue=s.FILE_SCAN_QUEUE, scan_policy=s.LARGE_UPLOAD_SCAN)
+    processed = await worker.run_once()
+    return {"processed": processed}
+
+
+@router.post("/files/sweep-uploads", dependencies=[Depends(require_internal_token)])
+async def sweep_uploads(request: Request) -> dict:
+    """Abort large-upload sessions older than UPLOAD_SESSION_TTL_SECONDS — releases their multiparts.
+
+    Driven by a CronJob. An initiated-but-never-completed upload leaves parts costing storage; this
+    is what stops them accruing forever.
+    """
+    import datetime as _dt
+
+    from app.api.v1.files import build_files
+    s = get_settings()
+    files = build_files(request)
+    cutoff = (_dt.datetime.now(_dt.timezone.utc)
+              - _dt.timedelta(seconds=s.UPLOAD_SESSION_TTL_SECONDS)).isoformat()
+    return await files.sweep_stale_sessions(cutoff)
 
 
 @router.post("/privacy/erase", dependencies=[Depends(require_internal_token)])

@@ -3,13 +3,16 @@ from __future__ import annotations
 
 import asyncio
 import os
+from typing import AsyncIterator
 
 from app.adapters.object_store.keys import validate_key
-from app.ports.errors import NotFound
+from app.ports.errors import NotFound, Unsupported
+from app.ports.object_store import CompletedPart, MultipartPlan, ObjectHead
 
 
 class LocalObjectStore:
     driver = "local"
+    supports_presign = False   # a local path is not a bucket the client can reach → SMALL path only
 
     def __init__(self, root: str) -> None:
         self._root = os.path.abspath(root or "./.objectstore")
@@ -51,6 +54,56 @@ class LocalObjectStore:
 
     async def health(self) -> bool:
         return await asyncio.to_thread(os.path.isdir, self._root)
+
+    # ── large path: not available (a local path is not a client-reachable bucket) ──
+    async def begin_multipart(self, key: str, content_type: str, size: int,
+                              part_size: int) -> MultipartPlan:
+        raise Unsupported("local object store cannot presign — use an s3 store for large uploads")
+
+    async def complete_multipart(self, key: str, upload_id: str,
+                                 parts: list[CompletedPart]) -> None:
+        raise Unsupported("local object store cannot presign")
+
+    async def abort_multipart(self, key: str, upload_id: str) -> None:
+        raise Unsupported("local object store cannot presign")
+
+    async def presign_get(self, key: str, filename: str, expires_in: int) -> str:
+        raise Unsupported("local object store cannot presign")
+
+    async def head(self, key: str) -> ObjectHead | None:
+        path = self._path(key)
+        try:
+            size = await asyncio.to_thread(os.path.getsize, path)
+        except FileNotFoundError:
+            return None
+        return ObjectHead(size=size, etag="")
+
+    async def promote(self, src_key: str, dst_key: str) -> None:
+        src, dst = self._path(src_key), self._path(dst_key)
+
+        def _move() -> None:
+            if not os.path.isfile(dst) and os.path.isfile(src):
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                os.replace(src, dst)          # atomic on the same filesystem
+            elif os.path.isfile(src):
+                os.remove(src)                # dst already exists (dedup) → discard staging
+
+        await asyncio.to_thread(_move)
+
+    async def stream(self, key: str, chunk_size: int = 1_048_576) -> AsyncIterator[bytes]:
+        path = self._path(key)
+        try:
+            fh = await asyncio.to_thread(open, path, "rb")
+        except FileNotFoundError as exc:
+            raise NotFound(f"object not found: {key}") from exc
+        try:
+            while True:
+                chunk = await asyncio.to_thread(fh.read, max(1, chunk_size))
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            await asyncio.to_thread(fh.close)
 
     async def close(self) -> None:
         return None

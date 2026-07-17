@@ -24,3 +24,12 @@ class Unavailable(PortError):
 
 class InvalidToken(PortError):
     """A token failed verification (bad signature, expired, wrong iss/aud, ...)."""
+
+
+class Unsupported(PortError):
+    """The adapter does not support this capability (e.g. presign on a local/memory store).
+
+    A capability the wired driver cannot provide is a hard, honest error — never a silent fall
+    back to a different path. The caller negotiates on `supports_presign` first; reaching here
+    means it asked anyway, and the answer is a clear refusal, not a surprise.
+    """

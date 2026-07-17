@@ -70,7 +70,8 @@ _OBJECTSTORE: dict[str, Builder] = {
     "s3": lambda s: S3ObjectStore(
         s.OBJECTSTORE_BUCKET, s.OBJECTSTORE_ENDPOINT_URL,
         access_key=s.OBJECTSTORE_ACCESS_KEY, secret_key=s.OBJECTSTORE_SECRET_KEY,
-        region=s.OBJECTSTORE_REGION, force_path_style=s.OBJECTSTORE_FORCE_PATH_STYLE),
+        region=s.OBJECTSTORE_REGION, force_path_style=s.OBJECTSTORE_FORCE_PATH_STYLE,
+        presign_ttl=s.PRESIGN_TTL_SECONDS),
 }
 _SECRETS: dict[str, Builder] = {
     "env": lambda s: EnvSecrets(),
@@ -99,8 +100,16 @@ from app.adapters.scanner.none import NoneScanner
 from app.adapters.signed_url.hmac_signer import HmacSigner
 
 
-def _s3_signer_not_ready(s):
-    raise ConfigError("s3 presigned URLs are a future adapter — use SIGNED_URL_DRIVER=hmac")
+def _s3_signer_redirect(s):
+    # Presigning is now REAL — but it lives on the ObjectStore (it needs the bucket client), not on
+    # this token-signer port. A SMALL file's share link is an HMAC token gating our own endpoint (so
+    # the endpoint can enforce scan-state and tenancy); a LARGE file's download is a presigned bucket
+    # GET the s3 object store mints directly. So there is no "s3 signer" driver: set
+    # OBJECTSTORE_DRIVER=s3 for the large path, and keep SIGNED_URL_DRIVER=hmac for share links.
+    raise ConfigError(
+        "SIGNED_URL_DRIVER=s3 does not exist: presigned bucket downloads are served by the s3 "
+        "OBJECTSTORE_DRIVER (object_store.presign_get), not the token signer. Use "
+        "SIGNED_URL_DRIVER=hmac and OBJECTSTORE_DRIVER=s3.")
 
 
 _SCANNER: dict[str, Builder] = {
@@ -110,7 +119,7 @@ _SCANNER: dict[str, Builder] = {
 }
 _SIGNED_URL: dict[str, Builder] = {
     "hmac": lambda s: HmacSigner(s.SIGNED_URL_SECRET or s.INTERNAL_SERVICE_TOKEN, s.SIGNED_URL_TTL_SECONDS),
-    "s3": _s3_signer_not_ready,
+    "s3": _s3_signer_redirect,
 }
 
 

@@ -13,15 +13,59 @@
 
 | Tier | Method · Path | Cap | Purpose |
 |------|---------------|-----|---------|
-| user | `POST /api/v1/files` (raw body + `X-Filename`, `Content-Type`) | `files.upload` | upload |
+| user | `POST /api/v1/files` (raw body + `X-Filename`, `Content-Type`) | `files.upload` | upload (small, inline) |
 | user | `GET /api/v1/files/{id}` | `files.read` | download (tenant-scoped) |
 | user | `GET /api/v1/files/{id}/metadata` | `files.read` | metadata |
 | user | `POST /api/v1/files/{id}/signed-url` | `files.read` | mint a signed URL |
 | user | `DELETE /api/v1/files/{id}` | `files.upload` | delete (ref-count aware) |
+| user | `POST /api/v1/files/uploads` | `files.upload` | **initiate a large, direct-to-bucket upload** |
+| user | `POST /api/v1/files/uploads/{id}/complete` | `files.upload` | finish a large upload |
+| user | `GET /api/v1/files/uploads/{id}` | `files.read` | large-upload status |
+| user | `DELETE /api/v1/files/uploads/{id}` | `files.upload` | cancel a large upload (releases the multipart) |
 | public | `GET /files/signed/{token}` | — | download via signed URL (no auth; token is the grant) |
 
-Upload is a **raw body** (the file bytes) with `X-Filename` + `Content-Type` headers —
+Small upload is a **raw body** (the file bytes) with `X-Filename` + `Content-Type` headers —
 no `python-multipart` needed. Max size = `MAX_UPLOAD_BYTES` (≤ `BODY_LIMIT_BYTES`).
+
+## Two models: small-in-app and large-direct-to-bucket (Phase 34)
+
+Small files (≤ `MAX_INLINE_BYTES`) go **through the app**: scanned and hashed in-request, then stored
+— today's path. A multi-GB object cannot: you can't hold it in memory or scan it in the request. So
+above the boundary the client uploads **straight to the bucket** and the app never touches the bytes.
+This path is available only when the wired object store can presign (the `s3` driver); a client
+discovers it from the manifest's `features.large_uploads`. Over the boundary on a non-presign store is
+a **413**, never a silent buffer.
+
+A file is **never readable until scanned**, whichever path it took. A large upload lands on a
+per-session **staging** key, is hashed + scanned asynchronously, and is promoted to its
+content-addressed key only when the hash matches and the scan is clean — otherwise it is
+**quarantined** and the staging object is discarded (a lying client can never overwrite a shared
+content blob). Dedup is possession-safe: an owner who already holds a hash skips re-uploading; a
+different owner must upload and verify.
+
+```bash
+# 1. initiate — declare the file's sha256 + size; get a presigned multipart plan (or a dedup hit)
+curl -XPOST $GW/api/v1/files/uploads -H "Authorization: Bearer $JWT" \
+  -d '{"filename":"movie.mp4","content_type":"video/mp4","sha256":"<hex>","size":5368709120}'
+#   → {"deduplicated":false,"session":{"id":"...","status":"pending"},
+#      "upload":{"part_size":8388608,"part_count":640,"parts":[{"part_number":1,"url":"https://..."}]}}
+
+# 2. PUT each part DIRECTLY to its presigned URL (bytes never touch the app); keep each ETag
+curl -XPUT "<parts[0].url>" --data-binary @part-1  # -> response ETag header
+
+# 3. complete — hand back the part ETags; the object is assembled and queued for scanning
+curl -XPOST $GW/api/v1/files/uploads/$SID/complete -H "Authorization: Bearer $JWT" \
+  -d '{"parts":[{"part_number":1,"etag":"..."}]}'          # → {"status":"scanning"}
+
+# 4. poll status until ready (a CronJob drains the scan queue)
+curl $GW/api/v1/files/uploads/$SID -H "Authorization: Bearer $JWT"   # → {"status":"ready","file_id":"..."}
+
+# 5. download — on an s3 store this 302-redirects straight to a short-lived presigned bucket GET
+curl -L $GW/api/v1/files/$FID -H "Authorization: Bearer $JWT"
+```
+
+Verified end-to-end against a real MinIO: initiate → parts PUT direct-to-bucket → complete → scan →
+ready → download redirect → bytes fetched from the bucket, sha matches.
 
 ## Content-addressing + ref-counting
 
@@ -66,8 +110,9 @@ pytest -q ; python ci/security_gate.py
 
 ## Out of scope (later)
 
-Thumbnails / preview (Pillow → optional `ThumbnailGenerator`) · chunked / resumable
-uploads · S3 presigned URLs · CDN / image transforms.
+Thumbnails / preview (Pillow → optional `ThumbnailGenerator`) · tus resumable protocol · CDN /
+image transforms · a non-S3 presign adapter (GCS/Azure). Large direct-to-bucket multipart uploads and
+S3 presigned URLs **shipped in Phase 34**.
 
 ## Rate limiting (every request, config-driven)
 

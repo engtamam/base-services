@@ -36,10 +36,24 @@ def test_path_style_is_configurable():
     needs a wildcard DNS record MinIO does not have — so it fails to resolve. Path style
     (https://host/bucket/key) is what on-prem stores serve."""
     virtual = S3ObjectStore("b", "http://minio:9000")
-    assert virtual._config is None
+    # A Config always exists now (it carries the presign-safety checksum setting), but WITHOUT a
+    # path-style override unless asked.
+    assert not getattr(virtual._config, "s3", None)
 
     path = S3ObjectStore("b", "http://minio:9000", force_path_style=True)
     assert path._config.s3["addressing_style"] == "path"
+
+
+def test_presigned_urls_do_not_require_a_default_checksum_header():
+    """Regression: modern botocore bakes a default x-amz-checksum-crc32 into a presigned URL's
+    SignedHeaders, so an ordinary browser/curl PUT fails with SignatureDoesNotMatch. The adapter
+    must set checksum calculation to 'when required' so a presigned URL any client can use."""
+    store = S3ObjectStore("b", "http://minio:9000", force_path_style=True)
+    # Only meaningful on botocore versions that HAVE the knob; on older ones there is no default to
+    # disable and the presigned URL is already usable.
+    calc = getattr(store._config, "request_checksum_calculation", None)
+    if calc is not None:
+        assert calc == "when_required"
 
 
 def test_minio_style_wiring_is_accepted():

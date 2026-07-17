@@ -27,6 +27,10 @@ def _admin_actions() -> list[dict[str, Any]]:
 def build_manifest(
     settings: Settings, ports: list[dict[str, str]] | None = None
 ) -> dict[str, Any]:
+    # Large uploads are available only when the wired object store can presign — today that is the
+    # s3 driver. Advertised so a CLIENT can discover the boundary and the endpoint up front (the
+    # inline route's 413 body is generic, per CWE-209), instead of learning it from an error.
+    large_available = settings.OBJECTSTORE_DRIVER == "s3"
     return {
         "name": settings.SERVICE_NAME,
         "version": settings.SERVICE_VERSION,
@@ -38,13 +42,28 @@ def build_manifest(
             {"path": "/metrics", "tier": "public", "method": "GET"},
             {"path": "/internal/health", "tier": "internal", "method": "GET"},
             {"path": "/internal/manifest", "tier": "internal", "method": "GET"},
+            {"path": "/internal/files/scan", "tier": "internal", "method": "POST"},
+            {"path": "/internal/files/sweep-uploads", "tier": "internal", "method": "POST"},
             {"path": "/api/v1/files", "tier": "user", "method": "POST"},
             {"path": "/api/v1/files/{id}", "tier": "user", "method": "GET"},
             {"path": "/api/v1/files/{id}/metadata", "tier": "user", "method": "GET"},
             {"path": "/api/v1/files/{id}/signed-url", "tier": "user", "method": "POST"},
             {"path": "/api/v1/files/{id}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/files/uploads", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/files/uploads/{id}/complete", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/files/uploads/{id}", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/files/uploads/{id}", "tier": "user", "method": "DELETE"},
             {"path": "/files/signed/{token}", "tier": "public", "method": "GET"},
         ],
+        "features": {
+            "large_uploads": {
+                "available": large_available,
+                "max_inline_bytes": settings.MAX_INLINE_BYTES,
+                "max_object_bytes": settings.MAX_OBJECT_BYTES,
+                "part_size": settings.MULTIPART_PART_SIZE,
+                "initiate": "/api/v1/files/uploads",
+            },
+        },
         "ports": ports or [],  # port -> driver, from the composition root
         "events": {"emitted": [], "consumed": []},
         "admin_actions": _admin_actions(),

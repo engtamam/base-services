@@ -36,6 +36,17 @@ class FileRepository:
     async def delete(self, file_id: str) -> None:
         await self._store.delete(_FILES, file_id)
 
+    async def first_by_owner_sha(self, owner: str, sha256: str) -> FileObject | None:
+        """A file THIS owner already holds with this content hash, or None.
+
+        The large path uses this for a POSSESSION-SAFE dedup short-circuit: an owner who already has
+        the bytes may skip re-uploading them. It is scoped to the owner on purpose — dedup across
+        the whole store still happens at the blob layer, but a caller can never claim a reference to
+        content it has not proven it possesses by naming another tenant's hash.
+        """
+        rows, _ = await self._store.find(_FILES, {"owner": owner, "sha256": sha256}, limit=1)
+        return FileObject.from_dict(rows[0]) if rows else None
+
     # ── content-addressed ref-count ───────────────────────────────────────────
     async def incr_ref(self, key: str) -> int:
         """One more owner points at this blob. Atomic — no lost increment under concurrent upload."""

@@ -120,10 +120,33 @@ class Settings(BaseSettings):
     # ── file-service (Phase 11) — all config-driven ────────────────────────
     MAX_UPLOAD_BYTES: int = 26_214_400       # 25 MiB (must be <= BODY_LIMIT_BYTES)
     ALLOWED_CONTENT_TYPES: str = ""          # comma list; empty = allow any
+
+    # ── file-service large objects (Phase 34) — the direct-to-bucket path ──────
+    # The boundary between the two models. ≤ MAX_INLINE_BYTES → bytes go through the app (dedup +
+    # scan in-request, today's path). > MAX_INLINE_BYTES → the client uploads straight to the bucket
+    # via a presigned multipart plan. Default = MAX_UPLOAD_BYTES, so a deployment that sets nothing
+    # behaves EXACTLY as before (the large path never triggers).
+    MAX_INLINE_BYTES: int = 26_214_400       # 25 MiB
+    MAX_OBJECT_BYTES: int = 5_368_709_120    # 5 GiB — hard ceiling for the large path (S3 copy limit)
+    MULTIPART_PART_SIZE: int = 8_388_608     # 8 MiB per presigned part (S3 min is 5 MiB per non-final part)
+    # How a LARGE upload is scanned. `async` (default): scan after upload, in the worker. `require`:
+    # refuse to START a large upload unless a real scanner is wired (fail closed). `skip`: verify the
+    # hash but do not scan — refused in production by a boot guard (see assert_large_scan_ok).
+    LARGE_UPLOAD_SCAN: Literal["async", "require", "skip"] = "async"
+    FILE_SCAN_QUEUE: str = "file-scan"       # queue name the completer enqueues and the worker drains
+    # A large upload that is initiated but never completed leaves a multipart holding paid-for parts
+    # in the bucket. The sweeper aborts sessions older than this. Consumed by the sweep endpoint.
+    UPLOAD_SESSION_TTL_SECONDS: int = 3600   # 1 hour
     MAGIC_STRICT: bool = True                # enforce magic-byte vs declared type
     SCANNER_DRIVER: str = "none"             # none | magic | clamav
-    SIGNED_URL_DRIVER: str = "hmac"          # hmac | s3
+    SIGNED_URL_DRIVER: str = "hmac"          # hmac (our-endpoint token). Presigned bucket GETs are an
+                                             # ObjectStore capability, not a signer driver — see below.
     SIGNED_URL_SECRET: str = ""              # required for hmac (falls back to INTERNAL token)
+
+    # Lifetime of a presigned bucket URL (the LARGE, direct-to-bucket path). Distinct from
+    # SIGNED_URL_TTL_SECONDS, which is the HMAC our-endpoint link TTL. Consumed by the s3 object
+    # store when it mints presigned PUT/GET URLs.
+    PRESIGN_TTL_SECONDS: int = 900           # 15 min
 
     # Salts the subject pseudonym written into every IMMUTABLE record (audit chain, ledgers,
     # invoices). FROZEN — see config/product.identifiers.lock.json. Change it and every pseudonym
@@ -154,6 +177,17 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.ENV == "production"
+
+    def assert_large_scan_ok(self) -> None:
+        """Boot guard: `LARGE_UPLOAD_SCAN=skip` must never be the production posture.
+
+        Serving multi-GB objects that were never scanned is a malware-distribution channel. In
+        production we refuse to start with `skip`; a dev/test box may use it to iterate.
+        """
+        if self.is_production and self.LARGE_UPLOAD_SCAN == "skip":
+            raise ValueError(
+                "LARGE_UPLOAD_SCAN=skip is refused in production — a large file would be served "
+                "without ever being scanned. Use 'async' (scan in the worker) or 'require'.")
 
     @field_validator("INTERNAL_SERVICE_TOKEN")
     @classmethod

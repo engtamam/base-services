@@ -47,3 +47,12 @@ metrics:
 # No ingress: reached service-to-service on the internal tier only.
 ingress:
   enabled: false
+
+# These internal endpoints have NO caller without this block.
+cronJobs:
+  - name: scan
+    schedule: "*/1 * * * *"
+    path: /internal/files/scan
+  - name: sweep-uploads
+    schedule: "*/15 * * * *"
+    path: /internal/files/sweep-uploads

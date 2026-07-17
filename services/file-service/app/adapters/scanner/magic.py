@@ -6,6 +6,8 @@ Zero-dep heuristic defense against unrestricted file upload (CWE-434 / CWE-646):
 """
 from __future__ import annotations
 
+from typing import AsyncIterator
+
 from app.ports.scanner import Rejected
 
 # Declared content-type -> acceptable leading magic bytes.
@@ -30,7 +32,18 @@ class MagicScanner:
         self._strict = strict
 
     def scan(self, data: bytes, content_type: str) -> None:
-        head = data[:16]
+        self._check(data[:16], content_type)
+
+    async def scan_stream(self, chunks: AsyncIterator[bytes], content_type: str) -> None:
+        # Magic sniffing needs only the leading bytes, but we must DRAIN the whole stream so the
+        # caller's hasher sees every byte. Keep a bounded header; discard the rest as it flows by.
+        header = b""
+        async for chunk in chunks:
+            if len(header) < 16:
+                header += chunk[: 16 - len(header)]
+        self._check(header, content_type)
+
+    def _check(self, head: bytes, content_type: str) -> None:
         for sig in _DANGEROUS:
             if head.startswith(sig):
                 raise Rejected("executable/script content is not allowed")

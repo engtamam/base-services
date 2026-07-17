@@ -42,6 +42,12 @@ PUBLIC_INGRESS = {"api-gateway"}
 CRONS: dict[str, list[tuple[str, str, str]]] = {
     "analytics-service": [("prune-raw", "17 3 * * *", "/internal/analytics/prune-raw")],
     "audit-service": [("enforce-retention", "23 3 * * *", "/internal/audit/enforce-retention")],
+    # Large-object path (Phase 34): drain the scan queue so staged uploads become readable, and abort
+    # abandoned upload sessions so their multiparts stop costing bucket storage.
+    "file-service": [
+        ("scan", "*/1 * * * *", "/internal/files/scan"),
+        ("sweep-uploads", "*/15 * * * *", "/internal/files/sweep-uploads"),
+    ],
     "billing-service": [("dunning", "31 4 * * *", "/internal/billing/dunning")],
     "job-service": [
         ("scheduler-tick", "* * * * *", "/internal/scheduler/tick"),
