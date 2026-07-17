@@ -56,6 +56,7 @@ def build_manifest(
             {"path": "/internal/files/scan", "tier": "internal", "method": "POST"},
             {"path": "/internal/files/sweep-uploads", "tier": "internal", "method": "POST"},
             {"path": "/api/v1/files", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/files", "tier": "user", "method": "GET"},
             {"path": "/api/v1/files/{id}", "tier": "user", "method": "GET"},
             {"path": "/api/v1/files/{id}/metadata", "tier": "user", "method": "GET"},
             {"path": "/api/v1/files/{id}/signed-url", "tier": "user", "method": "POST"},
