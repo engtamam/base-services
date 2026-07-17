@@ -60,7 +60,11 @@ async def sweep_sessions(request: Request) -> dict:
     whose engine process died is reaped. Without a caller, the guards are only advisory.
     """
     from app.api.v1.stream import build_stream_service
-    return await build_stream_service(request).enforce_and_reconcile()
+    svc = build_stream_service(request)
+    shipped = await svc.ship_live_recordings()   # move completed segments off the node first
+    result = await svc.enforce_and_reconcile()
+    result.update(shipped)
+    return result
 
 
 class HeartbeatIn(BaseModel):

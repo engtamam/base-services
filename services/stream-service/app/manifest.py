@@ -52,6 +52,11 @@ def build_manifest(
             {"path": "/api/v1/sessions/{id}", "tier": "user", "method": "DELETE"},
             {"path": "/api/v1/sessions/{id}/stop", "tier": "user", "method": "POST"},
             {"path": "/api/v1/sessions/{id}/playback", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/recordings", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/recordings/{id}", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/recordings/{id}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/recordings/{id}/lock", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/recordings/{id}/unlock", "tier": "user", "method": "POST"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         "events": {"emitted": ["stream.session.started", "stream.session.stopped"], "consumed": []},

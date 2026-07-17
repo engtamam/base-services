@@ -102,9 +102,11 @@ from app.adapters.stream.recording_sink import LocalRecordingSink, MemoryRecordi
 from app.adapters.stream.signed_playback import HmacSignedPlayback
 from app.core.sealing import Sealer
 
+from app.adapters.stream.ffmpeg_engine import FfmpegStreamEngine
+
 _STREAM_ENGINE: dict[str, Builder] = {
     "null": lambda s: NullStreamEngine(),
-    # "ffmpeg": built in 35.3 (needs the ffmpeg binary)
+    "ffmpeg": lambda s: FfmpegStreamEngine(s.FFMPEG_PATH),
 }
 _PTZ: dict[str, Builder] = {
     "null": lambda s: NullPtzController(),

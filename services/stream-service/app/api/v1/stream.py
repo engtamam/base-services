@@ -12,10 +12,13 @@ from app.api.ratelimit import rate_limit
 from app.config import get_settings
 from app.core.sealing import redact_url
 from app.core.ssrf import SsrfBlocked
-from app.core.stores import SessionStore, SourceStore
+from app.core.recording import RecordingShipper
+from app.core.stores import RecordingStore, SessionStore, SourceStore
 from app.core.stream_service import (
     QuotaExceeded, SourceNotFound, StreamConfig, StreamService,
 )
+
+_REC_EXT = {"fmp4": "mp4", "mp4": "mp4", "mkv": "mkv"}
 
 router = APIRouter(prefix="/api/v1", tags=["stream"])
 
@@ -35,10 +38,12 @@ def build_stream_service(request: Request) -> StreamService:
         max_concurrent_per_tenant=s.STREAM_MAX_CONCURRENT_SESSIONS_PER_TENANT,
         allowed_hosts=s.stream_allowed_hosts, allow_private=s.STREAM_ALLOW_PRIVATE,
         playback_ttl=s.PLAYBACK_URL_TTL_SECONDS, output_root=s.OBJECTSTORE_ROOT + "/hls")
+    shipper = RecordingShipper(sink=c.recording_sink, recordings=RecordingStore(c.datastore))
     return StreamService(
         sources=SourceStore(c.datastore), sessions=SessionStore(c.datastore),
         placer=c.session_placer, engine=c.stream_engine, sealer=c.sealer,
-        signed_playback=c.signed_playback, cfg=cfg, events=c.event_bus)
+        signed_playback=c.signed_playback, cfg=cfg, events=c.event_bus,
+        shipper=shipper, record_ext=_REC_EXT.get(s.RECORD_FORMAT, "mp4"))
 
 
 # ── request bodies ────────────────────────────────────────────────────────────
@@ -202,3 +207,65 @@ async def get_playback(request: Request, session_id: str,
         return await build_stream_service(request).playback(session_id, tenant=p.tenant or "")
     except SourceNotFound:
         raise HTTPException(404, "NOT_FOUND")
+
+
+# ── recordings ────────────────────────────────────────────────────────────────
+def _recordings(request: Request) -> RecordingStore:
+    return RecordingStore(request.app.state.container.datastore)
+
+
+@router.get("/recordings", dependencies=[Depends(_READ), Depends(rate_limit)])
+async def list_recordings(request: Request, p: Principal = Depends(require_user),
+                          source_id: str | None = Query(None),
+                          limit: int = Query(50, ge=1, le=200),
+                          after: str | None = Query(None, max_length=512)) -> dict:
+    rows, cursor = await _recordings(request).list_for_tenant(
+        p.tenant or "", source_id=source_id, limit=limit, after=after)
+    return {"recordings": [r.to_dict() for r in rows], "next": cursor}
+
+
+async def _load_recording(request: Request, recording_id: str, tenant: str):
+    rec = await _recordings(request).get(recording_id)
+    if rec is None or rec.tenant != tenant:
+        raise HTTPException(404, "NOT_FOUND")   # hidden across tenants
+    return rec
+
+
+@router.get("/recordings/{recording_id}", dependencies=[Depends(_READ)])
+async def get_recording(request: Request, recording_id: str,
+                        p: Principal = Depends(require_user)) -> dict:
+    return (await _load_recording(request, recording_id, p.tenant or "")).to_dict()
+
+
+@router.post("/recordings/{recording_id}/lock", dependencies=[Depends(_MANAGE)])
+async def lock_recording(request: Request, recording_id: str,
+                         p: Principal = Depends(require_user)) -> dict:
+    rec = await _load_recording(request, recording_id, p.tenant or "")
+    rec.locked = True
+    await _recordings(request).save(rec)
+    return rec.to_dict()
+
+
+@router.post("/recordings/{recording_id}/unlock", dependencies=[Depends(_MANAGE)])
+async def unlock_recording(request: Request, recording_id: str,
+                           p: Principal = Depends(require_user)) -> dict:
+    rec = await _load_recording(request, recording_id, p.tenant or "")
+    rec.locked = False
+    await _recordings(request).save(rec)
+    return rec.to_dict()
+
+
+@router.delete("/recordings/{recording_id}", dependencies=[Depends(_MANAGE)])
+async def delete_recording(request: Request, recording_id: str,
+                           p: Principal = Depends(require_user)) -> dict:
+    rec = await _load_recording(request, recording_id, p.tenant or "")
+    if rec.locked:
+        raise HTTPException(409, "RECORDING_LOCKED")   # legal hold
+    c = request.app.state.container
+    for seg in rec.segments:
+        try:
+            await c.recording_sink.delete(seg.get("ref", ""))
+        except Exception:   # noqa: BLE001
+            pass
+    await _recordings(request).delete(recording_id)
+    return {"deleted": True}

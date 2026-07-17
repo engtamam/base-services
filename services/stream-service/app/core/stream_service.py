@@ -61,7 +61,8 @@ class StreamConfig:
 class StreamService:
     def __init__(self, *, sources: SourceStore, sessions: SessionStore, placer, engine,
                  sealer: Sealer, signed_playback, cfg: StreamConfig,
-                 clock: Callable[[], float] = time.time, events=None) -> None:
+                 clock: Callable[[], float] = time.time, events=None,
+                 shipper=None, record_ext: str = "mp4") -> None:
         self._sources = sources
         self._sessions = sessions
         self._placer = placer
@@ -71,6 +72,8 @@ class StreamService:
         self._cfg = cfg
         self._clock = clock
         self._events = events
+        self._shipper = shipper
+        self._record_ext = record_ext
 
     # ── sources ────────────────────────────────────────────────────────────────
     async def register_source(self, *, tenant: str, name: str, url: str, transport: str = "tcp",
@@ -123,7 +126,7 @@ class StreamService:
                           output_dir=f"{self._cfg.output_root}/{sess.id}", profile=src.default_profile)
         placement = await self._placer.start(sess.id, spec)
         sess.placement = {"placer": placement.placer, "worker_id": placement.worker_id,
-                          "handle_id": placement.handle.id}
+                          "handle_id": placement.handle.id, "output_dir": spec.output_dir}
         sess.lease_expires_at = self._lease_deadline()
         await self._sessions.create(sess)
         await self._emit("stream.session.started", sess)
@@ -227,9 +230,35 @@ class StreamService:
             return "error"       # heartbeat missed → zombie; reconcile confirms, this is the backstop
         return ""
 
+    async def ship_live_recordings(self) -> dict[str, int]:
+        """Ship completed recording segments for every live recording session (sweep-driven)."""
+        if self._shipper is None:
+            return {"shipped": 0}
+        shipped = 0
+        cursor = None
+        while True:
+            batch, cursor = await self._sessions.iter_live(limit=200, after=cursor)
+            for sess in batch:
+                if "record" in sess.outputs and sess.placement.get("output_dir"):
+                    shipped += await self._shipper.ship_session(
+                        tenant=sess.tenant, session_id=sess.id, source_id=sess.source_id,
+                        output_dir=sess.placement["output_dir"], record_ext=self._record_ext,
+                        final=False)
+            if not cursor:
+                break
+        return {"shipped": shipped}
+
     async def _stop(self, sess: Session, reason: str) -> Session:
         if sess.is_terminal:
             return sess
+        # Ship the final recording segment(s) before tearing down — ffmpeg has closed them now.
+        if self._shipper is not None and "record" in sess.outputs and sess.placement.get("output_dir"):
+            try:
+                await self._shipper.ship_session(
+                    tenant=sess.tenant, session_id=sess.id, source_id=sess.source_id,
+                    output_dir=sess.placement["output_dir"], record_ext=self._record_ext, final=True)
+            except Exception:   # noqa: BLE001 — shipping must never block a stop
+                pass
         placement = sess.placement
         try:
             if placement:
