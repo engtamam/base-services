@@ -61,6 +61,8 @@ def build_manifest(
             {"path": "/api/v1/tenants/{id}", "tier": "user", "method": "DELETE"},
             {"path": "/api/v1/tenants/{id}/export", "tier": "user", "method": "GET"},
             {"path": "/api/v1/tenant", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/tenant/config", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/tenant/branding", "tier": "user", "method": "PUT"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         "events": {"emitted": [], "consumed": []},
