@@ -42,7 +42,7 @@ def build_manifest(
         "name": settings.SERVICE_NAME,
         "version": settings.SERVICE_VERSION,
         "env": settings.ENV,
-        "capabilities": ["notifications.templates"],
+        "capabilities": ["notifications.templates", "notifications.self"],
         "endpoints": [
             {"path": "/healthz", "tier": "public", "method": "GET"},
             {"path": "/readyz", "tier": "public", "method": "GET"},
