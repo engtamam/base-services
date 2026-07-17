@@ -42,17 +42,47 @@ Internal (CronJob-driven): `POST /internal/stream/sweep` (guards + reconcile + s
 - `continuous` — 24/7 with auto-reconnect (for recording); rolls over on `max_duration`.
 - `scheduled` — only inside a time window.
 
-## Plug-and-play (every capability is a port with a null adapter)
+## Plug-and-play
 
-| port | drivers |
-|---|---|
-| `StreamEngine` | **ffmpeg** \| null (synthetic, zero-infra) |
-| `SessionPlacer` | local (this pod) \| worker-pool *(same interface)* |
-| `PtzController` | onvif \| null · `MotionDetector` ffmpeg-scene \| none · `Discovery` onvif-ws \| none |
-| `RecordingSink` | file-service \| s3 \| local \| memory · `SignedPlayback` hmac · `MediaEgress` direct \| turn |
+Every capability is a **port** (a `Protocol`); a **driver** is an adapter registered in
+`app/container.py`; config picks the driver at boot (`_pick` fails fast on an unknown one). Nothing is
+hardcoded — one config turns a one-camera SMB into a thousand-camera operator, same code, and a
+customer swaps any single adapter (their own engine, their own sink) without touching the core.
 
-Set `STREAM_ENGINE_DRIVER=null` and it boots and tests with **no ffmpeg, camera, or TURN**. One
-config turns a one-camera SMB into a thousand-camera operator — same code.
+| port | drivers (✅ built · 🔜 planned) | config |
+|---|---|---|
+| `StreamEngine` | ✅ `ffmpeg` · ✅ `null` (synthetic, zero-infra) | `STREAM_ENGINE_DRIVER` |
+| `SessionPlacer` | ✅ `local` (runs in this pod) · 🔜 `worker-pool` (scale-out; same interface, clear boot error until built) | `SESSION_PLACER_DRIVER` |
+| `RecordingSink` | ✅ `file-service` (scanned, presign-served) · ✅ `s3` (direct to bucket) · ✅ `local` · ✅ `memory` | `RECORDING_SINK_DRIVER` |
+| `PtzController` | ✅ `onvif` · ✅ `null` | `PTZ_DRIVER` |
+| `MotionDetector` | ✅ `ffmpeg-scene` · ✅ `none` | `MOTION_DRIVER` |
+| `Discovery` | ✅ `onvif-ws` · ✅ `none` | `DISCOVERY_DRIVER` |
+| `SignedPlayback` | ✅ `hmac` | `SIGNED_PLAYBACK_DRIVER` |
+| `MediaEgress` | ✅ `direct` · ✅ `turn` | `MEDIA_EGRESS_DRIVER` |
+
+Everything defaults to a **null/local** driver, so `pytest` and `uvicorn app.main:app` boot with **no
+ffmpeg, camera, TURN, or file-service** — the whole service is exercised on a synthetic engine. Turn
+on real infra by pointing the driver at it: `STREAM_ENGINE_DRIVER=ffmpeg FFMPEG_PATH=…`,
+`RECORDING_SINK_DRIVER=file-service RECORDING_FILE_SERVICE_URL=…`, etc.
+
+### Add your own adapter (the extension point)
+
+A customer plugs in their own engine (or sink, or PTZ) in three steps — no core change:
+
+```python
+# 1. implement the port (app/ports/stream_ports.py :: StreamEngine)
+class MyEngine:
+    driver = "my-engine"
+    async def start(self, spec): ...   # + stop/stats/is_alive/snapshot/probe
+
+# 2. register it in app/container.py
+_STREAM_ENGINE["my-engine"] = lambda s: MyEngine(s.SOME_KNOB)
+
+# 3. select it by config
+STREAM_ENGINE_DRIVER=my-engine
+```
+
+The core (`StreamService`) only ever talks to the port, so it never knows which adapter it got.
 
 ## Security
 

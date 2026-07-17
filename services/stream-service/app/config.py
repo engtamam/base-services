@@ -134,7 +134,7 @@ class Settings(BaseSettings):
 
     # ── stream-service (Phase 35) — all config-driven ──────────────────────────
     # Drivers (every capability is a port; a null adapter lets the service boot with zero infra).
-    STREAM_ENGINE_DRIVER: Literal["ffmpeg", "gstreamer", "null"] = "null"
+    STREAM_ENGINE_DRIVER: Literal["ffmpeg", "null"] = "null"
     SESSION_PLACER_DRIVER: Literal["local", "worker-pool"] = "local"
     PTZ_DRIVER: Literal["onvif", "null"] = "null"
     MOTION_DRIVER: Literal["ffmpeg-scene", "none"] = "none"
@@ -174,6 +174,7 @@ class Settings(BaseSettings):
     RECORD_FORMAT: Literal["fmp4", "mp4", "mkv"] = "fmp4"
     RECORD_ON_START: bool = False
     RECORDING_FILE_SERVICE_URL: str = ""          # where segments are stored (file-service base url)
+    RECORDING_FILE_SERVICE_TOKEN: str = ""        # a service JWT with files.upload for the sink to post
     TRANSCODE_PROFILES: str = ""                  # JSON: {"id": {"scale":"1280:-1","vbitrate":"2M",...}}
 
     # Retention & export.

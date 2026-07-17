@@ -30,6 +30,36 @@ class MemoryRecordingSink:
         return f"memory://{ref}?ttl={ttl}"
 
 
+class S3RecordingSink:
+    """Store segments straight in the object store (S3/MinIO) — durable, no cross-service auth.
+
+    Reuses the ObjectStore adapter. Presigned segment DOWNLOAD needs the object store's presign (or
+    the file-service sink, which already presigns); until a segment-download endpoint exists, only
+    put/delete are exercised — a recording's bytes are stored durably and reachable by key.
+    """
+    driver = "s3"
+
+    def __init__(self, object_store) -> None:
+        self._store = object_store
+
+    def _key(self, tenant: str, session_id: str, seq: int) -> str:
+        return f"rec/{tenant}/{session_id}/{seq:08d}.mp4"
+
+    async def put_segment(self, *, tenant: str, session_id: str, seq: int, data: bytes,
+                          content_type: str, start: str, end: str) -> SegmentRef:
+        key = self._key(tenant, session_id, seq)
+        await self._store.put(key, data, content_type)
+        return SegmentRef(ref=key, bytes=len(data), start=start, end=end)
+
+    async def delete(self, ref: str) -> bool:
+        return await self._store.delete(ref)
+
+    async def signed_url(self, ref: str, *, ttl: int) -> str:
+        # Presigned download belongs to the object store / file-service sink; not wired until a
+        # segment-download endpoint exists.
+        raise NotImplementedError("s3 recording sink has no presigned download yet — use file-service")
+
+
 class LocalRecordingSink:
     driver = "local"
 

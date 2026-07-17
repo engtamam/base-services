@@ -98,7 +98,9 @@ from app.adapters.stream.null_adapters import (
     DirectMediaEgress, NoneDiscovery, NoneMotionDetector, NullPtzController, TurnMediaEgress,
 )
 from app.adapters.stream.null_engine import NullStreamEngine
-from app.adapters.stream.recording_sink import LocalRecordingSink, MemoryRecordingSink
+from app.adapters.stream.recording_sink import (
+    LocalRecordingSink, MemoryRecordingSink, S3RecordingSink,
+)
 from app.adapters.stream.signed_playback import HmacSignedPlayback
 from app.core.sealing import Sealer
 
@@ -141,14 +143,16 @@ def _recording_sink(s: Settings):
     if driver == "local":
         return LocalRecordingSink(s.OBJECTSTORE_ROOT + "/recordings")
     if driver == "s3":
-        # s3 sink reuses the object store; built in 35.7. Fall back to local until then.
-        return LocalRecordingSink(s.OBJECTSTORE_ROOT + "/recordings")
+        # Write segments straight to the object store (durable, no cross-service auth).
+        return S3RecordingSink(_pick(_OBJECTSTORE, "s3", "object_store", s))
     if driver == "file-service":
-        # The real HTTP sink (posts segments to file-service) is built in 35.7. Until a URL is set,
-        # dev/test uses a local dir so the service boots with zero infra.
+        # Post segments to file-service (scanned, content-addressed, presign-served storage). Until a
+        # URL is set, dev/test uses a local dir so the service boots with zero infra; production
+        # requires the URL (assert_stream_config_ok).
         if not s.RECORDING_FILE_SERVICE_URL:
             return LocalRecordingSink(s.OBJECTSTORE_ROOT + "/recordings")
-        raise ConfigError("file-service recording sink is built in Phase 35.7")
+        from app.adapters.stream.file_service_sink import FileServiceRecordingSink
+        return FileServiceRecordingSink(s.RECORDING_FILE_SERVICE_URL, s.RECORDING_FILE_SERVICE_TOKEN)
     raise ConfigError(f"unknown RECORDING_SINK_DRIVER: {driver!r}")
 
 
