@@ -92,6 +92,65 @@ _TELEMETRY: dict[str, Builder] = {
     "stdout": lambda s: StdoutTelemetry(),
 }
 
+# ── stream-service ports (Phase 35) ──────────────────────────────────────────
+from app.adapters.stream.local_placer import LocalSessionPlacer
+from app.adapters.stream.null_adapters import (
+    DirectMediaEgress, NoneDiscovery, NoneMotionDetector, NullPtzController, TurnMediaEgress,
+)
+from app.adapters.stream.null_engine import NullStreamEngine
+from app.adapters.stream.recording_sink import LocalRecordingSink, MemoryRecordingSink
+from app.adapters.stream.signed_playback import HmacSignedPlayback
+from app.core.sealing import Sealer
+
+_STREAM_ENGINE: dict[str, Builder] = {
+    "null": lambda s: NullStreamEngine(),
+    # "ffmpeg": built in 35.3 (needs the ffmpeg binary)
+}
+_PTZ: dict[str, Builder] = {
+    "null": lambda s: NullPtzController(),
+    # "onvif": built in 35.10
+}
+_MOTION: dict[str, Builder] = {
+    "none": lambda s: NoneMotionDetector(),
+    # "ffmpeg-scene": built in 35.9
+}
+_DISCOVERY: dict[str, Builder] = {
+    "none": lambda s: NoneDiscovery(),
+    # "onvif-ws": built in 35.10
+}
+_MEDIA_EGRESS: dict[str, Builder] = {
+    "direct": lambda s: DirectMediaEgress(),
+    "turn": lambda s: TurnMediaEgress(s.turn_urls, s.TURN_SECRET),
+}
+
+
+def _recording_sink(s: Settings):
+    driver = s.RECORDING_SINK_DRIVER
+    if driver == "memory":
+        return MemoryRecordingSink()
+    if driver == "local":
+        return LocalRecordingSink(s.OBJECTSTORE_ROOT + "/recordings")
+    if driver == "s3":
+        # s3 sink reuses the object store; built in 35.7. Fall back to local until then.
+        return LocalRecordingSink(s.OBJECTSTORE_ROOT + "/recordings")
+    if driver == "file-service":
+        # The real HTTP sink (posts segments to file-service) is built in 35.7. Until a URL is set,
+        # dev/test uses a local dir so the service boots with zero infra.
+        if not s.RECORDING_FILE_SERVICE_URL:
+            return LocalRecordingSink(s.OBJECTSTORE_ROOT + "/recordings")
+        raise ConfigError("file-service recording sink is built in Phase 35.7")
+    raise ConfigError(f"unknown RECORDING_SINK_DRIVER: {driver!r}")
+
+
+def _seal_key(s: Settings) -> str:
+    # SEAL_KEY is required in production (boot guard). In dev/test it falls back to the internal
+    # token so the service still seals credentials with a real secret and boots with zero config.
+    return s.SEAL_KEY or s.INTERNAL_SERVICE_TOKEN
+
+
+def _playback_secret(s: Settings) -> str:
+    return s.PLAYBACK_SIGNING_SECRET or s.INTERNAL_SERVICE_TOKEN
+
 
 def _pick(registry: dict[str, Builder], driver: str, port_name: str, settings: Settings) -> Any:
     builder = registry.get(driver)
@@ -114,6 +173,16 @@ class Container:
     token_verifier: TokenVerifier
     rate_limiter: RateLimiter
     telemetry: Telemetry
+    # stream ports
+    stream_engine: Any
+    session_placer: Any
+    ptz: Any
+    motion: Any
+    discovery: Any
+    recording_sink: Any
+    signed_playback: Any
+    media_egress: Any
+    sealer: Any
 
     def describe(self) -> list[dict[str, str]]:
         """[{port, driver}] for the service manifest."""
@@ -127,6 +196,14 @@ class Container:
             {"port": "token_verifier", "driver": self.token_verifier.driver},
             {"port": "rate_limiter", "driver": self.rate_limiter.driver},
             {"port": "telemetry", "driver": self.telemetry.driver},
+            {"port": "stream_engine", "driver": self.stream_engine.driver},
+            {"port": "session_placer", "driver": self.session_placer.driver},
+            {"port": "ptz", "driver": self.ptz.driver},
+            {"port": "motion", "driver": self.motion.driver},
+            {"port": "discovery", "driver": self.discovery.driver},
+            {"port": "recording_sink", "driver": self.recording_sink.driver},
+            {"port": "signed_playback", "driver": self.signed_playback.driver},
+            {"port": "media_egress", "driver": self.media_egress.driver},
         ]
 
     def health_probes(self) -> dict[str, Any]:
@@ -151,6 +228,13 @@ class Container:
 
 def build_container(settings: Settings) -> Container:
     """Resolve every port from config. Fail-fast on any unknown driver."""
+    engine = _pick(_STREAM_ENGINE, settings.STREAM_ENGINE_DRIVER, "stream_engine", settings)
+    # The placer is built FROM the engine (local runs it in-process); worker-pool (35.4-later) will
+    # take a dispatcher instead, same interface.
+    if settings.SESSION_PLACER_DRIVER == "local":
+        placer = LocalSessionPlacer(engine)
+    else:
+        raise ConfigError(f"session placer {settings.SESSION_PLACER_DRIVER!r} is built later")
     return Container(
         datastore=_pick(_DATASTORE, settings.DATASTORE_DRIVER, "datastore", settings),
         cache=_pick(_CACHE, settings.CACHE_DRIVER, "cache", settings),
@@ -161,4 +245,13 @@ def build_container(settings: Settings) -> Container:
         token_verifier=_pick(_TOKEN, settings.TOKEN_VERIFIER_DRIVER, "token_verifier", settings),
         rate_limiter=_pick(_RATELIMITER, settings.RATELIMITER_DRIVER, "rate_limiter", settings),
         telemetry=_pick(_TELEMETRY, settings.TELEMETRY_DRIVER, "telemetry", settings),
+        stream_engine=engine,
+        session_placer=placer,
+        ptz=_pick(_PTZ, settings.PTZ_DRIVER, "ptz", settings),
+        motion=_pick(_MOTION, settings.MOTION_DRIVER, "motion", settings),
+        discovery=_pick(_DISCOVERY, settings.DISCOVERY_DRIVER, "discovery", settings),
+        recording_sink=_recording_sink(settings),
+        signed_playback=HmacSignedPlayback(_playback_secret(settings)),
+        media_egress=_pick(_MEDIA_EGRESS, settings.MEDIA_EGRESS_DRIVER, "media_egress", settings),
+        sealer=Sealer(_seal_key(settings)),
     )

@@ -9,6 +9,7 @@ from __future__ import annotations
 import hmac
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from pydantic import BaseModel
 
 from app.config import Settings, get_settings
 from app.manifest import build_manifest
@@ -48,3 +49,28 @@ async def internal_manifest(
     if guard is not None:
         manifest["security"] = {"cwe_guard": guard.report()}
     return manifest
+
+
+@router.post("/stream/sweep", dependencies=[Depends(require_internal_token)])
+async def sweep_sessions(request: Request) -> dict:
+    """Enforce guards and reconcile placement across all live sessions.
+
+    Driven by a CronJob (the platform pattern). THIS is what makes 'a session can never run forever'
+    operationally true: a session past its max_duration/idle/lease is stopped here, and a session
+    whose engine process died is reaped. Without a caller, the guards are only advisory.
+    """
+    from app.api.v1.stream import build_stream_service
+    return await build_stream_service(request).enforce_and_reconcile()
+
+
+class HeartbeatIn(BaseModel):
+    stats: dict = {}
+
+
+@router.post("/stream/sessions/{session_id}/heartbeat", dependencies=[Depends(require_internal_token)])
+async def heartbeat(request: Request, session_id: str, body: HeartbeatIn) -> dict:
+    """Engine → service: extend the session lease and record stats (fps/bitrate/bytes). The size
+    guard is checked here, so a recording that hit its cap stops immediately."""
+    from app.api.v1.stream import build_stream_service
+    sess = await build_stream_service(request).heartbeat(session_id, stats=body.stats or None)
+    return sess.public_dict() if sess is not None else {"status": "gone"}

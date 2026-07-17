@@ -139,7 +139,7 @@ class Settings(BaseSettings):
     PTZ_DRIVER: Literal["onvif", "null"] = "null"
     MOTION_DRIVER: Literal["ffmpeg-scene", "none"] = "none"
     DISCOVERY_DRIVER: Literal["onvif-ws", "none"] = "none"
-    RECORDING_SINK_DRIVER: Literal["file-service", "s3", "local"] = "file-service"
+    RECORDING_SINK_DRIVER: Literal["file-service", "s3", "local", "memory"] = "file-service"
     MEDIA_EGRESS_DRIVER: Literal["direct", "turn"] = "direct"
     SIGNED_PLAYBACK_DRIVER: Literal["hmac"] = "hmac"
     FFMPEG_PATH: str = "ffmpeg"
