@@ -100,8 +100,28 @@ class PrivacyDispatcher:
             dsar.targets[key] = True           # the ack map is the single source of completion
         elif outcome_status == PENDING:
             # The target owns the rest of this: it will PUSH its ack. We stop dialing so a slow
-            # erasure is not restarted every sweep, but the DSAR stays open and visibly incomplete.
-            st["next_at"] = 0.0
+            # erasure is not restarted every sweep — but only for a BOUNDED time.
+            #
+            # This used to set next_at = 0.0, "never due again", and combine with a short-circuit
+            # in _is_due. A target that answered 202 and then never pushed was therefore waited on
+            # for ever: not acked, not failed, not exhausted, so not in `stuck` either. The DSAR
+            # hung open past its statutory deadline and the only trace was `overdue` in a listing
+            # nothing alerts on. A push can be lost to a crash, a deploy or a dropped queue message,
+            # and none of those announce themselves.
+            #
+            # So a pending target is simply DUE AGAIN after PRIVACY_PENDING_TIMEOUT_SECONDS. Erase
+            # is idempotent by contract — a target that already finished answers already_absent —
+            # so re-dialing costs a request and recovers a lost push. Attempts still count, so a
+            # target that keeps saying "later" and never delivers eventually exhausts and shows up
+            # in `stuck` like any other failure, which is the outcome an operator can act on.
+            st["pending_since"] = st.get("pending_since") or now
+            if st["attempts"] >= self._cfg.PRIVACY_MAX_ATTEMPTS:
+                st["exhausted"] = True
+                st["detail"] = (f"{detail} (accepted but never pushed an ack after "
+                                f"{st['attempts']} attempts)")
+                st["next_at"] = 0.0
+            else:
+                st["next_at"] = now + self._cfg.PRIVACY_PENDING_TIMEOUT_SECONDS
         else:
             exhausted = st["attempts"] >= self._cfg.PRIVACY_MAX_ATTEMPTS
             st["exhausted"] = exhausted
@@ -146,8 +166,10 @@ class PrivacyDispatcher:
     def _is_due(self, st: dict) -> bool:
         if st.get("exhausted"):
             return False
-        if st.get("status") == PENDING:
-            return False                      # theirs to finish; we wait for the push
+        # PENDING has no special case here any more. It sets a next_at like everything else, so
+        # "we are waiting for their push" and "we have waited long enough" are the same mechanism
+        # rather than two — the short-circuit that used to live here is exactly what made a lost
+        # push unrecoverable, because no elapsed time could ever change the answer.
         next_at = float(st.get("next_at") or 0.0)
         return next_at <= self._clock.now()
 
@@ -170,6 +192,14 @@ class PrivacyDispatcher:
             "stuck": [{"target": k, "attempts": state.get(k, {}).get("attempts", 0),
                        "detail": state.get(k, {}).get("detail", "")}
                       for k in remaining if state.get(k, {}).get("exhausted")],
+            # Accepted, not yet pushed, and not yet exhausted. Reported SEPARATELY from `stuck`
+            # because it is not a failure — the target may be legitimately mid-erasure. But it is
+            # the state a lost push hides in, so it must be visible while it is still recoverable
+            # rather than only once the retries have run out.
+            "awaiting_push": [{"target": k, "since": state.get(k, {}).get("pending_since", 0.0)}
+                              for k in remaining
+                              if state.get(k, {}).get("status") == PENDING
+                              and not state.get(k, {}).get("exhausted")],
             "complete": dsar.is_complete(),
         }
 

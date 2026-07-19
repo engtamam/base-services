@@ -196,6 +196,12 @@ class Settings(BaseSettings):
     PRIVACY_DISPATCH_TIMEOUT_SECONDS: int = 30
     PRIVACY_MAX_ATTEMPTS: int = 8            # then the target is FAILED and VISIBLE, never silent
     PRIVACY_BACKOFF_MS: int = 500            # full-jitter base between attempts
+    # How long we believe a target that answered 202 "I will push my ack later" before dialing it
+    # again. Generous by default — a large erasure legitimately takes hours, and re-dialing early
+    # just doubles the work. What it must NOT be is never: a push lost to a crash, a deploy or a
+    # dropped queue message would otherwise hold the DSAR open for ever, past its legal deadline,
+    # with nothing marking it stuck.
+    PRIVACY_PENDING_TIMEOUT_SECONDS: int = 21_600      # 6 hours
     PRIVACY_CONCURRENCY: int = 5             # max targets driven in parallel per sweep
     # Per-target auth seam. Our own services accept INTERNAL_SERVICE_TOKEN, but a third party has
     # its own credential — and we must never send ours to someone else's host. This maps a target to
