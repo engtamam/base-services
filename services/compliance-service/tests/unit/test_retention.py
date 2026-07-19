@@ -30,12 +30,8 @@ class _Store:
         self.data = {k: list(v) for k, v in data.items()}
         self.deleted = []
 
-    async def find(self, collection, filt, limit=100, after=None, sort=None):
-        rows = self.data.get(collection, [])
-        start = int(after or 0)
-        page = rows[start:start + limit]
-        nxt = start + len(page)
-        return page, (str(nxt) if nxt < len(rows) else None)
+    async def scan_all(self, collection, limit):
+        return list(self.data.get(collection, []))[:limit]
 
     async def delete(self, collection, key):
         self.deleted.append((collection, key))
@@ -126,18 +122,18 @@ def test_rows_with_no_subject_cannot_be_held_and_age_out():
     assert store.deleted == [("processing_activities", "ropa_1")]
 
 
-def test_pagination_walks_the_whole_collection():
+def test_the_whole_collection_is_walked():
+    # An earlier version paged with a cursor and deleted as it went, which shifted the collection
+    # underneath itself and skipped exactly as many rows as it deleted — every run, for ever.
     store = _Store({"dsar": [_row(f"r{i}", 400) for i in range(25)]})
-    enf = RetentionEnforcer(store=store, holds=_Holds(), rules={"dsar": 365}, clock=_Clock(),
-                            batch=10)
-    out = run(enf.run())
+    out = run(_mk(store, {"dsar": 365}).run())
     assert out["purged"] == {"dsar": 25}
 
 
 def test_a_run_is_capped_so_a_huge_backlog_cannot_run_for_ever():
     store = _Store({"dsar": [_row(f"r{i}", 400) for i in range(100)]})
     enf = RetentionEnforcer(store=store, holds=_Holds(), rules={"dsar": 365}, clock=_Clock(),
-                            batch=10, max_per_run=30)
+                            max_per_run=30)
     out = run(enf.run())
     assert out["purged"] == {"dsar": 30}
 

@@ -32,12 +32,11 @@ DAY_SECONDS = 86400
 
 class RetentionEnforcer:
     def __init__(self, *, store, holds, rules: dict[str, int], clock,
-                 batch: int = 500, max_per_run: int = 5000, telemetry=None) -> None:
+                 max_per_run: int = 5000, telemetry=None) -> None:
         self._store = store
         self._holds = holds
         self._rules = rules              # collection -> days (0/absent = keep, never purge)
         self._clock = clock
-        self._batch = batch
         self._max = max_per_run
         self._telemetry = telemetry
 
@@ -59,43 +58,25 @@ class RetentionEnforcer:
         return summary
 
     async def _purge(self, collection: str, cutoff: float) -> tuple[int, int]:
-        purged = held = seen = 0
-        cursor = None
-        # sweeper: retention's job IS to visit every row and decide whether it has outlived its
-        # declared period. There is no filter that expresses it: the store speaks equality only,
-        # and the retention clock is a different field per collection (completed_at for a DSAR,
-        # created_at for a RoPA row). This runs on a nightly CronJob with a hard per-run cap, never
-        # on a request path — a scan here is the operation, not a forgotten query.
-        while seen < self._max:
-            rows, next_cursor = await self._store.find(
-                collection, {}, limit=self._batch, after=cursor, sort=("created_at", "asc"))
-            if not rows:
-                break
-            before = purged
-            for row in rows:
-                seen += 1
-                age_at = _clock_field(row)
-                # No early exit on the first in-window row: rows are sorted by created_at but a
-                # DSAR ages from completed_at, so an old-but-recently-closed row would stop the
-                # walk and leave genuinely expired rows behind it undeleted.
-                if age_at is None or age_at >= cutoff:
-                    continue
-                if await self._is_held(row):
-                    held += 1
-                    continue
-                await self._store.delete(collection, row["id"])
-                purged += 1
+        # sweeper: retention's job IS to visit every row in the collection and decide whether it has
+        # outlived its declared period, so reading all of them is the operation rather than a
+        # forgotten query. No filter can express it: the store speaks equality only, and the
+        # retention clock is a different field per collection (completed_at for a DSAR, created_at
+        # for a RoPA row). scan_all() rather than find({}) because that is what this actually is —
+        # disguising a scan as a filtered read would hide it from the next reader and from this
+        # gate. Runs on a nightly CronJob, never on a request path, and capped per run.
+        rows = await self._store.scan_all(collection, limit=self._max)
 
-            # Deleting shifts the collection under the cursor. Advancing past a page we just
-            # deleted from would skip exactly as many rows as we removed — they would survive every
-            # future run too, since the same skip happens each time. So the cursor only advances
-            # when the page was left intact; otherwise we re-read from the same point. This
-            # terminates because every non-advancing pass removes at least one row.
-            if purged > before:
+        purged = held = 0
+        for row in rows:
+            age_at = _clock_field(row)
+            if age_at is None or age_at >= cutoff:
                 continue
-            if not next_cursor:
-                break
-            cursor = next_cursor
+            if await self._is_held(row):
+                held += 1                    # a hold beats retention, exactly as it beats erasure
+                continue
+            await self._store.delete(collection, row["id"])
+            purged += 1
         return purged, held
 
     async def _is_held(self, row: dict) -> bool:

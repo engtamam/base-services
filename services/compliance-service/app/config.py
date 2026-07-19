@@ -159,7 +159,6 @@ class Settings(BaseSettings):
     # "365 days" while the 2019 row is still there. Empty = purge nothing, because an undecided
     # retention must read as KEEP — over-retention is fixable, a wrong delete is not.
     RETENTION_RULES: str = ""                # "dsar=365,breaches=1825,consent_proof=2555"
-    RETENTION_BATCH: int = 500
     RETENTION_MAX_PER_RUN: int = 5000
     PRIVACY_SWEEP_PAGE_SIZE: int = 100       # open DSARs read per page
     PRIVACY_SWEEP_MAX_PER_RUN: int = 1000    # cap per run: a backlog becomes several runs, not one

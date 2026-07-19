@@ -73,7 +73,7 @@ def build_retention(request: Request) -> RetentionEnforcer:
     s = get_settings()
     return RetentionEnforcer(store=c.datastore, holds=HoldStore(c.datastore),
                              rules=s.retention_rules, clock=c.clock,
-                             batch=s.RETENTION_BATCH, max_per_run=s.RETENTION_MAX_PER_RUN,
+                             max_per_run=s.RETENTION_MAX_PER_RUN,
                              telemetry=c.telemetry)
 
 
