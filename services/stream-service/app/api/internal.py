@@ -87,6 +87,19 @@ async def heartbeat(request: Request, session_id: str, body: HeartbeatIn) -> dic
     return sess.public_dict() if sess is not None else {"status": "gone"}
 
 
+@router.post("/stream/exports/run", dependencies=[Depends(require_internal_token)])
+async def run_exports(request: Request) -> dict:
+    """Produce queued clips. Called by a CronJob or a worker Deployment.
+
+    Safe to run from several replicas at once: each dequeues a different job, and an export that
+    is no longer PENDING is skipped rather than redone. Capped per run so a backlog degrades into
+    several runs instead of one that never finishes.
+    """
+    from app.api.v1.stream import _exports
+    s = get_settings()
+    return await _exports(request).drain(s.EXPORT_DRAIN_MAX)
+
+
 @router.post("/stream/retention", dependencies=[Depends(require_internal_token)])
 async def enforce_retention(request: Request) -> dict:
     """Delete recordings past RETENTION_DAYS (legal-held ones are exempt). CronJob-driven."""

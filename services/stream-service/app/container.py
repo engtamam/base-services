@@ -99,11 +99,21 @@ _AUDIT_SINK: dict[str, Builder] = {
     "http": lambda s: HttpAuditSink(s.audit_ingest_url, s.INTERNAL_SERVICE_TOKEN,
                                     timeout=s.AUDIT_TIMEOUT_SECONDS),
 }
+# Clip export. `null` produces nothing and says so — never a fake ready, never a stuck pending.
+_CLIP_EXPORTER: dict[str, Builder] = {
+    "null": lambda s: NullClipExporter(),
+    "ffmpeg": lambda s: FfmpegClipExporter(
+        binary=s.EXPORT_FFMPEG_BIN, timeout_seconds=s.EXPORT_TIMEOUT_SECONDS,
+        args_by_format=s.export_args, content_types=s.export_content_types,
+        protocols=s.EXPORT_PROTOCOLS),
+}
 _TELEMETRY: dict[str, Builder] = {
     "stdout": lambda s: StdoutTelemetry(),
 }
 
 # ── stream-service ports (Phase 35) ──────────────────────────────────────────
+from app.adapters.clip_exporter.ffmpeg import FfmpegClipExporter
+from app.adapters.clip_exporter.null import NullClipExporter
 from app.adapters.stream.local_placer import LocalSessionPlacer
 from app.adapters.stream.null_adapters import (
     DirectMediaEgress, NoneDiscovery, NoneMotionDetector, NullPtzController, TurnMediaEgress,
@@ -209,6 +219,7 @@ class Container:
     media_egress: Any
     sealer: Any
     audit_sink: Any = None
+    clip_exporter: Any = None
 
     def describe(self) -> list[dict[str, str]]:
         """[{port, driver}] for the service manifest."""
@@ -232,6 +243,7 @@ class Container:
             {"port": "recording_sink", "driver": self.recording_sink.driver},
             {"port": "signed_playback", "driver": self.signed_playback.driver},
             {"port": "media_egress", "driver": self.media_egress.driver},
+            {"port": "clip_exporter", "driver": self.clip_exporter.driver},
         ]
 
     def health_probes(self) -> dict[str, Any]:
@@ -291,6 +303,7 @@ def build_container(settings: Settings) -> Container:
         discovery=_pick(_DISCOVERY, settings.DISCOVERY_DRIVER, "discovery", settings),
         recording_sink=_recording_sink(settings),
         media_egress=_pick(_MEDIA_EGRESS, settings.MEDIA_EGRESS_DRIVER, "media_egress", settings),
+        clip_exporter=_pick(_CLIP_EXPORTER, settings.EXPORT_DRIVER, "clip_exporter", settings),
         signed_playback=_pick(_SIGNED_PLAYBACK, settings.SIGNED_PLAYBACK_DRIVER, "signed_playback", settings),
         sealer=Sealer(_seal_key(settings)),
     )

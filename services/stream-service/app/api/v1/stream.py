@@ -13,7 +13,9 @@ from app.config import get_settings
 from app.core.sealing import redact_url
 from app.core.ssrf import SsrfBlocked
 from app.core.recording import RecordingShipper
-from app.core.stores import RecordingStore, SessionStore, SourceStore, TriggerStore
+from app.core.exporting import ExportService
+from app.core.stores import (ExportStore, RecordingStore, SessionStore, SourceStore,
+                              TriggerStore)
 from app.core.stream_service import (
     QuotaExceeded, SourceNotFound, StreamConfig, StreamService,
 )
@@ -389,3 +391,82 @@ async def delete_recording(request: Request, recording_id: str,
             pass
     await _recordings(request).delete(recording_id)
     return {"deleted": True}
+
+
+# ── clip export ───────────────────────────────────────────────────────────────
+def _exports(request: Request) -> ExportService:
+    c = request.app.state.container
+    s = get_settings()
+    return ExportService(
+        exports=ExportStore(c.datastore), recordings=RecordingStore(c.datastore),
+        exporter=c.clip_exporter, sink=c.recording_sink, queue=c.queue,
+        cfg={"max_range_seconds": s.EXPORT_MAX_RANGE_SECONDS, "formats": s.export_formats,
+             "max_segments": s.EXPORT_MAX_SEGMENTS, "max_recordings": s.EXPORT_MAX_RECORDINGS,
+             "segment_url_ttl": s.EXPORT_SEGMENT_URL_TTL})
+
+
+class ExportIn(BaseModel):
+    source_id: str = Field(min_length=1, max_length=128)
+    start: str = Field(min_length=1, max_length=64)
+    end: str = Field(min_length=1, max_length=64)
+    fmt: str = Field(default="mp4", max_length=16, alias="format")
+
+
+@router.post("/exports", status_code=201, dependencies=[Depends(_READ), Depends(rate_limit)])
+async def request_export(request: Request, body: ExportIn,
+                         p: Principal = Depends(require_user)) -> dict:
+    """Ask for a clip. Returns immediately with a PENDING export; a worker produces it.
+
+    Not synchronous, and that is not a nicety: a two-hour remux is minutes of work, which would
+    hold a connection open past every sane timeout and let one export starve the API for everyone.
+    """
+    s = get_settings()
+    if not s.EXPORT_ENABLED:
+        # Said plainly rather than accepting a request this platform will never fulfil.
+        raise HTTPException(501, "EXPORT_DISABLED")
+    await request.app.state.auditor.record(
+        "export.requested", actor=p.subject, tenant=p.tenant,
+        resource=f"source:{body.source_id}", ip=request.client.host if request.client else "",
+        metadata={"start": body.start, "end": body.end, "format": body.fmt})
+    try:
+        exp = await _exports(request).request(
+            tenant=p.tenant or "", source_id=body.source_id, start=body.start, end=body.end,
+            fmt=body.fmt)
+    except ValueError as e:
+        # 422: the request is well formed and authorised — the RANGE is the problem, and the
+        # message names the limit so a caller can ask for something we will actually do.
+        raise HTTPException(422, str(e))
+    return exp.public_dict()
+
+
+@router.get("/exports/{export_id}", dependencies=[Depends(_READ)])
+async def get_export(request: Request, export_id: str,
+                     p: Principal = Depends(require_user)) -> dict:
+    exp = await ExportStore(request.app.state.container.datastore).get(export_id)
+    if exp is None or exp.tenant != (p.tenant or ""):
+        raise HTTPException(404, "NOT_FOUND")     # hidden across tenants, like recordings
+    return exp.public_dict()
+
+
+@router.get("/exports/{export_id}/download", dependencies=[Depends(_READ)])
+async def download_export(request: Request, export_id: str,
+                          p: Principal = Depends(require_user)) -> dict:
+    """A short-lived link, never the bytes through this process.
+
+    Streaming a multi-gigabyte clip through the API would tie up a worker for the length of the
+    download and put footage through a hop that does not need to see it.
+    """
+    c = request.app.state.container
+    exp = await ExportStore(c.datastore).get(export_id)
+    if exp is None or exp.tenant != (p.tenant or ""):
+        raise HTTPException(404, "NOT_FOUND")
+    if exp.status != "ready" or not exp.file_id:
+        # 409, not 404: the export exists and is simply not finished. A 404 would send the caller
+        # off to create a duplicate of work already in flight.
+        raise HTTPException(409, f"EXPORT_{exp.status.upper()}")
+    await request.app.state.auditor.record(
+        "export.downloaded", actor=p.subject, tenant=p.tenant, resource=f"export:{export_id}",
+        ip=request.client.host if request.client else "")
+    s = get_settings()
+    return {"url": await c.recording_sink.signed_url(exp.file_id, ttl=s.EXPORT_DOWNLOAD_TTL),
+            "expires_in": s.EXPORT_DOWNLOAD_TTL, "format": exp.fmt}

@@ -34,6 +34,41 @@
         "title": "EraseIn",
         "type": "object"
       },
+      "ExportIn": {
+        "properties": {
+          "end": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "End",
+            "type": "string"
+          },
+          "format": {
+            "default": "mp4",
+            "maxLength": 16,
+            "title": "Format",
+            "type": "string"
+          },
+          "source_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Source Id",
+            "type": "string"
+          },
+          "start": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Start",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_id",
+          "start",
+          "end"
+        ],
+        "title": "ExportIn",
+        "type": "object"
+      },
       "Guards": {
         "properties": {
           "idle_timeout_s": {
@@ -375,6 +410,139 @@
           }
         },
         "summary": "Discover",
+        "tags": [
+          "stream"
+        ]
+      }
+    },
+    "/api/v1/exports": {
+      "post": {
+        "description": "Ask for a clip. Returns immediately with a PENDING export; a worker produces it.\n\nNot synchronous, and that is not a nicety: a two-hour remux is minutes of work, which would\nhold a connection open past every sane timeout and let one export starve the API for everyone.",
+        "operationId": "request_export_api_v1_exports_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Request Export Api V1 Exports Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request Export",
+        "tags": [
+          "stream"
+        ]
+      }
+    },
+    "/api/v1/exports/{export_id}": {
+      "get": {
+        "operationId": "get_export_api_v1_exports__export_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "export_id",
+            "required": true,
+            "schema": {
+              "title": "Export Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Export Api V1 Exports  Export Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Export",
+        "tags": [
+          "stream"
+        ]
+      }
+    },
+    "/api/v1/exports/{export_id}/download": {
+      "get": {
+        "description": "A short-lived link, never the bytes through this process.\n\nStreaming a multi-gigabyte clip through the API would tie up a worker for the length of the\ndownload and put footage through a hop that does not need to see it.",
+        "operationId": "download_export_api_v1_exports__export_id__download_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "export_id",
+            "required": true,
+            "schema": {
+              "title": "Export Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Download Export Api V1 Exports  Export Id  Download Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Export",
         "tags": [
           "stream"
         ]
@@ -1678,6 +1846,58 @@
           }
         },
         "summary": "Erase Subject",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/stream/exports/run": {
+      "post": {
+        "description": "Produce queued clips. Called by a CronJob or a worker Deployment.\n\nSafe to run from several replicas at once: each dequeues a different job, and an export that\nis no longer PENDING is skipped rather than redone. Capped per run so a backlog degrades into\nseveral runs instead of one that never finishes.",
+        "operationId": "run_exports_internal_stream_exports_run_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Run Exports Internal Stream Exports Run Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Exports",
         "tags": [
           "internal"
         ]

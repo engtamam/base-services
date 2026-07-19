@@ -238,7 +238,59 @@ class Settings(BaseSettings):
     # Retention & export.
     RETENTION_DAYS: int = 30
     RETENTION_MAX_BYTES: int = 0                  # 0 = unlimited (age-based only)
+    # ── clip export ───────────────────────────────────────────────────────────
+    # `null` produces nothing and SAYS so — never a fake `ready`, never a permanent `pending`.
+    # The boot guard refuses it in production when EXPORT_ENABLED is on.
+    EXPORT_DRIVER: str = "null"                   # null | ffmpeg
+    EXPORT_ENABLED: bool = False                  # does this platform offer clip export at all?
+    EXPORT_FFMPEG_BIN: str = "ffmpeg"             # a path or a name on PATH
+    # Longest window a single export may cover. This knob existed and was NEVER READ: a caller
+    # could ask for a year of footage and the worker would try. Bounded work is the difference
+    # between a slow export and an outage.
     EXPORT_MAX_RANGE_SECONDS: int = 3_600
+    EXPORT_FORMATS: str = "mp4"                   # comma list; each needs an EXPORT_ARGS entry
+    # ffmpeg arguments per output format, as JSON. `-c copy` is a REMUX: the same bitstream in a
+    # new container — fast, lossless, and it cannot be accused of degrading evidence. Re-encoding
+    # lives here too for platforms that need smaller files, and it is opt-in for that reason.
+    EXPORT_ARGS: str = '{"mp4": ["-c", "copy", "-movflags", "+faststart"]}'
+    EXPORT_CONTENT_TYPES: str = '{"mp4": "video/mp4"}'
+    # What ffmpeg may follow from the concat list. Without a whitelist it will read anything a
+    # list file points at, which turns a segment reference into an arbitrary-file-read.
+    EXPORT_PROTOCOLS: str = "file,http,https,tcp,tls,crypto"
+    EXPORT_TIMEOUT_SECONDS: int = 900             # 15 min; a hung export must not hold a worker
+    EXPORT_SEGMENT_URL_TTL: int = 3_600           # long enough for ffmpeg to read every segment
+    EXPORT_MAX_SEGMENTS: int = 5_000              # a bound on one clip's inputs
+    EXPORT_MAX_RECORDINGS: int = 1_000            # how far back to look for overlapping segments
+    EXPORT_DRAIN_MAX: int = 10                    # exports per worker run
+    EXPORT_DOWNLOAD_TTL: int = 300                # signed download link lifetime
+
+    @property
+    def export_formats(self) -> tuple[str, ...]:
+        return tuple(f.strip() for f in self.EXPORT_FORMATS.split(",") if f.strip())
+
+    @property
+    def export_args(self) -> dict[str, list[str]]:
+        import json as _json
+        try:
+            parsed = _json.loads(self.EXPORT_ARGS or "{}")
+        except ValueError as exc:
+            raise ValueError(f"EXPORT_ARGS is not valid JSON: {exc}") from exc
+        if not isinstance(parsed, dict) or not all(
+                isinstance(k, str) and isinstance(v, list)
+                and all(isinstance(a, str) for a in v) for k, v in parsed.items()):
+            raise ValueError('EXPORT_ARGS must be {"format": ["-arg", ...]}')
+        return parsed
+
+    @property
+    def export_content_types(self) -> dict[str, str]:
+        import json as _json
+        try:
+            parsed = _json.loads(self.EXPORT_CONTENT_TYPES or "{}")
+        except ValueError as exc:
+            raise ValueError(f"EXPORT_CONTENT_TYPES is not valid JSON: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError('EXPORT_CONTENT_TYPES must be {"format": "mime/type"}')
+        return parsed
 
     # Quotas (per-tenant fairness; fail-closed via the entitlement pattern).
     STREAM_MAX_CONCURRENT_SESSIONS_GLOBAL: int = 100
@@ -282,6 +334,29 @@ class Settings(BaseSettings):
             return json.loads(self.TRANSCODE_PROFILES)
         except json.JSONDecodeError:
             return {}
+
+    def assert_export_config_ok(self) -> None:
+        """Boot guard. A platform that OFFERS clip export must be able to produce one.
+
+        EXPORT_ENABLED is the same distinction CONSENT_GATED draws: it separates "this platform
+        does not do clip export" from "somebody forgot to configure the exporter". Those look
+        identical from the driver alone, and that ambiguity is how a model, a store and a config
+        knob for exports sat here with nothing able to produce a clip.
+        """
+        self.export_args               # parse now: malformed JSON fails at boot, not mid-export
+        self.export_content_types
+        missing = [f for f in self.export_formats if f not in self.export_args]
+        if missing:
+            raise ValueError(
+                f"EXPORT_FORMATS lists {missing} with no EXPORT_ARGS entry: an export in that "
+                f"format would be accepted and then fail on the worker.")
+        if not self.is_production or not self.EXPORT_ENABLED:
+            return
+        if self.EXPORT_DRIVER == "null":
+            raise ValueError(
+                "EXPORT_DRIVER=null in production with EXPORT_ENABLED=true: every export would be "
+                "accepted and then fail. Set 'ffmpeg' with EXPORT_FFMPEG_BIN, or turn "
+                "EXPORT_ENABLED off and stop advertising the feature.")
 
     def assert_stream_config_ok(self) -> None:
         """Boot guards: refuse footgun postures in production, fail-fast (never at first stream)."""

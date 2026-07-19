@@ -15,6 +15,19 @@ from typing import Any
 
 AUDITABLE_ACTIONS: list[dict[str, Any]] = [
     {
+        "action": "export.requested",
+        "source": "user",
+        "critical": False,
+    },
+    {
+        "action": "export.downloaded",
+        "source": "user",
+        "critical": True,
+        "why": "a clip export takes footage of identifiable people OUT of the platform, and the "
+               "download is the moment it leaves — an unrecorded export is exactly what an "
+               "investigation into misuse of camera footage needs and cannot get afterwards",
+    },
+    {
         "action": "source.created",
         "source": "admin",
         "critical": False,

@@ -44,6 +44,8 @@ def create_app() -> FastAPI:
     # traffic as if it can.
     settings.assert_audit_config_ok()
     settings.assert_stream_config_ok()   # refuse footgun postures (null engine / no SEAL_KEY / …) in prod
+    # A platform that OFFERS clip export must be able to produce one.
+    settings.assert_export_config_ok()
     configure_logging(settings.SERVICE_NAME, settings.ENV, settings.LOG_LEVEL)
     logger = get_logger("app.main")
 

@@ -136,9 +136,9 @@ ALLOWLIST: dict[str, str] = {
         "record and its identifier index behind. Needs a decision on subject->Person resolution "
         "and on memberships, so it is not wired here.",
     "services/stream-service/app/core/stores.py":
-        "SUSPECTED GAP — ExportStore is a complete create/get/save store that nothing constructs. "
-        "The Export model and the `exports` collection are real (erasure._delete_exports deletes "
-        "from it), so exports can be erased but appear to have no creation path.",
+        "(The ExportStore gap is CLOSED — clip export is built: a ClipExporter port, an ffmpeg "
+        "remux adapter, a queue-backed worker, and routes to request, poll and download. The "
+        "store now has a creation path and EXPORT_MAX_RANGE_SECONDS is finally read.)",
     "services/billing-service/app/core/billing_service.py":
         "check_entitlement() is exercised by tests/unit/test_billing_v2 and test_grandfathering. "
         "(The pause()/reactivate() gap this used to record is CLOSED — both are routed and "
