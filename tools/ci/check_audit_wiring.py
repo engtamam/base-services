@@ -20,7 +20,13 @@ can see the seam between them, which is what this gate is.
       creates the appearance of an audit trail and produces an empty one, which is exactly the
       state this phase found the platform in.
 
-  R3  A declaration is malformed.
+  R3  A service declares actions but NEVER EMITS any.
+      The declarations are valid, the sink is wired, the config points at the log — and no code
+      path calls record(), so the chain stays empty. This gate SHIPPED with exactly that hole:
+      every check passed while nothing was recorded, which is the same defect one level deeper.
+      Declaring an action is a promise; emitting it is the only thing that keeps it.
+
+  R4  A declaration is malformed.
       Checked with ast.literal_eval so the gate never imports (and therefore executes) a service.
       A critical action with no `why` is refused here as well as at boot, because `critical` means
       "refuse live requests when the log is down" and that decision must be deliberate.
@@ -63,6 +69,24 @@ def declarations(service: pathlib.Path) -> list[dict] | None:
                     f"AUDITABLE_ACTIONS is not a pure literal ({exc}). No variables, f-strings or "
                     f"function calls — the gate reads it without importing your service.") from exc
     return None
+
+
+def emitted_actions(service: pathlib.Path) -> set[str]:
+    """Action names this service actually passes to auditor.record().
+
+    Read as source text, not by importing: the gate must never execute what it audits. It matches
+    the literal first argument, which is the only form that can be checked statically — and is the
+    form every call should use anyway, because a computed action name cannot be found by anyone
+    searching the log either.
+    """
+    found: set[str] = set()
+    for path in (service / "app").rglob("*.py"):
+        if "__pycache__" in str(path):
+            continue
+        for match in re.finditer(r"""record\(\s*["']([a-z0-9_]+\.[a-z0-9_]+)["']""",
+                                 path.read_text(encoding="utf-8")):
+            found.add(match.group(1))
+    return found
 
 
 def emits(name: str) -> bool:
@@ -137,6 +161,23 @@ def main() -> int:
         else:
             wired += 1
             problems.extend(f"  {name}: {p}" for p in malformed(actions))
+
+            # R3. Declaring is a promise; emitting is what keeps it. Enforced on CRITICAL actions
+            # only, and that limit is deliberate: a critical action that is never emitted is a
+            # security control that exists solely on paper, while a routine one missing an emit
+            # costs visibility rather than evidence. Widening this to every action would be
+            # stricter and would also make the gate reject work in progress on its first commit.
+            emitted = emitted_actions(service)
+            missing = sorted(a["action"] for a in actions
+                             if a.get("critical") and a.get("action") not in emitted)
+            if missing:
+                problems.append(
+                    f"  {name}: declares {len(missing)} CRITICAL action(s) that nothing ever\n"
+                    f"      emits: {', '.join(missing)}\n"
+                    f"      The declaration, the sink and the config are all in place, so every\n"
+                    f"      check passes while the chain stays empty — the same defect one level\n"
+                    f"      deeper. Fix: call `await request.app.state.auditor.record(\"<action>\",\n"
+                    f"      ...)` at the point the action happens.")
 
     if problems:
         print("      audit trail is not wired to reality:")
