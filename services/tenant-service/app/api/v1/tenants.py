@@ -99,37 +99,49 @@ async def set_branding(request: Request, tenant_id: str, body: BrandingIn) -> di
     return (await svc.set_branding(tenant, body.branding)).public()
 
 
-@admin_router.post("/{tenant_id}/suspend", dependencies=[Depends(_PLATFORM)])
-async def suspend(request: Request, tenant_id: str) -> dict:
+@admin_router.post("/{tenant_id}/suspend")
+async def suspend(request: Request, tenant_id: str,
+                  principal: Principal = Depends(_PLATFORM)) -> dict:
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
+    #
+    # The principal is BOUND rather than just depended on, and that is the whole point of this
+    # route's audit record. Suspending a tenant takes an entire organisation off the platform;
+    # it is the most consequential thing an operator can do here and it WILL be disputed. An
+    # entry that says it happened but not who did it answers the one question an audit log
+    # exists to answer. `dependencies=[Depends(...)]` authorizes identically and leaves no name.
     await request.app.state.auditor.record(
-        "tenant.suspended", actor="", tenant="", resource=f"tenant:{tenant_id}",
+        "tenant.suspended", actor=principal.subject, tenant=principal.tenant,
+        resource=f"tenant:{tenant_id}",
         ip=request.client.host if request.client else "")
     svc, tenant = await _load(request, tenant_id)
     return (await svc.suspend(tenant)).public()
 
 
-@admin_router.post("/{tenant_id}/reactivate", dependencies=[Depends(_PLATFORM)])
-async def reactivate(request: Request, tenant_id: str) -> dict:
+@admin_router.post("/{tenant_id}/reactivate")
+async def reactivate(request: Request, tenant_id: str,
+                     principal: Principal = Depends(_PLATFORM)) -> dict:
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
-        "tenant.reactivated", actor="", tenant="", resource=f"tenant:{tenant_id}",
+        "tenant.reactivated", actor=principal.subject, tenant=principal.tenant,
+        resource=f"tenant:{tenant_id}",
         ip=request.client.host if request.client else "")
     svc, tenant = await _load(request, tenant_id)
     return (await svc.reactivate(tenant)).public()
 
 
-@admin_router.delete("/{tenant_id}", dependencies=[Depends(_PLATFORM)])
-async def delete(request: Request, tenant_id: str) -> dict:
+@admin_router.delete("/{tenant_id}")
+async def delete(request: Request, tenant_id: str,
+                 principal: Principal = Depends(_PLATFORM)) -> dict:
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
-        "tenant.deleted", actor="", tenant="", resource=f"tenant:{tenant_id}",
+        "tenant.deleted", actor=principal.subject, tenant=principal.tenant,
+        resource=f"tenant:{tenant_id}",
         ip=request.client.host if request.client else "")
     svc, tenant = await _load(request, tenant_id)
     return await svc.delete(tenant)

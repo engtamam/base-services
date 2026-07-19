@@ -71,6 +71,45 @@ def declarations(service: pathlib.Path) -> list[dict] | None:
     return None
 
 
+_ANON_ACTOR = re.compile(r"""record\(\s*["']([a-z0-9_.]+)["'][^)]*?actor\s*=\s*["']["']""", re.S)
+
+
+def anonymous_emits(service: pathlib.Path) -> list[str]:
+    """Actions recorded on a USER-FACING route with a literal empty actor.
+
+    An audit entry with no actor answers what and when but not WHO, and `who` is the only question
+    an audit log exists to answer in a dispute. It is worse than no entry, because the log looks
+    complete: "this tenant was suspended" with nobody named reads as a working control right up to
+    the moment someone has to rely on it.
+
+    The cause is mechanical, which is why this can be a gate at all. A route written
+
+        @router.post(..., dependencies=[Depends(_ADMIN)])
+        async def act(request: Request, ...)
+
+    has no principal in scope, so whoever wrote it passed "". Written
+
+        async def act(request: Request, ..., principal: Principal = Depends(_ADMIN))
+
+    the name is right there. BOTH SPELLINGS AUTHORIZE IDENTICALLY — only one preserves attribution,
+    and nothing but this check makes the difference visible.
+
+    app/api/internal.py is exempt BY DESIGN, not by oversight: service-to-service calls have no
+    human actor, and inventing one there would be worse than an empty string. That is why this
+    walks api/v1 rather than all of app/.
+    """
+    found: list[str] = []
+    v1 = service / "app" / "api" / "v1"
+    if not v1.is_dir():
+        return found
+    for path in sorted(v1.rglob("*.py")):
+        if "__pycache__" in str(path):
+            continue
+        for action in _ANON_ACTOR.findall(path.read_text(encoding="utf-8", errors="replace")):
+            found.append(f"{action} ({path.name})")
+    return found
+
+
 def emitted_actions(service: pathlib.Path) -> set[str]:
     """Action names this service actually passes to auditor.record().
 
@@ -187,6 +226,19 @@ def main() -> int:
                     f"      check passes while the chain stays empty — the same defect one level\n"
                     f"      deeper. Fix: call `await request.app.state.auditor.record(\"<action>\",\n"
                     f"      ...)` at the point the action happens.")
+
+            # R4. An entry that names nobody. See anonymous_emits() for why this is worse than a
+            # missing entry rather than a lesser version of one.
+            anon = anonymous_emits(service)
+            if anon:
+                problems.append(
+                    f"  {name}: {len(anon)} action(s) recorded with an EMPTY actor on a\n"
+                    f"      user-facing route: {', '.join(anon)}\n"
+                    f"      The log will say the action happened and not who did it, which is the\n"
+                    f"      one question it exists to answer. Fix: bind the principal —\n"
+                    f"      `principal: Principal = Depends(_ADMIN)` instead of\n"
+                    f"      `dependencies=[Depends(_ADMIN)]` — and pass actor=principal.subject.\n"
+                    f"      Both spellings authorize identically; only one is attributable.")
 
     if problems:
         print("      audit trail is not wired to reality:")

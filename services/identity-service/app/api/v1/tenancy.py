@@ -72,14 +72,20 @@ async def add_member(request: Request, body: AddMemberIn) -> dict:
     If the person already exists we grant a membership and touch nothing else — their credential
     is the key to every other company they work for, and an admin here has no claim on it (T2).
     """
+    # AUTHORIZE FIRST, then write-ahead audit, then mutate.
+    #
+    # The record used to run before this line, which had two faults. It could not name the actor,
+    # because the principal is only resolved here — and it recorded an ATTEMPT by a caller who
+    # was about to be refused, so any unauthenticated client could append entries to the audit
+    # chain at will. Write-ahead means before the MUTATION, not before the authorization.
+    s = get_settings()
+    principal, tenant = await _caller_tenant(request, _write_cap())
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
-        "member.added", actor="", tenant="", resource="member",
+        "member.added", actor=principal.subject, tenant=tenant, resource="member",
         ip=request.client.host if request.client else "")
-    s = get_settings()
-    _, tenant = await _caller_tenant(request, _write_cap())
     svc = _svc(request)
     try:
         m, invite = await svc.add_member(
@@ -109,13 +115,16 @@ async def remove_member(request: Request, person_id: str) -> dict:
     Deleting the Person from a single company's admin panel would remove her from every other
     company on the platform. This revokes a key, not a human.
     """
+    # Authorize first — see add_member above: recording before the capability check let an
+    # unauthorized caller append to the audit chain and left the entry with no actor.
+    principal, tenant = await _caller_tenant(request, _write_cap())
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
-        "member.removed", actor="", tenant="", resource=f"member:{person_id}",
+        "member.removed", actor=principal.subject, tenant=tenant,
+        resource=f"member:{person_id}",
         ip=request.client.host if request.client else "")
-    _, tenant = await _caller_tenant(request, _write_cap())
     removed = await _svc(request).remove_member(tenant, person_id)
     if not removed:
         # Same answer whether they are in another tenant or do not exist at all: a 404 that

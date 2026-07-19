@@ -212,13 +212,15 @@ async def verify_dsar(request: Request, dsar_id: str, token: str,
     return res
 
 
-@router.post("/dsar/{dsar_id}/process", dependencies=[Depends(_ADMIN)])
-async def process_dsar(request: Request, dsar_id: str) -> dict:
+@router.post("/dsar/{dsar_id}/process")
+async def process_dsar(request: Request, dsar_id: str,
+                       principal: Principal = Depends(_ADMIN)) -> dict:
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
-        "dsar.processed", actor="", tenant="", resource=f"dsar:{dsar_id}",
+        "dsar.processed", actor=principal.subject, tenant=principal.tenant,
+        resource=f"dsar:{dsar_id}",
         ip=request.client.host if request.client else "")
     res = await build_dsar(request).process(dsar_id)
     if not res.get("ok") and res.get("reason") == "NOT_FOUND":
@@ -244,13 +246,15 @@ async def place_hold(request: Request, body: HoldIn, principal: Principal = Depe
         tenant=_tenant(principal), subject=body.subject, reason=body.reason)).to_dict()
 
 
-@router.post("/legal-holds/{hold_id}/release", dependencies=[Depends(_ADMIN)])
-async def release_hold(request: Request, hold_id: str) -> dict:
+@router.post("/legal-holds/{hold_id}/release")
+async def release_hold(request: Request, hold_id: str,
+                       principal: Principal = Depends(_ADMIN)) -> dict:
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
-        "legal_hold.released", actor="", tenant="", resource=f"hold:{hold_id}",
+        "legal_hold.released", actor=principal.subject, tenant=principal.tenant,
+        resource=f"hold:{hold_id}",
         ip=request.client.host if request.client else "")
     h = await build_compliance(request).release_hold(hold_id)
     if h is None:
@@ -336,13 +340,15 @@ async def register_breach(request: Request, body: BreachIn, principal: Principal
     return await build_compliance(request).breach_status(b.id)
 
 
-@router.post("/breaches/{breach_id}/notify", dependencies=[Depends(_ADMIN)])
-async def notify_breach(request: Request, breach_id: str) -> dict:
+@router.post("/breaches/{breach_id}/notify")
+async def notify_breach(request: Request, breach_id: str,
+                        principal: Principal = Depends(_ADMIN)) -> dict:
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
-        "breach.notified", actor="", tenant="", resource=f"breach:{breach_id}",
+        "breach.notified", actor=principal.subject, tenant=principal.tenant,
+        resource=f"breach:{breach_id}",
         ip=request.client.host if request.client else "")
     res = await build_compliance(request).notify_breach(breach_id)
     if not res["ok"]:

@@ -238,13 +238,15 @@ async def invoice_pdf(request: Request, invoice_id: str, principal: Principal = 
                     headers={"Content-Disposition": f'attachment; filename="{inv.number}.pdf"'})
 
 
-@router.post("/payments/{payment_id}/refund", dependencies=[Depends(_ADMIN)])
-async def refund(request: Request, payment_id: str, amount_minor: int | None = None) -> dict:
+@router.post("/payments/{payment_id}/refund")
+async def refund(request: Request, payment_id: str, amount_minor: int | None = None,
+                 principal: Principal = Depends(_ADMIN)) -> dict:
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
-        "payment.refunded", actor="", tenant="", resource=f"payment:{payment_id}",
+        "payment.refunded", actor=principal.subject, tenant=principal.tenant,
+        resource=f"payment:{payment_id}",
         ip=request.client.host if request.client else "")
     res = await build_billing(request).refund(payment_id, amount_minor)
     if not res.get("ok") and res.get("reason") == "NOT_FOUND":

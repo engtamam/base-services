@@ -99,24 +99,26 @@ async def dead_letters(request: Request, principal: Principal = Depends(_READ)) 
     return {"dead_letters": [Job.from_dict(r).public() for r in rows]}
 
 
-@router.post("/{job_id}/replay", dependencies=[Depends(_ADMIN)])
-async def replay(request: Request, job_id: str) -> dict:
+@router.post("/{job_id}/replay")
+async def replay(request: Request, job_id: str,
+                 principal: Principal = Depends(_ADMIN)) -> dict:
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
-        "job.replayed", actor="", tenant="", resource=f"job:{job_id}",
+        "job.replayed", actor=principal.subject, tenant=principal.tenant, resource=f"job:{job_id}",
         ip=request.client.host if request.client else "")
     return await build_jobs(request).replay(job_id)
 
 
-@router.post("/{job_id}/cancel", dependencies=[Depends(_ADMIN)])
-async def cancel(request: Request, job_id: str) -> dict:
+@router.post("/{job_id}/cancel")
+async def cancel(request: Request, job_id: str,
+                 principal: Principal = Depends(_ADMIN)) -> dict:
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
-        "job.cancelled", actor="", tenant="", resource=f"job:{job_id}",
+        "job.cancelled", actor=principal.subject, tenant=principal.tenant, resource=f"job:{job_id}",
         ip=request.client.host if request.client else "")
     return await build_jobs(request).cancel(job_id)
 

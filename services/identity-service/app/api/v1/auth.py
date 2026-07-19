@@ -148,7 +148,8 @@ async def change_password(request: Request, body: ChangePwIn,
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
-        "auth.password_changed", actor="", tenant="", resource="user",
+        "auth.password_changed", actor=principal.subject, tenant=principal.tenant,
+        resource=f"user:{principal.subject}",
         ip=request.client.host if request.client else "")
     repo = UserRepository(request.app.state.container.datastore, request.app.state.container.login_identifier)
     user = await repo.get(principal.subject)
@@ -169,7 +170,8 @@ async def mfa_enroll(request: Request, principal: Principal = Depends(require_us
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
-        "auth.mfa_enrolled", actor="", tenant="", resource="user",
+        "auth.mfa_enrolled", actor=principal.subject, tenant=principal.tenant,
+        resource=f"user:{principal.subject}",
         ip=request.client.host if request.client else "")
     c = request.app.state.container
     if not c.mfa.enabled:

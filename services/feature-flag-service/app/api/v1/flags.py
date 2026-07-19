@@ -242,13 +242,14 @@ async def rollback_config(request: Request, key: str, version: int,
 
 
 # ── maintenance ───────────────────────────────────────────────────────────────
-@router.put("/maintenance", dependencies=[Depends(_ADMIN)])
-async def set_maintenance(request: Request, body: MaintenanceIn) -> dict:
+@router.put("/maintenance")
+async def set_maintenance(request: Request, body: MaintenanceIn,
+                          principal: Principal = Depends(_ADMIN)) -> dict:
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
-        "maintenance.toggled", actor="", tenant="", resource="maintenance",
+        "maintenance.toggled", actor=principal.subject, tenant=principal.tenant, resource="maintenance",
         ip=request.client.host if request.client else "")
     return (await build_maintenance(request).set(**body.model_dump())).to_dict()
 

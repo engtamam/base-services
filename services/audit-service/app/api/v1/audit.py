@@ -91,12 +91,13 @@ async def export(request: Request, principal: Principal = Depends(require_user),
                     headers={"Content-Disposition": "attachment; filename=audit-export"})
 
 
-@router.post("/purge", dependencies=[Depends(require_capability("platform.audit"))])
-async def purge(request: Request, body: PurgeIn) -> dict:
+@router.post("/purge")
+async def purge(request: Request, body: PurgeIn,
+                principal: Principal = Depends(require_capability("platform.audit"))) -> dict:
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
-        "audit.purged", actor="", tenant="", resource="audit_log",
+        "audit.purged", actor=principal.subject, tenant=principal.tenant, resource="audit_log",
         ip=request.client.host if request.client else "")
     return await build_audit(request).purge(body.before_ts, body.partition)
