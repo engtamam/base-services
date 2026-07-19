@@ -38,12 +38,25 @@ class CredentialNotYours(Exception):
 
 
 class AuthService:
+    # Class-level defaults so a partially-constructed instance (tests build these directly) has
+    # the SAFE value rather than an AttributeError — and so that adding a dependency here can
+    # never silently turn a guard off in production, where __init__ always runs.
+    _verifications = None
+    _require_verified = False
+    _legacy_email = "grandfather"
+    _platform_tenant = ""
+
     def __init__(self, *, users: UserRepository, refresh: RefreshStore, hasher,
                  issuer, verifier, mfa, identifier, access_ttl: int, refresh_ttl: int,
                  min_password_len: int = DEFAULT_MIN_PASSWORD_LEN, lockout=None,
                  memberships=None, invites=None, caps_resolver=None,
-                 platform_tenant: str = "") -> None:
+                 platform_tenant: str = "", verifications=None,
+                 require_verified_email: bool = False,
+                 legacy_email_policy: str = "grandfather") -> None:
         self._platform_tenant = platform_tenant
+        self._verifications = verifications
+        self._require_verified = require_verified_email
+        self._legacy_email = legacy_email_policy
         self._users = users
         self._identifier = identifier
         self._refresh = refresh
@@ -81,6 +94,28 @@ class AuthService:
         )
         return await self._users.create(user)
 
+    def email_is_proven(self, user: User) -> bool:
+        """Has this account proven its address, under the configured legacy policy?
+
+        THE THREE-VALUED CHECK. `None` means the row predates verification and nobody ever asked;
+        `False` means we asked and they have not answered. `grandfather` accepts the first and
+        refuses the second, which is what lets this ship without locking out every existing user
+        on the day it deploys. `enforce` refuses both and is the honest setting for a platform
+        that wants the guarantee to hold retroactively.
+
+        Written as an explicit `is True` / `is None` pair rather than a truthiness test, because
+        `not user.email_verified` would silently merge the two cases this method exists to keep
+        apart.
+        """
+        if user.email_verified is True:
+            return True
+        if user.email_verified is None:
+            return self._legacy_email != "enforce"
+        return False
+
+    class EmailNotVerified(Exception):
+        """Correct credentials, unproven address. Deliberately NOT an authentication failure."""
+
     def _safe_caps(self, user: User) -> list[str]:
         """Strip platform-wide capabilities from a token that is not the platform tenant's.
 
@@ -106,6 +141,45 @@ class AuthService:
             return caps
         return [c for c in caps if c != "*" and not c.startswith("platform.")]
 
+    # ── email verification ───────────────────────────────────────────────────
+    async def start_verification(self, user: User) -> str | None:
+        """Mint a token and ask for it to be mailed. Returns the raw token, or None if disabled.
+
+        The token is returned to the CALLER so the route can decide what to do with it — the
+        route hands it to the notifier and never to the HTTP response. Returning it here rather
+        than sending from inside keeps this service testable without a mail provider, and keeps
+        the "who is allowed to see this" decision at one visible boundary.
+        """
+        if self._verifications is None:
+            return None
+        return await self._verifications.issue(
+            user_id=user.id, tenant=user.tenant, address=user.username)
+
+    async def verify_email(self, token: str) -> User | None:
+        """Redeem a token and mark the address proven. None if the token is not good.
+
+        The address on the TOKEN must still match the account's address. Without that check a
+        link minted for the old address would prove a NEW one after a change of email — proving
+        something nobody ever demonstrated control of, which is the whole property this feature
+        sells.
+        """
+        if self._verifications is None:
+            return None
+        row = await self._verifications.redeem(token)
+        if row is None:
+            return None
+        user = await self._users.get(str(row.get("user_id", "")))
+        if user is None:
+            return None
+        if self._identifier.display(user.username) != self._identifier.display(
+                str(row.get("address", ""))):
+            return None
+        if user.email_verified is True:
+            return user                     # already proven; redeeming again is harmless
+        user.email_verified = True
+        await self._users.save(user)
+        return user
+
     # ── login ────────────────────────────────────────────────────────────────
     async def authenticate(self, tenant: str, username: str, password: str) -> User | None:
         # Locked accounts are refused before any password work (and without revealing
@@ -130,6 +204,13 @@ class AuthService:
 
     # ── token issuance ────────────────────────────────────────────────────────
     async def issue_tokens(self, user: User) -> dict:
+        # THE GATE, at the mint rather than in the login route. tenancy.py already argues why:
+        # minting is the only moment anything is verified, and every service downstream simply
+        # believes the claim. A check in one handler is one new handler away from being bypassed —
+        # and refresh mints too, so a route-level check would let an unverified session live for
+        # ever on renewals.
+        if self._require_verified and not self.email_is_proven(user):
+            raise self.EmailNotVerified(user.username)
         claims = {"caps": self._safe_caps(user), "roles": user.roles, "tenant": user.tenant}
         access = self._issuer.issue_access(user.id, claims, self._access_ttl)
         jti = new_id()

@@ -21,6 +21,11 @@ from __future__ import annotations
 from typing import Any
 
 AUDITABLE_ACTIONS: list[dict[str, Any]] = [
+    {
+        "action": "auth.email_verified",
+        "source": "user",
+        "critical": False,
+    },
     # ── auth: the volume path. Recorded, never blocking. ─────────────────────
     {
         "action": "auth.registered",

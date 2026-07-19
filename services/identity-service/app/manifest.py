@@ -55,6 +55,8 @@ def build_manifest(
             {"path": "/internal/manifest", "tier": "internal", "method": "GET"},
             {"path": "/api/v1/auth/register", "tier": "user", "method": "POST"},
             {"path": "/api/v1/auth/login", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/auth/verify-email", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/auth/resend-verification", "tier": "user", "method": "POST"},
             {"path": "/api/v1/auth/refresh", "tier": "user", "method": "POST"},
             {"path": "/api/v1/auth/logout", "tier": "user", "method": "POST"},
             {"path": "/api/v1/auth/me", "tier": "user", "method": "GET"},

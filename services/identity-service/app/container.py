@@ -31,6 +31,8 @@ from app.adapters.secrets.vault import VaultSecrets
 from app.adapters.audit_sink.eventbus import EventBusAuditSink
 from app.adapters.audit_sink.http import HttpAuditSink
 from app.adapters.audit_sink.null import NullAuditSink
+from app.adapters.notifier.http import HttpNotifier
+from app.adapters.notifier.null import NullNotifier
 from app.adapters.telemetry.stdout import StdoutTelemetry
 from app.adapters.token_verifier.hs256 import HS256Verifier
 from app.adapters.token_verifier.jwks import JWKSVerifier
@@ -101,6 +103,14 @@ _AUDIT_SINK: dict[str, Builder] = {
     "http": lambda s: HttpAuditSink(s.audit_ingest_url, s.INTERNAL_SERVICE_TOKEN,
                                     timeout=s.AUDIT_TIMEOUT_SECONDS),
 }
+# How a message reaches a human. `null` sends nothing and REPORTS that it sent nothing — never a
+# fake success, because "verification mail sent" with nothing delivered is the failure that looks
+# like success and locks people out.
+_NOTIFIER: dict[str, Builder] = {
+    "null": lambda s: NullNotifier(),
+    "http": lambda s: HttpNotifier(s.NOTIFY_SERVICE_URL, s.INTERNAL_SERVICE_TOKEN,
+                                   timeout=s.NOTIFY_TIMEOUT_SECONDS, path=s.NOTIFY_PATH),
+}
 _TELEMETRY: dict[str, Builder] = {
     "stdout": lambda s: StdoutTelemetry(),
 }
@@ -170,6 +180,7 @@ class Container:
     rate_limiter: RateLimiter
     telemetry: Telemetry
     audit_sink: Any = None
+    notifier: Any = None
     password_hasher: Any = None
     token_issuer: Any = None
     mfa: Any = None
@@ -240,6 +251,7 @@ def build_container(settings: Settings) -> Container:
         rate_limiter=_pick(_RATELIMITER, settings.RATELIMITER_DRIVER, "rate_limiter", settings),
         telemetry=_pick(_TELEMETRY, settings.TELEMETRY_DRIVER, "telemetry", settings),
         audit_sink=_build_audit_sink(settings, event_bus),
+        notifier=_pick(_NOTIFIER, settings.NOTIFIER_DRIVER, "notifier", settings),
         password_hasher=_pick(_PASSWORD_HASHER, settings.PASSWORD_HASHER_DRIVER, "password_hasher", settings),
         token_issuer=_pick(_TOKEN_ISSUER, settings.TOKEN_ISSUER_DRIVER, "token_issuer", settings),
         mfa=_pick(_MFA, settings.MFA_DRIVER, "mfa", settings),

@@ -141,6 +141,27 @@
         "title": "RegisterIn",
         "type": "object"
       },
+      "ResendIn": {
+        "properties": {
+          "tenant": {
+            "default": "default",
+            "maxLength": 128,
+            "title": "Tenant",
+            "type": "string"
+          },
+          "username": {
+            "maxLength": 128,
+            "minLength": 3,
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username"
+        ],
+        "title": "ResendIn",
+        "type": "object"
+      },
       "UnblockIn": {
         "properties": {
           "key": {
@@ -194,6 +215,21 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "VerifyEmailIn": {
+        "properties": {
+          "token": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "title": "VerifyEmailIn",
         "type": "object"
       }
     }
@@ -503,6 +539,94 @@
           }
         },
         "summary": "Register",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/resend-verification": {
+      "post": {
+        "description": "Ask for another verification mail. ALWAYS 202, whatever the truth.\n\nThis route is unauthenticated, so every distinguishable outcome is an oracle: whether the\naddress is registered, whether it is already verified, whether it is in cooldown. All of them\nanswer the same way. A caller who owns the address learns the truth from their inbox, which is\nthe only place that should be telling them.",
+        "operationId": "resend_verification_api_v1_auth_resend_verification_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResendIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Resend Verification Api V1 Auth Resend Verification Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resend Verification",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/verify-email": {
+      "post": {
+        "description": "Redeem a verification token. Single-use.\n\nUnknown, expired and already-spent are ONE answer on purpose. Distinguishing them tells an\nattacker holding a stale link whether the address exists and whether someone got there first,\nand none of those distinctions helps a legitimate user \u2014 who needs the same next step in\nevery case: ask for another mail.",
+        "operationId": "verify_email_api_v1_auth_verify_email_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyEmailIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Verify Email Api V1 Auth Verify Email Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Verify Email",
         "tags": [
           "auth"
         ]

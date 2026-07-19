@@ -46,6 +46,8 @@ def create_app() -> FastAPI:
     settings.assert_audit_config_ok()
     # And a service that cannot pseudonymise must not claim it can erase anyone.
     settings.assert_privacy_config_ok()
+    # And a service that demands a proven address must be able to ask for proof.
+    settings.assert_email_verification_ok()
     configure_logging(settings.SERVICE_NAME, settings.ENV, settings.LOG_LEVEL)
     logger = get_logger("app.main")
 

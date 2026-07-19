@@ -7,6 +7,8 @@
 # =============================================================================
 from __future__ import annotations
 
+import hashlib
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
@@ -14,10 +16,12 @@ from app.api.auth import Principal, require_user
 from app.api.deps import get_guard
 from app.api.ratelimit import rate_limit
 from app.config import get_settings
+from app.observability.logging import get_logger
 from app.core.auth_service import AuthService, WeakPassword
 from app.ports.errors import ValidationError
 from app.core.login_attempts import LoginAttemptStore
 from app.core.invites import InviteStore
+from app.core.email_verification import VerificationStore
 from app.core.membership import MembershipStore
 from app.core.refresh_store import RefreshStore
 from app.ports.caps_resolver import CapsUnavailable
@@ -47,6 +51,15 @@ class RegisterIn(BaseModel):
     username: str = Field(min_length=3, max_length=128)
     # min length is enforced by the core policy (PASSWORD_MIN_LENGTH); max is a DoS cap.
     password: str = Field(min_length=1, max_length=256)
+    tenant: str = Field(default="default", max_length=128)
+
+
+class VerifyEmailIn(BaseModel):
+    token: str = Field(min_length=1, max_length=512)
+
+
+class ResendIn(BaseModel):
+    username: str = Field(min_length=3, max_length=128)
     tenant: str = Field(default="default", max_length=128)
 
 
@@ -91,6 +104,14 @@ def _svc(request: Request) -> AuthService:
         caps_resolver=c.caps_resolver if s.IDENTITY_MULTI_TENANT else None,
         # platform.* is a BOUNDARY now, not a naming convention.
         platform_tenant=s.PLATFORM_TENANT,
+        verifications=(VerificationStore(
+            c.datastore, pepper=s.EMAIL_VERIFICATION_PEPPER,
+            ttl_seconds=s.EMAIL_VERIFICATION_TTL_SECONDS,
+            max_outstanding=s.EMAIL_VERIFICATION_MAX_OUTSTANDING)
+            if s.EMAIL_VERIFICATION_ENABLED else None),
+        require_verified_email=(s.EMAIL_VERIFICATION_ENABLED
+                                and s.LOGIN_REQUIRES_VERIFIED_EMAIL),
+        legacy_email_policy=s.EMAIL_VERIFICATION_LEGACY,
     )
 
 
@@ -113,7 +134,78 @@ async def register(request: Request, body: RegisterIn) -> dict:
         raise HTTPException(status.HTTP_409_CONFLICT, "USERNAME_TAKEN")
     except WeakPassword:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "WEAK_PASSWORD")
+    if s.EMAIL_VERIFICATION_ENABLED:
+        # Sent, and the OUTCOME recorded. A fire-and-forget send means a mail provider outage
+        # produces a stream of accounts that can never log in, with nothing in the response or
+        # the logs to say why. The account still exists either way — failing registration because
+        # a mail queue hiccuped would be the worse trade — but "we could not send it" is a fact
+        # somebody needs.
+        if not await _send_verification(request, svc, user):
+            get_logger("app.auth").warning(
+                "verification_mail_not_sent",
+                extra={"tenant": user.tenant, "detail": "account created but no mail accepted; "
+                                                        "the user must use resend-verification"})
     return user.public()
+
+
+async def _send_verification(request: Request, svc: AuthService, user) -> bool:
+    """Mint a token and hand it to the notifier. Returns whether the mail was accepted.
+
+    The raw token goes to the NOTIFIER and never to the HTTP response — a verification token in a
+    response body would let anyone who can call register prove an address they do not own, which
+    is the entire property this feature exists to establish.
+    """
+    s = get_settings()
+    token = await svc.start_verification(user)
+    if token is None:
+        return False
+    return await request.app.state.container.notifier.send(
+        to=user.username, template=s.EMAIL_VERIFICATION_TEMPLATE, tenant=user.tenant,
+        variables={"verify_url": f"{s.EMAIL_VERIFICATION_URL}{token}",
+                   "address": user.username,
+                   # A stable reference for the notifier's idempotency key. It is a HASH of the
+                   # token, never the token: the key travels through logs and dedupe stores.
+                   "token_ref": hashlib.sha256(token.encode()).hexdigest()[:32]})
+
+
+@router.post("/verify-email", dependencies=[Depends(rate_limit)])
+async def verify_email(request: Request, body: VerifyEmailIn) -> dict:
+    """Redeem a verification token. Single-use.
+
+    Unknown, expired and already-spent are ONE answer on purpose. Distinguishing them tells an
+    attacker holding a stale link whether the address exists and whether someone got there first,
+    and none of those distinctions helps a legitimate user — who needs the same next step in
+    every case: ask for another mail.
+    """
+    user = await _svc(request).verify_email(body.token)
+    if user is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "INVALID_OR_EXPIRED_TOKEN")
+    await request.app.state.auditor.record(
+        "auth.email_verified", actor=user.id, tenant=user.tenant,
+        resource=f"user:{user.id}", ip=request.client.host if request.client else "")
+    return {"verified": True}
+
+
+@router.post("/resend-verification", status_code=status.HTTP_202_ACCEPTED,
+             dependencies=[Depends(rate_limit)])
+async def resend_verification(request: Request, body: ResendIn) -> dict:
+    """Ask for another verification mail. ALWAYS 202, whatever the truth.
+
+    This route is unauthenticated, so every distinguishable outcome is an oracle: whether the
+    address is registered, whether it is already verified, whether it is in cooldown. All of them
+    answer the same way. A caller who owns the address learns the truth from their inbox, which is
+    the only place that should be telling them.
+    """
+    s = get_settings()
+    svc = _svc(request)
+    user = await UserRepository(request.app.state.container.datastore,
+                               request.app.state.container.login_identifier
+                               ).get_by_username(body.tenant, body.username)
+    if user is not None and not svc.email_is_proven(user) and svc._verifications is not None:
+        if not await svc._verifications.recently_issued(
+                user.id, s.EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS):
+            await _send_verification(request, svc, user)
+    return {"status": "accepted"}
 
 
 @router.post("/login", dependencies=[Depends(rate_limit)])
@@ -127,7 +219,14 @@ async def login(request: Request, body: LoginIn) -> dict:
     if c.mfa.enabled and user.mfa_secret:
         if not body.code or not c.mfa.verify(user.mfa_secret, body.code):
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "MFA_REQUIRED")
-    return await svc.issue_tokens(user)
+    try:
+        return await svc.issue_tokens(user)
+    except AuthService.EmailNotVerified:
+        # 403, NOT 401. The credentials were correct — telling this user their password is wrong
+        # sends them into a reset loop that cannot fix anything. It does reveal that the account
+        # exists and is unverified, but only to someone who ALREADY proved they know the
+        # password, so it is not a free enumeration oracle.
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "EMAIL_NOT_VERIFIED")
 
 
 @router.post("/refresh")

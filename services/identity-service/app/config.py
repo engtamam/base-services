@@ -171,6 +171,37 @@ class Settings(BaseSettings):
     MFA_ISSUER_NAME: str = "base-services"      # shown in authenticator apps
     MFA_TOTP_WINDOW: int = 1                     # TOTP clock-skew tolerance (± steps)
     REGISTRATION_ENABLED: bool = True           # open signup vs admin-only
+    # ── email verification ────────────────────────────────────────────────────
+    # An unproven address is not an identity: without this, anyone may register as
+    # cfo@bank.com and every service that treats the address as a person inherits the lie.
+    EMAIL_VERIFICATION_ENABLED: bool = True
+    # Refuse to MINT a token for an unverified address. Enforced at issue_tokens rather than in
+    # the login route, because minting is the only moment anything is checked — everywhere else
+    # the claim is believed. A route-level check is one new route away from being bypassed.
+    LOGIN_REQUIRES_VERIFIED_EMAIL: bool = True
+    # Accounts that existed BEFORE verification shipped. `grandfather` treats a missing flag as
+    # verified so an upgrade cannot lock out every existing user; `enforce` treats it as
+    # unverified and they must prove the address. Stated, never assumed.
+    EMAIL_VERIFICATION_LEGACY: str = "grandfather"    # grandfather | enforce
+    EMAIL_VERIFICATION_TTL_SECONDS: int = 86_400      # 24h; a link older than this is refused
+    # How many live tokens one account may hold. Every resend mints a credential; unbounded
+    # resends mean unbounded live keys, each another chance to leak via a mail archive or proxy.
+    EMAIL_VERIFICATION_MAX_OUTSTANDING: int = 3
+    # Peppers the stored digest. A thief with the table still cannot recognise a token they
+    # obtained elsewhere. Empty degrades to plain SHA-256 rather than disabling verification.
+    EMAIL_VERIFICATION_PEPPER: str = ""
+    # Where the link points. NEVER derived from the request Host header: an attacker-controlled
+    # host would put a live credential in a URL they own.
+    EMAIL_VERIFICATION_URL: str = ""      # e.g. https://app.example.com/verify?token=
+    EMAIL_VERIFICATION_TEMPLATE: str = "auth.verify_email"
+    # Per-ADDRESS cooldown between verification mails. A per-IP rate limit protects the service;
+    # it does nothing for the person being mail-bombed, because an attacker simply spreads the
+    # requests. The limit that protects the human is keyed on the human.
+    EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS: int = 60
+    NOTIFIER_DRIVER: str = "null"                 # null | http
+    NOTIFY_SERVICE_URL: str = ""
+    NOTIFY_PATH: str = "/internal/notify"
+    NOTIFY_TIMEOUT_SECONDS: int = 5
     # What a SELF-REGISTERED account gets. Comma list, empty by default: a stranger who signs
     # themself up is nobody until somebody grants them something. This exists because the route
     # used to take caps and roles FROM THE REQUEST BODY — an unauthenticated caller could send
@@ -273,6 +304,28 @@ class Settings(BaseSettings):
         if not self.AUDIT_SERVICE_URL:
             return ""
         return self.AUDIT_SERVICE_URL.rstrip("/") + self.AUDIT_INGEST_PATH
+
+    def assert_email_verification_ok(self) -> None:
+        """Boot guard. A service that REQUIRES a proven address must be able to ask for proof.
+
+        Enforcing verification with no way to send the mail locks every new account out
+        permanently and looks, from the outside, exactly like a broken login. The two settings
+        have to agree, and disagreeing must stop the deploy rather than the user.
+        """
+        if not self.is_production or not self.EMAIL_VERIFICATION_ENABLED:
+            return
+        if self.LOGIN_REQUIRES_VERIFIED_EMAIL and self.NOTIFIER_DRIVER == "null":
+            raise ValueError(
+                "LOGIN_REQUIRES_VERIFIED_EMAIL is on but NOTIFIER_DRIVER=null: no verification "
+                "mail can be sent, so every new account would be permanently unable to log in. "
+                "Set NOTIFIER_DRIVER=http with NOTIFY_SERVICE_URL.")
+        if self.NOTIFIER_DRIVER == "http" and not self.NOTIFY_SERVICE_URL:
+            raise ValueError("NOTIFIER_DRIVER=http but NOTIFY_SERVICE_URL is empty.")
+        if not self.EMAIL_VERIFICATION_URL:
+            raise ValueError(
+                "EMAIL_VERIFICATION_URL is empty: the mail would carry no link to click. It is "
+                "config and never the request Host, or an attacker-controlled host would receive "
+                "a live credential.")
 
     def assert_privacy_config_ok(self) -> None:
         """Boot guard for the erasure path. Same rule as the audit guard below, applied to the

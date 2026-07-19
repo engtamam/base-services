@@ -36,6 +36,13 @@ UNDECLARED_ROUTES: list[dict[str, str]] = [
      "why": "pre-auth: the app catalog is fetched WITH a token, so its caller has already registered"},
     {"method": "POST", "path": "/api/v1/auth/login",
      "why": "pre-auth: you cannot be shown a 'log in' control in an app you are already logged into"},
+    {"method": "POST", "path": "/api/v1/auth/verify-email",
+     "why": "pre-auth token redemption: reached by clicking a link in an email, by someone who "
+            "has no session by definition — the catalog is fetched WITH a token, and an "
+            "unverified account cannot obtain one"},
+    {"method": "POST", "path": "/api/v1/auth/resend-verification",
+     "why": "pre-auth: the caller is precisely the person who cannot log in yet, so it belongs to "
+            "the signup screen rather than to a catalog rendered for an authenticated user"},
     {"method": "POST", "path": "/api/v1/auth/refresh",
      "why": "session plumbing the client driver handles automatically, not a button"},
     {"method": "POST", "path": "/api/v1/auth/logout",
