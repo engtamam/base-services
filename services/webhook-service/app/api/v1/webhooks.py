@@ -91,6 +91,12 @@ class DispatchIn(BaseModel):
 # ── endpoints ─────────────────────────────────────────────────────────────────
 @router.post("/endpoints", status_code=201)
 async def register(request: Request, body: EndpointIn, principal: Principal = Depends(_ADMIN)) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "webhook.endpoint_created", actor=principal.subject, tenant=principal.tenant, resource="endpoint",
+        ip=request.client.host if request.client else "")
     try:
         ep = await build_webhooks(request).register(
             tenant=_tenant(principal, body.tenant), url=body.url,
@@ -123,6 +129,12 @@ async def update_endpoint(request: Request, endpoint_id: str, body: EndpointPatc
 
 @router.post("/endpoints/{endpoint_id}/rotate-secret")
 async def rotate(request: Request, endpoint_id: str, principal: Principal = Depends(_ADMIN)) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "webhook.secret_rotated", actor=principal.subject, tenant=principal.tenant, resource=f"endpoint:{endpoint_id}",
+        ip=request.client.host if request.client else "")
     svc = build_webhooks(request)
     await _owned(svc, endpoint_id, principal)
     ep, fresh = await svc.rotate_secret(endpoint_id)
@@ -131,6 +143,12 @@ async def rotate(request: Request, endpoint_id: str, principal: Principal = Depe
 
 @router.delete("/endpoints/{endpoint_id}")
 async def delete_endpoint(request: Request, endpoint_id: str, principal: Principal = Depends(_ADMIN)) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "webhook.endpoint_deleted", actor=principal.subject, tenant=principal.tenant, resource=f"endpoint:{endpoint_id}",
+        ip=request.client.host if request.client else "")
     svc = build_webhooks(request)
     await _owned(svc, endpoint_id, principal)
     return {"deleted": await svc.delete(endpoint_id)}

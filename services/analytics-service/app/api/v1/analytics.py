@@ -165,6 +165,12 @@ async def delete_report(report_id: str, request: Request, p: Principal = Depends
 @router.post("/export", dependencies=[Depends(rate_limit)])
 async def export_query(body: QueryIn, request: Request, p: Principal = Depends(_READ)) -> Response:
     """Run a query and hand it to the configured Warehouse port (CSV by default)."""
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "analytics.exported", actor=p.subject, tenant=p.tenant, resource="analytics_export",
+        ip=request.client.host if request.client else "")
     svc = build_query(request)
     try:
         result = await svc.query(

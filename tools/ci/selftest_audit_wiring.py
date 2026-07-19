@@ -30,13 +30,21 @@ _GOOD = [
 ]
 
 
-def _repo(tmp: pathlib.Path, *, actions, driver: str | None) -> pathlib.Path:
+def _repo(tmp: pathlib.Path, *, actions, driver: str | None, emit: bool = True) -> pathlib.Path:
     """A minimal repo the checker can walk: one service, its declaration, its values file."""
     svc = tmp / "services" / "x-service" / "app"
     svc.mkdir(parents=True)
     (tmp / "services" / "_template" / "app").mkdir(parents=True)
     if actions is not None:
         (svc / "auditable_actions.py").write_text(_DECL.format(actions=actions), encoding="utf-8")
+
+    # A route file that emits every critical action, unless the case is testing the absence of it.
+    if actions and emit:
+        calls = "\n".join(
+            '    await request.app.state.auditor.record("%s")' % a["action"]
+            for a in actions if isinstance(a, dict) and a.get("critical"))
+        (svc / "routes.py").write_text(
+            "async def handler(request):\n" + (calls or "    pass") + "\n", encoding="utf-8")
 
     values = tmp / "deploy" / "services"
     values.mkdir(parents=True)
@@ -64,15 +72,16 @@ CASES = [
     ("R1 declares but no driver at all", _GOOD, None, True, "nowhere to send it"),
     ("R2 emits but declares nothing", None, "http", True, "declares NO auditable actions"),
     ("no audit trail at all", None, None, True, "no audit trail at all"),
-    ("R3 flat action name", [{"action": "created", "source": "user", "critical": False}],
+    ("R3 critical action nothing emits", _GOOD, "http", True, "nothing ever"),
+    ("R4 flat action name", [{"action": "created", "source": "user", "critical": False}],
      "http", True, "dotted"),
-    ("R3 unknown source", [{"action": "a.b", "source": "panel", "critical": False}],
+    ("R4 unknown source", [{"action": "a.b", "source": "panel", "critical": False}],
      "http", True, "source"),
-    ("R3 criticality not a boolean", [{"action": "a.b", "source": "user", "critical": "yes"}],
+    ("R4 criticality not a boolean", [{"action": "a.b", "source": "user", "critical": "yes"}],
      "http", True, "explicitly"),
-    ("R3 critical with no why", [{"action": "a.b", "source": "user", "critical": True}],
+    ("R4 critical with no why", [{"action": "a.b", "source": "user", "critical": True}],
      "http", True, "no 'why'"),
-    ("R3 duplicate action", _GOOD + [dict(_GOOD[0])], "http", True, "twice"),
+    ("R4 duplicate action", _GOOD + [dict(_GOOD[0])], "http", True, "twice"),
 ]
 
 
@@ -80,7 +89,9 @@ def main() -> int:
     failures = []
     for name, actions, driver, must_fail, fragment in CASES:
         with tempfile.TemporaryDirectory() as td:
-            check = _repo(pathlib.Path(td), actions=actions, driver=driver)
+            # The dedicated no-emit case builds its repo without the route file.
+            check = _repo(pathlib.Path(td), actions=actions, driver=driver,
+                          emit="nothing emits" not in name)
             rc, out = _run(check)
         failed = rc != 0
         if failed != must_fail:

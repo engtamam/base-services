@@ -84,11 +84,17 @@ def test_a_routine_action_proceeds_when_it_cannot_be_witnessed():
     # and no exception: the action goes ahead
 
 
-def test_a_dropped_event_is_never_treated_as_recorded():
-    # The null sink's answer. "Dropped" is not success, and a critical action must still refuse.
-    auditor = _mk(_Sink(AuditReceipt(status=DROPPED, detail="null sink")))
-    with pytest.raises(AuditUnavailable):
-        run(auditor.record("data.exported"))
+def test_a_dropped_event_is_never_reported_as_recorded():
+    """`dropped` is the null sink saying it deliberately kept nothing — never success.
+
+    It does NOT block, and that split is deliberate. Blocking on `dropped` would make every
+    critical route 503 the moment someone runs the service with its zero-infrastructure defaults,
+    punishing the safe default rather than the unsafe one. "You must configure a log" is enforced
+    at BOOT by assert_audit_config_ok(), which refuses null in production. The runtime rule is the
+    narrower one: a log we were told to rely on is unreachable.
+    """
+    receipt = run(_mk(_Sink(AuditReceipt(status=DROPPED, detail="null sink"))).record("data.exported"))
+    assert receipt.is_recorded is False and receipt.status == DROPPED
 
 
 def test_every_gap_is_counted_even_when_it_is_tolerated():

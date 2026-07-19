@@ -86,6 +86,12 @@ async def internal_ingest_batch(body: BatchIn, request: Request) -> dict:
 @router.post("/analytics/prune-raw", dependencies=[Depends(require_internal_token)])
 async def internal_prune_raw(request: Request) -> dict:
     """Apply RAW_RETENTION_DAYS: raw events age out, rollups persist. A scheduler calls this."""
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "analytics.raw_pruned", actor="", tenant="", resource="raw_events",
+        ip=request.client.host if request.client else "")
     return await build_ingest(request).prune_raw()
 
 
@@ -118,6 +124,12 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     Returns the ack: what was erased, and what was RETAINED with its legal basis. Idempotent —
     a DSAR retries, so erasing an already-erased subject must not fail.
     """
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "subject.erased", actor="", tenant=body.tenant, resource=f"subject:{body.subject}",
+        ip=request.client.host if request.client else "")
     c = request.app.state.container
     s = get_settings()
     eraser = AnalyticsErasure(store=c.datastore, pii_salt=s.PII_SALT)

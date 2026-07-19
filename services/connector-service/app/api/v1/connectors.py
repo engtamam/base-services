@@ -141,6 +141,12 @@ async def list_specs(request: Request, principal: Principal = Depends(_READ)) ->
 # ── connections ────────────────────────────────────────────────────────────────
 @router.post("/connect", status_code=201)
 async def connect(request: Request, body: ConnectIn, principal: Principal = Depends(_ADMIN)) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "connector.connected", actor=principal.subject, tenant=principal.tenant, resource="connection",
+        ip=request.client.host if request.client else "")
     s = get_settings()
     c = request.app.state.container
     if body.instance_url:
@@ -179,6 +185,12 @@ async def health(request: Request, connection_id: str, principal: Principal = De
 
 @router.post("/{connection_id}/disconnect")
 async def disconnect(request: Request, connection_id: str, principal: Principal = Depends(_ADMIN)) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "connector.disconnected", actor=principal.subject, tenant=principal.tenant, resource=f"connection:{connection_id}",
+        ip=request.client.host if request.client else "")
     conn = await _owned(request, connection_id, principal)
     c = request.app.state.container
     spec = await _spec_for(request, conn)

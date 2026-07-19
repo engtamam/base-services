@@ -122,6 +122,12 @@ async def stale_flags(request: Request, days: int | None = None) -> dict:
 
 @router.delete("/flags/{key}")
 async def archive_flag(request: Request, key: str, principal: Principal = Depends(_ADMIN)) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "flag.deleted", actor=principal.subject, tenant=principal.tenant, resource=f"flag:{key}",
+        ip=request.client.host if request.client else "")
     flag = await build_flags(request).archive(key, actor=principal.subject)
     if flag is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
@@ -149,6 +155,12 @@ async def delete_segment(request: Request, key: str) -> dict:
 @router.post("/flags/{key}/overrides")
 async def set_override(request: Request, key: str, body: OverrideIn,
                        principal: Principal = Depends(_ADMIN)) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "flag.override_set", actor=principal.subject, tenant=principal.tenant, resource=f"flag:{key}",
+        ip=request.client.host if request.client else "")
     subject = body.subject
     if body.scope == "tenant" and "platform.flags" not in principal.caps:
         subject = principal.tenant or "__none__"        # can only override your own tenant
@@ -162,6 +174,12 @@ async def set_override(request: Request, key: str, body: OverrideIn,
 @router.delete("/flags/{key}/overrides")
 async def clear_override(request: Request, key: str, scope: str, subject: str,
                          principal: Principal = Depends(_ADMIN)) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "flag.override_removed", actor=principal.subject, tenant=principal.tenant, resource=f"flag:{key}",
+        ip=request.client.host if request.client else "")
     if scope not in ("tenant", "user"):
         raise HTTPException(422, "BAD_SCOPE")
     if scope == "tenant" and "platform.flags" not in principal.caps:
@@ -186,6 +204,12 @@ async def evaluate(request: Request, body: EvalIn) -> dict:
 @router.put("/config/{key}", dependencies=[Depends(_ADMIN)])
 async def put_config(request: Request, key: str, body: ConfigIn,
                      principal: Principal = Depends(_ADMIN)) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "config.updated", actor=principal.subject, tenant=principal.tenant, resource=f"config:{key}",
+        ip=request.client.host if request.client else "")
     return (await build_config(request).put(key, body.value, actor=principal.subject)).to_dict()
 
 
@@ -205,6 +229,12 @@ async def config_history(request: Request, key: str) -> dict:
 @router.post("/config/{key}/rollback", dependencies=[Depends(_ADMIN)])
 async def rollback_config(request: Request, key: str, version: int,
                           principal: Principal = Depends(_ADMIN)) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "config.rolled_back", actor=principal.subject, tenant=principal.tenant, resource=f"config:{key}",
+        ip=request.client.host if request.client else "")
     entry = await build_config(request).rollback(key, version, actor=principal.subject)
     if entry is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "VERSION_NOT_FOUND")
@@ -214,6 +244,12 @@ async def rollback_config(request: Request, key: str, version: int,
 # ── maintenance ───────────────────────────────────────────────────────────────
 @router.put("/maintenance", dependencies=[Depends(_ADMIN)])
 async def set_maintenance(request: Request, body: MaintenanceIn) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "maintenance.toggled", actor="", tenant="", resource="maintenance",
+        ip=request.client.host if request.client else "")
     return (await build_maintenance(request).set(**body.model_dump())).to_dict()
 
 

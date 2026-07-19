@@ -93,6 +93,12 @@ async def reconcile(tenant: str, request: Request) -> dict:
 @router.post("/wallet/credit", dependencies=[Depends(require_internal_token)])
 async def credit(body: CreditIn, request: Request) -> dict:
     """Add money. Call this only once the PSP has SETTLED — recording an intent is not money."""
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "wallet.credited", actor="", tenant=body.tenant, resource="wallet",
+        ip=request.client.host if request.client else "")
     try:
         return await build_wallet(request).credit(
             tenant=body.tenant, fund=body.fund, amount=body.amount, source=body.source,
@@ -142,6 +148,12 @@ async def release(body: HoldIn, request: Request) -> dict:
 @router.post("/wallet/refund", dependencies=[Depends(require_internal_token)])
 async def refund(body: RefundIn, request: Request) -> dict:
     """Reverse a spend INTO THE FUNDS IT CAME FROM (a refunded gift stays a gift)."""
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "wallet.refunded", actor="", tenant=body.tenant, resource="wallet",
+        ip=request.client.host if request.client else "")
     try:
         return await build_wallet(request).refund(tenant=body.tenant, seq=body.seq,
                                                   source=body.source, reason=body.reason)
@@ -191,6 +203,12 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     The endpoint still exists so a DSAR can PROVE it asked. "never contacted" and "holds nothing"
     are indistinguishable in an incomplete system and completely different to a regulator.
     """
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "subject.erased", actor="", tenant=body.tenant, resource=f"subject:{body.subject}",
+        ip=request.client.host if request.client else "")
     s = get_settings()
     eraser = WalletErasure(store=request.app.state.container.datastore, pii_salt=s.PII_SALT)
     return await eraser.erase(body.tenant, body.subject)

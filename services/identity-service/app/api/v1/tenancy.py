@@ -72,6 +72,12 @@ async def add_member(request: Request, body: AddMemberIn) -> dict:
     If the person already exists we grant a membership and touch nothing else — their credential
     is the key to every other company they work for, and an admin here has no claim on it (T2).
     """
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "member.added", actor="", tenant="", resource="member",
+        ip=request.client.host if request.client else "")
     s = get_settings()
     _, tenant = await _caller_tenant(request, _write_cap())
     svc = _svc(request)
@@ -103,6 +109,12 @@ async def remove_member(request: Request, person_id: str) -> dict:
     Deleting the Person from a single company's admin panel would remove her from every other
     company on the platform. This revokes a key, not a human.
     """
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "member.removed", actor="", tenant="", resource=f"member:{person_id}",
+        ip=request.client.host if request.client else "")
     _, tenant = await _caller_tenant(request, _write_cap())
     removed = await _svc(request).remove_member(tenant, person_id)
     if not removed:

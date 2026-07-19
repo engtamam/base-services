@@ -101,18 +101,36 @@ async def set_branding(request: Request, tenant_id: str, body: BrandingIn) -> di
 
 @admin_router.post("/{tenant_id}/suspend", dependencies=[Depends(_PLATFORM)])
 async def suspend(request: Request, tenant_id: str) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "tenant.suspended", actor="", tenant="", resource=f"tenant:{tenant_id}",
+        ip=request.client.host if request.client else "")
     svc, tenant = await _load(request, tenant_id)
     return (await svc.suspend(tenant)).public()
 
 
 @admin_router.post("/{tenant_id}/reactivate", dependencies=[Depends(_PLATFORM)])
 async def reactivate(request: Request, tenant_id: str) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "tenant.reactivated", actor="", tenant="", resource=f"tenant:{tenant_id}",
+        ip=request.client.host if request.client else "")
     svc, tenant = await _load(request, tenant_id)
     return (await svc.reactivate(tenant)).public()
 
 
 @admin_router.delete("/{tenant_id}", dependencies=[Depends(_PLATFORM)])
 async def delete(request: Request, tenant_id: str) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "tenant.deleted", actor="", tenant="", resource=f"tenant:{tenant_id}",
+        ip=request.client.host if request.client else "")
     svc, tenant = await _load(request, tenant_id)
     return await svc.delete(tenant)
 

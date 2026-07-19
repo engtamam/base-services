@@ -69,6 +69,12 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     unlinkable everywhere else. Idempotent: a retry on an already-erased subject returns the same
     shape rather than failing, because a DSAR retries.
     """
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "subject.erased", actor="", tenant=body.tenant, resource=f"subject:{body.subject}",
+        ip=request.client.host if request.client else "")
     c = request.app.state.container
     s = get_settings()
     eraser = IdentityErasure(
@@ -96,6 +102,12 @@ async def ratelimit_unblock(request: Request, body: UnblockIn) -> dict:
     off the throttled response's logs. It is internal-token gated: unblocking a limit is a platform
     action, not a tenant one.
     """
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "ratelimit.unblocked", actor="", tenant="", resource="ratelimit",
+        ip=request.client.host if request.client else "")
     await request.app.state.container.rate_limiter.reset(body.key)
     return {"unblocked": True, "key": body.key}
 

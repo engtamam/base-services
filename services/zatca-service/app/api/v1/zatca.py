@@ -69,6 +69,12 @@ async def put_settings(request: Request, body: SettingsIn, principal: Principal 
 
 @router.post("/onboard/compliance")
 async def onboard_compliance(request: Request, body: OnboardIn, principal: Principal = Depends(_ADMIN)) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "zatca.onboarded_compliance", actor=principal.subject, tenant=principal.tenant, resource="csid",
+        ip=request.client.host if request.client else "")
     svc = build_zatca(request)
     try:
         return await svc.onboard_compliance(op_tenant(principal, body.tenant),
@@ -81,6 +87,12 @@ async def onboard_compliance(request: Request, body: OnboardIn, principal: Princ
 async def onboard_production(request: Request, principal: Principal = Depends(_ADMIN),
                              tenant: str | None = None) -> dict:
     """Exchange the compliance CSID for a production CSID (after compliance checks pass)."""
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "zatca.onboarded_production", actor=principal.subject, tenant=principal.tenant, resource="csid",
+        ip=request.client.host if request.client else "")
     return await build_zatca(request).onboard_production(op_tenant(principal, tenant))
 
 

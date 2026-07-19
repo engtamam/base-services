@@ -211,6 +211,12 @@ async def invoice_pdf(request: Request, invoice_id: str, principal: Principal = 
 
 @router.post("/payments/{payment_id}/refund", dependencies=[Depends(_ADMIN)])
 async def refund(request: Request, payment_id: str, amount_minor: int | None = None) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "payment.refunded", actor="", tenant="", resource=f"payment:{payment_id}",
+        ip=request.client.host if request.client else "")
     res = await build_billing(request).refund(payment_id, amount_minor)
     if not res.get("ok") and res.get("reason") == "NOT_FOUND":
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
@@ -329,6 +335,12 @@ async def list_settlements(request: Request, invoice_id: str,
 async def reverse_settlement(request: Request, settlement_id: str, body: ReverseIn,
                              principal: Principal = Depends(_ADMIN)) -> dict:
     """A recalled or bounced transfer. History is never deleted; a credit note is issued."""
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "settlement.reversed", actor=principal.subject, tenant=principal.tenant, resource=f"settlement:{settlement_id}",
+        ip=request.client.host if request.client else "")
     svc = build_billing(request)
     tenant = None if "platform.billing" in principal.caps else (principal.tenant or "__none__")
     try:

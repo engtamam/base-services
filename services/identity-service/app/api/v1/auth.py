@@ -144,6 +144,12 @@ async def me(request: Request, principal: Principal = Depends(require_user),
 @router.post("/change-password")
 async def change_password(request: Request, body: ChangePwIn,
                           principal: Principal = Depends(require_user)) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "auth.password_changed", actor="", tenant="", resource="user",
+        ip=request.client.host if request.client else "")
     repo = UserRepository(request.app.state.container.datastore, request.app.state.container.login_identifier)
     user = await repo.get(principal.subject)
     if user is None:
@@ -159,6 +165,12 @@ async def change_password(request: Request, body: ChangePwIn,
 
 @router.post("/mfa/enroll")
 async def mfa_enroll(request: Request, principal: Principal = Depends(require_user)) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "auth.mfa_enrolled", actor="", tenant="", resource="user",
+        ip=request.client.host if request.client else "")
     c = request.app.state.container
     if not c.mfa.enabled:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "MFA_DISABLED")

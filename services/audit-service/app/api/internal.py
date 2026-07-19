@@ -48,6 +48,12 @@ async def require_internal_token(
 @router.post("/audit/enforce-retention", dependencies=[Depends(require_internal_token)])
 async def enforce_retention(request: Request, settings: Settings = Depends(get_settings)) -> dict:
     """Apply the RETENTION_DAYS policy (a scheduler calls this). 0 = keep forever."""
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "audit.retention_enforced", actor="", tenant="", resource="audit_log",
+        ip=request.client.host if request.client else "")
     return await build_audit(request).enforce_retention(settings.RETENTION_DAYS)
 
 
@@ -92,4 +98,10 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     name nobody. Redacting them instead would break the hash chain from that seq onward, which is
     the one thing this service exists to make impossible.
     """
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "subject.erased", actor="", tenant=body.tenant, resource=f"subject:{body.subject}",
+        ip=request.client.host if request.client else "")
     return await AuditErasure(audit=build_audit(request)).erase(body.tenant, body.subject)

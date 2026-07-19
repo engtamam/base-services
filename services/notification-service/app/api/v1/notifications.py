@@ -89,6 +89,12 @@ async def get_preferences(request: Request, principal: Principal = Depends(requi
 @notifications_router.put("/preferences")
 async def set_preferences(request: Request, body: PreferenceIn,
                           principal: Principal = Depends(require_user)) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "preferences.updated", actor=principal.subject, tenant=principal.tenant, resource="preferences",
+        ip=request.client.host if request.client else "")
     pref = Preference(user=principal.subject, suppressed=body.suppressed,
                       opt_out_channels=body.opt_out_channels, opt_out_events=body.opt_out_events)
     await PreferenceStore(request.app.state.container.datastore).set(pref)

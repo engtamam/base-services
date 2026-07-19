@@ -342,6 +342,12 @@ async def get_recording(request: Request, recording_id: str,
 @router.post("/recordings/{recording_id}/lock", dependencies=[Depends(_MANAGE)])
 async def lock_recording(request: Request, recording_id: str,
                          p: Principal = Depends(require_user)) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "recording.locked", actor=p.subject, tenant=p.tenant, resource=f"recording:{recording_id}",
+        ip=request.client.host if request.client else "")
     rec = await _load_recording(request, recording_id, p.tenant or "")
     rec.locked = True
     await _recordings(request).save(rec)
@@ -351,6 +357,12 @@ async def lock_recording(request: Request, recording_id: str,
 @router.post("/recordings/{recording_id}/unlock", dependencies=[Depends(_MANAGE)])
 async def unlock_recording(request: Request, recording_id: str,
                            p: Principal = Depends(require_user)) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "recording.unlocked", actor=p.subject, tenant=p.tenant, resource=f"recording:{recording_id}",
+        ip=request.client.host if request.client else "")
     rec = await _load_recording(request, recording_id, p.tenant or "")
     rec.locked = False
     await _recordings(request).save(rec)
@@ -360,6 +372,12 @@ async def unlock_recording(request: Request, recording_id: str,
 @router.delete("/recordings/{recording_id}", dependencies=[Depends(_MANAGE)])
 async def delete_recording(request: Request, recording_id: str,
                            p: Principal = Depends(require_user)) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "recording.deleted", actor=p.subject, tenant=p.tenant, resource=f"recording:{recording_id}",
+        ip=request.client.host if request.client else "")
     rec = await _load_recording(request, recording_id, p.tenant or "")
     if rec.locked:
         raise HTTPException(409, "RECORDING_LOCKED")   # legal hold

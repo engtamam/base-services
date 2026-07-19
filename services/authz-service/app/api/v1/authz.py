@@ -72,6 +72,13 @@ class AssignIn(BaseModel):
 # ── roles ────────────────────────────────────────────────────────────────────
 @router.post("/roles", status_code=201)
 async def create_role(request: Request, body: RoleIn, principal: Principal = Depends(_ADMIN)) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "role.created", actor=principal.subject, tenant=body.tenant or principal.tenant,
+        resource="role",
+        ip=request.client.host if request.client else "")
     tenant = _op_tenant(principal, body.tenant)
     r = await build_authz(request).create_role(tenant, body.name, body.capabilities, body.description)
     return r.to_dict()
@@ -94,6 +101,12 @@ async def get_role(request: Request, role_id: str, principal: Principal = Depend
 @router.put("/roles/{role_id}")
 async def update_role(request: Request, role_id: str, body: RoleUpdate,
                       principal: Principal = Depends(_ADMIN)) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "role.updated", actor=principal.subject, tenant=principal.tenant, resource=f"role:{role_id}",
+        ip=request.client.host if request.client else "")
     svc = build_authz(request)
     role = await svc.get_role(role_id)
     if role is None:
@@ -104,6 +117,12 @@ async def update_role(request: Request, role_id: str, body: RoleUpdate,
 
 @router.delete("/roles/{role_id}")
 async def delete_role(request: Request, role_id: str, principal: Principal = Depends(_ADMIN)) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "role.deleted", actor=principal.subject, tenant=principal.tenant, resource=f"role:{role_id}",
+        ip=request.client.host if request.client else "")
     svc = build_authz(request)
     role = await svc.get_role(role_id)
     if role is None:
@@ -116,6 +135,12 @@ async def delete_role(request: Request, role_id: str, principal: Principal = Dep
 # ── policies ──────────────────────────────────────────────────────────────────
 @router.post("/policies", status_code=201)
 async def create_policy(request: Request, body: PolicyIn, principal: Principal = Depends(_ADMIN)) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "policy.created", actor=principal.subject, tenant=principal.tenant, resource="policy",
+        ip=request.client.host if request.client else "")
     tenant = _op_tenant(principal, body.tenant)
     p = await build_authz(request).create_policy(tenant, body.effect, body.action, body.resource,
                                                  body.condition, body.priority, body.description)
@@ -129,6 +154,12 @@ async def list_policies(request: Request, principal: Principal = Depends(_ADMIN)
 
 @router.delete("/policies/{policy_id}")
 async def delete_policy(request: Request, policy_id: str, principal: Principal = Depends(_ADMIN)) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "policy.deleted", actor=principal.subject, tenant=principal.tenant, resource=f"policy:{policy_id}",
+        ip=request.client.host if request.client else "")
     svc = build_authz(request)
     p = await svc.get_policy(policy_id)
     if p is None:
@@ -142,6 +173,12 @@ async def delete_policy(request: Request, policy_id: str, principal: Principal =
 @router.put("/subjects/{subject}/roles")
 async def set_roles(request: Request, subject: str, body: AssignIn,
                     principal: Principal = Depends(_ADMIN)) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "subject.roles_assigned", actor=principal.subject, tenant=principal.tenant, resource=f"subject:{subject}",
+        ip=request.client.host if request.client else "")
     tenant = _op_tenant(principal)
     a = await build_authz(request).set_subject_roles(subject, tenant, body.roles, body.capabilities)
     return a.to_dict()

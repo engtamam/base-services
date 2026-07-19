@@ -219,6 +219,12 @@ async def download(request: Request, file_id: str, principal: Principal = Depend
 
 @router.post("/{file_id}/signed-url")
 async def signed_url(request: Request, file_id: str, principal: Principal = Depends(_READ)) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "file.signed_url_issued", actor=principal.subject, tenant=principal.tenant, resource=f"file:{file_id}",
+        ip=request.client.host if request.client else "")
     svc = build_files(request)
     await _load_scoped(svc, file_id, principal)
     token = svc.signed_token(file_id)
@@ -227,6 +233,12 @@ async def signed_url(request: Request, file_id: str, principal: Principal = Depe
 
 @router.delete("/{file_id}", dependencies=[Depends(_UPLOAD)])
 async def delete(request: Request, file_id: str, principal: Principal = Depends(require_user)) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    await request.app.state.auditor.record(
+        "file.deleted", actor=principal.subject, tenant=principal.tenant, resource=f"file:{file_id}",
+        ip=request.client.host if request.client else "")
     svc = build_files(request)
     await _load_scoped(svc, file_id, principal)
     return await svc.delete(file_id)

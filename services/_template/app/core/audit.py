@@ -42,7 +42,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.auditable import DeclarationError
-from app.ports.audit_sink import AuditEvent, AuditReceipt
+from app.ports.audit_sink import FAILED, AuditEvent, AuditReceipt
 
 
 class AuditUnavailable(RuntimeError):
@@ -89,7 +89,15 @@ class Auditor:
             return receipt
 
         self._count_gap(action, receipt)
-        if action in self._critical and self._fail_closed:
+
+        # Fail closed only when a log we RELY ON could not take the event. A `dropped` receipt
+        # means auditing was deliberately not configured (the null sink), and blocking on that
+        # would make every critical route 503 the moment a developer runs the service with its
+        # zero-infrastructure defaults — punishing the safe default rather than the unsafe one.
+        # Production cannot reach here with a null sink: assert_audit_config_ok() refuses to boot
+        # on it, which is where "you must configure a log" is enforced. This is where "the log you
+        # configured is down" is enforced.
+        if receipt.status == FAILED and action in self._critical and self._fail_closed:
             raise AuditUnavailable(
                 "this action requires an audit record and the audit log is unavailable")
         return receipt
