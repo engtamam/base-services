@@ -36,6 +36,7 @@ Exit 1 on any violation, naming the service and which side of the seam is missin
 from __future__ import annotations
 
 import ast
+import os
 import pathlib
 import re
 import sys
@@ -110,11 +111,33 @@ def anonymous_emits(service: pathlib.Path) -> list[str]:
     return found
 
 
+# Which call names count as an emit. `record` is ours; `audit` is the shape every real consumer
+# converges on, because write-ahead ordering and a pseudonymous actor want to live in ONE helper
+# rather than at forty call sites.
+#
+# This is configurable because it has to be. A team building on this repo copied the gate verbatim,
+# wrapped the auditor in their own `audit(request, action, ...)` helper — the correct thing to do —
+# and every one of their twenty-six actions was reported as never emitted. A gate that cries wolf
+# on a whole codebase is not a strict gate; it is one people learn to disbelieve, and it stops
+# working long before anyone switches it off.
+_EMIT_CALLEES = tuple(
+    n.strip() for n in os.environ.get("AUDIT_EMIT_CALLEES", "record,audit").split(",") if n.strip()
+)
+# `[^)]*?` — not `[^,)]*?`. The action is not always the FIRST argument: a wrapper is naturally
+# written `audit(request, "tenant.suspended", ...)`, so the pattern has to be able to cross a comma
+# to reach it. Refusing to was the bug's twin — it matched our own call shape and nothing else,
+# which is exactly how a gate ends up validating only the code that inspired it.
+_EMIT = re.compile(
+    r"""(?:%s)\(\s*[^)]*?["']([a-z0-9_]+(?:\.[a-z0-9_]+)+)["']"""
+    % "|".join(re.escape(n) for n in _EMIT_CALLEES)
+)
+
+
 def emitted_actions(service: pathlib.Path) -> set[str]:
-    """Action names this service actually passes to auditor.record().
+    """Action names this service actually passes to auditor.record() (or a configured wrapper).
 
     Read as source text, not by importing: the gate must never execute what it audits. It matches
-    the literal first argument, which is the only form that can be checked statically — and is the
+    a literal string argument, which is the only form that can be checked statically — and is the
     form every call should use anyway, because a computed action name cannot be found by anyone
     searching the log either.
     """
@@ -131,8 +154,7 @@ def emitted_actions(service: pathlib.Path) -> set[str]:
         # three-part action is still caught. But it sends someone hunting for a call that is
         # already there, and a gate people learn to disbelieve stops working long before it
         # stops running.
-        for match in re.finditer(r"""record\(\s*["']([a-z0-9_]+(?:\.[a-z0-9_]+)+)["']""",
-                                 path.read_text(encoding="utf-8")):
+        for match in _EMIT.finditer(path.read_text(encoding="utf-8")):
             found.add(match.group(1))
     return found
 
@@ -226,6 +248,23 @@ def main() -> int:
                     f"      check passes while the chain stays empty — the same defect one level\n"
                     f"      deeper. Fix: call `await request.app.state.auditor.record(\"<action>\",\n"
                     f"      ...)` at the point the action happens.")
+
+            # R5. The other direction, which this gate never checked at all: an emit for an
+            # action nothing declares. Adopted from a team building on this repo, who added it to
+            # their copy and had it catch a real bug in their own code within minutes.
+            #
+            # It is not a style rule. Our Auditor raises DeclarationError on an undeclared action,
+            # so every one of these is a 500 waiting for the first request that takes that path —
+            # and it will be a privileged path, because those are the ones that record. Catching
+            # it in CI costs nothing; catching it in production costs the action.
+            undeclared = sorted(emitted - {a.get("action") for a in actions})
+            if undeclared:
+                problems.append(
+                    f"  {name}: emits {len(undeclared)} action(s) it never declares:\n"
+                    f"      {', '.join(undeclared)}\n"
+                    f"      The Auditor raises DeclarationError on an undeclared action, so this\n"
+                    f"      is a 500 waiting for the first caller. Fix: add it to\n"
+                    f"      app/auditable_actions.py, or correct the name at the call site.")
 
             # R4. An entry that names nobody. See anonymous_emits() for why this is worse than a
             # missing entry rather than a lesser version of one.
