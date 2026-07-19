@@ -76,8 +76,12 @@ WIRING: dict[str, dict[str, str]] = {
     "billing-service": {
         "CURRENCY": "locale.currency",
     },
+    "wallet-service": {
+        "PII_SALT": "identifiers.piiSalt",   # frozen: re-maps every pseudonym
+    },
     "zatca-service": {
         "CURRENCY": "locale.currency",
+        "PII_SALT": "identifiers.piiSalt",   # frozen: re-maps every pseudonym
     },
     "notification-service": {
         "PII_SALT": "identifiers.piiSalt",

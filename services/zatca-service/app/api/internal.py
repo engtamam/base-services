@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from app.api.v1.zatca import build_zatca
 from app.config import Settings, get_settings
+from app.core.erasure import ZatcaErasure
 from app.manifest import build_manifest
 
 router = APIRouter(prefix="/internal", tags=["internal"])
@@ -71,3 +72,24 @@ async def internal_manifest(
     if guard is not None:
         manifest["security"] = {"cwe_guard": guard.report()}
     return manifest
+
+
+class EraseIn(BaseModel):
+    tenant: str
+    subject: str
+
+
+@router.post("/privacy/erase", dependencies=[Depends(require_internal_token)])
+async def erase_subject(request: Request, body: EraseIn) -> dict:
+    """zatca deletes NO legal record — it CANNOT, and the ack says why.
+
+    A signed invoice carries a ZATCA signature over its own bytes and its hash is the next
+    invoice's PIH, so altering one invoice would invalidate every invoice after it. Unlike billing,
+    the buyer's identity here cannot even be pseudonymised. What IS erased is the unsigned draft
+    working copy of already-accepted invoices: real personal data, no legal significance.
+    """
+    c = request.app.state.container
+    s = get_settings()
+    eraser = ZatcaErasure(store=c.datastore, pii_salt=s.PII_SALT,
+                          retention_years=s.TAX_RETENTION_YEARS, max_scan=s.ERASURE_MAX_SCAN)
+    return await eraser.erase(body.tenant, body.subject)

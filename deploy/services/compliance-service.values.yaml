@@ -33,6 +33,42 @@ autoscaling:
 
 existingSecret: compliance-service-secrets   # INTERNAL_SERVICE_TOKEN, DATASTORE_DSN, CACHE_URL, TOKEN_*
 
+# ── The data map: where a subject's data lives ────────────────────────────────
+# OUR OWN services are registered here through EXACTLY the same config path a customer uses for
+# theirs. Nothing in the dispatcher knows the name of a base-services service; there is no internal
+# fast path and no special case. That is deliberate on two counts: it means this list is a worked
+# example anyone can copy (see docs/contracts/privacy-erase-guide.md), and it means the path our
+# own erasures travel is the path we ask customers to trust — if it breaks for them, it broke for
+# us first.
+#
+# To add YOUR service: implement one endpoint (docs/contracts/privacy-erase.schema.json), append
+# `name=https://your-host` below, and declare a data-map row so the DSAR knows to wait for it.
+# A target in the data map with no entry here FAILS LOUDLY rather than being skipped — not knowing
+# where a service lives is a reason to shout, not to quietly report success.
+#
+# Third parties: add the path override under PRIVACY_ERASE_PATHS if theirs differs from ours, and
+# name a credential in PRIVACY_TARGET_SECRETS so they never receive our internal token.
+env:
+  PRIVACY_TRANSPORT_DRIVER: "http"
+  PRIVACY_TARGETS: >-
+    identity-service=http://identity-service:8000,
+    billing-service=http://billing-service:8000,
+    file-service=http://file-service:8000,
+    notification-service=http://notification-service:8000,
+    analytics-service=http://analytics-service:8000,
+    audit-service=http://audit-service:8000,
+    authz-service=http://authz-service:8000,
+    compliance-service=http://compliance-service:8000,
+    feature-flag-service=http://feature-flag-service:8000,
+    search-service=http://search-service:8000
+
+  # Retention for the records THIS service owns. Every other service declares its own period in its
+  # RoPA row and enforces it itself — only the owner knows which timestamp is its retention clock.
+  # Deliberately conservative: consent PROOF outlives everything else because it is the evidence
+  # that answers "prove she agreed before you processed", and destroying it destroys the defence
+  # for processing that already happened.
+  RETENTION_RULES: "dsar=1095,breaches=1825,consent_proof=2555"
+
 # The erasure fan-out. A DSAR dispatches immediately on process(); this is the SAFETY NET that
 # re-drives whatever did not ack — a target that was down, restarting, or answered 202 and is still
 # working. Without it, one unlucky moment during a fan-out leaves a subject's data in place while

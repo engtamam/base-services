@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from app.api.v1.wallet import build_wallet
 from app.config import Settings, get_settings
 from app.core import funds as _funds
+from app.core.erasure import WalletErasure
 from app.core.money import MoneyError
 from app.core.wallet_service import Conflict, WalletError
 from app.manifest import build_manifest
@@ -176,3 +177,20 @@ async def internal_manifest(
     if guard is not None:
         manifest["security"] = {"cwe_guard": guard.report()}
     return manifest
+
+
+class EraseIn(BaseModel):
+    tenant: str
+    subject: str
+
+
+@router.post("/privacy/erase", dependencies=[Depends(require_internal_token)])
+async def erase_subject(request: Request, body: EraseIn) -> dict:
+    """wallet holds no subject-linked data — every row is keyed by tenant.
+
+    The endpoint still exists so a DSAR can PROVE it asked. "never contacted" and "holds nothing"
+    are indistinguishable in an incomplete system and completely different to a regulator.
+    """
+    s = get_settings()
+    eraser = WalletErasure(store=request.app.state.container.datastore, pii_salt=s.PII_SALT)
+    return await eraser.erase(body.tenant, body.subject)

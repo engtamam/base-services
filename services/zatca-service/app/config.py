@@ -132,6 +132,16 @@ class Settings(BaseSettings):
     ZATCA_VALIDATE_BEFORE_SUBMIT: bool = False  # optional official-SDK validate pass before submit
     VAT_RATE: str = "0.15"
     CURRENCY: str = "SAR"
+    # Salts the subject pseudonym returned on an erasure ack. FROZEN — see
+    # config/product.identifiers.lock.json. Change it and every pseudonym re-maps, so an erasure
+    # can no longer prove it erased the right person.
+    PII_SALT: str = ""
+    # How long a tax invoice must be kept. KSA/ZATCA is 6 years; other jurisdictions differ, so it
+    # is config — the erasure ack quotes this number back to the data subject as the reason.
+    TAX_RETENTION_YEARS: int = 6
+    # A DSAR scans one taxpayer's invoices to find their working copies. Bounded: a DSAR is rare
+    # and must never become an unbounded read.
+    ERASURE_MAX_SCAN: int = 100_000
     ZATCA_RETRY_BASE_MS: int = 60_000        # 60s
     ZATCA_RETRY_MAX_MS: int = 21_600_000     # 6h
     ZATCA_RETRY_MAX_ATTEMPTS: int = 12
