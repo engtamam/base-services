@@ -1,0 +1,91 @@
+"""Repositories over the generic DataStore.
+
+Two collections, and the split is the whole anti-abuse design:
+
+    verifications   one row per check. Subject data — erasable.
+    identity_seen   one row per distinct identity ever verified. A one-way hash and nothing else.
+                    NOT erasable, and that is a decision with a reason, stated in the erasure ack.
+
+Keeping the second is what stops the oldest trick in the book: delete the tenant, sign up again
+with the same commercial registration, collect the welcome gift a second time. Per-tenant
+idempotency cannot see that — the tenant is gone. Both reference implementations we studied got
+this wrong in exactly that way.
+
+It is defensible to keep because the row names nobody: a salted one-way hash, a first-seen
+timestamp, and a count. It cannot be reversed into an identity, cannot be used to contact anyone,
+and holds no attribute of a person. What it can do is answer "have we seen this registration
+before", which is fraud prevention — a recognised basis for retention, and one the erasure ack
+states out loud rather than quietly exercising.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+from app.core.models import PENDING, Verification
+
+_VERIFICATIONS = "verifications"
+_SEEN = "identity_seen"
+
+
+class VerificationStore:
+    def __init__(self, store) -> None:
+        self._store = store
+
+    async def put(self, record: Verification) -> Verification:
+        await self._store.put(_VERIFICATIONS, record.id, record.to_dict())
+        return record
+
+    async def get(self, verification_id: str) -> Verification | None:
+        row = await self._store.get(_VERIFICATIONS, verification_id)
+        return Verification.from_dict(row) if row else None
+
+    async def latest(self, tenant: str, subject: str, claim_type: str) -> Verification | None:
+        """The most recent check of this claim. Sorted newest-first so a re-verification
+        supersedes the old verdict without deleting it — the history IS the audit trail."""
+        rows, _ = await self._store.find(
+            _VERIFICATIONS, {"tenant": tenant, "subject": subject, "claim_type": claim_type},
+            limit=1, sort=("created_at", "desc"))
+        return Verification.from_dict(rows[0]) if rows else None
+
+    async def for_subject(self, tenant: str, subject: str, limit: int = 100) -> list[Verification]:
+        rows, _ = await self._store.find(_VERIFICATIONS, {"tenant": tenant, "subject": subject},
+                                         limit=limit, sort=("created_at", "desc"))
+        return [Verification.from_dict(r) for r in rows]
+
+    async def pending_before(self, cutoff: float, limit: int = 500) -> list[Verification]:
+        """Prompts that have lapsed. Filtered on the explicit PENDING status rather than on
+        'not settled', so a verdict added later is not swept by accident."""
+        rows, _ = await self._store.find(_VERIFICATIONS, {"verdict": PENDING}, limit=limit,
+                                         sort=("created_at", "asc"))
+        return [r for r in (Verification.from_dict(row) for row in rows)
+                if r.pending_until and cutoff >= r.pending_until]
+
+    async def delete(self, verification_id: str) -> None:
+        await self._store.delete(_VERIFICATIONS, verification_id)
+
+
+class IdentityRegistry:
+    """Which distinct identities we have ever verified. Survives erasure by design."""
+
+    def __init__(self, store) -> None:
+        self._store = store
+
+    async def remember(self, claim_ref: str, now: float) -> dict[str, Any]:
+        """Record that this identity has been verified, and say whether we had seen it before.
+
+        The return value is what an onboarding grant checks: `first_seen` False means this
+        registration has already collected whatever is given once per identity.
+        """
+        existing = await self._store.get(_SEEN, claim_ref)
+        if existing:
+            existing["times"] = int(existing.get("times", 1)) + 1
+            existing["last_at"] = now
+            await self._store.put(_SEEN, claim_ref, existing)
+            return {"first_seen": False, "record": existing}
+
+        row = {"id": claim_ref, "first_at": now, "last_at": now, "times": 1}
+        await self._store.put(_SEEN, claim_ref, row)
+        return {"first_seen": True, "record": row}
+
+    async def seen(self, claim_ref: str) -> bool:
+        return await self._store.get(_SEEN, claim_ref) is not None
