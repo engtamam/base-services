@@ -38,9 +38,18 @@ class RequirementState:
     detail: str = ""
 
     @property
+    def satisfied(self) -> bool:
+        """THE definition, used by everything below.
+
+        Written as `== SATISFIED`, never `!= UNSATISFIED`: the second form makes every status
+        added later — starting with `unknown` — default to satisfied.
+        """
+        return self.status == SATISFIED
+
+    @property
     def attemptable(self) -> bool:
         """Can the person act on this NOW? Not satisfied, and nothing is holding it up."""
-        return self.status != SATISFIED and not self.blocked_by
+        return not self.satisfied and not self.blocked_by
 
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "status": self.status, "optional": self.optional,
@@ -64,7 +73,7 @@ class FlowState:
         today if a verification lapsed, and reporting it as still complete would be the same class
         of lie as a DSAR marked done with data still out there.
         """
-        return all(r.status == SATISFIED for r in self.requirements if not r.optional)
+        return all(r.satisfied for r in self.requirements if not r.optional)
 
     @property
     def next_up(self) -> list[RequirementState]:
@@ -82,8 +91,7 @@ class FlowState:
             "complete": self.complete,
             # Deliberately NOT a step number or a percentage. A count of what is left is honest
             # about a set; "step 3 of 7" implies an order that does not exist.
-            "remaining": [r.id for r in self.requirements
-                          if r.status != SATISFIED and not r.optional],
+            "remaining": [r.id for r in self.requirements if not r.satisfied and not r.optional],
             "next": [r.to_dict() for r in self.next_up],
             "requirements": [r.to_dict() for r in self.requirements],
         }
@@ -115,7 +123,7 @@ class Evaluator:
         # current state of its blocker — not by declaration order.
         for req in flow.get("requirements") or []:
             for blocked_id in req.get("blocks") or []:
-                if blocked_id in answers and answers[req["id"]].status != SATISFIED:
+                if blocked_id in answers and not answers[req["id"]].satisfied:
                     answers[blocked_id].blocked_by.append(req["id"])
 
         return FlowState(flow=flow["flow"], requirements=list(answers.values()))
