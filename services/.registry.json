@@ -11,6 +11,7 @@
   "identity-service": 8001,
   "job-service": 8012,
   "notification-service": 8002,
+  "onboarding-service": 8020,
   "search-service": 8013,
   "stream-service": 8018,
   "tenant-service": 8003,
