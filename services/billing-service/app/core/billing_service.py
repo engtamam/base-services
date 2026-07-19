@@ -111,9 +111,6 @@ class BillingService:
                                              features=features or [], limits=limits or {},
                                              trial_days=trial_days))
 
-    async def get_plan(self, plan_id: str) -> Plan | None:
-        return await self._plans.fetch(plan_id)
-
     async def list_plans(self) -> list[dict]:
         return await self._plans.all(self._cfg["list_limit"])
 

@@ -50,10 +50,6 @@ class RefreshStore:
             return "revoked"
         return "active"
 
-    async def user_of(self, jti: str) -> str | None:
-        row = await self._store.get(_COLL, jti)
-        return row.get("user_id") if row else None
-
     async def tenant_of(self, jti: str) -> str | None:
         """The tenant this refresh token was minted for. None on the single-tenant path."""
         row = await self._store.get(_COLL, jti)

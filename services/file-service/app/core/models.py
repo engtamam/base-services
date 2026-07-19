@@ -35,7 +35,7 @@ class FileObject:
         return {
             "id": self.id, "tenant": self.tenant, "owner": self.owner,
             "filename": self.filename, "content_type": self.content_type,
-            "size": self.size, "sha256": self.sha256, "storage_key": self.sha256,
+            "size": self.size, "sha256": self.sha256, "storage_key": self.storage_key,
             "created": self.created, "metadata": self.metadata,
         }
 

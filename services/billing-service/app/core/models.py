@@ -22,23 +22,21 @@ def iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).isoformat()
 
 
-# Pricing types: flat (fixed per period) · per_seat (× quantity) · usage (metered) · hybrid (base + overage)
-@dataclass
-class Price:
-    interval: str = "month"              # month | year | once
-    amount_minor: int = 0
-    currency: str = "SAR"
-    type: str = "flat"                   # flat | per_seat | usage | hybrid
-    usage_metric: str = ""               # for usage/hybrid
-    included_units: int = 0              # hybrid: free units before overage
-    overage_minor: int = 0               # hybrid/usage: price per unit over included
-    includes_tax: bool = False           # True → amount is VAT-inclusive (KSA display prices)
-
-
 @dataclass
 class Plan:
     id: str
     name: str
+    # Each price is a plain dict, not a type — it is snapshotted onto the subscription verbatim,
+    # so a dataclass here would be a second copy of a shape the store already round-trips:
+    #   interval        month | year | once
+    #   amount_minor    int
+    #   currency        e.g. "SAR"
+    #   type            flat (fixed per period) | per_seat (× quantity) | usage (metered)
+    #                   | hybrid (base + overage)
+    #   usage_metric    for usage/hybrid
+    #   included_units  hybrid: free units before overage
+    #   overage_minor   hybrid/usage: price per unit over included
+    #   includes_tax    True → amount is VAT-inclusive (KSA display prices)
     prices: list[dict] = field(default_factory=list)
     features: list[str] = field(default_factory=list)
     limits: dict[str, Any] = field(default_factory=dict)
