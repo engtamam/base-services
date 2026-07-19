@@ -28,6 +28,9 @@ from app.adapters.rate_limiter.redis import RedisRateLimiter
 from app.adapters.secrets.env import EnvSecrets
 from app.adapters.secrets.file import FileSecrets
 from app.adapters.secrets.vault import VaultSecrets
+from app.adapters.audit_sink.eventbus import EventBusAuditSink
+from app.adapters.audit_sink.http import HttpAuditSink
+from app.adapters.audit_sink.null import NullAuditSink
 from app.adapters.telemetry.stdout import StdoutTelemetry
 from app.adapters.token_verifier.hs256 import HS256Verifier
 from app.adapters.token_verifier.jwks import JWKSVerifier
@@ -87,6 +90,14 @@ _RATELIMITER: dict[str, Builder] = {
     "memory": lambda s: MemoryRateLimiter(s.RATELIMIT_MAX, s.RATELIMIT_WINDOW_SECONDS),
     "redis": lambda s: RedisRateLimiter(s.RATELIMIT_URL, s.RATELIMIT_MAX, s.RATELIMIT_WINDOW_SECONDS,
                                         degrade=s.RATELIMIT_DEGRADE),
+}
+# Where privileged actions are witnessed. `null` records nothing and SAYS so — the boot guard
+# refuses it in production, because a chain that verifies perfectly while empty is a control that
+# exists only on paper.
+_AUDIT_SINK: dict[str, Builder] = {
+    "null": lambda s: NullAuditSink(),
+    "http": lambda s: HttpAuditSink(s.audit_ingest_url, s.INTERNAL_SERVICE_TOKEN,
+                                    timeout=s.AUDIT_TIMEOUT_SECONDS),
 }
 _TELEMETRY: dict[str, Builder] = {
     "stdout": lambda s: StdoutTelemetry(),
@@ -161,6 +172,7 @@ class Container:
     token_verifier: TokenVerifier
     rate_limiter: RateLimiter
     telemetry: Telemetry
+    audit_sink: Any = None
     payment_gateway: Any = None
     tax_calculator: Any = None
     einvoicer: Any = None
@@ -178,6 +190,8 @@ class Container:
             {"port": "token_verifier", "driver": self.token_verifier.driver},
             {"port": "rate_limiter", "driver": self.rate_limiter.driver},
             {"port": "telemetry", "driver": self.telemetry.driver},
+            *([{"port": "audit_sink", "driver": self.audit_sink.driver}]
+              if self.audit_sink is not None else []),
         ]
         for name in ("payment_gateway", "tax_calculator", "einvoicer", "pdf_renderer"):
             adapter = getattr(self, name)
@@ -205,18 +219,29 @@ class Container:
                     pass
 
 
+def _build_audit_sink(settings: Settings, event_bus) -> Any:
+    """The eventbus sink must publish on the SAME bus the container hands out — a second instance
+    would be a second in-memory broker, so events would vanish while the sink reported success."""
+    driver = settings.AUDIT_SINK_DRIVER
+    if driver == "eventbus":
+        return EventBusAuditSink(event_bus, settings.AUDIT_TOPIC)
+    return _pick(_AUDIT_SINK, driver, "audit_sink", settings)
+
+
 def build_container(settings: Settings) -> Container:
     """Resolve every port from config. Fail-fast on any unknown driver."""
+    event_bus = _pick(_EVENTBUS, settings.EVENTBUS_DRIVER, "event_bus", settings)
     return Container(
         datastore=_pick(_DATASTORE, settings.DATASTORE_DRIVER, "datastore", settings),
         cache=_pick(_CACHE, settings.CACHE_DRIVER, "cache", settings),
-        event_bus=_pick(_EVENTBUS, settings.EVENTBUS_DRIVER, "event_bus", settings),
+        event_bus=event_bus,
         queue=_pick(_QUEUE, settings.QUEUE_DRIVER, "queue", settings),
         object_store=_pick(_OBJECTSTORE, settings.OBJECTSTORE_DRIVER, "object_store", settings),
         secrets=_pick(_SECRETS, settings.SECRETS_DRIVER, "secrets", settings),
         token_verifier=_pick(_TOKEN, settings.TOKEN_VERIFIER_DRIVER, "token_verifier", settings),
         rate_limiter=_pick(_RATELIMITER, settings.RATELIMITER_DRIVER, "rate_limiter", settings),
         telemetry=_pick(_TELEMETRY, settings.TELEMETRY_DRIVER, "telemetry", settings),
+        audit_sink=_build_audit_sink(settings, event_bus),
         payment_gateway=_pick(_PAYMENT, settings.PAYMENT_GATEWAY_DRIVER, "payment_gateway", settings),
         tax_calculator=_pick(_TAX, settings.TAX_CALCULATOR_DRIVER, "tax_calculator", settings),
         einvoicer=_pick(_EINVOICER, settings.EINVOICER_DRIVER, "einvoicer", settings),

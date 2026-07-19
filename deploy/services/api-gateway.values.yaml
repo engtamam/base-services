@@ -44,6 +44,12 @@ networkPolicy:
 metrics:
   serviceMonitor: true
 
+# From config/product.json — regenerate with scripts/gen_deploy_values.py.
+# Do not hand-edit: `identifiers` are frozen and guarded by safety:product.
+env:
+  AUDIT_SERVICE_URL: "http://audit-service:8000"
+  AUDIT_SINK_DRIVER: "http"
+
 ingress:
   enabled: true
   className: traefik

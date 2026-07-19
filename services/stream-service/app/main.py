@@ -22,6 +22,7 @@ from app.api.errors import register_error_handlers
 from app.api.health import register_readiness_check
 from app.api.v1 import router as v1_router
 from app.config import get_settings
+from app.core.audit import build_auditor
 from app.container import build_container
 from app.middleware import (
     BodyLimitMiddleware,
@@ -39,6 +40,9 @@ from app.security.step_map import load_step_map
 def create_app() -> FastAPI:
     # Fail-fast: this raises (and aborts startup) if the environment is invalid.
     settings = get_settings()
+    # A service that cannot witness its own privileged actions must not serve
+    # traffic as if it can.
+    settings.assert_audit_config_ok()
     settings.assert_stream_config_ok()   # refuse footgun postures (null engine / no SEAL_KEY / …) in prod
     configure_logging(settings.SERVICE_NAME, settings.ENV, settings.LOG_LEVEL)
     logger = get_logger("app.main")
@@ -78,6 +82,9 @@ def create_app() -> FastAPI:
         openapi_url=None if settings.is_production else "/openapi.json",
     )
     app.state.container = container
+    # Validated at boot: a malformed declaration stops the service rather than
+    # surfacing months later as a hole in the log.
+    app.state.auditor = build_auditor(settings, container)
     app.state.cwe_guard = cwe_guard
 
     # Readiness reflects real dependency health for the wired adapters.

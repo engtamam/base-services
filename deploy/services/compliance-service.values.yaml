@@ -47,6 +47,8 @@ metrics:
 # From config/product.json — regenerate with scripts/gen_deploy_values.py.
 # Do not hand-edit: `identifiers` are frozen and guarded by safety:product.
 env:
+  AUDIT_SERVICE_URL: "http://audit-service:8000"
+  AUDIT_SINK_DRIVER: "http"
   PRIVACY_TARGETS: "identity-service=http://identity-service:8000,billing-service=http://billing-service:8000,file-service=http://file-service:8000,notification-service=http://notification-service:8000,analytics-service=http://analytics-service:8000,audit-service=http://audit-service:8000,authz-service=http://authz-service:8000,compliance-service=http://compliance-service:8000,feature-flag-service=http://feature-flag-service:8000,search-service=http://search-service:8000,zatca-service=http://zatca-service:8000,wallet-service=http://wallet-service:8000,stream-service=http://stream-service:8000,webhook-service=http://webhook-service:8000,job-service=http://job-service:8000,connector-service=http://connector-service:8000,tenant-service=http://tenant-service:8000,api-gateway=http://api-gateway:8000"
   PRIVACY_TRANSPORT_DRIVER: "http"
   RETENTION_RULES: "dsar=1095,breaches=1825,consent_proof=2555"

@@ -1,0 +1,68 @@
+"""wallet-service — auditable actions.
+
+Every action here moves money, so the split is by DIRECTION rather than by importance. Credits and
+refunds create value out of nothing — that is the insider-fraud path and it is critical. Spends,
+reserves and confirmations consume value the customer already had, and the immutable ledger
+already records them, so they never block.
+
+See services/_template/app/auditable_actions.py for the format, the four sources, and how to decide
+`critical` (it REFUSES the request when the audit log is unavailable, so it is a behaviour and not
+a severity label).
+"""
+from __future__ import annotations
+
+from typing import Any
+
+AUDITABLE_ACTIONS: list[dict[str, Any]] = [
+    {
+        "action": "wallet.spent",
+        "source": "user",
+        "critical": False,
+    },
+    {
+        "action": "wallet.reserved",
+        "source": "user",
+        "critical": False,
+    },
+    {
+        "action": "wallet.confirmed",
+        "source": "user",
+        "critical": False,
+    },
+    {
+        "action": "wallet.released",
+        "source": "user",
+        "critical": False,
+    },
+    {
+        "action": "wallet.holds_swept",
+        "source": "system",
+        "critical": False,
+    },
+    {
+        "action": "wallet.grants_swept",
+        "source": "system",
+        "critical": False,
+    },
+    {
+        "action": "wallet.credited",
+        "source": "admin",
+        "critical": True,
+        "why": "a credit creates value from nothing; an unattributable credit is the classic "
+               "insider-fraud path and is indistinguishable from theft",
+    },
+    {
+        "action": "wallet.refunded",
+        "source": "admin",
+        "critical": True,
+        "why": "a refund returns money that was already taken; without a record there is no "
+               "way to say who authorised it",
+    },
+    {
+        "action": "subject.erased",
+        "source": "internal",
+        "critical": True,
+        "why": "erasure is irreversible and the data is gone — nothing but this record can "
+               "show we honoured the DSAR, or prove we erased the right person",
+    },
+]

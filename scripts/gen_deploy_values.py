@@ -146,6 +146,14 @@ ingress:
 # Non-identity env that belongs to the DEPLOYMENT rather than to config/product.json. It lives
 # here, not hand-edited into the values file, because safety:wiring regenerates and diffs — a hand
 # edit would be silently reverted on the next release and the fan-out would quietly stop.
+# Every service records its privileged actions to audit-service, through the same config path a
+# customer would use for their own log. The chain was empty for months because nothing was pointed
+# at it; safety:audit-wiring now fails if a service declares actions and is not configured here.
+AUDIT_ENV = {
+    "AUDIT_SINK_DRIVER": "http",
+    "AUDIT_SERVICE_URL": "http://audit-service:8000",
+}
+
 STATIC_ENV: dict[str, dict[str, str]] = {
     "compliance-service": {
         # The data map. OUR OWN services are registered through EXACTLY the config path a customer
@@ -180,6 +188,13 @@ def _env_block(name: str, cfg: dict) -> str:
     default with nothing.
     """
     env = dict(product.env_for(name, cfg) or {})
+    # audit-service points at ITSELF, deliberately. Its own auditable actions are purge, retention
+    # and erasure — rare, and every one of them REMOVES from the log, so they are exactly the
+    # actions that must be recorded before they happen. A loopback call costs nothing at that
+    # volume, keeps one code path for every service, and means a purge the service cannot record
+    # is a purge that does not happen.
+    if name != "_template":
+        env.update(AUDIT_ENV)
     env.update(STATIC_ENV.get(name, {}))
     if not env:
         return ""
