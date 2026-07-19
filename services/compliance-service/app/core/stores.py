@@ -33,16 +33,116 @@ class ConsentStore:
         self._store = store
 
     @staticmethod
-    def _key(tenant: str, subject: str, purpose: str) -> str:
+    def normalise(purpose: str) -> str:
+        """`"  Matching "` -> `"matching"`. The one place the rule lives.
+
+        Purpose was raw free text used directly as a store key, so `Matching` and `matching` were
+        two different consents. A caller asking with the wrong casing got `no_consent_record` —
+        IDENTICAL to the answer for a person who genuinely never consented. The failure is a
+        default-DENY, so it is not an unlawful-processing hole; it is undiagnosable, which is its
+        own kind of bad. Nobody can tell "they said no" from "you typed it differently".
+
+        Only case and surrounding whitespace. Not punctuation or internal spaces: `data-sharing`
+        and `data sharing` are plausibly different purposes chosen deliberately, and collapsing
+        them would merge two consents into one — a far worse error than failing to match them.
+        """
+        return purpose.strip().casefold()
+
+    @classmethod
+    def _key(cls, tenant: str, subject: str, purpose: str) -> str:
+        return f"{tenant}::{subject}::{cls.normalise(purpose)}"
+
+    @staticmethod
+    def _legacy_key(tenant: str, subject: str, purpose: str) -> str:
+        """The pre-normalisation key: purpose exactly as it was typed."""
         return f"{tenant}::{subject}::{purpose}"
 
     async def get(self, tenant: str, subject: str, purpose: str) -> Consent | None:
+        """Normalised first, then the raw key a pre-normalisation row was written under.
+
+        The fallback is what makes this safe to deploy without a migration. Rewriting live consent
+        records in bulk is the riskiest operation available here — a bug in that pass silently
+        changes what the platform believes it is allowed to do — so instead old rows are found
+        where they are, and put() retires them the next time that consent is written.
+        """
         row = await self._store.get(_CONSENT, self._key(tenant, subject, purpose))
+        if row is None:
+            legacy = self._legacy_key(tenant, subject, purpose)
+            if legacy != self._key(tenant, subject, purpose):
+                row = await self._store.get(_CONSENT, legacy)
         return Consent.from_dict(row) if row else None
 
     async def put(self, c: Consent) -> Consent:
-        await self._store.put(_CONSENT, self._key(c.tenant, c.subject, c.purpose), c.to_dict())
+        """Write normalised, and delete any legacy twin.
+
+        The delete is the important half. Without it a tenant with a legacy `Matching` row that
+        grants `matching` ends up with TWO rows for one consent, and which one answers depends on
+        lookup order — the exact ambiguity this change exists to remove. Lazy migration: each
+        consent is converted the next time it is written, and nothing is touched before then.
+        """
+        key = self._key(c.tenant, c.subject, c.purpose)
+        legacy = self._legacy_key(c.tenant, c.subject, c.purpose)
+        await self._store.put(_CONSENT, key, c.to_dict())
+        if legacy != key:
+            await self._store.delete(_CONSENT, legacy)
         return c
+
+    async def migrate_purpose_keys(self, limit: int = 1000) -> dict[str, Any]:
+        """Rewrite pre-normalisation rows under their normalised key. Run once, deliberately.
+
+        The lazy fallback in get() is NOT sufficient, and a test is what proved it: it only finds
+        a legacy row when the caller happens to use the original spelling. A caller asking
+        `matching` cannot find a row stored as `Matching`, because casefold has no inverse — so
+        for the very caller this change exists to help, the drift survives until the row is
+        rewritten. Hence a real migration, exposed as an explicit operator action rather than run
+        at boot, because it edits records that decide what the platform may lawfully do.
+
+        CONFLICTS ARE NOT MERGED. If both spellings exist, a withdrawal wins over a grant —
+        deny beats allow whenever we are unsure, since the cost of wrongly denying is a refused
+        request and the cost of wrongly allowing is processing someone objected to. Where both
+        agree, the most recently updated survives. Every conflict is REPORTED, so a resolution
+        nobody chose is at least a resolution somebody can see.
+        """
+        # sweeper: converting every consent key IS visiting every consent — a range/shape question
+        # the store cannot express, since it speaks equality only. Explicit scan_all rather than
+        # find({}) so it is visible to the next reader and to safety:scans. Operator-triggered,
+        # never on a request path, capped per run.
+        rows = await self._store.scan_all(_CONSENT, limit=limit)
+        migrated = 0
+        conflicts: list[dict[str, str]] = []
+
+        for row in rows:
+            tenant = row.get("tenant", "")
+            subject = row.get("subject", "")
+            purpose = row.get("purpose", "")
+            legacy = self._legacy_key(tenant, subject, purpose)
+            key = self._key(tenant, subject, purpose)
+            if legacy == key:
+                continue                              # already normalised
+
+            existing = await self._store.get(_CONSENT, key)
+            if existing is not None:
+                winner = self._resolve(existing, row)
+                conflicts.append({"tenant": tenant, "subject": subject, "purpose": purpose,
+                                  "kept": "withdrawn" if not winner.get("granted", True)
+                                          else "most_recent"})
+                await self._store.put(_CONSENT, key, winner)
+            else:
+                row["purpose"] = self.normalise(purpose)
+                await self._store.put(_CONSENT, key, row)
+            await self._store.delete(_CONSENT, legacy)
+            migrated += 1
+
+        return {"scanned": len(rows), "migrated": migrated, "conflicts": conflicts}
+
+    @staticmethod
+    def _resolve(a: dict, b: dict) -> dict:
+        """Deny beats allow; otherwise the newer record wins."""
+        if not a.get("granted", True):
+            return a
+        if not b.get("granted", True):
+            return b
+        return a if float(a.get("updated_at") or 0) >= float(b.get("updated_at") or 0) else b
 
     async def for_subject(self, tenant: str, subject: str, limit: int = 100) -> list[dict]:
         rows, _ = await self._store.find(_CONSENT, {"tenant": tenant, "subject": subject},

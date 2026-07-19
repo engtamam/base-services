@@ -114,6 +114,14 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "cannot prove we did it",
     },
     {
+        "action": "consent.purpose_keys_migrated",
+        "source": "system",
+        "critical": True,
+        "why": "it rewrites the records that decide what processing is lawful, and resolves "
+               "conflicting spellings by choosing a winner — an unrecorded run leaves nobody able "
+               "to say why a consent now reads the way it does",
+    },
+    {
         "action": "consent.lapse_swept",
         "source": "system",
         "critical": False,

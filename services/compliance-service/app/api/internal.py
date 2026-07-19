@@ -128,6 +128,30 @@ async def run_dsar_sweep(request: Request) -> dict:
     return await build_sweeper(request).run()
 
 
+@router.post("/compliance/consent/migrate-purpose-keys",
+             dependencies=[Depends(require_internal_token)])
+async def migrate_purpose_keys(request: Request) -> dict:
+    """One-shot: rewrite pre-normalisation consent rows under their normalised key.
+
+    Deliberately an operator action rather than something that runs at boot. It edits the records
+    that decide what the platform may lawfully do, and a migration that happens automatically on
+    every deploy is one nobody is watching when it goes wrong.
+
+    Idempotent — a second run finds nothing left to convert. The response reports CONFLICTS, where
+    both spellings existed: those are resolved deny-beats-allow rather than merged, and naming
+    them is the point, because a resolution nobody chose should at least be one somebody can see.
+    """
+    from app.core.stores import ConsentStore
+    s = get_settings()
+    result = await ConsentStore(request.app.state.container.datastore).migrate_purpose_keys(
+        limit=s.CONSENT_SWEEP_MAX_PER_RUN)
+    await request.app.state.auditor.record(
+        "consent.purpose_keys_migrated", actor="system:operator", tenant="", resource="consent",
+        ip=request.client.host if request.client else "",
+        metadata={"migrated": result["migrated"], "conflicts": len(result["conflicts"])})
+    return result
+
+
 @router.post("/compliance/consent/sweep-lapses", dependencies=[Depends(require_internal_token)])
 async def run_consent_sweep(request: Request) -> dict:
     """Announce guardian consents crossing the age of majority. Called by a CronJob.

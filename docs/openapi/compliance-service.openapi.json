@@ -1195,6 +1195,58 @@
         ]
       }
     },
+    "/internal/compliance/consent/migrate-purpose-keys": {
+      "post": {
+        "description": "One-shot: rewrite pre-normalisation consent rows under their normalised key.\n\nDeliberately an operator action rather than something that runs at boot. It edits the records\nthat decide what the platform may lawfully do, and a migration that happens automatically on\nevery deploy is one nobody is watching when it goes wrong.\n\nIdempotent \u2014 a second run finds nothing left to convert. The response reports CONFLICTS, where\nboth spellings existed: those are resolved deny-beats-allow rather than merged, and naming\nthem is the point, because a resolution nobody chose should at least be one somebody can see.",
+        "operationId": "migrate_purpose_keys_internal_compliance_consent_migrate_purpose_keys_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Migrate Purpose Keys Internal Compliance Consent Migrate Purpose Keys Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Migrate Purpose Keys",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/compliance/consent/sweep-lapses": {
       "post": {
         "description": "Announce guardian consents crossing the age of majority. Called by a CronJob.\n\nUntil this existed, majority handling was one line in capacity.py \u2014 expires_at is set to the\nday the subject can speak for themself \u2014 and nothing watched that date. On their eighteenth\nbirthday, check() simply started answering \"expired\": no notice to the controller, no prompt\nfor the young adult's OWN consent. Processing stopped and from outside it looked like a bug.\n\nA lapse is not an error that surfaces itself; it is a date arriving, and a date arriving is\nonly visible to something that looks.",

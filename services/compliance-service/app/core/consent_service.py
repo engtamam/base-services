@@ -124,6 +124,11 @@ class ConsentService:
     # ── check (HOT PATH) ────────────────────────────────────────────────────────
     async def check(self, *, tenant: str, subject: str, purpose: str) -> dict[str, Any]:
         gen = await self._gen(tenant)
+        # Normalised, or `Matching` and `matching` would occupy separate cache entries and a
+        # withdrawal recorded under one spelling would leave the other still answering "allowed"
+        # until its TTL expired. The store key is normalised; a cache key that is not would
+        # reintroduce the split one layer above the fix.
+        purpose = self._store.normalise(purpose)
         key = f"consent:{gen}:{tenant}:{subject}:{purpose}"
         cached = await self._cache_get(key)
         if cached is not None:
