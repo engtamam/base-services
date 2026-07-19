@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://base-services/contracts/privacy-erase.schema.json",
+  "title": "privacy-erase",
+  "description": "The erasure contract. A DSAR (GDPR art.17 / PDPL) is only complete when EVERY system holding the person's data has answered — so completion is DERIVED from acknowledgements, never declared. Any service, in any language, on any platform participates by implementing ONE endpoint that accepts this request and returns this ack, and by being registered as a target (a name=base_url config entry + a data-map row). The compliance dispatcher then drives it. There is no registry of 'our' services in code: base-services' own ten implement exactly this contract and are registered exactly this way — they are the reference implementation, not a special case.",
+  "type": "object",
+  "$defs": {
+    "request": {
+      "title": "erase request",
+      "description": "POST {target_base_url}{PRIVACY_ERASE_PATH} — default path /internal/privacy/erase. Authenticated as a service (internal token by default; a target may require its own credentials). MUST be IDEMPOTENT: a DSAR retries, so erasing an already-erased subject is a no-op that still acks.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tenant", "subject"],
+      "properties": {
+        "tenant": {
+          "type": "string",
+          "description": "The tenant whose data is in scope. A target MUST scope its deletion to this tenant — never erase across tenants."
+        },
+        "subject": {
+          "type": "string",
+          "description": "The data subject's identifier within that tenant."
+        },
+        "action": {
+          "type": "string",
+          "enum": ["erase", "export"],
+          "default": "erase",
+          "description": "Which right is being exercised. A target that only supports erase may refuse export explicitly (never silently)."
+        },
+        "request_id": {
+          "type": "string",
+          "description": "The DSAR id, echoed so a target can make its own work idempotent and can push a late ack back to /internal/compliance/dsar/{request_id}/target-ack."
+        }
+      }
+    },
+    "ack": {
+      "title": "erase acknowledgement",
+      "description": "Returned with HTTP 200 when the work is DONE (the dispatcher records the ack for you). Return HTTP 202 instead if erasure is slow/asynchronous — then POST this same body to /internal/compliance/dsar/{request_id}/target-ack when finished. Anything else is a failure and will be retried with backoff; after max attempts the target is marked FAILED and the DSAR stays INCOMPLETE and visible. NEVER return 200 for work you did not do: a false 'she was erased' is the worst lie this system can tell.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["service", "erased", "retained", "already_absent"],
+      "properties": {
+        "service": {
+          "type": "string",
+          "description": "Your service's stable name — MUST match the name it is registered under, because acks are keyed by (request_id, service, category)."
+        },
+        "category": {
+          "type": "string",
+          "description": "The data category you hold (e.g. invoices, user_files, messages). Matches your data-map row; a service holding several categories acks each."
+        },
+        "subject_ref": {
+          "type": "string",
+          "description": "A PSEUDONYM of the subject (salted hash), never the raw identifier — the ack itself must not become a new copy of the personal data."
+        },
+        "erased": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "What was deleted, as counted facts (e.g. \"files:12\"). Empty is legitimate — say so with already_absent or retained."
+        },
+        "retained": {
+          "type": "array",
+          "description": "What SURVIVED, each with its legal basis. 'We kept it' is always an answer with a reason attached, never a silence — a DSAR that cannot say why data survived has not answered the person.",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["what", "basis"],
+            "properties": {
+              "what": { "type": "string", "description": "e.g. \"invoices:3\"" },
+              "basis": { "type": "string", "description": "The lawful basis for keeping it, e.g. legal_obligation, consent_proof." },
+              "why": { "type": "string", "description": "Plain-language reason a regulator (or the person) can read." }
+            }
+          }
+        },
+        "already_absent": {
+          "type": "boolean",
+          "description": "True when this service held nothing for the subject. An honest 'nothing here' — distinct from a failure, and distinct from having erased something."
+        }
+      }
+    }
+  },
+  "oneOf": [{ "$ref": "#/$defs/request" }, { "$ref": "#/$defs/ack" }]
+}

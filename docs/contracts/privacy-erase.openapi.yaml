@@ -1,0 +1,121 @@
+openapi: 3.1.0
+info:
+  title: Privacy erasure (DSAR) — target contract
+  version: 0.7.0
+  description: |
+    The endpoint YOUR service implements to participate in erasure, plus the callback for slow
+    targets. See `privacy-erase-guide.md` for the 3-step integration and
+    `privacy-erase.schema.json` for the authoritative shapes.
+
+    A DSAR is complete only when every target on the data map has acknowledged. Completion is
+    DERIVED from acks, never declared. Any service in any language joins by implementing
+    `eraseSubject` and being registered (`PRIVACY_TARGETS` + a data-map row) — base-services' own
+    ten services do exactly this and are not special-cased.
+
+    **Path is configurable.** `/internal/privacy/erase` below is only the default; each target may
+    register its own path (`PRIVACY_ERASE_PATH_<TARGET>`).
+
+servers:
+  - url: "{target_base_url}"
+    description: Your service's base URL, as registered in PRIVACY_TARGETS.
+    variables:
+      target_base_url:
+        default: https://your-service.internal
+
+paths:
+  /internal/privacy/erase:
+    post:
+      operationId: eraseSubject
+      summary: Erase (or export) everything you hold for this subject, in this tenant.
+      description: |
+        MUST be idempotent — a DSAR retries; erasing an already-erased subject is a no-op that still
+        acks with `already_absent: true`. MUST scope deletion to the given tenant. MUST NOT return
+        200 for work not done.
+      security:
+        - internalToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EraseRequest" }
+      responses:
+        "200":
+          description: Done — the ack is recorded by the dispatcher.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Ack" }
+        "202":
+          description: |
+            Accepted, erasure is asynchronous. The target MUST later POST the same Ack body to
+            `{compliance}/internal/compliance/dsar/{request_id}/target-ack`. Until then this target
+            stays pending and the DSAR stays incomplete.
+        "4XX":
+          description: Refused. Retried with backoff; after max attempts the target is marked FAILED and stays visible.
+        "5XX":
+          description: Failed. Retried with backoff; never silently treated as done.
+
+  /internal/compliance/dsar/{request_id}/target-ack:
+    post:
+      operationId: pushTargetAck
+      summary: "Callback (async targets only): report a completed erasure back to compliance-service."
+      description: |
+        Served BY compliance-service. Only needed if you answered 202. Idempotent — re-acking an
+        already-acked target is harmless. A refusal never wears a success code: an unknown
+        service/category for this DSAR is a 409, a missing DSAR is a 404.
+      security:
+        - internalToken: []
+      parameters:
+        - name: request_id
+          in: path
+          required: true
+          schema: { type: string }
+          description: The DSAR id echoed in the erase request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Ack" }
+      responses:
+        "200": { description: Ack recorded; the DSAR re-derives its completion. }
+        "404": { description: No such DSAR. }
+        "409": { description: This service/category is not a target of that DSAR. }
+
+components:
+  securitySchemes:
+    internalToken:
+      type: apiKey
+      in: header
+      name: X-Internal-Token
+      description: Service-to-service credential. A target may instead require its own auth, configured per target.
+
+  schemas:
+    EraseRequest:
+      type: object
+      required: [tenant, subject]
+      properties:
+        tenant: { type: string, description: Scope deletion to THIS tenant only. }
+        subject: { type: string, description: The data subject's id within the tenant. }
+        action: { type: string, enum: [erase, export], default: erase }
+        request_id: { type: string, description: The DSAR id — echo it, and use it for the async callback. }
+    Ack:
+      type: object
+      required: [service, erased, retained, already_absent]
+      properties:
+        service: { type: string, description: Must match your registered PRIVACY_TARGETS name. }
+        category: { type: string, description: Your data-map category (e.g. invoices, user_files). }
+        subject_ref: { type: string, description: Salted PSEUDONYM of the subject — never the raw id. }
+        erased:
+          type: array
+          items: { type: string }
+          description: Counted facts of what was deleted, e.g. "files:12".
+        retained:
+          type: array
+          description: What survived, each WITH its lawful basis. Never a silence.
+          items:
+            type: object
+            required: [what, basis]
+            properties:
+              what: { type: string }
+              basis: { type: string, description: e.g. legal_obligation, consent_proof. }
+              why: { type: string, description: Plain language a regulator or the person can read. }
+        already_absent: { type: boolean, description: True when you held nothing — honest, and distinct from failure. }
