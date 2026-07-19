@@ -41,6 +41,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.core.auditable import DeclarationError
 from app.ports.audit_sink import AuditEvent, AuditReceipt
 
 
@@ -55,10 +56,12 @@ class AuditUnavailable(RuntimeError):
 
 class Auditor:
     def __init__(self, *, sink, service: str, critical_actions: frozenset[str] = frozenset(),
+                 declared_actions: frozenset[str] = frozenset(),
                  fail_closed: bool = True, telemetry=None) -> None:
         self._sink = sink
         self._service = service
         self._critical = critical_actions
+        self._declared = declared_actions
         self._fail_closed = fail_closed
         self._telemetry = telemetry
 
@@ -66,6 +69,13 @@ class Auditor:
                      ip: str = "", metadata: dict[str, Any] | None = None) -> AuditReceipt:
         """Witness one action. Raises AuditUnavailable only when a CRITICAL action cannot be
         recorded and the service is configured to fail closed."""
+        # An undeclared action is a coding mistake, and a loud one on purpose: the declaration is
+        # what the gate reads and what an investigator searches. An action emitted but never
+        # declared is invisible to both, so it would be audited in name only.
+        if self._declared and action not in self._declared:
+            raise DeclarationError(
+                f"{self._service}: action {action!r} is not declared in auditable_actions.py — "
+                f"declare it (with its source and criticality) before emitting it")
         event = AuditEvent(service=self._service, action=action, actor=actor, resource=resource,
                            tenant=tenant, ip=ip, metadata=metadata or {})
         try:
@@ -98,3 +108,20 @@ class Auditor:
                 "critical": action in self._critical, "detail": receipt.detail})
         except Exception:
             pass          # observability must never break the action, or the audit, or both
+
+
+def build_auditor(settings, container) -> Auditor:
+    """The one call a service makes to get an Auditor. Declarations are validated HERE, at boot:
+    a malformed one must stop the service starting, not surface months later as a gap in the log."""
+    from app.auditable_actions import AUDITABLE_ACTIONS
+    from app.core.auditable import critical_actions, declared_actions, validate
+
+    actions = validate(AUDITABLE_ACTIONS, settings.SERVICE_NAME)
+    return Auditor(
+        sink=container.audit_sink,
+        service=settings.SERVICE_NAME,
+        critical_actions=critical_actions(actions),
+        declared_actions=declared_actions(actions),
+        fail_closed=settings.AUDIT_FAIL_CLOSED,
+        telemetry=container.telemetry,
+    )
