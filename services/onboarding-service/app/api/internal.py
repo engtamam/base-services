@@ -76,3 +76,25 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     eraser = OnboardingErasure(store=c.datastore, pii_salt=s.PII_SALT,
                                max_scan=s.ERASURE_MAX_SCAN)
     return await eraser.erase(body.tenant, body.subject)
+
+
+@router.post("/onboarding/resume-provisioning", dependencies=[Depends(require_internal_token)])
+async def resume_provisioning(request: Request, tenant: str, subject: str) -> dict:
+    """Re-attempt undos a previous compensation could not finish.
+
+    The unfinished list IS the queue — a rollback that failed because wallet-service was
+    unreachable leaves exactly the steps still to undo, and this drains them once it is back.
+
+    Deliberately NOT a blanket sweep over every run: resuming re-attempts DELETES, and a sweeper
+    that walked every record would re-attempt them on runs an operator may be mid-way through
+    inspecting. It is called for a known subject, by a human or by a targeted job.
+    """
+    from app.core.provisioning import ProvisioningService
+
+    c = request.app.state.container
+    svc = ProvisioningService(provisioners=c.provisioners, store=c.datastore, clock=c.clock,
+                              auditor=request.app.state.auditor, telemetry=c.telemetry)
+    result = await svc.resume(tenant, subject)
+    if result is None:
+        return {"resumed": False, "detail": "nothing unfinished for this subject"}
+    return {"resumed": True, "unfinished": result["unfinished"]}
