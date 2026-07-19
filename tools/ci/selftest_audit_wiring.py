@@ -23,6 +23,15 @@ _DECL = '''from typing import Any
 AUDITABLE_ACTIONS: list[dict[str, Any]] = {actions}
 '''
 
+# A three-segment name. validate() allows it (it requires only a dot), so the emit matcher must
+# see its record() call too. The first version matched exactly two segments and reported this as
+# never-emitted — reported by a downstream user running v0.6.3, whose four correctly-wired
+# multi-part actions all came back as violations.
+_MULTIPART = [
+    {"action": "catalog.draft.approved", "source": "admin", "critical": True, "resource": "draft",
+     "why": "approving a draft publishes it to every tenant"},
+]
+
 _GOOD = [
     {"action": "thing.created", "source": "user", "critical": False, "resource": "thing"},
     {"action": "permission.granted", "source": "admin", "critical": True, "resource": "grant",
@@ -73,6 +82,8 @@ CASES = [
     ("R2 emits but declares nothing", None, "http", True, "declares NO auditable actions"),
     ("no audit trail at all", None, None, True, "no audit trail at all"),
     ("R3 critical action nothing emits", _GOOD, "http", True, "nothing ever"),
+    # A dotted name with THREE segments must be recognised as emitted, not reported missing.
+    ("multi-part action name is seen", _MULTIPART, "http", False, "declare auditable action"),
     ("R4 flat action name", [{"action": "created", "source": "user", "critical": False}],
      "http", True, "dotted"),
     ("R4 unknown source", [{"action": "a.b", "source": "panel", "critical": False}],
@@ -121,7 +132,10 @@ def main() -> int:
         print("audit-wiring selftest FAILED — the gate does not catch what it claims:")
         print("\n".join(failures))
         return 1
-    print(f"      audit-wiring selftest OK — {len(CASES) + 1} cases, every one rejected as intended")
+    # Not "every one rejected": some cases assert the gate PASSES a correctly-wired repo. A gate
+    # that only ever rejects is as broken as one that only ever accepts.
+    print(f"      audit-wiring selftest OK — {len(CASES) + 1} cases, each accepted or rejected "
+          f"as intended")
     return 0
 
 

@@ -83,7 +83,16 @@ def emitted_actions(service: pathlib.Path) -> set[str]:
     for path in (service / "app").rglob("*.py"):
         if "__pycache__" in str(path):
             continue
-        for match in re.finditer(r"""record\(\s*["']([a-z0-9_]+\.[a-z0-9_]+)["']""",
+        # One or more dots, not exactly one. validate() requires only that an action CONTAINS a
+        # dot, so `catalog.draft.approved` is a legal declaration — and the earlier two-segment
+        # pattern could not see its emit call, reporting a correctly-wired action as missing.
+        #
+        # Note which way that failed: it cried wolf rather than staying silent, because an
+        # unmatched emit reads as "never emitted". Noise, not a hole — a genuinely missing
+        # three-part action is still caught. But it sends someone hunting for a call that is
+        # already there, and a gate people learn to disbelieve stops working long before it
+        # stops running.
+        for match in re.finditer(r"""record\(\s*["']([a-z0-9_]+(?:\.[a-z0-9_]+)+)["']""",
                                  path.read_text(encoding="utf-8")):
             found.add(match.group(1))
     return found
