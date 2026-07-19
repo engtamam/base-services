@@ -60,9 +60,3 @@ def redact(value: Any, subject: str, replacement: str, text_keys: frozenset[str]
         return out_list, hits
 
     return value, 0
-
-
-def mentions(value: Any, subject: str, text_keys: frozenset[str] = frozenset()) -> bool:
-    """Cheap check used to decide whether a row needs rewriting at all."""
-    _, hits = redact(value, subject, "", text_keys)
-    return hits > 0

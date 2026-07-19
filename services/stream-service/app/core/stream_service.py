@@ -29,10 +29,6 @@ class QuotaExceeded(Exception):
         self.dimension = dimension
 
 
-class LargeStreamUnavailable(Exception):
-    pass
-
-
 class StreamConfig:
     """The slice of settings the core needs — passed in so the core stays free of pydantic."""
 

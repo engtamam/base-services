@@ -153,7 +153,7 @@ class UsageService:
         if int(amount) < 0:
             return {"released": 0, "key": key, "error": "NEGATIVE_AMOUNT"}
         sp, pkey, _ = await self._spec_for(tenant, key)
-        if sp["kind"] != "counter":
+        if not _ent.is_metered(sp):
             return {"released": 0, "key": key, "error": "NOT_A_COUNTER"}
         _, after = await self._store.incr_if_below(
             _COUNTERS, self.counter_key(tenant, key, pkey), -int(amount), None)

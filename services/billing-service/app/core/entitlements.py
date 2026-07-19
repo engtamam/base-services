@@ -124,7 +124,7 @@ def evaluate(sp: dict[str, Any], current: int = 0, amount: int = 1) -> dict[str,
     over_limit = cur > limit
     # Only a counter can run an overage. A denied boolean reporting `overage: 1` would be
     # meaningless, and billing must never see a unit it cannot price.
-    overage_units = 0 if (within or sp["kind"] != "counter") else projected - max(limit, cur)
+    overage_units = 0 if (within or not is_metered(sp)) else projected - max(limit, cur)
 
     if within:
         allowed = True

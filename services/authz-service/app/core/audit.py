@@ -97,7 +97,7 @@ class Auditor:
         # Production cannot reach here with a null sink: assert_audit_config_ok() refuses to boot
         # on it, which is where "you must configure a log" is enforced. This is where "the log you
         # configured is down" is enforced.
-        if receipt.status == FAILED and action in self._critical and self._fail_closed:
+        if receipt.status == FAILED and self.is_critical(action) and self._fail_closed:
             raise AuditUnavailable(
                 "this action requires an audit record and the audit log is unavailable")
         return receipt
@@ -113,7 +113,7 @@ class Auditor:
         try:
             self._telemetry.event("audit.gap", {
                 "service": self._service, "action": action, "status": receipt.status,
-                "critical": action in self._critical, "detail": receipt.detail})
+                "critical": self.is_critical(action), "detail": receipt.detail})
         except Exception:
             pass          # observability must never break the action, or the audit, or both
 

@@ -59,17 +59,6 @@ class Consent:
     relation: str = ""                # parent | custodian | power_of_attorney | executor…
     subject_born_at: float = 0.0      # 0 = UNKNOWN, which is not the same as "adult"
 
-    def capacity_ok(self, now: float) -> bool:
-        """Is this consent still given by someone entitled to give it?
-
-        Guardian consent is not permanent: a 15-year-old becomes able to speak for themself, and
-        consent obtained from their parent must lapse rather than quietly outlive the reason it
-        was needed. `expires_at` carries that date, set when the consent was granted.
-        """
-        if self.basis == SELF:
-            return True
-        return not (self.expires_at and now >= self.expires_at)
-
     def active(self, now: float) -> bool:
         if not self.granted:
             return False

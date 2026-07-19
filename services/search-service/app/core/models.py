@@ -24,9 +24,3 @@ class Document:
     def to_record(self, *, doc_len: float) -> dict[str, Any]:
         return {"id": self.id, "index": self.index, "tenant": self.tenant, "fields": self.fields,
                 "owner": self.owner, "created": self.created, "doc_len": doc_len}
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "Document":
-        return cls(id=d["id"], index=d.get("index", ""), tenant=d.get("tenant", ""),
-                   fields=dict(d.get("fields") or {}), owner=d.get("owner", ""),
-                   created=float(d.get("created", 0) or 0))
