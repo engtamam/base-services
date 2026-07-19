@@ -36,6 +36,8 @@ def build_notifier(request: Request) -> NotificationService:
         dedupe_ttl_seconds=s.NOTIFY_DEDUPE_TTL_SECONDS,
         dedupe_states=s.notify_dedupe_states,
         delivery_mode=s.NOTIFY_DELIVERY_MODE,
+        consent_gate=c.consent_gate, consent_purposes=s.notify_consent_purposes,
+        consent_unknown=s.NOTIFY_CONSENT_UNKNOWN,
         retry=RetryPolicy(
             max_attempts=s.NOTIFY_MAX_ATTEMPTS,
             base_ms=s.NOTIFY_BACKOFF_BASE_MS, max_ms=s.NOTIFY_BACKOFF_MAX_MS,

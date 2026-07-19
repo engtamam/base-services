@@ -67,6 +67,41 @@ class Settings(BaseSettings):
     # committed, and trying again later is the correct response. A 500 would tell the caller we
     # crashed, which invites a bug report instead of a retry.
     AUDIT_RETRY_AFTER_SECONDS: int = 30
+
+    # ── consent gate — do not send what nobody agreed to receive ──────────────
+    # Preferences are the user's CHANNEL opt-out. Consent is the LAWFUL BASIS for a purpose, and
+    # they are not the same question: a person who never opted out of email may still never have
+    # consented to marketing. This service had the first and not the second.
+    CONSENT_GATE_DRIVER: str = "null"        # null | http
+    COMPLIANCE_SERVICE_URL: str = ""
+    CONSENT_CHECK_PATH: str = "/internal/compliance/consent-check"
+    CONSENT_TIMEOUT_SECONDS: int = 3
+    CONSENT_GATED: bool = True               # this service DOES process personal data by purpose
+    # Which notifications need consent, and under which purpose name. JSON, because the mapping is
+    # a product decision that differs per platform: {"event_or_template": "purpose"}. Anything not
+    # listed is transactional (an OTP, a receipt, a password reset) and is sent on a different
+    # lawful basis — contract, not consent — so it must NOT be gated or the platform breaks.
+    NOTIFY_CONSENT_PURPOSES: str = ""
+    # What to do when the gate answers UNKNOWN. Closed by default: the gated notifications are by
+    # definition the ones a regulator would ask about, and an unsent marketing email is a smaller
+    # harm than one sent without a lawful basis.
+    NOTIFY_CONSENT_UNKNOWN: str = "fail_closed"      # fail_closed | fail_open
+
+    @property
+    def notify_consent_purposes(self) -> dict[str, str]:
+        """`{"event_or_template": "purpose"}`. Parsed at boot so a malformed map fails there."""
+        import json as _json
+        raw = (self.NOTIFY_CONSENT_PURPOSES or "").strip()
+        if not raw:
+            return {}
+        try:
+            parsed = _json.loads(raw)
+        except ValueError as exc:
+            raise ValueError(f"NOTIFY_CONSENT_PURPOSES is not valid JSON: {exc}") from exc
+        if not isinstance(parsed, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in parsed.items()):
+            raise ValueError('NOTIFY_CONSENT_PURPOSES must be {"event_or_template": "purpose"}')
+        return parsed
     # What happens when a CRITICAL action cannot be witnessed. Default closed: an action nobody can
     # prove is worse than a refused one for the actions investigations turn on. Routine actions
     # always fail open — the split is per action, declared by this service, not a global switch.
@@ -276,6 +311,35 @@ class Settings(BaseSettings):
         if not self.AUDIT_SERVICE_URL:
             return ""
         return self.AUDIT_SERVICE_URL.rstrip("/") + self.AUDIT_INGEST_PATH
+
+    def assert_consent_config_ok(self) -> None:
+        """Boot guard. A service that gates processing on consent must be able to ask.
+
+        Only applies when the SERVICE declares CONSENT_GATED — the whole point of that flag is to
+        distinguish "this service has no consent-gated processing" from "somebody forgot to
+        configure the gate". Those are identical from the driver alone, and that ambiguity is how
+        consent-check ran for four phases with no callers and nothing ever went red.
+        """
+        if not self.is_production or not self.CONSENT_GATED:
+            return
+        if self.CONSENT_GATE_DRIVER == "null":
+            raise ValueError(
+                "CONSENT_GATE_DRIVER=null in production, but this service declares consent-gated "
+                "processing: every check would answer UNKNOWN and the decision would fall to each "
+                "call site's fallback, which is not where a compliance posture should be decided. "
+                "Set 'http' with COMPLIANCE_SERVICE_URL."
+            )
+        if self.CONSENT_GATE_DRIVER == "http" and not self.COMPLIANCE_SERVICE_URL:
+            raise ValueError(
+                "CONSENT_GATE_DRIVER=http but COMPLIANCE_SERVICE_URL is empty: every consent "
+                "question would fail to send and answer UNKNOWN while the service looked healthy."
+            )
+        if (self.COMPLIANCE_SERVICE_URL
+                and not self.COMPLIANCE_SERVICE_URL.startswith(("http://", "https://"))):
+            raise ValueError(
+                f"COMPLIANCE_SERVICE_URL {self.COMPLIANCE_SERVICE_URL!r} must start with "
+                f"http:// or https://"
+            )
 
     def assert_audit_config_ok(self) -> None:
         """Boot guard. Refuse to start production without somewhere to witness privileged actions.

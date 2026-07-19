@@ -70,6 +70,23 @@ class Settings(BaseSettings):
     # committed, and trying again later is the correct response. A 500 would tell the caller we
     # crashed, which invites a bug report instead of a retry.
     AUDIT_RETRY_AFTER_SECONDS: int = 30
+
+    # ── consent gate — ask before processing personal data ────────────────────
+    # compliance-service served consent-check with ZERO callers for four phases: the control was
+    # built and nothing consulted it. `null` answers UNKNOWN (never ALLOWED — a gate that invented
+    # permission would be worse than no gate), and each call site declares what to do with that.
+    CONSENT_GATE_DRIVER: str = "null"        # null | http
+    COMPLIANCE_SERVICE_URL: str = ""         # e.g. http://compliance-service:8000
+    # THEIR path, so it is a default rather than an assumption about another platform's routing.
+    CONSENT_CHECK_PATH: str = "/internal/compliance/consent-check"
+    # Short: this sits on a request path, and a slow consent question must not become a slow API.
+    CONSENT_TIMEOUT_SECONDS: int = 3
+    # Does this service process personal data for a declared purpose? Set by the SERVICE, not the
+    # deployment — it is a fact about what the code does, and an operator should not be able to
+    # switch off a control by editing an env var. It exists so the boot guard below can tell
+    # "this service has no consent-gated processing" from "somebody forgot to configure the gate",
+    # which are indistinguishable from the driver alone and were exactly how the gap survived.
+    CONSENT_GATED: bool = False
     # What happens when a CRITICAL action cannot be witnessed. Default closed: an action nobody can
     # prove is worse than a refused one for the actions investigations actually turn on (permission
     # grants, credential changes, exports, suspensions). Routine actions always fail open — the
@@ -193,6 +210,35 @@ class Settings(BaseSettings):
         if self.AUDIT_SERVICE_URL and not self.AUDIT_SERVICE_URL.startswith(("http://", "https://")):
             raise ValueError(
                 f"AUDIT_SERVICE_URL {self.AUDIT_SERVICE_URL!r} must start with http:// or https://"
+            )
+
+    def assert_consent_config_ok(self) -> None:
+        """Boot guard. A service that gates processing on consent must be able to ask.
+
+        Only applies when the SERVICE declares CONSENT_GATED — the whole point of that flag is to
+        distinguish "this service has no consent-gated processing" from "somebody forgot to
+        configure the gate". Those are identical from the driver alone, and that ambiguity is how
+        consent-check ran for four phases with no callers and nothing ever went red.
+        """
+        if not self.is_production or not self.CONSENT_GATED:
+            return
+        if self.CONSENT_GATE_DRIVER == "null":
+            raise ValueError(
+                "CONSENT_GATE_DRIVER=null in production, but this service declares consent-gated "
+                "processing: every check would answer UNKNOWN and the decision would fall to each "
+                "call site's fallback, which is not where a compliance posture should be decided. "
+                "Set 'http' with COMPLIANCE_SERVICE_URL."
+            )
+        if self.CONSENT_GATE_DRIVER == "http" and not self.COMPLIANCE_SERVICE_URL:
+            raise ValueError(
+                "CONSENT_GATE_DRIVER=http but COMPLIANCE_SERVICE_URL is empty: every consent "
+                "question would fail to send and answer UNKNOWN while the service looked healthy."
+            )
+        if (self.COMPLIANCE_SERVICE_URL
+                and not self.COMPLIANCE_SERVICE_URL.startswith(("http://", "https://"))):
+            raise ValueError(
+                f"COMPLIANCE_SERVICE_URL {self.COMPLIANCE_SERVICE_URL!r} must start with "
+                f"http:// or https://"
             )
 
     @field_validator("INTERNAL_SERVICE_TOKEN")

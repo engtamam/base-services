@@ -31,6 +31,8 @@ from app.adapters.secrets.vault import VaultSecrets
 from app.adapters.audit_sink.eventbus import EventBusAuditSink
 from app.adapters.audit_sink.http import HttpAuditSink
 from app.adapters.audit_sink.null import NullAuditSink
+from app.adapters.consent_gate.http import HttpConsentGate
+from app.adapters.consent_gate.null import NullConsentGate
 from app.adapters.telemetry.stdout import StdoutTelemetry
 from app.adapters.token_verifier.hs256 import HS256Verifier
 from app.adapters.token_verifier.jwks import JWKSVerifier
@@ -98,6 +100,12 @@ _AUDIT_SINK: dict[str, Builder] = {
     "null": lambda s: NullAuditSink(),
     "http": lambda s: HttpAuditSink(s.audit_ingest_url, s.INTERNAL_SERVICE_TOKEN,
                                     timeout=s.AUDIT_TIMEOUT_SECONDS),
+}
+_CONSENT_GATE: dict[str, Builder] = {
+    "null": lambda s: NullConsentGate(),
+    "http": lambda s: HttpConsentGate(s.COMPLIANCE_SERVICE_URL, s.INTERNAL_SERVICE_TOKEN,
+                                      timeout=s.CONSENT_TIMEOUT_SECONDS,
+                                      path=s.CONSENT_CHECK_PATH),
 }
 _TELEMETRY: dict[str, Builder] = {
     "stdout": lambda s: StdoutTelemetry(),
@@ -178,6 +186,7 @@ class Container:
     rate_limiter: RateLimiter
     telemetry: Telemetry
     audit_sink: Any = None
+    consent_gate: Any = None
     email: Any = None
     sms: Any = None
     renderer: Any = None
@@ -248,6 +257,7 @@ def build_container(settings: Settings) -> Container:
         rate_limiter=_pick(_RATELIMITER, settings.RATELIMITER_DRIVER, "rate_limiter", settings),
         telemetry=_pick(_TELEMETRY, settings.TELEMETRY_DRIVER, "telemetry", settings),
         audit_sink=_build_audit_sink(settings, event_bus),
+        consent_gate=_pick(_CONSENT_GATE, settings.CONSENT_GATE_DRIVER, "consent_gate", settings),
         email=FailoverEmail(_build_chain(settings.email_chain, _EMAIL_PROVIDERS, "email", settings)),
         sms=FailoverSms(_build_chain(settings.sms_chain, _SMS_PROVIDERS, "sms", settings)),
         renderer=SafeRenderer(),

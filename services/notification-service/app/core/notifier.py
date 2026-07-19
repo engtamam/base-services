@@ -10,7 +10,9 @@ import asyncio
 import time
 from typing import Any
 
+from app.adapters.consent_gate.null import NullConsentGate
 from app.core.models import Delivery, InAppItem, new_id
+from app.ports.consent_gate import FAIL_CLOSED
 from app.core.retry import (
     DEAD_LETTER,
     FAILED,
@@ -43,6 +45,8 @@ class NotificationService:
                  dedupe_ttl_seconds: int = 86_400,
                  dedupe_states: tuple[str, ...] = _DEFAULT_DEDUPE_STATES,
                  retry: RetryPolicy | None = None,
+                 consent_gate=None, consent_purposes: dict[str, str] | None = None,
+                 consent_unknown: str = FAIL_CLOSED,
                  delivery_mode: str = INLINE, clock=time.time) -> None:
         self._templates = templates
         self._prefs = prefs
@@ -61,8 +65,16 @@ class NotificationService:
         self._mode = delivery_mode
         self._retry = retry
         self._clock = clock
+        # A null gate answers UNKNOWN, so with the default fail-closed posture a service that is
+        # configured to gate but cannot reach compliance-service stops sending those notifications
+        # rather than sending them unlawfully. The boot guard prevents that combination in
+        # production; this is what happens if it is ever reached anyway.
+        self._consent = consent_gate or NullConsentGate()
+        self._consent_purposes = dict(consent_purposes or {})
+        self._consent_unknown = consent_unknown
 
     async def notify(self, *, recipient: str, channel: str, template_key: str,
+                     tenant: str | None = None,
                      locale: str | None = None, variables: dict[str, Any] | None = None,
                      user_id: str | None = None, event: str | None = None,
                      idempotency_key: str | None = None) -> dict:
@@ -84,6 +96,26 @@ class NotificationService:
             if not pref.allows(channel, event):
                 return await self._finish(idempotency_key, await self._record(
                     recipient, channel, template_key, "suppressed"))
+
+        # 1b) CONSENT — a different question from the preference above, and the one this service
+        # could not previously ask. A preference is the user's channel opt-out; consent is the
+        # lawful basis for a PURPOSE. Someone who never opted out of email may still never have
+        # agreed to marketing, and sending on that basis is the violation regulators act on.
+        #
+        # Only notifications MAPPED to a purpose are gated. Everything else — an OTP, a receipt, a
+        # password reset — is sent under contract rather than consent, and gating those would
+        # break the platform while protecting nobody.
+        purpose = self._consent_purposes.get(event or "") or self._consent_purposes.get(template_key)
+        if purpose and user_id:
+            verdict = await self._consent.check(
+                tenant=tenant or "", subject=user_id, purpose=purpose)
+            if not verdict.permits(self._consent_unknown):
+                # A distinct status from "suppressed". A preference opt-out and a missing lawful
+                # basis look identical in a delivery log otherwise, and they are answered very
+                # differently when somebody asks why a person stopped receiving mail.
+                return await self._finish(idempotency_key, await self._record(
+                    recipient, channel, template_key, "consent_denied",
+                    error=f"{purpose}: {verdict.reason or verdict.status}"))
 
         # 2) template (with locale fallback)
         tmpl = await self._templates.get(template_key, locale or self._default_locale, self._default_locale)

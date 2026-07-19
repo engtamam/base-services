@@ -31,6 +31,8 @@ from app.adapters.secrets.vault import VaultSecrets
 from app.adapters.audit_sink.eventbus import EventBusAuditSink
 from app.adapters.audit_sink.http import HttpAuditSink
 from app.adapters.audit_sink.null import NullAuditSink
+from app.adapters.consent_gate.http import HttpConsentGate
+from app.adapters.consent_gate.null import NullConsentGate
 from app.adapters.telemetry.stdout import StdoutTelemetry
 from app.adapters.token_verifier.hs256 import HS256Verifier
 from app.adapters.token_verifier.jwks import JWKSVerifier
@@ -99,6 +101,15 @@ _AUDIT_SINK: dict[str, Builder] = {
     "http": lambda s: HttpAuditSink(s.audit_ingest_url, s.INTERNAL_SERVICE_TOKEN,
                                     timeout=s.AUDIT_TIMEOUT_SECONDS),
 }
+# Ask before processing personal data. `null` answers UNKNOWN and says so; the boot guard refuses
+# it in production for any service that declares consent-gated processing, because a gate that is
+# never asked is the same defect as a chain that is never written.
+_CONSENT_GATE: dict[str, Builder] = {
+    "null": lambda s: NullConsentGate(),
+    "http": lambda s: HttpConsentGate(s.COMPLIANCE_SERVICE_URL, s.INTERNAL_SERVICE_TOKEN,
+                                      timeout=s.CONSENT_TIMEOUT_SECONDS,
+                                      path=s.CONSENT_CHECK_PATH),
+}
 _TELEMETRY: dict[str, Builder] = {
     "stdout": lambda s: StdoutTelemetry(),
 }
@@ -126,6 +137,7 @@ class Container:
     rate_limiter: RateLimiter
     telemetry: Telemetry
     audit_sink: Any = None
+    consent_gate: Any = None
 
     def describe(self) -> list[dict[str, str]]:
         """[{port, driver}] for the service manifest."""
@@ -140,7 +152,8 @@ class Container:
             {"port": "rate_limiter", "driver": self.rate_limiter.driver},
             {"port": "telemetry", "driver": self.telemetry.driver},
         ] + ([{"port": "audit_sink", "driver": self.audit_sink.driver}]
-             if self.audit_sink is not None else [])
+             if self.audit_sink is not None else [])           + ([{"port": "consent_gate", "driver": self.consent_gate.driver}]
+             if self.consent_gate is not None else [])
 
     def health_probes(self) -> dict[str, Any]:
         """name -> async health() for adapters that support it (readiness)."""
@@ -186,4 +199,5 @@ def build_container(settings: Settings) -> Container:
         rate_limiter=_pick(_RATELIMITER, settings.RATELIMITER_DRIVER, "rate_limiter", settings),
         telemetry=_pick(_TELEMETRY, settings.TELEMETRY_DRIVER, "telemetry", settings),
         audit_sink=_build_audit_sink(settings, event_bus),
+        consent_gate=_pick(_CONSENT_GATE, settings.CONSENT_GATE_DRIVER, "consent_gate", settings),
     )
