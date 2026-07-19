@@ -24,6 +24,12 @@ from app.ports.payment_gateway import GatewayUnavailable
 
 _INTERVAL = {"month": 30 * 86400, "year": 365 * 86400, "once": 0}
 
+# Statuses the billing cycle refuses to invoice. A DENYLIST is wrong here and an allowlist is
+# right: a status added later (suspended, delinquent, closed) must default to NOT being charged.
+# Listing what may be billed means the unknown case declines money; listing what may not means
+# it takes money, and only one of those is recoverable.
+_BILLABLE = ("active", "trialing", "past_due")
+
 
 class BillingService:
     def __init__(self, *, plans: PlanStore, coupons: CouponStore, subs: SubscriptionStore,
@@ -200,10 +206,28 @@ class BillingService:
                 "limits": sub.limits_snapshot}
 
     async def pause(self, sub_id: str) -> Subscription | None:
-        return await self._set_status(sub_id, "paused")
+        """Active → paused. Refuses anything else.
+
+        Both of these used to set the status unconditionally, which was survivable while nothing
+        called them and is not once there is a route. Pausing a CANCELED subscription would move
+        it out of the terminal state, and the pair below is worse.
+        """
+        return await self._set_status(sub_id, "paused", allowed_from=("active",))
 
     async def reactivate(self, sub_id: str) -> Subscription | None:
-        return await self._set_status(sub_id, "active")
+        """Paused → active. Only from paused, and that restriction is the point.
+
+        Reactivating a CANCELED subscription would resume charging someone who left — the state
+        machine, not the route, has to refuse it, because a caller passing an id has no way to
+        know it is terminal. `cancel_at_period_end` is cleared: a customer who paused and came
+        back has withdrawn the intent to leave, and leaving the flag set would end the
+        subscription at the boundary anyway, silently undoing the reactivation they just asked for.
+        """
+        sub = await self._set_status(sub_id, "active", allowed_from=("paused",))
+        if sub is not None and sub.cancel_at_period_end:
+            sub.cancel_at_period_end = False
+            await self._subs.save(sub)
+        return sub
 
     async def cancel(self, sub_id: str, *, at_period_end: bool = True) -> Subscription | None:
         sub = await self._subs.fetch(sub_id)
@@ -215,10 +239,25 @@ class BillingService:
             sub.status = "canceled"
         return await self._subs.save(sub)
 
-    async def _set_status(self, sub_id: str, status: str) -> Subscription | None:
+    async def _set_status(self, sub_id: str, status: str,
+                          *, allowed_from: tuple[str, ...] = ()) -> Subscription | None:
+        """Returns None when absent; raises ValueError on an illegal transition.
+
+        The two are deliberately different: absent is a 404, but an illegal transition is a 409 —
+        the subscription exists and the caller may not do that to it. Collapsing them into None
+        would report 'no such subscription' for one that is merely canceled, and the caller would
+        reasonably retry a create.
+        """
         sub = await self._subs.fetch(sub_id)
         if sub is None:
             return None
+        if sub.status == status:
+            # Before the transition check, not after: already-in-the-target-state is a retry, and
+            # the target is never in allowed_from, so testing legality first would 409 every
+            # duplicate click and every redelivered webhook.
+            return sub
+        if allowed_from and sub.status not in allowed_from:
+            raise ValueError(f"cannot move a {sub.status!r} subscription to {status!r}")
         sub.status = status
         return await self._subs.save(sub)
 
@@ -230,6 +269,13 @@ class BillingService:
         sub = await self._subs.fetch(sub_id)
         if sub is None:
             raise ValueError("SUB_NOT_FOUND")
+        if sub.status not in _BILLABLE:
+            # This check was absent, and it made two features decorative: the cycle invoiced
+            # PAUSED and CANCELED subscriptions exactly like active ones. Pausing suppressed
+            # nothing, and cancelling only stopped renewals if some caller happened not to run
+            # the cycle — charging people who had left, which is the failure customers escalate
+            # rather than report. The state has to be enforced where the money is made.
+            raise ValueError(f"SUB_NOT_BILLABLE:{sub.status}")
         key = f"cycle:{sub.id}:{int(sub.current_period_end)}"     # deterministic → no double-charge
         prior = await self._idempo.seen(key)
         if prior:

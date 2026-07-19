@@ -173,6 +173,10 @@ class TargetStore:
                                          sort=("service", "asc"))
         return [DataTarget.from_dict(r) for r in rows]
 
+    async def get(self, target_id: str) -> DataTarget | None:
+        row = await self._store.get(_TARGETS, target_id)
+        return DataTarget.from_dict(row) if row else None
+
     async def delete(self, target_id: str) -> None:
         await self._store.delete(_TARGETS, target_id)
 

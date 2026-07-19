@@ -44,6 +44,21 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "critical": False,
     },
     {
+        "action": "data_target.deleted",
+        "source": "admin",
+        "critical": True,
+        "why": "the data map DRIVES the erasure fan-out, so removing a target means the next "
+               "DSAR reaches fewer stores and still reports 'complete' — an unattributable "
+               "removal is how erasure quietly narrows and nobody can say when it happened",
+    },
+    {
+        "action": "ropa_activity.deleted",
+        "source": "admin",
+        "critical": True,
+        "why": "Art. 30 obliges the controller to MAINTAIN the record of processing; an entry "
+               "that vanishes with no trace is the one outcome that cannot be shown to a regulator",
+    },
+    {
         "action": "dsar.target_acked",
         "source": "internal",
         "critical": False,

@@ -5,7 +5,10 @@ import pytest
 
 from app.config import Settings
 
-_OK = {"INTERNAL_SERVICE_TOKEN": "x" * 40}
+# The minimum a PRODUCTION config must carry. PII_SALT joined it when the boot guard did: a
+# deployment without one cannot pseudonymise, so it cannot erase anyone, so it is not a "happy
+# config" — it is one that fails on the first DSAR. See test_pii_salt_boot_guard.py.
+_OK = {"INTERNAL_SERVICE_TOKEN": "x" * 40, "PII_SALT": "s" * 32}
 
 
 def test_targets_parse_to_name_url():

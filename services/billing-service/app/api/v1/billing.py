@@ -155,6 +155,35 @@ async def change_plan(request: Request, sub_id: str, body: ChangeIn,
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
 
 
+@router.post("/subscriptions/{sub_id}/pause")
+async def pause(request: Request, sub_id: str, principal: Principal = Depends(_SELF)) -> dict:
+    return await _transition(request, sub_id, principal, "pause")
+
+
+@router.post("/subscriptions/{sub_id}/reactivate")
+async def reactivate(request: Request, sub_id: str, principal: Principal = Depends(_SELF)) -> dict:
+    return await _transition(request, sub_id, principal, "reactivate")
+
+
+async def _transition(request: Request, sub_id: str, principal: Principal, action: str) -> dict:
+    """Shared because the two differ only in which method they call — and because the tenant
+    guard is the part that must not be written twice and then written slightly differently.
+
+    409, not 404, on an illegal move: the subscription exists and the caller may not do this to
+    it. A 404 would send them off to create a duplicate.
+    """
+    svc = build_billing(request)
+    sub = await svc._subs.fetch(sub_id)
+    if sub is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    _guard(principal, sub.tenant)
+    try:
+        updated = await getattr(svc, action)(sub_id)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e))
+    return updated.to_dict()
+
+
 @router.post("/subscriptions/{sub_id}/cancel")
 async def cancel(request: Request, sub_id: str, at_period_end: bool = True,
                  principal: Principal = Depends(_SELF)) -> dict:

@@ -61,8 +61,25 @@ class ComplianceService:
     async def list_targets(self, tenant: str) -> list[dict]:
         return [t.to_dict() for t in await self._targets.for_tenant(tenant)]
 
-    async def delete_target(self, target_id: str) -> None:
+    async def delete_target(self, tenant: str, target_id: str) -> bool:
+        """Remove a target from the data map. Scoped by TENANT, not just id.
+
+        The id is the only argument this took before it was reachable, which would have made the
+        route a cross-tenant delete: `tgt_...` ids are guessable enough, and one tenant shrinking
+        another's data map is not merely a deletion — the erasure fan-out is DRIVEN by this map,
+        so a removed target means the next DSAR silently stops reaching that store and still
+        reports success. Quietly narrowing erasure is the worst failure this service has.
+
+        Returns False when absent or owned by someone else — the caller answers 404 to both, so
+        the map cannot be probed for what other tenants hold.
+        """
+        t = await self._targets.get(target_id)
+        if t is None or t.tenant != tenant:
+            return False
         await self._targets.delete(target_id)
+        await self._emit("data_target.deleted",
+                         {"target_id": target_id, "service": t.service, "category": t.category})
+        return True
 
     # ── RoPA ─────────────────────────────────────────────────────────────────────
     async def create_activity(self, *, tenant: str, name: str, purpose: str, lawful_basis: str,
@@ -82,8 +99,22 @@ class ComplianceService:
     async def list_activities(self, tenant: str) -> list[dict]:
         return await self._ropa.list(tenant, self._cfg["list_limit"])
 
-    async def delete_activity(self, activity_id: str) -> None:
+    async def delete_activity(self, tenant: str, activity_id: str) -> bool:
+        """Remove a processing activity from the RoPA. Tenant-scoped, for the same reason as
+        `delete_target` — and emitted, because the RoPA is the register a regulator asks for.
+
+        Art. 30 obliges the controller to MAINTAIN that register, so an entry vanishing with no
+        trace is the one outcome that cannot be allowed: the event carries what the entry said,
+        which means the audit log still shows the activity existed and when it stopped.
+        """
+        a = await self._ropa.get(activity_id)
+        if a is None or a.tenant != tenant:
+            return False
         await self._ropa.delete(activity_id)
+        await self._emit("ropa_activity.deleted",
+                         {"activity_id": activity_id, "name": a.name,
+                          "lawful_basis": a.lawful_basis, "purpose": a.purpose})
+        return True
 
     # ── breach register (the 72-hour clock) ─────────────────────────────────────
     async def register_breach(self, *, tenant: str, description: str, discovered_at: float = 0.0,

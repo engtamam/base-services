@@ -285,6 +285,22 @@ class Settings(BaseSettings):
         start rather than accept requests we cannot finish."""
         self.privacy_targets      # parse now: a malformed entry fails at boot, not mid-erasure
         self.privacy_erase_paths
+        if self.is_production and not self.PII_SALT:
+            # Without this the service starts, serves happily, and fails ONLY when someone
+            # actually exercises a right: core/pii.py raises on the empty salt, reached from
+            # erasure via subject_ref(), so an uncaught ValueError becomes a 500 on
+            # /internal/privacy/erase — months after deploy, at the worst possible moment.
+            #
+            # audit-service already refuses to start for exactly this reason. The rule its test
+            # states is the one being applied here: a misconfiguration must refuse to START, not
+            # fail one request at 3am long after it was deployed.
+            raise ValueError(
+                "PII_SALT is empty in production: subject pseudonyms would be unsalted, which "
+                "makes them reversible by guessing every email address — not pseudonyms at all. "
+                "Erasure would 500 the first time a DSAR reached it. Set PII_SALT (it is FROZEN "
+                "— see config/product.identifiers.lock.json; changing it re-maps every pseudonym "
+                "and orphans the history)."
+            )
         if self.is_production and self.PRIVACY_TRANSPORT_DRIVER == "null":
             raise ValueError(
                 "PRIVACY_TRANSPORT_DRIVER=null in production: DSARs would be accepted and never "

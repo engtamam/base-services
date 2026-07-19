@@ -141,12 +141,13 @@ ALLOWLIST: dict[str, str] = {
         "from it), so exports can be erased but appear to have no creation path.",
     "services/billing-service/app/core/billing_service.py":
         "check_entitlement() is exercised by tests/unit/test_billing_v2 and test_grandfathering. "
-        "SUSPECTED GAP — pause()/reactivate() are a matched subscription-lifecycle pair over "
-        "_set_status() with no route and no test behind either.",
+        "(The pause()/reactivate() gap this used to record is CLOSED — both are routed and "
+        "tested, and run_cycle now refuses to invoice a subscription that is not billable.)",
     "services/compliance-service/app/core/compliance_service.py":
         "is_held() is exercised by tests/unit/test_dsar_and_compliance (the production hold check "
         "calls _holds.active_for directly, because it needs WHICH hold for the refusal reason). "
-        "SUSPECTED GAP — delete_target()/delete_activity() are ROPA teardown with no route.",
+        "(The delete_target()/delete_activity() gap is CLOSED — both are routed, tenant-scoped "
+        "and audited.)",
 }
 
 _LINE = re.compile(r"^(?P<path>.+?):(?P<line>\d+): (?P<kind>unused \w+) '(?P<name>[^']+)'")

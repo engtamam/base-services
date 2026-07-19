@@ -646,6 +646,50 @@
         ]
       }
     },
+    "/api/v1/compliance/data-targets/{target_id}": {
+      "delete": {
+        "operationId": "delete_target_api_v1_compliance_data_targets__target_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "target_id",
+            "required": true,
+            "schema": {
+              "title": "Target Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Target Api V1 Compliance Data Targets  Target Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Target",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
     "/api/v1/compliance/dsar": {
       "get": {
         "operationId": "list_dsar_api_v1_compliance_dsar_get",
@@ -974,6 +1018,50 @@
           }
         },
         "summary": "Create Activity",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/ropa/{activity_id}": {
+      "delete": {
+        "operationId": "delete_activity_api_v1_compliance_ropa__activity_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "activity_id",
+            "required": true,
+            "schema": {
+              "title": "Activity Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Activity Api V1 Compliance Ropa  Activity Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Activity",
         "tags": [
           "compliance"
         ]

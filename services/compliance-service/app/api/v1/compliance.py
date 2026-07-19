@@ -276,6 +276,24 @@ async def list_targets(request: Request, principal: Principal = Depends(_READ)) 
     return {"targets": await build_compliance(request).list_targets(_tenant(principal))}
 
 
+@router.delete("/data-targets/{target_id}")
+async def delete_target(request: Request, target_id: str,
+                        principal: Principal = Depends(_ADMIN)) -> dict:
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this
+    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
+    # already succeeded, and leave it unrecorded.
+    #
+    # Audited even though registering one is not: removing a target NARROWS the erasure
+    # fan-out, so a DSAR after this reaches fewer stores and still reports complete. If that
+    # is ever wrong, the log is the only thing that shows when the map changed and who did it.
+    await request.app.state.auditor.record(
+        "data_target.deleted", actor=principal.subject, tenant=principal.tenant,
+        resource=f"target:{target_id}", ip=request.client.host if request.client else "")
+    if not await build_compliance(request).delete_target(_tenant(principal), target_id):
+        raise HTTPException(404, "NOT_FOUND")
+    return {"deleted": True}
+
+
 # ── RoPA ───────────────────────────────────────────────────────────────────────
 @router.post("/ropa", status_code=201)
 async def create_activity(request: Request, body: RopaIn, principal: Principal = Depends(_ADMIN)) -> dict:
@@ -289,6 +307,20 @@ async def create_activity(request: Request, body: RopaIn, principal: Principal =
 @router.get("/ropa", dependencies=[Depends(_READ)])
 async def list_activities(request: Request, principal: Principal = Depends(_READ)) -> dict:
     return {"activities": await build_compliance(request).list_activities(_tenant(principal))}
+
+
+@router.delete("/ropa/{activity_id}")
+async def delete_activity(request: Request, activity_id: str,
+                          principal: Principal = Depends(_ADMIN)) -> dict:
+    # Write-ahead, and for the strongest reason in this file: Art. 30 obliges the controller to
+    # MAINTAIN the record of processing. An entry that vanishes with nothing behind it is the
+    # one outcome that cannot be defended to a regulator, so the log entry precedes the delete.
+    await request.app.state.auditor.record(
+        "ropa_activity.deleted", actor=principal.subject, tenant=principal.tenant,
+        resource=f"activity:{activity_id}", ip=request.client.host if request.client else "")
+    if not await build_compliance(request).delete_activity(_tenant(principal), activity_id):
+        raise HTTPException(404, "NOT_FOUND")
+    return {"deleted": True}
 
 
 # ── breach register (72-hour clock) ────────────────────────────────────────────

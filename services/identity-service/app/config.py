@@ -252,6 +252,25 @@ class Settings(BaseSettings):
             return ""
         return self.AUDIT_SERVICE_URL.rstrip("/") + self.AUDIT_INGEST_PATH
 
+    def assert_privacy_config_ok(self) -> None:
+        """Boot guard for the erasure path. Same rule as the audit guard below, applied to the
+        one setting erasure cannot work without.
+
+        core/pii.py refuses an empty salt — correctly, because an unsalted pseudonym is reversible
+        by guessing every email address. But it refuses at CALL time, and the only caller is
+        IdentityErasure via subject_ref(), so an empty salt is invisible until a real DSAR arrives
+        and gets a 500. This is the service whose own docstring says it keeps nothing; discovering
+        it cannot pseudonymise while someone is exercising a right is the worst available moment.
+        """
+        if self.is_production and not self.PII_SALT:
+            raise ValueError(
+                "PII_SALT is empty in production: subject pseudonyms would be unsalted, which "
+                "makes them reversible by guessing every email address — not pseudonyms at all. "
+                "Erasure would 500 the first time a DSAR reached it. Set PII_SALT (it is FROZEN "
+                "— see config/product.identifiers.lock.json; changing it re-maps every pseudonym "
+                "and orphans the history)."
+            )
+
     def assert_audit_config_ok(self) -> None:
         """Boot guard. Refuse to start production without somewhere to witness privileged actions.
 

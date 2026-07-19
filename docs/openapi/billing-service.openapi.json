@@ -1194,6 +1194,94 @@
         ]
       }
     },
+    "/api/v1/billing/subscriptions/{sub_id}/pause": {
+      "post": {
+        "operationId": "pause_api_v1_billing_subscriptions__sub_id__pause_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sub_id",
+            "required": true,
+            "schema": {
+              "title": "Sub Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Pause Api V1 Billing Subscriptions  Sub Id  Pause Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pause",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/subscriptions/{sub_id}/reactivate": {
+      "post": {
+        "operationId": "reactivate_api_v1_billing_subscriptions__sub_id__reactivate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sub_id",
+            "required": true,
+            "schema": {
+              "title": "Sub Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Reactivate Api V1 Billing Subscriptions  Sub Id  Reactivate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reactivate",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
     "/api/v1/billing/subscriptions/{sub_id}/run": {
       "post": {
         "operationId": "run_cycle_api_v1_billing_subscriptions__sub_id__run_post",

@@ -44,6 +44,8 @@ def create_app() -> FastAPI:
     # A service that cannot witness its own privileged actions must not serve
     # traffic as if it can.
     settings.assert_audit_config_ok()
+    # And a service that cannot pseudonymise must not claim it can erase anyone.
+    settings.assert_privacy_config_ok()
     configure_logging(settings.SERVICE_NAME, settings.ENV, settings.LOG_LEVEL)
     logger = get_logger("app.main")
 
