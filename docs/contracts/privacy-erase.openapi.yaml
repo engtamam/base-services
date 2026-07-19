@@ -47,14 +47,14 @@ paths:
         "202":
           description: |
             Accepted, erasure is asynchronous. The target MUST later POST the same Ack body to
-            `{compliance}/internal/compliance/dsar/{request_id}/target-ack`. Until then this target
+            `{compliance}/internal/compliance/dsar/{dsar_id}/target-ack`. Until then this target
             stays pending and the DSAR stays incomplete.
         "4XX":
           description: Refused. Retried with backoff; after max attempts the target is marked FAILED and stays visible.
         "5XX":
           description: Failed. Retried with backoff; never silently treated as done.
 
-  /internal/compliance/dsar/{request_id}/target-ack:
+  /internal/compliance/dsar/{dsar_id}/target-ack:
     post:
       operationId: pushTargetAck
       summary: "Callback (async targets only): report a completed erasure back to compliance-service."
@@ -65,7 +65,7 @@ paths:
       security:
         - internalToken: []
       parameters:
-        - name: request_id
+        - name: dsar_id
           in: path
           required: true
           schema: { type: string }

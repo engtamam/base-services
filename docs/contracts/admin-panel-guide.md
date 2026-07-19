@@ -2,7 +2,7 @@
 
 One endpoint drives the whole panel: `GET /api/v1/admin/catalog` on the api-gateway. This guide
 shows a front end how to consume it, and shows any service — ours or a customer's own product — how
-to appear in it. The machine contract is [`admin-panel.openapi.yaml`](./admin-panel.openapi.yaml);
+to appear in it. The machine contract is [`api-gateway.openapi.json`](../openapi/api-gateway.openapi.json) (generated from the running service — see tools/ci/gen_openapi.py);
 the per-action schema is [`admin-actions.schema.json`](./admin-actions.schema.json).
 
 ## The one principle

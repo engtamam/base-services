@@ -107,6 +107,10 @@ jobs:
       - name: "safety:privacy-wiring — every service that can erase is a dispatch target"
         run: python tools/ci/check_privacy_wiring.py
 
+      # gates: safety:openapi
+      - name: "safety:openapi — published specs are generated, not hand-written"
+        run: python tools/ci/gen_openapi.py --check
+
       # gates: safety:audit-wiring
       - name: "safety:audit-wiring — every service can prove what it did"
         run: |

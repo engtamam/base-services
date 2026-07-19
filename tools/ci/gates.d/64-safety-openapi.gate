@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+gate_name="safety:openapi"
+gate_desc="every published API spec is generated from the running service"
+gate_protects="Hand-written specs rot silently. Four lived in docs/contracts/ and two had drifted:
+privacy-erase named a path parameter the service does not use, and stream-service
+declared seven endpoints that do not exist. Both point the dangerous way — the
+document promises what the code lacks, so a customer generating a client gets
+methods that 404. A spec that lies is worse than none, because people build on it."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/gen_openapi.py"
+gate_units=0
+gate_slow=1
+
+gate_main() { "$PY" tools/ci/gen_openapi.py --check; }

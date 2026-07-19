@@ -3,7 +3,7 @@
 > Live camera / RTSP ingest, control, record, and view. Registers a source (RTSP/ONVIF/RTMP/HTTP)
 > and turns it into a **live view** (HLS + WebRTC), **snapshots**, **recordings** (stored in
 > file-service), motion **events**, and **PTZ** — tenant-scoped, capability-gated, config-driven.
-> The contract is [`docs/contracts/stream-service.openapi.yaml`](../../docs/contracts/stream-service.openapi.yaml);
+> The contract is [`docs/openapi/stream-service.openapi.json`](../../docs/openapi/stream-service.openapi.json), generated from the running service;
 > the design is [`docs/phases/phase-35-stream-service.md`](../../docs/phases/phase-35-stream-service.md).
 
 ## The two guarantees

@@ -27,6 +27,14 @@ def build_gateway(request: Request) -> Gateway:
     )
 
 
-@router.api_route("/{full_path:path}", methods=_METHODS)
+# Excluded from the OpenAPI schema on purpose. This is ONE handler bound to several methods, so
+# FastAPI derives the same operationId for each and emits duplicates — which breaks client
+# generators outright and, because the collision resolves in arbitrary order, made the generated
+# spec differ between two identical runs.
+#
+# It is also not an API worth documenting: the gateway PROXIES to the services behind it, and each
+# of those publishes its own accurate spec. Describing a catch-all `/{full_path}` here would tell a
+# customer nothing except that any path is accepted.
+@router.api_route("/{full_path:path}", methods=_METHODS, include_in_schema=False)
 async def proxy(request: Request, full_path: str) -> Response:
     return await build_gateway(request).handle(request)

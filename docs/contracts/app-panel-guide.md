@@ -4,7 +4,7 @@ One endpoint drives the whole end-user app: `GET /api/v1/app/catalog` on the api
 user-facing twin of the admin panel — same aggregator, same rules — so this guide is short and points
 at the admin guide for the shared mechanics.
 
-- Machine contract: [`app-panel.openapi.yaml`](./app-panel.openapi.yaml)
+- Machine contract: [`api-gateway.openapi.json`](../openapi/api-gateway.openapi.json) (generated)
 - Per-action schema: [`user-actions.schema.json`](./user-actions.schema.json) (identical shape to `admin-actions.schema.json`)
 - Front-end render/invoke mechanics: [`admin-panel-guide.md`](./admin-panel-guide.md) — the same code, just point it at `/api/v1/app/catalog`.
 
