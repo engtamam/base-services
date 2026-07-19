@@ -54,9 +54,42 @@ class ComplianceService:
     # ── data map (drives erasure completeness) ──────────────────────────────────
     async def register_target(self, *, tenant: str, service: str, category: str,
                               description: str = "") -> DataTarget:
+        """Add a service to the data map, refusing a name the dispatcher cannot reach.
+
+        Without this check the mismatch surfaces only at ERASURE time: _url_for returns None, the
+        target is marked FAILED/UNREGISTERED, it burns PRIVACY_MAX_ATTEMPTS, and the DSAR can
+        never complete. That is weeks later, on a statutory clock, and the person who can fix it
+        is not the person watching. Registration is the moment the operator still has the name in
+        front of them, so it is the moment to say no.
+
+        Refused only when we KNOW the target set — an empty PRIVACY_TARGETS means this deployment
+        has not configured the fan-out at all (the local and test case), and refusing every
+        registration there would make the service unusable for the deployments least able to
+        debug it. Production cannot reach that state: assert_privacy_config_ok() already refuses
+        to boot with an http transport and no targets.
+        """
+        known = self._cfg.get("known_targets") or ()
+        if known and service not in known:
+            raise ValueError(
+                f"{service!r} is not a configured erasure target — it would be registered on the "
+                f"data map and then be unreachable when a DSAR arrives, blocking that DSAR "
+                f"forever. Known: {', '.join(sorted(known))}. Add it to PRIVACY_TARGETS first.")
         t = DataTarget(id=new_id("tgt_"), tenant=tenant, service=service, category=category,
                        description=description)
         return await self._targets.register(t)
+
+    async def unreachable_targets(self, tenant: str) -> list[dict]:
+        """Registered targets the dispatcher can no longer reach.
+
+        Registration-time validation cannot be the whole answer: PRIVACY_TARGETS is config, so a
+        target valid when registered becomes unreachable the moment someone edits the deployment
+        and forgets the map. This is how that drift is found BEFORE a DSAR finds it.
+        """
+        known = self._cfg.get("known_targets") or ()
+        if not known:
+            return []
+        return [t.to_dict() for t in await self._targets.for_tenant(tenant)
+                if t.service not in known]
 
     async def list_targets(self, tenant: str) -> list[dict]:
         return [t.to_dict() for t in await self._targets.for_tenant(tenant)]

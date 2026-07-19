@@ -646,6 +646,30 @@
         ]
       }
     },
+    "/api/v1/compliance/data-targets/unreachable": {
+      "get": {
+        "description": "Targets on the map that PRIVACY_TARGETS no longer knows about.\n\nRegistration refuses an unknown name, but PRIVACY_TARGETS is config: a target valid when it\nwas registered goes stale the moment a deployment changes and the map does not. Finding that\nhere costs a request; finding it during a DSAR costs the DSAR.",
+        "operationId": "unreachable_targets_api_v1_compliance_data_targets_unreachable_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Unreachable Targets Api V1 Compliance Data Targets Unreachable Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Unreachable Targets",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
     "/api/v1/compliance/data-targets/{target_id}": {
       "delete": {
         "operationId": "delete_target_api_v1_compliance_data_targets__target_id__delete",

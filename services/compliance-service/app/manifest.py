@@ -64,6 +64,7 @@ def build_manifest(
             {"path": "/api/v1/compliance/data-targets", "tier": "user", "method": "POST"},
             {"path": "/api/v1/compliance/data-targets", "tier": "user", "method": "GET"},
             {"path": "/api/v1/compliance/data-targets/{id}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/compliance/data-targets/unreachable", "tier": "user", "method": "GET"},
             {"path": "/api/v1/compliance/ropa", "tier": "user", "method": "POST"},
             {"path": "/api/v1/compliance/ropa", "tier": "user", "method": "GET"},
             {"path": "/api/v1/compliance/ropa/{id}", "tier": "user", "method": "DELETE"},

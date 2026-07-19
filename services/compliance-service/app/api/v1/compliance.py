@@ -32,7 +32,11 @@ def _cfg() -> dict[str, Any]:
     s = get_settings()
     return {"sla_days": s.DSAR_SLA_DAYS, "verification_ttl": s.DSAR_VERIFICATION_TTL_SECONDS,
             "breach_hours": s.BREACH_NOTIFY_HOURS, "residency_default": s.DATA_RESIDENCY_DEFAULT,
-            "list_limit": s.COMPLIANCE_LIST_LIMIT}
+            "list_limit": s.COMPLIANCE_LIST_LIMIT,
+            # The names the dispatcher can actually reach. The data map and PRIVACY_TARGETS are
+            # two halves of one fact and nothing used to compare them, so a target could be
+            # registered for a service that was never deployed.
+            "known_targets": tuple(s.privacy_targets)}
 
 
 def build_consent(request: Request) -> ConsentService:
@@ -270,9 +274,27 @@ async def list_holds(request: Request, principal: Principal = Depends(_READ)) ->
 # ── data map ───────────────────────────────────────────────────────────────────
 @router.post("/data-targets", status_code=201)
 async def register_target(request: Request, body: TargetIn, principal: Principal = Depends(_ADMIN)) -> dict:
-    return (await build_compliance(request).register_target(
-        tenant=_tenant(principal), service=body.service, category=body.category,
-        description=body.description)).to_dict()
+    try:
+        t = await build_compliance(request).register_target(
+            tenant=_tenant(principal), service=body.service, category=body.category,
+            description=body.description)
+    except ValueError as e:
+        # 422, not 404: the request is well-formed and the caller is authorised — the NAME is the
+        # problem. The message lists the configured targets, because the operator hitting this has
+        # a typo or a service that was never deployed, and both are fixed by seeing the real set.
+        raise HTTPException(422, str(e))
+    return t.to_dict()
+
+
+@router.get("/data-targets/unreachable", dependencies=[Depends(_READ)])
+async def unreachable_targets(request: Request, principal: Principal = Depends(_READ)) -> dict:
+    """Targets on the map that PRIVACY_TARGETS no longer knows about.
+
+    Registration refuses an unknown name, but PRIVACY_TARGETS is config: a target valid when it
+    was registered goes stale the moment a deployment changes and the map does not. Finding that
+    here costs a request; finding it during a DSAR costs the DSAR.
+    """
+    return {"unreachable": await build_compliance(request).unreachable_targets(_tenant(principal))}
 
 
 @router.get("/data-targets", dependencies=[Depends(_READ)])
