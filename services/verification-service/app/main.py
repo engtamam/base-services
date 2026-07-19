@@ -42,6 +42,8 @@ def create_app() -> FastAPI:
     settings = get_settings()
     # A service that cannot witness its own privileged actions must not serve traffic as if it can.
     settings.assert_audit_config_ok()
+    # A verifier that cannot verify must not accept claims it will answer wrongly.
+    settings.assert_verify_config_ok()
     configure_logging(settings.SERVICE_NAME, settings.ENV, settings.LOG_LEVEL)
     logger = get_logger("app.main")
 

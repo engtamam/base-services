@@ -53,6 +53,37 @@ class Settings(BaseSettings):
     PII_SALT: str = ""
     ERASURE_MAX_SCAN: int = 100_000   # a DSAR is rare, but must never be an unbounded read
 
+    # ── verification (Phase 40) — every provider is CONFIG, never code ────────
+    # WHICH provider answers WHICH kind of claim. Same name=value idiom as PRIVACY_TARGETS, so a
+    # market we have never heard of is one entry rather than a code change.
+    #   "individual=nafath,business=wathq,tax=vies"
+    # A claim type with no provider named is one this platform does not verify — and asking for it
+    # is refused rather than quietly answered by a default.
+    VERIFY_PROVIDERS: str = ""
+    # Per-provider profile: url, auth, request mapping, and WHERE the verdict lives in the reply.
+    # Written as `provider.key=value` pairs so one flat string configures any number of providers:
+    #   "wathq.url=https://…,wathq.auth=bearer:WATHQ_TOKEN,wathq.request=cr={claim},
+    #    wathq.verdict_path=data.status,wathq.verdict_ok=VERIFIED,
+    #    wathq.verdict_refused=NOT_FOUND,wathq.reference_path=data.ref"
+    # We ship no provider endpoints of our own: we do not hold verified contracts for Nafath or
+    # Wathq, and inventing them would produce a file that looks authoritative and is wrong.
+    VERIFY_PROFILES: str = ""
+    # Credential per provider, by SECRET NAME — resolved through the secrets port, never inline.
+    #   "wathq=WATHQ_TOKEN,nafath=NAFATH_TOKEN"
+    VERIFY_SECRETS: str = ""
+    VERIFY_TIMEOUT_SECONDS: int = 15
+    # How long a verdict stays trustworthy, per claim type. A commercial registration can be
+    # cancelled and a licence can lapse, so "verified once" is not "verified forever". 0 = never
+    # expires, which is only right for a claim that cannot change.
+    #   "business=365,individual=1095,tax=365"
+    VERIFY_TTL_DAYS: str = ""
+    # How long we wait for an async provider (a Nafath-style prompt on the user's phone) before
+    # the attempt lapses. Lapsing is NOT a verdict of verified — it means nobody answered.
+    VERIFY_PENDING_TTL_SECONDS: int = 900
+    # Manual review: require two different reviewers to approve. Off by default because it needs
+    # two staff, on for markets or claim types where one person granting trust is unacceptable.
+    VERIFY_TWO_EYES: bool = False
+
     # ── audit trail (Phase 38) — where privileged actions are witnessed ───────
     # `null` records NOTHING and says so; the boot guard below refuses it in production, because a
     # service that cannot witness its own privileged actions has no audit trail at all — and an
@@ -151,6 +182,107 @@ class Settings(BaseSettings):
     @property
     def is_test(self) -> bool:
         return self.ENV == "test"
+
+    @property
+    def verify_providers(self) -> dict[str, str]:
+        """`claim_type -> provider name`. A malformed entry fails at BOOT: a provider we cannot
+        resolve is a claim we would silently stop checking."""
+        out: dict[str, str] = {}
+        for part in self.VERIFY_PROVIDERS.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            claim, sep, provider = part.partition("=")
+            claim, provider = claim.strip(), provider.strip()
+            if not sep or not claim or not provider:
+                raise ValueError(f"VERIFY_PROVIDERS entry {part!r} must be claim_type=provider")
+            out[claim] = provider
+        return out
+
+    @property
+    def verify_profiles(self) -> dict[str, dict[str, str]]:
+        """`provider -> {key: value}`, parsed from flat `provider.key=value` pairs."""
+        out: dict[str, dict[str, str]] = {}
+        for part in self.VERIFY_PROFILES.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            lhs, sep, value = part.partition("=")
+            provider, dot, key = lhs.strip().partition(".")
+            if not sep or not dot or not provider or not key:
+                raise ValueError(
+                    f"VERIFY_PROFILES entry {part!r} must be provider.key=value")
+            out.setdefault(provider, {})[key] = value.strip()
+        return out
+
+    @property
+    def verify_secrets(self) -> dict[str, str]:
+        """`provider -> SECRET NAME`. A name, never a value: a credential in a config string ends
+        up in a ConfigMap, a log line, and a support ticket."""
+        out: dict[str, str] = {}
+        for part in self.VERIFY_SECRETS.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            provider, sep, key = part.partition("=")
+            provider, key = provider.strip(), key.strip()
+            if not sep or not provider or not key:
+                raise ValueError(f"VERIFY_SECRETS entry {part!r} must be provider=SECRET_NAME")
+            if key.startswith("http") or "/" in key:
+                raise ValueError(
+                    f"VERIFY_SECRETS {key!r} must be a secret NAME, not a value or URL")
+            out[provider] = key
+        return out
+
+    @property
+    def verify_ttl_days(self) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for part in self.VERIFY_TTL_DAYS.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            claim, sep, days = part.partition("=")
+            try:
+                value = int(days.strip())
+            except ValueError:
+                raise ValueError(f"VERIFY_TTL_DAYS {days!r} for {claim!r} must be an integer")
+            if not sep or value < 0:
+                raise ValueError(f"VERIFY_TTL_DAYS entry {part!r} must be claim_type=days (>= 0)")
+            out[claim.strip()] = value
+        return out
+
+    def assert_verify_config_ok(self) -> None:
+        """Boot guard. A verifier that cannot verify must not accept claims it will answer wrongly.
+
+        The specific catastrophe: a claim type is advertised as verified, the provider behind it is
+        missing or misconfigured, and every check falls through to whatever the caller does on
+        error. If that is 'allow', the platform has an identity check that approves everyone while
+        every dashboard shows it enabled.
+        """
+        providers = self.verify_providers        # parse now — malformed fails at boot
+        profiles = self.verify_profiles
+        self.verify_secrets
+        self.verify_ttl_days
+
+        if not self.is_production:
+            return
+        for claim, provider in providers.items():
+            if provider == "null":
+                raise ValueError(
+                    f"VERIFY_PROVIDERS maps {claim!r} to the null verifier in production: every "
+                    f"check would return error and nothing would ever be verified.")
+            if provider in ("manual", "document"):
+                continue                          # a human answers these; no URL needed
+            url = profiles.get(provider, {}).get("url", "")
+            if not url:
+                raise ValueError(
+                    f"provider {provider!r} verifies {claim!r} but has no url in VERIFY_PROFILES")
+            if not url.startswith(("http://", "https://")):
+                raise ValueError(f"VERIFY_PROFILES {provider}.url {url!r} must be http(s)")
+            if not profiles.get(provider, {}).get("verdict_path"):
+                raise ValueError(
+                    f"provider {provider!r} has no verdict_path: we would not know where its "
+                    f"answer lives, so every response would read as error")
 
     @property
     def is_production(self) -> bool:

@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.adapters.cache.memory import MemoryCache
@@ -28,6 +28,8 @@ from app.adapters.rate_limiter.redis import RedisRateLimiter
 from app.adapters.secrets.env import EnvSecrets
 from app.adapters.secrets.file import FileSecrets
 from app.adapters.secrets.vault import VaultSecrets
+from app.adapters.verifier.http import HttpVerifier
+from app.adapters.verifier.null import NullVerifier
 from app.adapters.audit_sink.eventbus import EventBusAuditSink
 from app.adapters.audit_sink.http import HttpAuditSink
 from app.adapters.audit_sink.null import NullAuditSink
@@ -126,6 +128,9 @@ class Container:
     rate_limiter: RateLimiter
     telemetry: Telemetry
     audit_sink: Any = None
+    # claim_type -> Verifier. Built once at boot so a misconfigured provider fails there rather
+    # than on the first customer who tries to verify.
+    verifiers: dict = field(default_factory=dict)
 
     def describe(self) -> list[dict[str, str]]:
         """[{port, driver}] for the service manifest."""
@@ -172,6 +177,35 @@ def _build_audit_sink(settings: Settings, event_bus) -> Any:
     return _pick(_AUDIT_SINK, driver, "audit_sink", settings)
 
 
+def _build_verifiers(settings: Settings, secrets) -> dict:
+    """One verifier per claim type the platform says it checks.
+
+    A claim type with no provider gets NO entry — not a null verifier. The difference matters: an
+    absent entry means "we do not verify this", which the service refuses outright; a null entry
+    would mean "we verify this" and then answer error forever, which looks like an outage rather
+    than a decision.
+    """
+    profiles = settings.verify_profiles
+    secret_names = settings.verify_secrets
+    out: dict = {}
+    for claim, provider in settings.verify_providers.items():
+        if provider == "null":
+            out[claim] = NullVerifier()
+            continue
+        if provider in ("manual", "document"):
+            continue                       # answered by a human; see the review flow
+        token = ""
+        name = secret_names.get(provider)
+        if name and secrets is not None:
+            try:
+                token = secrets.get(name) or ""
+            except Exception:
+                token = ""
+        out[claim] = HttpVerifier(provider, profiles.get(provider, {}), token=token,
+                                  timeout=settings.VERIFY_TIMEOUT_SECONDS)
+    return out
+
+
 def build_container(settings: Settings) -> Container:
     """Resolve every port from config. Fail-fast on any unknown driver."""
     event_bus = _pick(_EVENTBUS, settings.EVENTBUS_DRIVER, "event_bus", settings)
@@ -186,4 +220,5 @@ def build_container(settings: Settings) -> Container:
         rate_limiter=_pick(_RATELIMITER, settings.RATELIMITER_DRIVER, "rate_limiter", settings),
         telemetry=_pick(_TELEMETRY, settings.TELEMETRY_DRIVER, "telemetry", settings),
         audit_sink=_build_audit_sink(settings, event_bus),
+        verifiers=_build_verifiers(settings, _pick(_SECRETS, settings.SECRETS_DRIVER, "secrets", settings)),
     )
