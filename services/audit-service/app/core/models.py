@@ -37,12 +37,3 @@ class AuditEvent:
             "tenant": self.tenant, "ip": self.ip, "metadata": self.metadata,
             "prev_hash": self.prev_hash, "hash": self.hash,
         }
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "AuditEvent":
-        return cls(
-            id=d["id"], seq=int(d["seq"]), ts=d["ts"], service=d["service"],
-            action=d["action"], actor=d.get("actor", ""), resource=d.get("resource", ""),
-            tenant=d.get("tenant", ""), ip=d.get("ip", ""), metadata=dict(d.get("metadata") or {}),
-            prev_hash=d.get("prev_hash", ""), hash=d.get("hash", ""),
-        )

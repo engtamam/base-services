@@ -81,6 +81,72 @@ ALLOWLIST: dict[str, str] = {
     # The template ships code a generated service is expected to USE, so the scaffold itself
     # legitimately contains symbols nothing calls yet.
     "services/_template/": "the scaffold: its symbols are used by the services generated FROM it",
+
+    # ── the replicated PII module ────────────────────────────────────────────────────────────
+    # pii.py is copied verbatim into every service (self-contained by design), so `is_subject_ref`
+    # is dead in the 17 services that only MINT pseudonyms and live in the one that also VALIDATES
+    # them: audit-service calls it from erasure.assert_no_pii and pii_policy to refuse a raw
+    # identity at write time. Splitting the module per service would mean 18 copies of a security
+    # primitive drifting apart, which is worse than one unused function.
+    "app/core/pii.py": "replicated verbatim per service; is_subject_ref is live in audit-service "
+                       "(erasure.assert_no_pii + pii_policy) and unused where nothing validates",
+
+    # ── reached only from tests/ ─────────────────────────────────────────────────────────────
+    # Vulture scans app/ alone, so a pure function whose only caller is its unit test looks dead.
+    # Each of these is a domain rule tested directly rather than through a route.
+    "services/analytics-service/app/core/histogram.py":
+        "mean() is exercised by tests/unit/test_sketches.py; vulture never scans tests/",
+    "services/audit-service/app/core/erasure.py":
+        "assert_no_pii is a write-time guard called from tests/unit/test_erasure_chain.py; the "
+        "production caller is pii_policy, which reaches it through the same module",
+    "services/billing-service/app/core/currency.py":
+        "minor_per() is exercised by tests/unit/test_billing_v2.py",
+    "services/billing-service/app/core/entitlements.py":
+        "feature_enabled() is exercised by tests/unit/test_usage_entitlements.py",
+    "services/billing-service/app/core/stores.py":
+        "reconcile() is the balance invariant, asserted from tests/unit rather than a route",
+    "services/compliance-service/app/core/models.py":
+        "Consent.active() is asserted from tests/unit; the production path in consent_service "
+        "re-states the same granted/expiry test inline because it must return WHICH reason "
+        "(withdrawn vs expired), which a bool cannot carry",
+    "services/compliance-service/app/core/privacy_dispatcher.py":
+        "record_pushed_ack is driven from tests/unit/test_privacy_dispatcher.py",
+    "services/connector-service/app/core/backoff.py":
+        "parse_retry_after() is exercised by tests/unit/test_pure_cores.py",
+    "services/file-service/app/core/file_service.py":
+        "resolve_signed() is exercised by tests/unit/test_file_core.py",
+    "services/file-service/app/core/upload_session.py":
+        "list_for_tenant() is exercised by tests/unit/test_upload_session.py",
+    "services/identity-service/app/core/refresh_store.py":
+        "is_active() is exercised by tests/unit/test_erasure.py; the production path calls "
+        "status() directly because it needs revoked-vs-unknown, not a bool",
+    "services/tenant-service/app/core/tenant_repository.py":
+        "get_by_domain() is exercised by tests/unit/test_tombstone.py",
+    "services/wallet-service/app/core/funds.py":
+        "apply() is exercised by tests/unit/test_wallet_core.py",
+
+    # ── SUSPECTED MISSING CALL SITE — not dead, unreached. Kept deliberately. ─────────────────
+    # These are not decoration: each is working code with a plausible caller that does not exist.
+    # Deleting them would erase the evidence of the gap; wiring them is a behaviour change that
+    # needs a decision, not a cleanup commit.
+    "services/identity-service/app/core/membership.py":
+        "SUSPECTED BUG — delete_person() erases the `persons` and `persons_by_identifier` rows and "
+        "NOTHING calls it. IdentityErasure.erase() only deletes UserRepository's `users` rows, yet "
+        "its receipt claims 'identity keeps NOTHING'. A DSAR erasure appears to leave the Person "
+        "record and its identifier index behind. Needs a decision on subject->Person resolution "
+        "and on memberships, so it is not wired here.",
+    "services/stream-service/app/core/stores.py":
+        "SUSPECTED GAP — ExportStore is a complete create/get/save store that nothing constructs. "
+        "The Export model and the `exports` collection are real (erasure._delete_exports deletes "
+        "from it), so exports can be erased but appear to have no creation path.",
+    "services/billing-service/app/core/billing_service.py":
+        "check_entitlement() is exercised by tests/unit/test_billing_v2 and test_grandfathering. "
+        "SUSPECTED GAP — pause()/reactivate() are a matched subscription-lifecycle pair over "
+        "_set_status() with no route and no test behind either.",
+    "services/compliance-service/app/core/compliance_service.py":
+        "is_held() is exercised by tests/unit/test_dsar_and_compliance (the production hold check "
+        "calls _holds.active_for directly, because it needs WHICH hold for the refusal reason). "
+        "SUSPECTED GAP — delete_target()/delete_activity() are ROPA teardown with no route.",
 }
 
 _LINE = re.compile(r"^(?P<path>.+?):(?P<line>\d+): (?P<kind>unused \w+) '(?P<name>[^']+)'")
@@ -129,7 +195,12 @@ def main() -> int:
     for service in sorted(p for p in SERVICES.iterdir() if p.is_dir()):
         if not (service / "app").exists():
             continue
-        if any(f"services/{service.name}/" in frag for frag in ALLOWLIST):
+        # Only a WHOLE-DIRECTORY entry skips the scan. A file-level entry must not: substring
+        # matching means "services/x/app/core/pii.py" contains "services/x/", so the original
+        # test would have silently stopped scanning every service that allowlists a single file —
+        # turning one suppressed symbol into a suppressed service. The per-finding filter in
+        # scan() is what applies file-level entries.
+        if f"services/{service.name}/" in ALLOWLIST:
             continue
         findings, skip = scan(service)
         if skip:
