@@ -44,6 +44,14 @@ def gate_license() -> tuple[str, str]:
 
 def gate_sast() -> tuple[str, str]:
     r = _run([PY, "-m", "bandit", "-c", "pyproject.toml", "-r", "app", "-ll", "-ii", "-q"])
+    # A MISSING scanner is not a finding. Reporting "bandit medium+ findings" when bandit was never
+    # installed asserts a security result that was never measured — the same lie in the opposite
+    # direction from a scanner that silently passes, and worse than either because it sends someone
+    # hunting for vulnerabilities that were never reported. Every other scanner here already
+    # distinguishes the two; this one did not. SKIP is honest, and --strict (what CI runs) still
+    # turns it into a failure, so nothing gets weaker where it counts.
+    if r.returncode != 0 and "No module named bandit" in (r.stderr or ""):
+        return SKIP, "bandit not installed"
     return (PASS if r.returncode == 0 else FAIL), "bandit medium+ findings" if r.returncode else "no medium/high findings"
 
 
