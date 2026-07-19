@@ -49,8 +49,11 @@ def build_manifest(
             {"path": "/metrics", "tier": "public", "method": "GET"},
             {"path": "/internal/health", "tier": "internal", "method": "GET"},
             {"path": "/internal/manifest", "tier": "internal", "method": "GET"},
-            {"path": "/internal/compliance/consent-check", "tier": "internal", "method": "GET"},
-            {"path": "/internal/compliance/hold-check", "tier": "internal", "method": "GET"},
+            {"path": "/internal/compliance/consent-check", "tier": "internal", "method": "GET",
+             # Another SERVICE must call this. safety:contract-callers fails if none declares it.
+             "caller": "service"},
+            {"path": "/internal/compliance/hold-check", "tier": "internal", "method": "GET",
+             "caller": "service"},
             {"path": "/internal/compliance/dsar/{id}/target-ack", "tier": "internal", "method": "POST"},
             {"path": "/internal/compliance/consent/sweep-lapses", "tier": "internal", "method": "POST"},
             {"path": "/internal/compliance/consent/migrate-purpose-keys", "tier": "internal", "method": "POST"},

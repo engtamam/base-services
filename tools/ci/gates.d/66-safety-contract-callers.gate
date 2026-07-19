@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+gate_name="safety:contract-callers"
+gate_desc="a cross-service contract that nobody calls is not a control"
+gate_protects="The fourth appearance of one defect: complete, correct code connected to nothing.
+audit-service's chain verified perfectly while holding zero events. compliance-service
+served consent-check for four phases with ZERO callers — no knob, no adapter, no
+string 'consent' anywhere in the other nineteen services. safety:dead-code cannot see
+either: it finds a SYMBOL nobody uses, and a server with no clients has no unused
+symbols. The absence lives BETWEEN two services, where no unit test looks. This reads
+both sides — what is served, and what anyone declares calling — and also refuses a
+declaration with no adapter behind it, because a gate satisfied by declarations alone
+is satisfied by fiction."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_contract_callers.py"
+gate_units=0
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_contract_callers.py; }

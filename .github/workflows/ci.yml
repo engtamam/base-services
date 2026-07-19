@@ -111,6 +111,10 @@ jobs:
       - name: "safety:dead-code — no orphaned imports, functions or properties"
         run: python tools/ci/check_dead_code.py
 
+      # gates: safety:contract-callers
+      - name: "safety:contract-callers — a contract nobody calls is not a control"
+        run: python tools/ci/check_contract_callers.py
+
       # gates: safety:openapi
       - name: "safety:openapi — published specs are generated, not hand-written"
         run: python tools/ci/gen_openapi.py --check
