@@ -168,7 +168,7 @@ STATIC_ENV: dict[str, dict[str, str]] = {
                 "analytics-service", "audit-service", "authz-service", "compliance-service",
                 "feature-flag-service", "search-service", "zatca-service", "wallet-service",
                 "stream-service", "webhook-service", "job-service", "connector-service",
-                "tenant-service", "api-gateway")),
+                "tenant-service", "api-gateway", "verification-service")),
         # Retention for the records compliance-service OWNS. Every other service declares its own
         # period in its RoPA row and enforces it itself — only the owner knows which timestamp is
         # its retention clock. Consent PROOF outlives everything else: it is the evidence that

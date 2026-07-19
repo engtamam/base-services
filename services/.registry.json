@@ -14,6 +14,7 @@
   "search-service": 8013,
   "stream-service": 8018,
   "tenant-service": 8003,
+  "verification-service": 8019,
   "wallet-service": 8017,
   "webhook-service": 8011,
   "zatca-service": 8008

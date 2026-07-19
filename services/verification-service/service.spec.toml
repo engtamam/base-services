@@ -1,0 +1,6 @@
+# service.spec.toml — the record of how this service was generated.
+name = "verification-service"
+description = ""
+port = 8019
+
+[drivers]

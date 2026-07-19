@@ -79,6 +79,9 @@ WIRING: dict[str, dict[str, str]] = {
     "api-gateway": {
         "PII_SALT": "identifiers.piiSalt",   # frozen: re-maps every pseudonym
     },
+    "verification-service": {
+        "PII_SALT": "identifiers.piiSalt",   # frozen: hashes every verified identity
+    },
     "job-service": {
         "PII_SALT": "identifiers.piiSalt",   # frozen: re-maps every pseudonym
     },

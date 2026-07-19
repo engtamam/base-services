@@ -1,0 +1,16 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.git/
+.gitignore
+.env
+.env.*
+!.env.example
+tests/
+*.md
+# keep README.md: pyproject readme= needs it; the build COPYs it
+!README.md
