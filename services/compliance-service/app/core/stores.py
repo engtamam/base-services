@@ -108,6 +108,20 @@ class DsarStore:
             limit=1, sort=("created_at", "asc"))
         return Dsar.from_dict(rows[0]) if rows else None
 
+    async def open_dsars(self, limit: int = 100, after: str | None = None) -> tuple[list[Dsar], str | None]:
+        """Every still-open request, oldest first — the sweeper's work list.
+
+        Deliberately NOT tenant-scoped: the sweeper is a platform job driving every tenant's
+        erasures, and a per-tenant loop would first need to enumerate tenants (a scan) to find the
+        work. Filtered on the same explicit OPEN_DSAR_STATUSES as open_for() and pushed down to the
+        store, so this stays an indexed find; oldest-first means whatever is closest to its SLA
+        deadline is retried first.
+        """
+        rows, cursor = await self._store.find(
+            _DSAR, {"status": list(OPEN_DSAR_STATUSES)}, limit=limit, after=after,
+            sort=("created_at", "asc"))
+        return [Dsar.from_dict(r) for r in rows], cursor
+
     async def list(self, tenant: str, limit: int = 100, after: str | None = None) -> list[dict]:
         rows, _ = await self._store.find(_DSAR, {"tenant": tenant}, limit=limit, after=after,
                                          sort=("created_at", "desc"))

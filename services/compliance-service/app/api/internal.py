@@ -11,7 +11,8 @@ import hmac
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from app.api.v1.compliance import build_consent, build_dsar
+from app.api.v1.compliance import (build_consent, build_dsar, build_retention,
+                                   build_sweeper)
 from app.config import Settings, get_settings
 from app.core.erasure import ComplianceErasure
 from app.manifest import build_manifest
@@ -22,6 +23,10 @@ router = APIRouter(prefix="/internal", tags=["internal"])
 class AckIn(BaseModel):
     service: str = Field(min_length=1, max_length=128)
     category: str = Field(min_length=1, max_length=128)
+    # The ack BODY from an async (202) target: what it erased, what it kept and why. Optional so
+    # the existing contract still works, but without it the DSAR records THAT a target finished
+    # and not WHAT it did — and "what was kept, on what basis" is the half a regulator asks about.
+    ack: dict | None = None
 
 _HEADER = "X-Internal-Token"
 
@@ -54,7 +59,8 @@ async def consent_check(request: Request, tenant: str, subject: str, purpose: st
 @router.post("/compliance/dsar/{dsar_id}/target-ack", dependencies=[Depends(require_internal_token)])
 async def target_ack(request: Request, dsar_id: str, body: AckIn) -> dict:
     """A service confirms it erased/exported its slice. Completion is derived from these."""
-    res = await build_dsar(request).ack_target(dsar_id, body.service, body.category)
+    res = await build_dsar(request).ack_target(dsar_id, body.service, body.category,
+                                               ack=body.ack)
     if not res["ok"]:
         # A REFUSAL MUST NEVER WEAR A SUCCESS CODE. If this returned 200 with {"ok": false},
         # raise_for_status() would pass, the caller would ack the job, the target would never
@@ -72,6 +78,30 @@ async def target_ack(request: Request, dsar_id: str, body: AckIn) -> dict:
                 else s.COMPLIANCE_ACK_REJECT_STATUS)
         raise HTTPException(code, res["reason"])
     return res
+
+
+@router.post("/compliance/dsar/run", dependencies=[Depends(require_internal_token)])
+async def run_dsar_sweep(request: Request) -> dict:
+    """Drive every open DSAR's unacked targets. Called by the erasure CronJob.
+
+    This is the worker that makes an erasure an EFFECT rather than a record. Safe to call at any
+    time and from any replica: acked targets are skipped and backoff suppresses duplicate dials, so
+    an overlapping run costs a no-op. The response names anything STUCK — a target that exhausted
+    its attempts and is holding a DSAR open — because a jammed erasure nobody can see is how an
+    SLA breach becomes a regulatory one.
+    """
+    return await build_sweeper(request).run()
+
+
+@router.post("/compliance/retention/run", dependencies=[Depends(require_internal_token)])
+async def run_retention(request: Request) -> dict:
+    """Purge records past their declared retention period. Called by the retention CronJob.
+
+    Enforces the periods for the records THIS service owns; every other service enforces its own
+    and declares it in its RoPA row. A legal hold beats retention exactly as it beats erasure, and
+    a collection with no configured period is never purged — an undecided retention reads as KEEP.
+    """
+    return await build_retention(request).run()
 
 
 @router.get("/manifest", dependencies=[Depends(require_internal_token)])

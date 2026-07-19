@@ -15,6 +15,9 @@ from app.core.compliance_service import ComplianceService
 from app.core.consent_service import ConsentService
 from app.core.dsar_service import DsarService
 from app.core.models import DSAR_TYPES
+from app.core.privacy_dispatcher import PrivacyDispatcher
+from app.core.privacy_sweeper import PrivacySweeper
+from app.core.retention import RetentionEnforcer
 from app.core.stores import (BreachStore, ConsentStore, DsarStore, HoldStore, RopaStore,
                              TargetStore)
 
@@ -43,7 +46,35 @@ def build_dsar(request: Request) -> DsarService:
     c = request.app.state.container
     return DsarService(dsars=DsarStore(c.datastore), holds=HoldStore(c.datastore),
                        targets=TargetStore(c.datastore), orchestrator=c.orchestrator,
-                       clock=c.clock, config=_cfg(), event_bus=c.event_bus)
+                       clock=c.clock, config=_cfg(), event_bus=c.event_bus,
+                       dispatcher=build_dispatcher(request))
+
+
+def build_dispatcher(request: Request) -> PrivacyDispatcher:
+    """The erasure fan-out. Targets and credentials come from CONFIG only — never from a request —
+    so no caller can steer an erase POST at a host of their choosing."""
+    c = request.app.state.container
+    return PrivacyDispatcher(dsars=DsarStore(c.datastore), targets=TargetStore(c.datastore),
+                             transport=c.privacy_transport, settings=get_settings(),
+                             clock=c.clock, secrets=c.secrets, telemetry=c.telemetry)
+
+
+def build_sweeper(request: Request) -> PrivacySweeper:
+    s = get_settings()
+    return PrivacySweeper(dsars=DsarStore(request.app.state.container.datastore),
+                          dispatcher=build_dispatcher(request),
+                          page_size=s.PRIVACY_SWEEP_PAGE_SIZE,
+                          max_per_run=s.PRIVACY_SWEEP_MAX_PER_RUN,
+                          telemetry=request.app.state.container.telemetry)
+
+
+def build_retention(request: Request) -> RetentionEnforcer:
+    c = request.app.state.container
+    s = get_settings()
+    return RetentionEnforcer(store=c.datastore, holds=HoldStore(c.datastore),
+                             rules=s.retention_rules, clock=c.clock,
+                             batch=s.RETENTION_BATCH, max_per_run=s.RETENTION_MAX_PER_RUN,
+                             telemetry=c.telemetry)
 
 
 def build_compliance(request: Request) -> ComplianceService:

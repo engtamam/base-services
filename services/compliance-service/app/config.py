@@ -155,6 +155,15 @@ class Settings(BaseSettings):
     # the NAME of a secret; the value is resolved through the secrets port (env/file/vault), so no
     # credential is ever written in config. Targets with no entry get the internal token.
     PRIVACY_TARGET_SECRETS: str = ""         # "acme-crm=ACME_CRM_ERASE_TOKEN,…"
+    # Retention. A declared period nobody enforces is evidence AGAINST the platform: the RoPA says
+    # "365 days" while the 2019 row is still there. Empty = purge nothing, because an undecided
+    # retention must read as KEEP — over-retention is fixable, a wrong delete is not.
+    RETENTION_RULES: str = ""                # "dsar=365,breaches=1825,consent_proof=2555"
+    RETENTION_BATCH: int = 500
+    RETENTION_MAX_PER_RUN: int = 5000
+    PRIVACY_SWEEP_PAGE_SIZE: int = 100       # open DSARs read per page
+    PRIVACY_SWEEP_MAX_PER_RUN: int = 1000    # cap per run: a backlog becomes several runs, not one
+                                             # run that never finishes
 
     @property
     def privacy_targets(self) -> dict[str, str]:
@@ -202,6 +211,28 @@ class Settings(BaseSettings):
             if key.startswith("/") or "://" in key:
                 raise ValueError(f"PRIVACY_TARGET_SECRETS {key!r} must be a secret NAME, not a value")
             out[name] = key
+        return out
+
+    @property
+    def retention_rules(self) -> dict[str, int]:
+        """`collection -> days`. A negative or unparseable period is a config ERROR, not a zero:
+        silently treating "-1" as "keep" would hide a typo that was meant to delete something."""
+        out: dict[str, int] = {}
+        for part in self.RETENTION_RULES.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            name, sep, days = part.partition("=")
+            name, days = name.strip(), days.strip()
+            if not sep or not name:
+                raise ValueError(f"RETENTION_RULES entry {part!r} must be collection=days")
+            try:
+                value = int(days)
+            except ValueError:
+                raise ValueError(f"RETENTION_RULES days {days!r} for {name!r} must be an integer")
+            if value < 0:
+                raise ValueError(f"RETENTION_RULES days for {name!r} must be >= 0 (0 = keep)")
+            out[name] = value
         return out
 
     def secret_key_for(self, service: str) -> str | None:

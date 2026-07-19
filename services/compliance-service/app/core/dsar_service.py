@@ -30,7 +30,8 @@ from app.core.stores import DsarStore, HoldStore, TargetStore
 
 class DsarService:
     def __init__(self, *, dsars: DsarStore, holds: HoldStore, targets: TargetStore,
-                 orchestrator, clock, config: dict[str, Any], event_bus=None) -> None:
+                 orchestrator, clock, config: dict[str, Any], event_bus=None,
+                 dispatcher=None) -> None:
         self._dsars = dsars
         self._holds = holds
         self._targets = targets
@@ -38,6 +39,7 @@ class DsarService:
         self._clock = clock
         self._cfg = config
         self._bus = event_bus
+        self._dispatch = dispatcher
 
     # ── create (idempotent) ─────────────────────────────────────────────────────
     async def create(self, *, tenant: str, subject: str, type: str,
@@ -114,11 +116,26 @@ class DsarService:
         await self._dsars.save(d)
         await self._emit("dsar.dispatched", {"id": d.id, "targets": len(targets),
                                              "dispatched": dispatched})
+
+        # Drive the fan-out NOW rather than waiting for the next sweep: the subject's clock is
+        # already running. The sweep is the safety net for whatever does not ack on this pass, not
+        # the primary path — an erasure that only starts on a cron tick is an erasure that has not
+        # started. A dispatch failure here is not fatal: the targets stay unacked, which is exactly
+        # the state the sweeper knows how to resume from.
+        result = None
+        if self._dispatch is not None:
+            try:
+                result = await self._dispatch.drive(d)
+            except Exception:
+                pass
+
         return {"ok": True, "status": d.status, "targets": len(targets),
-                "dispatched": dispatched, "fully_dispatched": d.dispatched}
+                "dispatched": dispatched, "fully_dispatched": d.dispatched,
+                "fanout": result}
 
     # ── a target confirms it erased/exported its slice ──────────────────────────
-    async def ack_target(self, dsar_id: str, service: str, category: str) -> dict[str, Any]:
+    async def ack_target(self, dsar_id: str, service: str, category: str,
+                         ack: dict | None = None) -> dict[str, Any]:
         d = await self._dsars.get(dsar_id)
         if d is None:
             return {"ok": False, "reason": "NOT_FOUND"}
@@ -126,6 +143,13 @@ class DsarService:
         if key not in d.targets:
             return {"ok": False, "reason": "UNKNOWN_TARGET"}
         d.targets[key] = True                                 # idempotent
+        if ack is not None:
+            # Keep the evidence beside the flag: WHAT was erased and what was kept, with basis.
+            state = dict(d.target_state or {})
+            st = dict(state.get(key, {}))
+            st.update(status="acked", ack=ack, next_at=0.0, last_at=self._clock.now())
+            state[key] = st
+            d.target_state = state
         # (2) completion is DERIVED from the acks — never declared
         if d.is_complete():
             d.status = COMPLETED

@@ -33,12 +33,34 @@ autoscaling:
 
 existingSecret: compliance-service-secrets   # INTERNAL_SERVICE_TOKEN, DATASTORE_DSN, CACHE_URL, TOKEN_*
 
+# The erasure fan-out. A DSAR dispatches immediately on process(); this is the SAFETY NET that
+# re-drives whatever did not ack — a target that was down, restarting, or answered 202 and is still
+# working. Without it, one unlucky moment during a fan-out leaves a subject's data in place while
+# the request sits open until its SLA quietly expires.
+#
+# Every 5 minutes: fast enough that a transient outage costs minutes of a 30-day clock, slow enough
+# that per-target backoff (not the cron) governs retry pressure. The run is idempotent and capped
+# (PRIVACY_SWEEP_MAX_PER_RUN), so an overlapping run is a no-op and a backlog becomes several runs.
+cronJobs:
+  - name: dsar-sweep
+    schedule: "*/5 * * * *"
+    path: /internal/compliance/dsar/run
+  # Retention purge. Nightly, off-peak: retention is measured in DAYS, so running it more often
+  # buys nothing and only competes with daytime load. It purges nothing until RETENTION_RULES is
+  # set — an undecided retention reads as KEEP.
+  - name: retention-purge
+    schedule: "17 3 * * *"
+    path: /internal/compliance/retention/run
+
 networkPolicy:
   enabled: true
   ingressFromNamespace: ""
   egress:
     dns: true
     datastore: true
+    # Peer-service egress is always allowed by the chart, so the fan-out reaches OUR services with
+    # this off. Flip it on only if a PRIVACY_TARGETS entry points at a third party outside the
+    # cluster — an erasure we cannot deliver is a DSAR that can never complete.
     internet: false
 
 metrics:
