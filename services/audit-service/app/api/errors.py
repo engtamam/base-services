@@ -13,6 +13,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse
 
 from app.config import get_settings
+from app.core.audit import AuditUnavailable
 from app.middleware.request_context import get_request_id
 from app.middleware.security import apply_security_headers, build_security_headers
 from app.observability.logging import get_logger
@@ -64,6 +65,21 @@ def register_error_handlers(app: FastAPI) -> None:
     async def _validation_exc(request: Request, exc: RequestValidationError):
         # Do NOT echo the raw invalid input back (avoid reflected data / leaks).
         return _json("VALIDATION_ERROR", 422)
+
+    @app.exception_handler(AuditUnavailable)
+    async def _audit_unavailable(request: Request, exc: AuditUnavailable):
+        # The fail-closed path, made legible to the caller. Without this the exception fell to the
+        # catch-all below and surfaced as 500 INTERNAL_ERROR — telling a client "we crashed" when
+        # the truth is "this action requires an audit record and the log is unreachable". Those
+        # are different diagnoses, different on-call responses, and different retry strategies:
+        # 503 is retryable, 500 is not.
+        #
+        # The body carries no action detail. That the log is down is operational; WHICH privileged
+        # action someone attempted is not something an error body should reveal.
+        _logger.error("audit_unavailable", extra={"path": request.url.path})
+        resp = _json("AUDIT_UNAVAILABLE", 503)
+        resp.headers["Retry-After"] = str(settings.AUDIT_RETRY_AFTER_SECONDS)
+        return resp
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception):

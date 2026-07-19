@@ -96,6 +96,11 @@ class Settings(BaseSettings):
     AUDIT_TOPIC: str = "audit.events"        # eventbus sink
     # Short on purpose: this sits on the request path, and a slow audit must not become a slow API.
     AUDIT_TIMEOUT_SECONDS: int = 5
+    # How long a client should wait before retrying an action we REFUSED because the audit log
+    # was unreachable. It is a 503 + Retry-After, never a 500: the action did not happen, nothing
+    # committed, and trying again later is the correct response. A 500 would tell the caller we
+    # crashed, which invites a bug report instead of a retry.
+    AUDIT_RETRY_AFTER_SECONDS: int = 30
     # What happens when a CRITICAL action cannot be witnessed. Default closed: an action nobody can
     # prove is worse than a refused one for the actions investigations actually turn on (permission
     # grants, credential changes, exports, suspensions). Routine actions always fail open — the
