@@ -31,6 +31,28 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "cannot distinguish lawful expiry from someone quietly trimming the evidence",
     },
     {
+        # Reading the log is itself an investigative act. "Who looked up this person, and when"
+        # is a question that gets asked after a leak, and until now this service — the one whose
+        # entire job is answering that question about everyone else — could not answer it about
+        # itself. An unlogged read is how someone finds out what we know about them, or checks
+        # whether their own tracks are visible, and leaves nothing behind.
+        "action": "audit.queried",
+        "source": "user",
+        # NOT critical, deliberately. Critical means "refuse the action when the log is down", and
+        # refusing READS during an audit outage locks investigators out of the log at exactly the
+        # moment something is going wrong. A read changes nothing, so the safer failure is to
+        # serve it and lose one access record — the opposite trade from the export below.
+        "critical": False,
+    },
+    {
+        "action": "audit.exported",
+        "source": "user",
+        "critical": True,
+        "why": "export takes the log out in BULK, which is the shape of exfiltration rather than "
+               "investigation — an unrecorded bulk extraction of every action on the platform is "
+               "worse than a refused one, so this fails closed where a paged query does not",
+    },
+    {
         "action": "subject.erased",
         "source": "internal",
         "critical": True,

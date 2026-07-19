@@ -71,7 +71,18 @@ def _filters(request: Request, principal: Principal) -> dict[str, Any]:
 @router.get("")
 async def query(request: Request, principal: Principal = Depends(require_user),
                 guard=Depends(get_guard), limit: int | None = Query(default=None, le=1000)) -> dict:
+    # Recorded AFTER the read, not write-ahead. A read is not a mutation, so there is nothing to
+    # protect by recording first — and this action is non-critical, so the auditor never refuses
+    # it. Recording first would only log lookups that then failed.
+    #
+    # Yes, this means querying the audit log appends to the audit log. That is intended: an
+    # access trail is only worth having if reading it is also on it. It cannot runaway — one entry
+    # per request, and an entry is not itself a query.
     events = await build_audit(request).query(_filters(request, principal), limit)
+    await request.app.state.auditor.record(
+        "audit.queried", actor=principal.subject, tenant=principal.tenant, resource="audit_log",
+        ip=request.client.host if request.client else "",
+        metadata={"returned": len(events)})
     async with guard.step("respond") as step:
         body = {"events": events, "count": len(events)}
         step.result = body
@@ -86,6 +97,13 @@ async def verify(request: Request, partition: str = Query(default="global")) -> 
 @router.get("/export")
 async def export(request: Request, principal: Principal = Depends(require_user),
                  fmt: str = Query(default="", alias="format")) -> Response:
+    # Write-ahead, unlike the query above, because this one IS critical: a bulk extraction of the
+    # whole log that we could not record is refused rather than served. Recording afterwards would
+    # mean the export had already left the building by the time we failed to witness it.
+    await request.app.state.auditor.record(
+        "audit.exported", actor=principal.subject, tenant=principal.tenant, resource="audit_log",
+        ip=request.client.host if request.client else "",
+        metadata={"format": fmt or "default"})
     content_type, body = await build_audit(request).export(_filters(request, principal), fmt or None)
     return Response(content=body, media_type=content_type,
                     headers={"Content-Disposition": "attachment; filename=audit-export"})
