@@ -105,26 +105,46 @@ when, and only when, every target on the map has said what it erased and what it
 
 ---
 
-## Worked example — our own ten
+## Worked example — all eighteen of ours
 
-These are registered through the identical config path, with no special-casing anywhere in the
-dispatcher. Copy the shape:
+Every service we ship is registered through the identical config path you use for yours. There is
+no internal fast path and no special case in the dispatcher — the route our own erasures travel is
+the route we ask you to trust, so if it breaks for you it broke for us first.
 
-| service | category |
-|---|---|
-| identity-service | identity |
-| billing-service | invoices |
-| file-service | user_files |
-| notification-service | messages |
-| analytics-service | behavioural_events |
-| audit-service | audit_log |
-| authz-service | access_grants |
-| compliance-service | consent |
-| feature-flag-service | flag_overrides |
-| search-service | search_index |
+| service | category | what it does, and why |
+|---|---|---|
+| identity-service | identity | **Deletes everything, retains nothing.** It owns the pseudonym→person LINKAGE, so erasing here is what orphans every `sub_…` across the platform. |
+| billing-service | invoices | **Retains all, pseudonymises the buyer.** A tax invoice must outlive the request; the financial fact survives, the human does not. |
+| zatca-service | tax_invoices | **Retains all, cannot even pseudonymise.** The XML is signed over its own bytes and hash-chained — editing invoice #400 invalidates #401 onward. Only the unsigned draft copy is erased. |
+| file-service | user_files | **Decrements a ref-count.** One owner's erasure must never delete a blob another owner still references. |
+| notification-service | messages | Deletes delivered messages and contact records. |
+| analytics-service | behavioural_events | Events already carry pseudonyms; the linkage is what goes. |
+| audit-service | audit_log | **Retains the chain, pseudonymises within it.** Redacting a hash-chained record breaks `verify()` from that seq onward, and tamper-evidence IS the product. |
+| authz-service | access_grants | Deletes the subject's grants. |
+| compliance-service | consent | **Deletes the consent record, retains the PROOF.** The proof answers "prove she consented before you processed"; deleting it destroys the defence for processing that already happened. |
+| feature-flag-service | flag_overrides | Deletes per-subject overrides. |
+| search-service | search_index | Deletes indexed documents for the subject. |
+| webhook-service | webhook_payloads | **Redacts, keeps the row.** Delivery history answers "did it ever arrive?"; only the person leaves it. |
+| job-service | job_payloads | **Redacts AND cancels.** A redacted-but-still-queued job would still contact the person we were told to forget. |
+| connector-service | synced_records | **Deletes the row.** A DLQ entry gets RETRIED — a redacted one would replay a pseudonym into your CRM. |
+| stream-service | recordings | **Refuses without identification.** Video is keyed by camera and time; guessing which footage holds a person would delete other people's video. |
+| wallet-service | wallet_balances | **Nothing to erase** — every row is tenant-keyed. It answers anyway, so a DSAR can prove it asked. |
+| tenant-service | tenant_records | Organisations, not people — except a branding contact address, which is walked. |
+| api-gateway | routing | **Owns no subject data**, and says so rather than staying silent. |
 
-Note how differently they answer, and that all of it is legitimate:
-**identity-service** keeps nothing (it *is* the thing being erased); **billing-service** erases
-nothing and retains everything with a `legal_obligation` basis (a tax invoice must outlive the
-request — it pseudonymises the buyer instead); **file-service** decrements a shared blob's ref-count
-so one owner's erasure never deletes another's file.
+**Read that column before writing your own.** Six different answers come out of the same contract —
+delete, pseudonymise, retain-with-basis, redact, redact-and-cancel, refuse-without-identification —
+and picking the right one is a legal judgement about YOUR data, not a coding decision. The two that
+are never acceptable: reporting success for work that did not happen, and staying silent about what
+you kept.
+
+Two lessons from wiring all eighteen, which will probably apply to you too:
+
+* **Five of our own services turned out to hold personal data nobody had catalogued**, and none of
+  them had a subject-identifying column — it was inside untyped `payload` blobs and opaque
+  artifacts (signed XML, video segments). No schema search would have found it. Audit by reading
+  the models, not by trusting the service name.
+* **An endpoint that always answers "nothing here" still earns its place.** "Never contacted" and
+  "holds nothing" are indistinguishable in an incomplete system and completely different to a
+  regulator — and the service that gains PII by accident later is exactly the one you assumed was
+  empty.

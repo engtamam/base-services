@@ -103,6 +103,10 @@ jobs:
       - name: "safety:action-coverage — every user-tier route is declared, or excluded with a reason"
         run: python tools/ci/check_action_coverage.py
 
+      # gates: safety:privacy-wiring
+      - name: "safety:privacy-wiring — every service that can erase is a dispatch target"
+        run: python tools/ci/check_privacy_wiring.py
+
       # gates: safety:tenancy
       - name: "safety:tenancy — a token carries exactly ONE tenant, and only one it is entitled to"
         run: python tools/ci/check_tenancy.py

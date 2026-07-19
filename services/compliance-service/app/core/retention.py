@@ -61,9 +61,11 @@ class RetentionEnforcer:
     async def _purge(self, collection: str, cutoff: float) -> tuple[int, int]:
         purged = held = seen = 0
         cursor = None
-        # An unfiltered paginated walk. The store cannot express "age_field < cutoff" across the
-        # several fields that serve as a retention clock, and this is a BACKGROUND job with a hard
-        # per-run cap — never a request path, where a scan would be a latency bug.
+        # sweeper: retention's job IS to visit every row and decide whether it has outlived its
+        # declared period. There is no filter that expresses it: the store speaks equality only,
+        # and the retention clock is a different field per collection (completed_at for a DSAR,
+        # created_at for a RoPA row). This runs on a nightly CronJob with a hard per-run cap, never
+        # on a request path — a scan here is the operation, not a forgotten query.
         while seen < self._max:
             rows, next_cursor = await self._store.find(
                 collection, {}, limit=self._batch, after=cursor, sort=("created_at", "asc"))

@@ -33,83 +33,33 @@ autoscaling:
 
 existingSecret: compliance-service-secrets   # INTERNAL_SERVICE_TOKEN, DATASTORE_DSN, CACHE_URL, TOKEN_*
 
-# ── The data map: where a subject's data lives ────────────────────────────────
-# OUR OWN services are registered here through EXACTLY the same config path a customer uses for
-# theirs. Nothing in the dispatcher knows the name of a base-services service; there is no internal
-# fast path and no special case. That is deliberate on two counts: it means this list is a worked
-# example anyone can copy (see docs/contracts/privacy-erase-guide.md), and it means the path our
-# own erasures travel is the path we ask customers to trust — if it breaks for them, it broke for
-# us first.
-#
-# To add YOUR service: implement one endpoint (docs/contracts/privacy-erase.schema.json), append
-# `name=https://your-host` below, and declare a data-map row so the DSAR knows to wait for it.
-# A target in the data map with no entry here FAILS LOUDLY rather than being skipped — not knowing
-# where a service lives is a reason to shout, not to quietly report success.
-#
-# Third parties: add the path override under PRIVACY_ERASE_PATHS if theirs differs from ours, and
-# name a credential in PRIVACY_TARGET_SECRETS so they never receive our internal token.
-env:
-  PRIVACY_TRANSPORT_DRIVER: "http"
-  PRIVACY_TARGETS: >-
-    identity-service=http://identity-service:8000,
-    billing-service=http://billing-service:8000,
-    file-service=http://file-service:8000,
-    notification-service=http://notification-service:8000,
-    analytics-service=http://analytics-service:8000,
-    audit-service=http://audit-service:8000,
-    authz-service=http://authz-service:8000,
-    compliance-service=http://compliance-service:8000,
-    feature-flag-service=http://feature-flag-service:8000,
-    search-service=http://search-service:8000,
-    zatca-service=http://zatca-service:8000,
-    wallet-service=http://wallet-service:8000,
-    stream-service=http://stream-service:8000,
-    webhook-service=http://webhook-service:8000,
-    job-service=http://job-service:8000,
-    connector-service=http://connector-service:8000,
-    tenant-service=http://tenant-service:8000,
-    api-gateway=http://api-gateway:8000
-
-  # Retention for the records THIS service owns. Every other service declares its own period in its
-  # RoPA row and enforces it itself — only the owner knows which timestamp is its retention clock.
-  # Deliberately conservative: consent PROOF outlives everything else because it is the evidence
-  # that answers "prove she agreed before you processed", and destroying it destroys the defence
-  # for processing that already happened.
-  RETENTION_RULES: "dsar=1095,breaches=1825,consent_proof=2555"
-
-# The erasure fan-out. A DSAR dispatches immediately on process(); this is the SAFETY NET that
-# re-drives whatever did not ack — a target that was down, restarting, or answered 202 and is still
-# working. Without it, one unlucky moment during a fan-out leaves a subject's data in place while
-# the request sits open until its SLA quietly expires.
-#
-# Every 5 minutes: fast enough that a transient outage costs minutes of a 30-day clock, slow enough
-# that per-target backoff (not the cron) governs retry pressure. The run is idempotent and capped
-# (PRIVACY_SWEEP_MAX_PER_RUN), so an overlapping run is a no-op and a backlog becomes several runs.
-cronJobs:
-  - name: dsar-sweep
-    schedule: "*/5 * * * *"
-    path: /internal/compliance/dsar/run
-  # Retention purge. Nightly, off-peak: retention is measured in DAYS, so running it more often
-  # buys nothing and only competes with daytime load. It purges nothing until RETENTION_RULES is
-  # set — an undecided retention reads as KEEP.
-  - name: retention-purge
-    schedule: "17 3 * * *"
-    path: /internal/compliance/retention/run
-
 networkPolicy:
   enabled: true
   ingressFromNamespace: ""
   egress:
     dns: true
     datastore: true
-    # Peer-service egress is always allowed by the chart, so the fan-out reaches OUR services with
-    # this off. Flip it on only if a PRIVACY_TARGETS entry points at a third party outside the
-    # cluster — an erasure we cannot deliver is a DSAR that can never complete.
     internet: false
 
 metrics:
   serviceMonitor: true
 
+# From config/product.json — regenerate with scripts/gen_deploy_values.py.
+# Do not hand-edit: `identifiers` are frozen and guarded by safety:product.
+env:
+  PRIVACY_TARGETS: "identity-service=http://identity-service:8000,billing-service=http://billing-service:8000,file-service=http://file-service:8000,notification-service=http://notification-service:8000,analytics-service=http://analytics-service:8000,audit-service=http://audit-service:8000,authz-service=http://authz-service:8000,compliance-service=http://compliance-service:8000,feature-flag-service=http://feature-flag-service:8000,search-service=http://search-service:8000,zatca-service=http://zatca-service:8000,wallet-service=http://wallet-service:8000,stream-service=http://stream-service:8000,webhook-service=http://webhook-service:8000,job-service=http://job-service:8000,connector-service=http://connector-service:8000,tenant-service=http://tenant-service:8000,api-gateway=http://api-gateway:8000"
+  PRIVACY_TRANSPORT_DRIVER: "http"
+  RETENTION_RULES: "dsar=1095,breaches=1825,consent_proof=2555"
+
 # No ingress: reached service-to-service on the internal tier only.
 ingress:
   enabled: false
+
+# These internal endpoints have NO caller without this block.
+cronJobs:
+  - name: dsar-sweep
+    schedule: "*/5 * * * *"
+    path: /internal/compliance/dsar/run
+  - name: retention-purge
+    schedule: "17 3 * * *"
+    path: /internal/compliance/retention/run

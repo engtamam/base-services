@@ -61,6 +61,15 @@ CRONS: dict[str, list[tuple[str, str, str]]] = {
         ("retention", "17 3 * * *", "/internal/stream/retention"),
     ],
     "zatca-service": [("sweep", "*/10 * * * *", "/internal/zatca/sweep")],
+    # The erasure fan-out (Phase 37). A DSAR dispatches immediately on process(); the sweep is the
+    # SAFETY NET that re-drives whatever did not ack — a target that was down, restarting, or
+    # answered 202 and is still working. Without it one unlucky moment during a fan-out leaves a
+    # subject's data in place while the request sits open until its SLA quietly expires.
+    # Retention runs nightly: it is measured in DAYS, so more often buys nothing.
+    "compliance-service": [
+        ("dsar-sweep", "*/5 * * * *", "/internal/compliance/dsar/run"),
+        ("retention-purge", "17 3 * * *", "/internal/compliance/retention/run"),
+    ],
     # Without these the wallet's holds never expire: a client that dies between reserve and
     # confirm strands a customer's credits forever, while the balance still displays them.
     "wallet-service": [
@@ -134,6 +143,34 @@ ingress:
 """
 
 
+# Non-identity env that belongs to the DEPLOYMENT rather than to config/product.json. It lives
+# here, not hand-edited into the values file, because safety:wiring regenerates and diffs — a hand
+# edit would be silently reverted on the next release and the fan-out would quietly stop.
+STATIC_ENV: dict[str, dict[str, str]] = {
+    "compliance-service": {
+        # The data map. OUR OWN services are registered through EXACTLY the config path a customer
+        # uses for theirs — no internal fast path, no special case in the dispatcher. That makes
+        # this list a worked example anyone can copy, and it means the path our erasures travel is
+        # the path we ask customers to trust. safety:privacy-wiring fails if a service implements
+        # the erase contract and is missing here.
+        "PRIVACY_TRANSPORT_DRIVER": "http",
+        "PRIVACY_TARGETS": ",".join(
+            f"{svc}=http://{svc}:8000" for svc in (
+                "identity-service", "billing-service", "file-service", "notification-service",
+                "analytics-service", "audit-service", "authz-service", "compliance-service",
+                "feature-flag-service", "search-service", "zatca-service", "wallet-service",
+                "stream-service", "webhook-service", "job-service", "connector-service",
+                "tenant-service", "api-gateway")),
+        # Retention for the records compliance-service OWNS. Every other service declares its own
+        # period in its RoPA row and enforces it itself — only the owner knows which timestamp is
+        # its retention clock. Consent PROOF outlives everything else: it is the evidence that
+        # answers "prove she agreed before you processed", and destroying it destroys the defence
+        # for processing that already happened.
+        "RETENTION_RULES": "dsar=1095,breaches=1825,consent_proof=2555",
+    },
+}
+
+
 def _env_block(name: str, cfg: dict) -> str:
     """Product identity, as env vars. Generated — never hand-edited.
 
@@ -142,7 +179,8 @@ def _env_block(name: str, cfg: dict) -> str:
     rather than emitted as "", because an empty ConfigMap entry overrides the service's own
     default with nothing.
     """
-    env = product.env_for(name, cfg)
+    env = dict(product.env_for(name, cfg) or {})
+    env.update(STATIC_ENV.get(name, {}))
     if not env:
         return ""
     lines = ["", "# From config/product.json — regenerate with scripts/gen_deploy_values.py.",

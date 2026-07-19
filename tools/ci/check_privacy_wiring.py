@@ -65,11 +65,19 @@ def configured() -> set[str]:
     a gate that cannot run is a gate that does not protect anything.
     """
     text = VALUES.read_text(encoding="utf-8")
-    match = re.search(r"^\s*PRIVACY_TARGETS:\s*>-?\s*\n((?:\s{4,}.*\n)+)", text, re.MULTILINE)
-    if not match:
+    # Two shapes: the generator emits one quoted line, a human editing by hand reaches for a folded
+    # block. A parser that understood only one would report "no targets configured" — which reads
+    # as a catastrophic finding when in fact the parser is what is wrong.
+    inline = re.search(r'^\s*PRIVACY_TARGETS:\s*"([^"]*)"', text, re.MULTILINE)
+    folded = re.search(r"^\s*PRIVACY_TARGETS:\s*>-?\s*\n((?:\s{4,}.*\n)+)", text, re.MULTILINE)
+    if inline:
+        raw = inline.group(1)
+    elif folded:
+        raw = folded.group(1)
+    else:
         return set()
     return {entry.split("=", 1)[0].strip()
-            for entry in match.group(1).replace("\n", " ").split(",") if entry.strip()}
+            for entry in raw.replace("\n", " ").split(",") if entry.strip()}
 
 
 def main() -> int:
