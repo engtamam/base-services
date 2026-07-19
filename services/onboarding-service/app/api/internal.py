@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from app.config import Settings, get_settings
-from app.core.erasure import TemplateErasure
+from app.core.erasure import OnboardingErasure
 from app.manifest import build_manifest
 
 router = APIRouter(prefix="/internal", tags=["internal"])
@@ -69,6 +69,10 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     """
     c = request.app.state.container
     s = get_settings()
-    eraser = TemplateErasure(store=c.datastore, pii_salt=s.PII_SALT,
-                             max_scan=s.ERASURE_MAX_SCAN)
+    # Write-ahead: erasure is irreversible, so a record we could not write must stop the deletion
+    # rather than follow it.
+    await request.app.state.auditor.record(
+        "subject.erased", tenant=body.tenant, resource=f"subject:{body.subject}")
+    eraser = OnboardingErasure(store=c.datastore, pii_salt=s.PII_SALT,
+                               max_scan=s.ERASURE_MAX_SCAN)
     return await eraser.erase(body.tenant, body.subject)

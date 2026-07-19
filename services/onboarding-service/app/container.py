@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.adapters.cache.memory import MemoryCache
@@ -28,6 +28,9 @@ from app.adapters.rate_limiter.redis import RedisRateLimiter
 from app.adapters.secrets.env import EnvSecrets
 from app.adapters.secrets.file import FileSecrets
 from app.adapters.secrets.vault import VaultSecrets
+from app.adapters.entitlement.null import NullEntitlement
+from app.adapters.requirement_source.http import HttpRequirementSource
+from app.adapters.requirement_source.null import NullRequirementSource
 from app.adapters.audit_sink.eventbus import EventBusAuditSink
 from app.adapters.audit_sink.http import HttpAuditSink
 from app.adapters.audit_sink.null import NullAuditSink
@@ -126,6 +129,12 @@ class Container:
     rate_limiter: RateLimiter
     telemetry: Telemetry
     audit_sink: Any = None
+    clock: Any = None
+    requirement_sources: dict = field(default_factory=dict)
+    local_facts: Any = None
+    entitlement: Any = None
+    grant_ledger: Any = None
+    identity_lookup: Any = None
 
     def describe(self) -> list[dict[str, str]]:
         """[{port, driver}] for the service manifest."""
@@ -172,10 +181,25 @@ def _build_audit_sink(settings: Settings, event_bus) -> Any:
     return _pick(_AUDIT_SINK, driver, "audit_sink", settings)
 
 
+def _build_sources(settings: Settings) -> dict:
+    """One source per owning service. A service NOT listed gets no entry, so the evaluator answers
+    UNKNOWN for it — visibly incomplete rather than silently satisfied."""
+    paths = settings.onboarding_source_paths
+    default_path = "/internal/facts/{fact}?tenant={tenant}&subject={subject}"
+    out: dict = {}
+    for name, base in settings.onboarding_sources.items():
+        out[name] = HttpRequirementSource(
+            name, base, settings.INTERNAL_SERVICE_TOKEN,
+            paths.get(name, default_path),
+            answer_path=settings.ONBOARDING_SOURCE_ANSWER_PATH,
+            timeout=settings.ONBOARDING_SOURCE_TIMEOUT_SECONDS)
+    return out
+
+
 def build_container(settings: Settings) -> Container:
     """Resolve every port from config. Fail-fast on any unknown driver."""
     event_bus = _pick(_EVENTBUS, settings.EVENTBUS_DRIVER, "event_bus", settings)
-    return Container(
+    container = Container(
         datastore=_pick(_DATASTORE, settings.DATASTORE_DRIVER, "datastore", settings),
         cache=_pick(_CACHE, settings.CACHE_DRIVER, "cache", settings),
         event_bus=event_bus,
@@ -186,4 +210,23 @@ def build_container(settings: Settings) -> Container:
         rate_limiter=_pick(_RATELIMITER, settings.RATELIMITER_DRIVER, "rate_limiter", settings),
         telemetry=_pick(_TELEMETRY, settings.TELEMETRY_DRIVER, "telemetry", settings),
         audit_sink=_build_audit_sink(settings, event_bus),
+        requirement_sources=_build_sources(settings),
+        entitlement=NullEntitlement(),
     )
+    import time
+
+    from app.core.grant_ledger import GrantLedger
+    from app.core.local_facts import LocalFacts
+
+    class _SystemClock:
+        """Wall clock. Injected rather than called directly so tests can drive time — every
+        expiry and every 'already granted' check depends on it."""
+        driver = "system"
+
+        def now(self) -> float:
+            return time.time()
+
+    container.clock = _SystemClock()
+    container.local_facts = LocalFacts(container.datastore, container.clock)
+    container.grant_ledger = GrantLedger(container.datastore, container.clock)
+    return container

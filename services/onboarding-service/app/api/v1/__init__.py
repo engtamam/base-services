@@ -41,3 +41,9 @@ async def admin_ping() -> dict:
     return {"status": "ok"}
 
 # TODO (per service): add real business routes here.
+
+
+# The real surface.
+from app.api.v1.onboarding import router as _onboarding_router  # noqa: E402
+
+router.include_router(_onboarding_router)

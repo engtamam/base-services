@@ -42,16 +42,21 @@ def build_manifest(
         "name": settings.SERVICE_NAME,
         "version": settings.SERVICE_VERSION,
         "env": settings.ENV,
-        "capabilities": [],  # atomic capability keys — filled per service
+        "capabilities": ["platform.onboarding", "onboarding.manage", "onboarding.self"],
         "endpoints": [
             {"path": "/healthz", "tier": "public", "method": "GET"},
             {"path": "/readyz", "tier": "public", "method": "GET"},
             {"path": "/metrics", "tier": "public", "method": "GET"},
             {"path": "/internal/health", "tier": "internal", "method": "GET"},
             {"path": "/internal/manifest", "tier": "internal", "method": "GET"},
+            {"path": "/internal/privacy/erase", "tier": "internal", "method": "POST"},
+            {"path": "/api/v1/onboarding/next", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/onboarding/claim-grant", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/onboarding/admin/inspect", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/onboarding/admin/force/{subject}", "tier": "user", "method": "POST"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
-        "events": {"emitted": [], "consumed": []},
+        "events": {"emitted": ["onboarding.provision.failed"], "consumed": []},
         "admin_actions": _admin_actions(),
         "user_actions": _user_actions(),
     }

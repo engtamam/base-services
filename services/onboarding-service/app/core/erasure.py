@@ -38,11 +38,11 @@ from typing import Any
 from app.core.pii import subject_ref
 
 
-class TemplateErasure:
+class OnboardingErasure:
     # Both appear in the DSAR's target list, so they must match the data-map row registered for
     # this service. A mismatch means the DSAR waits for an ack that never arrives.
-    service = "CHANGE-ME-service"
-    category = "CHANGE-ME"
+    service = "onboarding-service"
+    category = "onboarding_progress"
 
     def __init__(self, *, store, pii_salt: str, max_scan: int = 100_000) -> None:
         self._store = store
@@ -57,6 +57,27 @@ class TemplateErasure:
         # Page with a cursor and stop at `self._max` rather than reading an unbounded set.
         erased: list[str] = []
         retained: list[dict[str, str]] = []
+
+        # Progress and operator overrides are this person's data and go.
+        for collection in ("onboarding_forced", "onboarding_grants"):
+            rows, _ = await self._store.find(collection, {"tenant": tenant, "subject": subject},
+                                             limit=self._max, sort=("id", "asc"))
+            for row in rows:
+                await self._store.delete(collection, row["id"])
+            if rows:
+                erased.append(f"{collection}:{len(rows)}")
+
+        # The grant ledger does NOT go, and this is the uncomfortable one — same shape as
+        # verification-service's identity_seen, and kept for the same reason.
+        retained.append({
+            "what": "grant_ledger:one_row_per_issued_grant",
+            "basis": "fraud_prevention",
+            "why": ("a one-way key derived from a VERIFIED identity, with the grant kind and a "
+                    "date — no name, no subject id, no contact, not reversible. It exists so that "
+                    "deleting an account and signing up again with the same registration cannot "
+                    "collect a one-per-identity welcome grant twice. Erasing it would re-open "
+                    "exactly that fraud, and the row identifies nobody"),
+        })
 
         # Example of a retention that is legally required — copy the SHAPE, not the words:
         # retained.append({

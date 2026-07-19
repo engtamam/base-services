@@ -53,6 +53,24 @@ class Settings(BaseSettings):
     PII_SALT: str = ""
     ERASURE_MAX_SCAN: int = 100_000   # a DSAR is rare, but must never be an unbounded read
 
+    # ── onboarding (Phase 41) — flows declare WHAT, config decides HOW ────────
+    # Where each owning service lives, so a requirement can be evaluated by asking it. Same
+    # name=value idiom as PRIVACY_TARGETS. A source not listed answers UNKNOWN — never satisfied.
+    #   "identity=http://identity-service:8000,verification=http://verification-service:8000"
+    ONBOARDING_SOURCES: str = ""
+    # Which fact-path to call on each source, so a customer's own service can answer requirements
+    # without matching our URL shape.
+    #   "identity=/internal/facts/{fact}?tenant={tenant}&subject={subject}"
+    ONBOARDING_SOURCE_PATHS: str = ""
+    ONBOARDING_SOURCE_ANSWER_PATH: str = "satisfied"   # where the yes/no lives in the reply
+    ONBOARDING_SOURCE_TIMEOUT_SECONDS: int = 5
+    # How a grant is actually delivered. A platform with no wallet picks trial_period or plan.
+    ONBOARDING_ENTITLEMENT: str = "null"      # null | wallet | trial | plan
+    ONBOARDING_WALLET_URL: str = ""
+    # What each declared grant is worth. Money in MINOR units — no float ever touches an amount.
+    #   "welcome=amount:200000,currency:SAR" or "welcome=days:14"
+    ONBOARDING_GRANTS: str = ""
+
     # ── audit trail (Phase 38) — where privileged actions are witnessed ───────
     # `null` records NOTHING and says so; the boot guard below refuses it in production, because a
     # service that cannot witness its own privileged actions has no audit trail at all — and an
@@ -151,6 +169,95 @@ class Settings(BaseSettings):
     @property
     def is_test(self) -> bool:
         return self.ENV == "test"
+
+    @property
+    def onboarding_sources(self) -> dict[str, str]:
+        """`service -> base_url`. Malformed fails at BOOT: a source we cannot reach makes every
+        requirement it owns UNKNOWN, and a flow that can never complete is a customer stuck."""
+        out: dict[str, str] = {}
+        for part in self.ONBOARDING_SOURCES.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            name, sep, url = part.partition("=")
+            name, url = name.strip(), url.strip()
+            if not sep or not name or not url:
+                raise ValueError(f"ONBOARDING_SOURCES entry {part!r} must be service=base_url")
+            if not url.startswith(("http://", "https://")):
+                raise ValueError(f"ONBOARDING_SOURCES url {url!r} must start with http(s)://")
+            out[name] = url.rstrip("/")
+        return out
+
+    @property
+    def onboarding_source_paths(self) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for part in self.ONBOARDING_SOURCE_PATHS.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            name, sep, path = part.partition("=")
+            name, path = name.strip(), path.strip()
+            if not sep or not name or not path.startswith("/"):
+                raise ValueError(
+                    f"ONBOARDING_SOURCE_PATHS entry {part!r} must be service=/relative/path")
+            out[name] = path
+        return out
+
+    @property
+    def onboarding_grants(self) -> dict[str, dict[str, str]]:
+        """`kind -> {amount, currency, days}`. A grant a flow declares but config never defines is
+        refused at issue time rather than silently granting nothing."""
+        out: dict[str, dict[str, str]] = {}
+        for part in self.ONBOARDING_GRANTS.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            kind, sep, spec = part.partition("=")
+            kind = kind.strip()
+            if not sep or not kind:
+                raise ValueError(f"ONBOARDING_GRANTS entry {part!r} must be kind=key:value|…")
+            fields: dict[str, str] = {}
+            for pair in spec.split("|"):
+                key, colon, value = pair.strip().partition(":")
+                if not colon or not key.strip():
+                    raise ValueError(f"ONBOARDING_GRANTS spec {pair!r} must be key:value")
+                fields[key.strip()] = value.strip()
+            if "amount" in fields and not fields["amount"].isdigit():
+                # Money is integer minor units. A float here is a rounding bug in a gift.
+                raise ValueError(
+                    f"ONBOARDING_GRANTS {kind!r} amount must be integer minor units, "
+                    f"got {fields['amount']!r}")
+            out[kind] = fields
+        return out
+
+    def assert_onboarding_config_ok(self) -> None:
+        """Boot guard.
+
+        The catastrophe: a flow promises a welcome credit, the entitlement backend is `null`, and
+        every customer completes onboarding believing they were given something. The platform looks
+        healthy and every dashboard shows the feature on.
+        """
+        self.onboarding_sources
+        self.onboarding_source_paths
+        grants = self.onboarding_grants
+
+        if not self.is_production:
+            return
+        from app.core.flows import validate
+        from app.onboarding_flows import ONBOARDING_FLOWS
+
+        flows = validate(ONBOARDING_FLOWS)
+        granting = {r.get("grants") for f in flows for r in f["requirements"] if r.get("grants")}
+        if granting and self.ONBOARDING_ENTITLEMENT == "null":
+            raise ValueError(
+                f"flows declare grants ({', '.join(sorted(granting))}) but "
+                f"ONBOARDING_ENTITLEMENT is null: onboarding would complete and the customer "
+                f"would be told they received something nobody issued.")
+        for kind in granting:
+            if kind not in grants:
+                raise ValueError(
+                    f"a flow grants {kind!r} but ONBOARDING_GRANTS does not define it — the grant "
+                    f"would be refused at issue time and the flow could never complete")
 
     @property
     def is_production(self) -> bool:
