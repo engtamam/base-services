@@ -152,6 +152,26 @@ class Settings(BaseSettings):
     PII_SALT: str = ""
     COMPLIANCE_LIST_LIMIT: int = 100
 
+    # ── capacity to consent (Phase 39) ────────────────────────────────────────
+    # The age at which a person may consent for themself. 0 = this platform does not serve minors,
+    # which is the default because it is what every existing deployment was already asserting
+    # implicitly — but it IS an assertion, so it is logged at boot rather than left silent.
+    #
+    # There is no correct number to hardcode: GDPR Art. 8 lets member states choose 13–16, PDPL and
+    # COPPA differ again, and a platform operating in several markets needs its own answer. So it
+    # is config, and 0 means "we have decided this does not apply to us".
+    CONSENT_AGE_OF_MAJORITY: int = 0
+    # What to do when the threshold is set and a subject's age is UNKNOWN. Refusing is the default
+    # and the only safe reading: recording an unknown-age subject as self-consenting is exactly the
+    # bug this phase exists to fix — the consent proof would then faithfully prove we relied on
+    # consent that may never have been lawful, which is evidence AGAINST the platform.
+    CONSENT_UNKNOWN_AGE: str = "refuse"      # refuse | allow
+
+    @property
+    def consent_majority_seconds(self) -> float:
+        """The threshold as a duration, so a birth date can be compared without date arithmetic."""
+        return self.CONSENT_AGE_OF_MAJORITY * 365.2425 * 86400
+
     # ── erasure fan-out (Phase 37) — discovery is CONFIG, never code ──────────
     # WHICH services hold a subject's data comes from the data map (runtime rows). WHERE they live
     # comes from here, in the platform's `name=value` idiom (same shape as ADMIN_SERVICES). A

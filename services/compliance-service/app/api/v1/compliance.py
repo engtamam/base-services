@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from app.api.auth import Principal
 from app.api.authz import require_any_capability
 from app.config import get_settings
+from app.core.capacity import CapacityPolicy, CapacityRefused
 from app.core.compliance_service import ComplianceService
 from app.core.consent_service import ConsentService
 from app.core.dsar_service import DsarService
@@ -39,7 +40,9 @@ def build_consent(request: Request) -> ConsentService:
     s = get_settings()
     return ConsentService(store=ConsentStore(c.datastore), clock=c.clock, cache=c.cache,
                           cache_ttl=s.CONSENT_CACHE_TTL_SECONDS,
-                          list_limit=s.COMPLIANCE_LIST_LIMIT, event_bus=c.event_bus)
+                          list_limit=s.COMPLIANCE_LIST_LIMIT, event_bus=c.event_bus,
+                          capacity=CapacityPolicy(age_of_majority=s.CONSENT_AGE_OF_MAJORITY,
+                                                  unknown_age=s.CONSENT_UNKNOWN_AGE))
 
 
 def build_dsar(request: Request) -> DsarService:
@@ -96,6 +99,13 @@ class ConsentIn(BaseModel):
     notice_version: str = ""
     method: str = ""
     expires_at: float = 0.0
+    # ── capacity (Phase 39) ─────────────────────────────────────────────────
+    # Who is agreeing, when that is not the subject themself. Optional, so every existing caller
+    # keeps working: absent means self-consent, which is what they were already asserting.
+    basis: str = "self"                 # self | guardian | legal_representative
+    consented_by: str = Field(default="", max_length=256)
+    relation: str = Field(default="", max_length=128)
+    subject_born_at: float = 0.0        # epoch seconds; 0 = unknown, NOT "adult"
 
 
 class DsarIn(BaseModel):
@@ -137,10 +147,26 @@ class BreachIn(BaseModel):
 # ── consent ───────────────────────────────────────────────────────────────────
 @router.post("/consent/grant", status_code=201)
 async def grant(request: Request, body: ConsentIn, principal: Principal = Depends(_ADMIN)) -> dict:
-    c = await build_consent(request).grant(
-        tenant=_tenant(principal), subject=body.subject, purpose=body.purpose,
-        notice_version=body.notice_version, method=body.method, expires_at=body.expires_at,
-        actor=principal.subject, ip=request.client.host if request.client else "")
+    try:
+        c = await build_consent(request).grant(
+            tenant=_tenant(principal), subject=body.subject, purpose=body.purpose,
+            notice_version=body.notice_version, method=body.method, expires_at=body.expires_at,
+            actor=principal.subject, ip=request.client.host if request.client else "",
+            basis=body.basis, consented_by=body.consented_by, relation=body.relation,
+            subject_born_at=body.subject_born_at)
+        if body.basis != "self":
+            # Delegated consent only. A self-consent is the ordinary case and recording every one
+            # would bury the log; the exception is the claim someone may later dispute.
+            await request.app.state.auditor.record(
+                "consent.guardian_recorded", actor=principal.subject,
+                tenant=_tenant(principal), resource=f"consent:{body.purpose}",
+                ip=request.client.host if request.client else "",
+                metadata={"basis": body.basis, "relation": body.relation})
+    except CapacityRefused as exc:
+        # 422, not 400: the request is well-formed and the caller is authorised — the consent is
+        # simply one we may not lawfully record. The reason is returned because the caller has to
+        # fix it (supply a birth date, or name a guardian), and it names no personal data.
+        raise HTTPException(422, str(exc)) from exc
     return c.to_dict()
 
 

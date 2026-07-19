@@ -49,6 +49,14 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "critical": False,
     },
     {
+        "action": "consent.guardian_recorded",
+        "source": "user",
+        "critical": True,
+        "why": "consent given by someone OTHER than the subject is the claim most likely to be "
+               "challenged — a parent, a carer, an attorney — and without a record of who agreed "
+               "and on what relation, we cannot show the person was entitled to agree",
+    },
+    {
         "action": "consent.withdrawn",
         "source": "user",
         "critical": True,

@@ -27,9 +27,24 @@ def new_id(prefix: str = "") -> str:
     return f"{prefix}{uuid.uuid4().hex}"
 
 
+# Who is legally entitled to give this consent. The platform-wide assumption used to be that the
+# subject always speaks for themself; splitting the two is what makes guardianship expressible.
+SELF = "self"
+GUARDIAN = "guardian"
+LEGAL_REPRESENTATIVE = "legal_representative"
+CONSENT_BASES = (SELF, GUARDIAN, LEGAL_REPRESENTATIVE)
+
+
 @dataclass
 class Consent:
-    """Consent is per (subject, purpose) — purpose limitation is the law, not a nicety."""
+    """Consent is per (subject, purpose) — purpose limitation is the law, not a nicety.
+
+    `subject` is who the data is ABOUT. `consented_by` is who actually agreed. They are the same
+    person in the ordinary case and deliberately separable in the ones that matter: a parent for a
+    child, a carer under a court order, an attorney under a power of attorney, an executor for an
+    estate. Modelling it as CAPACITY rather than as "minors" is what makes one mechanism cover all
+    of them — and what stops the next jurisdiction needing a new field.
+    """
     tenant: str
     subject: str
     purpose: str
@@ -38,6 +53,22 @@ class Consent:
     method: str = ""                  # how it was collected (web_form, api, import…)
     expires_at: float = 0.0           # 0 = no expiry
     updated_at: float = 0.0
+    # ── capacity (Phase 39) ────────────────────────────────────────────────
+    basis: str = SELF                 # self | guardian | legal_representative
+    consented_by: str = ""            # who agreed; empty means the subject themself
+    relation: str = ""                # parent | custodian | power_of_attorney | executor…
+    subject_born_at: float = 0.0      # 0 = UNKNOWN, which is not the same as "adult"
+
+    def capacity_ok(self, now: float) -> bool:
+        """Is this consent still given by someone entitled to give it?
+
+        Guardian consent is not permanent: a 15-year-old becomes able to speak for themself, and
+        consent obtained from their parent must lapse rather than quietly outlive the reason it
+        was needed. `expires_at` carries that date, set when the consent was granted.
+        """
+        if self.basis == SELF:
+            return True
+        return not (self.expires_at and now >= self.expires_at)
 
     def active(self, now: float) -> bool:
         if not self.granted:
@@ -62,9 +93,15 @@ class ConsentProof:
     action: str                       # granted | withdrawn
     notice_version: str = ""
     method: str = ""
-    actor: str = ""
+    actor: str = ""                   # who OPERATED the system (an admin, an API caller)
     ip: str = ""
     at: float = 0.0
+    # WHOSE consent this legally is, which is a different question from who typed it in. "We had
+    # consent" is not an answer without "from whom, and were they entitled to give it" — that is
+    # the half a regulator asks about, and the half that was missing.
+    basis: str = SELF
+    consented_by: str = ""
+    relation: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

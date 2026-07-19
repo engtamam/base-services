@@ -74,6 +74,17 @@
       },
       "ConsentIn": {
         "properties": {
+          "basis": {
+            "default": "self",
+            "title": "Basis",
+            "type": "string"
+          },
+          "consented_by": {
+            "default": "",
+            "maxLength": 256,
+            "title": "Consented By",
+            "type": "string"
+          },
           "expires_at": {
             "default": 0.0,
             "title": "Expires At",
@@ -95,11 +106,22 @@
             "title": "Purpose",
             "type": "string"
           },
+          "relation": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Relation",
+            "type": "string"
+          },
           "subject": {
             "maxLength": 256,
             "minLength": 1,
             "title": "Subject",
             "type": "string"
+          },
+          "subject_born_at": {
+            "default": 0.0,
+            "title": "Subject Born At",
+            "type": "number"
           }
         },
         "required": [

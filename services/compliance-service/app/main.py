@@ -43,9 +43,19 @@ def create_app() -> FastAPI:
     # A service that cannot witness its own privileged actions must not serve
     # traffic as if it can.
     settings.assert_audit_config_ok()
-    settings.assert_privacy_config_ok()   # a DSAR we cannot finish must not be accepted at all
+    settings.assert_privacy_config_ok()
+   # a DSAR we cannot finish must not be accepted at all
     configure_logging(settings.SERVICE_NAME, settings.ENV, settings.LOG_LEVEL)
     logger = get_logger("app.main")
+
+    if not settings.CONSENT_AGE_OF_MAJORITY:
+        # Running with the capacity check off is a CLAIM — "no minors use this platform". A claim
+        # nobody states is one nobody revisits, so it is said out loud at boot: a decision, not a
+        # default that quietly outlived its reasoning.
+        logger.warning(
+            "consent capacity check is OFF (CONSENT_AGE_OF_MAJORITY=0): this platform asserts "
+            "that no minors use it. If that is wrong, a child's own consent will be recorded as "
+            "valid and the consent proof will show we relied on it.")
 
     # Composition root: wire ports -> adapters from config (fail-fast on bad driver).
     container = build_container(settings)

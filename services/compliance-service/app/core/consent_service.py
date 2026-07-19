@@ -19,7 +19,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from app.core.models import Consent, ConsentProof, new_id
+from app.core.capacity import CapacityPolicy
+from app.core.models import Consent, ConsentProof, SELF, new_id
 from app.core.stores import ConsentStore
 
 GRANTED, WITHDRAWN = "granted", "withdrawn"
@@ -27,13 +28,18 @@ GRANTED, WITHDRAWN = "granted", "withdrawn"
 
 class ConsentService:
     def __init__(self, *, store: ConsentStore, clock, cache=None, cache_ttl: int = 30,
-                 list_limit: int = 100, event_bus=None) -> None:
+                 list_limit: int = 100, event_bus=None,
+                 capacity: CapacityPolicy | None = None) -> None:
         self._store = store
         self._clock = clock
         self._cache = cache
         self._ttl = cache_ttl
         self._limit = list_limit
         self._bus = event_bus
+        # Default policy = not enforced, which is what every deployment before Phase 39 was
+        # implicitly asserting. Making it an object rather than a flag keeps the decision in one
+        # place instead of scattered across the grant path.
+        self._capacity = capacity or CapacityPolicy()
 
     # ── generation-keyed cache ─────────────────────────────────────────────────
     async def _gen(self, tenant: str) -> str:
@@ -72,15 +78,30 @@ class ConsentService:
 
     # ── grant / withdraw ────────────────────────────────────────────────────────
     async def grant(self, *, tenant: str, subject: str, purpose: str, notice_version: str = "",
-                    method: str = "", expires_at: float = 0.0, actor: str = "", ip: str = "") -> Consent:
+                    method: str = "", expires_at: float = 0.0, actor: str = "", ip: str = "",
+                    basis: str = SELF, consented_by: str = "", relation: str = "",
+                    subject_born_at: float = 0.0) -> Consent:
         now = self._clock.now()
+
+        # Capacity is checked BEFORE anything is written. A refusal must leave no consent row and
+        # no proof: a proof recording a consent we refused to accept would be the same lie in a
+        # different direction.
+        lapses_at = self._capacity.check(basis=basis, consented_by=consented_by,
+                                         born_at=subject_born_at, now=now)
+        # Guardian consent lapses at majority. If the caller also set an expiry, the EARLIER wins —
+        # a shorter consent must not be silently extended by the capacity rule.
+        if lapses_at:
+            expires_at = min(expires_at, lapses_at) if expires_at else lapses_at
+
         c = Consent(tenant=tenant, subject=subject, purpose=purpose, granted=True,
                     notice_version=notice_version, method=method, expires_at=expires_at,
-                    updated_at=now)
+                    updated_at=now, basis=basis, consented_by=consented_by, relation=relation,
+                    subject_born_at=subject_born_at)
         await self._store.put(c)
         await self._store.add_proof(ConsentProof(
             id=new_id("prf_"), tenant=tenant, subject=subject, purpose=purpose, action=GRANTED,
-            notice_version=notice_version, method=method, actor=actor, ip=ip, at=now))
+            notice_version=notice_version, method=method, actor=actor, ip=ip, at=now,
+            basis=basis, consented_by=consented_by, relation=relation))
         await self._bump(tenant)                      # a stale 'denied' must not persist
         await self._emit("consent.granted", {"subject": subject, "purpose": purpose})
         return c
