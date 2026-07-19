@@ -72,15 +72,19 @@ class ReviewService:
         now = self._clock.now()
         prior = list(record.provider_state.get("reviewers") or [])
 
-        if approve and self._two_eyes and reviewer not in prior:
-            if not prior:
-                # First approval of two. Stays pending — one signature is not a decision when the
-                # platform has said it requires two.
-                record.provider_state = {**record.provider_state, "reviewers": [reviewer]}
+        if approve and self._two_eyes:
+            # The control is TWO PEOPLE, not two clicks. Written as `reviewer not in prior` alone,
+            # a reviewer approving a second time fell through to the decision — one pair of eyes
+            # satisfying a two-eyes rule, which is the whole thing it exists to prevent.
+            if reviewer in prior or not prior:
+                if reviewer not in prior:
+                    prior = prior + [reviewer]
+                # One signature is not a decision when the platform has said it needs two.
+                record.provider_state = {**record.provider_state, "reviewers": prior}
                 record.updated_at = now
                 await self._store.put(record)
                 return record
-            # Second, different reviewer: the decision completes.
+            # A second, DIFFERENT reviewer: the decision completes below.
 
         record.evidence = Evidence(provider=MANUAL, reference=document_id, checked_at=now,
                                    detail=note, reviewer=reviewer).to_dict()
