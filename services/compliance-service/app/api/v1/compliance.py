@@ -166,6 +166,14 @@ async def grant(request: Request, body: ConsentIn, principal: Principal = Depend
                 tenant=_tenant(principal), resource=f"consent:{body.purpose}",
                 ip=request.client.host if request.client else "",
                 metadata={"basis": body.basis, "relation": body.relation})
+        # AFTER the grant, not write-ahead. The write-ahead pattern exists so a CRITICAL action
+        # cannot happen unwitnessed — it lets AuditUnavailable refuse the action. These routine
+        # actions are fail-open by declaration, so the auditor never refuses them, and recording
+        # first would only log grants that then failed validation.
+        await request.app.state.auditor.record(
+            "consent.granted", actor=principal.subject, tenant=_tenant(principal),
+            resource=f"consent:{body.purpose}",
+            ip=request.client.host if request.client else "")
     except CapacityRefused as exc:
         # 422, not 400: the request is well-formed and the caller is authorised — the consent is
         # simply one we may not lawfully record. The reason is returned because the caller has to
@@ -200,6 +208,10 @@ async def create_dsar(request: Request, body: DsarIn, principal: Principal = Dep
         raise HTTPException(422, f"type must be one of {DSAR_TYPES}")
     d, created = await build_dsar(request).create(tenant=_tenant(principal), subject=body.subject,
                                                   type=body.type, payload=body.payload)
+    await request.app.state.auditor.record(
+        "dsar.created", actor=principal.subject, tenant=_tenant(principal),
+        resource=f"dsar:{d.id}", ip=request.client.host if request.client else "",
+        metadata={"type": body.type, "created": created})
     out = d.public()
     out["created"] = created
     if created:
@@ -213,6 +225,10 @@ async def verify_dsar(request: Request, dsar_id: str, token: str,
     res = await build_dsar(request).verify(dsar_id, token)
     if not res["ok"]:
         raise HTTPException(400, res["reason"])
+    # Verification is what turns a claim into an actionable request — the point the clock starts.
+    await request.app.state.auditor.record(
+        "dsar.verified", actor=principal.subject, tenant=_tenant(principal),
+        resource=f"dsar:{dsar_id}", ip=request.client.host if request.client else "")
     return res
 
 
@@ -283,6 +299,12 @@ async def register_target(request: Request, body: TargetIn, principal: Principal
         # problem. The message lists the configured targets, because the operator hitting this has
         # a typo or a service that was never deployed, and both are fixed by seeing the real set.
         raise HTTPException(422, str(e))
+    # Its deletion was already audited; registering WIDENS the erasure fan-out and belongs in the
+    # same record, so the two halves of a map change can be read together.
+    await request.app.state.auditor.record(
+        "data_target.registered", actor=principal.subject, tenant=principal.tenant,
+        resource=f"target:{t.id}", ip=request.client.host if request.client else "",
+        metadata={"service": body.service, "category": body.category})
     return t.to_dict()
 
 
@@ -327,6 +349,10 @@ async def create_activity(request: Request, body: RopaIn, principal: Principal =
         a = await build_compliance(request).create_activity(tenant=_tenant(principal), **body.model_dump())
     except ValueError as e:
         raise HTTPException(422, str(e))
+    await request.app.state.auditor.record(
+        "ropa.recorded", actor=principal.subject, tenant=_tenant(principal),
+        resource=f"activity:{a.id}", ip=request.client.host if request.client else "",
+        metadata={"name": a.name, "lawful_basis": a.lawful_basis})
     return a.to_dict()
 
 

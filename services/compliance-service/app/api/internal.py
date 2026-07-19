@@ -77,6 +77,22 @@ async def target_ack(request: Request, dsar_id: str, body: AckIn) -> dict:
         code = (s.COMPLIANCE_ACK_NOTFOUND_STATUS if res["reason"] == "NOT_FOUND"
                 else s.COMPLIANCE_ACK_REJECT_STATUS)
         raise HTTPException(code, res["reason"])
+    # The ack is another service ASSERTING it destroyed personal data, and DSAR completion is
+    # derived from these — so this is the state transition that closes a DSAR, and it was the one
+    # with no record behind it. "Who told us this target had erased its copy" was unanswerable.
+    #
+    # The actor is the SERVICE, not a person: this is an internal call and there is no human on
+    # it. Naming the caller is the whole value of the entry, so it is recorded as `service:<name>`
+    # rather than left empty — the empty-actor rule exists because a nameless entry proves
+    # nothing, and that reasoning applies to machines too.
+    #
+    # Recorded only on the success path. An ack we REFUSED (unknown target, no such DSAR) did not
+    # change anything, and logging it as though a target had acked would be the false completion
+    # this endpoint's own comment exists to prevent.
+    await request.app.state.auditor.record(
+        "dsar.target_acked", actor=f"service:{body.service}", tenant=res.get("tenant", ""),
+        resource=f"dsar:{dsar_id}", ip=request.client.host if request.client else "",
+        metadata={"service": body.service, "category": body.category, "ack": body.ack})
     return res
 
 
