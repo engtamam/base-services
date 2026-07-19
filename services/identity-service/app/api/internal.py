@@ -82,6 +82,10 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
         refresh=RefreshStore(c.datastore),
         store=c.datastore,
         pii_salt=s.PII_SALT,
+        # Without these the Person row — identifier, password hash, MFA secret — survives a DSAR
+        # while the receipt claims nothing was kept.
+        memberships=MembershipStore(c.datastore) if s.IDENTITY_MULTI_TENANT else None,
+        identifier=c.login_identifier if s.IDENTITY_MULTI_TENANT else None,
     )
     return await eraser.erase(body.tenant, body.subject)
 
