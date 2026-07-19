@@ -29,6 +29,7 @@ from app.adapters.secrets.env import EnvSecrets
 from app.adapters.secrets.file import FileSecrets
 from app.adapters.secrets.vault import VaultSecrets
 from app.adapters.entitlement.null import NullEntitlement
+from app.adapters.provisioner.http import HttpProvisioner
 from app.adapters.requirement_source.http import HttpRequirementSource
 from app.adapters.audit_sink.eventbus import EventBusAuditSink
 from app.adapters.audit_sink.http import HttpAuditSink
@@ -134,6 +135,7 @@ class Container:
     entitlement: Any = None
     grant_ledger: Any = None
     identity_lookup: Any = None
+    provisioners: dict = field(default_factory=dict)
 
     def describe(self) -> list[dict[str, str]]:
         """[{port, driver}] for the service manifest."""
@@ -211,6 +213,10 @@ def build_container(settings: Settings) -> Container:
         audit_sink=_build_audit_sink(settings, event_bus),
         requirement_sources=_build_sources(settings),
         entitlement=NullEntitlement(),
+        provisioners={
+            kind: HttpProvisioner(kind, create, undo, settings.INTERNAL_SERVICE_TOKEN,
+                                  timeout=settings.ONBOARDING_PROVISION_TIMEOUT_SECONDS)
+            for kind, (create, undo) in settings.onboarding_provisioners.items()},
     )
     import time
 

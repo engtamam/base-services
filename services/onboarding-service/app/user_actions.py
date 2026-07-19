@@ -17,6 +17,14 @@ USER_ACTIONS: list[dict[str, Any]] = [
         "group": "Getting started",
     },
     {
+        "id": "onboarding.provision",
+        "label": "Set up my account",
+        "method": "POST",
+        "path": "/api/v1/onboarding/provision",
+        "capability": "onboarding.self",
+        "group": "Getting started",
+    },
+    {
         "id": "onboarding.claim_grant",
         "label": "Claim my welcome grant",
         "method": "POST",

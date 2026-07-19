@@ -70,6 +70,11 @@ class Settings(BaseSettings):
     # What each declared grant is worth. Money in MINOR units — no float ever touches an amount.
     #   "welcome=amount:200000,currency:SAR" or "welcome=days:14"
     ONBOARDING_GRANTS: str = ""
+    # Provisioning: what signup CREATES, and where. Each kind names a create and an undo endpoint,
+    # because a create without a matching undo is how orphans happen.
+    #   "tenant=http://tenant-service:8000/internal/tenants|/internal/tenants/{id}"
+    ONBOARDING_PROVISIONERS: str = ""
+    ONBOARDING_PROVISION_TIMEOUT_SECONDS: int = 10
 
     # ── audit trail (Phase 38) — where privileged actions are witnessed ───────
     # `null` records NOTHING and says so; the boot guard below refuses it in production, because a
@@ -230,6 +235,30 @@ class Settings(BaseSettings):
             out[kind] = fields
         return out
 
+    @property
+    def onboarding_provisioners(self) -> dict[str, tuple[str, str]]:
+        """`kind -> (create_url, undo_url)`. Both required: an adapter that can create and cannot
+        undo is precisely the shape that leaves orphans."""
+        out: dict[str, tuple[str, str]] = {}
+        for part in self.ONBOARDING_PROVISIONERS.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            kind, sep, urls = part.partition("=")
+            create, pipe, undo = urls.partition("|")
+            kind, create, undo = kind.strip(), create.strip(), undo.strip()
+            if not sep or not kind or not create or not pipe or not undo:
+                raise ValueError(
+                    f"ONBOARDING_PROVISIONERS entry {part!r} must be kind=create_url|undo_url")
+            if not create.startswith(("http://", "https://")):
+                raise ValueError(f"ONBOARDING_PROVISIONERS create url {create!r} must be http(s)")
+            if "{id}" not in undo:
+                raise ValueError(
+                    f"ONBOARDING_PROVISIONERS undo url {undo!r} must contain {{id}} — without it "
+                    f"compensation cannot name what to remove")
+            out[kind] = (create, undo)
+        return out
+
     def assert_onboarding_config_ok(self) -> None:
         """Boot guard.
 
@@ -239,6 +268,7 @@ class Settings(BaseSettings):
         """
         self.onboarding_sources
         self.onboarding_source_paths
+        self.onboarding_provisioners
         grants = self.onboarding_grants
 
         if not self.is_production:

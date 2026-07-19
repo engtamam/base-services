@@ -22,6 +22,7 @@ from app.config import get_settings
 from app.core.evaluator import Evaluator
 from app.core.flows import pick_flow, validate
 from app.core.grants import GrantService
+from app.core.provisioning import ProvisioningService
 from app.onboarding_flows import ONBOARDING_FLOWS
 
 router = APIRouter(prefix="/onboarding", tags=["onboarding"])
@@ -111,6 +112,36 @@ async def claim_grant(request: Request, body: ProfileIn,
         issued.append({"requirement": req_state.id, "grant": spec["grants"],
                        "status": outcome.status, "detail": outcome.detail})
     return {"issued": issued}
+
+
+@router.post("/provision", dependencies=[Depends(rate_limit)])
+async def provision(request: Request, body: ProfileIn,
+                    principal: Principal = Depends(require_user)) -> dict:
+    """Create what this flow says signup creates — atomically, or not at all.
+
+    Safe to call twice: every step carries a key derived from the tenant, subject and step name, so
+    a customer who times out and presses the button again gets the same tenant rather than a
+    second one. If a later step fails, the earlier ones are undone — the orphan-tenant failure this
+    was built to prevent.
+    """
+    flow = pick_flow(_flows(), body.profile)
+    if flow is None:
+        raise HTTPException(422, "no onboarding flow matches this profile")
+    steps = flow.get("provisions") or []
+    if not steps:
+        return {"ok": True, "completed": [], "detail": "this flow provisions nothing"}
+
+    c = request.app.state.container
+    svc = ProvisioningService(provisioners=c.provisioners, store=c.datastore, clock=c.clock,
+                              auditor=request.app.state.auditor, telemetry=c.telemetry)
+    result = await svc.provision(tenant=principal.tenant, subject=principal.subject, steps=steps)
+    if not result["ok"]:
+        # 502: the request was fine and WE could not complete it against a downstream service. The
+        # body names what was rolled back and what the world is still carrying, because an operator
+        # needs that more than the customer needs a tidy message.
+        raise HTTPException(502, {"error": "PROVISIONING_FAILED", **{
+            k: result[k] for k in ("failed_step", "compensated", "residue", "unfinished")}})
+    return result
 
 
 # ── admin tier ───────────────────────────────────────────────────────────────

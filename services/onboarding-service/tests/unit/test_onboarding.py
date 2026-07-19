@@ -372,3 +372,109 @@ def test_malformed_flows_fail_at_boot(flows, match):
 def test_the_shipped_flows_are_valid():
     from app.onboarding_flows import ONBOARDING_FLOWS
     validate(ONBOARDING_FLOWS)
+
+
+# ── provisioning: the orphan the Saga exists to prevent ───────────────────────
+class _Prov:
+    driver = "fake"
+
+    def __init__(self, kind, fail=False, undo_fail=False):
+        self.kind, self.fail, self.undo_fail = kind, fail, undo_fail
+        self.creates = self.undos = 0
+        self.keys: list[str] = []
+
+    async def create(self, req):
+        self.creates += 1
+        self.keys.append(req.key)
+        from app.ports.provisioner import CREATED, FAILED, ProvisionResult
+        if self.fail:
+            return ProvisionResult(status=FAILED, detail="refused")
+        return ProvisionResult(status=CREATED, reference=f"{self.kind}-1")
+
+    async def undo(self, req, ref):
+        from app.ports.provisioner import CREATED, FAILED, ProvisionResult
+        self.undos += 1
+        if self.undo_fail:
+            return ProvisionResult(status=FAILED, detail="unreachable")
+        return ProvisionResult(status=CREATED, reference=ref)
+
+
+def _prov_service(provisioners, store=None):
+    from app.adapters.datastore.memory import MemoryDataStore
+    from app.core.provisioning import ProvisioningService
+
+    class _Clock:
+        def now(self):
+            return 1000.0
+
+    return ProvisioningService(provisioners=provisioners, store=store or MemoryDataStore(),
+                               clock=_Clock())
+
+
+def test_a_failed_later_step_leaves_no_orphan_tenant():
+    """THE Kobo failure: provision the tenant, register the owner, owner fails, tenant orphaned
+    with no rollback and manual recovery. Made impossible."""
+    tenant, membership = _Prov("tenant"), _Prov("membership", fail=True)
+    svc = _prov_service({"tenant": tenant, "membership": membership})
+    out = run(svc.provision(tenant="acme", subject="u1",
+                            steps=[{"kind": "tenant"}, {"kind": "membership"}]))
+    assert out["ok"] is False
+    assert out["failed_step"] == "membership"
+    assert out["compensated"] == ["tenant"]
+    assert tenant.undos == 1
+
+
+def test_provisioning_keys_are_stable_so_a_retry_does_not_double_create():
+    """A customer who gets a timeout WILL press the button again."""
+    first, second = _Prov("tenant"), _Prov("tenant")
+    run(_prov_service({"tenant": first}).provision(
+        tenant="acme", subject="u1", steps=[{"kind": "tenant"}]))
+    run(_prov_service({"tenant": second}).provision(
+        tenant="acme", subject="u1", steps=[{"kind": "tenant"}]))
+    assert first.keys == second.keys        # same key -> the downstream service dedupes
+
+
+def test_an_irreversible_step_is_recorded_as_residue():
+    svc = _prov_service({"tenant": _Prov("tenant"), "email": _Prov("email"),
+                         "membership": _Prov("membership", fail=True)})
+    out = run(svc.provision(tenant="acme", subject="u2", steps=[
+        {"kind": "tenant"},
+        {"kind": "email", "irreversible": "an email cannot be unsent"},
+        {"kind": "membership"}]))
+    assert out["residue"] == [{"step": "email", "why": "an email cannot be unsent"}]
+
+
+def test_a_failed_compensation_is_resumable_and_drains():
+    from app.adapters.datastore.memory import MemoryDataStore
+    store = MemoryDataStore()
+    tenant = _Prov("tenant", undo_fail=True)
+    svc = _prov_service({"tenant": tenant, "membership": _Prov("m", fail=True)}, store=store)
+    out = run(svc.provision(tenant="acme", subject="u3",
+                            steps=[{"kind": "tenant"}, {"kind": "membership"}]))
+    assert [u["step"] for u in out["unfinished"]] == ["tenant"]
+
+    tenant.undo_fail = False                 # the outage clears
+    resumed = run(svc.resume("acme", "u3"))
+    assert resumed["unfinished"] == []       # the queue drained
+
+
+def test_a_missing_provisioner_refuses_before_creating_anything():
+    """Discovering it halfway means compensating work we should never have started."""
+    tenant = _Prov("tenant")
+    out = run(_prov_service({"tenant": tenant}).provision(
+        tenant="acme", subject="u4", steps=[{"kind": "tenant"}, {"kind": "ghost"}]))
+    assert out["ok"] is False and tenant.creates == 0
+
+
+def test_resume_does_not_re_run_the_forward_steps():
+    """Re-running them would create exactly what the rollback is trying to remove."""
+    from app.adapters.datastore.memory import MemoryDataStore
+    store = MemoryDataStore()
+    tenant = _Prov("tenant", undo_fail=True)
+    svc = _prov_service({"tenant": tenant, "membership": _Prov("m", fail=True)}, store=store)
+    run(svc.provision(tenant="acme", subject="u5",
+                      steps=[{"kind": "tenant"}, {"kind": "membership"}]))
+    creates_before = tenant.creates
+    tenant.undo_fail = False
+    run(svc.resume("acme", "u5"))
+    assert tenant.creates == creates_before

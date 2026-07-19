@@ -69,6 +69,13 @@ ONBOARDING_FLOWS: list[dict[str, Any]] = [
         "flow": "b2b_self_serve",
         # Which flow a person gets. First match wins, so put the specific ones first.
         "audience": {"account_type": "business"},
+        # What signup CREATES, in order, each with an undo. Declared rather than inferred: a
+        # membership needs its tenant to exist first, and only the flow author knows that. A step
+        # marked `irreversible` states why — it surfaces as residue rather than being skipped.
+        "provisions": [
+            {"kind": "tenant"},
+            {"kind": "membership"},
+        ],
         "requirements": [
             {
                 "id": "email_verified",

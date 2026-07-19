@@ -73,6 +73,10 @@ def validate(flows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 # is exactly how the implementations we studied could be drained.
                 req.setdefault("_warning", "grants without once_per can be issued repeatedly")
 
+        for step in flow.get("provisions") or []:
+            if not step.get("kind"):
+                raise FlowError(f"{name}: every provisioning step needs a 'kind'")
+
         # Dependencies must exist, and must not form a cycle.
         for req in requirements:
             for blocked in req.get("blocks") or []:

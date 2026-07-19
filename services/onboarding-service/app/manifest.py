@@ -52,6 +52,7 @@ def build_manifest(
             {"path": "/internal/privacy/erase", "tier": "internal", "method": "POST"},
             {"path": "/api/v1/onboarding/next", "tier": "user", "method": "POST"},
             {"path": "/api/v1/onboarding/claim-grant", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/onboarding/provision", "tier": "user", "method": "POST"},
             {"path": "/api/v1/onboarding/admin/inspect", "tier": "user", "method": "POST"},
             {"path": "/api/v1/onboarding/admin/force/{subject}", "tier": "user", "method": "POST"},
         ],
