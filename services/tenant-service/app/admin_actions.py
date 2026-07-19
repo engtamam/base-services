@@ -14,6 +14,26 @@ from typing import Any
 # `admin_actions` follows docs/contracts/admin-actions.schema.json. Nothing hardcoded that belongs
 # in config — these are declarations OF the routes, which are themselves the code.
 ADMIN_ACTIONS: list[dict[str, Any]] = [
+    # READS FIRST — a panel that can only act is half a panel. Without these, a console can suspend a
+    # tenant but cannot answer "which tenants are there?", so a Customers page is impossible: every
+    # other action needs a {tenant_id} the operator would have to already know.
+    {
+        "id": "tenant.list",
+        "label": "List tenants",
+        "method": "GET",
+        "path": "/api/v1/tenants",
+        "capability": "platform.tenants",
+        "group": "Tenancy",
+    },
+    {
+        "id": "tenant.get",
+        "label": "View a tenant",
+        "method": "GET",
+        "path": "/api/v1/tenants/{tenant_id}",
+        "capability": "platform.tenants",
+        "group": "Tenancy",
+        "params": [{"name": "tenant_id", "in": "path", "type": "string", "required": True}],
+    },
     {
         "id": "tenant.provision",
         "label": "Provision tenant",

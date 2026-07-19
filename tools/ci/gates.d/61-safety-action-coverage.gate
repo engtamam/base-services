@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+gate_name="safety:action-coverage"
+gate_desc="every user-tier route is declared to a panel, or excluded with a stated reason"
+gate_protects="safety:admin and safety:user-actions prove a declaration is not FALSE. Neither can
+prove it is COMPLETE — and incompleteness is silent. tenant-service declared
+six mutations and no GET /api/v1/tenants: the admin panel could suspend a
+customer but could not answer 'which customers are there?', so a Customers page
+was impossible while every gate stayed green. READS are the half of a panel that
+is easy to forget, because nothing breaks when they are missing.
+
+So this gate inverts the question: every `tier: user` route in a manifest must be
+declared in admin_actions or user_actions, or listed in UNDECLARED_ROUTES with a
+`why`. An omission stops being an oversight and becomes a decision someone wrote
+a reason for (pre-auth flows and SDK/programmatic endpoints are legitimate; a
+forgotten list endpoint is not)."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_action_coverage.py"
+gate_units=1
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_action_coverage.py; }
+
+# A gate that cannot fail is decoration. Mutation-tested: a covered service passes, then an
+# undeclared route and a reasonless exclusion each turn it red.
+gate_selftest() { "$PY" tools/ci/selftest_action_coverage.py >/dev/null 2>&1; }

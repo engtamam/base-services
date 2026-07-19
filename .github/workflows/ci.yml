@@ -99,6 +99,10 @@ jobs:
       - name: "safety:user-actions — the end-user app catalog is a map, never the authority"
         run: python tools/ci/check_user_actions.py
 
+      # gates: safety:action-coverage
+      - name: "safety:action-coverage — every user-tier route is declared, or excluded with a reason"
+        run: python tools/ci/check_action_coverage.py
+
       # gates: safety:tenancy
       - name: "safety:tenancy — a token carries exactly ONE tenant, and only one it is entitled to"
         run: python tools/ci/check_tenancy.py

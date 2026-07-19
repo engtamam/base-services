@@ -28,3 +28,16 @@ USER_ACTIONS: list[dict[str, Any]] = [
      "path": "/api/v1/auth/mfa/verify", "capability": "identity.self", "group": "My account",
      "params": [{"name": "code", "in": "body", "type": "string", "required": True}]},
 ]
+
+# Routes deliberately NOT rendered as controls. Machine-checked by safety:action-coverage: every
+# user-tier route must be declared above or excluded here WITH a reason.
+UNDECLARED_ROUTES: list[dict[str, str]] = [
+    {"method": "POST", "path": "/api/v1/auth/register",
+     "why": "pre-auth: the app catalog is fetched WITH a token, so its caller has already registered"},
+    {"method": "POST", "path": "/api/v1/auth/login",
+     "why": "pre-auth: you cannot be shown a 'log in' control in an app you are already logged into"},
+    {"method": "POST", "path": "/api/v1/auth/refresh",
+     "why": "session plumbing the client driver handles automatically, not a button"},
+    {"method": "POST", "path": "/api/v1/auth/logout",
+     "why": "session plumbing owned by the app shell's own sign-out, not a per-service control"},
+]

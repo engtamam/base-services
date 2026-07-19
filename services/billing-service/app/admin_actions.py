@@ -55,6 +55,14 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         ],
     },
     {
+        # The read that makes the reversal usable: you must SEE an invoice's settlements before you
+        # can pick one to reverse.
+        "id": "billing.list_settlements", "label": "View invoice settlements",
+        "method": "GET", "path": "/api/v1/billing/invoices/{invoice_id}/settlements",
+        "capability": "platform.billing", "group": "Settlement",
+        "params": [{"name": "invoice_id", "in": "path", "type": "string", "required": True}],
+    },
+    {
         "id": "billing.reverse_settlement", "label": "Reverse a settlement (recalled transfer)",
         "method": "POST", "path": "/api/v1/billing/settlements/{settlement_id}/reverse",
         "capability": "platform.billing", "group": "Payments", "danger": True, "confirm": True,

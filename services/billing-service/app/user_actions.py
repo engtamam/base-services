@@ -36,6 +36,19 @@ USER_ACTIONS: list[dict[str, Any]] = [
     {"id": "billing.invoice_pdf", "label": "Download an invoice", "method": "GET",
      "path": "/api/v1/billing/invoices/{id}/pdf", "capability": "billing.self", "group": "Invoices",
      "params": [{"name": "id", "in": "path", "type": "string", "required": True}]},
+    {"id": "billing.invoice_settlements", "label": "Payments against an invoice", "method": "GET",
+     "path": "/api/v1/billing/invoices/{invoice_id}/settlements", "capability": "billing.self",
+     "group": "Invoices",
+     "params": [{"name": "invoice_id", "in": "path", "type": "string", "required": True}]},
     {"id": "billing.my_usage", "label": "My usage", "method": "GET",
      "path": "/api/v1/billing/usage", "capability": "billing.self", "group": "Usage"},
+]
+
+# Routes deliberately NOT rendered as controls. Machine-checked by safety:action-coverage: every
+# user-tier route must be declared above or excluded here WITH a reason.
+UNDECLARED_ROUTES: list[dict[str, str]] = [
+    {"method": "POST", "path": "/api/v1/billing/usage",
+     "why": "metering ingestion a client SDK calls per event — a firehose, not a button"},
+    {"method": "GET", "path": "/api/v1/billing/entitlements/{key}",
+     "why": "a fail-closed permission check other services make programmatically before acting"},
 ]
