@@ -1422,6 +1422,67 @@
         ]
       }
     },
+    "/internal/compliance/held-refs": {
+      "get": {
+        "description": "Every held subject for a tenant, as PSEUDONYMS. One call per sweep.\n\nFor the callers hold-check cannot serve. A service that purges by SCANNING \u2014 audit-service\nwalks partitions by timestamp \u2014 would otherwise need one HTTP call per row. And a service that\npseudonymises cannot use hold-check at all: its rows carry subject_ref, an HMAC with no\ninverse, so it has no subject to ask with, and giving it the salt to re-derive one would\ndefeat the pseudonymisation.\n\nBoth sides compute subject_ref from the same frozen product PII_SALT, so the caller intersects\nthese refs against the ones it already holds. NO RAW IDENTIFIER CROSSES THE WIRE in either\ndirection \u2014 which makes this the better shape on privacy grounds, not merely the cheaper one.\n\n\u26a0 `complete: false` MEANS DO NOT PURGE. It says the tenant has more active holds than\nHELD_REFS_MAX and this list is partial. Deleting on a partial list destroys evidence somebody\nis legally required to keep, so a caller that proceeds anyway has done something worse than\nskipping its run.",
+        "operationId": "held_refs_internal_compliance_held_refs_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Held Refs Internal Compliance Held Refs Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Held Refs",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/compliance/hold-check": {
       "get": {
         "description": "HOT PATH \u2014 a service asks before PURGING. Fail closed, cached by generation.\n\nRetention is decentralised: every service enforces its own period, and retention.py is\nexplicit that a hold beats retention and a held row must be reported as RETAINED rather than\nsilently skipped. Until now that was impossible to honour from outside \u2014 holds lived only on\nthe capability-gated v1 API, so a consuming service had to either hand a nightly cron job an\nadmin token or purge without checking. Both are bad, and one of them deletes evidence.\n\nGuarded by the internal token like consent-check, precisely so a sweeper does not need\n`compliance.manage`. A retention job should be able to ask \"may I delete this\" without also\nbeing able to place and release holds.\n\nReturns hold_ids, not just a bool, so the caller can NAME what stopped it in its own receipt.",

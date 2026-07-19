@@ -151,6 +151,11 @@ class Settings(BaseSettings):
     # the generation and invalidates cached answers instantly, so this TTL only bounds how long
     # a RELEASE takes to be believed, never how long a new hold takes to be seen.
     HOLD_CACHE_TTL_SECONDS: int = 30
+    # Cap on /internal/compliance/held-refs. A tenant with more active holds than this gets a
+    # response marked `complete: false`, and a caller MUST abort its purge rather than delete on a
+    # partial list — so this is a correctness bound, not a page size, and it is set high enough
+    # that reaching it means something unusual is happening.
+    HELD_REFS_MAX: int = 10_000
     DSAR_SLA_DAYS: int = 30                  # PDPL/GDPR data-subject request deadline
     BREACH_NOTIFY_HOURS: int = 72            # GDPR/PDPL breach notification clock
     DSAR_VERIFICATION_TTL_SECONDS: int = 86_400

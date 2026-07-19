@@ -67,6 +67,19 @@ class Settings(BaseSettings):
     # committed, and trying again later is the correct response. A 500 would tell the caller we
     # crashed, which invites a bug report instead of a retry.
     AUDIT_RETRY_AFTER_SECONDS: int = 30
+
+    # ── hold protection for retention ─────────────────────────────────────────
+    # Retention deleted expired events unconditionally, including events belonging to a subject
+    # under legal hold. This service cannot ask hold-check per subject — its rows carry a
+    # pseudonymous subject_ref with no inverse — so it fetches the held REFS per partition and
+    # intersects locally. `null` provides no protection and reports it; when protection is on and
+    # the list cannot be obtained, the purge is SKIPPED rather than run blind.
+    HOLD_REFS_DRIVER: str = "null"           # null | http
+    COMPLIANCE_SERVICE_URL: str = ""
+    HELD_REFS_PATH: str = "/internal/compliance/held-refs"
+    # Longer than a hot-path timeout on purpose: this is one call per partition on a nightly job,
+    # and a timeout here costs a skipped purge rather than a slow request.
+    HELD_REFS_TIMEOUT_SECONDS: int = 10
     # What happens when a CRITICAL action cannot be witnessed. Default closed: an action nobody can
     # prove is worse than a refused one for the actions investigations turn on. Routine actions
     # always fail open — the split is per action, declared by this service, not a global switch.

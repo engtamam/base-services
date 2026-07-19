@@ -50,14 +50,11 @@ SERVICES = ROOT / "services"
 # entry here is a claim someone has to defend, which is the point of writing it down.
 ALLOWLIST: dict[str, str] = {
     "/internal/compliance/hold-check":
-        "KNOWN GAP, not a resolved one. Shipped for an EXTERNAL adopting team whose retention "
-        "sweeps purge per subject and can therefore ask. Our own first candidate cannot: "
-        "audit-service purges by timestamp across partitions and its rows carry a pseudonymous "
-        "subject_ref (an HMAC with no inverse), while hold-check takes a raw subject — so it has "
-        "nothing to ask WITH, and handing it the salt to re-derive would defeat the "
-        "pseudonymisation the design rests on. That is a contract mismatch at the seam, tracked "
-        "as its own decision rather than papered over with a call that cannot be written. This "
-        "entry comes OUT the moment a bulk held-refs shape lands.",
+        "Serves the PER-SUBJECT shape, for callers that purge one subject at a time and hold a "
+        "raw identifier — which includes the external team this was built for. Our own services "
+        "consume the bulk held-refs shape instead, because audit-service purges by scanning and "
+        "holds only pseudonyms. Two shapes of the same question, each with a caller; this one's "
+        "caller is outside this repo, which is what an allowlist entry is for.",
 }
 
 

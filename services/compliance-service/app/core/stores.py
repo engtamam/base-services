@@ -256,6 +256,18 @@ class HoldStore:
                                          sort=("placed_at", "desc"))
         return rows
 
+    async def active_in_tenant(self, tenant: str, limit: int) -> tuple[list[LegalHold], bool]:
+        """Every active hold for a tenant, and whether the answer is COMPLETE.
+
+        The second half of that tuple is the whole safety argument. A caller uses this to decide
+        what it may delete; a silently truncated list means it deletes data that is held. So the
+        cursor is inspected and completeness returned as a fact, rather than the caller inferring
+        it from `len(rows) < limit` — which is the same guess, made further from the evidence.
+        """
+        rows, cursor = await self._store.find(
+            _HOLDS, {"tenant": tenant, "active": True}, limit=limit, sort=("placed_at", "asc"))
+        return [LegalHold.from_dict(r) for r in rows], cursor is None
+
 
 class TargetStore:
     """The data map — which services hold which category of a subject's data."""

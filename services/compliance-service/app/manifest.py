@@ -54,6 +54,8 @@ def build_manifest(
              "caller": "service"},
             {"path": "/internal/compliance/hold-check", "tier": "internal", "method": "GET",
              "caller": "service"},
+            {"path": "/internal/compliance/held-refs", "tier": "internal", "method": "GET",
+             "caller": "service"},
             {"path": "/internal/compliance/dsar/{id}/target-ack", "tier": "internal", "method": "POST"},
             {"path": "/internal/compliance/consent/sweep-lapses", "tier": "internal", "method": "POST"},
             {"path": "/internal/compliance/consent/migrate-purpose-keys", "tier": "internal", "method": "POST"},

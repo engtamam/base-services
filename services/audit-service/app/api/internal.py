@@ -52,9 +52,16 @@ async def enforce_retention(request: Request, settings: Settings = Depends(get_s
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
-        "audit.retention_enforced", actor="", tenant="", resource="audit_log",
+        "audit.retention_enforced", actor="system:cron", tenant="", resource="audit_log",
         ip=request.client.host if request.client else "")
-    return await build_audit(request).enforce_retention(settings.RETENTION_DAYS)
+    # Hold protection, when a driver is configured. Retention used to delete every expired event,
+    # including events belonging to a subject under legal hold — this service could not ask,
+    # because its rows carry a pseudonym rather than a subject. The refs come per partition and
+    # the intersection happens locally; an incomplete answer skips that partition rather than
+    # purging blind. `hold_protected` in the response says which of those two happened.
+    gate = request.app.state.container.hold_refs
+    holds = gate.for_tenant if gate is not None and gate.driver != "null" else None
+    return await build_audit(request).enforce_retention(settings.RETENTION_DAYS, holds=holds)
 
 
 @router.get("/health", dependencies=[Depends(require_internal_token)])

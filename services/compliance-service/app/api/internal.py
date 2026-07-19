@@ -75,6 +75,29 @@ async def hold_check(request: Request, tenant: str, subject: str) -> dict:
     return await build_compliance(request).hold_check(tenant=tenant, subject=subject)
 
 
+@router.get("/compliance/held-refs", dependencies=[Depends(require_internal_token)])
+async def held_refs(request: Request, tenant: str) -> dict:
+    """Every held subject for a tenant, as PSEUDONYMS. One call per sweep.
+
+    For the callers hold-check cannot serve. A service that purges by SCANNING — audit-service
+    walks partitions by timestamp — would otherwise need one HTTP call per row. And a service that
+    pseudonymises cannot use hold-check at all: its rows carry subject_ref, an HMAC with no
+    inverse, so it has no subject to ask with, and giving it the salt to re-derive one would
+    defeat the pseudonymisation.
+
+    Both sides compute subject_ref from the same frozen product PII_SALT, so the caller intersects
+    these refs against the ones it already holds. NO RAW IDENTIFIER CROSSES THE WIRE in either
+    direction — which makes this the better shape on privacy grounds, not merely the cheaper one.
+
+    ⚠ `complete: false` MEANS DO NOT PURGE. It says the tenant has more active holds than
+    HELD_REFS_MAX and this list is partial. Deleting on a partial list destroys evidence somebody
+    is legally required to keep, so a caller that proceeds anyway has done something worse than
+    skipping its run.
+    """
+    s = get_settings()
+    return await build_compliance(request).held_refs(tenant=tenant, limit=s.HELD_REFS_MAX)
+
+
 @router.post("/compliance/dsar/{dsar_id}/target-ack", dependencies=[Depends(require_internal_token)])
 async def target_ack(request: Request, dsar_id: str, body: AckIn) -> dict:
     """A service confirms it erased/exported its slice. Completion is derived from these."""

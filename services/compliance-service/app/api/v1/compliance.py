@@ -100,7 +100,8 @@ def build_compliance(request: Request) -> ComplianceService:
     c = request.app.state.container
     return ComplianceService(holds=HoldStore(c.datastore), ropa=RopaStore(c.datastore),
                              breaches=BreachStore(c.datastore), targets=TargetStore(c.datastore),
-                             clock=c.clock, config=_cfg(), event_bus=c.event_bus, cache=c.cache)
+                             clock=c.clock, config=_cfg(), event_bus=c.event_bus, cache=c.cache,
+                             pii_salt=get_settings().PII_SALT)
 
 
 def _tenant(p: Principal, body_tenant: str | None = None) -> str:

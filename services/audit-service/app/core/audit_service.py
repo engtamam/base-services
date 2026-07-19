@@ -141,7 +141,7 @@ class AuditService:
         return exporter.export(events)
 
     # ── retention policy (enforces RETENTION_DAYS across all partitions) ───────
-    async def enforce_retention(self, retention_days: int) -> dict:
+    async def enforce_retention(self, retention_days: int, holds=None) -> dict:
         """Purge events older than the configured retention. 0 = keep forever (no-op).
 
         This is what makes `RETENTION_DAYS` a real policy rather than an unwired knob, and
@@ -151,17 +151,59 @@ class AuditService:
             return {"enforced": False, "reason": "RETENTION_DAYS=0 (keep forever)", "purged": 0}
         cutoff = (_dt.datetime.now(_dt.timezone.utc)
                   - _dt.timedelta(days=retention_days)).isoformat()
-        purged = 0
+        purged = held = 0
+        skipped: list[dict] = []
         partitions = await self._repo.partitions()
         for partition in partitions:
-            purged += (await self.purge(cutoff, partition))["purged"]
-        return {"enforced": True, "cutoff": cutoff, "partitions": len(partitions), "purged": purged}
+            refs = None
+            if holds is not None:
+                # In tenant-partition mode the partition IS the tenant, which is what makes a
+                # per-partition hold set meaningful at all.
+                answer = await holds(partition)
+                if answer is None or not answer.get("complete"):
+                    # FAIL CLOSED. An incomplete hold list means we cannot tell which events are
+                    # protected, and deleting on a partial answer destroys evidence somebody is
+                    # legally required to keep. Skipping this partition costs one delayed purge;
+                    # the alternative is not recoverable. It is REPORTED, never silent — a purge
+                    # that quietly does nothing is its own kind of failure.
+                    skipped.append({"partition": partition,
+                                    "reason": "hold list unavailable or incomplete"})
+                    continue
+                refs = frozenset(answer.get("refs") or ())
+            result = await self.purge(cutoff, partition, held_refs=refs)
+            purged += result["purged"]
+            held += result.get("held", 0)
+        return {"enforced": True, "cutoff": cutoff, "partitions": len(partitions),
+                "purged": purged, "held": held, "skipped": skipped,
+                # Stated, not implied: without this an operator cannot tell a run that protected
+                # held data from one that never looked.
+                "hold_protected": holds is not None}
 
     # ── retention purge (re-anchors the chain) ────────────────────────────────
-    async def purge(self, before_ts: str, partition: str = "global") -> dict:
+    async def purge(self, before_ts: str, partition: str = "global",
+                    held_refs: frozenset[str] | None = None) -> dict:
+        """Delete events older than the cutoff — except any belonging to a HELD subject.
+
+        `held_refs` carries subject_ref PSEUDONYMS, which is the only shape this service can use:
+        its rows never hold a raw subject, so it cannot ask "is this person held?" one row at a
+        time. compliance-service derives the same refs from the same frozen product PII_SALT and
+        hands over the whole set, and the intersection happens here, locally.
+
+        A held event is KEPT and counted, never silently skipped. retention.py's rule is that a
+        held row is REPORTED as retained — an operator looking at "purged: 500" needs to know that
+        12 were preserved under hold, because that number is the difference between a purge and
+        spoliation of evidence.
+
+        None means no protection was applied, which is what this did unconditionally before.
+        The caller reports that as `hold_protected: false` rather than leaving it implied.
+        """
         events = await self._repo.iterate(partition)
-        kept = [e for e in events if e.get("ts", "") >= before_ts]
-        purged = [e for e in events if e.get("ts", "") < before_ts]
+        expired = [e for e in events if e.get("ts", "") < before_ts]
+        held = ([e for e in expired if e.get("actor") in held_refs]
+                if held_refs else [])
+        held_ids = {e["id"] for e in held}
+        kept = [e for e in events if e.get("ts", "") >= before_ts or e["id"] in held_ids]
+        purged = [e for e in expired if e["id"] not in held_ids]
         for e in purged:
             await self._repo.delete(e["id"])
         # re-anchor the retained events so the chain stays valid post-purge
@@ -174,5 +216,6 @@ class AuditService:
         last_seq = kept[-1]["seq"] if kept else 0
         await self._repo.set_head(partition, last_seq, prev)
         await self.record(service="audit-service", action="audit.purged",
-                          metadata={"before_ts": before_ts, "purged": len(purged)})
-        return {"purged": len(purged), "remaining": len(kept) + 1}
+                          metadata={"before_ts": before_ts, "purged": len(purged),
+                                    "held": len(held)})
+        return {"purged": len(purged), "remaining": len(kept) + 1, "held": len(held)}

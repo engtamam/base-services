@@ -11,6 +11,7 @@ import json
 from typing import Any
 
 from app.core.models import Breach, DataTarget, LegalHold, ProcessingActivity, new_id
+from app.core.pii import subject_ref
 from app.core.stores import BreachStore, HoldStore, RopaStore, TargetStore
 
 LAWFUL_BASES = ("consent", "contract", "legal_obligation", "vital_interests",
@@ -20,8 +21,9 @@ LAWFUL_BASES = ("consent", "contract", "legal_obligation", "vital_interests",
 class ComplianceService:
     def __init__(self, *, holds: HoldStore, ropa: RopaStore, breaches: BreachStore,
                  targets: TargetStore, clock, config: dict[str, Any], event_bus=None,
-                 cache=None) -> None:
+                 cache=None, pii_salt: str = "") -> None:
         self._cache = cache
+        self._pii_salt = pii_salt
         self._holds = holds
         self._ropa = ropa
         self._breaches = breaches
@@ -93,6 +95,33 @@ class ComplianceService:
         result: dict[str, Any] = {"held": bool(holds), "hold_ids": [h.id for h in holds]}
         await self._cache_set(key, result)
         return {**result, "cached": False}
+
+    async def held_refs(self, *, tenant: str, limit: int) -> dict[str, Any]:
+        """Every held subject for a tenant, as PSEUDONYMS. One call per sweep, not one per row.
+
+        hold_check answers about one raw subject, which is the wrong shape for two kinds of
+        caller. A service that purges by scanning — audit-service walks partitions by timestamp —
+        would need one HTTP call per row. And a service that PSEUDONYMISES cannot use it at all:
+        audit rows carry subject_ref, an HMAC with no inverse, so there is no subject to ask with.
+        Handing that service the salt to re-derive would defeat the pseudonymisation the design
+        rests on.
+
+        This works because subject_ref is derived identically everywhere from the same frozen
+        product PII_SALT — verified byte-for-byte between this service and audit-service. So we
+        can compute the pseudonyms of OUR held subjects and the caller intersects locally against
+        the refs it already holds. No raw identifier crosses the wire in either direction, which
+        makes this a better shape than hold_check on privacy grounds as well as cost.
+
+        `complete` IS THE SAFETY PROPERTY. A caller uses this to decide what it may delete, so a
+        silently truncated list means it deletes data under legal hold. When complete is false the
+        caller MUST abort the purge rather than proceed on a partial answer — that instruction is
+        in the endpoint docstring and in the response, because being wrong here destroys evidence
+        somebody is legally required to keep.
+        """
+        holds, complete = await self._holds.active_in_tenant(tenant, limit)
+        refs = sorted({subject_ref(self._pii_salt, tenant, h.subject)
+                       for h in holds if h.subject})
+        return {"tenant": tenant, "refs": refs, "count": len(refs), "complete": complete}
 
     # ── hold cache plumbing ─────────────────────────────────────────────────────
     # Deliberately the same generation scheme consent uses. Two copies of a cache invalidation

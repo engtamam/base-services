@@ -31,6 +31,8 @@ from app.adapters.secrets.vault import VaultSecrets
 from app.adapters.audit_sink.eventbus import EventBusAuditSink
 from app.adapters.audit_sink.http import HttpAuditSink
 from app.adapters.audit_sink.null import NullAuditSink
+from app.adapters.hold_refs.http import HttpHoldRefs
+from app.adapters.hold_refs.null import NullHoldRefs
 from app.adapters.telemetry.stdout import StdoutTelemetry
 from app.adapters.token_verifier.hs256 import HS256Verifier
 from app.adapters.token_verifier.jwks import JWKSVerifier
@@ -99,6 +101,11 @@ _AUDIT_SINK: dict[str, Builder] = {
     "http": lambda s: HttpAuditSink(s.audit_ingest_url, s.INTERNAL_SERVICE_TOKEN,
                                     timeout=s.AUDIT_TIMEOUT_SECONDS),
 }
+_HOLD_REFS: dict[str, Builder] = {
+    "null": lambda s: NullHoldRefs(),
+    "http": lambda s: HttpHoldRefs(s.COMPLIANCE_SERVICE_URL, s.INTERNAL_SERVICE_TOKEN,
+                                   timeout=s.HELD_REFS_TIMEOUT_SECONDS, path=s.HELD_REFS_PATH),
+}
 _TELEMETRY: dict[str, Builder] = {
     "stdout": lambda s: StdoutTelemetry(),
 }
@@ -145,6 +152,7 @@ class Container:
     rate_limiter: RateLimiter
     telemetry: Telemetry
     audit_sink: Any = None
+    hold_refs: Any = None
     integrity: Any = None
     exporter: Any = None
 
@@ -212,6 +220,7 @@ def build_container(settings: Settings) -> Container:
         rate_limiter=_pick(_RATELIMITER, settings.RATELIMITER_DRIVER, "rate_limiter", settings),
         telemetry=_pick(_TELEMETRY, settings.TELEMETRY_DRIVER, "telemetry", settings),
         audit_sink=_build_audit_sink(settings, event_bus),
+        hold_refs=_pick(_HOLD_REFS, settings.HOLD_REFS_DRIVER, "hold_refs", settings),
         integrity=_pick(_INTEGRITY, settings.INTEGRITY_DRIVER, "integrity", settings),
         exporter=_pick(_EXPORTER, settings.EXPORTER_DEFAULT, "exporter", settings),
     )
