@@ -150,10 +150,9 @@ class DsarService:
             st.update(status="acked", ack=ack, next_at=0.0, last_at=self._clock.now())
             state[key] = st
             d.target_state = state
-        # (2) completion is DERIVED from the acks — never declared
-        if d.is_complete():
-            d.status = COMPLETED
-            d.completed_at = self._clock.now()
+        # (2) completion is DERIVED from the acks — never declared. Same rule the dispatcher
+        # applies, called from the model so the two paths cannot drift apart again.
+        if d.derive_completion(self._clock.now()):
             await self._emit("dsar.completed", {"id": d.id, "type": d.type})
         await self._dsars.save(d)
         return {"ok": True, "status": d.status, "remaining": [k for k, v in d.targets.items() if not v]}

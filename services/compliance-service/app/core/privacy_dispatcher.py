@@ -67,6 +67,10 @@ class PrivacyDispatcher:
 
         dsar.target_state = state
         # Completion stays DERIVED: recomputed from the ack map, never set by a dispatch result.
+        # Applied HERE as well as on the push path, because a DSAR whose targets all answer on the
+        # first dispatch would otherwise never close — every target erased, nobody marked it done.
+        if dsar.derive_completion(self._clock.now()):
+            self._emit_completed(dsar)
         await self._dsars.save(dsar)
         return self._summary(dsar, attempted=len(due))
 
@@ -168,6 +172,15 @@ class PrivacyDispatcher:
                       for k in remaining if state.get(k, {}).get("exhausted")],
             "complete": dsar.is_complete(),
         }
+
+    def _emit_completed(self, dsar) -> None:
+        if self._telemetry is None:
+            return
+        try:
+            self._telemetry.event("privacy.dsar.completed",
+                                  {"dsar": dsar.id, "targets": len(dsar.targets)})
+        except Exception:
+            pass
 
     def _emit(self, dsar, key: str, st: dict) -> None:
         if self._telemetry is None:

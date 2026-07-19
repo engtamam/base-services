@@ -113,6 +113,22 @@ class Dsar:
         """Completion is DERIVED: every target acknowledged. A partial delete is not 'done'."""
         return bool(self.targets) and all(self.targets.values())
 
+    def derive_completion(self, now: float) -> bool:
+        """Apply the derivation. Returns True if this call is what completed the request.
+
+        This lives on the MODEL because a DSAR finishes by two different routes — a target acking
+        synchronously through the dispatcher, or an async target pushing its ack to /target-ack —
+        and the rule must be identical on both. It was not: completion was applied only on the push
+        path, so a DSAR whose targets all answered on the first dispatch stayed `in_progress` for
+        ever. Every service reported success, every target really had erased, and the request never
+        closed. One rule, one place, called from both.
+        """
+        if self.status in (COMPLETED, REFUSED) or not self.is_complete():
+            return False
+        self.status = COMPLETED
+        self.completed_at = now
+        return True
+
     def overdue(self, now: float) -> bool:
         return self.status not in (COMPLETED, REFUSED) and bool(self.deadline_at) and now > self.deadline_at
 
