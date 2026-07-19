@@ -76,7 +76,39 @@ explicitly — because what nobody declares, nobody logs.
    its equivalent — a gate comparing declared auditable actions against services actually
    configured to emit, failing in both directions.
 
-## Proposed shape
+## What was built (complete)
+
+1. **`AuditSink` port + `http`/`eventbus`/`null` adapters**, in `_template` first so a new service
+   is born wired. Three outcomes: `accepted` (the receipt carries the seq and hash proving where in
+   the chain it sits), `dropped` (deliberately not delivered, and says so), `failed`. A 200 with no
+   chain hash is treated as FAILED — the hash IS the evidence.
+2. **Config + fail-closed boot guard.** Production refuses to start on the `null` sink or on `http`
+   with no URL.
+3. **The failure policy.** Security-relevant actions fail CLOSED; everything else fails OPEN and is
+   counted. Which actions are critical is declared per service, so it is a judgement made in review.
+4. **Declared auditable actions**, as pure literals. The declaration file IS the guide — it explains
+   the four sources and how to decide `critical` at the moment someone is deciding.
+5. **`safety:audit-wiring`**, with a 12-case selftest run before the gate itself.
+6. **All 18 services wired**: 145 actions declared, 69 critical, 69 emitted.
+7. **End-to-end proof** against the real ingest endpoint.
+
+## What it cost to get right
+
+Four real defects, each caught by something built to catch it:
+
+* **Declarations with no emitters.** 145 actions declared, sinks wired, config correct, gate green —
+  and nothing called `record()`. The third instance of built-but-unwired in two phases, and this
+  time self-inflicted. The gate now requires every critical action to have a real emit call.
+* **The null sink 503'd every critical route.** Blocking on `dropped` punished the SAFE default:
+  a developer running with zero-infrastructure defaults found every privileged route broken. Fail
+  closed when a log we RELY on is unreachable, not when we deliberately configured none.
+* **Emits referencing names that did not exist** — one local used before assignment, seventeen
+  assuming every route calls its Principal parameter `principal`. NameErrors that fire only when
+  the route is called, so the emit would have crashed the actions it was meant to witness.
+* **A selftest that tested nothing** — a substitution written for double quotes against text
+  `repr()` had written with single quotes. It now asserts its own mutation landed.
+
+## Original proposed shape
 
 1. `AuditSink` port + `http` / `eventbus` / `null` adapters, in `_template` first so every future
    service is born wired.
