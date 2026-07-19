@@ -28,12 +28,26 @@ router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 # ── Schemas ─────────────────────────────────────────────────────────────────
 class RegisterIn(BaseModel):
+    """What a stranger may state about themself: who they are and a password. Nothing else.
+
+    `caps` and `roles` USED TO BE FIELDS HERE, and this route is unauthenticated. Anyone able to
+    reach it could send caps=["*"] and receive a token that satisfies every capability check on
+    the platform — the gateway honours "*" as a wildcard — for any tenant they named. That is a
+    total compromise reachable by one POST, and REGISTRATION_ENABLED defaults to true.
+
+    They are not validated here; they are ABSENT. Pydantic ignores unknown fields, so an existing
+    client that still sends them keeps working and the values are discarded — a 400 would only
+    tell an attacker which field to rename. Privilege comes from the server, never the request.
+
+    core/tenancy.py already said this for the multi-tenant path: "a request may ASK for a tenant;
+    it may never SUPPLY one", and "caps and roles come from the Membership". This legacy
+    single-tenant route bypassed that guard entirely.
+    """
+
     username: str = Field(min_length=3, max_length=128)
     # min length is enforced by the core policy (PASSWORD_MIN_LENGTH); max is a DoS cap.
     password: str = Field(min_length=1, max_length=256)
     tenant: str = Field(default="default", max_length=128)
-    caps: list[str] = Field(default_factory=list)
-    roles: list[str] = Field(default_factory=list)
 
 
 class LoginIn(BaseModel):
@@ -75,6 +89,8 @@ def _svc(request: Request) -> AuthService:
         invites=InviteStore(c.datastore) if s.IDENTITY_MULTI_TENANT else None,
         # Roles are the input; capabilities are derived. The resolver decides where from.
         caps_resolver=c.caps_resolver if s.IDENTITY_MULTI_TENANT else None,
+        # platform.* is a BOUNDARY now, not a naming convention.
+        platform_tenant=s.PLATFORM_TENANT,
     )
 
 
@@ -85,7 +101,12 @@ async def register(request: Request, body: RegisterIn) -> dict:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "REGISTRATION_DISABLED")
     svc = _svc(request)
     try:
-        user = await svc.register(body.tenant, body.username, body.password, body.caps, body.roles)
+        # Roles come from CONFIG, not the caller. A platform that wants self-service signup to
+        # grant something states it once, in one place an operator reviews, rather than trusting
+        # whatever arrives in a body.
+        s = get_settings()
+        user = await svc.register(body.tenant, body.username, body.password,
+                                  caps=None, roles=s.registration_default_roles)
     except ValidationError:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "INVALID_IDENTIFIER")
     except UserExists:

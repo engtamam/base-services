@@ -171,6 +171,23 @@ class Settings(BaseSettings):
     MFA_ISSUER_NAME: str = "base-services"      # shown in authenticator apps
     MFA_TOTP_WINDOW: int = 1                     # TOTP clock-skew tolerance (± steps)
     REGISTRATION_ENABLED: bool = True           # open signup vs admin-only
+    # What a SELF-REGISTERED account gets. Comma list, empty by default: a stranger who signs
+    # themself up is nobody until somebody grants them something. This exists because the route
+    # used to take caps and roles FROM THE REQUEST BODY — an unauthenticated caller could send
+    # caps=["*"] and mint a token that satisfied every capability check on the platform.
+    #
+    # Roles only, never capabilities. Roles are names an operator recognises and the resolver
+    # maps to capabilities; letting config name raw caps would rebuild the same hole one file
+    # further away, with an operator typing "platform.admin" instead of an attacker.
+    REGISTRATION_DEFAULT_ROLES: str = ""
+    # The one tenant allowed to hold platform.* capabilities. `platform` has always been a naming
+    # convention and never a boundary — nothing refused a platform.* cap on a customer's token.
+    # Empty disables the check, which is the pre-existing behaviour and is logged at boot.
+    PLATFORM_TENANT: str = ""
+
+    @property
+    def registration_default_roles(self) -> list[str]:
+        return [r.strip() for r in self.REGISTRATION_DEFAULT_ROLES.split(",") if r.strip()]
     PASSWORD_MIN_LENGTH: int = 8                 # minimum password length policy
     # Per-account brute-force lockout (generic rate-limit doesn't stop targeted stuffing).
     LOGIN_MAX_ATTEMPTS: int = 5                  # consecutive failures before lockout

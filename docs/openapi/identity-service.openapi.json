@@ -113,26 +113,13 @@
         "type": "object"
       },
       "RegisterIn": {
+        "description": "What a stranger may state about themself: who they are and a password. Nothing else.\n\n`caps` and `roles` USED TO BE FIELDS HERE, and this route is unauthenticated. Anyone able to\nreach it could send caps=[\"*\"] and receive a token that satisfies every capability check on\nthe platform \u2014 the gateway honours \"*\" as a wildcard \u2014 for any tenant they named. That is a\ntotal compromise reachable by one POST, and REGISTRATION_ENABLED defaults to true.\n\nThey are not validated here; they are ABSENT. Pydantic ignores unknown fields, so an existing\nclient that still sends them keeps working and the values are discarded \u2014 a 400 would only\ntell an attacker which field to rename. Privilege comes from the server, never the request.\n\ncore/tenancy.py already said this for the multi-tenant path: \"a request may ASK for a tenant;\nit may never SUPPLY one\", and \"caps and roles come from the Membership\". This legacy\nsingle-tenant route bypassed that guard entirely.",
         "properties": {
-          "caps": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Caps",
-            "type": "array"
-          },
           "password": {
             "maxLength": 256,
             "minLength": 1,
             "title": "Password",
             "type": "string"
-          },
-          "roles": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Roles",
-            "type": "array"
           },
           "tenant": {
             "default": "default",

@@ -49,6 +49,16 @@ def create_app() -> FastAPI:
     configure_logging(settings.SERVICE_NAME, settings.ENV, settings.LOG_LEVEL)
     logger = get_logger("app.main")
 
+    # An UNSET platform tenant means platform.* is still only a naming convention here: any
+    # capability that reaches a User becomes platform authority on login. That is the behaviour
+    # this service always had, so it is not forced — but it is an assertion, and an assertion
+    # nobody states is one nobody revisits. Same reasoning as CONSENT_AGE_OF_MAJORITY=0.
+    if not settings.PLATFORM_TENANT:
+        logger.warning(
+            "platform_tenant_unset",
+            extra={"detail": "PLATFORM_TENANT is empty: platform.* and '*' capabilities are NOT "
+                             "restricted to a platform tenant. Set it to enforce the boundary."})
+
     # Composition root: wire ports -> adapters from config (fail-fast on bad driver).
     container = build_container(settings)
 

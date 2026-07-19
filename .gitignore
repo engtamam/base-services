@@ -87,3 +87,6 @@ config/product.json
 
 # Agent worktrees: real git worktrees, never repo content.
 .claude/worktrees/
+
+# Transient local release build logs (see scratchpad/build_release.sh)
+.release-logs/

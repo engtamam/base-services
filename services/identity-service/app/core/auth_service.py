@@ -41,7 +41,9 @@ class AuthService:
     def __init__(self, *, users: UserRepository, refresh: RefreshStore, hasher,
                  issuer, verifier, mfa, identifier, access_ttl: int, refresh_ttl: int,
                  min_password_len: int = DEFAULT_MIN_PASSWORD_LEN, lockout=None,
-                 memberships=None, invites=None, caps_resolver=None) -> None:
+                 memberships=None, invites=None, caps_resolver=None,
+                 platform_tenant: str = "") -> None:
+        self._platform_tenant = platform_tenant
         self._users = users
         self._identifier = identifier
         self._refresh = refresh
@@ -79,6 +81,31 @@ class AuthService:
         )
         return await self._users.create(user)
 
+    def _safe_caps(self, user: User) -> list[str]:
+        """Strip platform-wide capabilities from a token that is not the platform tenant's.
+
+        THE LAST DOOR. `platform.*` was a naming convention and never a boundary — nothing in
+        require_capability or at the gateway refused a platform.* cap on a customer's token. So a
+        capability that ended up on a User by ANY route became platform authority on login.
+
+        `*` is stripped too, and it is the one that mattered most: the gateway honours it as a
+        wildcard matching every capability check on the platform, so `*` was strictly worse than
+        platform.admin and easy to miss while looking for the word "platform".
+
+        Filtered at MINT time rather than at each check, for the reason tenancy.py already gives:
+        the moment a token is minted is the only moment anything is verified. Everywhere else the
+        claim is simply believed, and sixteen services are right to believe it.
+
+        PLATFORM_TENANT empty disables this — the pre-existing behaviour, kept so an upgrade
+        cannot lock an operator out of their own platform, and logged at boot so it is a decision
+        rather than a silence.
+        """
+        caps = list(user.caps or [])
+        platform_tenant = (self._platform_tenant or "").strip()
+        if not platform_tenant or user.tenant == platform_tenant:
+            return caps
+        return [c for c in caps if c != "*" and not c.startswith("platform.")]
+
     # ── login ────────────────────────────────────────────────────────────────
     async def authenticate(self, tenant: str, username: str, password: str) -> User | None:
         # Locked accounts are refused before any password work (and without revealing
@@ -103,7 +130,7 @@ class AuthService:
 
     # ── token issuance ────────────────────────────────────────────────────────
     async def issue_tokens(self, user: User) -> dict:
-        claims = {"caps": user.caps, "roles": user.roles, "tenant": user.tenant}
+        claims = {"caps": self._safe_caps(user), "roles": user.roles, "tenant": user.tenant}
         access = self._issuer.issue_access(user.id, claims, self._access_ttl)
         jti = new_id()
         refresh = self._issuer.issue_refresh(user.id, jti, self._refresh_ttl)
