@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     # ── Internal service-to-service auth (REQUIRED) ─────────────────────────
     # Shared token for /internal/* endpoints. Must be strong (>= 32 chars).
     INTERNAL_SERVICE_TOKEN: str = Field(min_length=32)
+    # Salts the subject pseudonym on an erasure ack. FROZEN — config/product.identifiers.lock.json.
+    PII_SALT: str = ""
 
     # ── Ports & adapters (Phase 2) — driver selection, ZERO-INFRA defaults ──
     # Every default reaches NO external system; point at real infra by config.

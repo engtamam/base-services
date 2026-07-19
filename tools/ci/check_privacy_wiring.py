@@ -30,43 +30,21 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 VALUES = ROOT / "deploy" / "services" / "compliance-service.values.yaml"
 ERASE_ROUTE = re.compile(r'@router\.post\(\s*["\']/privacy/erase["\']')
 
-# Every service must land in exactly one of three buckets: it implements the contract, it holds no
-# subject data, or it is a DECLARED gap. Silence is not an option — a service nobody classified is
-# a service nobody checked, and that is precisely how ten erasure endpoints ended up with no
-# callers while every test passed.
-
-# Genuinely tenant- or machine-scoped. Verified by reading the models, not assumed from the name.
-NO_SUBJECT_DATA = {
-    "_template": "the scaffold — not a deployed service",
-    "api-gateway": "routes and aggregates; stores no subject data of its own",
-    "wallet-service": "Wallet/LedgerEntry/Hold/Grant key on tenant only; balances are per-tenant",
-    "tenant-service": "Tenant/slug/domain records describe organisations, not natural persons",
-    "job-service": "orchestration only; see KNOWN_GAPS for the payload-blob caveat",
-}
-
-# Services that DO hold subject data and cannot yet be erased. Listing them here is not permission
-# — it is the opposite. An undeclared gap is invisible; a declared one is a ticket with a reason
-# attached, and this gate makes removing the reason the only way to make the entry go away.
+# Every service must land in exactly one of two buckets: it implements the erasure contract, or it
+# is the scaffold. There is no third bucket any more.
 #
-# What these five share: NONE has a subject-identifying column. The personal data sits in untyped
-# blobs (payload, record, result) or opaque artifacts (UBL XML, video segments), so there is no
-# indexed key to resolve a subject to rows. Adding an endpoint would not close the gap — that is a
-# schema migration, which is why it is not folded into this phase.
-KNOWN_GAPS = {
-    "connector-service": "SyncRecord.record holds full CRM/ERP contact rows (mapping.py maps "
-                         "properties.email); DLQ rows persist after a failed sync. Needs a "
-                         "subject_id at write time before erasure can find them.",
-    "webhook-service": "Event.payload / InboundEvent.payload / Delivery.response_body are "
-                       "unbounded PII carriers retained for retry history.",
-    "job-service": "Job.payload and Job.result carry recipient data (a welcome-email job holds "
-                   "the address). Untyped blobs, no subject key.",
-    "zatca-service": "buyer identity is persisted inside signed_xml/cleared_xml (ubl.py writes "
-                     "RegistrationName + ID); simplified invoices are B2C by definition. Likely "
-                     "resolves to a STATUTORY RETENTION exemption rather than deletion — but the "
-                     "erasure request must still be recorded and answered.",
-    "stream-service": "recordings and exports are video of physical spaces — biometric data by "
-                      "construction — with no subject column to match on. Recording.locked is "
-                      "already a legal-hold flag, so retention duties compete here too.",
+# There WAS one. An audit during Phase 37 found five services holding real subject data with no
+# erase endpoint — connector (CRM rows in the DLQ), webhook (payload blobs), job (job arguments),
+# zatca (buyer identity inside signed XML), stream (video of people). They were listed here as
+# declared gaps with reasons. Every one has since been closed, and the list is gone rather than
+# kept as a place for the next gap to be parked.
+#
+# The lesson that stays: NONE of those five had a subject-identifying column. The personal data sat
+# in untyped blobs and opaque artifacts, which is why the audit was needed at all — no schema
+# search would have found it. If a new service is added here as an exemption, verify it by reading
+# the models, not by trusting the name.
+EXEMPT = {
+    "_template": "the scaffold — not a deployed service; it ships the contract for new services",
 }
 
 
@@ -75,7 +53,8 @@ def implementers() -> set[str]:
     found = set()
     for internal in sorted((ROOT / "services").glob("*/app/api/internal.py")):
         if ERASE_ROUTE.search(internal.read_text(encoding="utf-8")):
-            found.add(internal.parents[3].name)
+            # services/<name>/app/api/internal.py -> parents[2] is <name>
+            found.add(internal.parents[2].name)
     return found
 
 
@@ -97,7 +76,7 @@ def main() -> int:
     impl, cfg = implementers(), configured()
     problems = []
 
-    for service in sorted(impl - cfg):
+    for service in sorted(impl - cfg - set(EXEMPT)):
         problems.append(
             f"  {service}: implements /internal/privacy/erase but is NOT in PRIVACY_TARGETS.\n"
             f"      A DSAR would complete while this service still holds the subject's data.\n"
@@ -105,7 +84,7 @@ def main() -> int:
             f"      deploy/services/compliance-service.values.yaml")
 
     for service in sorted(cfg - impl):
-        if service in NO_SUBJECT_DATA:
+        if service in EXEMPT:
             continue
         problems.append(
             f"  {service}: named in PRIVACY_TARGETS but does NOT implement /internal/privacy/erase.\n"

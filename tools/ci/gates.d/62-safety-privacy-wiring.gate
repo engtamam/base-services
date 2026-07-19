@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+gate_name="safety:privacy-wiring"
+gate_desc="every service implementing the erase contract is a dispatch target"
+gate_protects="Ten erasure endpoints once sat in this repo with zero callers. Each half was
+individually correct and every test passed, because no test can see across the
+seam between an implementation and the deployed config. A service that implements
+erase but is not in PRIVACY_TARGETS makes a DSAR report success while that service
+still holds the subject's data — the most dangerous shape this bug takes."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_privacy_wiring.py"
+gate_units=0
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_privacy_wiring.py; }

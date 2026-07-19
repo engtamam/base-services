@@ -76,6 +76,9 @@ WIRING: dict[str, dict[str, str]] = {
     "billing-service": {
         "CURRENCY": "locale.currency",
     },
+    "api-gateway": {
+        "PII_SALT": "identifiers.piiSalt",   # frozen: re-maps every pseudonym
+    },
     "job-service": {
         "PII_SALT": "identifiers.piiSalt",   # frozen: re-maps every pseudonym
     },
@@ -101,6 +104,7 @@ WIRING: dict[str, dict[str, str]] = {
     },
     "tenant-service": {
         "DEFAULT_LOCALE": "locale.default",
+        "PII_SALT": "identifiers.piiSalt",   # frozen: re-maps every pseudonym
     },
 }
 

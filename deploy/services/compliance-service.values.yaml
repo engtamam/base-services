@@ -60,7 +60,15 @@ env:
     authz-service=http://authz-service:8000,
     compliance-service=http://compliance-service:8000,
     feature-flag-service=http://feature-flag-service:8000,
-    search-service=http://search-service:8000
+    search-service=http://search-service:8000,
+    zatca-service=http://zatca-service:8000,
+    wallet-service=http://wallet-service:8000,
+    stream-service=http://stream-service:8000,
+    webhook-service=http://webhook-service:8000,
+    job-service=http://job-service:8000,
+    connector-service=http://connector-service:8000,
+    tenant-service=http://tenant-service:8000,
+    api-gateway=http://api-gateway:8000
 
   # Retention for the records THIS service owns. Every other service declares its own period in its
   # RoPA row and enforces it itself — only the owner knows which timestamp is its retention clock.
