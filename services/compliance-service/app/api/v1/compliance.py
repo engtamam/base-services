@@ -14,6 +14,7 @@ from app.config import get_settings
 from app.core.capacity import CapacityPolicy, CapacityRefused
 from app.core.compliance_service import ComplianceService
 from app.core.consent_service import ConsentService
+from app.core.consent_sweeper import ConsentSweeper
 from app.core.dsar_service import DsarService
 from app.core.models import DSAR_TYPES
 from app.core.privacy_dispatcher import PrivacyDispatcher
@@ -74,6 +75,16 @@ def build_sweeper(request: Request) -> PrivacySweeper:
                           page_size=s.PRIVACY_SWEEP_PAGE_SIZE,
                           max_per_run=s.PRIVACY_SWEEP_MAX_PER_RUN,
                           telemetry=request.app.state.container.telemetry)
+
+
+def build_consent_sweeper(request: Request) -> ConsentSweeper:
+    """The watcher over guardian consents crossing majority. Runs on a CronJob, never a request."""
+    c = request.app.state.container
+    s = get_settings()
+    return ConsentSweeper(store=c.datastore, consents=ConsentStore(c.datastore), clock=c.clock,
+                          event_bus=c.event_bus,
+                          notice_seconds=s.consent_lapse_notice_seconds,
+                          max_per_run=s.CONSENT_SWEEP_MAX_PER_RUN, telemetry=c.telemetry)
 
 
 def build_retention(request: Request) -> RetentionEnforcer:

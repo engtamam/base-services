@@ -1195,6 +1195,58 @@
         ]
       }
     },
+    "/internal/compliance/consent/sweep-lapses": {
+      "post": {
+        "description": "Announce guardian consents crossing the age of majority. Called by a CronJob.\n\nUntil this existed, majority handling was one line in capacity.py \u2014 expires_at is set to the\nday the subject can speak for themself \u2014 and nothing watched that date. On their eighteenth\nbirthday, check() simply started answering \"expired\": no notice to the controller, no prompt\nfor the young adult's OWN consent. Processing stopped and from outside it looked like a bug.\n\nA lapse is not an error that surfaces itself; it is a date arriving, and a date arriving is\nonly visible to something that looks.",
+        "operationId": "run_consent_sweep_internal_compliance_consent_sweep_lapses_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Run Consent Sweep Internal Compliance Consent Sweep Lapses Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Consent Sweep",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/compliance/dsar/run": {
       "post": {
         "description": "Drive every open DSAR's unacked targets. Called by the erasure CronJob.\n\nThis is the worker that makes an erasure an EFFECT rather than a record. Safe to call at any\ntime and from any replica: acked targets are skipped and backoff suppresses duplicate dials, so\nan overlapping run costs a no-op. The response names anything STUCK \u2014 a target that exhausted\nits attempts and is holding a DSAR open \u2014 because a jammed erasure nobody can see is how an\nSLA breach becomes a regulatory one.",

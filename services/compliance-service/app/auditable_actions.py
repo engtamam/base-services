@@ -114,6 +114,11 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "cannot prove we did it",
     },
     {
+        "action": "consent.lapse_swept",
+        "source": "system",
+        "critical": False,
+    },
+    {
         "action": "retention.purged",
         "source": "system",
         "critical": True,

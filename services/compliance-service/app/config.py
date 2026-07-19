@@ -176,6 +176,16 @@ class Settings(BaseSettings):
     # bug this phase exists to fix — the consent proof would then faithfully prove we relied on
     # consent that may never have been lawful, which is evidence AGAINST the platform.
     CONSENT_UNKNOWN_AGE: str = "refuse"      # refuse | allow
+    # How long BEFORE a guardian consent lapses at majority to announce consent.lapsing. This is
+    # the whole product value of the sweeper: it is the window in which a re-consent flow can run
+    # so the subject never experiences an interruption. 0 disables the early notice and leaves
+    # only consent.lapsed, which is honest but late — by then processing has already stopped.
+    CONSENT_LAPSE_NOTICE_DAYS: int = 30
+    CONSENT_SWEEP_MAX_PER_RUN: int = 1000
+
+    @property
+    def consent_lapse_notice_seconds(self) -> float:
+        return self.CONSENT_LAPSE_NOTICE_DAYS * 86400
 
     @property
     def consent_majority_seconds(self) -> float:

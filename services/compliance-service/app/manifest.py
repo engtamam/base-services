@@ -52,6 +52,7 @@ def build_manifest(
             {"path": "/internal/compliance/consent-check", "tier": "internal", "method": "GET"},
             {"path": "/internal/compliance/hold-check", "tier": "internal", "method": "GET"},
             {"path": "/internal/compliance/dsar/{id}/target-ack", "tier": "internal", "method": "POST"},
+            {"path": "/internal/compliance/consent/sweep-lapses", "tier": "internal", "method": "POST"},
             {"path": "/api/v1/compliance/consent/grant", "tier": "user", "method": "POST"},
             {"path": "/api/v1/compliance/consent/withdraw", "tier": "user", "method": "POST"},
             {"path": "/api/v1/compliance/consent/history", "tier": "user", "method": "GET"},

@@ -11,8 +11,8 @@ import hmac
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from app.api.v1.compliance import (build_compliance, build_consent, build_dsar, build_retention,
-                                   build_sweeper)
+from app.api.v1.compliance import (build_compliance, build_consent, build_consent_sweeper,
+                                   build_dsar, build_retention, build_sweeper)
 from app.config import Settings, get_settings
 from app.core.erasure import ComplianceErasure
 from app.manifest import build_manifest
@@ -126,6 +126,24 @@ async def run_dsar_sweep(request: Request) -> dict:
     SLA breach becomes a regulatory one.
     """
     return await build_sweeper(request).run()
+
+
+@router.post("/compliance/consent/sweep-lapses", dependencies=[Depends(require_internal_token)])
+async def run_consent_sweep(request: Request) -> dict:
+    """Announce guardian consents crossing the age of majority. Called by a CronJob.
+
+    Until this existed, majority handling was one line in capacity.py — expires_at is set to the
+    day the subject can speak for themself — and nothing watched that date. On their eighteenth
+    birthday, check() simply started answering "expired": no notice to the controller, no prompt
+    for the young adult's OWN consent. Processing stopped and from outside it looked like a bug.
+
+    A lapse is not an error that surfaces itself; it is a date arriving, and a date arriving is
+    only visible to something that looks.
+    """
+    await request.app.state.auditor.record(
+        "consent.lapse_swept", actor="system:cron", tenant="", resource="consent",
+        ip=request.client.host if request.client else "")
+    return await build_consent_sweeper(request).run()
 
 
 @router.post("/compliance/retention/run", dependencies=[Depends(require_internal_token)])
