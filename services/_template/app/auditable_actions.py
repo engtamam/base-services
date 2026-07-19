@@ -66,6 +66,36 @@ stays both useful and erasable: erase the linkage in identity-service and every 
 an orphan that names nobody, while the chain still verifies.
 
 ────────────────────────────────────────────────────────────────────────────────────
+THEN EMIT IT — the other half of the job
+────────────────────────────────────────────────────────────────────────────────────
+
+Declaring an action does not record it. At the point the action happens:
+
+    await request.app.state.auditor.record(
+        "permission.granted",
+        actor=subject_ref,               # a PSEUDONYM — see below
+        resource=f"grant:{grant.id}",
+        tenant=principal.tenant,
+        ip=request.client.host,
+        metadata={"capability": cap},
+    )
+
+For a `critical` action, let `AuditUnavailable` propagate — the API layer turns it into a 503. That
+is the fail-closed decision doing its job, and swallowing it would quietly undo the whole point.
+
+Emitting an action that is NOT in the list below raises: an event nobody declared is invisible to
+the CI gate and to the investigator searching the log, so it would be audited in name only.
+
+Where to point it (app/config.py has the full set):
+
+    AUDIT_SINK_DRIVER=http   -> the receipt carries seq + hash; the event is sealed INTO the chain
+    AUDIT_SINK_DRIVER=eventbus -> no hot-path cost, but the receipt means PUBLISHED, not recorded
+    AUDIT_SINK_DRIVER=null   -> records nothing and says so; production refuses to boot on it
+
+See app/adapters/audit_sink/*.py for the trade-off in full, and app/ports/audit_sink.py for the
+wire contract.
+
+────────────────────────────────────────────────────────────────────────────────────
 FORMAT
 ────────────────────────────────────────────────────────────────────────────────────
 
