@@ -61,6 +61,12 @@ CRONS: dict[str, list[tuple[str, str, str]]] = {
         ("retention", "17 3 * * *", "/internal/stream/retention"),
     ],
     "zatca-service": [("sweep", "*/10 * * * *", "/internal/zatca/sweep")],
+    # A verification prompt nobody answers must LAPSE rather than sit pending forever. status()
+    # already refuses to trust a lapsed record, so this is tidiness and visibility, not correctness
+    # — which is why every 15 minutes is ample.
+    "verification-service": [
+        ("sweep-pending", "*/15 * * * *", "/internal/verification/sweep-pending"),
+    ],
     # The erasure fan-out (Phase 37). A DSAR dispatches immediately on process(); the sweep is the
     # SAFETY NET that re-drives whatever did not ack — a target that was down, restarting, or
     # answered 202 and is still working. Without it one unlucky moment during a fan-out leaves a

@@ -56,6 +56,7 @@ def build_manifest(
             {"path": "/internal/privacy/erase", "tier": "internal", "method": "POST"},
             {"path": "/internal/verification/identity/{claim_ref}/seen", "tier": "internal",
              "method": "GET"},
+            {"path": "/internal/verification/sweep-pending", "tier": "internal", "method": "POST"},
             # ── user tier: a person checking their OWN claim ─────────────────
             {"path": "/api/v1/verification/claims", "tier": "user", "method": "POST"},
             {"path": "/api/v1/verification/claims", "tier": "user", "method": "GET"},

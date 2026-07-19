@@ -128,6 +128,7 @@ class Container:
     rate_limiter: RateLimiter
     telemetry: Telemetry
     audit_sink: Any = None
+    clock: Any = None
     # claim_type -> Verifier. Built once at boot so a misconfigured provider fails there rather
     # than on the first customer who tries to verify.
     verifiers: dict = field(default_factory=dict)
@@ -209,7 +210,7 @@ def _build_verifiers(settings: Settings, secrets) -> dict:
 def build_container(settings: Settings) -> Container:
     """Resolve every port from config. Fail-fast on any unknown driver."""
     event_bus = _pick(_EVENTBUS, settings.EVENTBUS_DRIVER, "event_bus", settings)
-    return Container(
+    container = Container(
         datastore=_pick(_DATASTORE, settings.DATASTORE_DRIVER, "datastore", settings),
         cache=_pick(_CACHE, settings.CACHE_DRIVER, "cache", settings),
         event_bus=event_bus,
@@ -222,3 +223,14 @@ def build_container(settings: Settings) -> Container:
         audit_sink=_build_audit_sink(settings, event_bus),
         verifiers=_build_verifiers(settings, _pick(_SECRETS, settings.SECRETS_DRIVER, "secrets", settings)),
     )
+    import time
+
+    class _SystemClock:
+        """Wall clock, injected so tests can drive expiry rather than sleeping."""
+        driver = "system"
+
+        def now(self) -> float:
+            return time.time()
+
+    container.clock = _SystemClock()
+    return container

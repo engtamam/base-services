@@ -94,3 +94,22 @@ async def identity_seen(request: Request, claim_ref: str) -> dict:
     """
     registry = IdentityRegistry(request.app.state.container.datastore)
     return {"seen": await registry.seen(claim_ref)}
+
+
+@router.post("/verification/sweep-pending", dependencies=[Depends(require_internal_token)])
+async def sweep_pending(request: Request) -> dict:
+    """Lapse verification prompts nobody answered. Called by the sweep CronJob.
+
+    A safety net, not the authority: status() already refuses to trust a lapsed record, so a sweep
+    that has not run cannot leave one trusted. This keeps the store tidy and makes the lapse
+    visible, rather than leaving rows that look pending forever.
+    """
+    from app.core.stores import VerificationStore
+    from app.core.verification_service import VerificationService
+
+    c = request.app.state.container
+    s = get_settings()
+    svc = VerificationService(store=VerificationStore(c.datastore), verifiers=c.verifiers,
+                              clock=c.clock, pii_salt=s.PII_SALT,
+                              pending_ttl=s.VERIFY_PENDING_TTL_SECONDS)
+    return {"lapsed": await svc.sweep_pending()}
