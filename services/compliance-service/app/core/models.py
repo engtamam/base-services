@@ -98,6 +98,10 @@ class Dsar:
     verification_token: str = ""
     verification_expires: float = 0.0
     targets: dict[str, bool] = field(default_factory=dict)   # "service:category" -> acked?
+    # Per-target dispatch record: attempts, last outcome, next retry, and the ack BODY (what was
+    # erased, what was kept and why). `targets` above stays the single authority on completion;
+    # this is the evidence and the retry schedule beside it.
+    target_state: dict[str, Any] = field(default_factory=dict)
     dispatched: bool = False
     refusal_reason: str = ""
     payload: dict[str, Any] = field(default_factory=dict)     # correction data / export bundle

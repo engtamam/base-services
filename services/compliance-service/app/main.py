@@ -39,6 +39,7 @@ from app.security.step_map import load_step_map
 def create_app() -> FastAPI:
     # Fail-fast: this raises (and aborts startup) if the environment is invalid.
     settings = get_settings()
+    settings.assert_privacy_config_ok()   # a DSAR we cannot finish must not be accepted at all
     configure_logging(settings.SERVICE_NAME, settings.ENV, settings.LOG_LEVEL)
     logger = get_logger("app.main")
 

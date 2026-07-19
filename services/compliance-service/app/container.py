@@ -99,11 +99,20 @@ from app.adapters.orchestrator.eventbus import EventBusOrchestrator
 from app.adapters.orchestrator.job_http import JobHttpOrchestrator
 from app.adapters.orchestrator.null import NullOrchestrator
 
+from app.adapters.privacy_transport.http import HttpPrivacyTransport
+from app.adapters.privacy_transport.null import NullPrivacyTransport
+
 _CLOCK: dict[str, Builder] = {
     "system": lambda s: SystemClock(),
     "manual": lambda s: ManualClock(),
 }
 _ORCHESTRATOR_NAMES = ("null", "eventbus", "job-http")
+# How an erase request reaches ONE target. `null` dispatches nothing and says so (the boot guard
+# refuses it in production); `http` posts the contract to the target's configured URL.
+_PRIVACY_TRANSPORT: dict[str, Builder] = {
+    "null": lambda s: NullPrivacyTransport(),
+    "http": lambda s: HttpPrivacyTransport(),
+}
 
 
 def _pick(registry: dict[str, Builder], driver: str, port_name: str, settings: Settings) -> Any:
@@ -129,6 +138,7 @@ class Container:
     telemetry: Telemetry
     clock: Any = None
     orchestrator: Any = None
+    privacy_transport: Any = None
 
     def describe(self) -> list[dict[str, str]]:
         """[{port, driver}] for the service manifest."""
@@ -143,7 +153,7 @@ class Container:
             {"port": "rate_limiter", "driver": self.rate_limiter.driver},
             {"port": "telemetry", "driver": self.telemetry.driver},
         ]
-        for name in ("clock", "orchestrator"):
+        for name in ("clock", "orchestrator", "privacy_transport"):
             adapter = getattr(self, name)
             if adapter is not None:
                 rows.append({"port": name, "driver": adapter.driver})
@@ -187,6 +197,8 @@ def build_container(settings: Settings) -> Container:
     return Container(
         clock=_pick(_CLOCK, settings.CLOCK_DRIVER, "clock", settings),
         orchestrator=_build_orchestrator(settings, event_bus),
+        privacy_transport=_pick(_PRIVACY_TRANSPORT, settings.PRIVACY_TRANSPORT_DRIVER,
+                                "privacy_transport", settings),
         datastore=_pick(_DATASTORE, settings.DATASTORE_DRIVER, "datastore", settings),
         cache=_pick(_CACHE, settings.CACHE_DRIVER, "cache", settings),
         event_bus=event_bus,   # same instance the eventbus orchestrator publishes on

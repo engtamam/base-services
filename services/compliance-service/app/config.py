@@ -135,6 +135,98 @@ class Settings(BaseSettings):
     PII_SALT: str = ""
     COMPLIANCE_LIST_LIMIT: int = 100
 
+    # ── erasure fan-out (Phase 37) — discovery is CONFIG, never code ──────────
+    # WHICH services hold a subject's data comes from the data map (runtime rows). WHERE they live
+    # comes from here, in the platform's `name=value` idiom (same shape as ADMIN_SERVICES). A
+    # customer's own service — in any language, on any platform — is ONE entry; nothing in the
+    # dispatcher names a service, including ours.
+    PRIVACY_TARGETS: str = ""                # "identity-service=http://identity:8080,acme-crm=https://crm/…"
+    # The default path a target serves. `/internal/privacy/erase` is OUR convention, not an
+    # assumption about anyone else — override per target when theirs differs.
+    PRIVACY_ERASE_PATH: str = "/internal/privacy/erase"
+    PRIVACY_ERASE_PATHS: str = ""            # per-target override: "acme-crm=/api/gdpr/forget,…"
+    PRIVACY_TRANSPORT_DRIVER: str = "null"   # null | http  (null dispatches nothing and SAYS so)
+    PRIVACY_DISPATCH_TIMEOUT_SECONDS: int = 30
+    PRIVACY_MAX_ATTEMPTS: int = 8            # then the target is FAILED and VISIBLE, never silent
+    PRIVACY_BACKOFF_MS: int = 500            # full-jitter base between attempts
+    PRIVACY_CONCURRENCY: int = 5             # max targets driven in parallel per sweep
+    # Per-target auth seam. Our own services accept INTERNAL_SERVICE_TOKEN, but a third party has
+    # its own credential — and we must never send ours to someone else's host. This maps a target to
+    # the NAME of a secret; the value is resolved through the secrets port (env/file/vault), so no
+    # credential is ever written in config. Targets with no entry get the internal token.
+    PRIVACY_TARGET_SECRETS: str = ""         # "acme-crm=ACME_CRM_ERASE_TOKEN,…"
+
+    @property
+    def privacy_targets(self) -> dict[str, str]:
+        """`name -> base_url`. Raises ValueError on a malformed entry — a target we cannot reach is
+        a DSAR that can never complete, so it must fail at BOOT, not at erasure time."""
+        out: dict[str, str] = {}
+        for part in self.PRIVACY_TARGETS.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            name, sep, url = part.partition("=")
+            name, url = name.strip(), url.strip()
+            if not sep or not name or not url:
+                raise ValueError(f"PRIVACY_TARGETS entry {part!r} must be name=base_url")
+            if not (url.startswith("http://") or url.startswith("https://")):
+                raise ValueError(f"PRIVACY_TARGETS url {url!r} must start with http:// or https://")
+            out[name] = url.rstrip("/")
+        return out
+
+    @property
+    def privacy_erase_paths(self) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for part in self.PRIVACY_ERASE_PATHS.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            name, sep, path = part.partition("=")
+            name, path = name.strip(), path.strip()
+            if not sep or not name or not path.startswith("/"):
+                raise ValueError(f"PRIVACY_ERASE_PATHS entry {part!r} must be name=/relative/path")
+            out[name] = path
+        return out
+
+    @property
+    def privacy_target_secrets(self) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for part in self.PRIVACY_TARGET_SECRETS.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            name, sep, key = part.partition("=")
+            name, key = name.strip(), key.strip()
+            if not sep or not name or not key:
+                raise ValueError(f"PRIVACY_TARGET_SECRETS entry {part!r} must be name=SECRET_KEY")
+            if key.startswith("/") or "://" in key:
+                raise ValueError(f"PRIVACY_TARGET_SECRETS {key!r} must be a secret NAME, not a value")
+            out[name] = key
+        return out
+
+    def secret_key_for(self, service: str) -> str | None:
+        """The secret NAME holding this target's credential, or None to use the internal token."""
+        return self.privacy_target_secrets.get(service)
+
+    def erase_path_for(self, service: str) -> str:
+        """The path THIS target serves — its own override, else the default."""
+        return self.privacy_erase_paths.get(service, self.PRIVACY_ERASE_PATH)
+
+    def assert_privacy_config_ok(self) -> None:
+        """Boot guard. A dispatcher that can reach nothing can never complete a DSAR, and a DSAR
+        that can never complete is a regulatory failure that LOOKS like progress — so refuse to
+        start rather than accept requests we cannot finish."""
+        self.privacy_targets      # parse now: a malformed entry fails at boot, not mid-erasure
+        self.privacy_erase_paths
+        if self.is_production and self.PRIVACY_TRANSPORT_DRIVER == "null":
+            raise ValueError(
+                "PRIVACY_TRANSPORT_DRIVER=null in production: DSARs would be accepted and never "
+                "dispatched — set 'http' and register PRIVACY_TARGETS")
+        if self.is_production and self.PRIVACY_TRANSPORT_DRIVER == "http" and not self.privacy_targets:
+            raise ValueError(
+                "PRIVACY_TARGETS is empty in production: every DSAR would hang waiting for targets "
+                "that can never be reached")
+
     @property
     def egress_allowed_hosts(self) -> frozenset[str]:
         return frozenset(
