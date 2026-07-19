@@ -29,6 +29,7 @@ from app.adapters.secrets.env import EnvSecrets
 from app.adapters.secrets.file import FileSecrets
 from app.adapters.secrets.vault import VaultSecrets
 from app.adapters.entitlement.null import NullEntitlement
+from app.adapters.entitlement.wallet import WalletEntitlement
 from app.adapters.provisioner.http import HttpProvisioner
 from app.adapters.requirement_source.http import HttpRequirementSource
 from app.adapters.audit_sink.eventbus import EventBusAuditSink
@@ -212,7 +213,10 @@ def build_container(settings: Settings) -> Container:
         telemetry=_pick(_TELEMETRY, settings.TELEMETRY_DRIVER, "telemetry", settings),
         audit_sink=_build_audit_sink(settings, event_bus),
         requirement_sources=_build_sources(settings),
-        entitlement=NullEntitlement(),
+        entitlement=(
+            WalletEntitlement(settings.ONBOARDING_WALLET_URL, settings.INTERNAL_SERVICE_TOKEN)
+            if settings.ONBOARDING_ENTITLEMENT == "wallet" and settings.ONBOARDING_WALLET_URL
+            else NullEntitlement()),
         provisioners={
             kind: HttpProvisioner(kind, create, undo, settings.INTERNAL_SERVICE_TOKEN,
                                   timeout=settings.ONBOARDING_PROVISION_TIMEOUT_SECONDS)

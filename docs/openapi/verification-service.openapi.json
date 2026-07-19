@@ -625,6 +625,58 @@
         ]
       }
     },
+    "/internal/verification/sweep-pending": {
+      "post": {
+        "description": "Lapse verification prompts nobody answered. Called by the sweep CronJob.\n\nA safety net, not the authority: status() already refuses to trust a lapsed record, so a sweep\nthat has not run cannot leave one trusted. This keeps the store tidy and makes the lapse\nvisible, rather than leaving rows that look pending forever.",
+        "operationId": "sweep_pending_internal_verification_sweep_pending_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Sweep Pending Internal Verification Sweep Pending Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sweep Pending",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/metrics": {
       "get": {
         "operationId": "metrics_metrics_get",

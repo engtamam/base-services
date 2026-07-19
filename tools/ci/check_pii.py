@@ -64,9 +64,21 @@ def _subject_markers() -> tuple[re.Pattern, ...]:
 _SUBJECT_MARKERS = _subject_markers()
 
 # The only bases anyone may retain data under. Inventing a new one is how "we kept it" becomes
-# unfalsifiable.
+# unfalsifiable — so this list grows only when a genuinely different reason appears, with the
+# reason written down here rather than in a commit message nobody re-reads.
+#
+# other_controller_relationships was added for identity-service, and it is a real distinction
+# rather than a synonym for the others. A Person is ONE HUMAN with one login who may work for
+# several tenants. When tenant A asks us to erase them, tenant B's relationship with that same
+# human is not tenant A's to end: B is a separate controller who never asked. So A's membership is
+# deleted and the login survives — until the LAST membership ends, at which point it goes too.
+#
+# It is deliberately narrow. It justifies keeping a record another controller still relies on; it
+# does not justify keeping anything the REQUESTING controller holds, which is what makes it
+# unusable as a general excuse.
 _ALLOWED_BASES = ({"tax_retention", "legal_hold", "security_audit", "consent_proof",
-                   "delivery_proof", "fraud_prevention"} | _csv(_ENV_BASES))
+                   "delivery_proof", "fraud_prevention",
+                   "other_controller_relationships", "record_of_decision"} | _csv(_ENV_BASES))
 
 # Services that legitimately hold NO data subject (infra / routing only).
 _NO_SUBJECT = _csv(_ENV_NO_SUBJECT)

@@ -278,6 +278,10 @@ class Settings(BaseSettings):
 
         flows = validate(ONBOARDING_FLOWS)
         granting = {r.get("grants") for f in flows for r in f["requirements"] if r.get("grants")}
+        if self.ONBOARDING_ENTITLEMENT == "wallet" and not self.ONBOARDING_WALLET_URL:
+            raise ValueError(
+                "ONBOARDING_ENTITLEMENT=wallet but ONBOARDING_WALLET_URL is empty: every grant "
+                "would fail while the flow reported a credit the customer never received")
         if granting and self.ONBOARDING_ENTITLEMENT == "null":
             raise ValueError(
                 f"flows declare grants ({', '.join(sorted(granting))}) but "

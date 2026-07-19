@@ -1,0 +1,710 @@
+{
+  "components": {
+    "schemas": {
+      "EraseIn": {
+        "properties": {
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "tenant": {
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant",
+          "subject"
+        ],
+        "title": "EraseIn",
+        "type": "object"
+      },
+      "ForceIn": {
+        "properties": {
+          "reason": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "requirement": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Requirement",
+            "type": "string"
+          }
+        },
+        "required": [
+          "requirement",
+          "reason"
+        ],
+        "title": "ForceIn",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "ProfileIn": {
+        "description": "What decides WHICH flow applies. Free-form on purpose: a platform's audiences are its own,\nand `account_type` / `joined_by` are examples rather than a schema.",
+        "properties": {
+          "profile": {
+            "additionalProperties": true,
+            "title": "Profile",
+            "type": "object"
+          }
+        },
+        "title": "ProfileIn",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "onboarding-service",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/admin/ping": {
+      "get": {
+        "operationId": "admin_ping_api_v1_admin_ping_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Ping Api V1 Admin Ping Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Admin Ping",
+        "tags": [
+          "v1"
+        ]
+      }
+    },
+    "/api/v1/onboarding/admin/force/{subject}": {
+      "post": {
+        "description": "Mark a requirement satisfied by hand.\n\nThis is granting by hand exactly what the requirement exists to verify, so it is critical and\naudited, and the reason is REQUIRED \u2014 an override with no stated reason is indistinguishable\nfrom an attacker with an operator token.",
+        "operationId": "force_complete_api_v1_onboarding_admin_force__subject__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "subject",
+            "required": true,
+            "schema": {
+              "title": "Subject",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForceIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Force Complete Api V1 Onboarding Admin Force  Subject  Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Force Complete",
+        "tags": [
+          "v1",
+          "onboarding"
+        ]
+      }
+    },
+    "/api/v1/onboarding/admin/inspect": {
+      "post": {
+        "description": "See someone's flow as it stands \u2014 for supporting a customer who is stuck.",
+        "operationId": "inspect_api_v1_onboarding_admin_inspect_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "subject",
+            "required": true,
+            "schema": {
+              "title": "Subject",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Inspect Api V1 Onboarding Admin Inspect Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Inspect",
+        "tags": [
+          "v1",
+          "onboarding"
+        ]
+      }
+    },
+    "/api/v1/onboarding/claim-grant": {
+      "post": {
+        "description": "Issue any grant whose requirement is now satisfied and unblocked.\n\nIdempotent by construction: the grant service keys on a verified identity, so calling this\nrepeatedly \u2014 or racing it \u2014 yields one grant.",
+        "operationId": "claim_grant_api_v1_onboarding_claim_grant_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Claim Grant Api V1 Onboarding Claim Grant Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Claim Grant",
+        "tags": [
+          "v1",
+          "onboarding"
+        ]
+      }
+    },
+    "/api/v1/onboarding/next": {
+      "post": {
+        "description": "What is still unsatisfied for me, right now.\n\nPOST rather than GET because the audience profile decides which flow applies and belongs in a\nbody, not in a query string that lands in access logs.\n\nEvaluated live on every call: a verification that expired since the last request shows as\nunsatisfied again, and anything it blocked is blocked again. Nothing here is remembered.",
+        "operationId": "whats_next_api_v1_onboarding_next_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Whats Next Api V1 Onboarding Next Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Whats Next",
+        "tags": [
+          "v1",
+          "onboarding"
+        ]
+      }
+    },
+    "/api/v1/onboarding/provision": {
+      "post": {
+        "description": "Create what this flow says signup creates \u2014 atomically, or not at all.\n\nSafe to call twice: every step carries a key derived from the tenant, subject and step name, so\na customer who times out and presses the button again gets the same tenant rather than a\nsecond one. If a later step fails, the earlier ones are undone \u2014 the orphan-tenant failure this\nwas built to prevent.",
+        "operationId": "provision_api_v1_onboarding_provision_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Provision Api V1 Onboarding Provision Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Provision",
+        "tags": [
+          "v1",
+          "onboarding"
+        ]
+      }
+    },
+    "/api/v1/whoami": {
+      "get": {
+        "operationId": "whoami_api_v1_whoami_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Whoami Api V1 Whoami Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Whoami",
+        "tags": [
+          "v1"
+        ]
+      }
+    },
+    "/healthz": {
+      "get": {
+        "operationId": "healthz_healthz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Healthz Healthz Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Healthz",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/internal/health": {
+      "get": {
+        "operationId": "internal_health_internal_health_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Internal Health Internal Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Internal Health",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/manifest": {
+      "get": {
+        "operationId": "internal_manifest_internal_manifest_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Internal Manifest Internal Manifest Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Internal Manifest",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/onboarding/resume-provisioning": {
+      "post": {
+        "description": "Re-attempt undos a previous compensation could not finish.\n\nThe unfinished list IS the queue \u2014 a rollback that failed because wallet-service was\nunreachable leaves exactly the steps still to undo, and this drains them once it is back.\n\nDeliberately NOT a blanket sweep over every run: resuming re-attempts DELETES, and a sweeper\nthat walked every record would re-attempt them on runs an operator may be mid-way through\ninspecting. It is called for a known subject, by a human or by a targeted job.",
+        "operationId": "resume_provisioning_internal_onboarding_resume_provisioning_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "subject",
+            "required": true,
+            "schema": {
+              "title": "Subject",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Resume Provisioning Internal Onboarding Resume Provisioning Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resume Provisioning",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/privacy/erase": {
+      "post": {
+        "description": "Erase a data subject. Called by compliance-service during a DSAR fan-out.\n\nReturns the ack: what was erased, and what was RETAINED with its legal basis. Idempotent \u2014 a\nDSAR retries, so erasing an already-erased subject must not fail. Wire this service into the\nfan-out by adding it to PRIVACY_TARGETS in compliance-service's values file; the\nsafety:privacy-wiring gate fails if you implement this and forget.",
+        "operationId": "erase_subject_internal_privacy_erase_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EraseIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Erase Subject Internal Privacy Erase Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Erase Subject",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/metrics": {
+      "get": {
+        "operationId": "metrics_metrics_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Metrics",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/readyz": {
+      "get": {
+        "operationId": "readyz_readyz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Readyz",
+        "tags": [
+          "health"
+        ]
+      }
+    }
+  }
+}
