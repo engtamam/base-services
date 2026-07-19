@@ -60,6 +60,13 @@ class VerificationStore:
         return [r for r in (Verification.from_dict(row) for row in rows)
                 if r.pending_until and cutoff >= r.pending_until]
 
+    async def pending_reviews(self, tenant: str, limit: int = 100) -> list[Verification]:
+        """Claims waiting on a human. Oldest first — a queue that serves newest-first leaves the
+        person who has waited longest waiting longest."""
+        rows, _ = await self._store.find(_VERIFICATIONS, {"tenant": tenant, "verdict": PENDING},
+                                         limit=limit, sort=("created_at", "asc"))
+        return [Verification.from_dict(r) for r in rows]
+
     async def delete(self, verification_id: str) -> None:
         await self._store.delete(_VERIFICATIONS, verification_id)
 
