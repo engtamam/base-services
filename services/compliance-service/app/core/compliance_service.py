@@ -7,6 +7,7 @@ out of clock is the failure mode this exists to prevent.
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from app.core.models import Breach, DataTarget, LegalHold, ProcessingActivity, new_id
@@ -18,7 +19,9 @@ LAWFUL_BASES = ("consent", "contract", "legal_obligation", "vital_interests",
 
 class ComplianceService:
     def __init__(self, *, holds: HoldStore, ropa: RopaStore, breaches: BreachStore,
-                 targets: TargetStore, clock, config: dict[str, Any], event_bus=None) -> None:
+                 targets: TargetStore, clock, config: dict[str, Any], event_bus=None,
+                 cache=None) -> None:
+        self._cache = cache
         self._holds = holds
         self._ropa = ropa
         self._breaches = breaches
@@ -32,6 +35,10 @@ class ComplianceService:
         h = LegalHold(id=new_id("hold_"), tenant=tenant, subject=subject, reason=reason,
                       active=True, placed_at=self._clock.now())
         await self._holds.save(h)
+        # Instantly, before the event. A sweeper asking hold_check() a millisecond from now must
+        # see this hold — a cached "not held" outliving the hold that contradicts it is how data
+        # someone is legally obliged to keep gets purged on schedule.
+        await self._bump_holds(tenant)
         await self._emit("legal_hold.placed", {"subject": subject, "hold_id": h.id})
         return h
 
@@ -42,6 +49,7 @@ class ComplianceService:
         h.active = False
         h.released_at = self._clock.now()
         await self._holds.save(h)
+        await self._bump_holds(h.tenant)     # release re-enables deletion; it must be seen too
         await self._emit("legal_hold.released", {"hold_id": hold_id})
         return h
 
@@ -50,6 +58,81 @@ class ComplianceService:
 
     async def is_held(self, tenant: str, subject: str) -> bool:
         return bool(await self._holds.active_for(tenant, subject))
+
+    async def hold_check(self, *, tenant: str, subject: str) -> dict[str, Any]:
+        """HOT PATH — a service asks before purging. Fail CLOSED, cached by generation.
+
+        Retention is DECENTRALISED by design: each service enforces its own period, and
+        retention.py is explicit that a hold beats retention and a held row must be reported as
+        retained rather than silently skipped. But holds lived only behind the capability-gated
+        v1 API, so a consuming service had two options — give a nightly cron job an admin token,
+        or purge without checking. A team building on us correctly refused the first and shipped
+        the second, which means data under litigation hold is being deleted on schedule right now.
+        That is our API shape's fault, not theirs.
+
+        Returns the hold IDS, not just a bool. A caller that must report WHY it retained a row
+        needs something to name, and a bare `true` forces it back to the admin API for the answer.
+
+        THE CACHE IS THE DANGEROUS PART, and it is why this is generation-keyed rather than
+        merely TTL'd. A stale "allowed" consent is a privacy problem; a stale "not held" is
+        spoliation of evidence someone is legally obliged to keep. place_hold() bumps the
+        generation, so a hold placed a millisecond ago invalidates every cached answer for that
+        tenant immediately — a TTL alone would leave a window in which a sweeper is told the
+        subject is free while the hold exists.
+
+        On a cache error the answer is computed from the store, never assumed. There is no path
+        here that reports "not held" without having looked.
+        """
+        gen = await self._hold_gen(tenant)
+        key = f"holdcheck:{gen}:{tenant}:{subject}"
+        cached = await self._cache_get(key)
+        if cached is not None:
+            return {**cached, "cached": True}
+
+        holds = await self._holds.active_for(tenant, subject)
+        result: dict[str, Any] = {"held": bool(holds), "hold_ids": [h.id for h in holds]}
+        await self._cache_set(key, result)
+        return {**result, "cached": False}
+
+    # ── hold cache plumbing ─────────────────────────────────────────────────────
+    # Deliberately the same generation scheme consent uses. Two copies of a cache invalidation
+    # rule that must not drift is worse than one shared helper, but these live in different
+    # services' futures and the rule is four lines; the thing that MUST match is the behaviour on
+    # failure, which is "assume nothing is cached and go to the store".
+    async def _hold_gen(self, tenant: str) -> str:
+        if self._cache is None:
+            return "0"
+        try:
+            return (await self._cache.get(f"holdgen:{tenant}")) or "0"
+        except Exception:
+            return "0"
+
+    async def _bump_holds(self, tenant: str) -> None:
+        """Called when a hold is PLACED or RELEASED. Placing must take effect instantly."""
+        if self._cache is None:
+            return
+        try:
+            g = await self._cache.get(f"holdgen:{tenant}")
+            await self._cache.set(f"holdgen:{tenant}", str(int(g or 0) + 1), None)
+        except Exception:
+            pass
+
+    async def _cache_get(self, key: str):
+        if self._cache is None:
+            return None
+        try:
+            raw = await self._cache.get(key)
+            return json.loads(raw) if raw else None
+        except Exception:
+            return None      # a cache miss, never a "no hold" answer
+
+    async def _cache_set(self, key: str, value: dict) -> None:
+        if self._cache is None:
+            return
+        try:
+            await self._cache.set(key, json.dumps(value), self._cfg["hold_cache_ttl"])
+        except Exception:
+            pass
 
     # ── data map (drives erasure completeness) ──────────────────────────────────
     async def register_target(self, *, tenant: str, service: str, category: str,

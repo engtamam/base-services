@@ -1318,6 +1318,76 @@
         ]
       }
     },
+    "/internal/compliance/hold-check": {
+      "get": {
+        "description": "HOT PATH \u2014 a service asks before PURGING. Fail closed, cached by generation.\n\nRetention is decentralised: every service enforces its own period, and retention.py is\nexplicit that a hold beats retention and a held row must be reported as RETAINED rather than\nsilently skipped. Until now that was impossible to honour from outside \u2014 holds lived only on\nthe capability-gated v1 API, so a consuming service had to either hand a nightly cron job an\nadmin token or purge without checking. Both are bad, and one of them deletes evidence.\n\nGuarded by the internal token like consent-check, precisely so a sweeper does not need\n`compliance.manage`. A retention job should be able to ask \"may I delete this\" without also\nbeing able to place and release holds.\n\nReturns hold_ids, not just a bool, so the caller can NAME what stopped it in its own receipt.",
+        "operationId": "hold_check_internal_compliance_hold_check_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "subject",
+            "required": true,
+            "schema": {
+              "title": "Subject",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Hold Check Internal Compliance Hold Check Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hold Check",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/compliance/retention/run": {
       "post": {
         "description": "Purge records past their declared retention period. Called by the retention CronJob.\n\nEnforces the periods for the records THIS service owns; every other service enforces its own\nand declares it in its RoPA row. A legal hold beats retention exactly as it beats erasure, and\na collection with no configured period is never purged \u2014 an undecided retention reads as KEEP.",

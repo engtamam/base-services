@@ -11,7 +11,7 @@ import hmac
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from app.api.v1.compliance import (build_consent, build_dsar, build_retention,
+from app.api.v1.compliance import (build_compliance, build_consent, build_dsar, build_retention,
                                    build_sweeper)
 from app.config import Settings, get_settings
 from app.core.erasure import ComplianceErasure
@@ -54,6 +54,25 @@ async def internal_health(settings: Settings = Depends(get_settings)) -> dict[st
 async def consent_check(request: Request, tenant: str, subject: str, purpose: str) -> dict:
     """HOT PATH — any service asks before processing personal data. Default DENY, cached."""
     return await build_consent(request).check(tenant=tenant, subject=subject, purpose=purpose)
+
+
+@router.get("/compliance/hold-check", dependencies=[Depends(require_internal_token)])
+async def hold_check(request: Request, tenant: str, subject: str) -> dict:
+    """HOT PATH — a service asks before PURGING. Fail closed, cached by generation.
+
+    Retention is decentralised: every service enforces its own period, and retention.py is
+    explicit that a hold beats retention and a held row must be reported as RETAINED rather than
+    silently skipped. Until now that was impossible to honour from outside — holds lived only on
+    the capability-gated v1 API, so a consuming service had to either hand a nightly cron job an
+    admin token or purge without checking. Both are bad, and one of them deletes evidence.
+
+    Guarded by the internal token like consent-check, precisely so a sweeper does not need
+    `compliance.manage`. A retention job should be able to ask "may I delete this" without also
+    being able to place and release holds.
+
+    Returns hold_ids, not just a bool, so the caller can NAME what stopped it in its own receipt.
+    """
+    return await build_compliance(request).hold_check(tenant=tenant, subject=subject)
 
 
 @router.post("/compliance/dsar/{dsar_id}/target-ack", dependencies=[Depends(require_internal_token)])

@@ -146,6 +146,11 @@ class Settings(BaseSettings):
     JOB_SERVICE_TOKEN: str = ""
 
     CONSENT_CACHE_TTL_SECONDS: int = 30      # hot path: consent_check
+    # Hot path: hold_check, asked before every retention purge in every consuming service.
+    # Short, and safe to be short because the cache is generation-keyed — placing a hold bumps
+    # the generation and invalidates cached answers instantly, so this TTL only bounds how long
+    # a RELEASE takes to be believed, never how long a new hold takes to be seen.
+    HOLD_CACHE_TTL_SECONDS: int = 30
     DSAR_SLA_DAYS: int = 30                  # PDPL/GDPR data-subject request deadline
     BREACH_NOTIFY_HOURS: int = 72            # GDPR/PDPL breach notification clock
     DSAR_VERIFICATION_TTL_SECONDS: int = 86_400

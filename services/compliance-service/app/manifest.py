@@ -50,6 +50,7 @@ def build_manifest(
             {"path": "/internal/health", "tier": "internal", "method": "GET"},
             {"path": "/internal/manifest", "tier": "internal", "method": "GET"},
             {"path": "/internal/compliance/consent-check", "tier": "internal", "method": "GET"},
+            {"path": "/internal/compliance/hold-check", "tier": "internal", "method": "GET"},
             {"path": "/internal/compliance/dsar/{id}/target-ack", "tier": "internal", "method": "POST"},
             {"path": "/api/v1/compliance/consent/grant", "tier": "user", "method": "POST"},
             {"path": "/api/v1/compliance/consent/withdraw", "tier": "user", "method": "POST"},

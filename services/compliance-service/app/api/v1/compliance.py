@@ -36,7 +36,8 @@ def _cfg() -> dict[str, Any]:
             # The names the dispatcher can actually reach. The data map and PRIVACY_TARGETS are
             # two halves of one fact and nothing used to compare them, so a target could be
             # registered for a service that was never deployed.
-            "known_targets": tuple(s.privacy_targets)}
+            "known_targets": tuple(s.privacy_targets),
+            "hold_cache_ttl": s.HOLD_CACHE_TTL_SECONDS}
 
 
 def build_consent(request: Request) -> ConsentService:
@@ -88,7 +89,7 @@ def build_compliance(request: Request) -> ComplianceService:
     c = request.app.state.container
     return ComplianceService(holds=HoldStore(c.datastore), ropa=RopaStore(c.datastore),
                              breaches=BreachStore(c.datastore), targets=TargetStore(c.datastore),
-                             clock=c.clock, config=_cfg(), event_bus=c.event_bus)
+                             clock=c.clock, config=_cfg(), event_bus=c.event_bus, cache=c.cache)
 
 
 def _tenant(p: Principal, body_tenant: str | None = None) -> str:
