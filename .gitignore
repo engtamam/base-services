@@ -84,3 +84,6 @@ config/product.json
 # in a source repository, and a signed PDF committed by mistake cannot be unsent —
 # it lives in the history of every clone that ever pulled it.
 /legal/
+
+# Agent worktrees: real git worktrees, never repo content.
+.claude/worktrees/
