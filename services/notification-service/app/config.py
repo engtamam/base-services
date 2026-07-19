@@ -72,6 +72,36 @@ class Settings(BaseSettings):
     # Preferences are the user's CHANNEL opt-out. Consent is the LAWFUL BASIS for a purpose, and
     # they are not the same question: a person who never opted out of email may still never have
     # consented to marketing. This service had the first and not the second.
+    # Templates this deployment ships with, seeded at boot. JSON list of
+    #   [{"key","locale","subject","body"}]
+    #
+    # Content lives in CONFIG, never in code: a template is a product's words, in a product's
+    # language, and hardcoding one here would make every platform inherit ours. Seeding matters
+    # because a flow that depends on a template nobody created fails at the worst moment — a
+    # verification mail that is accepted, then silently never rendered, leaves an account unable
+    # to log in with nothing to show why.
+    #
+    # Idempotent: an upsert on every boot, so re-deploying re-asserts the shipped copy and an
+    # operator's later edit through the API is overwritten only by a deliberate config change.
+    NOTIFY_SEED_TEMPLATES: str = ""
+
+    @property
+    def notify_seed_templates(self) -> list[dict[str, str]]:
+        import json as _json
+        raw = (self.NOTIFY_SEED_TEMPLATES or "").strip()
+        if not raw:
+            return []
+        try:
+            parsed = _json.loads(raw)
+        except ValueError as exc:
+            raise ValueError(f"NOTIFY_SEED_TEMPLATES is not valid JSON: {exc}") from exc
+        if not isinstance(parsed, list):
+            raise ValueError('NOTIFY_SEED_TEMPLATES must be a LIST of template objects')
+        for entry in parsed:
+            if not isinstance(entry, dict) or not {"key", "locale", "subject", "body"} <= set(entry):
+                raise ValueError('each template needs key, locale, subject and body')
+        return parsed
+
     CONSENT_GATE_DRIVER: str = "null"        # null | http
     COMPLIANCE_SERVICE_URL: str = ""
     CONSENT_CHECK_PATH: str = "/internal/compliance/consent-check"

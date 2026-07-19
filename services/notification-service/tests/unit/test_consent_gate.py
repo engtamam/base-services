@@ -204,3 +204,41 @@ def test_a_service_that_does_NOT_gate_is_unaffected():
     s = Settings(INTERNAL_SERVICE_TOKEN="x" * 40, ENV="production",
                  CONSENT_GATED=False, CONSENT_GATE_DRIVER="null")
     s.assert_consent_config_ok()
+
+
+# ── template seeding ───────────────────────────────────────────────────────────
+def test_seed_templates_parse_from_config():
+    """Content lives in CONFIG, never in code — a template is a product's words in a product's
+    language, and hardcoding one would make every platform inherit ours."""
+    from app.config import Settings
+
+    s = Settings(INTERNAL_SERVICE_TOKEN="x" * 40,
+                 NOTIFY_SEED_TEMPLATES='[{"key":"auth.verify_email","locale":"en",'
+                                       '"subject":"Confirm your address","body":"{{verify_url}}"}]')
+    seeds = s.notify_seed_templates
+    assert len(seeds) == 1 and seeds[0]["key"] == "auth.verify_email"
+
+
+def test_a_template_missing_a_field_fails_at_BOOT():
+    """Not at send time. A template that cannot render is discovered when someone is waiting for
+    the mail that lets them finish signing up."""
+    from app.config import Settings
+
+    s = Settings(INTERNAL_SERVICE_TOKEN="x" * 40,
+                 NOTIFY_SEED_TEMPLATES='[{"key":"a","locale":"en","subject":"s"}]')
+    with pytest.raises(ValueError):
+        s.notify_seed_templates
+
+
+def test_malformed_seed_json_fails_at_boot():
+    from app.config import Settings
+
+    s = Settings(INTERNAL_SERVICE_TOKEN="x" * 40, NOTIFY_SEED_TEMPLATES="{not json")
+    with pytest.raises(ValueError):
+        s.notify_seed_templates
+
+
+def test_no_seeds_configured_is_fine():
+    from app.config import Settings
+
+    assert Settings(INTERNAL_SERVICE_TOKEN="x" * 40).notify_seed_templates == []

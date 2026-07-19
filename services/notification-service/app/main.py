@@ -69,6 +69,25 @@ def create_app() -> FastAPI:
                 "ports": container.describe(),
             },
         )
+        # Seed the templates this deployment ships with. Upsert, so it is safe on every boot and
+        # a rolling restart cannot leave half a template set. Failure is logged and NOT fatal: a
+        # datastore that is briefly unavailable at boot must not stop the service from starting
+        # and then serving every template that already exists.
+        seeds = settings.notify_seed_templates
+        if seeds:
+            from app.core.models import Template
+            from app.core.stores import TemplateStore
+            store = TemplateStore(container.datastore)
+            seeded = 0
+            for entry in seeds:
+                try:
+                    await store.upsert(Template(key=entry["key"], locale=entry["locale"],
+                                                subject=entry["subject"], body=entry["body"]))
+                    seeded += 1
+                except Exception as exc:      # noqa: BLE001 - boot must not die on one template
+                    logger.error("template_seed_failed",
+                                 extra={"key": entry.get("key"), "error": type(exc).__name__})
+            logger.info("templates_seeded", extra={"count": seeded, "declared": len(seeds)})
         yield
         await container.close()
         logger.info("shutdown", extra={"service": settings.SERVICE_NAME})

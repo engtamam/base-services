@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, s
 
 from app.api.v1.tenancy import list_members_of
 from app.config import Settings, get_settings
+from app.core import facts
 from app.core.membership import MembershipStore
 from app.core.erasure import IdentityErasure
 from app.core.refresh_store import RefreshStore
@@ -114,6 +115,41 @@ async def ratelimit_unblock(request: Request, body: UnblockIn) -> dict:
         ip=request.client.host if request.client else "")
     await request.app.state.container.rate_limiter.reset(body.key)
     return {"unblocked": True, "key": body.key}
+
+
+@router.get("/identity/facts/{fact}", dependencies=[Depends(require_internal_token)])
+async def identity_fact(request: Request, fact: str, tenant: str, subject: str) -> dict:
+    """Answer a question another service declared identity as the OWNER of.
+
+    onboarding names requirements `satisfied_by: "identity.email_verified"`, which only works if
+    identity can be asked. It could not be, so those flows could never complete.
+
+    THREE OUTCOMES, and keeping them apart is the entire safety property:
+
+      200 {"satisfied": true|false}  we know, and this is the answer
+      404                            no such account — the caller reads this as UNSATISFIED, which
+                                     is right: a person who does not exist has verified nothing
+      501                            WE DO NOT ANSWER THAT QUESTION. The caller reads any non-404
+                                     error as UNKNOWN, and unknown never counts as satisfied.
+
+    The third is why an unrecognised fact must not be a 404. A 404 would be read as a decision —
+    "this requirement is not met" — when the truth is that nobody evaluated it. For a requirement
+    that gates a welcome credit, the difference is whether a stranger is refused or quietly
+    onboarded.
+    """
+    s = get_settings()
+    c = request.app.state.container
+    try:
+        answer = await facts.resolve(
+            fact,
+            users=UserRepository(c.datastore, c.login_identifier),
+            memberships=MembershipStore(c.datastore) if s.IDENTITY_MULTI_TENANT else None,
+            tenant=tenant, subject=subject, legacy=s.EMAIL_VERIFICATION_LEGACY)
+    except facts.UnknownFact:
+        raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, "UNKNOWN_FACT")
+    if answer is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    return {"fact": fact, "satisfied": bool(answer)}
 
 
 @router.get("/tenancy/members", dependencies=[Depends(require_internal_token)])

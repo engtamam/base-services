@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     ONBOARDING_SOURCES: str = ""
     # Which fact-path to call on each source, so a customer's own service can answer requirements
     # without matching our URL shape.
-    #   "identity=/internal/facts/{fact}?tenant={tenant}&subject={subject}"
+    #   "identity=/internal/identity/facts/{fact}?tenant={tenant}&subject={subject}"
     ONBOARDING_SOURCE_PATHS: str = ""
     ONBOARDING_SOURCE_ANSWER_PATH: str = "satisfied"   # where the yes/no lives in the reply
     ONBOARDING_SOURCE_TIMEOUT_SECONDS: int = 5

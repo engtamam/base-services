@@ -710,6 +710,85 @@
         ]
       }
     },
+    "/internal/identity/facts/{fact}": {
+      "get": {
+        "description": "Answer a question another service declared identity as the OWNER of.\n\nonboarding names requirements `satisfied_by: \"identity.email_verified\"`, which only works if\nidentity can be asked. It could not be, so those flows could never complete.\n\nTHREE OUTCOMES, and keeping them apart is the entire safety property:\n\n  200 {\"satisfied\": true|false}  we know, and this is the answer\n  404                            no such account \u2014 the caller reads this as UNSATISFIED, which\n                                 is right: a person who does not exist has verified nothing\n  501                            WE DO NOT ANSWER THAT QUESTION. The caller reads any non-404\n                                 error as UNKNOWN, and unknown never counts as satisfied.\n\nThe third is why an unrecognised fact must not be a 404. A 404 would be read as a decision \u2014\n\"this requirement is not met\" \u2014 when the truth is that nobody evaluated it. For a requirement\nthat gates a welcome credit, the difference is whether a stranger is refused or quietly\nonboarded.",
+        "operationId": "identity_fact_internal_identity_facts__fact__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "fact",
+            "required": true,
+            "schema": {
+              "title": "Fact",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "subject",
+            "required": true,
+            "schema": {
+              "title": "Subject",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Identity Fact Internal Identity Facts  Fact  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Identity Fact",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/manifest": {
       "get": {
         "operationId": "internal_manifest_internal_manifest_get",
