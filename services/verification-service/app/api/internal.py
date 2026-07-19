@@ -13,7 +13,8 @@ from pydantic import BaseModel
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from app.config import Settings, get_settings
-from app.core.erasure import TemplateErasure
+from app.core.erasure import VerificationErasure
+from app.core.stores import IdentityRegistry, VerificationStore
 from app.manifest import build_manifest
 
 router = APIRouter(prefix="/internal", tags=["internal"])
@@ -69,6 +70,27 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     """
     c = request.app.state.container
     s = get_settings()
-    eraser = TemplateErasure(store=c.datastore, pii_salt=s.PII_SALT,
-                             max_scan=s.ERASURE_MAX_SCAN)
+    eraser = VerificationErasure(store=VerificationStore(c.datastore),
+                                 object_store=c.object_store, max_scan=s.ERASURE_MAX_SCAN)
+    # Write-ahead: erasure is irreversible, so a record we could not write must stop the deletion
+    # rather than follow it. Recording afterwards would 503 a caller whose data was ALREADY gone.
+    await request.app.state.auditor.record(
+        "subject.erased", tenant=body.tenant, resource=f"subject:{body.subject}")
     return await eraser.erase(body.tenant, body.subject)
+
+
+@router.get("/verification/identity/{claim_ref}/seen",
+            dependencies=[Depends(require_internal_token)])
+async def identity_seen(request: Request, claim_ref: str) -> dict:
+    """Has this verified identity been seen before?
+
+    The anti-abuse question, asked by onboarding-service before it grants anything once per
+    identity. Internal tier because the caller is a SERVICE, not a person — a capability check
+    would have been machine auth wearing a user's clothes.
+
+    Takes a claim_ref rather than a raw value on purpose: the caller must already hold the hash, so
+    this cannot be used to ask whether a given national id exists in our records. A raw-value
+    endpoint here would be an enumeration oracle over a national registry.
+    """
+    registry = IdentityRegistry(request.app.state.container.datastore)
+    return {"seen": await registry.seen(claim_ref)}

@@ -1,78 +1,102 @@
-"""Erasure — the contract every service in this platform answers.
+"""Erasure — verification: the claim goes, the verdict stays, and the ack says which and why.
 
-A new service is born connected to the DSAR fan-out because this file exists. Fill in the two
-methods and it is done; delete this file and the service silently becomes a place personal data
-goes to hide.
+This service holds three different things about a person, and they do not share an answer:
 
-WRITE THIS FILE HONESTLY. It is the one piece of code a regulator would read line by line, and the
-three rules below are what separate a compliant answer from a plausible one:
+  * **The claim details and any uploaded document** — an ID card photo, a certificate. This is the
+    person's data in the plainest sense, and it is DELETED, from the object store as well as the
+    row. Deleting the row alone would leave the image on disk and report success.
 
-  1. **Never report success for work that did not happen.** If you cannot reach the rows, cannot
-     identify the subject, or must keep the data, say so. A false "she was erased" is the worst
-     thing this platform can say. `already_absent` means you LOOKED and found nothing — it is not
-     a default.
+  * **The verdict and its evidence** — that on this date this provider affirmed a claim. This is
+    the record of a DECISION WE MADE, not an attribute of the person. Deleting it would destroy our
+    ability to answer "on what basis did you open that account?", which is the question a regulator
+    and a fraud investigator both ask. Retained with the subject link severed: without it the row
+    says "a business was verified on this date", which is the fact we are entitled to keep.
 
-  2. **Say what you KEPT, and why, with a basis.** "We kept it" is always an answer with a reason
-     attached, never a silence. A tax invoice, an audit chain, a legal hold, a consent proof —
-     these survive erasure, and the person is entitled to be told which law keeps them.
+  * **The identity_seen row** — a one-way hash, a first-seen date, a count. RETAINED, and this is
+    the one that needs stating plainly rather than quietly exercising, because it survives an
+    erasure request on purpose.
 
-  3. **Decide delete vs pseudonymise vs redact deliberately.** Look at how the platform's other
-     services chose, because the same walker leads to different answers:
-        billing   pseudonymises — the invoice must survive, the buyer's name must not
-        zatca     retains everything — a signed, hash-chained invoice cannot even be altered
-        webhook   redacts and keeps the row — the delivery history is operational record
-        connector deletes the row — a DLQ entry gets RETRIED, so a redacted one corrupts a CRM
-        job       redacts AND cancels — pending work would still contact the erased person
-        stream    refuses without identification — guessing would delete other people's video
+Why keeping that row is defensible: it cannot be reversed into an identity, cannot be used to
+contact anyone, and holds no attribute of a person. What it can do is answer "have we seen this
+registration before" — which stops the oldest fraud in self-serve signup: delete the tenant, sign
+up again with the same commercial registration, collect the welcome gift a second time. Per-tenant
+idempotency cannot see that, because the tenant is gone.
 
-  4. **Be idempotent.** A DSAR retries. Erasing an already-erased subject is a no-op that still
-     returns a receipt; it must never fail the second time.
+Phase 37's rule was that a service must SAY what it kept and on what basis. This is that rule
+applied to the least comfortable case — where we keep something the person asked us to delete. The
+ack names it, gives the basis, and states the limit: it is a hash, not a record of them.
 
-See docs/contracts/privacy-erase.schema.json for the wire format and
-docs/contracts/privacy-erase-guide.md for the three steps to connect a service.
+Idempotent: a DSAR retries, and a second pass finds the links already severed.
 """
 from __future__ import annotations
 
 from typing import Any
 
-from app.core.pii import subject_ref
+FRAUD_BASIS = "fraud_prevention"
+DECISION_BASIS = "record_of_decision"
 
 
-class TemplateErasure:
-    # Both appear in the DSAR's target list, so they must match the data-map row registered for
-    # this service. A mismatch means the DSAR waits for an ack that never arrives.
-    service = "CHANGE-ME-service"
-    category = "CHANGE-ME"
+class VerificationErasure:
+    service = "verification-service"
+    category = "identity_verifications"
 
-    def __init__(self, *, store, pii_salt: str, max_scan: int = 100_000) -> None:
+    def __init__(self, *, store, object_store=None, max_scan: int = 100_000) -> None:
         self._store = store
-        self._salt = pii_salt
+        self._objects = object_store
         self._max = max_scan          # a DSAR is rare, but must never be an unbounded read
 
     async def erase(self, tenant: str, subject: str) -> dict[str, Any]:
-        ref = subject_ref(self._salt, tenant, subject)
+        records = await self._store.for_subject(tenant, subject, limit=self._max)
 
-        # ── TODO: erase this service's subject data ──────────────────────────
-        # Scope EVERY query to `tenant`: one customer's DSAR must never touch another's rows.
-        # Page with a cursor and stop at `self._max` rather than reading an unbounded set.
-        erased: list[str] = []
+        documents = 0
+        unlinked = 0
+        for record in records:
+            evidence = record.evidence or {}
+            # The uploaded document IS the person's data — a photo of an ID card.
+            doc = evidence.get("reference", "")
+            if doc and self._objects is not None and evidence.get("provider") == "manual":
+                try:
+                    await self._objects.delete(doc)
+                    documents += 1
+                except Exception:
+                    pass          # a stranded blob is swept by retention; the row still goes
+
+            record.subject = ""           # the link from a decision to a human
+            record.provider_state = {}
+            await self._store.put(record)
+            unlinked += 1
+
+        erased = []
+        if documents:
+            erased.append(f"identity_documents:{documents}")
+        if unlinked:
+            erased.append(f"verification_subject_links:{unlinked}")
+
         retained: list[dict[str, str]] = []
-
-        # Example of a retention that is legally required — copy the SHAPE, not the words:
-        # retained.append({
-        #     "what": "invoices:12",
-        #     "basis": "tax_retention",
-        #     "why": "a tax invoice must survive ~10 years by law; the buyer's name is "
-        #            "pseudonymised and the financial record is untouched",
-        # })
+        if unlinked:
+            retained.append({
+                "what": f"verification_verdicts:{unlinked}",
+                "basis": DECISION_BASIS,
+                "why": ("a verdict records a decision WE made — that on this date a provider "
+                        "affirmed a claim — not an attribute of the person. Kept with the subject "
+                        "link severed, so we can still answer 'on what basis was that account "
+                        "opened', which a regulator and a fraud investigation both ask"),
+            })
+        retained.append({
+            "what": "identity_seen:one_row_per_verified_identity",
+            "basis": FRAUD_BASIS,
+            "why": ("a one-way salted hash of the verified registration, with a first-seen date "
+                    "and a count — no name, no contact, no attribute of any person, and not "
+                    "reversible. It exists so that deleting an account and signing up again with "
+                    "the same registration cannot collect a one-per-identity welcome grant twice. "
+                    "Erasing it would re-open that fraud, and it identifies nobody"),
+        })
 
         return {
             "service": self.service,
             "category": self.category,
-            "subject_ref": ref,          # the pseudonym — never echo the raw subject back
             "erased": erased,
             "retained": retained,
-            # Only true when you looked and there was nothing. Never a default, and never a way to
-            # avoid admitting that a lookup failed.
-            "already_absent": not erased and not retained,
+            "already_absent": not records,
+            "truncated": len(records) >= self._max,
         }

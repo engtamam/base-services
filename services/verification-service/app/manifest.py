@@ -42,16 +42,31 @@ def build_manifest(
         "name": settings.SERVICE_NAME,
         "version": settings.SERVICE_VERSION,
         "env": settings.ENV,
-        "capabilities": [],  # atomic capability keys — filled per service
+        # The capabilities a panel may advertise. `verification.self` is the end-user's own-claim
+        # capability (the <svc>.self pattern); the other two gate the review queue, which is where
+        # trust is actually granted.
+        "capabilities": ["platform.verification", "verification.review", "verification.read",
+                         "verification.self"],
         "endpoints": [
             {"path": "/healthz", "tier": "public", "method": "GET"},
             {"path": "/readyz", "tier": "public", "method": "GET"},
             {"path": "/metrics", "tier": "public", "method": "GET"},
             {"path": "/internal/health", "tier": "internal", "method": "GET"},
             {"path": "/internal/manifest", "tier": "internal", "method": "GET"},
+            {"path": "/internal/privacy/erase", "tier": "internal", "method": "POST"},
+            {"path": "/internal/verification/identity/{claim_ref}/seen", "tier": "internal",
+             "method": "GET"},
+            # ── user tier: a person checking their OWN claim ─────────────────
+            {"path": "/api/v1/verification/claims", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/verification/claims", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/verification/status", "tier": "user", "method": "GET"},
+            # ── admin tier: the review queue, where trust is granted ─────────
+            {"path": "/api/v1/verification/review-queue", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/verification/review/{verification_id}", "tier": "user",
+             "method": "POST"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
-        "events": {"emitted": [], "consumed": []},
+        "events": {"emitted": ["verification.settled"], "consumed": []},
         "admin_actions": _admin_actions(),
         "user_actions": _user_actions(),
     }

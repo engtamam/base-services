@@ -41,3 +41,9 @@ async def admin_ping() -> dict:
     return {"status": "ok"}
 
 # TODO (per service): add real business routes here.
+
+
+# The real surface. /whoami and /admin/ping above stay as the template's probes.
+from app.api.v1.verification import router as _verification_router  # noqa: E402
+
+router.include_router(_verification_router)
