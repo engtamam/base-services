@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+gate_name="safety:audit-wiring"
+gate_desc="every service declares what it must prove, and can actually record it"
+gate_protects="audit-service shipped a hash-chained log with a working ingest endpoint that no
+service called for months. The chain verified perfectly and held zero events, and
+not one test went red — because a missing event leaves no hole. An audit log cannot
+tell you what it never received. Each half was individually correct, so only a check
+that reads the declarations and the deployed config TOGETHER can see the seam."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_audit_wiring.py"
+gate_units=0
+gate_slow=0
+
+gate_main() {
+  # Prove the gate can fail before trusting that it passed.
+  "$PY" tools/ci/selftest_audit_wiring.py || return 1
+  "$PY" tools/ci/check_audit_wiring.py
+}

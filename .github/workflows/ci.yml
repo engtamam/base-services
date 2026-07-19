@@ -107,6 +107,12 @@ jobs:
       - name: "safety:privacy-wiring — every service that can erase is a dispatch target"
         run: python tools/ci/check_privacy_wiring.py
 
+      # gates: safety:audit-wiring
+      - name: "safety:audit-wiring — every service can prove what it did"
+        run: |
+          python tools/ci/selftest_audit_wiring.py
+          python tools/ci/check_audit_wiring.py
+
       # gates: safety:tenancy
       - name: "safety:tenancy — a token carries exactly ONE tenant, and only one it is entitled to"
         run: python tools/ci/check_tenancy.py
