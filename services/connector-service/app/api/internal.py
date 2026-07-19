@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from app.api.v1.connectors import _spec_for, build_sync
 from app.config import Settings, get_settings
+from app.core.erasure import ConnectorErasure
 from app.core.stores import ConnectionStore
 from app.manifest import build_manifest
 
@@ -76,3 +77,18 @@ async def internal_manifest(
     if guard is not None:
         manifest["security"] = {"cwe_guard": guard.report()}
     return manifest
+
+
+class EraseIn(BaseModel):
+    tenant: str
+    subject: str
+
+
+@router.post("/privacy/erase", dependencies=[Depends(require_internal_token)])
+async def erase_subject(request: Request, body: EraseIn) -> dict:
+    """Remove the data subject from this service's untyped payloads."""
+    c = request.app.state.container
+    s = get_settings()
+    eraser = ConnectorErasure(store=c.datastore, pii_salt=s.PII_SALT, text_keys=s.erasure_text_keys,
+                  max_scan=s.ERASURE_MAX_SCAN)
+    return await eraser.erase(body.tenant, body.subject)

@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     # ── Internal service-to-service auth (REQUIRED) ─────────────────────────
     # Shared token for /internal/* endpoints. Must be strong (>= 32 chars).
     INTERNAL_SERVICE_TOKEN: str = Field(min_length=32)
+    # Salts the subject pseudonym written into redacted payloads. FROZEN —
+    # config/product.identifiers.lock.json.
+    PII_SALT: str = ""
+    # Keys whose value is free TEXT, where the subject must be matched as a SUBSTRING (a rendered
+    # message body, a response). Everywhere else only an exact value match redacts, so a field that
+    # merely mentions the subject's id is never rewritten. Opt-in per key, never guessed.
+    ERASURE_TEXT_KEYS: str = "body,message,text,html,subject,response_body,error,description"
+    ERASURE_MAX_SCAN: int = 100_000
 
     # ── Ports & adapters (Phase 2) — driver selection, ZERO-INFRA defaults ──
     # Every default reaches NO external system; point at real infra by config.
@@ -183,6 +191,12 @@ class Settings(BaseSettings):
     @property
     def is_test(self) -> bool:
         return self.ENV == "test"
+
+    @property
+    def erasure_text_keys(self) -> frozenset[str]:
+        """Parsed ERASURE_TEXT_KEYS. Substring matching is opt-in per key precisely because
+        applying it everywhere would rewrite fields that merely reference the subject."""
+        return frozenset(k.strip() for k in self.ERASURE_TEXT_KEYS.split(",") if k.strip())
 
     @property
     def is_production(self) -> bool:

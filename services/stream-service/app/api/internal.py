@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel
 
 from app.config import Settings, get_settings
+from app.core.erasure import StreamErasure
 from app.manifest import build_manifest
 
 router = APIRouter(prefix="/internal", tags=["internal"])
@@ -97,3 +98,29 @@ async def enforce_retention(request: Request) -> dict:
     return await svc.enforce_retention(days=s.RETENTION_DAYS,
                                        recordings=RecordingStore(c.datastore),
                                        sink=c.recording_sink)
+
+
+class EraseIn(BaseModel):
+    tenant: str
+    subject: str
+    # Video is keyed by camera and time, not by person. These narrow the request to footage the
+    # caller has IDENTIFIED; without source_id nothing is deleted, because guessing which
+    # recordings hold a person would delete other people's footage.
+    source_id: str = ""
+    start: str = ""
+    end: str = ""
+
+
+@router.post("/privacy/erase", dependencies=[Depends(require_internal_token)])
+async def erase_subject(request: Request, body: EraseIn) -> dict:
+    """Erase footage identified by camera + window. Locked (legal-hold) recordings are retained.
+
+    With no source_id this answers `identification_not_possible` rather than "nothing here" — the
+    person may well be on camera, and claiming otherwise would be a lie.
+    """
+    c = request.app.state.container
+    s = get_settings()
+    eraser = StreamErasure(store=c.datastore, pii_salt=s.PII_SALT, object_store=c.object_store,
+                           max_scan=s.ERASURE_MAX_SCAN)
+    return await eraser.erase(body.tenant, body.subject, source_id=body.source_id,
+                              start=body.start, end=body.end)

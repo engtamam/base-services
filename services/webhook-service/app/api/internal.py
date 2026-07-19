@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from app.api.v1.webhooks import build_webhooks
 from app.config import Settings, get_settings
+from app.core.erasure import WebhookErasure
 from app.manifest import build_manifest
 
 router = APIRouter(prefix="/internal", tags=["internal"])
@@ -79,3 +80,23 @@ async def internal_manifest(
     if guard is not None:
         manifest["security"] = {"cwe_guard": guard.report()}
     return manifest
+
+
+class EraseIn(BaseModel):
+    tenant: str
+    subject: str
+
+
+@router.post("/privacy/erase", dependencies=[Depends(require_internal_token)])
+async def erase_subject(request: Request, body: EraseIn) -> dict:
+    """Redact the subject out of event payloads, inbound bodies and delivery responses.
+
+    Rows are redacted, not deleted: the delivery history is how an operator answers "did it ever
+    arrive?", and a payload with a key removed can crash a consumer that replays it. The person
+    leaves; the shape stays.
+    """
+    c = request.app.state.container
+    s = get_settings()
+    eraser = WebhookErasure(store=c.datastore, pii_salt=s.PII_SALT,
+                            text_keys=s.erasure_text_keys, max_scan=s.ERASURE_MAX_SCAN)
+    return await eraser.erase(body.tenant, body.subject)

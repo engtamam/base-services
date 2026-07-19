@@ -76,6 +76,18 @@ WIRING: dict[str, dict[str, str]] = {
     "billing-service": {
         "CURRENCY": "locale.currency",
     },
+    "job-service": {
+        "PII_SALT": "identifiers.piiSalt",   # frozen: re-maps every pseudonym
+    },
+    "connector-service": {
+        "PII_SALT": "identifiers.piiSalt",   # frozen: re-maps every pseudonym
+    },
+    "webhook-service": {
+        "PII_SALT": "identifiers.piiSalt",   # frozen: re-maps every pseudonym
+    },
+    "stream-service": {
+        "PII_SALT": "identifiers.piiSalt",   # frozen: re-maps every pseudonym
+    },
     "wallet-service": {
         "PII_SALT": "identifiers.piiSalt",   # frozen: re-maps every pseudonym
     },

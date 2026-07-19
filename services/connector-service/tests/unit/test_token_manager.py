@@ -22,7 +22,7 @@ def run(c):
     return asyncio.run(c)
 
 
-def _env(provider=None, expires_in=3600, clock=None):
+def _env(provider=None, expires_in=3600, clock=None, access="A1"):
     st = MemoryDataStore()
     clk = clock or ManualClock(1000.0)
     prov = provider or RecordingConnector()
@@ -31,15 +31,21 @@ def _env(provider=None, expires_in=3600, clock=None):
                       cache=MemoryCache(), cache_ttl=300, refresh_skew=60)
     conn = Connection(id="cn_1", tenant="t1", provider="rec")
     run(conns.save(conn))
-    run(tm.store_tokens(conn, Tokens(access_token="A1", refresh_token="R1", expires_in=expires_in),
+    run(tm.store_tokens(conn, Tokens(access_token=access, refresh_token="R1", expires_in=expires_in),
                         invalidate=True))
     return tm, conns, prov, clk
 
 
 def test_credentials_are_sealed_at_rest_and_hidden_from_api():
-    tm, conns, _, _ = _env()
+    # A DISTINCTIVE token, not the "A1" the other tests use. Sealing produces base64 over a random
+    # nonce, so a 2-character needle turns up inside the ciphertext by pure chance about 1% of the
+    # time — the assertion would fail on a clean codebase roughly once in a hundred runs and look
+    # like a real leak. Long enough that a chance collision is impossible, so a failure here means
+    # the credential genuinely was not sealed.
+    secret = "ACCESS-TOKEN-THAT-MUST-NEVER-APPEAR-IN-PLAINTEXT"
+    tm, conns, _, _ = _env(access=secret)
     stored = run(conns.get("cn_1"))
-    assert "A1" not in stored.access_sealed and _seal.unseal(stored.access_sealed, SEAL) == "A1"
+    assert secret not in stored.access_sealed and _seal.unseal(stored.access_sealed, SEAL) == secret
     assert "access_sealed" not in stored.public() and "refresh_sealed" not in stored.public()
 
 
