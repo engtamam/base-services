@@ -40,8 +40,11 @@ class UnsupportedClaim(ValueError):
 class VerificationService:
     def __init__(self, *, store, verifiers: dict, clock, pii_salt: str,
                  ttl_days: dict[str, int] | None = None, pending_ttl: int = 900,
-                 auditor=None, event_bus=None) -> None:
+                 registry=None, auditor=None, event_bus=None) -> None:
         self._store = store
+        # The durable record of WHICH identities have ever been verified. Without it the
+        # anti-abuse key does not exist and a welcome gift is farmable by re-registering.
+        self._registry = registry
         self._verifiers = verifiers
         self._clock = clock
         self._salt = pii_salt
@@ -188,6 +191,17 @@ class VerificationService:
         the decision a dispute turns on. Refusals and errors are recorded as events but must not
         block — refusing to refuse someone because the audit log is down helps nobody.
         """
+        if record.verdict == VERIFIED and self._registry is not None:
+            # Remember the IDENTITY, not the person. This row survives account deletion and is the
+            # only thing standing between a welcome gift and someone collecting it repeatedly by
+            # deleting the tenant and signing up again.
+            try:
+                await self._registry.remember(record.claim_ref, self._clock.now())
+            except Exception:
+                # A registry write failing must not un-verify a genuine identity — but it does mean
+                # the anti-abuse key is missing, so the grant side refuses rather than assuming.
+                pass
+
         if self._auditor is not None and record.verdict == VERIFIED:
             await self._auditor.record(
                 "identity.verified", actor=record.subject, tenant=record.tenant,

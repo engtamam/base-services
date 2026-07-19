@@ -45,7 +45,7 @@ def build_grants(request: Request) -> GrantService:
     s = get_settings()
     return GrantService(entitlement=c.entitlement, ledger=c.grant_ledger,
                         identity_lookup=c.identity_lookup, specs=s.onboarding_grants,
-                        auditor=request.app.state.auditor)
+                        local_facts=c.local_facts, auditor=request.app.state.auditor)
 
 
 class ProfileIn(BaseModel):
@@ -106,7 +106,8 @@ async def claim_grant(request: Request, body: ProfileIn,
             continue
         outcome = await grants.issue(
             kind=spec["grants"], once_per=spec.get("once_per", ""),
-            tenant=principal.tenant, subject=principal.subject)
+            tenant=principal.tenant, subject=principal.subject,
+            requirement=req_state.id, scope=spec.get("scope", "tenant"))
         issued.append({"requirement": req_state.id, "grant": spec["grants"],
                        "status": outcome.status, "detail": outcome.detail})
     return {"issued": issued}

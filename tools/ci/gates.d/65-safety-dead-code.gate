@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+gate_name="safety:dead-code"
+gate_desc="no orphaned imports, functions, classes or properties"
+gate_protects="A symbol nobody calls is a rule that can rot. Answer.is_satisfied carried the
+reasoning for onboarding's most safety-critical decision — unknown must never count
+as satisfied — in a property nothing called, while the evaluator duplicated the rule
+as a bare string comparison. Mutating the careful version broke no test, because it
+was decoration. This catches the visible half so the dangerous half (the same rule
+written twice) has nowhere to hide."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_dead_code.py"
+gate_units=0
+gate_slow=1
+
+gate_main() { "$PY" tools/ci/check_dead_code.py; }

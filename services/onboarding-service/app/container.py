@@ -30,7 +30,6 @@ from app.adapters.secrets.file import FileSecrets
 from app.adapters.secrets.vault import VaultSecrets
 from app.adapters.entitlement.null import NullEntitlement
 from app.adapters.requirement_source.http import HttpRequirementSource
-from app.adapters.requirement_source.null import NullRequirementSource
 from app.adapters.audit_sink.eventbus import EventBusAuditSink
 from app.adapters.audit_sink.http import HttpAuditSink
 from app.adapters.audit_sink.null import NullAuditSink

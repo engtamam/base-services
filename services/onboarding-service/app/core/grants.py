@@ -55,15 +55,20 @@ class GrantOutcome:
 
 class GrantService:
     def __init__(self, *, entitlement, ledger, identity_lookup=None, specs: dict | None = None,
-                 auditor=None) -> None:
+                 local_facts=None, auditor=None) -> None:
         self._entitlement = entitlement
         self._ledger = ledger                      # our record of what we have issued
         self._identity = identity_lookup           # verification-service: the durable identity key
         self._specs = specs or {}                  # grant kind -> amount/days/currency, from config
+        # The local record that makes the REQUIREMENT read as satisfied. Without it the grant is
+        # delivered and the flow still shows it outstanding, so the customer is asked to claim a
+        # gift they already have.
+        self._local = local_facts
         self._auditor = auditor
 
     async def issue(self, *, kind: str, once_per: str, tenant: str, subject: str,
-                    claim_ref: str = "") -> GrantOutcome:
+                    claim_ref: str = "", requirement: str = "",
+                    scope: str = "tenant") -> GrantOutcome:
         """Issue `kind` at most once per `once_per`."""
         spec = self._specs.get(kind)
         if spec is None:
@@ -108,6 +113,10 @@ class GrantService:
 
         await self._ledger.record(key, kind=kind, tenant=tenant, subject=subject,
                                   reference=receipt.reference)
+        if self._local is not None:
+            await self._local.mark_granted(requirement=requirement or kind, tenant=tenant,
+                                           subject=subject, scope=scope,
+                                           reference=receipt.reference)
         if self._auditor is not None:
             await self._auditor.record(
                 "grant.issued", actor=subject, tenant=tenant, resource=f"grant:{kind}",

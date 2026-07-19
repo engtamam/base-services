@@ -16,7 +16,6 @@ from app.core.retry import (
     FAILED,
     QUEUED,
     SENT,
-    SUPPRESSED,
     RetryPolicy,
 )
 from app.core.stores import DeliveryStore, InAppStore, PreferenceStore, TemplateStore

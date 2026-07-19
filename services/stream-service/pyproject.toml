@@ -54,11 +54,13 @@ dev = [
 
 # CI security tools — PERMISSIVE ONLY.
 #   bandit         Apache-2.0  (SAST)
+#   vulture        MIT         (dead code — a symbol nobody calls is a rule that can rot)
 #   pip-audit      Apache-2.0  (dependency CVE scan)
 #   detect-secrets Apache-2.0  (secret scan)
 #   cyclonedx-bom  Apache-2.0  (SBOM)
 ci = [
     "bandit>=1.7,<2.0",
+    "vulture>=2.11,<3.0",
     "pip-audit>=2.7,<3.0",
     "detect-secrets>=1.5,<2.0",
     "cyclonedx-bom>=4.0,<7.0",

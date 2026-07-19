@@ -24,7 +24,7 @@ from app.api.authz import require_any_capability
 from app.api.ratelimit import rate_limit
 from app.config import get_settings
 from app.core.review import ReviewRefused, ReviewService
-from app.core.stores import VerificationStore
+from app.core.stores import IdentityRegistry, VerificationStore
 from app.core.verification_service import UnsupportedClaim, VerificationService
 
 router = APIRouter(prefix="/verification", tags=["verification"])
@@ -39,6 +39,7 @@ def build_service(request: Request) -> VerificationService:
     s = get_settings()
     return VerificationService(
         store=VerificationStore(c.datastore), verifiers=c.verifiers, clock=c.clock,
+        registry=IdentityRegistry(c.datastore),
         pii_salt=s.PII_SALT, ttl_days=s.verify_ttl_days,
         pending_ttl=s.VERIFY_PENDING_TTL_SECONDS,
         auditor=request.app.state.auditor, event_bus=c.event_bus)
