@@ -20,29 +20,17 @@ from tests.fakes import FakePresignStore
 _REFS = "blob_refs"
 
 
-class _Queue:
-    driver = "fake"
-
-    def __init__(self):
-        self._q = []
-
-    async def enqueue(self, queue, payload):
-        self._q.append(_Job(payload))
-        return "j"
-
-    async def dequeue(self, queue):
-        return self._q.pop(0) if self._q else None
-
-
-class _Job:
-    def __init__(self, payload):
-        self.payload = payload
+# The REAL memory adapter, not a stand-in. A hand-written fake queue is what let the pop-vs-lease
+# bug live here unnoticed: the fake implemented `dequeue` and nothing else, so every test passed
+# while measuring a contract the shipped adapters do not have. Using the real driver means these
+# tests break the day the port changes — which is exactly what happened when it did.
+from app.adapters.queue.memory import MemoryQueue
 
 
 def _wire(scanner, *, policy="async"):
     ds = MemoryDataStore()
     store = FakePresignStore()
-    queue = _Queue()
+    queue = MemoryQueue()
     sessions = UploadSessionStore(ds)
     files = FileService(
         repo=FileRepository(ds), object_store=store, scanner=scanner, signed_url=None,
@@ -51,7 +39,8 @@ def _wire(scanner, *, policy="async"):
         max_object_bytes=5 << 30, part_size=8 << 20, scan_policy=policy,
     )
     worker = ScanWorker(files=files, sessions=sessions, object_store=store, scanner=scanner,
-                        queue=queue, scan_queue="file-scan", scan_policy=policy)
+                        queue=queue, scan_queue="file-scan", scan_policy=policy,
+                        lease_seconds=900)
     return files, worker, store, ds, sessions
 
 

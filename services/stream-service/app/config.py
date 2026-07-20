@@ -280,6 +280,11 @@ class Settings(BaseSettings):
     # Longest window a single export may cover. This knob existed and was NEVER READ: a caller
     # could ask for a year of footage and the worker would try. Bounded work is the difference
     # between a slow export and an outage.
+    # How long a worker may hold an export job before another may take it. Sized to the LONGEST
+    # transcode this deployment expects: reclaiming a job that is still running means two workers
+    # transcoding the same clip, which is the cost the lease exists to bound. An export is the
+    # longest-running work in this service, so this is deliberately generous.
+    EXPORT_LEASE_SECONDS: int = 1_800
     EXPORT_MAX_RANGE_SECONDS: int = 3_600
     EXPORT_FORMATS: str = "mp4"                   # comma list; each needs an EXPORT_ARGS entry
     # ffmpeg arguments per output format, as JSON. `-c copy` is a REMUX: the same bitstream in a

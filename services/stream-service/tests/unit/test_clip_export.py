@@ -69,22 +69,10 @@ class _Sink:
         return SegmentRef(ref=f"clip-{session_id}", bytes=len(data), start=start, end=end)
 
 
-class _Queue:
-    def __init__(self):
-        self.jobs: list[dict] = []
-
-    async def enqueue(self, queue, payload):
-        self.jobs.append(payload)
-        return "j1"
-
-    async def dequeue(self, queue):
-        if not self.jobs:
-            return None
-
-        class _Job:
-            payload = self.jobs.pop(0)
-
-        return _Job()
+# The REAL memory adapter, not a stand-in. A hand-written fake implementing only `dequeue` is what
+# let the pop-vs-lease bug survive here: every test passed while measuring a contract the shipped
+# adapters do not have. Using the real driver means these tests break when the port changes.
+from app.adapters.queue.memory import MemoryQueue as _Queue
 
 
 class _Exporter:
@@ -100,7 +88,8 @@ class _Exporter:
 
 
 _CFG = {"max_range_seconds": 3600, "formats": ("mp4",), "max_segments": 5000,
-        "max_recordings": 1000, "segment_url_ttl": 3600}
+        "max_recordings": 1000, "segment_url_ttl": 3600,
+        "lease_seconds": 900}
 
 
 def _svc(exporter=None, recs=(), cfg=None):
@@ -125,7 +114,10 @@ def test_a_request_is_recorded_pending_and_enqueued():
     svc = _svc()
     exp = run(svc.request(tenant="acme", source_id="cam1", start=T0, end=T60, fmt="mp4"))
     assert exp.status == "pending"
-    assert svc._queue.jobs == [{"export_id": exp.id, "tenant": "acme"}]
+    # Read through the port rather than a fake's inbox: the assertion is that the job is
+    # RETRIEVABLE, which is the property the caller depends on.
+    job = run(svc._queue.dequeue("stream.exports", lease_seconds=60))
+    assert job is not None and job.payload == {"export_id": exp.id, "tenant": "acme"}
 
 
 def test_the_row_exists_BEFORE_the_job_is_enqueued():

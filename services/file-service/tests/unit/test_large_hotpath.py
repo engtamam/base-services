@@ -34,7 +34,7 @@ class _CountingStore(FakePresignStore):
         self.bytes_through_app += len(data)
         return data
 
-    async def stream(self, key, chunk_size=1_048_576):
+    async def stream(self, key, chunk_size=1_048_576, lease_seconds=900):
         self.stream_calls += 1
         async for chunk in super().stream(key, chunk_size):
             self.chunks += 1
@@ -113,7 +113,7 @@ def test_scan_worker_streams_in_bounded_chunks_not_one_slurp():
 
     worker = ScanWorker(files=svc, sessions=svc._sessions, object_store=store,
                         scanner=NoneScanner(), queue=svc._queue, scan_queue="file-scan",
-                        chunk_size=1_048_576)
+                        chunk_size=1_048_576, lease_seconds=900)
     store.get_calls = 0
     run(worker.process(b.session.id))
     # It streamed in BOUNDED chunks (3 MB / 1 MiB ≈ 3), and never called the whole-object get().

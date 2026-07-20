@@ -75,8 +75,19 @@ class ExportService:
 
     # ── run (worker) ───────────────────────────────────────────────────────────
     async def run_one(self) -> dict[str, Any] | None:
-        """Drain one export. Returns None when the queue is empty, so a caller can loop."""
-        job = await self._queue.dequeue(_EXPORT_QUEUE)
+        """Drain one export. Returns None when the queue is empty, so a caller can loop.
+
+        LEASED, NOT POPPED. This used to take the job off the queue and then transcode, so a
+        worker killed mid-export — and an export is the longest-running work in this service —
+        took the job with it. The Export row stayed PENDING for ever, nothing retried it, and the
+        customer watched a clip that was never coming.
+
+        The job is deleted only once the export reaches a terminal state. A crash before that
+        leaves the lease to expire and the job returns by itself; the PENDING check below makes
+        the duplicate harmless, because a re-run finds the row already READY and skips it.
+        """
+        job = await self._queue.dequeue(_EXPORT_QUEUE,
+                                        lease_seconds=self._cfg["lease_seconds"])
         if job is None:
             return None
         export_id = (job.payload or {}).get("export_id", "")
@@ -85,16 +96,29 @@ class ExportService:
             # The row was erased (a DSAR deletes exports) between enqueue and dequeue. Nothing to
             # do and nothing wrong — reported so a queue that is quietly dropping work looks
             # different from one that is idle.
+            await self._queue.ack(job)
             return {"export_id": export_id, "status": "gone"}
         if exp.status != PENDING:
+            # Already handled — by an earlier run, or by the duplicate a lease can produce.
+            await self._queue.ack(job)
             return {"export_id": export_id, "status": exp.status, "skipped": True}
 
-        sources, missing = await self._sources_for(exp)
-        result = await self._exporter.export(sources=sources, fmt=exp.fmt,
-                                             start=exp.start, end=exp.end)
+        try:
+            sources, missing = await self._sources_for(exp)
+            result = await self._exporter.export(sources=sources, fmt=exp.fmt,
+                                                 start=exp.start, end=exp.end)
+        except Exception:
+            # An unexpected fault is not a verdict about the export. Hand the job straight back
+            # rather than waiting out a lease sized for a long transcode: the row stays PENDING,
+            # so a retry is correct and nothing downstream sees a false result.
+            await self._queue.nack(job)
+            raise
         if not result.ok:
+            # A REPORTED failure is terminal: the exporter ran and said no. Acked, because
+            # retrying it would fail identically for as long as the queue exists.
             exp.status = FAILED
             await self._exports.save(exp)
+            await self._queue.ack(job)
             return {"export_id": exp.id, "status": FAILED, "detail": result.detail}
 
         # Stored in the RECORDING SINK, not the object store, and that is a correction rather
@@ -109,6 +133,9 @@ class ExportService:
         exp.file_id = ref.ref
         exp.status = READY
         await self._exports.save(exp)
+        # Acked only now: everything above this line is redoable, so a crash before it costs one
+        # repeated export rather than one silently lost one.
+        await self._queue.ack(job)
         return {"export_id": exp.id, "status": READY, "bytes": len(result.data),
                 # Carried out of the worker, not swallowed here. See the module docstring: a
                 # reviewer who is not told about a gap concludes nothing happened in it.
@@ -120,6 +147,10 @@ class ExportService:
         Capped so one enormous backlog degrades into several runs instead of one run that never
         finishes — the same shape as every other sweeper here.
         """
+        # Anything a dead worker left behind returns first, or the queue looks idle while jobs
+        # sit in flight with nobody holding them.
+        await self._queue.reclaim(_EXPORT_QUEUE)
+
         done: list[dict] = []
         for _ in range(max(1, limit)):
             outcome = await self.run_one()

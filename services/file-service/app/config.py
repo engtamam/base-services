@@ -156,6 +156,10 @@ class Settings(BaseSettings):
     # hash but do not scan — refused in production by a boot guard (see assert_large_scan_ok).
     LARGE_UPLOAD_SCAN: Literal["async", "require", "skip"] = "async"
     FILE_SCAN_QUEUE: str = "file-scan"       # queue name the completer enqueues and the worker drains
+    # How long a worker may hold a scan job before another may take it. Sized to the SLOWEST scan
+    # this deployment expects, not the average: reclaiming a job that is still being scanned means
+    # two workers streaming the same multi-GB object, which is the cost the lease exists to bound.
+    FILE_SCAN_LEASE_SECONDS: int = 900
     # A large upload that is initiated but never completed leaves a multipart holding paid-for parts
     # in the bucket. The sweeper aborts sessions older than this. Consumed by the sweep endpoint.
     UPLOAD_SESSION_TTL_SECONDS: int = 3600   # 1 hour

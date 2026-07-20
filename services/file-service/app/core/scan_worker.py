@@ -22,7 +22,7 @@ from app.ports.scanner import Rejected
 class ScanWorker:
     def __init__(self, *, files: FileService, sessions: UploadSessionStore, object_store, scanner,
                  queue: Any, scan_queue: str = "file-scan", scan_policy: str = "async",
-                 chunk_size: int = 1_048_576) -> None:
+                 chunk_size: int = 1_048_576, lease_seconds: int) -> None:
         self._files = files
         self._sessions = sessions
         self._store = object_store
@@ -31,6 +31,10 @@ class ScanWorker:
         self._scan_queue = scan_queue
         self._policy = scan_policy
         self._chunk = chunk_size
+        # How long a scan may run before another worker may take the job. Config only:
+        # a number chosen here would be a guess about how long scanning someone else's
+        # file takes, and guessing short means reclaiming work that is still running.
+        self._lease_seconds = lease_seconds
 
     async def process(self, session_id: str) -> None:
         """Verify and scan one staged object, then finalize its session."""
@@ -63,14 +67,41 @@ class ScanWorker:
                                                  clean=clean, reason=reason)
 
     async def run_once(self) -> int:
-        """Drain the scan queue once (invoked by a CronJob / a loop). Returns how many it processed."""
+        """Drain the scan queue once (invoked by a CronJob / a loop). Returns how many it processed.
+
+        LEASED, NOT POPPED. This loop used to take a job off the queue and then scan it, so a
+        worker killed mid-scan — an OOM on a large upload, a node drain, a rolling deploy — took
+        the job with it. The upload stayed in SCANNING for ever, nothing retried it, and nothing
+        anywhere recorded that the work had existed.
+
+        Now the job is only deleted once `process` returns. A crash before that leaves the lease
+        to expire and the job returns by itself. `process` is idempotent — it re-reads the session
+        and does nothing unless the status is still SCANNING — so the duplicate a lease can
+        produce is a no-op, which is what makes at-least-once safe to accept here.
+        """
+        # Anything a dead worker left behind comes back first. Without this the queue looks empty
+        # while jobs sit in flight with nobody holding them.
+        await self._queue.reclaim(self._scan_queue)
+
         n = 0
         while True:
-            job = await self._queue.dequeue(self._scan_queue)
+            job = await self._queue.dequeue(self._scan_queue, lease_seconds=self._lease_seconds)
             if job is None:
                 break
             sid = (job.payload or {}).get("session_id")
-            if sid:
+            if not sid:
+                # Malformed and unprocessable: acked rather than nacked, because returning it
+                # would retry it for ever and block nothing but itself.
+                await self._queue.ack(job)
+                continue
+            try:
                 await self.process(sid)
-                n += 1
+            except Exception:
+                # Hand it straight back instead of waiting out the lease: a known failure should
+                # be retried promptly, and a slow silent one is harder to notice than a fast loud
+                # one. The scan is not marked done, so nothing downstream sees a false verdict.
+                await self._queue.nack(job)
+                raise
+            await self._queue.ack(job)
+            n += 1
         return n

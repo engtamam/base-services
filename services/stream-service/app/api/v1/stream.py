@@ -402,7 +402,8 @@ def _exports(request: Request) -> ExportService:
         exporter=c.clip_exporter, sink=c.recording_sink, queue=c.queue,
         cfg={"max_range_seconds": s.EXPORT_MAX_RANGE_SECONDS, "formats": s.export_formats,
              "max_segments": s.EXPORT_MAX_SEGMENTS, "max_recordings": s.EXPORT_MAX_RECORDINGS,
-             "segment_url_ttl": s.EXPORT_SEGMENT_URL_TTL})
+             "segment_url_ttl": s.EXPORT_SEGMENT_URL_TTL,
+             "lease_seconds": s.EXPORT_LEASE_SECONDS})
 
 
 class ExportIn(BaseModel):
