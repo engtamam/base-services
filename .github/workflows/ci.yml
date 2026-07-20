@@ -83,6 +83,10 @@ jobs:
       - name: "safety:pii — a service that holds a person can erase them"
         run: python tools/ci/check_pii.py
 
+      # gates: safety:pii-salt
+      - name: "safety:pii-salt — pseudonymising services refuse to start without the salt"
+        run: python tools/ci/check_pii_salt.py
+
       # gates: safety:own-license
       - name: "safety:own-license — the product is proprietary; only its dependencies are permissive"
         run: python tools/ci/check_own_license.py

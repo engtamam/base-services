@@ -327,23 +327,42 @@ class Settings(BaseSettings):
                 "config and never the request Host, or an attacker-controlled host would receive "
                 "a live credential.")
 
-    def assert_privacy_config_ok(self) -> None:
-        """Boot guard for the erasure path. Same rule as the audit guard below, applied to the
-        one setting erasure cannot work without.
+    # assert_privacy_config_ok lived here and checked exactly one thing: PII_SALT. That check is
+    # now assert_pii_config_ok, which every service runs rather than the two that remembered to
+    # write it — so this method had nothing left to do and keeping an empty guard would suggest
+    # the erasure path has a boot check of its own when it does not.
 
-        core/pii.py refuses an empty salt — correctly, because an unsalted pseudonym is reversible
-        by guessing every email address. But it refuses at CALL time, and the only caller is
-        IdentityErasure via subject_ref(), so an empty salt is invisible until a real DSAR arrives
-        and gets a 500. This is the service whose own docstring says it keeps nothing; discovering
-        it cannot pseudonymise while someone is exercising a right is the worst available moment.
+    def assert_pii_config_ok(self) -> None:
+        """Boot guard. Refuse to start production without the salt that pseudonyms are built from.
+
+        Every service in the platform writes `subject_ref` — the per-tenant pseudonym that lets an
+        immutable audit row, ledger entry or invoice outlive the person named in it. It is
+        HMAC(PII_SALT, tenant|subject), and `core.pii.subject_ref` REFUSES an empty salt rather
+        than emitting an unsalted digest that anyone could reverse by hashing every email address.
+
+        That refusal is correct and badly timed. Without this guard the service starts, passes
+        every health check, serves traffic for weeks, and then raises the first time a real person
+        touches a path that pseudonymises — which is a 500 in production, at whatever hour the
+        first DSAR or first audited action happens to arrive. A misconfiguration must refuse to
+        START, not fail one request months later.
+
+        Two services already did this. Nineteen declared PII_SALT and never checked it, which is
+        why safety:pii-salt now fails the build for any service that reads the salt without
+        guarding it.
+
+        NOT CHECKED HERE, because it cannot be: that every service was given the SAME salt. Two
+        different non-empty salts fold one person to two pseudonyms, and every service still boots
+        and still works. That is a deployment invariant — see the chart's shared-secret handling
+        and config/product.identifiers.lock.json, which freezes the value for exactly this reason.
         """
         if self.is_production and not self.PII_SALT:
             raise ValueError(
                 "PII_SALT is empty in production: subject pseudonyms would be unsalted, which "
                 "makes them reversible by guessing every email address — not pseudonyms at all. "
-                "Erasure would 500 the first time a DSAR reached it. Set PII_SALT (it is FROZEN "
-                "— see config/product.identifiers.lock.json; changing it re-maps every pseudonym "
-                "and orphans the history)."
+                "Any audited or pseudonymised write would 500 the first time it was reached. Set "
+                "PII_SALT (it is FROZEN — see config/product.identifiers.lock.json; changing it "
+                "re-maps every pseudonym and orphans the history), and set the SAME value in "
+                "every service or one person becomes two."
             )
 
     def assert_audit_config_ok(self) -> None:

@@ -43,6 +43,7 @@ def create_app() -> FastAPI:
     # A service that cannot witness its own privileged actions must not serve
     # traffic as if it can.
     settings.assert_audit_config_ok()
+    settings.assert_pii_config_ok()
     settings.assert_stream_config_ok()   # refuse footgun postures (null engine / no SEAL_KEY / …) in prod
     # A platform that OFFERS clip export must be able to produce one.
     settings.assert_export_config_ok()

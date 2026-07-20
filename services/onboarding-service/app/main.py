@@ -42,6 +42,7 @@ def create_app() -> FastAPI:
     settings = get_settings()
     # A service that cannot witness its own privileged actions must not serve traffic as if it can.
     settings.assert_audit_config_ok()
+    settings.assert_pii_config_ok()
     # A flow that promises a grant nothing can issue would tell every customer they received
     # something nobody gave them.
     settings.assert_onboarding_config_ok()

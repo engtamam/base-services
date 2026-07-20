@@ -43,6 +43,7 @@ def create_app() -> FastAPI:
     # A service that cannot witness its own privileged actions must not serve
     # traffic as if it can.
     settings.assert_audit_config_ok()
+    settings.assert_pii_config_ok()
     settings.assert_privacy_config_ok()
    # a DSAR we cannot finish must not be accepted at all
     configure_logging(settings.SERVICE_NAME, settings.ENV, settings.LOG_LEVEL)

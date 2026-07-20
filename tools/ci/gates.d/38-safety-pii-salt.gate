@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+gate_name="safety:pii-salt"
+gate_desc="a service that pseudonymises refuses to start without the salt"
+gate_protects="subject_ref = HMAC(PII_SALT, tenant|subject) is what lets an immutable audit row or
+invoice outlive the person named in it. core/pii.py refuses an empty salt — but
+at CALL time, so a service without one starts, passes health checks, serves for
+weeks, and 500s the first time a real person exercises a right. Two services
+guarded against that; nineteen declared the setting and never checked it, and
+nothing noticed because each was internally consistent. An adopter found it by
+reading files one at a time."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_pii_salt.py"
+gate_units=0
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_pii_salt.py; }

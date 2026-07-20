@@ -25,7 +25,7 @@ def _settings(**kw):
 def test_production_refuses_to_start_with_an_empty_salt():
     """THE guard."""
     with pytest.raises(ValueError) as e:
-        _settings(PII_SALT="").assert_privacy_config_ok()
+        _settings(PII_SALT="").assert_pii_config_ok()
     assert "PII_SALT" in str(e.value)
 
 
@@ -33,21 +33,21 @@ def test_the_message_says_what_to_set_and_warns_that_it_is_frozen():
     """An operator hitting this at an interrupted deploy needs the fix AND the warning: choosing
     a fresh salt later re-maps every pseudonym and orphans the history."""
     with pytest.raises(ValueError) as e:
-        _settings(PII_SALT="").assert_privacy_config_ok()
+        _settings(PII_SALT="").assert_pii_config_ok()
     msg = str(e.value)
     assert "FROZEN" in msg
     assert "reversible" in msg          # says WHY, not just that a variable is missing
 
 
 def test_a_configured_salt_starts_normally():
-    _settings().assert_privacy_config_ok()
+    _settings().assert_pii_config_ok()
 
 
 def test_development_is_not_blocked():
     """Local runs and tests must not need the production secret — the guard is about what is
     SERVED, not about making the service unrunnable."""
-    _settings(ENV="development", PII_SALT="").assert_privacy_config_ok()
-    _settings(ENV="test", PII_SALT="").assert_privacy_config_ok()
+    _settings(ENV="development", PII_SALT="").assert_pii_config_ok()
+    _settings(ENV="test", PII_SALT="").assert_pii_config_ok()
 
 
 def test_the_guard_is_reachable_from_the_erasure_path_it_protects():
