@@ -123,6 +123,29 @@ class SubscriptionStore(_Repo):
     async def list(self, tenant: str, limit: int = 100) -> list[dict]:
         return await self.list_tenant(tenant, limit)
 
+    async def billable_for(self, tenant: str, statuses: tuple[str, ...],
+                           limit: int = 200) -> list[dict]:
+        """EVERY subscription a tenant is currently billable on. One indexed read.
+
+        active_for() returns ONE row, which was correct while a tenant had one subscription and
+        silently wrong the moment they bought two: entitlements resolved from whichever row sorted
+        first, so a customer who paid for three things could use one of them.
+
+        Still a single query. This sits on the entitlement hot path — feature-flag-service calls
+        the resolver once per flag evaluation — so N subscriptions must not become N reads. The
+        status set is pushed into the datastore rather than filtered in Python, for the same reason
+        active_for() was fixed: past the cap, a paying tenant could be told it had nothing.
+
+        Ordered OLDEST FIRST and by id, so the order is total and stable. REPLACE takes the last
+        contribution, which only means "newest wins" if the order is defined — and two rows sharing
+        a `created` value would otherwise straddle a page boundary differently on each read, making
+        the same tenant resolve two different ways.
+        """
+        rows, _ = await self._store.find(self.collection,
+                                         {"tenant": tenant, "status": list(statuses)},
+                                         limit=limit, sort=("created", "asc"))
+        return sorted(rows, key=lambda r: (r.get("created", ""), r.get("id", "")))
+
     async def active_for(self, tenant: str) -> dict | None:
         """The tenant's active/trialing subscription. Indexed lookup, one row.
 

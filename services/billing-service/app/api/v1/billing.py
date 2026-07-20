@@ -41,6 +41,12 @@ def build_billing(request: Request) -> BillingService:
                 "reverse_charge": s.REVERSE_CHARGE_B2B, "grandfather": s.GRANDFATHER,
                 "dunning_base_hours": s.DUNNING_RETRY_BASE_HOURS, "dunning_max_attempts": s.DUNNING_MAX_ATTEMPTS,
                 "grace_days": s.GRACE_DAYS, "list_limit": s.BILLING_LIST_LIMIT,
+                # Entitlement resolution (Phase 42). Required by EntitlementResolver —
+                # every default lives in config.py, never inline at a call site.
+                "billable_statuses": s.billable_statuses,
+                "max_subscriptions": s.MAX_BILLABLE_SUBSCRIPTIONS,
+                "merge_strategies": s.entitlement_merge_strategies,
+                "rank_orders": s.entitlement_rank_orders,
                 "limits_cache_ttl": s.LIMITS_CACHE_TTL_SECONDS,
                 "settlement_methods": s.settlement_methods,
                 "settlement_allow_partial": s.SETTLEMENT_ALLOW_PARTIAL,

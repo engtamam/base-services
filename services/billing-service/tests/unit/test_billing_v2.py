@@ -12,7 +12,10 @@ from app.core.stores import (CouponStore, IdempotencyStore, InvoiceStore, Ledger
 from app.ports.payment_gateway import Charge, WebhookEvent
 
 CFG = {"currency": "SAR", "trial_days": 0, "vat_rate": "0.15", "dunning_base_hours": 24,
-       "dunning_max_attempts": 3, "grace_days": 7, "list_limit": 100, "reverse_charge": False}
+       "dunning_max_attempts": 3, "grace_days": 7, "list_limit": 100, "reverse_charge": False,
+       # Phase 42: required by EntitlementResolver.
+       "billable_statuses": ("active", "trialing", "past_due"), "grandfather": True, "max_subscriptions": 200, "merge_strategies": {}, "rank_orders": {},
+}
 
 
 def run(c):

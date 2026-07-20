@@ -58,7 +58,7 @@ def _env():
         plans=plans, coupons=CouponStore(st), subs=subs, invoices=InvoiceStore(st),
         payments=PaymentStore(st), usage=UsageStore(st), ledger=LedgerStore(st),
         idempo=IdempotencyStore(st), gateway=None, tax=None, einvoicer=None, pdf=None,
-        cache=cache, config={"grandfather": True, "limits_cache_ttl": 300})
+        cache=cache, config={"grandfather": True, "limits_cache_ttl": 300, "grace_days": 7, "billable_statuses": ("active", "trialing", "past_due"), "grandfather": True, "max_subscriptions": 200, "merge_strategies": {}, "rank_orders": {}})
 
     limits = {"api_calls": {"kind": "counter", "limit": 1_000_000, "period": "month"},
               "seats": 25, "sso": True}

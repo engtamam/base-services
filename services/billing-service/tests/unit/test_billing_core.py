@@ -16,7 +16,12 @@ from app.ports.payment_gateway import Charge, GatewayUnavailable, WebhookEvent
 CFG = {"currency": "SAR", "trial_days": 0, "vat_rate": "0.15", "dunning_base_hours": 24,
        "dunning_max_attempts": 3, "grace_days": 7, "list_limit": 100, "reverse_charge": False,
        "settlement_methods": {"bank_transfer": True, "cheque": True}, "settlement_allow_partial": True,
-       "settlement_tolerance_minor": 0, "settlement_max_backdate_days": 3650}
+       "settlement_tolerance_minor": 0, "settlement_max_backdate_days": 3650,
+       # Entitlement resolution (Phase 42). Required by EntitlementResolver — a service
+       # built without these would resolve entitlements against nothing.
+       "billable_statuses": ("active", "trialing", "past_due"), "grandfather": True,
+       "max_subscriptions": 200, "merge_strategies": {}, "rank_orders": {},
+       }
 
 
 def run(c):

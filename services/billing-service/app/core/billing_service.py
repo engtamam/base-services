@@ -13,6 +13,7 @@ import time
 from typing import Any
 
 from app.core import entitlements as _ent
+from app.core.entitlement_resolver import EntitlementResolver
 from app.core import pricing
 from app.core import settlement as _stl
 from app.core.models import (Coupon, Invoice, Payment, Plan, Settlement, Subscription, iso,
@@ -36,7 +37,7 @@ class BillingService:
                  invoices: InvoiceStore, payments: PaymentStore, usage: UsageStore,
                  ledger: LedgerStore, idempo: IdempotencyStore,
                  gateway, tax, einvoicer, pdf, config: dict[str, Any], cache=None,
-                 settlements: SettlementStore | None = None) -> None:
+                 settlements: SettlementStore | None = None, clock=now_ts) -> None:
         self._plans, self._coupons, self._subs = plans, coupons, subs
         self._invoices, self._payments, self._usage = invoices, payments, usage
         self._ledger, self._idempo = ledger, idempo
@@ -44,6 +45,11 @@ class BillingService:
         self._cfg = config
         self._cache = cache
         self._settlements = settlements
+        self._clock = clock
+        # The union resolver. Config is passed WHOLE and required — see EntitlementResolver's
+        # REQUIRED_CFG: a missing key fails at construction rather than silently resolving a
+        # tenant against a default nobody chose.
+        self._entitlements = EntitlementResolver(subs=subs, plans=plans, cfg=config)
 
     # ── entitlements (general limit enforcement) ────────────────────────────────
     async def _generation(self, tenant: str) -> str:
@@ -75,17 +81,10 @@ class BillingService:
             except Exception:  # noqa: BLE001
                 pass
 
-        resolved: dict[str, Any] = {"limits": {}, "anchor": None, "subscription_id": ""}
-        row = await self._subs.active_for(tenant)
-        if row:
-            resolved["anchor"] = float(row.get("current_period_start") or 0) or None
-            resolved["subscription_id"] = row.get("id", "")
-            if self._cfg.get("grandfather", True) and row.get("limits_snapshot"):
-                resolved["limits"] = row["limits_snapshot"]      # signup terms win
-            else:
-                plan = await self._plans.fetch(row["plan_id"])
-                if plan:
-                    resolved["limits"] = plan.limits
+        # EVERY billable subscription, merged — not the first row that sorted. A tenant who buys
+        # three things is entitled to three things, and the shape below is unchanged so existing
+        # callers reading `limits` and `anchor` see exactly what they saw before.
+        resolved = await self._entitlements.resolve(tenant, self._clock())
 
         if self._cache is not None:
             try:

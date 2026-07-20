@@ -159,6 +159,71 @@ class Settings(BaseSettings):
     DUNNING_RETRY_BASE_HOURS: int = 24
     DUNNING_MAX_ATTEMPTS: int = 4
     GRACE_DAYS: int = 7
+
+    # ── entitlement resolution (Phase 42) ─────────────────────────────────────
+    # A tenant's entitlements are the UNION of everything they pay for. Resolution used to read
+    # ONE subscription, so a customer who bought three things could use one — and which one
+    # depended on insertion order. The refusal was a fail-closed 402, indistinguishable from
+    # "you have not paid for this".
+    #
+    # WHICH SUBSCRIPTIONS COUNT is a credit decision, not a technical one, so it is config.
+    # `canceled` is deliberately absent and cannot be added: a cancelled subscription that still
+    # granted access would make cancellation a suggestion. past_due counts only inside GRACE_DAYS.
+    BILLABLE_STATUSES: str = "active,trialing,past_due"
+    # Bound on how many subscriptions one tenant may resolve from. A ceiling, not a page size:
+    # reaching it means something unusual, and silently resolving from a truncated set is how a
+    # paying customer loses an entitlement.
+    MAX_BILLABLE_SUBSCRIPTIONS: int = 200
+    # How to combine one key across subscriptions, per KEY. A global sum-or-max switch breaks on
+    # the first mixed catalogue: seats SUM, retention MAX, sso OR, support_tier RANK — which is
+    # neither sum nor max. Unlisted keys default BY TYPE (numbers sum, booleans OR).
+    #   {"seats": "sum", "max_retention_days": "max", "support_tier": "rank"}
+    ENTITLEMENT_MERGE_STRATEGIES: str = ""
+    # Ordered vocabularies for RANK keys. Without one a rank key REFUSES rather than inventing an
+    # order — an invented order silently promotes or demotes a customer's support tier.
+    #   {"support_tier": ["bronze", "silver", "gold"]}
+    ENTITLEMENT_RANK_ORDERS: str = ""
+
+    @property
+    def billable_statuses(self) -> tuple[str, ...]:
+        return tuple(s.strip() for s in self.BILLABLE_STATUSES.split(",") if s.strip())
+
+    @property
+    def entitlement_merge_strategies(self) -> dict[str, str]:
+        import json as _json
+        raw = (self.ENTITLEMENT_MERGE_STRATEGIES or "").strip()
+        if not raw:
+            return {}
+        try:
+            parsed = _json.loads(raw)
+        except ValueError as exc:
+            raise ValueError(f"ENTITLEMENT_MERGE_STRATEGIES is not valid JSON: {exc}") from exc
+        if not isinstance(parsed, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in parsed.items()):
+            raise ValueError('ENTITLEMENT_MERGE_STRATEGIES must be {"key": "strategy"}')
+        from app.core.entitlement_merge import STRATEGIES
+        bad = {k: v for k, v in parsed.items() if v not in STRATEGIES}
+        if bad:
+            # At BOOT, not at the first entitlement check. A typo here silently refuses a key for
+            # every tenant, and a refusal looks exactly like "you did not pay for this".
+            raise ValueError(f"unknown merge strategy in {bad!r}; one of {', '.join(STRATEGIES)}")
+        return parsed
+
+    @property
+    def entitlement_rank_orders(self) -> dict[str, list[str]]:
+        import json as _json
+        raw = (self.ENTITLEMENT_RANK_ORDERS or "").strip()
+        if not raw:
+            return {}
+        try:
+            parsed = _json.loads(raw)
+        except ValueError as exc:
+            raise ValueError(f"ENTITLEMENT_RANK_ORDERS is not valid JSON: {exc}") from exc
+        if not isinstance(parsed, dict) or not all(
+                isinstance(v, list) and all(isinstance(x, str) for x in v)
+                for v in parsed.values()):
+            raise ValueError('ENTITLEMENT_RANK_ORDERS must be {"key": ["low", …, "high"]}')
+        return parsed
     BILLING_LIST_LIMIT: int = 100
 
     # ── usage metering / entitlement enforcement (Phase 25) ──────────────────
