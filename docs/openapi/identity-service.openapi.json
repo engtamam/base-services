@@ -1,6 +1,47 @@
 {
   "components": {
     "schemas": {
+      "AddMemberIn": {
+        "properties": {
+          "caps": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Caps",
+            "type": "array"
+          },
+          "identifier": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Identifier",
+            "type": "string"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password"
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Roles",
+            "type": "array"
+          }
+        },
+        "required": [
+          "identifier"
+        ],
+        "title": "AddMemberIn",
+        "type": "object"
+      },
       "ChangePwIn": {
         "properties": {
           "new_password": {
@@ -19,6 +60,28 @@
           "new_password"
         ],
         "title": "ChangePwIn",
+        "type": "object"
+      },
+      "ClaimIn": {
+        "properties": {
+          "password": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Password",
+            "type": "string"
+          },
+          "token": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token",
+          "password"
+        ],
+        "title": "ClaimIn",
         "type": "object"
       },
       "EraseIn": {
@@ -99,6 +162,38 @@
         "title": "MfaVerifyIn",
         "type": "object"
       },
+      "PersonLoginIn": {
+        "properties": {
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "password": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Password",
+            "type": "string"
+          },
+          "username": {
+            "maxLength": 256,
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "password"
+        ],
+        "title": "PersonLoginIn",
+        "type": "object"
+      },
       "RefreshIn": {
         "properties": {
           "refresh_token": {
@@ -160,6 +255,54 @@
           "username"
         ],
         "title": "ResendIn",
+        "type": "object"
+      },
+      "TenantIn": {
+        "properties": {
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password"
+          },
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
+          }
+        },
+        "required": [
+          "tenant"
+        ],
+        "title": "TenantIn",
         "type": "object"
       },
       "UnblockIn": {
@@ -458,6 +601,96 @@
         ]
       }
     },
+    "/api/v1/auth/person/claim": {
+      "post": {
+        "description": "The invited human sets their OWN password. No token, no admin, no session \u2014 just the invite.\n\nSingle-use: redeeming consumes it. An invite that worked twice would be a password reset for\nanyone who ever saw the link.",
+        "operationId": "claim_invite_api_v1_auth_person_claim_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClaimIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Claim Invite Api V1 Auth Person Claim Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Claim Invite",
+        "tags": [
+          "tenancy"
+        ]
+      },
+      "x-available-when": "IDENTITY_MULTI_TENANT=true"
+    },
+    "/api/v1/auth/person/login": {
+      "post": {
+        "description": "Authenticate the PERSON. Returns their doors \u2014 and no token, and no data.",
+        "operationId": "person_login_api_v1_auth_person_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PersonLoginIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Person Login Api V1 Auth Person Login Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Person Login",
+        "tags": [
+          "tenancy"
+        ]
+      },
+      "x-available-when": "IDENTITY_MULTI_TENANT=true"
+    },
     "/api/v1/auth/refresh": {
       "post": {
         "operationId": "refresh_api_v1_auth_refresh_post",
@@ -588,6 +821,51 @@
         ]
       }
     },
+    "/api/v1/auth/tenant": {
+      "post": {
+        "description": "Choose ONE door and get a token scoped to it.\n\nThis is THE mint, and it is the only door between every company on the platform. The tenant\nthat ends up in the token is read off the membership row we find \u2014 never off `body.tenant`\n(T1). `body.tenant` is a request to be let in, not an assertion of where you already are.",
+        "operationId": "select_tenant_api_v1_auth_tenant_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TenantIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Select Tenant Api V1 Auth Tenant Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Select Tenant",
+        "tags": [
+          "tenancy"
+        ]
+      },
+      "x-available-when": "IDENTITY_MULTI_TENANT=true"
+    },
     "/api/v1/auth/verify-email": {
       "post": {
         "description": "Redeem a verification token. Single-use.\n\nUnknown, expired and already-spent are ONE answer on purpose. Distinguishing them tells an\nattacker holding a stale link whether the address exists and whether someone got there first,\nand none of those distinctions helps a legitimate user \u2014 who needs the same next step in\nevery case: ask for another mail.",
@@ -631,6 +909,164 @@
           "auth"
         ]
       }
+    },
+    "/api/v1/tenancy/members": {
+      "get": {
+        "description": "Who works HERE. Admin-gated, one tenant, paginated.\n\nTHE TENANT IS NOT A PARAMETER. It is read off the caller's token \u2014 the same membership row the\nmint verified. A `?tenant=` on a directory read is T1 wearing a different hat: it would let any\nadmin enumerate the staff of any company on the platform, and it would look like a feature.\n\nA caller with no tenant claim is REJECTED, never widened to \"all tenants\" (T8).",
+        "operationId": "list_members_api_v1_tenancy_members_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Members Api V1 Tenancy Members Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Members",
+        "tags": [
+          "tenancy"
+        ]
+      },
+      "post": {
+        "description": "Staff THIS tenant. Admin-gated; the tenant comes off the token.\n\nIf the person already exists we grant a membership and touch nothing else \u2014 their credential\nis the key to every other company they work for, and an admin here has no claim on it (T2).",
+        "operationId": "add_member_api_v1_tenancy_members_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddMemberIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Add Member Api V1 Tenancy Members Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Member",
+        "tags": [
+          "tenancy"
+        ]
+      },
+      "x-available-when": "IDENTITY_MULTI_TENANT=true"
+    },
+    "/api/v1/tenancy/members/{person_id}": {
+      "delete": {
+        "description": "Revoke ONE membership. The person survives \u2014 she still works somewhere else.\n\nDeleting the Person from a single company's admin panel would remove her from every other\ncompany on the platform. This revokes a key, not a human.",
+        "operationId": "remove_member_api_v1_tenancy_members__person_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "person_id",
+            "required": true,
+            "schema": {
+              "title": "Person Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Remove Member Api V1 Tenancy Members  Person Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Member",
+        "tags": [
+          "tenancy"
+        ]
+      },
+      "x-available-when": "IDENTITY_MULTI_TENANT=true"
     },
     "/healthz": {
       "get": {
