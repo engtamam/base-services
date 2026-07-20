@@ -1,6 +1,6 @@
 # base-services
 
-Seventeen production-grade backend microservices in Python / FastAPI, plus the Helm chart and
+Twenty production-grade backend microservices in Python / FastAPI, plus the Helm chart and
 CI that deploy them. Every service is **self-contained**: no shared runtime library, no
 cross-service import, one copy-me template. Hexagonal, deny-by-default, zero-hardcoded.
 
@@ -8,6 +8,27 @@ cross-service import, one copy-me template. Hexagonal, deny-by-default, zero-har
 > anyone. Keep this repository **private**.
 
 ---
+
+## The surface you adopt
+
+Every file below is a **pure literal or plain config** — readable, and checkable, without running
+the service. If you are fitting one of these to your platform, these are the files to read first;
+everything else is implementation you should not need to touch.
+
+| File | What it decides |
+| --- | --- |
+| `app/config.py` | **Every knob.** No URL, limit, path or vocabulary is hardcoded anywhere else. Read this before deploying anything. |
+| `app/manifest.py` | The routes and capabilities this service actually serves — the source of truth the gates check declarations against. |
+| `app/ports/*.py` | The contracts. Swap the matching `app/adapters/*/` to run on your infrastructure instead of ours. |
+| `app/adapters/*/` | The drivers behind each port (`memory`, `postgres`, `redis`, `s3`, `http`, `null`…). Chosen by config, never by code. |
+| `app/admin_actions.py` | What an operator panel may show — and the capability each action needs. |
+| `app/user_actions.py` | The self-service catalog, plus `UNDECLARED_ROUTES` with a stated reason for anything deliberately absent. |
+| `app/auditable_actions.py` | What is recorded, and which actions **fail closed** when the audit log is unreachable. |
+| `app/service_contracts.py` | What this service CALLS in another — the other half of the seam. **Absent means it calls nothing**, which is most services. |
+| `deploy/services/<svc>.values.yaml` | Deployment shape. Images are digest-pinned at release; never a `:latest` tag. |
+| `docs/openapi/<svc>.openapi.json` | The HTTP surface, generated from the running app rather than written by hand. |
+
+A service you are not using can be deleted outright — nothing imports across service boundaries.
 
 ## The services
 
@@ -18,7 +39,8 @@ cross-service import, one copy-me template. Hexagonal, deny-by-default, zero-har
 | **notification** — email/SMS/push, KSA providers | **webhook** — outbound delivery, SSRF-guarded | **connector** — third-party integrations, OAuth2 |
 | **analytics** — events, rollups, funnels, retention | **search** — Arabic-aware full-text | **feature-flag** — rules, rollout, entitlement-aware |
 | **job** — queue, leases, backoff, dead-letter | **audit** — hash-chained, retention | **compliance** — PDPL + GDPR, DSAR, consent |
-| **file** — object storage | **api-gateway** — the only public door | **`_template`** — the copy-me seed |
+| **file** — object storage | **api-gateway** — the only public door | **verification** — Nafath, CR, VAT claims |
+| **onboarding** — requirements, not a wizard | **`_template`** — the copy-me seed | |
 
 Each has its own `README.md`, its own tests, its own security gate, and its own venv-free
 `pyproject.toml`. Delete any one of them and the rest still build.
