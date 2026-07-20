@@ -138,16 +138,37 @@ class ConsentService:
         c = await self._store.get(tenant, subject, purpose)
         if c is None:
             result = {"allowed": False, "reason": "no_consent_record"}      # DEFAULT DENY
-        elif not c.granted:
-            result = {"allowed": False, "reason": "withdrawn"}
-        elif c.expires_at and now >= c.expires_at:
-            result = {"allowed": False, "reason": "expired"}
         else:
-            result = {"allowed": True, "reason": "granted",
-                      "notice_version": c.notice_version}
+            # CAPACITY IS RE-EVALUATED HERE, not merely trusted from write time. grant() folds a
+            # lapse date into expires_at, which covers every consent granted since the policy
+            # existed — and covers NOTHING granted before it, because those rows carry
+            # expires_at=0 and no amount of waiting changes a stored zero. Deriving the majority
+            # date on read means a lapse is a fact about the subject's age rather than a value
+            # somebody remembered to write down.
+            majority = self._majority_for(c)
+            status = c.status_at(now, majority)
+            if status == "granted":
+                result = {"allowed": True, "reason": "granted",
+                          "notice_version": c.notice_version}
+            else:
+                result = {"allowed": False, "reason": status}
         result["purpose"] = purpose
         await self._cache_set(key, result)
         return {**result, "cached": False}
+
+    def _majority_for(self, c) -> float | None:
+        """The day this consent's subject can speak for themself, or None if unknowable.
+
+        None means "we cannot evaluate capacity" — no policy configured, or no birth date on the
+        record — and it is NOT the same as "no lapse". status_at() treats None as un-evaluated and
+        falls back to the stored expiry, so an unknown age never manufactures permission and never
+        manufactures a refusal either.
+        """
+        if self._capacity is None or not self._capacity.enforced:
+            return None
+        if not c.subject_born_at:
+            return None
+        return self._capacity.majority_at(c.subject_born_at)
 
     async def history(self, tenant: str, subject: str) -> dict[str, Any]:
         return {"consents": await self._store.for_subject(tenant, subject, self._limit),

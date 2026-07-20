@@ -59,10 +59,37 @@ class Consent:
     relation: str = ""                # parent | custodian | power_of_attorney | executor…
     subject_born_at: float = 0.0      # 0 = UNKNOWN, which is not the same as "adult"
 
-    def active(self, now: float) -> bool:
+    def status_at(self, now: float, majority_at: float | None = None) -> str:
+        """WHY this consent does or does not permit processing, at `now`.
+
+        THE SINGLE HOME OF THE RULE. This used to be a bool named `active()` with no production
+        caller, while consent_service restated the same granted/expiry test inline because it
+        needed WHICH reason, and a bool cannot carry one. Two copies of the rule that decides
+        whether processing is lawful, one of them dead and therefore free to rot — mutating the
+        careful copy broke no test.
+
+        Returning the reason rather than a bool is what lets one implementation serve both callers,
+        so there is nothing left to duplicate.
+
+        `majority_at` is the day a delegated consent lapses, passed in rather than computed here:
+        the age of majority is jurisdiction policy and belongs in CapacityPolicy, not on a model.
+        Passing None means "capacity not evaluated", which is the pre-policy case and must not be
+        silently read as "no lapse".
+        """
         if not self.granted:
-            return False
-        return not (self.expires_at and now >= self.expires_at)
+            return "withdrawn"
+        if self.expires_at and now >= self.expires_at:
+            return "expired"
+        # A DELEGATED consent whose subject has reached majority is spent, whether or not anyone
+        # ever wrote an expiry onto the row. Rows granted before the policy existed carry
+        # expires_at=0 and would otherwise answer "granted" for ever.
+        if majority_at and self.basis != SELF and now >= majority_at:
+            return "lapsed_at_majority"
+        return "granted"
+
+    def active(self, now: float, majority_at: float | None = None) -> bool:
+        """The bool form, for callers that do not need the reason."""
+        return self.status_at(now, majority_at) == "granted"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

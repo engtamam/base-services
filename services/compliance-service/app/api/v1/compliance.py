@@ -84,7 +84,12 @@ def build_consent_sweeper(request: Request) -> ConsentSweeper:
     return ConsentSweeper(store=c.datastore, consents=ConsentStore(c.datastore), clock=c.clock,
                           event_bus=c.event_bus,
                           notice_seconds=s.consent_lapse_notice_seconds,
-                          max_per_run=s.CONSENT_SWEEP_MAX_PER_RUN, telemetry=c.telemetry)
+                          max_per_run=s.CONSENT_SWEEP_MAX_PER_RUN, telemetry=c.telemetry,
+                          # So the sweep can DERIVE a lapse date for rows granted before
+                          # the policy existed, instead of skipping the one category it
+                          # was built for.
+                          capacity=CapacityPolicy(age_of_majority=s.CONSENT_AGE_OF_MAJORITY,
+                                                  unknown_age=s.CONSENT_UNKNOWN_AGE))
 
 
 def build_retention(request: Request) -> RetentionEnforcer:

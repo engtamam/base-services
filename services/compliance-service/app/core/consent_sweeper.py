@@ -33,7 +33,8 @@ _DELEGATED = ("guardian", "legal_representative")
 
 class ConsentSweeper:
     def __init__(self, *, store, consents, clock, event_bus=None, notice_seconds: float = 0.0,
-                 max_per_run: int = 1000, telemetry=None) -> None:
+                 max_per_run: int = 1000, telemetry=None, capacity=None) -> None:
+        self._capacity = capacity
         self._store = store
         self._consents = consents
         self._clock = clock
@@ -62,7 +63,19 @@ class ConsentSweeper:
         for row in rows:
             expires_at = float(row.get("expires_at") or 0.0)
             if not expires_at:
-                continue                          # no lapse date: nothing to watch
+                # PRE-POLICY ROWS. A delegated consent granted before CONSENT_AGE_OF_MAJORITY was
+                # raised above zero carries no expiry, and this loop used to skip it — so the one
+                # category the sweeper exists for was the one it never looked at. Those rows would
+                # answer "allowed" for ever and nothing on the platform would revisit them.
+                #
+                # The lapse date is DERIVED from the subject's birth date rather than trusted from
+                # the row, then written back, so the record catches up with the policy instead of
+                # staying frozen at whatever was true when it was created.
+                expires_at = self._derive_lapse(row)
+                if not expires_at:
+                    continue                      # genuinely no lapse: self-consent, or age unknown
+                row["expires_at"] = expires_at
+                await self._store.put("consent", self._key(row), row)
             if row.get("basis", "self") not in _DELEGATED:
                 # An expiry set by the granting party is that party's business — this sweeper is
                 # only about the one date the SUBJECT did not choose and cannot see coming.
@@ -96,6 +109,29 @@ class ConsentSweeper:
             except Exception:
                 pass
         return summary
+
+    def _derive_lapse(self, row: dict) -> float:
+        """When a delegated consent lapses, from the subject's age. 0 when it cannot be known.
+
+        Returns 0 rather than guessing whenever capacity is unenforced, the basis is self, or the
+        birth date is absent. An UNKNOWN age must never manufacture a lapse date — that would
+        expire a consent nobody agreed to end, which is the same class of error as inventing one
+        that never ends, pointed the other way.
+        """
+        if self._capacity is None or not self._capacity.enforced:
+            return 0.0
+        if row.get("basis", "self") not in _DELEGATED:
+            return 0.0
+        born_at = float(row.get("subject_born_at") or 0.0)
+        if not born_at:
+            return 0.0
+        return self._capacity.majority_at(born_at)
+
+    @staticmethod
+    def _key(row: dict) -> str:
+        from app.core.stores import ConsentStore
+        return ConsentStore._key(row.get("tenant", ""), row.get("subject", ""),
+                                 row.get("purpose", ""))
 
     async def _announce(self, event: str, payload: dict, row: dict) -> None:
         """Mark first, publish second.
