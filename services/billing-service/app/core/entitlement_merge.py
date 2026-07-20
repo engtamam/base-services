@@ -88,6 +88,15 @@ def merge(key: str, contributions: list[dict[str, Any]], strategy: str | None = 
         return {"value": None, "strategy": strategy or "none", "from": []}
 
     values = [c["value"] for c in live]
+
+    # A limit may be a RICH DEFINITION rather than a scalar:
+    #     {"kind": "counter", "limit": 50000, "period": "billing_period", "overage": "allow_and_bill"}
+    # Merged as a scalar it falls to REPLACE, so two 50 000-call packs resolve to 50 000 and the
+    # customer loses the pack they bought. Counters are exactly what prepaid packs are, so this is
+    # the case the union exists for — it must merge STRUCTURALLY, on the `limit` field.
+    if any(isinstance(v, dict) for v in values):
+        return _merge_rich(key, live, strategy, rank_order)
+
     # UNLIMITED is a SENTINEL, not a type. It is deliberately spelled as a string and mixes with
     # numbers on purpose ("10 seats here, no cap there"), so it must not read as subscriptions
     # disagreeing about what the key is.
@@ -171,3 +180,51 @@ def _answer(value: Any, strategy: str, live: list[dict]) -> dict[str, Any]:
         "from": [{"subscription": c.get("subscription", ""), "contributed": c["value"]}
                  for c in live],
     }
+
+
+def _merge_rich(key: str, live: list[dict], strategy: str | None,
+                rank_order: tuple[str, ...]) -> dict[str, Any]:
+    """Merge rich limit definitions by combining their `limit` and agreeing on the rest.
+
+    THE SHAPE MUST AGREE. A `counter` and a `gauge` for one key is a configuration error, not
+    something to reconcile: a counter is consumed and a gauge is reported, so merging them would
+    produce a number that means neither. Same for the period — 50 000 per day and 50 000 per month
+    have no common value.
+
+    WHERE THE POLICY DISAGREES, THE STRICTER ONE WINS. One pack saying `allow_and_bill` and
+    another saying `block` is also a config error, but refusing outright would deny an entitlement
+    the customer paid for. So the answer is the safe one: block. Being wrong that way blocks a
+    request and someone complains; being wrong the other way silently charges them for overage
+    they never agreed to, which costs money and trust to undo.
+    """
+    scalars, shapes = [], []
+    for c in live:
+        v = c["value"]
+        if isinstance(v, dict):
+            shapes.append(v)
+            scalars.append({"subscription": c.get("subscription", ""), "value": v.get("limit")})
+        else:
+            # A bare number alongside a rich definition is the same entitlement stated two ways.
+            shapes.append({})
+            scalars.append({"subscription": c.get("subscription", ""), "value": v})
+
+    kinds = {s.get("kind") for s in shapes if s.get("kind")}
+    if len(kinds) > 1:
+        raise MergeRefused(f"{key}: subscriptions disagree on kind ({sorted(kinds)})")
+    periods = {s.get("period") for s in shapes if s.get("period")}
+    if len(periods) > 1:
+        raise MergeRefused(f"{key}: subscriptions disagree on period ({sorted(periods)})")
+
+    inner = merge(key, scalars, strategy, rank_order)
+
+    policies = [s.get("overage") for s in shapes if s.get("overage")]
+    # "block" is the strictest and the safe answer when they disagree.
+    overage = "block" if (len(set(policies)) > 1 or not policies) else policies[0]
+
+    merged: dict[str, Any] = {"limit": inner["value"]}
+    if kinds:
+        merged["kind"] = next(iter(kinds))
+    if periods:
+        merged["period"] = next(iter(periods))
+    merged["overage"] = overage
+    return {"value": merged, "strategy": inner["strategy"], "from": inner["from"]}

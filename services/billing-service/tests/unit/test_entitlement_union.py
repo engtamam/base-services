@@ -298,3 +298,115 @@ def test_a_key_present_on_only_one_subscription_still_resolves():
     _sub(store, "sub_a", limits={"seats": 5}, created="2024-01-01")
     _sub(store, "sub_b", limits={"sso": True}, created="2024-01-02")
     assert run(r.resolve("acme", NOW))["limits"] == {"seats": 5, "sso": True}
+
+
+# ── rich limit definitions: the shape prepaid packs actually use ──────────────
+# A limit may be a full definition rather than a scalar:
+#     {"kind": "counter", "limit": 50000, "period": "billing_period", "overage": "allow_and_bill"}
+# Merged as a scalar it falls to REPLACE, so two packs resolve to ONE pack. Counters are exactly
+# what a prepaid pack is, so this is the case the whole union exists for.
+_PACK = {"kind": "counter", "limit": 50_000, "period": "billing_period",
+         "overage": "allow_and_bill"}
+
+
+def test_TWO_PREPAID_PACKS_ADD_UP():
+    """The bug that would have shipped: two 50 000-call packs resolving to 50 000, and the
+    customer losing the pack they bought."""
+    store, r = _world()
+    _sub(store, "sub_p1", limits={"api_calls": dict(_PACK)}, created="2024-01-01")
+    _sub(store, "sub_p2", limits={"api_calls": dict(_PACK)}, created="2024-01-02")
+
+    out = run(r.resolve("acme", NOW))
+    assert out["limits"]["api_calls"]["limit"] == 100_000
+    assert out["limits"]["api_calls"]["kind"] == "counter"
+
+
+def test_a_pack_preserves_its_period_and_policy():
+    store, r = _world()
+    _sub(store, "sub_p1", limits={"api_calls": dict(_PACK)})
+    got = run(r.resolve("acme", NOW))["limits"]["api_calls"]
+    assert got["period"] == "billing_period" and got["overage"] == "allow_and_bill"
+
+
+def test_a_COUNTER_and_a_GAUGE_for_one_key_are_refused():
+    """A counter is consumed and a gauge is reported. Merging them produces a number that means
+    neither."""
+    store, r = _world()
+    _sub(store, "sub_a", limits={"api_calls": dict(_PACK)}, created="2024-01-01")
+    _sub(store, "sub_b", limits={"api_calls": {"kind": "gauge", "limit": 5}}, created="2024-01-02")
+
+    out = run(r.resolve("acme", NOW))
+    assert "api_calls" not in out["limits"]
+    assert "disagree on kind" in out["refused"]["api_calls"]
+
+
+def test_periods_that_disagree_are_refused():
+    """50 000 per day and 50 000 per month have no common value."""
+    store, r = _world()
+    daily = {**_PACK, "period": "day"}
+    _sub(store, "sub_a", limits={"api_calls": dict(_PACK)}, created="2024-01-01")
+    _sub(store, "sub_b", limits={"api_calls": daily}, created="2024-01-02")
+    assert "disagree on period" in run(r.resolve("acme", NOW))["refused"]["api_calls"]
+
+
+def test_a_POLICY_CLASH_resolves_to_the_STRICTER_one():
+    """Being wrong toward `block` blocks a request and someone complains. Being wrong toward
+    `allow_and_bill` silently charges a customer for overage they never agreed to, which costs
+    money and trust to undo."""
+    store, r = _world()
+    _sub(store, "sub_a", limits={"api_calls": dict(_PACK)}, created="2024-01-01")
+    _sub(store, "sub_b", limits={"api_calls": {**_PACK, "overage": "block"}}, created="2024-01-02")
+    assert run(r.resolve("acme", NOW))["limits"]["api_calls"]["overage"] == "block"
+
+
+def test_a_rich_definition_and_a_bare_number_are_the_same_entitlement():
+    """One plan states it fully, another states just a cap. Both are that tenant's allowance."""
+    store, r = _world()
+    _sub(store, "sub_a", limits={"api_calls": dict(_PACK)}, created="2024-01-01")
+    _sub(store, "sub_b", limits={"api_calls": 10}, created="2024-01-02")
+    assert run(r.resolve("acme", NOW))["limits"]["api_calls"]["limit"] == 50_010
+
+
+def test_the_merged_definition_still_evaluates_through_the_normal_check():
+    """The union must produce something the EXISTING enforcement understands — a merged limit that
+    entitlements.check cannot read would be a cap that never applies."""
+    from app.core import entitlements as ent
+
+    store, r = _world()
+    _sub(store, "sub_p1", limits={"api_calls": dict(_PACK)}, created="2024-01-01")
+    _sub(store, "sub_p2", limits={"api_calls": dict(_PACK)}, created="2024-01-02")
+    limits = run(r.resolve("acme", NOW))["limits"]
+
+    assert ent.check(limits, "api_calls", current=99_999)["allowed"] is True
+    over = ent.check(limits, "api_calls", current=100_000)
+    assert over["allowed"] is True and over["overage"] == 1      # allow_and_bill
+
+
+def test_a_blocked_counter_refuses_past_the_MERGED_cap():
+    from app.core import entitlements as ent
+
+    store, r = _world()
+    blocked = {**_PACK, "overage": "block"}
+    _sub(store, "sub_a", limits={"scans": dict(blocked)}, created="2024-01-01")
+    _sub(store, "sub_b", limits={"scans": dict(blocked)}, created="2024-01-02")
+    limits = run(r.resolve("acme", NOW))["limits"]
+
+    assert ent.check(limits, "scans", current=99_999)["allowed"] is True
+    assert ent.check(limits, "scans", current=100_000)["allowed"] is False
+
+
+# ── contract terms: a fixed-term negotiated cap with no plan ──────────────────
+def test_a_CONTRACT_TERM_contributes_like_any_other_subscription():
+    """An enterprise deal is a subscription with an agreed period and its own snapshot — no plan
+    in the catalogue. It needs no new model once resolution unions rather than picks."""
+    store, r = _world()
+    _sub(store, "sub_plan", limits={"seats": 10}, created="2024-01-01")
+    _sub(store, "sub_contract", limits={"seats": 500}, created="2024-01-02", plan_id="")
+    assert run(r.resolve("acme", NOW))["limits"]["seats"] == 510
+
+
+def test_an_EXPIRED_contract_stops_contributing_once_it_is_cancelled():
+    store, r = _world()
+    _sub(store, "sub_plan", limits={"seats": 10}, created="2024-01-01")
+    _sub(store, "sub_contract", limits={"seats": 500}, created="2024-01-02", status="canceled")
+    assert run(r.resolve("acme", NOW))["limits"]["seats"] == 10
