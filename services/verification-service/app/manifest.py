@@ -65,6 +65,8 @@ def build_manifest(
             {"path": "/api/v1/verification/review-queue", "tier": "user", "method": "GET"},
             {"path": "/api/v1/verification/review/{verification_id}", "tier": "user",
              "method": "POST"},
+            {"path": "/api/v1/admin/ping", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/whoami", "tier": "user", "method": "GET"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         "events": {"emitted": ["verification.settled"], "consumed": []},

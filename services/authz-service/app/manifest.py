@@ -49,6 +49,12 @@ def build_manifest(
             {"path": "/metrics", "tier": "public", "method": "GET"},
             {"path": "/internal/health", "tier": "internal", "method": "GET"},
             {"path": "/internal/manifest", "tier": "internal", "method": "GET"},
+            {"path": "/internal/privacy/erase", "tier": "internal", "method": "POST",
+             # DECLARED, because a data map built from manifests is how a DSAR fan-out
+             # finds who holds a person. An undeclared holder is never asked, never acks,
+             # and is therefore never MISSED — the request closes green on an erasure
+             # that did not happen.
+             "erasure_category": "subject"},
             {"path": "/internal/authz/check", "tier": "internal", "method": "POST"},
             {"path": "/internal/authz/effective", "tier": "internal", "method": "GET"},
             {"path": "/api/v1/roles", "tier": "user", "method": "POST"},

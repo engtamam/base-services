@@ -40,3 +40,11 @@ USER_ACTIONS: list[dict[str, Any]] = [
         "group": "Identity",
     },
 ]
+
+
+UNDECLARED_ROUTES: list[dict[str, str]] = [
+    {"method": "GET", "path": "/api/v1/whoami",
+     "why": "scaffold diagnostic from the template: echoes the caller's own claims, so it is a debugging aid rather than a control a panel renders"},
+    {"method": "GET", "path": "/api/v1/admin/ping",
+     "why": "scaffold liveness probe from the template — proves the admin tier authorises, carries no data and does nothing"},
+]

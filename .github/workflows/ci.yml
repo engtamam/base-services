@@ -115,6 +115,10 @@ jobs:
       - name: "safety:contract-callers — a contract nobody calls is not a control"
         run: python tools/ci/check_contract_callers.py
 
+      # gates: safety:manifest-routes
+      - name: "safety:manifest-routes — the manifest admits to every route served"
+        run: python tools/ci/check_manifest_routes.py
+
       # gates: safety:openapi
       - name: "safety:openapi — published specs are generated, not hand-written"
         run: python tools/ci/gen_openapi.py --check

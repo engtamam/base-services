@@ -49,6 +49,12 @@ def build_manifest(
             {"path": "/metrics", "tier": "public", "method": "GET"},
             {"path": "/internal/health", "tier": "internal", "method": "GET"},
             {"path": "/internal/manifest", "tier": "internal", "method": "GET"},
+            {"path": "/internal/privacy/erase", "tier": "internal", "method": "POST",
+             # DECLARED, because a data map built from manifests is how a DSAR fan-out
+             # finds who holds a person. An undeclared holder is never asked, never acks,
+             # and is therefore never MISSED — the request closes green on an erasure
+             # that did not happen.
+             "erasure_category": "subject"},
             {"path": "/internal/notify", "tier": "internal", "method": "POST"},
             {"path": "/api/v1/notifications", "tier": "user", "method": "GET"},
             {"path": "/api/v1/notifications/{id}/read", "tier": "user", "method": "POST"},
@@ -56,6 +62,7 @@ def build_manifest(
             {"path": "/api/v1/notifications/preferences", "tier": "user", "method": "PUT"},
             {"path": "/api/v1/templates", "tier": "user", "method": "POST"},
             {"path": "/api/v1/templates", "tier": "user", "method": "GET"},
+            {"path": "/internal/notifications/drain", "tier": "internal", "method": "POST"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         "events": {"emitted": [], "consumed": []},

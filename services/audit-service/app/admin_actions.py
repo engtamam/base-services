@@ -17,6 +17,23 @@ from typing import Any
 
 ADMIN_ACTIONS: list[dict[str, Any]] = [
     {
+        # THE READ AN OPERATOR MOST NEEDS, and it was the one the panel could not render.
+        # GET /api/v1/audit answers ACROSS tenants for a platform.audit holder, but it was
+        # declared only in user_actions as the self-service "my activity log". A panel builds
+        # itself from the ADMIN catalog, so an investigator had a purge button and a verify
+        # button and no way to look at the log.
+        "id": "audit.query", "label": "Search the audit log", "method": "GET",
+        "path": "/api/v1/audit", "capability": "platform.audit", "group": "Audit",
+        "params": [
+            {"name": "tenant", "in": "query", "type": "string", "required": False,
+             "help": "omit to search ACROSS tenants — platform.audit only"},
+            {"name": "actor", "in": "query", "type": "string", "required": False,
+             "help": "a raw identifier is folded to its pseudonym before matching"},
+            {"name": "action", "in": "query", "type": "string", "required": False},
+            {"name": "limit", "in": "query", "type": "integer", "required": False},
+        ],
+    },
+    {
         "id": "audit.verify", "label": "Verify log integrity (hash chain)", "method": "GET",
         "path": "/api/v1/audit/verify", "capability": "platform.audit", "group": "Audit",
         "params": [{"name": "partition", "in": "query", "type": "string", "required": False,

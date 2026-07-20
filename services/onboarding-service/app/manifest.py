@@ -57,6 +57,8 @@ def build_manifest(
             {"path": "/api/v1/onboarding/provision", "tier": "user", "method": "POST"},
             {"path": "/api/v1/onboarding/admin/inspect", "tier": "user", "method": "POST"},
             {"path": "/api/v1/onboarding/admin/force/{subject}", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/admin/ping", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/whoami", "tier": "user", "method": "GET"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         "events": {"emitted": ["onboarding.provision.failed"], "consumed": []},

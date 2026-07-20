@@ -14,3 +14,11 @@ from typing import Any
 
 
 USER_ACTIONS: list[dict[str, Any]] = []
+
+
+UNDECLARED_ROUTES: list[dict[str, str]] = [
+    {"method": "GET", "path": "/api/v1/admin/catalog",
+     "why": "this route IS the admin catalog; a catalog that listed itself as an action would be a control whose only effect is to describe the controls"},
+    {"method": "GET", "path": "/api/v1/app/catalog",
+     "why": "this route IS the end-user catalog — same reason as the admin one above"},
+]

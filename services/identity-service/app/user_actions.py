@@ -32,6 +32,12 @@ USER_ACTIONS: list[dict[str, Any]] = [
 # Routes deliberately NOT rendered as controls. Machine-checked by safety:action-coverage: every
 # user-tier route must be declared above or excluded here WITH a reason.
 UNDECLARED_ROUTES: list[dict[str, str]] = [
+    {"method": "POST", "path": "/api/v1/auth/person/claim",
+     "why": "pre-auth: redeeming an invite token is done by someone who has no session yet, which is the whole point of an invite"},
+    {"method": "POST", "path": "/api/v1/auth/person/login",
+     "why": "pre-auth: you cannot be shown a log-in control in an app you are already in"},
+    {"method": "POST", "path": "/api/v1/auth/tenant",
+     "why": "signup-time tenant creation, reached before the caller belongs to a tenant and therefore before any catalog is fetched"},
     {"method": "POST", "path": "/api/v1/auth/register",
      "why": "pre-auth: the app catalog is fetched WITH a token, so its caller has already registered"},
     {"method": "POST", "path": "/api/v1/auth/login",

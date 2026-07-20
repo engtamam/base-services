@@ -49,6 +49,12 @@ def build_manifest(
             {"path": "/metrics", "tier": "public", "method": "GET"},
             {"path": "/internal/health", "tier": "internal", "method": "GET"},
             {"path": "/internal/manifest", "tier": "internal", "method": "GET"},
+            {"path": "/internal/privacy/erase", "tier": "internal", "method": "POST",
+             # DECLARED, because a data map built from manifests is how a DSAR fan-out
+             # finds who holds a person. An undeclared holder is never asked, never acks,
+             # and is therefore never MISSED — the request closes green on an erasure
+             # that did not happen.
+             "erasure_category": "subject"},
             {"path": "/internal/compliance/consent-check", "tier": "internal", "method": "GET",
              # Another SERVICE must call this. safety:contract-callers fails if none declares it.
              "caller": "service"},
@@ -79,6 +85,8 @@ def build_manifest(
             {"path": "/api/v1/compliance/breaches", "tier": "user", "method": "POST"},
             {"path": "/api/v1/compliance/breaches", "tier": "user", "method": "GET"},
             {"path": "/api/v1/compliance/breaches/{id}/notify", "tier": "user", "method": "POST"},
+            {"path": "/internal/compliance/dsar/run", "tier": "internal", "method": "POST"},
+            {"path": "/internal/compliance/retention/run", "tier": "internal", "method": "POST"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         "events": {"emitted": [], "consumed": []},

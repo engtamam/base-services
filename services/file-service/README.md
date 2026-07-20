@@ -1,5 +1,11 @@
 # file-service
 
+> **Upload memory is a budget you size.** An upload is read whole before it is hashed and
+> scanned — content-addressing needs the bytes, and the scanner needs them again — so the
+> real ceiling is `MAX_UPLOAD_BYTES × concurrent uploads`, not `MAX_UPLOAD_BYTES`. The
+> default 25 MiB is chosen so a pod survives a burst; raise it for larger evidence packs
+> only alongside pod memory and a concurrency limit. There is no streaming path today.
+
 > Self-contained, plug-and-play **FastAPI** file service (SaaS checklist §2). Upload /
 > download / delete with **size + type + magic-byte validation** and malware
 > **scanning**, **content-addressed storage** (sha256 dedup) + **ref-counting** (safe

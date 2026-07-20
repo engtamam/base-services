@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+gate_name="safety:manifest-routes"
+gate_desc="the manifest admits to every route the service serves"
+gate_protects="Every service serves POST /internal/privacy/erase; eighteen of twenty never listed it.
+A team built a DSAR fan-out from the platform's own discovery surface, got a map that
+did not admit to holding anyone, and shipped a fan-out that skipped identity-service —
+the one service that maps a subject_ref back to a human. Completion is DERIVED from
+acks, so a holder nobody registered is never asked, never acks, and is therefore never
+MISSED: the request closed GREEN while the identity row sat intact. Nothing disagreed
+with itself; every record was internally consistent and collectively false."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_manifest_routes.py"
+gate_units=0
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_manifest_routes.py; }
