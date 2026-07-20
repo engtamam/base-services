@@ -82,6 +82,29 @@
         "title": "InitiateIn",
         "type": "object"
       },
+      "LinkSubjectsIn": {
+        "properties": {
+          "subjects": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Subjects",
+            "type": "array"
+          },
+          "tenant": {
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant",
+          "subjects"
+        ],
+        "title": "LinkSubjectsIn",
+        "type": "object"
+      },
       "PartIn": {
         "properties": {
           "etag": {
@@ -851,6 +874,77 @@
           }
         },
         "summary": "Internal Signed Url",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/files/{file_id}/subjects": {
+      "post": {
+        "description": "Record which people appear in a file, so erasure can reach it.\n\nA service that stores data on someone's behalf is the file's `owner`; the people IN it are\nnamed nowhere. Match footage written by a recording sink belongs to \"service:stream\", so a\nDSAR for a child found no files and said so \u2014 a receipt asserting absence, produced as\nevidence that a right was honoured.\n\nIdentification is normally LATER than storage: a recording exists before anyone knows who is\nin it, and in a well-built product the naming step is also where consent is checked. So this\nis a separate call rather than an upload argument, and it is idempotent \u2014 a re-tagged face or\na retried job must not make one file count three times in an erasure receipt.\n\nOnly the PSEUDONYM is stored. A linkage table holding raw identifiers would be a fresh copy of\nthe data erasure exists to remove.",
+        "operationId": "link_subjects_internal_files__file_id__subjects_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "title": "File Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkSubjectsIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Link Subjects Internal Files  File Id  Subjects Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Link Subjects",
         "tags": [
           "internal"
         ]

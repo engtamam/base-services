@@ -47,6 +47,16 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "record is the only way to know what was handed out",
     },
     {
+        "action": "file.subjects_linked",
+        "source": "system",
+        "critical": True,
+        "why": "this is the record that a named person appears in a file, and it is what makes "
+               "their data reachable by an erasure — so it decides whether a future DSAR finds "
+               "the file or reports absence. A wrong or missing link produces a receipt claiming "
+               "data was erased that still exists, which is worse than an error because it is "
+               "filed as evidence a right was honoured",
+    },
+    {
         "action": "file.deleted",
         "source": "user",
         "critical": True,

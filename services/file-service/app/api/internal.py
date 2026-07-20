@@ -10,7 +10,7 @@ import hmac
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.file_service import NotFound
 from app.config import Settings, get_settings
@@ -151,3 +151,50 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     s = get_settings()
     eraser = FileErasure(store=c.datastore, object_store=c.object_store, pii_salt=s.PII_SALT)
     return await eraser.erase(body.tenant, body.subject)
+
+
+class LinkSubjectsIn(BaseModel):
+    tenant: str = Field(..., min_length=1)
+    subjects: list[str] = Field(..., min_length=1)
+
+
+@router.post("/files/{file_id}/subjects", dependencies=[Depends(require_internal_token)])
+async def link_subjects(request: Request, file_id: str, body: LinkSubjectsIn) -> dict:
+    """Record which people appear in a file, so erasure can reach it.
+
+    A service that stores data on someone's behalf is the file's `owner`; the people IN it are
+    named nowhere. Match footage written by a recording sink belongs to "service:stream", so a
+    DSAR for a child found no files and said so — a receipt asserting absence, produced as
+    evidence that a right was honoured.
+
+    Identification is normally LATER than storage: a recording exists before anyone knows who is
+    in it, and in a well-built product the naming step is also where consent is checked. So this
+    is a separate call rather than an upload argument, and it is idempotent — a re-tagged face or
+    a retried job must not make one file count three times in an erasure receipt.
+
+    Only the PSEUDONYM is stored. A linkage table holding raw identifiers would be a fresh copy of
+    the data erasure exists to remove.
+    """
+    from app.api.v1.files import build_files
+    from app.core.subject_links import SubjectLinks
+
+    c = request.app.state.container
+    s = get_settings()
+    files = build_files(request)
+    try:
+        f = await files.get(file_id)
+    except NotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    # Same scoping rule as every other internal read: the internal token is held by every service,
+    # so without a tenant argument this would let any caller learn that a file exists — and then
+    # attach a person to another tenant's data.
+    if not f.tenant or f.tenant != body.tenant:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+
+    await request.app.state.auditor.record(
+        "file.subjects_linked", actor="service:internal", tenant=body.tenant,
+        resource=f"file:{file_id}", ip=request.client.host if request.client else "")
+
+    links = SubjectLinks(store=c.datastore, pii_salt=s.PII_SALT)
+    linked = await links.attach(tenant=body.tenant, file_id=file_id, subjects=body.subjects)
+    return {"file_id": file_id, "linked": linked}

@@ -65,6 +65,10 @@ def build_manifest(
             # a REQUIRED tenant argument, not by the internal token alone — that token is held by
             # every service, so on its own it would be a read capability over every tenant.
             {"path": "/internal/files/{file_id}/signed-url", "tier": "internal", "method": "POST"},
+            # Who APPEARS IN a file, as distinct from who uploaded it. Without this, data a
+            # service stored on a person's behalf names them nowhere, and erasure reports
+            # success having matched nothing.
+            {"path": "/internal/files/{file_id}/subjects", "tier": "internal", "method": "POST"},
             {"path": "/api/v1/files", "tier": "user", "method": "POST"},
             {"path": "/api/v1/files", "tier": "user", "method": "GET"},
             {"path": "/api/v1/files/{id}", "tier": "user", "method": "GET"},
