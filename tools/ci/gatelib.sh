@@ -32,14 +32,34 @@ UNIT_SKIP="${GATE_UNIT_SKIP:-_template}"
 # across 17 runners instead of grinding through them one after another in a single job. It is a
 # FILTER, never a skip: every unit still runs its gates, in some job, and `require_units` still
 # treats an empty result as fatal — so a typo'd unit name is a hard error, not a quiet green.
+# GATE_CHANGED_ONLY is a DEV-LOOP accelerator, OPT-IN and OFF by default. When =1, discovery is
+# narrowed to units with a git diff vs $GATE_CHANGED_BASE (default origin/main). The release/CI
+# run leaves it unset and gates every unit. Two safety rails keep "faster" from ever meaning
+# "fewer checks": if the base ref is unavailable OR the narrowed set is empty, it FALLS BACK to
+# full discovery — so it can only ever be a SUBSET when git positively proves the rest is
+# untouched, and require_units still fatals on a genuine 0-unit misconfiguration.
+_changed_units() {
+  local base="${GATE_CHANGED_BASE:-origin/main}" diffbase line u seen=""
+  command -v git >/dev/null 2>&1 || return 1
+  diffbase="$(git merge-base "$base" HEAD 2>/dev/null)" || diffbase="$base"
+  git rev-parse --verify "$diffbase" >/dev/null 2>&1 || return 1
+  git diff --name-only "$diffbase" -- "$UNITS_DIR/" 2>/dev/null | while IFS= read -r line; do
+    u="${line#"$UNITS_DIR"/}"; u="${u%%/*}"
+    [ -n "$u" ] && printf '%s\n' "$u"
+  done | sort -u
+}
+
 services() {
-  local d skip hit
+  local d skip hit changed=""
   if [ -n "${GATE_ONLY_UNIT:-}" ]; then
     if [ -d "$UNITS_DIR/$GATE_ONLY_UNIT/$UNIT_MARKER" ]; then
       printf '%s
 ' "$GATE_ONLY_UNIT"
     fi
     return 0
+  fi
+  if [ "${GATE_CHANGED_ONLY:-0}" = "1" ]; then
+    changed="$(_changed_units)"          # may be empty -> we fall back to full discovery below
   fi
   for d in "$UNITS_DIR"/*/; do
     [ -d "$d" ] || continue
@@ -48,6 +68,7 @@ services() {
     for skip in $UNIT_SKIP; do [ "$d" = "$skip" ] && hit=1; done
     [ "$hit" = "1" ] && continue
     [ -d "$UNITS_DIR/$d/$UNIT_MARKER" ] || continue
+    if [ -n "$changed" ] && ! printf '%s\n' "$changed" | grep -qx "$d"; then continue; fi
     printf '%s\n' "$d"
   done
 }
