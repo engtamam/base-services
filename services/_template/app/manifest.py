@@ -42,7 +42,11 @@ def build_manifest(
         "name": settings.SERVICE_NAME,
         "version": settings.SERVICE_VERSION,
         "env": settings.ENV,
-        "capabilities": [],  # atomic capability keys — filled per service
+        # FILL THIS. An empty list is a CLAIM — "this service grants no capabilities" — that an
+        # adopter's client app reads as fact and renders nothing from. A blank app is the usual
+        # symptom of a service that shipped this untouched. If a service genuinely grants none,
+        # leaving it empty is correct; the point is that it must be a decision, not a leftover.
+        "capabilities": [],  # e.g. ["files.upload", "files.read"] — atomic capability keys
         "endpoints": [
             {"path": "/healthz", "tier": "public", "method": "GET"},
             {"path": "/readyz", "tier": "public", "method": "GET"},
@@ -59,7 +63,10 @@ def build_manifest(
             {"path": "/api/v1/whoami", "tier": "user", "method": "GET"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
-        "events": {"emitted": [], "consumed": []},
+        # FILL THIS too, or leave it empty deliberately. Same trap as capabilities: an empty
+        # `emitted` reads as "this service publishes nothing", so a consumer wiring against it
+        # subscribes to nothing and fails silently rather than at boot.
+        "events": {"emitted": [], "consumed": []},  # e.g. {"emitted": ["wallet.credited"], ...}
         "admin_actions": _admin_actions(),
         "user_actions": _user_actions(),
     }

@@ -46,6 +46,56 @@ class Settings(BaseSettings):
     # CSP frame-ancestors — who may embed this service's responses in a frame.
     ALLOWED_FRAME_ANCESTORS: str = "'none'"
 
+    # ── CORS — who may call this service FROM A BROWSER ─────────────────────
+    # Empty by default, and that default is a real choice rather than an omission: with no origins
+    # configured no CORS headers are emitted at all, so a browser blocks every cross-origin call
+    # and a server-to-server caller is unaffected. Opening a hole must be a decision somebody
+    # typed, not the state a service arrives in.
+    #
+    # There was no CORS anywhere in this platform, which is invisible from a terminal and fatal
+    # from a product: curl works, every fetch() from a client app or an operator panel is refused
+    # by the browser before our code sees the request, and no server-side test catches it because
+    # the rule is enforced in the browser.
+    #
+    # `*` IS REFUSED when credentials are allowed — the browser refuses that combination too, so
+    # accepting it here would only move the failure somewhere harder to read. Serving the app and
+    # the API from one origin remains the better answer where it is possible; this is for the
+    # deployments where it is not.
+    CORS_ALLOWED_ORIGINS: str = ""            # comma list of exact origins, e.g. https://app.example.com
+    CORS_ALLOW_CREDENTIALS: bool = False      # cookies / Authorization on cross-origin calls
+    CORS_ALLOWED_METHODS: str = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
+    CORS_ALLOWED_HEADERS: str = "authorization,content-type,x-request-id"
+    CORS_MAX_AGE_SECONDS: int = 600           # how long a browser may cache the preflight
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return [o.strip() for o in self.CORS_ALLOWED_ORIGINS.split(",") if o.strip()]
+
+    @property
+    def cors_methods(self) -> list[str]:
+        return [m.strip().upper() for m in self.CORS_ALLOWED_METHODS.split(",") if m.strip()]
+
+    @property
+    def cors_headers(self) -> list[str]:
+        return [h.strip() for h in self.CORS_ALLOWED_HEADERS.split(",") if h.strip()]
+
+    def assert_cors_config_ok(self) -> None:
+        """Boot guard. A CORS policy that cannot mean what it says must not start.
+
+        `*` with credentials is refused by every browser, so a service configured that way would
+        serve headers that look permissive and work for nobody — the hardest kind of failure to
+        diagnose, because the configuration and the symptom disagree.
+        """
+        if "*" in self.cors_origins and self.CORS_ALLOW_CREDENTIALS:
+            raise ValueError(
+                "CORS_ALLOWED_ORIGINS='*' with CORS_ALLOW_CREDENTIALS=true is refused by every "
+                "browser, so this would emit headers that satisfy nothing. List the exact origins "
+                "that need credentials.")
+        if self.is_production and "*" in self.cors_origins:
+            raise ValueError(
+                "CORS_ALLOWED_ORIGINS='*' in production lets any site on the internet call this "
+                "service with a user's browser. List the origins you actually serve.")
+
     # ── Internal service-to-service auth (REQUIRED) ─────────────────────────
     # Shared token for /internal/* endpoints. Must be strong (>= 32 chars).
     INTERNAL_SERVICE_TOKEN: str = Field(min_length=32)

@@ -44,6 +44,7 @@ def create_app() -> FastAPI:
     # traffic as if it can.
     settings.assert_audit_config_ok()
     settings.assert_pii_config_ok()
+    settings.assert_cors_config_ok()
     configure_logging(settings.SERVICE_NAME, settings.ENV, settings.LOG_LEVEL)
     logger = get_logger("app.main")
 
@@ -124,6 +125,20 @@ def create_app() -> FastAPI:
         is_production=settings.is_production,
     )
     app.add_middleware(RequestIdMiddleware)
+
+    # CORS is added LAST so it is the OUTERMOST middleware: a preflight must be answered before
+    # the body limit, the timeout or anything else can reject it, and a rejected preflight is an
+    # error the browser reports as a CORS failure rather than as the real reason.
+    if settings.cors_origins:
+        from fastapi.middleware.cors import CORSMiddleware
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_origins,
+            allow_credentials=settings.CORS_ALLOW_CREDENTIALS,
+            allow_methods=settings.cors_methods,
+            allow_headers=settings.cors_headers,
+            max_age=settings.CORS_MAX_AGE_SECONDS,
+        )
 
     # ── Error handlers (safe, generic) ──────────────────────────────────────
     register_error_handlers(app)
