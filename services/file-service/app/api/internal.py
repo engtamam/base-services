@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import hmac
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 
 from pydantic import BaseModel
 
+from app.core.file_service import NotFound
 from app.config import Settings, get_settings
 from app.core.erasure import FileErasure
 from app.core.scan_worker import ScanWorker
@@ -57,6 +58,45 @@ async def internal_manifest(
 class EraseIn(BaseModel):
     tenant: str
     subject: str
+
+
+@router.post("/files/{file_id}/signed-url", dependencies=[Depends(require_internal_token)])
+async def internal_signed_url(request: Request, file_id: str,
+                              tenant: str = Query(..., min_length=1)) -> dict:
+    """Mint a short-lived download link for a SERVICE that has no human to borrow a token from.
+
+    The user-facing twin takes the tenant off the caller's JWT — correctly, because a link a
+    service could mint in its own name would be a link to any file on the platform. A background
+    job has no JWT, so the tenant is a required PARAMETER and the file must belong to it. The
+    caller was handed that tenant by whatever scheduled it; it is not choosing one.
+
+    That check is the entire security of this endpoint. Without it the internal token — which
+    every service holds — becomes a read capability over every tenant's files.
+
+    A mismatch answers 404, identically to a file that does not exist, so this cannot be used to
+    ask whether another tenant holds a given id.
+
+    The TTL is CONFIG. A caller-supplied lifetime would let a job mint a link that outlives the
+    reason it was issued, and a link is a bearer credential: whoever holds it is the reader.
+    """
+    svc = build_files(request)
+    try:
+        f = await svc.get(file_id)
+    except NotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    if not f.tenant or f.tenant != tenant:
+        # `not f.tenant` is deliberate: a file stored without a tenant belongs to nobody, and
+        # answering for it here would hand it to whoever asked first.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+
+    s = get_settings()
+    # Audited as a SERVICE act. A download link leaving the platform is the moment the bytes
+    # become reachable, and "which job handed this out" is the question asked afterwards.
+    await request.app.state.auditor.record(
+        "file.signed_url_issued", actor="service:internal", tenant=tenant,
+        resource=f"file:{file_id}", ip=request.client.host if request.client else "")
+    return {"url": f"/files/signed/{svc.signed_token(file_id)}",
+            "expires_in": s.SIGNED_URL_TTL_SECONDS}
 
 
 @router.post("/files/scan", dependencies=[Depends(require_internal_token)])

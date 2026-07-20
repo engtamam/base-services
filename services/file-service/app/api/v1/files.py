@@ -68,8 +68,16 @@ async def _load_scoped(svc: FileService, file_id: str, principal: Principal) -> 
         f = await svc.get(file_id)
     except NotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
-    if f.tenant and principal.tenant and f.tenant != principal.tenant \
-            and "platform.files" not in principal.caps:
+    # FAIL CLOSED. The previous form was
+    #     if f.tenant and principal.tenant and f.tenant != principal.tenant
+    # which short-circuits to "allowed" whenever EITHER side is empty — and both can be:
+    # _extract_principal sets tenant=None when the token carries no tenant claim, and upload
+    # stores tenant="" for exactly such a caller. So a token with no tenant read EVERY tenant's
+    # files, and a file stored without one was readable by anybody. A missing tenant is not a
+    # wildcard; it is the absence of the only fact this check has.
+    if "platform.files" in principal.caps:
+        return f                      # the platform-wide reader, deliberately unscoped
+    if not principal.tenant or f.tenant != principal.tenant:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")  # hide existence
     return f
 

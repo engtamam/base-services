@@ -785,6 +785,77 @@
         ]
       }
     },
+    "/internal/files/{file_id}/signed-url": {
+      "post": {
+        "description": "Mint a short-lived download link for a SERVICE that has no human to borrow a token from.\n\nThe user-facing twin takes the tenant off the caller's JWT \u2014 correctly, because a link a\nservice could mint in its own name would be a link to any file on the platform. A background\njob has no JWT, so the tenant is a required PARAMETER and the file must belong to it. The\ncaller was handed that tenant by whatever scheduled it; it is not choosing one.\n\nThat check is the entire security of this endpoint. Without it the internal token \u2014 which\nevery service holds \u2014 becomes a read capability over every tenant's files.\n\nA mismatch answers 404, identically to a file that does not exist, so this cannot be used to\nask whether another tenant holds a given id.\n\nThe TTL is CONFIG. A caller-supplied lifetime would let a job mint a link that outlives the\nreason it was issued, and a link is a bearer credential: whoever holds it is the reader.",
+        "operationId": "internal_signed_url_internal_files__file_id__signed_url_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "title": "File Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Internal Signed Url Internal Files  File Id  Signed Url Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Internal Signed Url",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/health": {
       "get": {
         "operationId": "internal_health_internal_health_get",

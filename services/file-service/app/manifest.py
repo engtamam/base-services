@@ -61,6 +61,10 @@ def build_manifest(
              "erasure_category": "subject"},
             {"path": "/internal/files/scan", "tier": "internal", "method": "POST"},
             {"path": "/internal/files/sweep-uploads", "tier": "internal", "method": "POST"},
+            # Lets a sibling service hand a user a download without proxying the bytes. Scoped by
+            # a REQUIRED tenant argument, not by the internal token alone — that token is held by
+            # every service, so on its own it would be a read capability over every tenant.
+            {"path": "/internal/files/{file_id}/signed-url", "tier": "internal", "method": "POST"},
             {"path": "/api/v1/files", "tier": "user", "method": "POST"},
             {"path": "/api/v1/files", "tier": "user", "method": "GET"},
             {"path": "/api/v1/files/{id}", "tier": "user", "method": "GET"},
