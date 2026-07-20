@@ -38,6 +38,10 @@
 #   HELM                 path to helm (default: on PATH)
 #   GATE_SEED            primary PYTHONHASHSEED (default 0)
 #   GATE_SEED2           second seed for the determinism gate (default 1337)
+#   GATE_JOBS            max gates run concurrently (default: nproc-2, min 2)
+#   GATE_CHANGED_ONLY    dev-loop accelerator, OPT-IN. When =1, per-unit gates
+#                        narrow to services touched vs origin/main. OFF by default
+#                        so the release/CI run stays full-coverage. (see gatelib.sh)
 # =============================================================================
 set -uo pipefail
 
@@ -190,7 +194,49 @@ if [ "$MODE" = "verify" ]; then
   exit $rc
 fi
 
-# ── run ─────────────────────────────────────────────────────────────────────
+# ── run (CONCURRENT) ─────────────────────────────────────────────────────────
+# Gates are INDEPENDENT by construction: each runs in its OWN subshell against a read-only tree
+# and shares nothing but per-gate scratch files under $RUN_TMP whose names never collide. So we
+# run them concurrently — but under three rules that keep the verdicts AND the transcript
+# byte-for-byte identical to the old sequential run:
+#
+#   1. PER-GATE LOGS, ORDERED REPLAY. Every gate writes to its OWN $RUN_TMP/run_<i>.log; two
+#      gates never share a stream. Nothing is printed while gates run. AFTER they finish we
+#      replay each gate's banner+log+verdict in GATE-FILE ORDER. That kills the interleaving
+#      that once produced torn lines like "OK compliance-servOK" under `xargs -P | tee`.
+#   2. MATRIX GATES RUN ALONE. suites / security-gate / contracts:postgres each already fan out
+#      across every core (or own the one postgres). Running them next to anything would
+#      oversubscribe the box or share a database, the exact class of bug documented in
+#      gatelib.sh. They go in a SERIAL group, one at a time, each with the whole machine.
+#   3. EVERYTHING ELSE runs in a POOL capped at GATE_JOBS (default nproc-2). These are the light
+#      gates plus the single-core-heavy ones (chart / determinism / openapi / dead-code) —
+#      precisely the gates whose overlap buys the wall-clock back.
+#
+# A gate's verdict is still exactly its subshell exit code: written to <log>.rc, read back in
+# order — the same fact as the old `if [ $? -eq 0 ]`, just recorded instead of inspected inline.
+
+JOBS="${GATE_JOBS:-$(_jobs)}"
+[ "$JOBS" -lt 2 ] && JOBS=2
+
+# parallel arrays, one slot per gate, indexed in gate-file order
+G_NAME=(); G_DESC=(); G_FILE=(); G_KIND=(); G_INFO=(); G_UNITS=(); G_SERIAL=()
+idx=0
+
+# run_gate_bg <i> <gatefile> <units> — the subshell body, verdict -> <log>.rc.
+# Identical isolation to the old inline subshell; only the destination of its output changed.
+run_gate_bg() {
+  local i="$1" f="$2" units="$3" log="$RUN_TMP/run_$i.log"
+  (
+    if [ "$units" = "1" ]; then
+      . "$ROOT/tools/ci/gatelib.sh"; . "$f"; require_units && gate_main
+    else
+      . "$ROOT/tools/ci/gatelib.sh"; . "$f"; gate_main
+    fi
+  ) >"$log" 2>&1
+  echo "$?" > "$log.rc"
+}
+
+# ── classify every gate (cheap, deterministic; no gate body runs here) ───────
 for f in $(gate_files); do
   name="$(meta "$f" gate_name)"
   desc="$(meta "$f" gate_desc)"
@@ -202,13 +248,19 @@ for f in $(gate_files); do
   matrix="$(meta "$f" gate_matrix)"
 
   if [ -n "$ONLY" ] && [ "$ONLY" != "$name" ]; then continue; fi
-  if ! in_profile "${slow:-0}" "${matrix:-0}"; then noprof "$name" "$PROFILE"; continue; fi
+
+  i=$idx; idx=$((idx + 1))
+  G_NAME[$i]="$name"; G_DESC[$i]="$desc"; G_FILE[$i]="$f"
+  G_INFO[$i]=""; G_UNITS[$i]="${units:-0}"; G_SERIAL[$i]=0
+
+  if ! in_profile "${slow:-0}" "${matrix:-0}"; then
+    G_KIND[$i]="noprof"; G_INFO[$i]="$PROFILE"; continue
+  fi
 
   # PENDING: the SUBJECT does not exist yet. Never blocks. A gate wired the day before the code
   # it guards is a promise kept, not a build broken.
   if [ -n "$subject" ] && ! compgen -G "$subject" >/dev/null 2>&1; then
-    pend_msg "$name" "subject not built yet: $subject"
-    continue
+    G_KIND[$i]="pending"; G_INFO[$i]="subject not built yet: $subject"; continue
   fi
 
   # SKIP: the INFRA is absent. --strict turns this into a FAIL, because "we installed helm and
@@ -217,23 +269,49 @@ for f in $(gate_files); do
   for c in $needs;    do have "$c"        || missing="$missing $c"; done
   for e in $need_env; do [ -n "${!e:-}" ] || missing="$missing \$$e"; done
   if [ -n "$missing" ]; then
-    if [ "$STRICT" = 1 ]; then
-      fail_msg "$name"; echo "        --strict: required and absent:$missing"
-    else
-      skip_msg "$name" "absent:$missing"
-    fi
-    continue
+    if [ "$STRICT" = 1 ]; then G_KIND[$i]="strictfail"; else G_KIND[$i]="skip"; fi
+    G_INFO[$i]="$missing"; continue
   fi
 
-  banner "$name — $desc" "$(protects "$f")"
+  # RUNNABLE. matrix gates saturate the machine on their own -> serial group; the rest -> pool.
+  G_KIND[$i]="run"
+  [ "${matrix:-0}" = "1" ] && G_SERIAL[$i]=1
+done
 
-  # Each gate runs in a SUBSHELL: it cannot corrupt the runner, or the gate after it.
-  if [ "${units:-0}" = "1" ]; then
-    ( . "$ROOT/tools/ci/gatelib.sh"; . "$f"; require_units && gate_main )
-  else
-    ( . "$ROOT/tools/ci/gatelib.sh"; . "$f"; gate_main )
-  fi
-  if [ $? -eq 0 ]; then pass_msg "$name"; else fail_msg "$name"; fi
+# ── dispatch: POOL concurrently (capped), then the SERIAL group one at a time ─
+running=0
+for (( i=0; i<idx; i++ )); do
+  [ "${G_KIND[$i]}" = "run" ] || continue
+  [ "${G_SERIAL[$i]}" = "0" ] || continue
+  run_gate_bg "$i" "${G_FILE[$i]}" "${G_UNITS[$i]}" &
+  running=$((running + 1))
+  if [ "$running" -ge "$JOBS" ]; then wait -n 2>/dev/null || wait; running=$((running - 1)); fi
+done
+wait
+for (( i=0; i<idx; i++ )); do
+  [ "${G_KIND[$i]}" = "run" ] || continue
+  [ "${G_SERIAL[$i]}" = "1" ] || continue
+  run_gate_bg "$i" "${G_FILE[$i]}" "${G_UNITS[$i]}"   # foreground == alone, whole box to itself
+done
+
+# ── replay in gate-file order: deterministic transcript, verdicts into the arrays ─
+for (( i=0; i<idx; i++ )); do
+  name="${G_NAME[$i]}"
+  case "${G_KIND[$i]}" in
+    noprof)     noprof   "$name" "${G_INFO[$i]}" ;;
+    pending)    pend_msg "$name" "${G_INFO[$i]}" ;;
+    skip)       skip_msg "$name" "absent:${G_INFO[$i]}" ;;
+    strictfail) fail_msg "$name"; echo "        --strict: required and absent:${G_INFO[$i]}" ;;
+    run)
+      banner "$name — ${G_DESC[$i]}" "$(protects "${G_FILE[$i]}")"
+      cat "$RUN_TMP/run_$i.log" 2>/dev/null
+      if [ "$(cat "$RUN_TMP/run_$i.log.rc" 2>/dev/null || echo 1)" -eq 0 ]; then
+        pass_msg "$name"
+      else
+        fail_msg "$name"
+      fi
+      ;;
+  esac
 done
 
 # ── summary ─────────────────────────────────────────────────────────────────

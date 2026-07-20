@@ -11,21 +11,30 @@ gate_units=1
 gate_slow=1
 gate_matrix=1
 
+# GATE_XDIST is OPT-IN and OFF by default. When set to a value pytest-xdist understands (e.g.
+# `auto` or a small integer) each service's suite runs across that many worker processes. It is
+# off by default for two reasons: pytest-xdist must be installed in the service venv, and a suite
+# that shares a fixed port / temp path across tests is not automatically xdist-safe — enabling it
+# blindly could flip a verdict, which this runner must never do. fan_out ALREADY runs the ~20
+# services concurrently, so the default already uses every core; GATE_XDIST only adds
+# within-service parallelism for services whose own suite is the long pole. When you enable it,
+# lower the service-level fan (GATE_SUITES_JOBS) so services × workers does not oversubscribe.
 _suite_one() {
-  local svc="$1" py="$2" log="$3"
+  local svc="$1" py="$2" log="$3" xargs=""
+  [ -n "${GATE_XDIST:-}" ] && xargs="-n ${GATE_XDIST} --dist worksteal"
   # DATASTORE_TEST_DSN is deliberately CLEARED. The postgres contract belongs to the
   # `contracts:postgres` gate, which runs it one unit at a time against the database it OWNS.
   # Leaving the DSN set made 16 concurrent suites TRUNCATE the same table underneath each other;
   # every service reported errors, and the failures looked like adapter bugs. They were the
   # harness. A gate that fans out must declare what it shares — this one shares nothing.
   (cd "$UNITS_DIR/$svc" && env PYTHONHASHSEED="$PRIMARY_SEED" DATASTORE_TEST_DSN= \
-      "$py" -m pytest -q -p no:cacheprovider >"$log" 2>&1)
+      "$py" -m pytest -q -p no:cacheprovider $xargs >"$log" 2>&1)
   echo "$?" > "$log.rc"
 }
 
 gate_main() {
   local svc rc=0 status
-  fan_out gate _suite_one
+  fan_out gate _suite_one "${GATE_SUITES_JOBS:-}"
   for svc in $(services); do                 # ordered replay: deterministic, readable
     printf '  --- %s\n' "$svc"
     status="$(cat "$RUN_TMP/gate_$svc.log.rc" 2>/dev/null || echo 1)"
