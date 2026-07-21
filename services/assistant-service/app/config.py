@@ -124,6 +124,20 @@ class Settings(BaseSettings):
     RETRIEVAL_BM25_K1: float = 1.2
     RETRIEVAL_BM25_B: float = 0.75
 
+    # ── Semantic scoring (optional) ─────────────────────────────────────────
+    # Off by default: embeddings need either a model in-process (a large dependency and image) or
+    # a network call per query and per entry (a key, a bill, a failure mode). Neither belongs in
+    # the path a service takes to boot with nothing configured. Lexical answers on its own.
+    EMBEDDINGS_DRIVER: str = "null"           # null | http
+    EMBEDDINGS_URL: str = ""
+    EMBEDDINGS_MODEL: str = ""
+    EMBEDDINGS_DIMENSIONS: int = 0
+    EMBEDDINGS_TIMEOUT_SECONDS: float = 10.0
+    # Blend weight: 1.0 = purely lexical, 0.0 = purely semantic. Lexical is exact and always finds
+    # a product name or an error code; semantic is fuzzy in both directions. The default leans
+    # lexical because being findable by the exact word is the property users notice losing.
+    RETRIEVAL_HYBRID_ALPHA: float = 0.65
+
     # ── Answering ───────────────────────────────────────────────────────────
     # `extractive` needs no API key and cannot hallucinate: it quotes the retrieved passages. It is
     # the default because a help assistant that requires a key before it does anything is a feature

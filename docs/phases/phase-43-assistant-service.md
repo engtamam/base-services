@@ -136,7 +136,7 @@ when the code exists.
 - [x] **43.4** `catalog` adapter — entries from `GET /api/v1/app/catalog`, capability-filtered, never hardcoded to our service names
 - [x] **43.5** Indexing: chunking, language-aware normalisation (Arabic + English), generation key
 - [x] **43.6** Retrieval: BM25 ranking, surface filter, capability filter, relevance threshold, top-N, token budget
-- [ ] **43.7** `Embeddings` port + optional adapter; hybrid scoring when configured, lexical-only when not
+- [x] **43.7** `Embeddings` port + optional adapter; hybrid scoring when configured, lexical-only when not
 - [x] **43.8** Direct `anchor` lookup — no model, no retrieval, for the `?` icon
 - [x] **43.9** `Model` port: `null` (extractive) default + provider adapters; timeouts; never return an upstream error verbatim
 - [x] **43.10** Grounded synthesis with citations; the abstention gate; per-surface persona and not-found message

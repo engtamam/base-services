@@ -38,6 +38,8 @@ from app.adapters.knowledge_source.composite import CompositeKnowledgeSource
 from app.adapters.knowledge_source.file import FileKnowledgeSource
 from app.adapters.knowledge_source.memory import MemoryKnowledgeSource
 from app.adapters.model.extractive import ExtractiveModel
+from app.adapters.embeddings.http import HttpEmbeddings
+from app.adapters.embeddings.null import NullEmbeddings
 from app.core.conversations import ConversationStore, MessageCrypto
 from app.adapters.telemetry.stdout import StdoutTelemetry
 from app.adapters.token_verifier.hs256 import HS256Verifier
@@ -166,6 +168,15 @@ def _build_conversations(settings: Settings, datastore) -> Any:
         new_id=lambda: _uuid.uuid4().hex)
 
 
+_EMBEDDINGS: dict[str, Builder] = {
+    "null": lambda s: NullEmbeddings(),
+    "http": lambda s: HttpEmbeddings(s.EMBEDDINGS_URL, s.INTERNAL_SERVICE_TOKEN,
+                                     model=s.EMBEDDINGS_MODEL,
+                                     dimensions=s.EMBEDDINGS_DIMENSIONS,
+                                     timeout=s.EMBEDDINGS_TIMEOUT_SECONDS),
+}
+
+
 _MODEL: dict[str, Builder] = {
     # Answers by quoting retrieved passages: no API key, no latency, and it cannot hallucinate.
     "extractive": lambda s: ExtractiveModel(max_passages=s.MODEL_EXTRACTIVE_MAX_PASSAGES),
@@ -197,6 +208,7 @@ class Container:
     kb_source: Any = None
     conversations: Any = None
     model: Any = None
+    embeddings: Any = None
     consent_gate: Any = None
 
     def describe(self) -> list[dict[str, str]]:
@@ -263,5 +275,6 @@ def build_container(settings: Settings) -> Container:
         kb_source=_build_kb_source(settings),
         conversations=_build_conversations(settings, datastore),
         model=_pick(_MODEL, settings.MODEL_DRIVER, "model", settings),
+        embeddings=_pick(_EMBEDDINGS, settings.EMBEDDINGS_DRIVER, "embeddings", settings),
         consent_gate=_pick(_CONSENT_GATE, settings.CONSENT_GATE_DRIVER, "consent_gate", settings),
     )

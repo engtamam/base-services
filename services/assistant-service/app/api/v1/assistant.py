@@ -45,7 +45,9 @@ def build_kb(request: Request) -> KbService:
              "max_context_chars": s.RETRIEVAL_MAX_CONTEXT_CHARS,
              "bm25_k1": s.RETRIEVAL_BM25_K1,
              "bm25_b": s.RETRIEVAL_BM25_B,
-             "max_answer_tokens": s.MODEL_MAX_ANSWER_TOKENS},
+             "max_answer_tokens": s.MODEL_MAX_ANSWER_TOKENS,
+             "hybrid_alpha": s.RETRIEVAL_HYBRID_ALPHA},
+        embeddings=c.embeddings,
     )
 
 

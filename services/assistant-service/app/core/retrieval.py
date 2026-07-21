@@ -66,6 +66,8 @@ class KbIndex:
         self._len = [max(1, len(c.tokens)) for c in chunks]
         self._avg_len = (sum(self._len) / len(self._len)) if self._len else 1.0
         # term -> chunk ordinals containing it
+        # Filled by attach_vectors() when an embedder is configured; empty means lexical only.
+        self._vectors: list[list[float]] = []
         self._postings: dict[str, list[int]] = {}
         for i, tf in enumerate(self._tf):
             for term in tf:
@@ -73,6 +75,26 @@ class KbIndex:
 
     def __len__(self) -> int:
         return len(self._chunks)
+
+    # ── semantic half (optional) ──────────────────────────────────────────────
+    def attach_vectors(self, vectors: list[list[float]]) -> None:
+        """Store one vector per chunk, in chunk order.
+
+        Length is checked rather than trusted: a short batch would misalign every vector with the
+        wrong chunk, and the result is not an obvious error but a subtly wrong ranking — the kind
+        that reads as "the assistant is a bit poor" for months.
+        """
+        if len(vectors) != len(self._chunks):
+            raise ValueError(
+                f"got {len(vectors)} vectors for {len(self._chunks)} chunks — a misaligned vector "
+                f"scores the wrong passage and looks like mediocre quality, not a bug")
+        self._vectors = [_unit(v) for v in vectors]
+
+    @staticmethod
+    def _cosine(a: list[float], b: list[float]) -> float:
+        if not a or not b or len(a) != len(b):
+            return 0.0
+        return sum(x * y for x, y in zip(a, b))       # both already unit-length
 
     def _candidates(self, *, surface: str, caps: frozenset[str], lang: str) -> list[int]:
         """Chunk ordinals this caller may see, in this language, on this surface."""
@@ -102,7 +124,8 @@ class KbIndex:
         return lang not in (set(entry.title) | set(entry.body))
 
     def search(self, query: str, *, surface: str = "", caps: frozenset[str] = frozenset(),
-               lang: str = "", limit: int = 8, min_score: float = 0.0) -> list[Hit]:
+               lang: str = "", limit: int = 8, min_score: float = 0.0,
+               query_vector: list[float] | None = None, alpha: float = 1.0) -> list[Hit]:
         """The best passages for `query`, already filtered to what this caller may see.
 
         Returns at most one chunk per entry: three passages of one page crowd out three different
@@ -130,6 +153,32 @@ class KbIndex:
                 tf = self._tf[i][term]
                 norm = tf + self._k1 * (1 - self._b + self._b * self._len[i] / self._avg_len)
                 scores[i] = scores.get(i, 0.0) + idf * (tf * (self._k1 + 1)) / norm
+
+        # HYBRID. Lexical is exact and will always find a product name, an error code or a field
+        # label; semantic is fuzzy in both directions. Blending keeps exactness while adding the
+        # ability to tell "phone number" from "VAT number" — the case no single threshold splits,
+        # because one side wants a higher bar and the other a lower one.
+        #
+        # Both halves are normalised to [0,1] over the CANDIDATE set before blending: raw BM25 is
+        # unbounded and cosine is not, so adding them directly would make the blend weight mean
+        # something different for every query.
+        # `alpha < 1.0` is a SHORT-CIRCUIT, not a behaviour rule: at alpha == 1.0 the blend below
+        # reduces to the lexical score and is rescaled back onto it, so removing this clause
+        # changes no result — confirmed by mutation. It stays because the common case (no
+        # embedder configured) should not walk every candidate to compute a zero.
+        if query_vector and self._vectors and alpha < 1.0:
+            qv = _unit(query_vector)
+            top = max(scores.values()) if scores else 0.0
+            blended: dict[int, float] = {}
+            for i in candidates:
+                lex = (scores.get(i, 0.0) / top) if top > 0 else 0.0
+                sem = max(0.0, self._cosine(qv, self._vectors[i])) if i < len(self._vectors) else 0.0
+                combined = alpha * lex + (1.0 - alpha) * sem
+                if combined > 0:
+                    blended[i] = combined
+            # Rescaled back onto the lexical range so a configured min_score keeps its meaning
+            # rather than silently becoming stricter the moment embeddings are switched on.
+            scores = {i: v * top for i, v in blended.items()} if top > 0 else blended
 
         ranked = sorted(scores.items(), key=lambda kv: (-kv[1], self._chunks[kv[0]].ref))
         hits: list[Hit] = []
@@ -177,3 +226,14 @@ def budgeted(hits: list[Hit], *, max_chars: int) -> list[Hit]:
         out.append(hit)
         used += cost
     return out
+
+
+def _unit(v: list[float]) -> list[float]:
+    """Normalise to unit length so cosine similarity is a plain dot product.
+
+    Done once at store time rather than per comparison: an un-normalised vector makes similarity
+    depend on magnitude, and magnitude differs between providers and even between models from one
+    provider — so the same KB would rank differently for a reason nobody could see.
+    """
+    norm = math.sqrt(sum(x * x for x in v))
+    return [x / norm for x in v] if norm else list(v)

@@ -85,3 +85,56 @@ def test_ask_never_surfaces_help_the_caller_cannot_use():
     answer, _ = run(_svc().ask(question="purge", surface="admin", caps=frozenset(),
                                lang="en", not_found_text="nope"))
     assert answer.abstained, "admin help reached a caller without the capability"
+
+
+# ── embeddings degrade, never fail ────────────────────────────────────────────
+class _BrokenEmbedder:
+    driver, enabled, dimensions = "broken", True, 2
+    async def embed(self, texts): raise RuntimeError("embedder down")
+    async def health(self): return False
+    async def close(self): return None
+
+
+class _FakeEmbedder:
+    driver, enabled, dimensions = "fake", True, 2
+    def __init__(self): self.batches = 0
+    async def embed(self, texts):
+        self.batches += 1
+        return [[1.0, 0.0] for _ in texts]
+    async def health(self): return True
+    async def close(self): return None
+
+
+def _svc_emb(emb, doc=DOC):
+    return KbService(source=MemoryKnowledgeSource(raw=doc), model=ExtractiveModel(),
+                     cfg={**CFG, "hybrid_alpha": 0.5}, embeddings=emb)
+
+
+def test_an_unreachable_embedder_still_answers_lexically():
+    """An optional quality improvement must not become a hard dependency. An assistant that goes
+    down because a similarity endpoint did has traded a working product for a better ranking."""
+    answer, hits = run(_svc_emb(_BrokenEmbedder()).ask(
+        question="vat number", surface="web", caps=frozenset(), lang="en", not_found_text="nope"))
+    assert not answer.abstained and hits
+
+
+def test_embedding_happens_in_one_batch_not_one_call_per_entry():
+    # Per-entry calls turn a thousand-entry rebuild into a thousand round trips.
+    emb = _FakeEmbedder()
+    svc = _svc_emb(emb)
+    run(svc.index())
+    assert emb.batches == 1
+
+
+def test_the_index_is_not_re_embedded_when_the_kb_is_unchanged():
+    emb = _FakeEmbedder()
+    svc = _svc_emb(emb)
+    run(svc.index()); run(svc.index())
+    assert emb.batches == 1, "an unchanged KB was embedded twice"
+
+
+def test_no_embedder_means_no_semantic_call_at_all():
+    svc = _svc_emb(None)
+    answer, _ = run(svc.ask(question="vat number", surface="web", caps=frozenset(),
+                            lang="en", not_found_text="nope"))
+    assert not answer.abstained
