@@ -88,7 +88,7 @@ One service per task, and each one is finished before the next starts: routes, d
 actions, audit entries, tests, gate run. A half-migrated service is worse than an unmigrated one,
 because an operator cannot tell which settings are live.
 
-- [ ] **44.1** `SecretStore` core: envelope encryption, write-only access, masked hints, previous-value window
+- [x] **44.1** `SecretStore` core: envelope encryption, write-only access, masked hints, previous-value window
 - [ ] **44.2** `RuntimeConfig` core: typed per-tenant overrides, config fallback, the same validation as the boot guard
 - [ ] **44.3** The shared admin surface: set / rotate / verify / clear, `platform.secrets`, audited — declared once and copied per service, since services stay self-contained
 - [ ] **44.4** A gate: no route may return a stored secret, and every secret-setting route must declare its capability and audit
