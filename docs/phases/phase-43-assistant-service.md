@@ -131,8 +131,8 @@ Tick as they land. A task is done when it is wired, tested, and its failure mode
 when the code exists.
 
 - [x] **43.1** Service skeleton from `_template`: config, container, ports, manifest, health, CORS, PII salt guard
-- [ ] **43.2** KB entry model + validation; language maps; the optional-field contract (`title`/`body` required, rest optional)
-- [ ] **43.3** `KnowledgeSource` port + `file` / `http` / `datastore` adapters; hot-reload keyed by a generation
+- [x] **43.2** KB entry model + validation; language maps; the optional-field contract (`title`/`body` required, rest optional)
+- [x] **43.3** `KnowledgeSource` port + `file` / `http` / `datastore` adapters; hot-reload keyed by a generation
 - [ ] **43.4** `catalog` adapter — entries from `GET /api/v1/app/catalog`, capability-filtered, never hardcoded to our service names
 - [ ] **43.5** Indexing: chunking, language-aware normalisation (Arabic + English), generation key
 - [ ] **43.6** Retrieval: BM25 ranking, surface filter, capability filter, relevance threshold, top-N, token budget
