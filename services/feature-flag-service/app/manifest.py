@@ -77,7 +77,11 @@ def build_manifest(
             {"path": "/api/v1/maintenance", "tier": "user", "method": "GET"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
-        "events": {"emitted": [], "consumed": []},
+        # DECLARED, because the manifest is the only place a consumer can discover these exist.
+        # flag.exposed is what makes an A/B experiment measurable — an analytics pipeline cannot
+        # subscribe to a topic it has never been told about, so an undeclared exposure event means
+        # the experiment silently has no data.
+        "events": {"emitted": ["flag.exposed", "maintenance.changed"], "consumed": []},
         "admin_actions": _admin_actions(),
         "user_actions": _user_actions(),
     }

@@ -15,6 +15,7 @@ from typing import Any
 from app.core import entitlements as _ent
 from app.core.entitlement_resolver import EntitlementResolver
 from app.core import pricing
+from app.core import events as _events
 from app.core import settlement as _stl
 from app.core.models import (Coupon, Invoice, Payment, Plan, Settlement, Subscription, iso,
                              new_id, now_ts)
@@ -37,7 +38,8 @@ class BillingService:
                  invoices: InvoiceStore, payments: PaymentStore, usage: UsageStore,
                  ledger: LedgerStore, idempo: IdempotencyStore,
                  gateway, tax, einvoicer, pdf, config: dict[str, Any], cache=None,
-                 settlements: SettlementStore | None = None, clock=now_ts) -> None:
+                 settlements: SettlementStore | None = None, clock=now_ts,
+                 emitter=None) -> None:
         self._plans, self._coupons, self._subs = plans, coupons, subs
         self._invoices, self._payments, self._usage = invoices, payments, usage
         self._ledger, self._idempo = ledger, idempo
@@ -46,6 +48,10 @@ class BillingService:
         self._cache = cache
         self._settlements = settlements
         self._clock = clock
+        # Publishes domain events so a consumer can react without this service knowing it exists.
+        # None means nothing is wired and emitting is a no-op — this service records money
+        # correctly with or without anyone listening.
+        self._events = emitter
         # The union resolver. Config is passed WHOLE and required — see EntitlementResolver's
         # REQUIRED_CFG: a missing key fails at construction rather than silently resolving a
         # tenant against a default nobody chose.
@@ -236,7 +242,17 @@ class BillingService:
             sub.cancel_at_period_end = True
         else:
             sub.status = "canceled"
-        return await self._subs.save(sub)
+        saved = await self._subs.save(sub)
+        if self._events is not None:
+            # `at_period_end` is carried because the two cases are genuinely different to a
+            # consumer: one keeps serving the customer until the period ends, the other stops now.
+            # A consumer that cannot tell them apart either cuts access early or never cuts it.
+            await self._events.emit(_events.SUBSCRIPTION_CANCELLED, {
+                "tenant": sub.tenant, "subscription_id": sub.id, "plan_id": sub.plan_id,
+                "at_period_end": bool(at_period_end), "status": sub.status,
+                "current_period_end": getattr(sub, "current_period_end", "") or "",
+            })
+        return saved
 
     async def _set_status(self, sub_id: str, status: str,
                           *, allowed_from: tuple[str, ...] = ()) -> Subscription | None:
@@ -305,6 +321,20 @@ class BillingService:
         await self._subs.save(sub)
         await self._charge_invoice(inv, sub.payment_token)
         await self._idempo.mark(key, {"invoice_id": inv.id})
+        if self._events is not None:
+            # Emitted for the RENEWAL, whether or not the charge succeeded — the period rolled
+            # either way, and a consumer granting a plan's included allowance needs the period, not
+            # the payment. Whether the money arrived is payment.succeeded / payment.failed, which a
+            # consumer that cares about payment subscribes to separately.
+            #
+            # `period_key` is the idempotency key the cycle itself used, so a consumer granting
+            # credits can key on the same period and cannot double-grant across a replay.
+            await self._events.emit(_events.SUBSCRIPTION_RENEWED, {
+                "tenant": sub.tenant, "subscription_id": sub.id, "plan_id": sub.plan_id,
+                "invoice_id": inv.id, "period_key": key,
+                "period_start": sub.current_period_start, "period_end": sub.current_period_end,
+                "limits": dict(sub.limits_snapshot or {}) if hasattr(sub, "limits_snapshot") else {},
+            })
         return await self._invoices.fetch(inv.id) or inv
 
     def _split_tax(self, base_minor: int, includes_tax: bool, *, reverse_charge: bool = False) -> tuple[int, int, int]:
@@ -400,6 +430,16 @@ class BillingService:
         await self._ledger.record(tenant=inv.tenant, kind="charge", amount_minor=inv.total_minor,
                                   currency=inv.currency, invoice_id=inv.id,
                                   source=source or inv.number)
+        # Emitted from HERE, the one place an invoice becomes paid, rather than from each of the
+        # three callers. A card charge, a webhook reconcile and a settlement must produce the same
+        # event or a consumer's view of "paid" depends on how the money arrived.
+        #
+        # AFTER the ledger, never before: the event says the payment is recorded, and a consumer
+        # that reads back on receipt must not find a row that is not there yet.
+        if self._events is not None:
+            payload = _events.payment_payload(inv, source=source or inv.number)
+            await self._events.emit(_events.INVOICE_PAID, payload)
+            await self._events.emit(_events.PAYMENT_SUCCEEDED, payload)
 
     # ── off-gateway settlement (Phase 27) ───────────────────────────────────────
     async def settle(self, *, invoice_id: str, method: str, reference: str, amount_minor: int,
@@ -629,6 +669,15 @@ class BillingService:
         else:
             pay.next_retry_at = now_ts() + base_h * (2 ** pay.attempts) * 3600
         pay.attempts += 1
+        if self._events is not None:
+            # `final` distinguishes "we will try again" from "we have given up and suspended".
+            # A consumer that treats every failure as final dunning-mails a customer whose retry
+            # would have succeeded an hour later.
+            await self._events.emit(_events.PAYMENT_FAILED, {
+                "tenant": pay.tenant, "invoice_id": pay.invoice_id, "payment_id": pay.id,
+                "attempts": pay.attempts, "final": pay.next_retry_at is None,
+                "next_retry_at": pay.next_retry_at or "",
+            })
 
     async def _suspend(self, tenant: str, invoice_id: str) -> None:
         inv = await self._invoices.fetch(invoice_id)
@@ -727,6 +776,13 @@ class BillingService:
                 await self._ledger.record(tenant=inv.tenant, kind="refund",
                                           amount_minor=-(amount_minor or inv.total_minor),
                                           currency=inv.currency, invoice_id=inv.id, source="refund")
+                if self._events is not None:
+                    # A consumer that granted something on payment.succeeded needs to know to take
+                    # it back. Without this, a refunded customer keeps whatever the payment bought.
+                    await self._events.emit(_events.PAYMENT_REFUNDED, {
+                        **_events.payment_payload(inv, payment_id=pay.id, source="refund"),
+                        "amount_minor": amount_minor or inv.total_minor,
+                    })
         return {"ok": charge.ok, "status": charge.status}
 
     def render_pdf(self, invoice: dict) -> tuple[str, bytes] | None:

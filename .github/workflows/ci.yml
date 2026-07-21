@@ -62,6 +62,10 @@ jobs:
       - name: "safety:no-secret-reads — a stored credential never leaves through an API"
         run: bash tools/ci/run_all_gates.sh --only safety:no-secret-reads
 
+      # gates: safety:event-contract
+      - name: "safety:event-contract — a service admits to the events it publishes"
+        run: bash tools/ci/run_all_gates.sh --only safety:event-contract
+
       # gates: safety:runner
       - name: "safety:runner — the gate runner's own guards, plus scripts/tests"
         run: |

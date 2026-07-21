@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.core.events import EMITTED as _EMITTED
+
 from app.config import Settings
 
 
@@ -97,7 +99,10 @@ def build_manifest(
             {"path": "/api/v1/operator/config/{}", "tier": "user", "method": "DELETE"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
-        "events": {"emitted": [], "consumed": []},
+        # DECLARED, because a consumer cannot subscribe to an event it cannot discover. An
+        # undeclared event reaches nobody, which is the same as not publishing it — and the
+        # safety:event-contract gate fails the build if this list and core/events.py disagree.
+        "events": {"emitted": list(_EMITTED), "consumed": []},
         "admin_actions": _admin_actions(),
         "user_actions": _user_actions(),
     }

@@ -317,6 +317,14 @@ class Settings(BaseSettings):
     # API: a key that protects the secrets and is itself editable in the UI protects nothing from
     # someone who has the UI. Empty means the operator surface refuses rather than storing in the
     # clear.
+    # ── domain events ─────────────────────────────────────────────────────────
+    # What happens when the event bus cannot be reached. The money has already moved by the time
+    # these publish, so refusing to record a payment because a broker is unreachable turns a
+    # degraded notification path into a failed payment. fail_closed exists for platforms that
+    # would rather refuse than proceed unobserved; it is not the default, because here the
+    # alternative to a missed hint is a lost payment.
+    EVENT_PUBLISH_FAILURE: str = "fail_open"      # fail_open | fail_closed
+
     SECRETS_KEK: str = ""
     SECRETS_ROTATION_WINDOW_SECONDS: int = 300
     # How long resolved gateway credentials are reused before being read again. Resolving on every

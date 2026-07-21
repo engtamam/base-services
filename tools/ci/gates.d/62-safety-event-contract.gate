@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+gate_name="safety:event-contract"
+gate_desc="a service admits to the events it publishes"
+gate_protects="The manifest is the only place a consumer can learn an event exists. There is no
+registry, no schema server, and no way to observe a topic that has never fired. So
+an undeclared event is not a documentation gap — it reaches nobody, which is
+operationally identical to not publishing it. The code runs, the broker accepts it,
+nothing looks wrong anywhere, and the integration that should have existed never
+gets built, because the person who would have built it could not see the event.
+
+That was the state of this repo. billing-service published nothing and declared
+\"emitted\": []. feature-flag-service DID publish flag.exposed — what makes an A/B
+experiment measurable — and also declared nothing, so an analytics pipeline had no
+way to know the exposure event existed and the experiment silently had no data.
+
+Also fails the reverse: a declared event nothing publishes leaves a subscriber
+waiting for ever while looking perfectly healthy.
+
+Publishers that compute their topic are NOTED, not failed — the check does not claim
+to have proved what it cannot."
+gate_needs="python"
+gate_env=""
+gate_subject="services/*/app/manifest.py"
+gate_units=0
+gate_slow=0
+
+gate_main() {
+  "$PY" tools/ci/check_event_contract.py || return 1
+  return 0
+}
+
+# A gate that cannot fail is decoration. Plant the exact defect — a named event published and not
+# declared — and require a refusal.
+gate_selftest() {
+  local probe="$RUN_TMP/svc-events"
+  mkdir -p "$probe/undeclared/app/core"
+  cat > "$probe/undeclared/app/manifest.py" <<'PY'
+def build_manifest(settings):
+    return {"events": {"emitted": [], "consumed": []}}
+PY
+  cat > "$probe/undeclared/app/core/thing.py" <<'PY'
+async def go(self):
+    await self._bus.publish("thing.happened", {})
+PY
+  ! ( SERVICES_ROOT="$probe" "$PY" tools/ci/check_event_contract.py >/dev/null 2>&1 )
+}

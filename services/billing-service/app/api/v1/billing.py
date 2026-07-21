@@ -13,6 +13,7 @@ from app.api.auth import Principal
 from app.api.authz import require_any_capability
 from app.config import get_settings
 from app.core import settlement as _stl
+from app.core.events import Emitter
 from app.core.billing_service import BillingService
 from app.core.stores import (CouponStore, IdempotencyStore, InvoiceStore, LedgerStore,
                              PaymentStore, PlanStore, SettlementStore, SubscriptionStore,
@@ -47,6 +48,8 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
         ledger=LedgerStore(c.datastore, cas_max_retries=s.LEDGER_CAS_MAX_RETRIES,
                            cas_backoff_ms=s.LEDGER_CAS_BACKOFF_MS),
         idempo=IdempotencyStore(c.datastore),
+        emitter=Emitter(c.event_bus,
+                        fail_closed=s.EVENT_PUBLISH_FAILURE == "fail_closed"),
         gateway=gateway, tax=c.tax_calculator, einvoicer=c.einvoicer, pdf=c.pdf_renderer,
         cache=c.cache, settlements=SettlementStore(c.datastore),
         config={"currency": s.CURRENCY, "trial_days": s.TRIAL_DAYS, "vat_rate": s.VAT_RATE,
