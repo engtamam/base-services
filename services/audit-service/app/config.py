@@ -105,7 +105,10 @@ class Settings(BaseSettings):
     # `null` records NOTHING and says so; the boot guard refuses it in production, because a
     # service that cannot witness its own privileged actions has no audit trail at all — and an
     # empty hash chain looks like a working control while answering nothing.
-    AUDIT_SINK_DRIVER: str = "null"          # null | http | eventbus
+    # in_process: audit-service records its OWN actions by calling its core directly, never
+    # over HTTP to itself (that self-call fail-closes when every worker is busy). This is the
+    # right default for THIS service; http/eventbus ship a service's audit to a SEPARATE one.
+    AUDIT_SINK_DRIVER: str = "in_process"     # in_process | null | http | eventbus
     AUDIT_SERVICE_URL: str = ""              # e.g. http://audit-service:8000
     # OUR ingest path is a default, not an assumption about another platform's endpoint.
     AUDIT_INGEST_PATH: str = "/internal/audit"

@@ -159,6 +159,12 @@ AUDIT_ENV = {
     "AUDIT_SINK_DRIVER": "http",
     "AUDIT_SERVICE_URL": "http://audit-service:8000",
 }
+# audit-service audits ITSELF, in-process — never over HTTP to itself (see _env_block). No URL:
+# in_process needs no network target, and emitting an empty AUDIT_SERVICE_URL would override the
+# service default with nothing.
+AUDIT_SELF_ENV = {
+    "AUDIT_SINK_DRIVER": "in_process",
+}
 
 STATIC_ENV: dict[str, dict[str, str]] = {
     "compliance-service": {
@@ -195,12 +201,20 @@ def _env_block(name: str, cfg: dict) -> str:
     default with nothing.
     """
     env = dict(product.env_for(name, cfg) or {})
-    # audit-service points at ITSELF, deliberately. Its own auditable actions are purge, retention
-    # and erasure — rare, and every one of them REMOVES from the log, so they are exactly the
-    # actions that must be recorded before they happen. A loopback call costs nothing at that
-    # volume, keeps one code path for every service, and means a purge the service cannot record
-    # is a purge that does not happen.
-    if name != "_template":
+    # Every service records its privileged actions to audit-service over HTTP — except
+    # audit-service itself, which records IN-PROCESS.
+    #
+    # It used to point its http sink at itself ("a loopback costs nothing, one code path for
+    # everyone"). That reasoning was wrong and it was a real hang: an erase handler occupies a
+    # worker while it POSTs subject.erased back to the same service, so under load — several DSARs,
+    # or the verify cron firing during erases — every worker is busy and the self-call finds no
+    # free loop, times out, and the critical action fail-closes with a 503. Adding workers only
+    # widens the window. audit-service records to its own core directly, which is faster, cannot
+    # deadlock, and is more correct: a hash-chain append should never depend on a network round
+    # trip that can fail half-way and cannot be safely retried.
+    if name == "audit-service":
+        env.update(AUDIT_SELF_ENV)
+    elif name != "_template":
         env.update(AUDIT_ENV)
     env.update(STATIC_ENV.get(name, {}))
     if not env:

@@ -30,6 +30,7 @@ from app.adapters.secrets.file import FileSecrets
 from app.adapters.secrets.vault import VaultSecrets
 from app.adapters.audit_sink.eventbus import EventBusAuditSink
 from app.adapters.audit_sink.http import HttpAuditSink
+from app.adapters.audit_sink.in_process import InProcessAuditSink
 from app.adapters.audit_sink.null import NullAuditSink
 from app.adapters.hold_refs.http import HttpHoldRefs
 from app.adapters.hold_refs.null import NullHoldRefs
@@ -197,10 +198,16 @@ class Container:
                     pass
 
 
-def _build_audit_sink(settings: Settings, event_bus) -> Any:
+def _build_audit_sink(settings: Settings, event_bus, datastore, integrity) -> Any:
     """The eventbus sink must publish on the SAME bus the container hands out — a second instance
-    would be a second in-memory broker, so events would vanish while the sink reported success."""
+    would be a second in-memory broker, so events would vanish while the sink reported success.
+
+    `in_process` is the one that matters here: it must record into the SAME datastore + integrity
+    the rest of the service reads and verifies, so it is handed them directly rather than building
+    a second chain nobody else can see."""
     driver = settings.AUDIT_SINK_DRIVER
+    if driver == "in_process":
+        return InProcessAuditSink(datastore=datastore, integrity=integrity, settings=settings)
     if driver == "eventbus":
         return EventBusAuditSink(event_bus, settings.AUDIT_TOPIC)
     return _pick(_AUDIT_SINK, driver, "audit_sink", settings)
@@ -209,8 +216,12 @@ def _build_audit_sink(settings: Settings, event_bus) -> Any:
 def build_container(settings: Settings) -> Container:
     """Resolve every port from config. Fail-fast on any unknown driver."""
     event_bus = _pick(_EVENTBUS, settings.EVENTBUS_DRIVER, "event_bus", settings)
+    # datastore + integrity are built first: the in_process audit sink records into these exact
+    # instances, so it must witness the same chain the service serves — not a second one.
+    datastore = _pick(_DATASTORE, settings.DATASTORE_DRIVER, "datastore", settings)
+    integrity = _pick(_INTEGRITY, settings.INTEGRITY_DRIVER, "integrity", settings)
     return Container(
-        datastore=_pick(_DATASTORE, settings.DATASTORE_DRIVER, "datastore", settings),
+        datastore=datastore,
         cache=_pick(_CACHE, settings.CACHE_DRIVER, "cache", settings),
         event_bus=event_bus,
         queue=_pick(_QUEUE, settings.QUEUE_DRIVER, "queue", settings),
@@ -219,8 +230,8 @@ def build_container(settings: Settings) -> Container:
         token_verifier=_pick(_TOKEN, settings.TOKEN_VERIFIER_DRIVER, "token_verifier", settings),
         rate_limiter=_pick(_RATELIMITER, settings.RATELIMITER_DRIVER, "rate_limiter", settings),
         telemetry=_pick(_TELEMETRY, settings.TELEMETRY_DRIVER, "telemetry", settings),
-        audit_sink=_build_audit_sink(settings, event_bus),
+        audit_sink=_build_audit_sink(settings, event_bus, datastore, integrity),
         hold_refs=_pick(_HOLD_REFS, settings.HOLD_REFS_DRIVER, "hold_refs", settings),
-        integrity=_pick(_INTEGRITY, settings.INTEGRITY_DRIVER, "integrity", settings),
+        integrity=integrity,
         exporter=_pick(_EXPORTER, settings.EXPORTER_DEFAULT, "exporter", settings),
     )

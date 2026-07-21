@@ -165,7 +165,11 @@ def emits(name: str) -> bool:
     if not values.exists():
         return False
     text = values.read_text(encoding="utf-8")
-    match = re.search(r'^\s*AUDIT_SINK_DRIVER:\s*"?([a-z]+)"?', text, re.MULTILINE)
+    # [a-z_] not [a-z]: driver names include `in_process`. With [a-z] the match stopped at the
+    # underscore and captured "in", which happened to pass (it is not "null") but for the wrong
+    # reason — a driver literally named "null_something" would have been captured as "null" and
+    # wrongly failed.
+    match = re.search(r'^\s*AUDIT_SINK_DRIVER:\s*"?([a-z_]+)"?', text, re.MULTILINE)
     return bool(match) and match.group(1) != "null"
 
 
