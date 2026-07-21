@@ -318,6 +318,17 @@ class Settings(BaseSettings):
     RECORDING_FILE_SERVICE_TOKEN: str = ""        # a service JWT with files.upload for the sink to post
     TRANSCODE_PROFILES: str = ""                  # JSON: {"id": {"scale":"1280:-1","vbitrate":"2M",...}}
 
+    # ── operator-managed credentials ──────────────────────────────────────────
+    # Seals credentials an operator sets from the panel. Never settable through any API: a key
+    # that protects the secrets and is itself editable in the UI protects nothing from someone
+    # who has the UI. Empty means the operator surface refuses rather than storing in the clear.
+    SECRETS_KEK: str = ""
+    SECRETS_ROTATION_WINDOW_SECONDS: int = 300
+    # How long a resolved sink credential is reused before it is read again. A recording sink
+    # authenticates on every segment — one datastore read and one decrypt per 60-second segment,
+    # per session, to support a change that happens a few times a year.
+    RECORDING_CREDENTIAL_REFRESH_SECONDS: int = 30
+
     # Retention & export.
     RETENTION_DAYS: int = 30
     RETENTION_MAX_BYTES: int = 0                  # 0 = unlimited (age-based only)
@@ -457,6 +468,19 @@ class Settings(BaseSettings):
                 raise ValueError("RECORDING_FILE_SERVICE_URL is required when recording to file-service")
             if self.WEBRTC_ENABLED and self.MEDIA_EGRESS_DRIVER == "turn" and not self.TURN_URLS:
                 raise ValueError("MEDIA_EGRESS_DRIVER=turn requires TURN_URLS")
+
+        if self.SECRETS_KEK and (
+                self.RECORDING_CREDENTIAL_REFRESH_SECONDS > self.SECRETS_ROTATION_WINDOW_SECONDS):
+            # The refresh window is how long a replica may keep using the old credential; the
+            # rotation window is how long the old one stays valid. If refresh outlives rotation the
+            # two stop overlapping, and a rotation opens a gap where a live recorder uploads with a
+            # token file-service has already stopped accepting — segments failing, silently, for a
+            # change that looked successful in the panel. Footage lost that way cannot be re-taken.
+            raise ValueError(
+                f"RECORDING_CREDENTIAL_REFRESH_SECONDS ({self.RECORDING_CREDENTIAL_REFRESH_SECONDS}) "
+                f"must not exceed SECRETS_ROTATION_WINDOW_SECONDS "
+                f"({self.SECRETS_ROTATION_WINDOW_SECONDS}) — otherwise a rotation leaves a window "
+                f"where the sink uploads with a credential the store no longer accepts")
 
     @field_validator("INTERNAL_SERVICE_TOKEN")
     @classmethod

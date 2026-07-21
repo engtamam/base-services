@@ -21,12 +21,23 @@ router = APIRouter(prefix="/api/v1/zatca", tags=["zatca"])
 _ADMIN = require_any_capability("platform.zatca", "zatca.manage")
 
 
-def build_zatca(request: Request) -> ZatcaService:
+async def build_zatca(request: Request, tenant: str = "") -> ZatcaService:
+    """Assemble the service for this request.
+
+    Async because the signer credential is resolved from what an operator may have set after
+    launch, rather than captured once at boot. The resolver caches, so this is a dict lookup on all
+    but the first call in each refresh window.
+    """
     c = request.app.state.container
     s = get_settings()
+    signer = c.zatca_signer
+    creds = getattr(request.app.state, "signer_credentials", None)
+    if creds is not None:
+        from app.container import rebuild_signer
+        signer = rebuild_signer(s, await creds.token(tenant), c.zatca_signer)
     return ZatcaService(
         invoices=InvoiceStore(c.datastore), settings=SettingsStore(c.datastore, s.seal_key),
-        signer=c.zatca_signer, fatoora=c.fatoora_client, qr=c.qr_renderer,
+        signer=signer, fatoora=c.fatoora_client, qr=c.qr_renderer,
         vat_rate=s.VAT_RATE, currency=s.CURRENCY,
         retry={"base_ms": s.ZATCA_RETRY_BASE_MS, "max_ms": s.ZATCA_RETRY_MAX_MS,
                "max_attempts": s.ZATCA_RETRY_MAX_ATTEMPTS}, list_limit=s.ZATCA_LIST_LIMIT,
@@ -57,13 +68,13 @@ class OnboardIn(BaseModel):
 # ── settings ──────────────────────────────────────────────────────────────────
 @router.get("/settings")
 async def get_settings_route(request: Request, principal: Principal = Depends(_ADMIN)) -> dict:
-    svc = build_zatca(request)
+    svc = (await build_zatca(request))
     return await svc._set.view(op_tenant(principal))   # view never returns CSID material
 
 
 @router.put("/settings")
 async def put_settings(request: Request, body: SettingsIn, principal: Principal = Depends(_ADMIN)) -> dict:
-    svc = build_zatca(request)
+    svc = (await build_zatca(request))
     return await svc._set.put(op_tenant(principal, body.tenant), body.model_dump(exclude={"tenant"}))
 
 
@@ -75,7 +86,7 @@ async def onboard_compliance(request: Request, body: OnboardIn, principal: Princ
     await request.app.state.auditor.record(
         "zatca.onboarded_compliance", actor=principal.subject, tenant=principal.tenant, resource="csid",
         ip=request.client.host if request.client else "")
-    svc = build_zatca(request)
+    svc = (await build_zatca(request))
     try:
         return await svc.onboard_compliance(op_tenant(principal, body.tenant),
                                             otp=body.otp, csr_meta=body.csr_meta)
@@ -93,21 +104,21 @@ async def onboard_production(request: Request, principal: Principal = Depends(_A
     await request.app.state.auditor.record(
         "zatca.onboarded_production", actor=principal.subject, tenant=principal.tenant, resource="csid",
         ip=request.client.host if request.client else "")
-    return await build_zatca(request).onboard_production(op_tenant(principal, tenant))
+    return await (await build_zatca(request)).onboard_production(op_tenant(principal, tenant))
 
 
 # ── invoices ──────────────────────────────────────────────────────────────────
 @router.get("/invoices")
 async def list_invoices(request: Request, needs_attention: bool = False,
                         principal: Principal = Depends(_ADMIN)) -> dict:
-    svc = build_zatca(request)
+    svc = (await build_zatca(request))
     return {"invoices": await svc._inv.list(op_tenant(principal), needs_attention=needs_attention,
                                             limit=get_settings().ZATCA_LIST_LIMIT)}
 
 
 @router.post("/invoices/{invoice_id}/resubmit")
 async def resubmit(request: Request, invoice_id: str, principal: Principal = Depends(_ADMIN)) -> dict:
-    svc = build_zatca(request)
+    svc = (await build_zatca(request))
     inv = await svc._inv.get(invoice_id)
     if inv is None or (
             "platform.zatca" not in principal.caps and inv.tenant != (principal.tenant or "__none__")):
@@ -121,7 +132,7 @@ async def resubmit(request: Request, invoice_id: str, principal: Principal = Dep
 @router.get("/invoices/{invoice_id}/qr")
 async def invoice_qr(request: Request, invoice_id: str, data_uri: bool = False,
                      principal: Principal = Depends(_ADMIN)):
-    svc = build_zatca(request)
+    svc = (await build_zatca(request))
     inv = await svc._inv.get(invoice_id)
     if inv is None or (
             "platform.zatca" not in principal.caps and inv.tenant != (principal.tenant or "__none__")):
@@ -139,9 +150,9 @@ async def invoice_qr(request: Request, invoice_id: str, data_uri: bool = False,
 
 @router.get("/chain/verify")
 async def chain_verify(request: Request, principal: Principal = Depends(_ADMIN)) -> dict:
-    return await build_zatca(request).verify_chain(op_tenant(principal))
+    return await (await build_zatca(request)).verify_chain(op_tenant(principal))
 
 
 @router.post("/sweep")
 async def sweep(request: Request, principal: Principal = Depends(_ADMIN)) -> dict:
-    return await build_zatca(request).sweep()
+    return await (await build_zatca(request)).sweep()

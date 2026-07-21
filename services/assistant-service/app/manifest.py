@@ -46,7 +46,12 @@ def build_manifest(
         # adopter's client app reads as fact and renders nothing from. A blank app is the usual
         # symptom of a service that shipped this untouched. If a service genuinely grants none,
         # leaving it empty is correct; the point is that it must be a decision, not a leftover.
-        "capabilities": ["assistant.ask", "platform.assistant"],
+        # platform.secrets is deliberately separate from platform.config: setting the model
+        # provider's key and changing a retention period are not the same privilege, and a role
+        # that conflates them hands every settings-editor the ability to point the assistant at an
+        # endpoint of their choosing.
+        "capabilities": ["assistant.ask", "platform.assistant",
+                         "platform.secrets", "platform.config"],
         "endpoints": [
             {"path": "/healthz", "tier": "public", "method": "GET"},
             {"path": "/readyz", "tier": "public", "method": "GET"},
@@ -69,6 +74,15 @@ def build_manifest(
             {"path": "/api/v1/assistant/branding", "tier": "user", "method": "GET"},
             {"path": "/api/v1/assistant/admin/kb/status", "tier": "admin", "method": "GET"},
             {"path": "/api/v1/assistant/admin/kb/reload", "tier": "admin", "method": "POST"},
+            # The operator surface: credentials and policy an operator changes after launch.
+            # A route table built from manifests that omits where credentials are set hides the
+            # highest-privilege surface this service has.
+            {"path": "/api/v1/operator/secrets", "tier": "admin", "method": "GET"},
+            {"path": "/api/v1/operator/secrets", "tier": "admin", "method": "PUT"},
+            {"path": "/api/v1/operator/secrets/{name}", "tier": "admin", "method": "DELETE"},
+            {"path": "/api/v1/operator/config", "tier": "admin", "method": "GET"},
+            {"path": "/api/v1/operator/config", "tier": "admin", "method": "PUT"},
+            {"path": "/api/v1/operator/config/{key}", "tier": "admin", "method": "DELETE"},
             {"path": "/internal/assistant/retention", "tier": "internal", "method": "POST"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root

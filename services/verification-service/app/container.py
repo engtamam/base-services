@@ -178,6 +178,54 @@ def _build_audit_sink(settings: Settings, event_bus) -> Any:
     return _pick(_AUDIT_SINK, driver, "audit_sink", settings)
 
 
+def make_verifier_pool(settings: Settings, secret_store, runtime_config, secrets):
+    """The pool the verification path resolves through, so a credential change lands without a
+    redeploy. The environment's secrets port stays the fallback, so a deployment that stores
+    nothing behaves exactly as it does today."""
+    from app.core.verifier_pool import VerifierPool
+
+    def _fallback(name: str) -> str:
+        if secrets is None:
+            return ""
+        try:
+            return secrets.get(name) or ""
+        except Exception:      # noqa: BLE001 — a missing env secret is "unset", not an outage
+            return ""
+
+    return VerifierPool(
+        settings, secret_store, runtime_config,
+        build=lambda spec, tokens: _verifiers_from(settings, spec, tokens),
+        fallback=_fallback,
+        ttl_s=settings.PROVIDER_REFRESH_SECONDS,
+    )
+
+
+def _verifiers_from(settings: Settings, providers_spec: str, tokens: dict) -> dict:
+    """`claim_type -> verifier` for one already-resolved set of credentials.
+
+    Shares the boot builder's rules rather than restating them: a claim type with no provider gets
+    no entry, and two implementations of "which provider verifies what" would eventually disagree
+    about which claims this platform answers.
+    """
+    resolved = settings.model_copy(update={"VERIFY_PROVIDERS": providers_spec})
+    return _build_verifiers(resolved, _TokenSecrets(tokens))
+
+
+class _TokenSecrets:
+    """The resolved credentials, shaped like the secrets port so the builder is untouched.
+
+    Rewriting the builder to take a dict would have been a second place that decides how a provider
+    is configured, and a divergence there looks exactly like a working provider quietly using a
+    stale key.
+    """
+
+    def __init__(self, tokens: dict) -> None:
+        self._tokens = tokens
+
+    def get(self, name: str) -> str:
+        return self._tokens.get(name, "")
+
+
 def _build_verifiers(settings: Settings, secrets) -> dict:
     """One verifier per claim type the platform says it checks.
 

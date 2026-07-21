@@ -89,6 +89,25 @@ def create_app() -> FastAPI:
     app.state.auditor = build_auditor(settings, container)
     app.state.cwe_guard = cwe_guard
 
+    # ── Operator-managed credentials and policy ────────────────────────────
+    # Without a KEK there is nothing to seal with, so the store is not built and the operator
+    # surface refuses with 503 rather than storing a credential in the clear. The pool still
+    # resolves — from the environment — so behaviour is exactly what it was before.
+    from app.config import Settings
+    from app.container import make_verifier_pool
+    from app.core.runtime_config import RuntimeConfig
+    from app.core.secret_store import SecretStore
+
+    secret_store = None
+    if settings.SECRETS_KEK:
+        secret_store = SecretStore(
+            container.datastore, settings.SECRETS_KEK,
+            rotation_window_s=settings.SECRETS_ROTATION_WINDOW_SECONDS)
+    app.state.secret_store = secret_store
+    app.state.runtime_config = RuntimeConfig(container.datastore, Settings)
+    app.state.provider_pool = make_verifier_pool(
+        settings, secret_store, app.state.runtime_config, container.secrets)
+
     # Readiness reflects real dependency health for the wired adapters.
     for name, probe in container.health_probes().items():
         register_readiness_check(name, probe)
@@ -129,6 +148,8 @@ def create_app() -> FastAPI:
     app.include_router(metrics.router)
     app.include_router(internal.router)
     app.include_router(v1_router)
+    from app.api.v1.operator import router as operator_router
+    app.include_router(operator_router)
 
     return app
 

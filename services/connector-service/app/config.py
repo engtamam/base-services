@@ -202,6 +202,19 @@ class Settings(BaseSettings):
     CLOCK_DRIVER: str = "system"              # system | manual (tests)
 
     CREDENTIAL_SEAL_KEY: str = ""             # AES-256-GCM key material for creds at rest
+
+    # ── Operator-managed credentials (Phase 44.8) ────────────────────────────
+    # The key that seals operator-set credentials. It stays in the ENVIRONMENT and is never
+    # settable through any API: a key protecting the secrets that is itself editable in the panel
+    # protects nothing from someone who has the panel. Empty means the operator surface refuses
+    # (503) rather than storing a credential in the clear.
+    SECRETS_KEK: str = ""
+    # How long a rotated credential's PREVIOUS value stays readable. An OAuth refresh in flight
+    # when the client secret changes must not brick the connection.
+    SECRETS_ROTATION_WINDOW_SECONDS: int = 300
+    # Name under which a provider spec's OAuth client secret is held in the credential store.
+    # Per spec, because two specs for the same provider are two different registered apps.
+    OPERATOR_SPEC_SECRET_PREFIX: str = "SPEC_CLIENT_SECRET:"
     CONNECTION_CACHE_TTL_SECONDS: int = 60    # hot path: credential/token resolution
     TOKEN_REFRESH_SKEW_SECONDS: int = 60      # refresh EARLY — never trust exact expiry
 

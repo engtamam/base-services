@@ -22,7 +22,8 @@ from app.api.errors import register_error_handlers
 from app.api.health import register_readiness_check
 from app.api.v1 import router as v1_router
 from app.api.v1.assistant import router as assistant_router
-from app.config import get_settings
+from app.api.v1.operator import router as operator_router
+from app.config import Settings, get_settings
 from app.core.audit import build_auditor
 from app.container import build_container
 from app.middleware import (
@@ -45,6 +46,7 @@ def create_app() -> FastAPI:
     settings.assert_audit_config_ok()
     settings.assert_pii_config_ok()
     settings.assert_cors_config_ok()
+    settings.assert_secrets_config_ok()
     configure_logging(settings.SERVICE_NAME, settings.ENV, settings.LOG_LEVEL)
     logger = get_logger("app.main")
 
@@ -87,6 +89,30 @@ def create_app() -> FastAPI:
     # later as a hole in the log.
     app.state.auditor = build_auditor(settings, container)
     app.state.cwe_guard = cwe_guard
+
+    # ── Operator-managed credentials and policy ────────────────────────────
+    # An operator has to be able to point the assistant at a different LLM provider, or rotate the
+    # key of the one it already uses, after launch. Without a KEK there is nothing to seal with, so
+    # the store is not built and the operator surface refuses with 503 rather than storing a
+    # credential in the clear. The credential cache still resolves — from the environment — so
+    # behaviour is exactly what it was before.
+    from app.core.model_credentials import ModelCredentials
+    from app.core.runtime_config import RuntimeConfig
+    from app.core.secret_store import SecretStore
+
+    secret_store = None
+    if settings.SECRETS_KEK:
+        secret_store = SecretStore(
+            container.datastore, settings.SECRETS_KEK,
+            rotation_window_s=settings.SECRETS_ROTATION_WINDOW_SECONDS)
+    app.state.secret_store = secret_store
+    app.state.runtime_config = RuntimeConfig(container.datastore, Settings)
+    app.state.model_credentials = ModelCredentials(
+        settings, secret_store, ttl_s=settings.MODEL_CREDENTIAL_REFRESH_SECONDS)
+    # Only the HTTP driver authenticates to anything; the extractive one has no credential and
+    # must not grow a code path that pretends otherwise.
+    if hasattr(container.model, "use_key_resolver"):
+        container.model.use_key_resolver(app.state.model_credentials.get)
 
     # Readiness reflects real dependency health for the wired adapters.
     for name, probe in container.health_probes().items():
@@ -131,6 +157,8 @@ def create_app() -> FastAPI:
     # The assistant's own tier. Mounted separately from the template's v1 router so a
     # route here is obviously this service's product surface rather than scaffolding.
     app.include_router(assistant_router)
+    # Operator controls: credentials and policy an operator changes after launch.
+    app.include_router(operator_router)
 
     # The widget itself. Served UNAUTHENTICATED and deliberately: it is a static script that
     # contains no data and no secret — the host mints a token and passes it in. Requiring a token

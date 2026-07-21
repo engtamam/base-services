@@ -8,9 +8,12 @@
 # =============================================================================
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+
+_log = logging.getLogger(__name__)
 
 from app.adapters.cache.memory import MemoryCache
 from app.adapters.cache.redis import RedisCache
@@ -121,6 +124,32 @@ from app.adapters.pdf.null import NullPdf
 from app.adapters.pdf.reportlab_renderer import ReportLabPdf
 from app.adapters.tax.null import NullTax
 from app.adapters.tax.vat import VatCalculator
+
+
+def rebuild_gateway(settings, resolved: dict, current):
+    """The payment gateway, rebuilt with operator-set credentials laid over the environment.
+
+    Returns `current` unchanged when nothing is stored, so a deployment that has not migrated keeps
+    the exact object it built at boot. Falls back to `current` on any build failure too: a bad
+    stored key must not make every charge raise — the boot-built gateway is a working answer, and a
+    broken credential is an operator problem rather than a total payment outage.
+    """
+    from app.core.credentials import Overlay
+
+    # Only when a stored credential actually DIFFERS from the configured one. Equal values mean
+    # the boot-built gateway is already correct, and handing back a fresh object instead would
+    # discard whatever that gateway holds between calls for no benefit at all.
+    if all(v == (getattr(settings, k, "") or "") for k, v in resolved.items()):
+        return current
+    driver = settings.PAYMENT_GATEWAY_DRIVER
+    builder = _PAYMENT.get(driver)
+    if builder is None:
+        return current
+    try:
+        return builder(Overlay(settings, resolved))
+    except Exception:  # noqa: BLE001 - GatewayUnavailable for a missing key, anything a client raises
+        _log.warning("gateway_rebuild_failed_using_boot_credentials", extra={"driver": driver})
+        return current
 
 
 def _pay(cls):

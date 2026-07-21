@@ -21,7 +21,8 @@ from app.api import health, internal, metrics
 from app.api.errors import register_error_handlers
 from app.api.health import register_readiness_check
 from app.api.v1 import router as v1_router
-from app.config import get_settings
+from app.api.v1.operator import router as operator_router
+from app.config import Settings, get_settings
 from app.core.audit import build_auditor
 from app.container import build_container
 from app.middleware import (
@@ -44,6 +45,7 @@ def create_app() -> FastAPI:
     # traffic as if it can.
     settings.assert_audit_config_ok()
     settings.assert_pii_config_ok()
+    settings.assert_secrets_config_ok()
     settings.assert_cors_config_ok()
     configure_logging(settings.SERVICE_NAME, settings.ENV, settings.LOG_LEVEL)
     logger = get_logger("app.main")
@@ -83,6 +85,24 @@ def create_app() -> FastAPI:
         openapi_url=None if settings.is_production else "/openapi.json",
     )
     app.state.container = container
+
+    # ── Operator-managed payment credentials ───────────────────────────────
+    # Without a KEK there is nothing to seal with, so the store is not built and the operator
+    # surface refuses with 503 rather than storing a payment key in the clear. The resolver still
+    # resolves — from the environment — so behaviour is exactly what it was before.
+    from app.core.credentials import CredentialResolver
+    from app.core.runtime_config import RuntimeConfig
+    from app.core.secret_store import SecretStore
+
+    secret_store = None
+    if settings.SECRETS_KEK:
+        secret_store = SecretStore(
+            container.datastore, settings.SECRETS_KEK,
+            rotation_window_s=settings.SECRETS_ROTATION_WINDOW_SECONDS)
+    app.state.secret_store = secret_store
+    app.state.runtime_config = RuntimeConfig(container.datastore, Settings)
+    app.state.credentials = CredentialResolver(
+        settings, secret_store, ttl_s=settings.PROVIDER_REFRESH_SECONDS)
     # Validated at boot: a malformed declaration stops the service rather than
     # surfacing months later as a hole in the log.
     app.state.auditor = build_auditor(settings, container)
@@ -128,6 +148,8 @@ def create_app() -> FastAPI:
     app.include_router(metrics.router)
     app.include_router(internal.router)
     app.include_router(v1_router)
+    # Operator controls: credentials and policy an operator changes after launch.
+    app.include_router(operator_router)
 
     return app
 

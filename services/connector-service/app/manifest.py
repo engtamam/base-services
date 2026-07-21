@@ -42,7 +42,8 @@ def build_manifest(
         "name": settings.SERVICE_NAME,
         "version": settings.SERVICE_VERSION,
         "env": settings.ENV,
-        "capabilities": ["platform.connectors", "connectors.manage", "connectors.read"],
+        "capabilities": ["platform.connectors", "connectors.manage", "connectors.read",
+                         "platform.secrets", "platform.config"],
         "endpoints": [
             {"path": "/healthz", "tier": "public", "method": "GET"},
             {"path": "/readyz", "tier": "public", "method": "GET"},
@@ -65,6 +66,15 @@ def build_manifest(
             {"path": "/api/v1/connectors/sync", "tier": "user", "method": "POST"},
             {"path": "/api/v1/connectors/runs", "tier": "user", "method": "GET"},
             {"path": "/api/v1/connectors/dead-letters", "tier": "user", "method": "GET"},
+            # The operator surface: credentials and policy an operator changes after launch.
+            # A route table built from manifests that omits where credentials are set hides the
+            # highest-privilege surface this service has.
+            {"path": "/api/v1/operator/secrets", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/operator/secrets", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/operator/secrets/{}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/operator/config", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/operator/config", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/operator/config/{}", "tier": "user", "method": "DELETE"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         "events": {"emitted": [], "consumed": []},

@@ -670,10 +670,25 @@ class BillingService:
         return {"retried": retried, "due": len(due)}
 
     # ── webhooks ───────────────────────────────────────────────────────────────────
-    async def handle_webhook(self, provider: str, headers: dict, body: bytes, secret: str) -> dict[str, Any]:
-        event = self._gw.verify_webhook(headers=headers, body=body, secret=secret)
-        if not event.verified:
-            return {"ok": False, "reason": "SIGNATURE_INVALID", "type": event.type}
+    async def handle_webhook(self, provider: str, headers: dict, body: bytes,
+                             secret: str | tuple[str, ...]) -> dict[str, Any]:
+        """Reconcile a gateway callback. `secret` may be SEVERAL candidate signing secrets.
+
+        During a rotation both the new and the previous secret must verify. The gateway signed
+        whatever it held when it sent, and it may still be sending with the old one — for a
+        callback that is already in flight there is no version to negotiate. Accepting only the
+        current secret would reject those as forged, and a rejected payment.succeeded means an
+        invoice stays unpaid while the customer's money has already moved.
+        """
+        candidates = (secret,) if isinstance(secret, str) else tuple(secret)
+        event = None
+        for candidate in candidates or ("",):
+            event = self._gw.verify_webhook(headers=headers, body=body, secret=candidate)
+            if event.verified:
+                break
+        if event is None or not event.verified:
+            return {"ok": False, "reason": "SIGNATURE_INVALID",
+                    "type": event.type if event else ""}
         pay = await self._payments.by_provider_id(event.provider_id) if event.provider_id else None
         if pay is None:
             return {"ok": True, "reconciled": False, "type": event.type}

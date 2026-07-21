@@ -23,21 +23,26 @@ class FileServiceRecordingSink:
     driver = "file-service"
 
     def __init__(self, base_url: str, token: str, *, transport: Transport | None = None,
-                 timeout: float = 30.0) -> None:
+                 timeout: float = 30.0, token_resolver=None) -> None:
         if not base_url:
             raise ValueError("RECORDING_FILE_SERVICE_URL is required for the file-service sink")
         self._base = base_url.rstrip("/")
         self._token = token
+        # Read at use time rather than captured here, so an operator can replace the upload token
+        # without a redeploy. Absent (no KEK configured), the constructor value is used exactly as
+        # before.
+        self._token_resolver = token_resolver
         self._timeout = timeout
         self._transport = transport or self._httpx_transport
 
-    def _auth(self) -> dict:
-        return {"Authorization": f"Bearer {self._token}"} if self._token else {}
+    async def _auth(self) -> dict:
+        token = await self._token_resolver.get() if self._token_resolver else self._token
+        return {"Authorization": f"Bearer {token}"} if token else {}
 
     async def put_segment(self, *, tenant: str, session_id: str, seq: int, data: bytes,
                           content_type: str, start: str, end: str) -> SegmentRef:
         # file-service takes a raw-body upload with the filename in a header.
-        headers = {**self._auth(), "Content-Type": content_type,
+        headers = {**await self._auth(), "Content-Type": content_type,
                    "X-Filename": f"{session_id}_{seq:08d}.mp4"}
         status, body = await self._transport("POST", f"{self._base}/api/v1/files", headers, data)
         if status not in (200, 201) or not isinstance(body, dict) or "id" not in body:
@@ -46,12 +51,12 @@ class FileServiceRecordingSink:
 
     async def delete(self, ref: str) -> bool:
         status, _ = await self._transport("DELETE", f"{self._base}/api/v1/files/{ref}",
-                                          self._auth(), None)
+                                          await self._auth(), None)
         return status in (200, 204)
 
     async def signed_url(self, ref: str, *, ttl: int) -> str:
         status, body = await self._transport("POST", f"{self._base}/api/v1/files/{ref}/signed-url",
-                                             self._auth(), None)
+                                             await self._auth(), None)
         if status == 200 and isinstance(body, dict) and body.get("url"):
             # file-service returns a relative path; the caller prefixes the file-service origin.
             return f"{self._base}{body['url']}"

@@ -312,6 +312,17 @@ class Settings(BaseSettings):
     # Salts the subject pseudonym on a retained tax invoice. FROZEN — see the identifier lock.
     PII_SALT: str = ""
 
+    # ── operator-managed credentials ──────────────────────────────────────────
+    # Seals the payment credentials an operator sets from the panel. Never settable through any
+    # API: a key that protects the secrets and is itself editable in the UI protects nothing from
+    # someone who has the UI. Empty means the operator surface refuses rather than storing in the
+    # clear.
+    SECRETS_KEK: str = ""
+    SECRETS_ROTATION_WINDOW_SECONDS: int = 300
+    # How long resolved gateway credentials are reused before being read again. Resolving on every
+    # charge would put a datastore read and a scrypt-backed decrypt on the payment path.
+    PROVIDER_REFRESH_SECONDS: int = 30
+
     # How long a tax invoice must survive. ZATCA/KSA is 6; several EU states are 10. It is a
     # PLATFORM/jurisdiction decision, never ours — so it is config, and it is quoted back to the
     # person in the erasure receipt rather than asserted in a docstring nobody reads.
@@ -367,6 +378,23 @@ class Settings(BaseSettings):
         if not self.AUDIT_SERVICE_URL:
             return ""
         return self.AUDIT_SERVICE_URL.rstrip("/") + self.AUDIT_INGEST_PATH
+
+    def assert_secrets_config_ok(self) -> None:
+        """Boot guard: the refresh window must not outlive the rotation window.
+
+        The refresh window is how long a replica keeps using a credential it already resolved; the
+        rotation window is how long the previous one stays valid. If refresh outlives rotation the
+        two stop overlapping, and a rotation opens a gap where live replicas charge with a key the
+        gateway has already stopped accepting — every payment failing, after a change that looked
+        successful in the panel.
+        """
+        if self.SECRETS_KEK and (
+                self.PROVIDER_REFRESH_SECONDS > self.SECRETS_ROTATION_WINDOW_SECONDS):
+            raise ValueError(
+                f"PROVIDER_REFRESH_SECONDS ({self.PROVIDER_REFRESH_SECONDS}) must not exceed "
+                f"SECRETS_ROTATION_WINDOW_SECONDS ({self.SECRETS_ROTATION_WINDOW_SECONDS}) — "
+                f"otherwise a rotation leaves a window where charges use a key the gateway no "
+                f"longer accepts")
 
     def assert_pii_config_ok(self) -> None:
         """Boot guard. Refuse to start production without the salt that pseudonyms are built from.

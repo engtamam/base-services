@@ -157,7 +157,7 @@ _SIGNED_PLAYBACK: dict[str, Builder] = {
 }
 
 
-def _recording_sink(s: Settings):
+def _recording_sink(s: Settings, secret_store=None, resolvers=None):
     driver = s.RECORDING_SINK_DRIVER
     if driver == "memory":
         return MemoryRecordingSink()
@@ -173,7 +173,16 @@ def _recording_sink(s: Settings):
         if not s.RECORDING_FILE_SERVICE_URL:
             return LocalRecordingSink(s.OBJECTSTORE_ROOT + "/recordings")
         from app.adapters.stream.file_service_sink import FileServiceRecordingSink
-        return FileServiceRecordingSink(s.RECORDING_FILE_SERVICE_URL, s.RECORDING_FILE_SERVICE_TOKEN)
+        # The upload token is resolved per use so an operator can rotate it from the panel; the
+        # configured value stays the fallback, so nothing changes for a deployment with no KEK.
+        from app.core.operator_credentials import CredentialResolver
+        resolver = CredentialResolver(
+            secret_store, "RECORDING_FILE_SERVICE_TOKEN", s.RECORDING_FILE_SERVICE_TOKEN,
+            ttl_s=s.RECORDING_CREDENTIAL_REFRESH_SECONDS)
+        if resolvers is not None:
+            resolvers.append(resolver)
+        return FileServiceRecordingSink(s.RECORDING_FILE_SERVICE_URL, s.RECORDING_FILE_SERVICE_TOKEN,
+                                        token_resolver=resolver)
     raise ConfigError(f"unknown RECORDING_SINK_DRIVER: {driver!r}")
 
 
@@ -219,6 +228,10 @@ class Container:
     media_egress: Any
     sealer: Any
     audit_sink: Any = None
+    # Built here because the store needs the datastore, and the sink needs the store. None when no
+    # KEK is configured: the operator surface then refuses rather than storing in the clear.
+    secret_store: Any = None
+    credential_resolvers: tuple = ()
     clip_exporter: Any = None
 
     def describe(self) -> list[dict[str, str]]:
@@ -285,8 +298,15 @@ def build_container(settings: Settings) -> Container:
     else:
         raise ConfigError(f"session placer {settings.SESSION_PLACER_DRIVER!r} is built later")
     event_bus = _pick(_EVENTBUS, settings.EVENTBUS_DRIVER, "event_bus", settings)
+    datastore = _pick(_DATASTORE, settings.DATASTORE_DRIVER, "datastore", settings)
+    secret_store = None
+    if settings.SECRETS_KEK:
+        from app.core.secret_store import SecretStore
+        secret_store = SecretStore(datastore, settings.SECRETS_KEK,
+                                   rotation_window_s=settings.SECRETS_ROTATION_WINDOW_SECONDS)
+    resolvers: list = []
     return Container(
-        datastore=_pick(_DATASTORE, settings.DATASTORE_DRIVER, "datastore", settings),
+        datastore=datastore,
         cache=_pick(_CACHE, settings.CACHE_DRIVER, "cache", settings),
         event_bus=event_bus,
         queue=_pick(_QUEUE, settings.QUEUE_DRIVER, "queue", settings),
@@ -301,9 +321,11 @@ def build_container(settings: Settings) -> Container:
         ptz=_pick(_PTZ, settings.PTZ_DRIVER, "ptz", settings),
         motion=_pick(_MOTION, settings.MOTION_DRIVER, "motion", settings),
         discovery=_pick(_DISCOVERY, settings.DISCOVERY_DRIVER, "discovery", settings),
-        recording_sink=_recording_sink(settings),
+        recording_sink=_recording_sink(settings, secret_store, resolvers),
         media_egress=_pick(_MEDIA_EGRESS, settings.MEDIA_EGRESS_DRIVER, "media_egress", settings),
         clip_exporter=_pick(_CLIP_EXPORTER, settings.EXPORT_DRIVER, "clip_exporter", settings),
         signed_playback=_pick(_SIGNED_PLAYBACK, settings.SIGNED_PLAYBACK_DRIVER, "signed_playback", settings),
         sealer=Sealer(_seal_key(settings)),
+        secret_store=secret_store,
+        credential_resolvers=tuple(resolvers),
     )

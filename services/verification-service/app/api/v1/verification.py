@@ -34,11 +34,14 @@ _READ = require_any_capability("platform.verification", "verification.review",
                                "verification.read")
 
 
-def build_service(request: Request) -> VerificationService:
+async def build_service(request: Request, tenant: str = "") -> VerificationService:
+    """Verifiers come from the pool, not from the container's boot-time map: a credential an
+    operator rotated must reach the next check without a redeploy."""
     c = request.app.state.container
     s = get_settings()
     return VerificationService(
-        store=VerificationStore(c.datastore), verifiers=c.verifiers, clock=c.clock,
+        store=VerificationStore(c.datastore),
+        verifiers=await request.app.state.provider_pool.get(tenant), clock=c.clock,
         registry=IdentityRegistry(c.datastore),
         pii_salt=s.PII_SALT, ttl_days=s.verify_ttl_days,
         pending_ttl=s.VERIFY_PENDING_TTL_SECONDS,
@@ -75,7 +78,8 @@ async def submit_claim(request: Request, body: VerifyIn,
     """Check a claim about yourself. Rate-limited: verification calls cost money at the provider,
     and an unthrottled endpoint is both a bill and an enumeration oracle."""
     try:
-        record = await build_service(request).verify(
+        svc = await build_service(request, principal.tenant)
+        record = await svc.verify(
             tenant=principal.tenant, subject=principal.subject,
             claim_type=body.claim_type, value=body.value, extra=body.extra)
     except UnsupportedClaim as exc:
@@ -98,7 +102,8 @@ async def claim_status(request: Request, claim_type: str,
                        principal: Principal = Depends(require_user)) -> dict:
     """Is my claim currently good? `trusted` is computed against the clock, so an expired verdict
     reports as expired the moment it lapses rather than when a sweeper next runs."""
-    return await build_service(request).status(principal.tenant, principal.subject, claim_type)
+    svc = await build_service(request, principal.tenant)
+    return await svc.status(principal.tenant, principal.subject, claim_type)
 
 
 # ── admin tier ───────────────────────────────────────────────────────────────

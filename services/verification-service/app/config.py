@@ -134,6 +134,17 @@ class Settings(BaseSettings):
     # two staff, on for markets or claim types where one person granting trust is unacceptable.
     VERIFY_TWO_EYES: bool = False
 
+    # ── operator-managed credentials ──────────────────────────────────────────
+    # Seals credentials an operator sets from the panel. Never settable through any API: a key
+    # that protects the secrets and is itself editable in the UI protects nothing from someone
+    # who has the UI. Empty means the operator surface refuses rather than storing in the clear.
+    SECRETS_KEK: str = ""
+    SECRETS_ROTATION_WINDOW_SECONDS: int = 300
+    # How long a resolved set of verifiers is reused before credentials are read again. Resolving
+    # every provider credential per check would be a datastore read and a decrypt on the request
+    # path, to support a change that happens a few times a year.
+    PROVIDER_REFRESH_SECONDS: int = 30
+
     # ── audit trail (Phase 38) — where privileged actions are witnessed ───────
     # `null` records NOTHING and says so; the boot guard below refuses it in production, because a
     # service that cannot witness its own privileged actions has no audit trail at all — and an
@@ -318,6 +329,19 @@ class Settings(BaseSettings):
         profiles = self.verify_profiles
         self.verify_secrets
         self.verify_ttl_days
+
+        if self.SECRETS_KEK and (
+                self.PROVIDER_REFRESH_SECONDS > self.SECRETS_ROTATION_WINDOW_SECONDS):
+            # The refresh window is how long a replica may keep using the old credential; the
+            # rotation window is how long the old one stays valid. If refresh outlives rotation the
+            # two stop overlapping, and a rotation opens a gap where live replicas authenticate
+            # with a credential the provider has already stopped accepting — every check failing,
+            # for a change that looked successful in the panel.
+            raise ValueError(
+                f"PROVIDER_REFRESH_SECONDS ({self.PROVIDER_REFRESH_SECONDS}) must not exceed "
+                f"SECRETS_ROTATION_WINDOW_SECONDS ({self.SECRETS_ROTATION_WINDOW_SECONDS}) — "
+                f"otherwise a rotation leaves a window where replicas verify with a credential the "
+                f"provider no longer accepts")
 
         if not self.is_production:
             return

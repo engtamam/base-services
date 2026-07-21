@@ -42,7 +42,8 @@ def build_manifest(
         "name": settings.SERVICE_NAME,
         "version": settings.SERVICE_VERSION,
         "env": settings.ENV,
-        "capabilities": ["platform.zatca", "zatca.manage"],
+        "capabilities": ["platform.zatca", "zatca.manage",
+                         "platform.secrets", "platform.config"],
         "endpoints": [
             {"path": "/healthz", "tier": "public", "method": "GET"},
             {"path": "/readyz", "tier": "public", "method": "GET"},
@@ -66,6 +67,13 @@ def build_manifest(
             {"path": "/api/v1/zatca/invoices/{id}/qr", "tier": "user", "method": "GET"},
             {"path": "/api/v1/zatca/chain/verify", "tier": "user", "method": "GET"},
             {"path": "/api/v1/zatca/sweep", "tier": "user", "method": "POST"},
+            # The operator surface: credentials and policy, changeable after launch.
+            {"path": "/api/v1/operator/secrets", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/operator/secrets", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/operator/secrets/{}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/operator/config", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/operator/config", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/operator/config/{}", "tier": "user", "method": "DELETE"},
         ],
         # Which ZATCA this pod talks to. An operator must be able to see this without
         # reading env vars off a running container.

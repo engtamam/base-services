@@ -218,6 +218,15 @@ class Settings(BaseSettings):
     ZATCA_RETRY_MAX_MS: int = 21_600_000     # 6h
     ZATCA_RETRY_MAX_ATTEMPTS: int = 12
     ZATCA_SEAL_KEY: str = ""                 # AES-GCM key for CSID at rest (falls back to INTERNAL token)
+    # ── operator-managed credentials ──────────────────────────────────────────
+    # Seals credentials an operator sets from the panel. Distinct from ZATCA_SEAL_KEY, which
+    # protects the CSIDs and is deliberately NOT settable at runtime: rotating the key that seals
+    # every stored certificate would make them all unreadable at once.
+    SECRETS_KEK: str = ""
+    SECRETS_ROTATION_WINDOW_SECONDS: int = 300
+    # How long a resolved signer credential is reused. The signer is called once per invoice, so
+    # an uncached resolve would put a datastore read and an AES open on every clearance.
+    SIGNER_CREDENTIAL_REFRESH_SECONDS: int = 30
     ZATCA_LIST_LIMIT: int = 100
 
     @property

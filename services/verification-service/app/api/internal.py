@@ -109,7 +109,8 @@ async def sweep_pending(request: Request) -> dict:
 
     c = request.app.state.container
     s = get_settings()
-    svc = VerificationService(store=VerificationStore(c.datastore), verifiers=c.verifiers,
+    svc = VerificationService(store=VerificationStore(c.datastore),
+                              verifiers=await request.app.state.provider_pool.get(),
                               clock=c.clock, pii_salt=s.PII_SALT,
                               pending_ttl=s.VERIFY_PENDING_TTL_SECONDS)
     return {"lapsed": await svc.sweep_pending()}

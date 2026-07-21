@@ -25,9 +25,21 @@ _ADMIN = require_any_capability("platform.billing", "billing.manage")
 _SELF = require_any_capability("billing.self", "billing.manage", "platform.billing")
 
 
-def build_billing(request: Request) -> BillingService:
+async def build_billing(request: Request, tenant: str = "") -> BillingService:
+    """Assemble the service for this request.
+
+    Async because the payment gateway is built from credentials an operator can change after
+    launch, rather than captured once at boot. The resolver caches per tenant, so this is a dict
+    lookup on all but the first call in each refresh window — see `core/credentials.py`.
+    """
     c = request.app.state.container
     s = get_settings()
+    gateway = c.payment_gateway
+    resolver = getattr(request.app.state, "credentials", None)
+    if resolver is not None:
+        from app.container import rebuild_gateway
+        gateway = await resolver.gateway(
+            tenant, lambda resolved, boot: rebuild_gateway(s, resolved, boot), c.payment_gateway)
     return BillingService(
         plans=PlanStore(c.datastore, c.cache), coupons=CouponStore(c.datastore),
         subs=SubscriptionStore(c.datastore, c.cache),
@@ -35,7 +47,7 @@ def build_billing(request: Request) -> BillingService:
         ledger=LedgerStore(c.datastore, cas_max_retries=s.LEDGER_CAS_MAX_RETRIES,
                            cas_backoff_ms=s.LEDGER_CAS_BACKOFF_MS),
         idempo=IdempotencyStore(c.datastore),
-        gateway=c.payment_gateway, tax=c.tax_calculator, einvoicer=c.einvoicer, pdf=c.pdf_renderer,
+        gateway=gateway, tax=c.tax_calculator, einvoicer=c.einvoicer, pdf=c.pdf_renderer,
         cache=c.cache, settlements=SettlementStore(c.datastore),
         config={"currency": s.CURRENCY, "trial_days": s.TRIAL_DAYS, "vat_rate": s.VAT_RATE,
                 "reverse_charge": s.REVERSE_CHARGE_B2B, "grandfather": s.GRANDFATHER,
@@ -54,11 +66,11 @@ def build_billing(request: Request) -> BillingService:
                 "settlement_max_backdate_days": s.SETTLEMENT_MAX_BACKDATE_DAYS})
 
 
-def build_usage(request: Request) -> UsageService:
+async def build_usage(request: Request) -> UsageService:
     """UsageService owns the usage number. Routes never accept one from the caller."""
     c = request.app.state.container
     s = get_settings()
-    billing = build_billing(request)
+    billing = (await build_billing(request))
     return UsageService(
         store=c.datastore, limits_resolver=billing.limits_resolver, meter=UsageStore(c.datastore),
         config={"default_period": s.USAGE_DEFAULT_PERIOD,
@@ -119,25 +131,25 @@ class UsageIn(BaseModel):
 # ── catalog (admin) ────────────────────────────────────────────────────────────
 @router.post("/plans", status_code=201, dependencies=[Depends(_ADMIN)])
 async def create_plan(request: Request, body: PlanIn) -> dict:
-    p = await build_billing(request).create_plan(**body.model_dump())
+    p = await (await build_billing(request)).create_plan(**body.model_dump())
     return p.to_dict()
 
 
 @router.get("/plans", dependencies=[Depends(_SELF)])
 async def list_plans(request: Request) -> dict:
-    return {"plans": await build_billing(request).list_plans()}
+    return {"plans": await (await build_billing(request)).list_plans()}
 
 
 @router.post("/coupons", status_code=201, dependencies=[Depends(_ADMIN)])
 async def create_coupon(request: Request, body: CouponIn) -> dict:
-    return (await build_billing(request).upsert_coupon(**body.model_dump())).to_dict()
+    return (await (await build_billing(request)).upsert_coupon(**body.model_dump())).to_dict()
 
 
 # ── subscriptions (customer) ────────────────────────────────────────────────────
 @router.post("/subscriptions", status_code=201)
 async def subscribe(request: Request, body: SubscribeIn, principal: Principal = Depends(_SELF)) -> dict:
     try:
-        sub = await build_billing(request).subscribe(
+        sub = await (await build_billing(request)).subscribe(
             tenant=_tenant(principal, body.tenant), plan_id=body.plan_id, interval=body.interval,
             quantity=body.quantity, coupon_code=body.coupon_code, payment_token=body.payment_token,
             buyer_name=body.buyer_name, buyer_vat=body.buyer_vat, buyer_cr=body.buyer_cr)
@@ -149,7 +161,7 @@ async def subscribe(request: Request, body: SubscribeIn, principal: Principal = 
 @router.post("/subscriptions/{sub_id}/change")
 async def change_plan(request: Request, sub_id: str, body: ChangeIn,
                       principal: Principal = Depends(_SELF)) -> dict:
-    svc = build_billing(request)
+    svc = (await build_billing(request))
     sub = await svc._subs.fetch(sub_id)
     if sub is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
@@ -178,7 +190,7 @@ async def _transition(request: Request, sub_id: str, principal: Principal, actio
     409, not 404, on an illegal move: the subscription exists and the caller may not do this to
     it. A 404 would send them off to create a duplicate.
     """
-    svc = build_billing(request)
+    svc = (await build_billing(request))
     sub = await svc._subs.fetch(sub_id)
     if sub is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
@@ -193,7 +205,7 @@ async def _transition(request: Request, sub_id: str, principal: Principal, actio
 @router.post("/subscriptions/{sub_id}/cancel")
 async def cancel(request: Request, sub_id: str, at_period_end: bool = True,
                  principal: Principal = Depends(_SELF)) -> dict:
-    svc = build_billing(request)
+    svc = (await build_billing(request))
     sub = await svc._subs.fetch(sub_id)
     if sub is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
@@ -204,20 +216,20 @@ async def cancel(request: Request, sub_id: str, at_period_end: bool = True,
 @router.post("/subscriptions/{sub_id}/run", dependencies=[Depends(_ADMIN)])
 async def run_cycle(request: Request, sub_id: str) -> dict:
     try:
-        return (await build_billing(request).run_cycle(sub_id)).to_dict()
+        return (await (await build_billing(request)).run_cycle(sub_id)).to_dict()
     except ValueError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
 
 
 @router.get("/subscriptions", dependencies=[Depends(_SELF)])
 async def list_subs(request: Request, principal: Principal = Depends(_SELF)) -> dict:
-    return {"subscriptions": await build_billing(request)._subs.list(_tenant(principal),
+    return {"subscriptions": await (await build_billing(request))._subs.list(_tenant(principal),
                                                                      get_settings().BILLING_LIST_LIMIT)}
 
 
 @router.post("/usage", status_code=201)
 async def record_usage(request: Request, body: UsageIn, principal: Principal = Depends(_SELF)) -> dict:
-    return await build_billing(request).record_usage(
+    return await (await build_billing(request)).record_usage(
         tenant=_tenant(principal), subscription_id=body.subscription_id,
         metric=body.metric, quantity=body.quantity)
 
@@ -225,13 +237,13 @@ async def record_usage(request: Request, body: UsageIn, principal: Principal = D
 # ── invoices ───────────────────────────────────────────────────────────────────
 @router.get("/invoices", dependencies=[Depends(_SELF)])
 async def list_invoices(request: Request, principal: Principal = Depends(_SELF)) -> dict:
-    return {"invoices": await build_billing(request)._invoices.list(_tenant(principal),
+    return {"invoices": await (await build_billing(request))._invoices.list(_tenant(principal),
                                                                     get_settings().BILLING_LIST_LIMIT)}
 
 
 @router.get("/invoices/{invoice_id}/pdf")
 async def invoice_pdf(request: Request, invoice_id: str, principal: Principal = Depends(_SELF)):
-    svc = build_billing(request)
+    svc = (await build_billing(request))
     inv = await svc._invoices.fetch(invoice_id)
     if inv is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
@@ -254,7 +266,7 @@ async def refund(request: Request, payment_id: str, amount_minor: int | None = N
         "payment.refunded", actor=principal.subject, tenant=principal.tenant,
         resource=f"payment:{payment_id}",
         ip=request.client.host if request.client else "")
-    res = await build_billing(request).refund(payment_id, amount_minor)
+    res = await (await build_billing(request)).refund(payment_id, amount_minor)
     if not res.get("ok") and res.get("reason") == "NOT_FOUND":
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
     return res
@@ -262,21 +274,21 @@ async def refund(request: Request, payment_id: str, amount_minor: int | None = N
 
 @router.post("/dunning/run", dependencies=[Depends(_ADMIN)])
 async def dunning(request: Request) -> dict:
-    return await build_billing(request).dunning_sweep()
+    return await (await build_billing(request)).dunning_sweep()
 
 
 @router.post("/subscriptions/{sub_id}/migrate", dependencies=[Depends(_ADMIN)])
 async def migrate_terms(request: Request, sub_id: str) -> dict:
     """Explicitly move a grandfathered subscription onto the CURRENT plan terms."""
     try:
-        return await build_billing(request).migrate_terms(sub_id)
+        return await (await build_billing(request)).migrate_terms(sub_id)
     except ValueError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
 
 
 @router.post("/subscriptions/{sub_id}/overage", dependencies=[Depends(_ADMIN)])
 async def run_overage(request: Request, sub_id: str) -> dict:
-    inv = await build_billing(request).run_overage(sub_id)
+    inv = await (await build_billing(request)).run_overage(sub_id)
     return inv.to_dict() if inv else {"overage": 0}
 
 
@@ -290,18 +302,18 @@ async def entitlement(request: Request, key: str, amount: int = 1,
     (CWE-602: client-side enforcement of a server-side security decision). Enforcement lives
     in POST /internal/billing/usage/consume, which is atomic.
     """
-    return await build_usage(request).check(tenant=_tenant(principal), key=key, amount=amount)
+    return await (await build_usage(request)).check(tenant=_tenant(principal), key=key, amount=amount)
 
 
 @router.get("/usage", dependencies=[Depends(_SELF)])
 async def usage_summary(request: Request, principal: Principal = Depends(_SELF)) -> dict:
     """'18 of 25 seats'. Without this the client has to count, which is how it went wrong."""
-    return await build_usage(request).summary(_tenant(principal))
+    return await (await build_usage(request)).summary(_tenant(principal))
 
 
 @router.get("/ledger", dependencies=[Depends(_ADMIN)])
 async def ledger(request: Request, principal: Principal = Depends(_ADMIN)) -> dict:
-    return {"ledger": await build_billing(request)._ledger.list(_tenant(principal),
+    return {"ledger": await (await build_billing(request))._ledger.list(_tenant(principal),
                                                                get_settings().BILLING_LIST_LIMIT)}
 
 
@@ -348,7 +360,7 @@ def _settlement_error(exc: Exception) -> HTTPException:
 async def settle_invoice(request: Request, invoice_id: str, body: SettleIn,
                          principal: Principal = Depends(_ADMIN)) -> dict:
     """Record a payment made outside any gateway, and settle the invoice with it."""
-    svc = build_billing(request)
+    svc = (await build_billing(request))
     tenant = None if "platform.billing" in principal.caps else (principal.tenant or "__none__")
     try:
         return await svc.settle(invoice_id=invoice_id, tenant=tenant, **body.model_dump())
@@ -359,7 +371,7 @@ async def settle_invoice(request: Request, invoice_id: str, body: SettleIn,
 @router.get("/invoices/{invoice_id}/settlements", dependencies=[Depends(_SELF)])
 async def list_settlements(request: Request, invoice_id: str,
                            principal: Principal = Depends(_SELF)) -> dict:
-    svc = build_billing(request)
+    svc = (await build_billing(request))
     tenant = None if "platform.billing" in principal.caps else (principal.tenant or "__none__")
     try:
         rows = await svc.settlements_for(invoice_id, tenant=tenant)
@@ -378,7 +390,7 @@ async def reverse_settlement(request: Request, settlement_id: str, body: Reverse
     await request.app.state.auditor.record(
         "settlement.reversed", actor=principal.subject, tenant=principal.tenant, resource=f"settlement:{settlement_id}",
         ip=request.client.host if request.client else "")
-    svc = build_billing(request)
+    svc = (await build_billing(request))
     tenant = None if "platform.billing" in principal.caps else (principal.tenant or "__none__")
     try:
         return await svc.reverse_settlement(settlement_id=settlement_id, tenant=tenant,

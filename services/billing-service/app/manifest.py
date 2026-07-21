@@ -42,7 +42,8 @@ def build_manifest(
         "name": settings.SERVICE_NAME,
         "version": settings.SERVICE_VERSION,
         "env": settings.ENV,
-        "capabilities": ["platform.billing", "billing.manage", "billing.self"],
+        "capabilities": ["platform.billing", "billing.manage", "billing.self",
+                         "platform.secrets", "platform.config"],
         "endpoints": [
             {"path": "/healthz", "tier": "public", "method": "GET"},
             {"path": "/readyz", "tier": "public", "method": "GET"},
@@ -87,6 +88,13 @@ def build_manifest(
             {"path": "/api/v1/billing/invoices/{id}/pdf", "tier": "user", "method": "GET"},
             {"path": "/api/v1/billing/payments/{id}/refund", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/dunning/run", "tier": "user", "method": "POST"},
+            # The operator surface: payment credentials and policy, changeable after launch.
+            {"path": "/api/v1/operator/secrets", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/operator/secrets", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/operator/secrets/{}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/operator/config", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/operator/config", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/operator/config/{}", "tier": "user", "method": "DELETE"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         "events": {"emitted": [], "consumed": []},

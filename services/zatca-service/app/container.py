@@ -8,9 +8,13 @@
 # =============================================================================
 from __future__ import annotations
 
+import logging
+
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+
+_log = logging.getLogger(__name__)
 
 from app.adapters.cache.memory import MemoryCache
 from app.adapters.cache.redis import RedisCache
@@ -116,6 +120,36 @@ _ZATCA_SIGNER: dict[str, Builder] = {
     "null": lambda s: NullSigner(),
     "sdk-sidecar": lambda s: SidecarSigner(s.ZATCA_SIGNER_URL, s.ZATCA_SIGNER_TOKEN),
 }
+
+
+def rebuild_signer(settings, token: str, current):
+    """The signer, rebuilt when an operator has set a credential differing from the configured one.
+
+    Returns `current` untouched when they match, so a deployment that has not migrated keeps the
+    exact object it built at boot. A rebuild that produced a fresh object on every request would
+    discard whatever that client holds between calls, for no benefit at all.
+
+    Falls back to `current` on any build failure: a bad stored token must not make every clearance
+    raise. For a tax integration an outage is a filing deadline, not just a failed request.
+    """
+    if not token or token == (getattr(settings, "ZATCA_SIGNER_TOKEN", "") or ""):
+        return current
+    builder = _ZATCA_SIGNER.get(settings.ZATCA_SIGNER_DRIVER)
+    if builder is None:
+        return current
+
+    class _Overlay:
+        """Settings with only the signer token replaced, so the adapter stays untouched."""
+
+        def __getattr__(self, name):
+            return token if name == "ZATCA_SIGNER_TOKEN" else getattr(settings, name)
+
+    try:
+        return builder(_Overlay())
+    except Exception:  # noqa: BLE001 - SignerUnavailable for a missing value, anything a client raises
+        _log.warning("signer_rebuild_failed_using_boot_credentials")
+        return current
+
 _FATOORA: dict[str, Builder] = {
     "null": lambda s: NullFatoora(),
     "sidecar": lambda s: SidecarFatoora(s.ZATCA_SIGNER_URL, s.ZATCA_SIGNER_TOKEN),

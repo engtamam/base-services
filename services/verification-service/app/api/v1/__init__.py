@@ -47,3 +47,6 @@ async def admin_ping() -> dict:
 from app.api.v1.verification import router as _verification_router  # noqa: E402
 
 router.include_router(_verification_router)
+
+# The operator surface carries its own /api/v1 prefix, so it is mounted on the app rather than
+# nested here — see main.py.

@@ -31,6 +31,10 @@ from app.ports.model import ModelAnswer, ModelError, Passage
 
 # transport(url, headers, payload, timeout) -> (status, json)
 Transport = Callable[[str, dict, dict, float], Awaitable[tuple[int, Any]]]
+# () -> the credential to authenticate this call with. Asked per call rather than captured at
+# construction, which is what lets an operator rotate the key without a redeploy; the resolver
+# owns the caching so this stays off the hot path.
+KeyResolver = Callable[[], Awaitable[str]]
 
 CHAT, GENERATE = "chat", "generate"
 
@@ -46,7 +50,8 @@ class HttpModel:
 
     def __init__(self, url: str, api_key: str = "", *, model: str = "", shape: str = CHAT,
                  timeout: float = 20.0, temperature: float = 0.2,
-                 transport: Transport | None = None) -> None:
+                 transport: Transport | None = None,
+                 key_resolver: KeyResolver | None = None) -> None:
         if not url:
             raise ConfigError("MODEL_URL is required for the http model driver")
         if shape not in (CHAT, GENERATE):
@@ -58,6 +63,22 @@ class HttpModel:
         self._timeout = timeout
         self._temperature = temperature
         self._transport = transport or self._httpx_transport
+        self._key_resolver = key_resolver
+
+    def use_key_resolver(self, resolver: KeyResolver) -> None:
+        """Take the credential from the operator store instead of the boot-time config value.
+
+        Set from the composition root rather than the constructor so the driver registry keeps its
+        single shape: an adapter built without a resolver behaves exactly as before, which is what
+        every existing test asserts.
+        """
+        self._key_resolver = resolver
+
+    async def _credential(self) -> str:
+        """The key for THIS call. The configured value when nothing overrides it."""
+        if self._key_resolver is None:
+            return self._key
+        return await self._key_resolver() or ""
 
     # ── prompt ────────────────────────────────────────────────────────────────
     @staticmethod
@@ -134,8 +155,9 @@ class HttpModel:
                      persona: str = "", max_tokens: int = 0) -> ModelAnswer:
         system, user = self._prompt(question, passages, persona)
         headers = {"Content-Type": "application/json"}
-        if self._key:
-            headers["Authorization"] = f"Bearer {self._key}"
+        key = await self._credential()
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
 
         try:
             status, body = await self._transport(self._url, headers,

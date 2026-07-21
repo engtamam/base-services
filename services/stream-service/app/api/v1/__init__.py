@@ -12,10 +12,13 @@ from app.api.auth import Principal, require_user
 from app.api.authz import require_capability
 from app.api.deps import get_guard
 from app.api.ratelimit import rate_limit
+from app.api.v1.operator import router as operator_router
 from app.api.v1.stream import router as stream_router
 
 router = APIRouter()
 router.include_router(stream_router)
+# Credentials and policy an operator changes after launch, without a redeploy.
+router.include_router(operator_router)
 
 # Generic identity/RBAC probes (auth machinery, not business logic). Kept so the token-verification,
 # capability-gating, and rate-limit behaviours are exercised independently of stream semantics.

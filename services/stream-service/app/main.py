@@ -91,6 +91,16 @@ def create_app() -> FastAPI:
     app.state.auditor = build_auditor(settings, container)
     app.state.cwe_guard = cwe_guard
 
+    # ── Operator-managed credentials and policy ────────────────────────────
+    # Without a KEK there is nothing to seal with, so the container built no store and the operator
+    # surface refuses with 503 rather than storing a credential in the clear. The recording sink
+    # still resolves its token — from the environment — so behaviour is exactly what it was before.
+    from app.config import Settings
+    from app.core.runtime_config import RuntimeConfig
+
+    app.state.secret_store = container.secret_store
+    app.state.runtime_config = RuntimeConfig(container.datastore, Settings)
+
     # Readiness reflects real dependency health for the wired adapters.
     for name, probe in container.health_probes().items():
         register_readiness_check(name, probe)

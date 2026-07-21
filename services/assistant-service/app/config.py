@@ -223,6 +223,17 @@ class Settings(BaseSettings):
     PII_SALT: str = ""
     ERASURE_MAX_SCAN: int = 100_000   # a DSAR is rare, but must never be an unbounded read
 
+    # ── operator-managed credentials ─────────────────────────────────────────
+    # Seals credentials an operator sets from the panel. Never settable through any API: a key
+    # that protects the secrets and is itself editable in the UI protects nothing from someone
+    # who has the UI. Empty means the operator surface refuses rather than storing in the clear.
+    SECRETS_KEK: str = ""
+    SECRETS_ROTATION_WINDOW_SECONDS: int = 300
+    # How long a resolved model credential is reused before the store is read again. Resolving it
+    # per question would put a datastore read and a scrypt-backed decrypt on the answering hot
+    # path, to support a change that happens a few times a year.
+    MODEL_CREDENTIAL_REFRESH_SECONDS: int = 30
+
     # ── audit trail (Phase 38) — where privileged actions are witnessed ───────
     # `null` records NOTHING and says so; the boot guard below refuses it in production, because a
     # service that cannot witness its own privileged actions has no audit trail at all — and an
@@ -414,6 +425,23 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"AUDIT_SERVICE_URL {self.AUDIT_SERVICE_URL!r} must start with http:// or https://"
             )
+
+    def assert_secrets_config_ok(self) -> None:
+        """Boot guard. The credential cache must not outlive the rotation it depends on.
+
+        The refresh window is how long a replica may keep using the credential it already
+        resolved; the rotation window is how long the previous one stays acceptable. If refresh
+        outlives rotation the two stop overlapping, and a rotation opens a gap where live replicas
+        still call the provider with a key it has already stopped accepting — every answer failing,
+        after a change that looked successful in the panel.
+        """
+        if self.SECRETS_KEK and (
+                self.MODEL_CREDENTIAL_REFRESH_SECONDS > self.SECRETS_ROTATION_WINDOW_SECONDS):
+            raise ValueError(
+                f"MODEL_CREDENTIAL_REFRESH_SECONDS ({self.MODEL_CREDENTIAL_REFRESH_SECONDS}) must "
+                f"not exceed SECRETS_ROTATION_WINDOW_SECONDS "
+                f"({self.SECRETS_ROTATION_WINDOW_SECONDS}) — otherwise a rotation leaves a window "
+                f"where replicas call the model with a credential it no longer accepts")
 
     def assert_consent_config_ok(self) -> None:
         """Boot guard. A service that gates processing on consent must be able to ask.

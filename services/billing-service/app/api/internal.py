@@ -40,6 +40,12 @@ async def internal_health(settings: Settings = Depends(get_settings)) -> dict[st
     return {"status": "ok", "service": settings.SERVICE_NAME}
 
 
+def _webhook_tenant(request: Request) -> str:
+    """A gateway callback carries no session, so the tenant comes from the path it was registered
+    under. Platform-wide is the correct default: most deployments hold one gateway account."""
+    return request.query_params.get("tenant", "") or ""
+
+
 @router.post("/billing/webhook/{provider}")
 async def payment_webhook(provider: str, request: Request,
                           settings: Settings = Depends(get_settings)) -> dict:
@@ -47,8 +53,13 @@ async def payment_webhook(provider: str, request: Request,
     signature IS the auth). Reconciles the payment/invoice idempotently."""
     body = await request.body()
     headers = {k.lower(): v for k, v in request.headers.items()}
-    result = await build_billing(request).handle_webhook(
-        provider, headers, body, settings.PAYMENT_WEBHOOK_SECRET)
+    # Every signing secret currently valid, not just the newest. A callback already in flight was
+    # signed with whatever the gateway held when it sent; rejecting it as forged would leave an
+    # invoice unpaid after the customer's money has already moved.
+    resolver = getattr(request.app.state, "credentials", None)
+    secrets = (await resolver.webhook_secrets(_webhook_tenant(request))
+               if resolver is not None else settings.PAYMENT_WEBHOOK_SECRET)
+    result = await (await build_billing(request)).handle_webhook(provider, headers, body, secrets)
     if not result.get("ok"):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, result.get("reason", "INVALID"))
     return result
@@ -56,7 +67,7 @@ async def payment_webhook(provider: str, request: Request,
 
 @router.post("/billing/dunning", dependencies=[Depends(require_internal_token)])
 async def run_dunning(request: Request) -> dict:
-    return await build_billing(request).dunning_sweep()
+    return await (await build_billing(request)).dunning_sweep()
 
 
 class ConsumeIn(BaseModel):
@@ -80,7 +91,7 @@ async def entitlement_check(request: Request, tenant: str, key: str, amount: int
     even so — between a check that says yes and the action, another request can take the last
     unit. To ENFORCE, call /usage/consume, which checks and increments atomically.
     """
-    return await build_usage(request).check(tenant=tenant, key=key, amount=amount)
+    return await (await build_usage(request)).check(tenant=tenant, key=key, amount=amount)
 
 
 @router.post("/billing/usage/consume", dependencies=[Depends(require_internal_token)])
@@ -90,7 +101,7 @@ async def usage_consume(body: ConsumeIn, request: Request) -> dict:
     Idempotent by `idempotency_key` — our event bus is at-least-once, and a redelivered
     consume must not burn a second unit of the tenant's quota.
     """
-    return await build_usage(request).consume(
+    return await (await build_usage(request)).consume(
         tenant=body.tenant, key=body.key, amount=body.amount,
         idempotency_key=body.idempotency_key)
 
@@ -98,7 +109,7 @@ async def usage_consume(body: ConsumeIn, request: Request) -> dict:
 @router.post("/billing/usage/release", dependencies=[Depends(require_internal_token)])
 async def usage_release(body: ConsumeIn, request: Request) -> dict:
     """Give a counter unit back when the action failed. Never refused; clamped at 0."""
-    return await build_usage(request).release(tenant=body.tenant, key=body.key, amount=body.amount)
+    return await (await build_usage(request)).release(tenant=body.tenant, key=body.key, amount=body.amount)
 
 
 @router.post("/billing/usage/set", dependencies=[Depends(require_internal_token)])
@@ -108,12 +119,12 @@ async def usage_set(body: SetUsageIn, request: Request) -> dict:
     Absolute, not additive: a gauge that is incremented only ever grows, so removing a user
     would never give the seat back.
     """
-    return await build_usage(request).set_usage(tenant=body.tenant, key=body.key, value=body.value)
+    return await (await build_usage(request)).set_usage(tenant=body.tenant, key=body.key, value=body.value)
 
 
 @router.get("/billing/usage", dependencies=[Depends(require_internal_token)])
 async def usage_summary_internal(request: Request, tenant: str) -> dict:
-    return await build_usage(request).summary(tenant)
+    return await (await build_usage(request)).summary(tenant)
 
 
 @router.get("/manifest", dependencies=[Depends(require_internal_token)])

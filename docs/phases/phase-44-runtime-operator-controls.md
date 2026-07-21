@@ -93,13 +93,13 @@ because an operator cannot tell which settings are live.
 - [x] **44.3** The shared admin surface: set / rotate / verify / clear, `platform.secrets`, audited — declared once and copied per service, since services stay self-contained
 - [x] **44.4** A gate: no route may return a stored secret, and every secret-setting route must declare its capability and audit
 - [x] **44.5** **notification-service** — 17 credential knobs, the largest surface; provider preference and failover order
-- [ ] **44.6** **billing-service** — payment provider keys; the one where a wrong value moves money
-- [ ] **44.7** **zatca-service** — ZATCA credentials, needed after launch by definition
-- [ ] **44.8** **connector-service** — third-party OAuth secrets
-- [ ] **44.9** **stream-service** — recording sink and camera credentials
-- [ ] **44.10** **verification-service** — provider keys
-- [ ] **44.11** **assistant-service** — model and embeddings keys
-- [ ] **44.12** **file-service**, **webhook-service**, **compliance-service**, **identity-service** — remaining credential knobs
+- [x] **44.6** **billing-service** — payment provider keys; the one where a wrong value moves money
+- [x] **44.7** **zatca-service** — ZATCA credentials, needed after launch by definition
+- [x] **44.8** **connector-service** — third-party OAuth secrets
+- [x] **44.9** **stream-service** — recording sink and camera credentials
+- [x] **44.10** **verification-service** — provider keys
+- [x] **44.11** **assistant-service** — model and embeddings keys
+- [x] **44.12** **file-service**, **webhook-service**, **compliance-service**, **identity-service** — remaining credential knobs
 - [ ] **44.13** Runtime policy values: retention, quotas, thresholds, grace periods — per service, per tenant
 - [ ] **44.14** Fill the empty admin catalogs (api-gateway, file-service) so every service declares its operator controls
 - [ ] **44.15** Full gate run, docs, and a rotation runbook

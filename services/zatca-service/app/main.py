@@ -21,7 +21,8 @@ from app.api import health, internal, metrics
 from app.api.errors import register_error_handlers
 from app.api.health import register_readiness_check
 from app.api.v1 import router as v1_router
-from app.config import get_settings
+from app.api.v1.operator import router as operator_router
+from app.config import Settings, get_settings
 from app.core.audit import build_auditor
 from app.container import build_container
 from app.middleware import (
@@ -83,6 +84,24 @@ def create_app() -> FastAPI:
         openapi_url=None if settings.is_production else "/openapi.json",
     )
     app.state.container = container
+
+    # ── Operator-managed credentials and policy ────────────────────────────
+    # ZATCA credentials are issued by the authority to the taxpayer and replaced on the authority's
+    # schedule, not ours — so entering one must not require a deployment. Without a KEK the store
+    # is not built and the surface 503s rather than storing a credential in the clear.
+    from app.core.operator_credentials import SignerCredentials
+    from app.core.runtime_config import RuntimeConfig
+    from app.core.secret_store import SecretStore
+
+    secret_store = None
+    if settings.SECRETS_KEK:
+        secret_store = SecretStore(
+            container.datastore, settings.SECRETS_KEK,
+            rotation_window_s=settings.SECRETS_ROTATION_WINDOW_SECONDS)
+    app.state.secret_store = secret_store
+    app.state.runtime_config = RuntimeConfig(container.datastore, Settings)
+    app.state.signer_credentials = SignerCredentials(
+        settings, secret_store, ttl_s=settings.SIGNER_CREDENTIAL_REFRESH_SECONDS)
     # Validated at boot: a malformed declaration stops the service rather than
     # surfacing months later as a hole in the log.
     app.state.auditor = build_auditor(settings, container)
@@ -128,6 +147,8 @@ def create_app() -> FastAPI:
     app.include_router(metrics.router)
     app.include_router(internal.router)
     app.include_router(v1_router)
+    # Operator controls: credentials and policy an operator changes after launch.
+    app.include_router(operator_router)
 
     return app
 

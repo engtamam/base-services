@@ -45,8 +45,11 @@ def build_manifest(
         # The capabilities a panel may advertise. `verification.self` is the end-user's own-claim
         # capability (the <svc>.self pattern); the other two gate the review queue, which is where
         # trust is actually granted.
+        # platform.secrets is deliberately separate from platform.config: setting a registry
+        # credential and changing a policy knob are not the same privilege, and a role that
+        # conflates them hands every settings-editor the ability to repoint who grants trust.
         "capabilities": ["platform.verification", "verification.review", "verification.read",
-                         "verification.self"],
+                         "verification.self", "platform.secrets", "platform.config"],
         "endpoints": [
             {"path": "/healthz", "tier": "public", "method": "GET"},
             {"path": "/readyz", "tier": "public", "method": "GET"},
@@ -65,6 +68,15 @@ def build_manifest(
             {"path": "/api/v1/verification/review-queue", "tier": "user", "method": "GET"},
             {"path": "/api/v1/verification/review/{verification_id}", "tier": "user",
              "method": "POST"},
+            # The operator surface: credentials and policy an operator changes after launch.
+            # A route table built from manifests that omits where credentials are set hides the
+            # highest-privilege surface this service has.
+            {"path": "/api/v1/operator/secrets", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/operator/secrets", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/operator/secrets/{}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/operator/config", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/operator/config", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/operator/config/{}", "tier": "user", "method": "DELETE"},
             {"path": "/api/v1/admin/ping", "tier": "user", "method": "GET"},
             {"path": "/api/v1/whoami", "tier": "user", "method": "GET"},
         ],

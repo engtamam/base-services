@@ -15,6 +15,7 @@ from app.core import seal as _seal
 from app.core import ssrf as _ssrf
 from app.core.mapping import MappingError, validate as validate_mapping
 from app.core.models import Connection, ProviderSpec, REVOKED, new_id
+from app.core.spec_resolver import resolve_spec
 from app.core.stores import (ConnectionStore, DlqStore, RunStore, SeenStore, SpecStore)
 from app.core.sync_engine import SyncEngine
 from app.core.token_manager import TokenManager
@@ -66,17 +67,16 @@ async def _owned(request: Request, connection_id: str, p: Principal) -> Connecti
 
 
 async def _spec_for(request: Request, conn: Connection) -> dict[str, Any]:
-    """Rehydrate the provider spec, unsealing the client secret only in memory."""
-    s = get_settings()
-    spec = await SpecStore(request.app.state.container.datastore).get(conn.spec_id)
-    if spec is None:
-        return {}
-    out = spec.to_dict()
-    out.pop("client_secret_sealed", None)
-    out["client_secret"] = _seal.unseal(spec.client_secret_sealed, s.seal_key) or ""
-    if conn.instance_url:
-        out["base_url"] = conn.instance_url
-    return out
+    """The provider spec for this connection.
+
+    The credential resolution itself lives in `core/spec_resolver`, not here: the resolved spec
+    carries a plaintext client secret, and a dict holding a live credential inside a route module
+    is one `return` away from being a response.
+    """
+    return await resolve_spec(
+        request.app.state.container.datastore,
+        getattr(request.app.state, "secret_store", None),
+        get_settings(), conn)
 
 
 class SpecIn(BaseModel):

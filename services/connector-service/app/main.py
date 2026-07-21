@@ -88,6 +88,20 @@ def create_app() -> FastAPI:
     app.state.auditor = build_auditor(settings, container)
     app.state.cwe_guard = cwe_guard
 
+    # ── Operator-managed credentials ────────────────────────────────────────
+    # Built only when a KEK is configured. Without one there is nothing to seal with, and the
+    # operator surface must refuse (503) rather than fall back to storing a credential in the
+    # clear while every check reports "encrypted" — so None here is a deliberate state, not an
+    # oversight, and the routes check for it.
+    app.state.secret_store = None
+    if settings.SECRETS_KEK:
+        from app.core.secret_store import SecretStore
+        app.state.secret_store = SecretStore(
+            container.datastore, settings.SECRETS_KEK,
+            rotation_window_s=settings.SECRETS_ROTATION_WINDOW_SECONDS)
+    from app.core.runtime_config import RuntimeConfig
+    app.state.runtime_config = RuntimeConfig(container.datastore, type(settings))
+
     # Readiness reflects real dependency health for the wired adapters.
     for name, probe in container.health_probes().items():
         register_readiness_check(name, probe)

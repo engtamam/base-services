@@ -42,7 +42,8 @@ def build_manifest(
         "name": settings.SERVICE_NAME,
         "version": settings.SERVICE_VERSION,
         "env": settings.ENV,
-        "capabilities": ["platform.stream", "stream.manage", "stream.view"],
+        "capabilities": ["platform.stream", "stream.manage", "stream.view",
+                         "platform.secrets", "platform.config"],
         "endpoints": [
             {"path": "/healthz", "tier": "public", "method": "GET"},
             {"path": "/readyz", "tier": "public", "method": "GET"},
@@ -55,6 +56,13 @@ def build_manifest(
              # and is therefore never MISSED — the request closes green on an erasure
              # that did not happen.
              "erasure_category": "subject"},
+            # The operator surface: credentials and policy an operator changes after launch.
+            {"path": "/api/v1/operator/secrets", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/operator/secrets", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/operator/secrets/{}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/operator/config", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/operator/config", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/operator/config/{}", "tier": "user", "method": "DELETE"},
             {"path": "/internal/stream/sweep", "tier": "internal", "method": "POST"},
             {"path": "/internal/stream/retention", "tier": "internal", "method": "POST"},
             {"path": "/internal/stream/exports/run", "tier": "internal", "method": "POST"},

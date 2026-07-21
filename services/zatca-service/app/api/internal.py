@@ -53,12 +53,12 @@ async def finalize(request: Request, body: FinalizeIn) -> dict:
     caller — a transient error leaves the invoice retryable ('pending')."""
     if not body.invoice.get("number"):
         raise HTTPException(422, "MISSING_NUMBER")
-    return await build_zatca(request).finalize(body.invoice, body.tenant)
+    return await (await build_zatca(request)).finalize(body.invoice, body.tenant)
 
 
 @router.post("/zatca/sweep", dependencies=[Depends(require_internal_token)])
 async def internal_sweep(request: Request) -> dict:
-    return await build_zatca(request).sweep()
+    return await (await build_zatca(request)).sweep()
 
 
 @router.get("/manifest", dependencies=[Depends(require_internal_token)])
