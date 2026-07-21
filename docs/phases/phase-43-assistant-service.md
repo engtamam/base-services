@@ -138,8 +138,8 @@ when the code exists.
 - [x] **43.6** Retrieval: BM25 ranking, surface filter, capability filter, relevance threshold, top-N, token budget
 - [ ] **43.7** `Embeddings` port + optional adapter; hybrid scoring when configured, lexical-only when not
 - [ ] **43.8** Direct `anchor` lookup — no model, no retrieval, for the `?` icon
-- [ ] **43.9** `Model` port: `null` (extractive) default + provider adapters; timeouts; never return an upstream error verbatim
-- [ ] **43.10** Grounded synthesis with citations; the abstention gate; per-surface persona and not-found message
+- [x] **43.9** `Model` port: `null` (extractive) default + provider adapters; timeouts; never return an upstream error verbatim
+- [x] **43.10** Grounded synthesis with citations; the abstention gate; per-surface persona and not-found message
 - [ ] **43.11** Action deep-links from the catalog — suggest and link, never execute
 - [ ] **43.12** Conversations: tenant+subject scoping, encryption at rest, pagination, export
 - [ ] **43.13** PII redaction outbound and on stored content, default ON; bounded-time patterns
