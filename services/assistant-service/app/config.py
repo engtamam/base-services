@@ -135,6 +135,21 @@ class Settings(BaseSettings):
     # provider adapter, which is the moment it starts meaning something.
     MODEL_EXTRACTIVE_MAX_PASSAGES: int = 3
 
+    # ── Conversations & privacy ─────────────────────────────────────────────
+    # A help question is user content and routinely carries the identifiers the platform works to
+    # keep out of its logs — people paste card numbers into help boxes when a payment fails.
+    # Redaction is ON by default: the deployment that most needs it is the one that never read
+    # this setting.
+    REDACT_PII: bool = True
+    REDACT_MAX_CHARS: int = 20_000
+    # Storing history is opt-in: a service that keeps nothing has nothing to leak or erase.
+    CONVERSATIONS_ENABLED: bool = False
+    # Refuses to start rather than store plaintext when on without a key.
+    ENCRYPT_MESSAGES: bool = True
+    MESSAGE_KEY: str = ""
+    CONVERSATION_PAGE_SIZE: int = 20
+    CONVERSATION_RETENTION_DAYS: int = 90     # 0 = keep until erased
+
     # The language used when a caller does not ask for one.
     DEFAULT_LANGUAGE: str = "en"
     # What the assistant says when the evidence is too thin. Deliberately configurable per

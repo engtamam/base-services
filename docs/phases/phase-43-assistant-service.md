@@ -141,10 +141,10 @@ when the code exists.
 - [x] **43.9** `Model` port: `null` (extractive) default + provider adapters; timeouts; never return an upstream error verbatim
 - [x] **43.10** Grounded synthesis with citations; the abstention gate; per-surface persona and not-found message
 - [x] **43.11** Action deep-links from the catalog — suggest and link, never execute
-- [ ] **43.12** Conversations: tenant+subject scoping, encryption at rest, pagination, export
-- [ ] **43.13** PII redaction outbound and on stored content, default ON; bounded-time patterns
+- [x] **43.12** Conversations: tenant+subject scoping, encryption at rest, pagination, export
+- [x] **43.13** PII redaction outbound and on stored content, default ON; bounded-time patterns
 - [ ] **43.14** Quotas + rate limiting per tenant and per subject, shared-store backed so it survives >1 replica
-- [ ] **43.15** Erasure contract + a retention sweeper that actually runs
+- [x] **43.15** Erasure contract + a retention sweeper that actually runs
 - [ ] **43.16** Audit: declared auditable actions; admin config changes witnessed
 - [ ] **43.17** Eval harness with a golden set — and it must be able to FAIL
 - [ ] **43.18** Branding config per tenant + surface (colours, logo, name, greeting, locale, position), validated

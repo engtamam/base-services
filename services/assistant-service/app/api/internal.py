@@ -59,6 +59,24 @@ class EraseIn(BaseModel):
     subject: str
 
 
+@router.post("/assistant/retention", dependencies=[Depends(require_internal_token)])
+async def enforce_retention(request: Request) -> dict:
+    """Apply CONVERSATION_RETENTION_DAYS (a scheduler calls this). 0 = keep until erased.
+
+    Shipped with a cron caller in the chart, because a sweeper nobody calls is the same defect as
+    no sweeper at all — and harder to spot, since the code review passes.
+    """
+    import datetime as _dt
+
+    s = get_settings()
+    store = request.app.state.container.conversations
+    if store is None or s.CONVERSATION_RETENTION_DAYS <= 0:
+        return {"conversations": 0, "messages": 0, "skipped": True}
+    cutoff = (_dt.datetime.now(_dt.timezone.utc)
+              - _dt.timedelta(days=s.CONVERSATION_RETENTION_DAYS)).isoformat()
+    return await store.enforce_retention(cutoff_iso=cutoff)
+
+
 @router.post("/privacy/erase", dependencies=[Depends(require_internal_token)])
 async def erase_subject(request: Request, body: EraseIn) -> dict:
     """Erase a data subject. Called by compliance-service during a DSAR fan-out.
@@ -82,4 +100,16 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     s = get_settings()
     eraser = TemplateErasure(store=c.datastore, pii_salt=s.PII_SALT,
                              max_scan=s.ERASURE_MAX_SCAN)
-    return await eraser.erase(body.tenant, body.subject)
+    ack = await eraser.erase(body.tenant, body.subject)
+    # Conversations are this service's own personal data, so the ack must account for them or it
+    # claims an erasure it did not perform.
+    if c.conversations is not None:
+        removed = await c.conversations.erase_subject(tenant=body.tenant, subject=body.subject)
+        erased = list(ack.get("erased") or [])
+        if removed["conversations"]:
+            erased.append(f"conversations:{removed['conversations']}")
+        if removed["messages"]:
+            erased.append(f"messages:{removed['messages']}")
+        ack["erased"] = erased
+        ack["already_absent"] = ack.get("already_absent", True) and not erased
+    return ack

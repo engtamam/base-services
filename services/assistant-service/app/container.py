@@ -38,6 +38,7 @@ from app.adapters.knowledge_source.composite import CompositeKnowledgeSource
 from app.adapters.knowledge_source.file import FileKnowledgeSource
 from app.adapters.knowledge_source.memory import MemoryKnowledgeSource
 from app.adapters.model.extractive import ExtractiveModel
+from app.core.conversations import ConversationStore, MessageCrypto
 from app.adapters.telemetry.stdout import StdoutTelemetry
 from app.adapters.token_verifier.hs256 import HS256Verifier
 from app.adapters.token_verifier.jwks import JWKSVerifier
@@ -148,6 +149,23 @@ def _build_kb_source(settings: Settings) -> Any:
     return CompositeKnowledgeSource([_one_kb_source(n, settings) for n in names])
 
 
+def _build_conversations(settings: Settings, datastore) -> Any:
+    """None when history is off. A service that keeps nothing has nothing to leak or erase, so the
+    absence is the feature rather than a missing dependency."""
+    if not settings.CONVERSATIONS_ENABLED:
+        return None
+    import datetime as _dt
+    import uuid as _uuid
+
+    crypto = MessageCrypto(settings.MESSAGE_KEY, required=settings.ENCRYPT_MESSAGES)
+    # ISO-8601 UTC: it sorts correctly as a string, which is what the store's cursor ordering
+    # relies on, and it needs no timezone table to compare.
+    return ConversationStore(
+        datastore, pii_salt=settings.PII_SALT, crypto=crypto,
+        now=lambda: _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        new_id=lambda: _uuid.uuid4().hex)
+
+
 _MODEL: dict[str, Builder] = {
     # Answers by quoting retrieved passages: no API key, no latency, and it cannot hallucinate.
     "extractive": lambda s: ExtractiveModel(max_passages=s.MODEL_EXTRACTIVE_MAX_PASSAGES),
@@ -177,6 +195,7 @@ class Container:
     telemetry: Telemetry
     audit_sink: Any = None
     kb_source: Any = None
+    conversations: Any = None
     model: Any = None
     consent_gate: Any = None
 
@@ -229,8 +248,9 @@ def _build_audit_sink(settings: Settings, event_bus) -> Any:
 def build_container(settings: Settings) -> Container:
     """Resolve every port from config. Fail-fast on any unknown driver."""
     event_bus = _pick(_EVENTBUS, settings.EVENTBUS_DRIVER, "event_bus", settings)
+    datastore = _pick(_DATASTORE, settings.DATASTORE_DRIVER, "datastore", settings)
     return Container(
-        datastore=_pick(_DATASTORE, settings.DATASTORE_DRIVER, "datastore", settings),
+        datastore=datastore,
         cache=_pick(_CACHE, settings.CACHE_DRIVER, "cache", settings),
         event_bus=event_bus,
         queue=_pick(_QUEUE, settings.QUEUE_DRIVER, "queue", settings),
@@ -241,6 +261,7 @@ def build_container(settings: Settings) -> Container:
         telemetry=_pick(_TELEMETRY, settings.TELEMETRY_DRIVER, "telemetry", settings),
         audit_sink=_build_audit_sink(settings, event_bus),
         kb_source=_build_kb_source(settings),
+        conversations=_build_conversations(settings, datastore),
         model=_pick(_MODEL, settings.MODEL_DRIVER, "model", settings),
         consent_gate=_pick(_CONSENT_GATE, settings.CONSENT_GATE_DRIVER, "consent_gate", settings),
     )

@@ -63,6 +63,10 @@ def build_manifest(
             {"path": "/api/v1/whoami", "tier": "user", "method": "GET"},
             {"path": "/api/v1/assistant/ask", "tier": "user", "method": "POST"},
             {"path": "/api/v1/assistant/help", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/assistant/conversations", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/assistant/conversations/{id}", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/assistant/conversations/{id}", "tier": "user", "method": "DELETE"},
+            {"path": "/internal/assistant/retention", "tier": "internal", "method": "POST"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         # FILL THIS too, or leave it empty deliberately. Same trap as capabilities: an empty

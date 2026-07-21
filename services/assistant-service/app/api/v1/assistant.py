@@ -26,6 +26,7 @@ from app.api.ratelimit import rate_limit
 from app.config import get_settings
 from app.core.kb_service import KbService
 from app.core.pii import subject_ref
+from app.core.redaction import redact
 
 router = APIRouter(prefix="/api/v1/assistant", tags=["assistant"])
 
@@ -75,9 +76,12 @@ async def ask(request: Request, body: AskIn,
               principal: Principal = Depends(require_user)) -> dict:
     """Answer from the knowledge base — grounded and cited, or an honest abstention."""
     s = get_settings()
+    # Redacted BEFORE anything: before it reaches a third-party model, before it is stored, and
+    # before it is ranked. Redacting later would mean the raw text had already left the process.
+    cleaned = redact(body.question, enabled=s.REDACT_PII, max_chars=s.REDACT_MAX_CHARS)
     kb = build_kb(request)
     answer, hits = await kb.ask(
-        question=body.question,
+        question=cleaned.text,
         surface=body.surface,
         caps=principal.caps,          # from the verified token, never from the body
         lang=body.lang or s.DEFAULT_LANGUAGE,
@@ -118,6 +122,9 @@ async def ask(request: Request, body: AskIn,
         "actions": _actions(hits) if answer.grounded else [],
         "abstained_because": answer.abstained_because,
         "searched": len(hits),
+        # Told, not hidden. A user who pasted a card number should see that we removed it, and an
+        # answer that seems to ignore the question is otherwise baffling.
+        "redacted": list(cleaned.hits),
     }
 
 
@@ -137,3 +144,60 @@ async def help_for_anchor(request: Request, anchor: str = "", surface: str = "",
     title, text = entry.text(lang or s.DEFAULT_LANGUAGE)
     return {"id": entry.id, "anchor": entry.anchor, "title": title, "body": text,
             "kind": entry.kind, "related": list(entry.related)}
+
+
+# ── conversations ─────────────────────────────────────────────────────────────
+# Absent entirely when history is switched off: a 404 rather than an empty list, because "you have
+# no conversations" and "this deployment keeps none" are different facts and a client that cannot
+# tell them apart will render an empty history as data loss.
+def _conversations(request: Request):
+    store = request.app.state.container.conversations
+    if store is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "CONVERSATIONS_DISABLED")
+    return store
+
+
+@router.get("/conversations", dependencies=[Depends(require_capability("assistant.ask")),
+                                            Depends(rate_limit)])
+async def list_conversations(request: Request, after: str = "",
+                             principal: Principal = Depends(require_user)) -> dict:
+    """This caller's own conversations. Scoped at the store by tenant AND subject."""
+    s = get_settings()
+    store = _conversations(request)
+    convs, cursor = await store.list(tenant=principal.tenant or "", subject=principal.subject,
+                                     limit=s.CONVERSATION_PAGE_SIZE, after=after or None)
+    return {"conversations": [{"id": c.id, "title": c.title, "surface": c.surface,
+                               "created": c.created, "updated": c.updated} for c in convs],
+            "next": cursor}
+
+
+@router.get("/conversations/{conversation_id}",
+            dependencies=[Depends(require_capability("assistant.ask")), Depends(rate_limit)])
+async def get_conversation(request: Request, conversation_id: str,
+                           principal: Principal = Depends(require_user)) -> dict:
+    """One conversation with its messages — the caller's own, or a 404."""
+    store = _conversations(request)
+    tenant, subject = principal.tenant or "", principal.subject
+    conv = await store.get(conversation_id=conversation_id, tenant=tenant, subject=subject)
+    if conv is None:
+        # 404 for "not yours" as well as "not there": distinguishing them confirms the id exists.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    msgs, cursor = await store.messages(conversation_id=conversation_id, tenant=tenant,
+                                        subject=subject)
+    return {"id": conv.id, "title": conv.title,
+            "messages": [{"id": m.id, "role": m.role, "content": m.content,
+                          "created": m.created, "citations": list(m.citations)} for m in msgs],
+            "next": cursor}
+
+
+@router.delete("/conversations/{conversation_id}",
+               dependencies=[Depends(require_capability("assistant.ask")), Depends(rate_limit)])
+async def delete_conversation(request: Request, conversation_id: str,
+                              principal: Principal = Depends(require_user)) -> dict:
+    """A real delete, not an archive flag. Asked to be forgotten means gone."""
+    store = _conversations(request)
+    ok = await store.delete(conversation_id=conversation_id, tenant=principal.tenant or "",
+                            subject=principal.subject)
+    if not ok:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    return {"deleted": conversation_id}

@@ -42,6 +42,15 @@ USER_ACTIONS: list[dict[str, Any]] = [
     {"id": "assistant.help", "label": "Help for this control", "method": "GET",
      "path": "/api/v1/assistant/help", "capability": "assistant.ask", "group": "Help",
      "params": [{"name": "anchor", "in": "query", "type": "string", "required": True}]},
+    {"id": "assistant.my_conversations", "label": "My past questions", "method": "GET",
+     "path": "/api/v1/assistant/conversations", "capability": "assistant.ask", "group": "Help"},
+    {"id": "assistant.read_conversation", "label": "Read a past conversation", "method": "GET",
+     "path": "/api/v1/assistant/conversations/{id}", "capability": "assistant.ask", "group": "Help",
+     "params": [{"name": "id", "in": "path", "type": "string", "required": True}]},
+    {"id": "assistant.delete_conversation", "label": "Delete a conversation", "method": "DELETE",
+     "path": "/api/v1/assistant/conversations/{id}", "capability": "assistant.ask", "group": "Help",
+     "danger": True, "confirm": True,
+     "params": [{"name": "id", "in": "path", "type": "string", "required": True}]},
 ]
 
 

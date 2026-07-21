@@ -76,6 +76,10 @@ CRONS: dict[str, list[tuple[str, str, str]]] = {
         ("dsar-sweep", "*/5 * * * *", "/internal/compliance/dsar/run"),
         ("retention-purge", "17 3 * * *", "/internal/compliance/retention/run"),
     ],
+    # A conversation retention policy that is stored and never executed is the most common
+    # compliance defect there is: every review passes because the setting exists, and the data is
+    # still there years later. Nightly, because the policy is measured in days.
+    "assistant-service": [("retention", "43 3 * * *", "/internal/assistant/retention")],
     # Without these the wallet's holds never expire: a client that dies between reserve and
     # confirm strands a customer's credits forever, while the balance still displays them.
     "wallet-service": [

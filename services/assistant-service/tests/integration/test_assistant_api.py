@@ -179,3 +179,19 @@ def test_a_non_critical_audit_failure_never_costs_the_answer(client, monkeypatch
     monkeypatch.setattr(client.app.state.auditor, "record", boom)
     r = _ask(client, "nothing matches this zzzq")
     assert r.status_code == 200 and r.json()["grounded"] is False
+
+
+# ── redaction on the way in ───────────────────────────────────────────────────
+def test_a_pasted_card_number_never_reaches_retrieval_or_storage(client):
+    b = _ask(client, "my card 4111 1111 1111 1111 was declined, what is a VAT number").json()
+    assert "card" in b["redacted"], "the card was not detected"
+    assert "4111" not in json.dumps(b), "the card number came back in the response"
+
+
+def test_redaction_is_reported_so_the_answer_is_not_baffling(client):
+    b = _ask(client, "email me at ahmed@example.com about vat").json()
+    assert "email" in b["redacted"]
+
+
+def test_an_ordinary_question_reports_no_redaction(client):
+    assert _ask(client, "what is a vat number").json()["redacted"] == []
