@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from app.config import Settings, get_settings
+from app.core.pii import subject_ref
 from app.core.erasure import TemplateErasure
 from app.manifest import build_manifest
 
@@ -67,6 +68,16 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     fan-out by adding it to PRIVACY_TARGETS in compliance-service's values file; the
     safety:privacy-wiring gate fails if you implement this and forget.
     """
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this runs
+    # BEFORE the mutation. Recording afterwards would 503 a caller whose erasure had already
+    # succeeded, and leave the one irreversible action in the service unproven.
+    #
+    # The resource carries the PSEUDONYM rather than the subject: an erasure record that names the
+    # person it erased defeats the erasure.
+    ref = subject_ref(get_settings().PII_SALT, body.tenant, body.subject)
+    await request.app.state.auditor.record(
+        "subject.erased", actor="", tenant=body.tenant, resource=f"subject:{ref}",
+        ip=request.client.host if request.client else "")
     c = request.app.state.container
     s = get_settings()
     eraser = TemplateErasure(store=c.datastore, pii_salt=s.PII_SALT,

@@ -31,4 +31,23 @@ from __future__ import annotations
 from typing import Any
 
 
-USER_ACTIONS: list[dict[str, Any]] = []
+USER_ACTIONS: list[dict[str, Any]] = [
+    # Both are ordinary self-service: asking for help is not a privileged act. `assistant.ask`
+    # gates the ROUTE; what the assistant will actually answer is gated per entry by its own
+    # `requires`, so holding this capability grants access to the assistant and to nothing else.
+    {"id": "assistant.ask", "label": "Ask the assistant", "method": "POST",
+     "path": "/api/v1/assistant/ask", "capability": "assistant.ask", "group": "Help",
+     "params": [{"name": "question", "in": "body", "type": "string", "required": True},
+                {"name": "surface", "in": "body", "type": "string", "required": False}]},
+    {"id": "assistant.help", "label": "Help for this control", "method": "GET",
+     "path": "/api/v1/assistant/help", "capability": "assistant.ask", "group": "Help",
+     "params": [{"name": "anchor", "in": "query", "type": "string", "required": True}]},
+]
+
+
+UNDECLARED_ROUTES: list[dict[str, str]] = [
+    {"method": "GET", "path": "/api/v1/whoami",
+     "why": "scaffold diagnostic from the template: echoes the caller's own claims, so it is a debugging aid rather than a control a panel renders"},
+    {"method": "GET", "path": "/api/v1/admin/ping",
+     "why": "scaffold liveness probe from the template — proves the admin tier authorises, carries no data and does nothing"},
+]

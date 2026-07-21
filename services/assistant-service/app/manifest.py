@@ -46,7 +46,7 @@ def build_manifest(
         # adopter's client app reads as fact and renders nothing from. A blank app is the usual
         # symptom of a service that shipped this untouched. If a service genuinely grants none,
         # leaving it empty is correct; the point is that it must be a decision, not a leftover.
-        "capabilities": [],  # e.g. ["files.upload", "files.read"] — atomic capability keys
+        "capabilities": ["assistant.ask"],
         "endpoints": [
             {"path": "/healthz", "tier": "public", "method": "GET"},
             {"path": "/readyz", "tier": "public", "method": "GET"},
@@ -61,6 +61,8 @@ def build_manifest(
              "erasure_category": "subject"},
             {"path": "/api/v1/admin/ping", "tier": "user", "method": "GET"},
             {"path": "/api/v1/whoami", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/assistant/ask", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/assistant/help", "tier": "user", "method": "GET"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         # FILL THIS too, or leave it empty deliberately. Same trap as capabilities: an empty

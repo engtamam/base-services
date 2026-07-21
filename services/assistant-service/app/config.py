@@ -96,6 +96,55 @@ class Settings(BaseSettings):
                 "CORS_ALLOWED_ORIGINS='*' in production lets any site on the internet call this "
                 "service with a user's browser. List the origins you actually serve.")
 
+    # ── Knowledge base — where the assistant's facts come from ──────────────
+    # NEVER the request body. Whoever controls the knowledge controls what the product appears to
+    # assert, so the source is operator-configured and a caller may only say what it is asking.
+    # `composite` merges several in order, and the FIRST source wins on a duplicate id — put the
+    # authored file first so a human can override one generated sentence without forking anything.
+    KB_SOURCE_DRIVER: str = "memory"          # memory | file | catalog | composite
+    KB_FILE_PATH: str = ""                    # a .json file, or a directory of them
+    KB_CATALOG_URL: str = ""                  # an aggregated action catalog
+    KB_CATALOG_TIMEOUT_SECONDS: float = 10.0
+    KB_CATALOG_PREFIX: str = "action"         # namespace for generated ids
+    # Which sources compose, in priority order. Only read when the driver is `composite`.
+    KB_COMPOSITE_SOURCES: str = "file,catalog"
+
+    # ── Retrieval ───────────────────────────────────────────────────────────
+    # Chunk size is about CITATION, not cost: a citation a reader cannot check is not a citation.
+    KB_CHUNK_MAX_CHARS: int = 900
+    # How many passages an answer may draw on. More stops being an answer and becomes a search page.
+    RETRIEVAL_TOP_N: int = 6
+    # The precision lever. Below this a passage is not evidence, and the assistant abstains rather
+    # than reaching for the least-bad match — which is how confident wrong answers are produced.
+    RETRIEVAL_MIN_SCORE: float = 0.35
+    # The context budget. This is what keeps prompt size independent of KB size; without it the
+    # bill and the latency track how much help has been written.
+    RETRIEVAL_MAX_CONTEXT_CHARS: int = 6000
+    # BM25 tuning. Surfaced because the right values depend on a corpus we do not have yet.
+    RETRIEVAL_BM25_K1: float = 1.2
+    RETRIEVAL_BM25_B: float = 0.75
+
+    # ── Answering ───────────────────────────────────────────────────────────
+    # `extractive` needs no API key and cannot hallucinate: it quotes the retrieved passages. It is
+    # the default because a help assistant that requires a key before it does anything is a feature
+    # an adopter evaluates later and never switches on.
+    MODEL_DRIVER: str = "extractive"          # extractive | (provider adapters)
+    MODEL_MAX_ANSWER_TOKENS: int = 700
+    # No MODEL_TIMEOUT here on purpose: the only driver today makes no network call, and a knob
+    # that configures nothing is a promise the API does not keep. It arrives with the first
+    # provider adapter, which is the moment it starts meaning something.
+    MODEL_EXTRACTIVE_MAX_PASSAGES: int = 3
+
+    # The language used when a caller does not ask for one.
+    DEFAULT_LANGUAGE: str = "en"
+    # What the assistant says when the evidence is too thin. Deliberately configurable per
+    # deployment: the abstention is the sentence users see most when a KB is young, and it should
+    # sound like the product rather than like a library.
+    ASSISTANT_NOT_FOUND_TEXT: str = (
+        "I don't have anything on that yet. Try rephrasing, or ask your administrator to add it "
+        "to the help content."
+    )
+
     # ── Internal service-to-service auth (REQUIRED) ─────────────────────────
     # Shared token for /internal/* endpoints. Must be strong (>= 32 chars).
     INTERNAL_SERVICE_TOKEN: str = Field(min_length=32)

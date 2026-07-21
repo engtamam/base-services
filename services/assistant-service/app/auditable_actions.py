@@ -72,12 +72,12 @@ THEN EMIT IT — the other half of the job
 Declaring an action does not record it. At the point the action happens:
 
     await request.app.state.auditor.record(
-        "permission.granted",
+        "subject.erased",
         actor=subject_ref,               # a PSEUDONYM — see below
-        resource=f"grant:{grant.id}",
+        resource=f"subject:{subject_ref}",
         tenant=principal.tenant,
         ip=request.client.host,
-        metadata={"capability": cap},
+        metadata={"category": "conversations"},
     )
 
 For a `critical` action, let `AuditUnavailable` propagate — the API layer turns it into a 503. That
@@ -116,26 +116,23 @@ from __future__ import annotations
 from typing import Any
 
 AUDITABLE_ACTIONS: list[dict[str, Any]] = [
-    # ── Delete these examples and declare your own ────────────────────────────
     {
-        "action": "example.thing_created",
+        # Not critical: refusing to ANSWER a help question because the audit log is unreachable
+        # would take the product down to protect a record of who asked what. The record is useful
+        # — it shows which questions the KB cannot answer — but it is not worth the availability.
+        "action": "assistant.abstained",
         "source": "user",
         "critical": False,
-        "resource": "thing",
+        "resource": "question",
+        "why": "the questions the assistant could NOT answer are the highest-value signal for "
+               "what the knowledge base is missing, and they are invisible anywhere else",
     },
     {
-        "action": "example.permission_granted",
-        "source": "admin",
-        "critical": True,
-        "resource": "grant",
-        "why": "an unattributable permission grant is indistinguishable from an attacker's",
-    },
-    {
-        "action": "example.subject_erased",
+        "action": "subject.erased",
         "source": "internal",
         "critical": True,
         "resource": "subject",
-        "why": "erasure is irreversible; without a record we cannot prove we honoured the DSAR, "
-               "and the data itself is gone so nothing else can show it",
+        "why": "erasure is irreversible and the data itself is gone afterwards, so nothing else "
+               "can show it happened; without a record we cannot prove we honoured the DSAR",
     },
 ]

@@ -33,6 +33,11 @@ from app.adapters.audit_sink.http import HttpAuditSink
 from app.adapters.audit_sink.null import NullAuditSink
 from app.adapters.consent_gate.http import HttpConsentGate
 from app.adapters.consent_gate.null import NullConsentGate
+from app.adapters.knowledge_source.catalog import CatalogKnowledgeSource
+from app.adapters.knowledge_source.composite import CompositeKnowledgeSource
+from app.adapters.knowledge_source.file import FileKnowledgeSource
+from app.adapters.knowledge_source.memory import MemoryKnowledgeSource
+from app.adapters.model.extractive import ExtractiveModel
 from app.adapters.telemetry.stdout import StdoutTelemetry
 from app.adapters.token_verifier.hs256 import HS256Verifier
 from app.adapters.token_verifier.jwks import JWKSVerifier
@@ -115,6 +120,40 @@ _TELEMETRY: dict[str, Builder] = {
 }
 
 
+# Where the assistant's facts come from. `memory` is the zero-infra default so the service boots
+# and answers with nothing configured; an operator points it at a file, a catalog, or both.
+def _one_kb_source(driver: str, settings: Settings) -> Any:
+    if driver == "memory":
+        return MemoryKnowledgeSource()
+    if driver == "file":
+        return FileKnowledgeSource(settings.KB_FILE_PATH)
+    if driver == "catalog":
+        return CatalogKnowledgeSource(settings.KB_CATALOG_URL, settings.INTERNAL_SERVICE_TOKEN,
+                                      timeout=settings.KB_CATALOG_TIMEOUT_SECONDS,
+                                      prefix=settings.KB_CATALOG_PREFIX)
+    raise ConfigError(f"unknown knowledge_source driver: {driver!r} — "
+                      f"allowed: memory, file, catalog, composite")
+
+
+def _build_kb_source(settings: Settings) -> Any:
+    driver = settings.KB_SOURCE_DRIVER
+    if driver != "composite":
+        return _one_kb_source(driver, settings)
+    names = [n.strip() for n in settings.KB_COMPOSITE_SOURCES.split(",") if n.strip()]
+    if not names:
+        raise ConfigError("KB_SOURCE_DRIVER=composite but KB_COMPOSITE_SOURCES is empty — the "
+                          "assistant would have no knowledge at all")
+    # Order is priority: the FIRST source wins a duplicate id, so authored help placed first can
+    # override one generated sentence without forking the generator.
+    return CompositeKnowledgeSource([_one_kb_source(n, settings) for n in names])
+
+
+_MODEL: dict[str, Builder] = {
+    # Answers by quoting retrieved passages: no API key, no latency, and it cannot hallucinate.
+    "extractive": lambda s: ExtractiveModel(max_passages=s.MODEL_EXTRACTIVE_MAX_PASSAGES),
+}
+
+
 def _pick(registry: dict[str, Builder], driver: str, port_name: str, settings: Settings) -> Any:
     builder = registry.get(driver)
     if builder is None:
@@ -137,6 +176,8 @@ class Container:
     rate_limiter: RateLimiter
     telemetry: Telemetry
     audit_sink: Any = None
+    kb_source: Any = None
+    model: Any = None
     consent_gate: Any = None
 
     def describe(self) -> list[dict[str, str]]:
@@ -199,5 +240,7 @@ def build_container(settings: Settings) -> Container:
         rate_limiter=_pick(_RATELIMITER, settings.RATELIMITER_DRIVER, "rate_limiter", settings),
         telemetry=_pick(_TELEMETRY, settings.TELEMETRY_DRIVER, "telemetry", settings),
         audit_sink=_build_audit_sink(settings, event_bus),
+        kb_source=_build_kb_source(settings),
+        model=_pick(_MODEL, settings.MODEL_DRIVER, "model", settings),
         consent_gate=_pick(_CONSENT_GATE, settings.CONSENT_GATE_DRIVER, "consent_gate", settings),
     )
