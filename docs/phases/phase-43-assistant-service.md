@@ -91,6 +91,29 @@ on a misread question is a large surface for a small gain.
 the standard `/internal/privacy/erase` contract, and retention is **enforced by a sweeper**, not
 described in a config field.
 
+**We ship the UI, as a web component.** An adopter with four UIs should not build the same chat
+panel four times, and a backend-only help service quietly pushes that cost onto every consumer. The
+service serves its own widget: one `<script>` tag, no build step, no npm dependency, no framework.
+
+    <script src="https://.../widget.js"></script>
+    <assistant-widget surface="admin" locale="ar"></assistant-widget>
+
+A web component rather than a React package, for three reasons that each cost real money otherwise:
+it works identically in React, Vue, Angular or plain HTML, so four UIs share one widget; **shadow
+DOM** means the host's CSS cannot break the panel and the panel's CSS cannot leak into the host,
+which is the usual first support ticket for an embedded widget; and zero dependencies keeps it
+self-contained and trivial to license-audit, like everything else here.
+
+**Branding is server-side config, per tenant and per surface** — colours, logo, assistant name,
+greeting, locale, position. Set once, picked up by every UI, no rebuild. **RTL is a layout
+requirement, not a translation**: Arabic mirrors the panel, and this platform targets a market
+where that is the default case, not an edge case.
+
+**The widget holds no secret, and branding cannot inject markup.** The host app mints a short-lived
+token; the widget never carries an API key. Brand values are validated as colours and URLs — a
+brand config that can carry HTML or CSS is stored XSS in every adopter's application, arriving
+through a field nobody thinks of as untrusted.
+
 ## What must never happen
 
 1. **A confident wrong answer.** Ungrounded or unsupported → abstain. Measured, not asserted.
@@ -124,7 +147,11 @@ described in a config field.
 | 43.15 | Erasure contract + retention sweeper that actually runs |
 | 43.16 | Audit: declared auditable actions; admin config changes witnessed |
 | 43.17 | Eval harness with a golden set — and it must be able to FAIL (see below) |
-| 43.18 | Manifest routes, user_actions, admin_actions, OpenAPI, full gate run |
+| 43.18 | Branding config: per tenant + per surface (colours, logo, name, greeting, locale, position), validated |
+| 43.19 | `widget.js` — zero-dependency web component, shadow DOM, served by the service; chat mode + `?` anchor mode |
+| 43.20 | Widget RTL + locale: Arabic mirrors the panel, not just the strings |
+| 43.21 | Widget auth: host-minted short-lived token, no secret in the browser; CORS + CSP posture |
+| 43.22 | Manifest routes, user_actions, admin_actions, OpenAPI, full gate run |
 
 ## Definition of done
 
@@ -136,6 +163,9 @@ described in a config field.
 - Zero-config run works: no API key, no external service, extractive answers with citations
 - Retention sweeper deletes; erasure erases; both tested
 - Eval harness runs, and **a deliberately broken retriever makes it go red**
+- The widget drops into a plain HTML page with one script tag and works — no build step, no
+  dependency, host CSS unaffected in both directions
+- A brand config carrying HTML or CSS is refused, not rendered
 - All gates green, including a new one if this phase earns it
 
 ## Honest limits
