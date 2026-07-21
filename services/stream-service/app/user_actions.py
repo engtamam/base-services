@@ -93,6 +93,17 @@ USER_ACTIONS: list[dict[str, Any]] = [
      "path": "/api/v1/recordings/{id}", "capability": "stream.manage", "group": "Recordings",
      "danger": True, "confirm": True,
      "params": [{"name": "id", "in": "path", "type": "string", "required": True}]},
+    # Legal hold. The endpoints and the stream.manage capability shipped; only the app button was
+    # missing, so an operator could not place a hold from the UI even though retention already
+    # exempts a locked recording. `confirm` because a hold changes what deletion may touch.
+    {"id": "stream.lock_recording", "label": "Place legal hold", "method": "POST",
+     "path": "/api/v1/recordings/{id}/lock", "capability": "stream.manage", "group": "Recordings",
+     "confirm": True,
+     "params": [{"name": "id", "in": "path", "type": "string", "required": True}]},
+    {"id": "stream.unlock_recording", "label": "Release legal hold", "method": "POST",
+     "path": "/api/v1/recordings/{id}/unlock", "capability": "stream.manage", "group": "Recordings",
+     "confirm": True,
+     "params": [{"name": "id", "in": "path", "type": "string", "required": True}]},
 ]
 
 
