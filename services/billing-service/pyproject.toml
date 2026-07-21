@@ -38,10 +38,14 @@ dependencies = [
 # smaller attack surface). ALL PERMISSIVE.
 #   asyncpg   MIT/Apache | redis MIT | aioboto3 Apache-2.0 | hvac Apache-2.0
 postgres = ["asyncpg>=0.29,<1.0"]
-pdf = [  # BSD/MIT/LGPL — optional PDF_RENDERER=reportlab (EN/AR bilingual invoices)
+pdf = [  # BSD/MIT — optional PDF_RENDERER=reportlab (EN/AR bilingual invoices)
     "reportlab>=4.0,<5.0",
     "arabic-reshaper>=3.0,<4.0",
     "python-bidi>=0.4,<1.0",
+    # BSD-3. Draws the ZATCA TLV QR onto the invoice. Was used by the renderer and NOT declared
+    # here, which would have failed at runtime in any image built from this extra — the QR is
+    # legally required, so it would have failed on the one thing that must not be missing.
+    "segno>=1.6,<2.0",
 ]
 redis = ["redis>=5.0,<6.0"]
 s3 = ["aioboto3>=13.0,<15.0"]
@@ -53,6 +57,11 @@ vault = ["hvac>=2.0,<3.0"]
 dev = [
     "pytest>=9.0.3,<10.0",
     "httpx>=0.27,<1.0",
+    # Apache-2.0/BSD-3. Rasterises and text-extracts the invoice PDF so the tests can assert what
+    # a READER sees rather than that a render returned bytes. Declared here deliberately: the PDF
+    # tests importorskip on it, so without it in CI they would SKIP in silence — and a document
+    # test that quietly does not run is how both font defects survived in the first place.
+    "pypdfium2>=4.0,<6.0",
 ]
 
 # CI security tools — PERMISSIVE ONLY.

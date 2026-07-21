@@ -203,6 +203,21 @@ class Settings(BaseSettings):
     ZATCA_SERVICE_URL: str = ""              # base URL of zatca-service (/internal/zatca/finalize)
     ZATCA_SERVICE_TOKEN: str = ""            # X-Internal-Token for zatca-service
     PDF_RENDERER_DRIVER: str = "null"        # null | reportlab
+    # The Arabic-capable face embedded in the invoice PDF. Empty uses the bundled Droid Sans
+    # Arabic (Apache-2.0, © The Android Open Source Project — see the NOTICE beside it). Point
+    # this at a corporate typeface to brand the document without patching code.
+    INVOICE_FONT_PATH: str = ""
+    # How many line items a rendered invoice shows. The document is built in memory, so an invoice
+    # with a hundred thousand lines is an upstream bug that must not take the service down; the
+    # PDF says plainly that it was truncated rather than quietly showing a partial total.
+    INVOICE_MAX_LINES: int = 500
+    # Printed as the supplier on every invoice. ZATCA requires the seller's name and VAT number on
+    # a tax invoice, so leaving these empty produces a document that is not compliant — they are
+    # deliberately not defaulted to a placeholder that would look filled in.
+    INVOICE_SELLER_NAME: str = ""
+    INVOICE_SELLER_VAT: str = ""
+    INVOICE_SELLER_CR: str = ""
+    INVOICE_SELLER_ADDRESS: str = ""
     CURRENCY: str = "SAR"
     TRIAL_DAYS: int = 14
     GRANDFATHER: bool = True                  # existing subs keep signup price/limits until migrated

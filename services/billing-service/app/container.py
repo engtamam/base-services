@@ -198,7 +198,12 @@ _EINVOICER: dict[str, Builder] = {
 }
 _PDF: dict[str, Builder] = {
     "null": lambda s: NullPdf(),
-    "reportlab": lambda s: ReportLabPdf(),
+    "reportlab": lambda s: ReportLabPdf(
+        font_path=s.INVOICE_FONT_PATH, max_lines=s.INVOICE_MAX_LINES,
+        brand={"name": s.INVOICE_SELLER_NAME,
+               "seller": {"name": s.INVOICE_SELLER_NAME, "vat_number": s.INVOICE_SELLER_VAT,
+                          "cr_number": s.INVOICE_SELLER_CR,
+                          "address": s.INVOICE_SELLER_ADDRESS}}),
 }
 
 

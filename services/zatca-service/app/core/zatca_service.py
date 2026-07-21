@@ -207,4 +207,11 @@ class ZatcaService:
     def _result(self, inv: ZatcaInvoice) -> dict[str, Any]:
         return {"invoice_id": inv.id, "number": inv.number, "icv": inv.icv, "uuid": inv.uuid,
                 "status": inv.status, "invoice_type": inv.invoice_type,
+                # The ZATCA TLV QR, base64. RETURNED, because it is generated here and printed
+                # somewhere else: it was stored on the invoice and never handed back, so no PDF
+                # could show it — and a KSA tax invoice without the QR is not a compliant invoice.
+                # It carries seller name, VAT number, timestamp and totals, all of which are meant
+                # to be readable by anyone holding the printed invoice, so returning it discloses
+                # nothing that printing it would not.
+                "qr": inv.qr,
                 "warnings": inv.warnings, "errors": inv.errors, "message": inv.message}

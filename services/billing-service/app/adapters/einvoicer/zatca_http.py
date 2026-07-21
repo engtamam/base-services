@@ -26,4 +26,7 @@ class ZatcaHttpEInvoicer:
         if not (200 <= code < 300):
             return {"status": "deferred", "code": code}
         return {"status": resp.get("status", "pending"), "invoice_id": resp.get("invoice_id"),
-                "icv": resp.get("icv")}
+                "icv": resp.get("icv"),
+                # Carried through so the invoice PDF can print it. Dropping it here was why the
+                # QR existed and no document ever showed one.
+                "qr": resp.get("qr", ""), "uuid": resp.get("uuid", "")}
