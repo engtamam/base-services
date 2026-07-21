@@ -325,6 +325,17 @@ class Settings(BaseSettings):
     # re-maps: the history orphans and an erasure can no longer prove it erased the right person.
     PII_SALT: str = ""
 
+    # ── operator-managed credentials ──────────────────────────────────────────
+    # Seals credentials an operator sets from the panel. Never settable through any API: a key
+    # that protects the secrets and is itself editable in the UI protects nothing from someone
+    # who has the UI. Empty means the operator surface refuses rather than storing in the clear.
+    SECRETS_KEK: str = ""
+    SECRETS_ROTATION_WINDOW_SECONDS: int = 300
+    # How long a resolved provider chain is reused before credentials are read again. Fourteen
+    # credentials resolved per send would be fourteen datastore reads and fourteen decrypts on the
+    # hot path, to support a change that happens a few times a year.
+    PROVIDER_REFRESH_SECONDS: int = 30
+
     @property
     def email_chain(self) -> list[str]:
         return [c.strip() for c in self.EMAIL_CHAIN.split(",") if c.strip()]
@@ -477,6 +488,19 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"AUDIT_SERVICE_URL {self.AUDIT_SERVICE_URL!r} must start with http:// or https://"
             )
+
+        if self.SECRETS_KEK and (
+                self.PROVIDER_REFRESH_SECONDS > self.SECRETS_ROTATION_WINDOW_SECONDS):
+            # The refresh window is how long a replica may keep using the old credential; the
+            # rotation window is how long the old one stays valid. If refresh outlives rotation the
+            # two stop overlapping, and a rotation opens a gap where live replicas authenticate
+            # with a credential the provider has already stopped accepting — every send failing,
+            # for a change that looked successful in the panel.
+            raise ValueError(
+                f"PROVIDER_REFRESH_SECONDS ({self.PROVIDER_REFRESH_SECONDS}) must not exceed "
+                f"SECRETS_ROTATION_WINDOW_SECONDS ({self.SECRETS_ROTATION_WINDOW_SECONDS}) — "
+                f"otherwise a rotation leaves a window where replicas send with a credential the "
+                f"provider no longer accepts")
 
     @field_validator("INTERNAL_SERVICE_TOKEN")
     @classmethod

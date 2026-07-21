@@ -23,15 +23,28 @@ notifications_router = APIRouter(prefix="/api/v1/notifications", tags=["notifica
 templates_router = APIRouter(prefix="/api/v1/templates", tags=["templates"])
 
 
-def build_notifier(request: Request) -> NotificationService:
+async def build_notifier(request: Request, tenant: str = "") -> NotificationService:
+    """Assemble the service for this request.
+
+    Async because the provider chains are resolved from credentials an operator can change after
+    launch, rather than captured once at boot. The pool caches per tenant, so this is a dict lookup
+    on all but the first send in each refresh window — see `core/provider_pool.py`.
+    """
     c = request.app.state.container
     s = get_settings()
     store = c.datastore
+    pool = getattr(request.app.state, "provider_pool", None)
+    if pool is not None:
+        email, sms = await pool.get(tenant)
+    else:
+        # No pool wired: the boot-built chains from the environment. Behaviour identical to before
+        # operator-managed credentials existed.
+        email, sms = c.email, c.sms
     return NotificationService(
         templates=TemplateStore(store), prefs=PreferenceStore(store),
         deliveries=DeliveryStore(store),
         inapp=InAppStore(store, page_size=s.FEED_PAGE_SIZE, scan_limit=s.FEED_SCAN_LIMIT),
-        email=c.email, sms=c.sms, renderer=c.renderer,
+        email=email, sms=sms, renderer=c.renderer,
         email_from=s.EMAIL_FROM, default_locale=s.DEFAULT_LOCALE,
         dedupe_ttl_seconds=s.NOTIFY_DEDUPE_TTL_SECONDS,
         dedupe_states=s.notify_dedupe_states,
@@ -65,7 +78,7 @@ class TemplateIn(BaseModel):
 @notifications_router.get("")
 async def feed(request: Request, principal: Principal = Depends(require_user),
                guard=Depends(get_guard)) -> dict:
-    items = await build_notifier(request).feed(principal.subject)
+    items = await (await build_notifier(request, principal.tenant)).feed(principal.subject)
     async with guard.step("respond") as step:
         body = {"items": items}
         step.result = body
@@ -75,7 +88,7 @@ async def feed(request: Request, principal: Principal = Depends(require_user),
 @notifications_router.post("/{item_id}/read")
 async def mark_read(request: Request, item_id: str,
                     principal: Principal = Depends(require_user)) -> dict:
-    ok = await build_notifier(request).mark_read(principal.subject, item_id)
+    ok = await (await build_notifier(request, principal.tenant)).mark_read(principal.subject, item_id)
     if not ok:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
     return {"status": "ok"}

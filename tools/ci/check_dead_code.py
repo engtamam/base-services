@@ -82,6 +82,22 @@ ALLOWLIST: dict[str, str] = {
     # legitimately contains symbols nothing calls yet.
     "services/_template/": "the scaffold: its symbols are used by the services generated FROM it",
 
+    # ── the replicated operator-credential core ──────────────────────────────────────────────
+    # secret_store.py and runtime_config.py are copied verbatim into every service that gains
+    # operator-managed credentials (self-contained by design). Two methods are live only where the
+    # need arises, and both must stay identical across copies rather than being trimmed per
+    # service — a security primitive that differs subtly between eighteen copies is worse than one
+    # unused method.
+    #   accepted()  — every credential a provider should currently accept from us. Live where the
+    #                 service VERIFIES an inbound signature; unused where it only sends. Rejecting
+    #                 the old value mid-rotation is an outage for every caller not yet updated.
+    #   overrides() — the per-tenant override list; live in the panel view, unused where the
+    #                 service exposes only the effective config.
+    "app/core/secret_store.py": "replicated verbatim per service; accepted() is live where a "
+                                "service verifies an inbound signature during a rotation",
+    "app/core/runtime_config.py": "replicated verbatim per service; overrides() is live in the "
+                                  "panel's per-tenant view",
+
     # ── the replicated PII module ────────────────────────────────────────────────────────────
     # pii.py is copied verbatim into every service (self-contained by design), so `is_subject_ref`
     # is dead in the 17 services that only MINT pseudonyms and live in the one that also VALIDATES

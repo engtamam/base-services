@@ -54,7 +54,7 @@ async def internal_health(settings: Settings = Depends(get_settings)) -> dict[st
 @router.post("/notify", dependencies=[Depends(require_internal_token)])
 async def internal_notify(request: Request, body: NotifyIn) -> dict:
     """Service-to-service send. Returns the delivery id + status."""
-    return await build_notifier(request).notify(
+    return await (await build_notifier(request, getattr(body, 'tenant', '') or '')).notify(
         recipient=body.recipient, channel=body.channel, template_key=body.template_key,
         locale=body.locale, variables=body.variables, user_id=body.user_id, event=body.event,
         idempotency_key=body.idempotency_key,
@@ -77,7 +77,7 @@ async def drain_queue(request: Request) -> dict:
     a tick that arrives early simply skips it.
     """
     s = get_settings()
-    return await build_notifier(request).drain(limit=s.NOTIFY_DRAIN_LIMIT)
+    return await (await build_notifier(request)).drain(limit=s.NOTIFY_DRAIN_LIMIT)
 
 
 @router.get("/manifest", dependencies=[Depends(require_internal_token)])

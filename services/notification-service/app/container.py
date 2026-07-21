@@ -8,9 +8,12 @@
 # =============================================================================
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+
+_log = logging.getLogger(__name__)
 
 from app.adapters.cache.memory import MemoryCache
 from app.adapters.cache.redis import RedisCache
@@ -162,6 +165,66 @@ def _build_chain(chain: list[str], registry: dict[str, Builder], name: str, sett
             )
         providers.append(builder(settings))
     return providers
+
+
+class _Overlay:
+    """Settings, with the fourteen provider credentials replaced by resolved ones.
+
+    The builder lambdas above read `s.RESEND_API_KEY` and so on. Rather than rewriting all fourteen
+    to take credentials another way — fourteen chances to miss one, and a miss looks like a working
+    provider using a stale key — the resolved values are laid over the settings object. Everything
+    else delegates untouched.
+    """
+
+    __slots__ = ("_s", "_over")
+
+    def __init__(self, settings, over: dict[str, str]) -> None:
+        self._s = settings
+        self._over = over
+
+    def __getattr__(self, name: str):
+        over = object.__getattribute__(self, "_over")
+        if name in over and over[name]:
+            return over[name]
+        return getattr(object.__getattribute__(self, "_s"), name)
+
+
+def _tolerant_chain(chain: list[str], registry: dict[str, Builder], name: str, settings) -> list:
+    """Build what can be built. A provider with a missing credential is DROPPED, not fatal.
+
+    The chain exists so one provider being unusable is survivable; raising here would turn a single
+    bad key into a total outage for the channel. Console is kept as the floor so the chain is never
+    empty — an empty chain fails every send with no provider to name in the log.
+    """
+    built = []
+    for driver in chain:
+        builder = registry.get(driver)
+        if builder is None:
+            _log.warning("unknown_provider_skipped", extra={"channel": name, "provider": driver})
+            continue
+        try:
+            built.append(builder(settings))
+        except Exception:  # noqa: BLE001 — ConfigError for a missing key, anything a client raises
+            _log.warning("provider_unconfigured_skipped",
+                         extra={"channel": name, "provider": driver})
+    if not built:
+        built.append(registry["console"](settings))
+        _log.warning("provider_chain_empty_fell_back_to_console", extra={"channel": name})
+    return built
+
+
+def make_provider_pool(settings, secret_store, runtime_config):
+    """The pool the send path resolves through, so a credential change lands without a redeploy."""
+    from app.core.provider_pool import ProviderPool
+
+    return ProviderPool(
+        settings, secret_store, runtime_config,
+        build_email=lambda chain, creds: FailoverEmail(
+            _tolerant_chain(chain, _EMAIL_PROVIDERS, "email", _Overlay(settings, creds))),
+        build_sms=lambda chain, creds: FailoverSms(
+            _tolerant_chain(chain, _SMS_PROVIDERS, "sms", _Overlay(settings, creds))),
+        ttl_s=settings.PROVIDER_REFRESH_SECONDS,
+    )
 
 
 def _pick(registry: dict[str, Builder], driver: str, port_name: str, settings: Settings) -> Any:
