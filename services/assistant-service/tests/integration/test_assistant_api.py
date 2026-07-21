@@ -251,3 +251,40 @@ def test_the_widget_never_uses_innerhtml_for_content(client):
     body = client.get("/widget.js").text
     # The only assignment clears the root; nothing ever parses a string into markup.
     assert ".innerHTML =" not in body
+
+
+# ── operator controls ─────────────────────────────────────────────────────────
+def test_kb_status_needs_the_platform_capability(client):
+    assert client.get("/api/v1/assistant/admin/kb/status", headers=_tok()).status_code == 403
+
+
+def test_kb_status_reports_what_the_service_believes_it_knows(client):
+    r = client.get("/api/v1/assistant/admin/kb/status",
+                   headers=_tok(["platform.assistant"]))
+    assert r.status_code == 200
+    b = r.json()
+    # "Why did it not answer that?" is usually "the KB it loaded is not the KB you edited", and
+    # that is invisible without a generation to compare.
+    assert b["entries"] >= 3 and b["generation"] and b["source"] == "file"
+
+
+def test_reload_needs_the_platform_capability(client):
+    assert client.post("/api/v1/assistant/admin/kb/reload", headers=_tok()).status_code == 403
+
+
+def test_reload_rebuilds_the_index(client):
+    r = client.post("/api/v1/assistant/admin/kb/reload", headers=_tok(["platform.assistant"]))
+    assert r.status_code == 200 and r.json()["reloaded"] is True
+    assert r.json()["entries"] >= 3
+
+
+def test_a_reload_that_cannot_be_recorded_does_not_happen(client, monkeypatch):
+    """The action is declared CRITICAL: it changes what the product asserts to every user, so an
+    unprovable one must be refused rather than performed."""
+    from app.core.audit import AuditUnavailable
+
+    async def refuse(*a, **kw):
+        raise AuditUnavailable("audit log unreachable")
+    monkeypatch.setattr(client.app.state.auditor, "record", refuse)
+    r = client.post("/api/v1/assistant/admin/kb/reload", headers=_tok(["platform.assistant"]))
+    assert r.status_code == 503, "a critical action proceeded without a record"

@@ -29,4 +29,25 @@ from __future__ import annotations
 from typing import Any
 
 
-ADMIN_ACTIONS: list[dict[str, Any]] = []
+ADMIN_ACTIONS: list[dict[str, Any]] = [
+    {
+        "id": "assistant.kb_status",
+        "label": "Knowledge base status",
+        "method": "GET",
+        "path": "/api/v1/assistant/admin/kb/status",
+        "capability": "platform.assistant",
+        "group": "Assistant",
+    },
+    {
+        # Not destructive, but it changes what the product says to everyone on the tenant, so it
+        # asks first: an accidental reload against a half-edited KB is a visible outage in the
+        # help panel.
+        "id": "assistant.kb_reload",
+        "label": "Reload knowledge base",
+        "method": "POST",
+        "path": "/api/v1/assistant/admin/kb/reload",
+        "capability": "platform.assistant",
+        "confirm": True,
+        "group": "Assistant",
+    },
+]

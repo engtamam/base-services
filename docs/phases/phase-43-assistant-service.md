@@ -145,13 +145,13 @@ when the code exists.
 - [x] **43.13** PII redaction outbound and on stored content, default ON; bounded-time patterns
 - [x] **43.14** Quotas + rate limiting per tenant and per subject, shared-store backed so it survives >1 replica
 - [x] **43.15** Erasure contract + a retention sweeper that actually runs
-- [ ] **43.16** Audit: declared auditable actions; admin config changes witnessed
+- [x] **43.16** Audit: declared auditable actions; admin config changes witnessed
 - [x] **43.17** Eval harness with a golden set — and it must be able to FAIL
 - [x] **43.18** Branding config per tenant + surface (colours, logo, name, greeting, locale, position), validated
 - [x] **43.19** `widget.js` — zero-dependency web component, shadow DOM, served by the service; chat + `?` anchor modes
 - [x] **43.20** Widget RTL + locale: Arabic mirrors the panel, not just the strings
 - [x] **43.21** Widget auth: host-minted short-lived token, no secret in the browser; CORS + CSP posture
-- [ ] **43.22** Manifest routes, user_actions, admin_actions, OpenAPI, full gate run
+- [x] **43.22** Manifest routes, user_actions, admin_actions, OpenAPI, full gate run
 
 ## Definition of done
 

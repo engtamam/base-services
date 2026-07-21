@@ -128,6 +128,15 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "what the knowledge base is missing, and they are invisible anywhere else",
     },
     {
+        "action": "assistant.kb_reloaded",
+        "source": "admin",
+        "critical": True,
+        "resource": "knowledge_base",
+        "why": "a reload changes what the product asserts to every user of the tenant; an "
+               "unprovable one leaves an investigation unable to place a wrong answer in time, "
+               "and the previous knowledge base is already gone",
+    },
+    {
         "action": "subject.erased",
         "source": "internal",
         "critical": True,

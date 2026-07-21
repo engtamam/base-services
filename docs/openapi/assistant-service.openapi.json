@@ -130,6 +130,54 @@
         ]
       }
     },
+    "/api/v1/assistant/admin/kb/reload": {
+      "post": {
+        "description": "Force a re-read of the knowledge source.\n\nAUDITED, and critical. This changes what the product asserts to every user of the tenant \u2014 a\nreload that swapped in a bad KB, or one nobody can prove happened, is exactly the kind of\nchange an investigation needs to place in time. Recorded BEFORE the reload, because an action\nthe log cannot take must not happen at all.",
+        "operationId": "reload_kb_api_v1_assistant_admin_kb_reload_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Reload Kb Api V1 Assistant Admin Kb Reload Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Reload Kb",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/api/v1/assistant/admin/kb/status": {
+      "get": {
+        "description": "What the assistant currently believes it knows.\n\nA read, and the one an operator reaches for first: \"why did it not answer that?\" is usually\n\"the KB it loaded is not the KB you edited\", and that is invisible without a generation to\ncompare.",
+        "operationId": "kb_status_api_v1_assistant_admin_kb_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Kb Status Api V1 Assistant Admin Kb Status Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Kb Status",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
     "/api/v1/assistant/ask": {
       "post": {
         "description": "Answer from the knowledge base \u2014 grounded and cited, or an honest abstention.",

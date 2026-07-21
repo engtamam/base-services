@@ -263,3 +263,50 @@ async def branding(request: Request, surface: str = "", locale: str = "",
                              overrides.get(f"{tenant}:{surface}") if surface else None,
                              locale=locale or s.DEFAULT_LANGUAGE)
     return resolved.to_dict()
+
+
+# ── operator controls ─────────────────────────────────────────────────────────
+# The assistant's configuration is environment-driven, so there is deliberately no runtime
+# config-mutation surface here: a knob editable in two places drifts, and "zero hardcoded" means
+# the environment is the one place. What an operator genuinely needs is to make an edited KB take
+# effect, and to see what the service currently believes it knows.
+
+@router.post("/admin/kb/reload",
+             dependencies=[Depends(require_capability("platform.assistant")), Depends(rate_limit)])
+async def reload_kb(request: Request, principal: Principal = Depends(require_user)) -> dict:
+    """Force a re-read of the knowledge source.
+
+    AUDITED, and critical. This changes what the product asserts to every user of the tenant — a
+    reload that swapped in a bad KB, or one nobody can prove happened, is exactly the kind of
+    change an investigation needs to place in time. Recorded BEFORE the reload, because an action
+    the log cannot take must not happen at all.
+    """
+    s = get_settings()
+    await request.app.state.auditor.record(
+        "assistant.kb_reloaded",
+        actor=subject_ref(s.PII_SALT, principal.tenant or "", principal.subject)
+        if s.PII_SALT else "",
+        tenant=principal.tenant or "", resource="knowledge_base",
+        ip=request.client.host if request.client else "")
+
+    kb = build_kb(request)
+    kb._index = None                      # drop the cache; the next index() rebuilds from source
+    index = await kb.index()
+    return {"reloaded": True, "entries": len(index), "generation": index.generation}
+
+
+@router.get("/admin/kb/status",
+            dependencies=[Depends(require_capability("platform.assistant")), Depends(rate_limit)])
+async def kb_status(request: Request, principal: Principal = Depends(require_user)) -> dict:
+    """What the assistant currently believes it knows.
+
+    A read, and the one an operator reaches for first: "why did it not answer that?" is usually
+    "the KB it loaded is not the KB you edited", and that is invisible without a generation to
+    compare.
+    """
+    c = request.app.state.container
+    index = await build_kb(request).index()
+    return {"entries": len(index), "generation": index.generation,
+            "source": getattr(c.kb_source, "driver", ""),
+            "model": getattr(c.model, "driver", ""),
+            "embeddings": getattr(c.embeddings, "driver", "")}
