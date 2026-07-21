@@ -159,6 +159,23 @@ class Settings(BaseSettings):
     QUOTA_DAILY_PER_SUBJECT: int = 200
     QUOTA_DAILY_PER_TENANT: int = 5_000
 
+    # ── Branding (the widget's look) ────────────────────────────────────────
+    # Deployment defaults. A tenant or a surface may refine them; every value is validated as a
+    # strict hex colour, an http(s) URL or plain text before it is stored or served, because
+    # branding is stored, served to every user of a tenant, and nobody thinks of it as untrusted.
+    BRAND_NAME: str = "Assistant"
+    BRAND_GREETING: str = ""
+    BRAND_PRIMARY_COLOR: str = "#2563eb"
+    BRAND_SURFACE_COLOR: str = "#ffffff"
+    BRAND_TEXT_COLOR: str = "#111827"
+    BRAND_LOGO_URL: str = ""
+    BRAND_POSITION: str = "bottom-right"
+    # Per-tenant and per-surface overrides, as JSON: {"tenant": {...}} / {"tenant:surface": {...}}
+    BRAND_OVERRIDES: str = "{}"
+    # Serving the widget is opt-in: a deployment that embeds its own UI should not also publish a
+    # script it does not use.
+    WIDGET_ENABLED: bool = True
+
     # The language used when a caller does not ask for one.
     DEFAULT_LANGUAGE: str = "en"
     # What the assistant says when the evidence is too thin. Deliberately configurable per

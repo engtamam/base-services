@@ -55,6 +55,8 @@ USER_ACTIONS: list[dict[str, Any]] = [
 
 
 UNDECLARED_ROUTES: list[dict[str, str]] = [
+    {"method": "GET", "path": "/api/v1/assistant/branding",
+     "why": "the widget reads its own colours and logo here — it is presentation the client fetches for itself, not a control a panel renders as a button"},
     {"method": "GET", "path": "/api/v1/whoami",
      "why": "scaffold diagnostic from the template: echoes the caller's own claims, so it is a debugging aid rather than a control a panel renders"},
     {"method": "GET", "path": "/api/v1/admin/ping",

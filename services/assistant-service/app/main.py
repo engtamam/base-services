@@ -132,6 +132,25 @@ def create_app() -> FastAPI:
     # route here is obviously this service's product surface rather than scaffolding.
     app.include_router(assistant_router)
 
+    # The widget itself. Served UNAUTHENTICATED and deliberately: it is a static script that
+    # contains no data and no secret — the host mints a token and passes it in. Requiring a token
+    # to fetch the script would mean the page needs a token before it can load the thing that uses
+    # the token.
+    if settings.WIDGET_ENABLED:
+        from fastapi.responses import FileResponse
+        import pathlib as _pathlib
+
+        _widget = _pathlib.Path(__file__).resolve().parent / "widget" / "widget.js"
+
+        @app.get("/widget.js", include_in_schema=False)
+        async def widget_js():                      # noqa: D401
+            return FileResponse(
+                _widget, media_type="application/javascript",
+                headers={"Cache-Control": "public, max-age=300",
+                         # It is a script, not a document: nothing here should ever be framed or
+                         # sniffed into another type.
+                         "X-Content-Type-Options": "nosniff"})
+
     return app
 
 

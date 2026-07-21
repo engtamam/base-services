@@ -66,6 +66,7 @@ def build_manifest(
             {"path": "/api/v1/assistant/conversations", "tier": "user", "method": "GET"},
             {"path": "/api/v1/assistant/conversations/{id}", "tier": "user", "method": "GET"},
             {"path": "/api/v1/assistant/conversations/{id}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/assistant/branding", "tier": "user", "method": "GET"},
             {"path": "/internal/assistant/retention", "tier": "internal", "method": "POST"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root

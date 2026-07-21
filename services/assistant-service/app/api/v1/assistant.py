@@ -26,6 +26,7 @@ from app.api.ratelimit import rate_limit
 from app.config import get_settings
 from app.core.kb_service import KbService
 from app.core.pii import subject_ref
+from app.core.branding import Branding, resolve as resolve_brand
 from app.core.quota import DailyQuota
 from app.core.redaction import redact
 
@@ -220,3 +221,43 @@ async def delete_conversation(request: Request, conversation_id: str,
     if not ok:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
     return {"deleted": conversation_id}
+
+
+# ── branding + the widget ─────────────────────────────────────────────────────
+def _brand_overrides(s) -> dict:
+    """Parsed once per call and tolerated if malformed.
+
+    A broken overrides blob must not take the assistant down: branding is decoration, and refusing
+    to answer questions because someone typed bad JSON into a colour setting trades a working
+    product for a tidy one. The boot guard is where malformed config is meant to be caught.
+    """
+    import json
+
+    try:
+        parsed = json.loads(s.BRAND_OVERRIDES or "{}")
+        return parsed if isinstance(parsed, dict) else {}
+    except ValueError:
+        return {}
+
+
+@router.get("/branding", dependencies=[Depends(require_capability("assistant.ask")),
+                                       Depends(rate_limit)])
+async def branding(request: Request, surface: str = "", locale: str = "",
+                   principal: Principal = Depends(require_user)) -> dict:
+    """What the widget should look like for this caller's tenant and surface.
+
+    Resolution is specific-beats-general — surface over tenant over deployment default — and it
+    LAYERS rather than replaces, so a surface that only wants a different accent inherits the logo
+    and the name instead of restating them. Restating is what makes four UIs drift apart.
+    """
+    s = get_settings()
+    default = Branding(name=s.BRAND_NAME, greeting=s.BRAND_GREETING,
+                       primary_color=s.BRAND_PRIMARY_COLOR, surface_color=s.BRAND_SURFACE_COLOR,
+                       text_color=s.BRAND_TEXT_COLOR, logo_url=s.BRAND_LOGO_URL,
+                       position=s.BRAND_POSITION)
+    overrides = _brand_overrides(s)
+    tenant = principal.tenant or ""
+    resolved = resolve_brand(default, overrides.get(tenant),
+                             overrides.get(f"{tenant}:{surface}") if surface else None,
+                             locale=locale or s.DEFAULT_LANGUAGE)
+    return resolved.to_dict()

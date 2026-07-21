@@ -174,6 +174,62 @@
         ]
       }
     },
+    "/api/v1/assistant/branding": {
+      "get": {
+        "description": "What the widget should look like for this caller's tenant and surface.\n\nResolution is specific-beats-general \u2014 surface over tenant over deployment default \u2014 and it\nLAYERS rather than replaces, so a surface that only wants a different accent inherits the logo\nand the name instead of restating them. Restating is what makes four UIs drift apart.",
+        "operationId": "branding_api_v1_assistant_branding_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "surface",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Surface",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "locale",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Locale",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Branding Api V1 Assistant Branding Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Branding",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
     "/api/v1/assistant/conversations": {
       "get": {
         "description": "This caller's own conversations. Scoped at the store by tenant AND subject.",

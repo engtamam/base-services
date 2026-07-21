@@ -204,3 +204,50 @@ def test_an_abstention_does_not_spend_quota(client):
     for _ in range(6):
         r = _ask(client, "totally unrelated question zzzq")
         assert r.status_code == 200 and r.json()["grounded"] is False
+
+
+# ── branding + widget ─────────────────────────────────────────────────────────
+def test_branding_returns_the_deployment_default(client):
+    r = client.get("/api/v1/assistant/branding", headers=_tok())
+    assert r.status_code == 200
+    b = r.json()
+    assert b["name"] and b["primary_color"].startswith("#")
+
+
+def test_branding_direction_is_rtl_for_arabic(client):
+    """RTL is a layout fact: an Arabic panel whose launcher and alignment stay left reads as
+    broken software however good the translation is."""
+    b = client.get("/api/v1/assistant/branding?locale=ar", headers=_tok()).json()
+    assert b["direction"] == "rtl"
+
+
+def test_branding_direction_is_ltr_for_english(client):
+    assert client.get("/api/v1/assistant/branding?locale=en",
+                      headers=_tok()).json()["direction"] == "ltr"
+
+
+def test_branding_requires_a_token(client):
+    assert client.get("/api/v1/assistant/branding").status_code == 401
+
+
+def test_the_widget_is_served_and_needs_no_token(client):
+    # The page needs the script before it can use the token the script carries.
+    r = client.get("/widget.js")
+    assert r.status_code == 200
+    assert "javascript" in r.headers["content-type"]
+    assert r.headers.get("x-content-type-options") == "nosniff"
+
+
+def test_the_widget_carries_no_secret_and_no_hardcoded_host(client):
+    body = client.get("/widget.js").text
+    assert "api_key" not in body.lower()
+    assert "customElements.define" in body
+
+
+def test_the_widget_never_uses_innerhtml_for_content(client):
+    """Answers, citations and branding are inserted as text. 'It is our own content' is the
+    assumption that turns a help panel into a stored-XSS carrier the first time an adopter lets a
+    customer edit an entry."""
+    body = client.get("/widget.js").text
+    # The only assignment clears the root; nothing ever parses a string into markup.
+    assert ".innerHTML =" not in body
