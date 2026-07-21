@@ -24,6 +24,7 @@ class S3ObjectStore:
         resolve otherwise. Every "why can't I connect to MinIO" is this.
     """
     driver = "s3"
+    supports_presign = True   # S3/MinIO mints presigned URLs → segment download served by the bucket
 
     def __init__(self, bucket: str, endpoint_url: str = "", *,
                  access_key: str = "", secret_key: str = "", region: str = "",
@@ -104,6 +105,21 @@ class S3ObjectStore:
                 return True
             except Exception:
                 return False
+
+    async def presign_get(self, key: str, expires_in: int) -> str:
+        """A short-lived URL serving the segment straight from the bucket.
+
+        The export builder fetches these to feed the clip engine, and a browser can play them back
+        — either way the bytes come from the store, never through this service. `key` is validated
+        (never a caller-supplied path) and the TTL is floored at 1s so a zero can never mint a URL
+        that is already dead.
+        """
+        k = validate_key(key)
+        async with self._client() as s3:
+            return await s3.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": self._bucket, "Key": k},
+                ExpiresIn=max(1, int(expires_in)))
 
     async def health(self) -> bool:
         try:

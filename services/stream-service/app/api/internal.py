@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import hmac
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel
 
 from app.config import Settings, get_settings
-from app.core.erasure import StreamErasure
+from app.core.erasure import StreamErasure, _overlaps
+from app.core.stores import RecordingStore
 from app.manifest import build_manifest
 
 router = APIRouter(prefix="/internal", tags=["internal"])
@@ -124,6 +125,65 @@ class EraseIn(BaseModel):
     end: str = ""
 
 
+@router.get("/stream/segments", dependencies=[Depends(require_internal_token)])
+async def list_segments(
+    request: Request,
+    tenant: str = Query(..., min_length=1),
+    source_id: str = Query(..., min_length=1),
+    start: str = Query(""),
+    end: str = Query(""),
+) -> dict:
+    """The segment file_ids for footage identified by camera + window.
+
+    Stream stores footage by CAMERA and TIME, never by person — it cannot know who is in a frame
+    without running facial recognition, which would create more biometric data than it answers.
+    So stream's own erasure needs the caller to identify footage by source_id + window (see
+    /privacy/erase), and that is the primary path: it deletes the footage outright.
+
+    This is the OTHER path, for the service that DOES have identity (squad, which records who a
+    coach named). Given the same camera + window, it returns each segment's `file_id` in
+    file-service so the caller can attach the subject there via POST /internal/files/{id}/subjects
+    — after which a file-service DSAR for that person reaches the footage through the subject-link.
+    Either path erases the video; neither leaves it stranded.
+
+    `source_id` is REQUIRED for the same reason erase requires it: returning "every segment for a
+    tenant" would hand back other people's footage identifiers on an unscoped call. Locked
+    (legal-hold) recordings are still listed — a hold governs deletion, not who may be linked.
+    """
+    c = request.app.state.container
+    s = get_settings()
+    recordings = RecordingStore(c.datastore)
+
+    out: list[dict] = []
+    scanned = 0
+    after: str | None = None
+    while scanned < s.ERASURE_MAX_SCAN:
+        recs, after = await recordings.list_for_tenant(tenant, source_id=source_id,
+                                                       limit=_SEG_PAGE, after=after)
+        if not recs:
+            break
+        for rec in recs:
+            scanned += 1
+            d = rec.to_dict()
+            if not _overlaps(d, start, end):
+                continue
+            for seg in rec.segments or []:
+                ref = seg.get("ref")
+                if not ref:
+                    continue
+                out.append({"recording_id": rec.id, "file_id": ref,
+                            "start": seg.get("start", ""), "end": seg.get("end", ""),
+                            "locked": bool(rec.locked)})
+        if not after:
+            break
+
+    return {"tenant": tenant, "source_id": source_id, "segments": out,
+            "truncated": scanned >= s.ERASURE_MAX_SCAN}
+
+
+_SEG_PAGE = 500
+
+
 @router.post("/privacy/erase", dependencies=[Depends(require_internal_token)])
 async def erase_subject(request: Request, body: EraseIn) -> dict:
     """Erase footage identified by camera + window. Locked (legal-hold) recordings are retained.
@@ -139,7 +199,7 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
         ip=request.client.host if request.client else "")
     c = request.app.state.container
     s = get_settings()
-    eraser = StreamErasure(store=c.datastore, pii_salt=s.PII_SALT, object_store=c.object_store,
-                           max_scan=s.ERASURE_MAX_SCAN)
+    eraser = StreamErasure(store=c.datastore, pii_salt=s.PII_SALT, sink=c.recording_sink,
+                           object_store=c.object_store, max_scan=s.ERASURE_MAX_SCAN)
     return await eraser.erase(body.tenant, body.subject, source_id=body.source_id,
                               start=body.start, end=body.end)

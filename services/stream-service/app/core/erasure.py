@@ -43,11 +43,33 @@ class StreamErasure:
     service = "stream-service"
     category = "recordings"
 
-    def __init__(self, *, store, pii_salt: str, object_store=None, max_scan: int = 100_000) -> None:
+    def __init__(self, *, store, pii_salt: str, sink=None, object_store=None,
+                 max_scan: int = 100_000) -> None:
         self._store = store
         self._salt = pii_salt
+        # The SINK is where a segment's bytes actually live — memory, a local dir, s3, or
+        # file-service — and it is the only thing that knows how to delete by the `ref` it handed
+        # back. Erasure used to delete through `object_store` instead, which for the file-service
+        # sink is the WRONG store entirely (the bytes are in file-service, not our bucket), and it
+        # read the wrong field on top of that. `object_store` is kept only for the exceptional
+        # deployment that has no sink; when a sink is present it wins.
+        self._sink = sink
         self._objects = object_store
         self._max = max_scan
+
+    async def _delete_ref(self, ref: str) -> None:
+        """Delete one stored object by the ref the sink handed back. Sink first — it is where the
+        bytes are; object_store is a fallback for a sink-less deployment. Best-effort: a stranded
+        blob is swept by retention, but a MISSING delete path is the false-receipt bug."""
+        if not ref:
+            return
+        try:
+            if self._sink is not None:
+                await self._sink.delete(ref)
+            elif self._objects is not None:
+                await self._objects.delete(ref)
+        except Exception:   # noqa: BLE001 — a blob already gone is already erased
+            pass
 
     async def erase(self, tenant: str, subject: str,
                     source_id: str = "", start: str = "", end: str = "") -> dict[str, Any]:
@@ -133,11 +155,10 @@ class StreamErasure:
             for exp in rows:
                 if not _overlaps({"started": exp.get("start"), "ended": exp.get("end")}, start, end):
                     continue
-                if exp.get("file_id") and self._objects is not None:
-                    try:
-                        await self._objects.delete(exp["file_id"])
-                    except Exception:
-                        pass          # the row still goes; a stranded blob is swept by retention
+                # An export's clip is stored through the SAME sink as a segment (exporting sets
+                # exp.file_id = ref.ref from sink.put_segment), so it is deleted the same way. It
+                # too was going through object_store — wrong store for the file-service sink.
+                await self._delete_ref(exp.get("file_id"))
                 await self._store.delete(_EXPORTS, exp["id"])
                 deleted += 1
             if not cursor:
@@ -146,17 +167,17 @@ class StreamErasure:
 
     async def _delete_segments(self, rec: dict) -> None:
         """The row is an index; the FOOTAGE is the personal data. Deleting the row alone would
-        leave the video on disk and report success."""
-        if self._objects is None:
-            return
+        leave the video where it lives and report success.
+
+        A segment carries its object id under `ref` — that is what the sink returns from
+        put_segment and what export reads to build a download URL. The old code looked for `key`
+        or `file_id`, which no segment has, so the loop deleted nothing on every recording, the
+        row was removed anyway, and the receipt said `recordings:N`. Footage kept, erasure
+        reported. That is the same false-erasure-receipt this platform has now been bitten by
+        twice; here it is a child's match video staying in file-service after a deletion request.
+        """
         for seg in rec.get("segments") or []:
-            key = seg.get("key") or seg.get("file_id")
-            if not key:
-                continue
-            try:
-                await self._objects.delete(key)
-            except Exception:
-                pass
+            await self._delete_ref(seg.get("ref"))
 
 
 def _overlaps(rec: dict, start: str, end: str) -> bool:

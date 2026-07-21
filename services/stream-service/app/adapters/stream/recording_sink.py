@@ -33,9 +33,10 @@ class MemoryRecordingSink:
 class S3RecordingSink:
     """Store segments straight in the object store (S3/MinIO) — durable, no cross-service auth.
 
-    Reuses the ObjectStore adapter. Presigned segment DOWNLOAD needs the object store's presign (or
-    the file-service sink, which already presigns); until a segment-download endpoint exists, only
-    put/delete are exercised — a recording's bytes are stored durably and reachable by key.
+    Reuses the ObjectStore adapter, including its presigned GET: a segment download is served by
+    the bucket, never streamed through this service. Until this was wired, signed_url raised
+    NotImplementedError, so an s3-sink deployment could store and delete footage but could not
+    EXPORT it — "the sink exports or erases, never both". It now does both.
     """
     driver = "s3"
 
@@ -55,9 +56,10 @@ class S3RecordingSink:
         return await self._store.delete(ref)
 
     async def signed_url(self, ref: str, *, ttl: int) -> str:
-        # Presigned download belongs to the object store / file-service sink; not wired until a
-        # segment-download endpoint exists.
-        raise NotImplementedError("s3 recording sink has no presigned download yet — use file-service")
+        # The object store presigns; the bytes are served by the bucket, not by us. A store that
+        # cannot presign (memory/local) raises Unsupported — which is honest, and only reachable
+        # in a misconfigured deployment, because the s3 sink is only ever paired with an s3 store.
+        return await self._store.presign_get(ref, expires_in=ttl)
 
 
 class LocalRecordingSink:

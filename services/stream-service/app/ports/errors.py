@@ -24,3 +24,7 @@ class Unavailable(PortError):
 
 class InvalidToken(PortError):
     """A token failed verification (bad signature, expired, wrong iss/aud, ...)."""
+
+
+class Unsupported(PortError):
+    """The operation is not available on this driver (e.g. presigning a local/memory store)."""
