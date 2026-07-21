@@ -177,3 +177,29 @@ def test_an_entry_written_only_in_one_language_still_answers_the_other():
     doc = {"only.ar": {"title": {"ar": "الفواتير"}, "body": {"ar": "الفاتورة تصدر شهريا."}}}
     idx = _index(doc)
     assert idx.search("الفاتورة", lang="en") != []
+
+
+# ── stopwords: precision on a small corpus ────────────────────────────────────
+def test_function_words_do_not_drive_a_match():
+    """BM25 leans on IDF to discount common terms, and IDF is unreliable on a small corpus: in a
+    handful of entries a word in one of them looks genuinely rare. That is how "how do I file tax
+    in Peru" retrieved a camera page with confidence."""
+    idx = _index(SAMPLE)
+    assert idx.search("how do I file corporate tax in Peru", min_score=0.35) == []
+
+
+def test_a_query_of_only_function_words_still_matches_something():
+    # Returning nothing would be indistinguishable from "we have no help at all", which is a worse
+    # answer than a weak one.
+    from app.core.indexing import tokenize
+    assert tokenize("how do I") != []
+
+
+def test_stopwords_do_not_break_a_real_question():
+    idx = _index(SAMPLE)
+    assert idx.search("how do I add a camera")[0].entry.id == "cameras.add"
+
+
+def test_arabic_function_words_are_dropped_too():
+    from app.core.indexing import tokenize
+    assert "من" not in tokenize("ما هو الرقم من الضريبي")

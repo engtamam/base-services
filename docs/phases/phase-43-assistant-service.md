@@ -146,7 +146,7 @@ when the code exists.
 - [x] **43.14** Quotas + rate limiting per tenant and per subject, shared-store backed so it survives >1 replica
 - [x] **43.15** Erasure contract + a retention sweeper that actually runs
 - [ ] **43.16** Audit: declared auditable actions; admin config changes witnessed
-- [ ] **43.17** Eval harness with a golden set — and it must be able to FAIL
+- [x] **43.17** Eval harness with a golden set — and it must be able to FAIL
 - [x] **43.18** Branding config per tenant + surface (colours, logo, name, greeting, locale, position), validated
 - [x] **43.19** `widget.js` — zero-dependency web component, shadow DOM, served by the service; chat + `?` anchor modes
 - [x] **43.20** Widget RTL + locale: Arabic mirrors the panel, not just the strings

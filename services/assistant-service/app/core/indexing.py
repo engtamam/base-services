@@ -60,11 +60,41 @@ def normalize(text: str) -> str:
     return out.casefold()
 
 
-def tokenize(text: str) -> list[str]:
+# Function words carry no topic. They matter because BM25 leans on IDF to discount common terms,
+# and IDF is unreliable on a SMALL corpus: in a fifty-entry KB a word appearing in five entries
+# looks genuinely rare, so "how do I …" scores against whichever entry happens to contain "do".
+# That is how an unrelated question retrieves a confident, irrelevant passage. Dropping them is a
+# precision fix, not an optimisation.
+#
+# Deliberately short — a long stopword list starts removing words that ARE the question ("how to
+# CANCEL"), and the failure then looks like the KB is missing an entry.
+_STOP_EN = frozenset("""
+a an and are as at be by can do does for from had has have how i if in into is it its me my of on
+or our so than that the their them then there these they this to was we what when where which who
+why will with you your
+""".split())
+
+# Arabic function words and the inseparable prefixes that attach to them.
+_STOP_AR = frozenset("""
+في من الى إلى على عن مع هذا هذه ذلك تلك التي الذي ما ماذا كيف هل ان أن إن كان يكون قد لقد
+او أو ثم حتى كل بعض عند لدى هو هي هم انا أنا نحن انت أنت لا لم لن نعم و ف ب ل ك
+""".split())
+
+_STOPWORDS = _STOP_EN | _STOP_AR
+
+
+def tokenize(text: str, *, drop_stopwords: bool = True) -> list[str]:
     """Normalised tokens. The one function both indexing and querying call — if they ever differ,
     a document becomes unfindable by the exact words it contains, which is the hardest search bug
     to see because everything looks correct on both sides."""
-    return _TOKEN.findall(normalize(text))
+    tokens = _TOKEN.findall(normalize(text))
+    if not drop_stopwords:
+        return tokens
+    kept = [tok for tok in tokens if tok not in _STOPWORDS]
+    # If a query is ENTIRELY function words ("how do I"), keep them: returning nothing would make
+    # the query unmatchable, and an empty result there is indistinguishable from "we have no help",
+    # which is a worse answer than a weak one.
+    return kept or tokens
 
 
 @dataclass(frozen=True)
