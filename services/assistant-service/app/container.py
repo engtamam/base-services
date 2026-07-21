@@ -38,6 +38,7 @@ from app.adapters.knowledge_source.composite import CompositeKnowledgeSource
 from app.adapters.knowledge_source.file import FileKnowledgeSource
 from app.adapters.knowledge_source.memory import MemoryKnowledgeSource
 from app.adapters.model.extractive import ExtractiveModel
+from app.adapters.model.http_provider import HttpModel
 from app.adapters.embeddings.http import HttpEmbeddings
 from app.adapters.embeddings.null import NullEmbeddings
 from app.core.conversations import ConversationStore, MessageCrypto
@@ -180,6 +181,9 @@ _EMBEDDINGS: dict[str, Builder] = {
 _MODEL: dict[str, Builder] = {
     # Answers by quoting retrieved passages: no API key, no latency, and it cannot hallucinate.
     "extractive": lambda s: ExtractiveModel(max_passages=s.MODEL_EXTRACTIVE_MAX_PASSAGES),
+    "http": lambda s: HttpModel(s.MODEL_URL, s.MODEL_API_KEY, model=s.MODEL_NAME,
+                                shape=s.MODEL_SHAPE, timeout=s.MODEL_TIMEOUT_SECONDS,
+                                temperature=s.MODEL_TEMPERATURE),
 }
 
 

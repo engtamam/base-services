@@ -14,13 +14,158 @@
  * IT HOLDS NO SECRET. The host application mints a short-lived token and passes it in; the widget
  * never carries an API key. A key shipped to a browser is a key published.
  *
- * EVERYTHING IT RENDERS IS TEXT. Answers, citations and branding are inserted with textContent and
- * element properties, never innerHTML. The KB is operator-authored and the branding is
- * operator-set, but "it is our own content" is exactly the assumption that turns a help panel into
- * a stored-XSS delivery vehicle the first time an adopter lets a customer edit an entry.
+ * NOTHING IS EVER PARSED AS MARKUP. Answers arrive in markdown and are rendered by BUILDING DOM
+ * NODES — createElement plus textContent — never innerHTML. A `<script>` inside an entry renders
+ * as the visible characters `<script>`: inert, and obviously wrong to whoever wrote it. "It is our
+ * own content" is exactly the assumption that turns a help panel into a stored-XSS carrier the
+ * first time an adopter lets a customer edit an entry.
  */
 (function () {
   "use strict";
+
+
+  /*
+   * A SMALL MARKDOWN RENDERER THAT NEVER PARSES HTML.
+   *
+   * The model answers in markdown, so rendering with textContent shows a user literal "**VAT
+   * number**" and a line of dashes where a list should be — help that looks broken. The obvious
+   * fix is innerHTML with a markdown library, and that is exactly the wrong trade: it re-opens
+   * script injection through KB content and drags in a dependency to audit.
+   *
+   * So this builds DOM NODES. Every piece of text goes in through textContent and every element
+   * is created explicitly, which means a `<script>` in an entry renders as the characters
+   * `<script>` — visible, inert, and obviously wrong to whoever wrote it. There is no code path
+   * that turns a string into markup.
+   *
+   * The subset is what help text actually uses: headings, bullet and numbered lists, code blocks,
+   * inline code, bold, italic, and links. Anything else falls through as text rather than being
+   * silently dropped — losing a user's content is worse than showing an unsupported marker.
+   */
+  // Each pattern captures its own leading offset so the slice math is trivial and cannot
+  // double-count. An earlier version adjusted the index after matching and duplicated text — the
+  // kind of arithmetic that looks right and is not, which is why the renderer has its own tests.
+  var INLINE = [
+    { name: "code", re: /`([^`]+)`/ },
+    { name: "bold", re: /\*\*([^*]+)\*\*/ },
+    { name: "link", re: /\[([^\]]+)\]\(([^)\s]+)\)/ },
+    { name: "ital", re: /\*([^*]+)\*/ }
+  ];
+
+  /** Only http(s), root-relative or in-page links become anchors. Anything else stays TEXT — that
+   *  one rule keeps `javascript:` out of an href without enumerating every scheme. */
+  function safeHref(url) {
+    var u = String(url || "").trim();
+    return /^https?:\/\//i.test(u) || u.charAt(0) === "/" || u.charAt(0) === "#" ? u : null;
+  }
+
+  /** Inline markers -> nodes appended to `parent`. */
+  function inline(parent, text) {
+    while (text) {
+      var best = null;
+      for (var i = 0; i < INLINE.length; i++) {
+        var m = INLINE[i].re.exec(text);
+        // Strictly earlier wins, so the order above breaks ties: code before bold before italic,
+        // which is what stops `**a**` being read as an italic `*` pair.
+        if (m && (!best || m.index < best.m.index)) best = { kind: INLINE[i].name, m: m };
+      }
+      if (!best) { parent.appendChild(document.createTextNode(text)); return; }
+
+      var m0 = best.m;
+      if (m0.index > 0) parent.appendChild(document.createTextNode(text.slice(0, m0.index)));
+
+      var el;
+      if (best.kind === "code") {
+        el = document.createElement("code");
+        el.textContent = m0[1];                      // never re-parsed
+      } else if (best.kind === "bold") {
+        el = document.createElement("strong");
+        inline(el, m0[1]);
+      } else if (best.kind === "ital") {
+        el = document.createElement("em");
+        inline(el, m0[1]);
+      } else {
+        var href = safeHref(m0[2]);
+        if (href) {
+          el = document.createElement("a");
+          el.setAttribute("href", href);
+          el.setAttribute("rel", "noopener noreferrer");   // the opened page cannot reach back
+          el.setAttribute("target", "_blank");
+        } else {
+          el = document.createElement("span");             // refused scheme: shown, never linked
+        }
+        inline(el, m0[1]);
+      }
+      parent.appendChild(el);
+
+      // Advance past the WHOLE match. One expression, no per-kind adjustment to get wrong.
+      text = text.slice(m0.index + m0[0].length);
+    }
+  }
+
+  /** Blocks -> a fragment. */
+  function markdown(src) {
+    var frag = document.createDocumentFragment();
+    var lines = String(src || "").split(/\r?\n/);
+    var i = 0, list = null;
+
+    function endList() { list = null; }
+
+    while (i < lines.length) {
+      var line = lines[i];
+
+      if (/^```/.test(line)) {                                   // fenced code
+        endList();
+        var buf = [];
+        i++;
+        while (i < lines.length && !/^```/.test(lines[i])) { buf.push(lines[i]); i++; }
+        i++;
+        var pre = document.createElement("pre");
+        var code = document.createElement("code");
+        code.textContent = buf.join("\n");                       // never parsed
+        pre.appendChild(code);
+        frag.appendChild(pre);
+        continue;
+      }
+
+      var h = /^(#{1,4})\s+(.*)$/.exec(line);
+      if (h) {
+        endList();
+        var hEl = document.createElement("h" + Math.min(6, h[1].length + 2));
+        inline(hEl, h[2]);
+        frag.appendChild(hEl);
+        i++;
+        continue;
+      }
+
+      var bullet = /^\s*[-*+]\s+(.*)$/.exec(line);
+      var numbered = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+      if (bullet || numbered) {
+        var want = bullet ? "ul" : "ol";
+        if (!list || list.tagName.toLowerCase() !== want) {
+          list = document.createElement(want);
+          frag.appendChild(list);
+        }
+        var li = document.createElement("li");
+        inline(li, (bullet || numbered)[1]);
+        list.appendChild(li);
+        i++;
+        continue;
+      }
+
+      if (!line.trim()) { endList(); i++; continue; }
+
+      endList();                                                  // paragraph
+      var para = [line];
+      i++;
+      while (i < lines.length && lines[i].trim() && !/^```|^#{1,4}\s|^\s*[-*+]\s|^\s*\d+[.)]\s/.test(lines[i])) {
+        para.push(lines[i]); i++;
+      }
+      var p = document.createElement("p");
+      inline(p, para.join(" "));
+      frag.appendChild(p);
+    }
+    return frag;
+  }
 
   var DEFAULTS = {
     name: "Assistant",
@@ -123,7 +268,18 @@
         ".head .t { font-weight: 600; flex: 1; }",
         ".head button { background: transparent; border: 0; color: #fff; font-size: 20px; cursor: pointer; }",
         ".log { flex: 1; overflow-y: auto; padding: 12px 14px; }",
-        ".msg { margin: 0 0 12px; white-space: pre-wrap; }",
+        ".msg { margin: 0 0 12px; }",
+        ".msg p { margin: 0 0 8px; }",
+        ".msg p:last-child { margin-bottom: 0; }",
+        ".msg ul, .msg ol { margin: 6px 0; padding-inline-start: 20px; }",
+        ".msg li { margin: 2px 0; }",
+        ".msg h3, .msg h4, .msg h5, .msg h6 { margin: 10px 0 4px; font-size: 1em; font-weight: 600; }",
+        ".msg code { background: rgba(0,0,0,.06); border-radius: 4px; padding: 1px 4px;",
+        "  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .92em; }",
+        ".msg pre { background: rgba(0,0,0,.06); border-radius: 8px; padding: 8px 10px;",
+        "  overflow-x: auto; margin: 6px 0; }",
+        ".msg pre code { background: none; padding: 0; }",
+        ".msg a { color: " + b.primary + "; }",
         ".msg.me { text-align: " + (rtl ? "left" : "right") + "; opacity: .85; }",
         ".cites { margin: 4px 0 0; padding: 0; list-style: none; font-size: 12px; opacity: .75; }",
         ".acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }",
@@ -211,7 +367,13 @@
       if (!this._log) return;
       var p = document.createElement("p");
       p.className = "msg" + (who === "me" ? " me" : "");
-      p.textContent = text;                     // the answer is TEXT, never markup
+      if (who === "me") {
+        // The user's own words are shown exactly as typed. Rendering them as markdown would let a
+        // question containing an asterisk come back looking edited.
+        p.textContent = text;
+      } else {
+        p.appendChild(markdown(text));          // nodes, never parsed markup
+      }
       this._log.appendChild(p);
 
       if (citations && citations.length) {

@@ -72,6 +72,7 @@ async def compose(
     model: Model,
     lang: str,
     not_found_text: str,
+    unavailable_text: str = "",
     persona: str = "",
     max_tokens: int = 0,
 ) -> Answer:
@@ -95,7 +96,13 @@ async def compose(
     except ModelError:
         # The upstream reason is deliberately not propagated to the caller: provider messages carry
         # hostnames, model names and quota details, and sometimes fragments of the prompt.
-        return Answer(text=not_found_text, grounded=False, abstained_because=MODEL_FAILED)
+        #
+        # But it gets its OWN sentence. A live rate-limit showed this: the user was told "I don't
+        # have anything on that yet", which is the KB-gap message, so the honest reading is "write
+        # more help content" when the truth was "retry in a minute". Two different failures must
+        # not wear the same words — one sends a person to author documentation, the other to wait.
+        return Answer(text=unavailable_text or not_found_text, grounded=False,
+                      abstained_because=MODEL_FAILED)
 
     supplied = {p.ref for p in passages}
     # Intersect, never trust. A ref the model was not given is either an invention or a leak from

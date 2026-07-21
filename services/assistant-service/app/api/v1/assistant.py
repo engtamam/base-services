@@ -103,6 +103,7 @@ async def ask(request: Request, body: AskIn,
         caps=principal.caps,          # from the verified token, never from the body
         lang=body.lang or s.DEFAULT_LANGUAGE,
         not_found_text=s.ASSISTANT_NOT_FOUND_TEXT,
+        unavailable_text=s.ASSISTANT_UNAVAILABLE_TEXT,
     )
     if answer.abstained:
         # Refunded: an abstention did no work worth paying for, and charging for one would mean a

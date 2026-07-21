@@ -148,3 +148,25 @@ def test_every_citation_points_at_a_retrieved_passage():
 
 def test_a_grounded_answer_records_which_driver_answered():
     assert _compose(_hits("vat number")).used_model == "extractive"
+
+
+def test_a_model_outage_does_not_wear_the_knowledge_gap_message():
+    """Found by a live rate-limit. The user was told "I don't have anything on that yet" — the
+    KB-gap wording — when the truth was "retry shortly". One sends a person to author help
+    content, the other to wait; they must not read the same."""
+    a = _compose(_hits("vat number"), model=_Broken(),
+                 unavailable_text="Temporarily unavailable, please retry.")
+    assert a.abstained and a.abstained_because == MODEL_FAILED
+    assert a.text == "Temporarily unavailable, please retry."
+    assert a.text != NOT_FOUND
+
+
+def test_a_real_knowledge_gap_still_says_so():
+    a = _compose([], unavailable_text="Temporarily unavailable, please retry.")
+    assert a.abstained_because == NO_EVIDENCE and a.text == NOT_FOUND
+
+
+def test_the_outage_message_falls_back_when_unset():
+    # An operator who never configured one still gets a sentence rather than an empty reply.
+    a = _compose(_hits("vat number"), model=_Broken())
+    assert a.text == NOT_FOUND

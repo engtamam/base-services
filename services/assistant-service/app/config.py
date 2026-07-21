@@ -142,11 +142,22 @@ class Settings(BaseSettings):
     # `extractive` needs no API key and cannot hallucinate: it quotes the retrieved passages. It is
     # the default because a help assistant that requires a key before it does anything is a feature
     # an adopter evaluates later and never switches on.
-    MODEL_DRIVER: str = "extractive"          # extractive | (provider adapters)
+    MODEL_DRIVER: str = "extractive"          # extractive | http
+    # One adapter, several vendors, no SDK: the wire format is a JSON POST returning a string, and
+    # a vendor SDK per provider is a large amount of supply chain for a small convenience.
+    MODEL_URL: str = ""
+    MODEL_API_KEY: str = ""
+    MODEL_NAME: str = ""
+    # CONFIGURED, never auto-detected. Guessing a response shape means an unexpected payload reads
+    # as "no answer", which surfaces as an abstention and sends someone hunting a thin knowledge
+    # base when the real fault is a schema mismatch.
+    #   chat      messages[] -> choices[].message.content   (OpenRouter, OpenAI-compatible, most)
+    #   generate  contents[] -> candidates[]                (Gemini shape)
+    MODEL_SHAPE: str = "chat"                 # chat | generate
+    MODEL_TEMPERATURE: float = 0.2
     MODEL_MAX_ANSWER_TOKENS: int = 700
-    # No MODEL_TIMEOUT here on purpose: the only driver today makes no network call, and a knob
-    # that configures nothing is a promise the API does not keep. It arrives with the first
-    # provider adapter, which is the moment it starts meaning something.
+    # Arrived with the provider adapter, which is when it started meaning something.
+    MODEL_TIMEOUT_SECONDS: float = 20.0
     MODEL_EXTRACTIVE_MAX_PASSAGES: int = 3
 
     # ── Conversations & privacy ─────────────────────────────────────────────
@@ -195,6 +206,11 @@ class Settings(BaseSettings):
     # What the assistant says when the evidence is too thin. Deliberately configurable per
     # deployment: the abstention is the sentence users see most when a KB is young, and it should
     # sound like the product rather than like a library.
+    # A model outage is NOT a knowledge gap, and must not wear its words: one asks the reader to
+    # write help content, the other to wait a moment.
+    ASSISTANT_UNAVAILABLE_TEXT: str = (
+        "The assistant is temporarily unavailable. Please try again in a moment."
+    )
     ASSISTANT_NOT_FOUND_TEXT: str = (
         "I don't have anything on that yet. Try rephrasing, or ask your administrator to add it "
         "to the help content."

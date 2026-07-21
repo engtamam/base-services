@@ -86,12 +86,14 @@ class KbService:
         return budgeted(hits, max_chars=self._cfg["max_context_chars"])
 
     async def ask(self, *, question: str, surface: str, caps: frozenset[str], lang: str,
-                  not_found_text: str, persona: str = "") -> tuple[Answer, list[Hit]]:
+                  not_found_text: str, unavailable_text: str = "",
+                  persona: str = "") -> tuple[Answer, list[Hit]]:
         """Retrieve, then answer or abstain. Hits are returned alongside so the caller can report
         what was searched even when nothing was good enough — an abstention that says only "I don't
         know" gives an operator nothing to act on."""
         hits = await self.retrieve(question=question, surface=surface, caps=caps, lang=lang)
         answer = await compose(question=question, hits=hits, model=self._model, lang=lang,
-                               not_found_text=not_found_text, persona=persona,
+                               not_found_text=not_found_text,
+                               unavailable_text=unavailable_text, persona=persona,
                                max_tokens=self._cfg["max_answer_tokens"])
         return answer, hits
