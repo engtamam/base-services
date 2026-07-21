@@ -116,6 +116,32 @@ from __future__ import annotations
 from typing import Any
 
 AUDITABLE_ACTIONS: list[dict[str, Any]] = [
+    {
+        "action": "operator.secret_set",
+        "source": "admin",
+        "critical": True,
+        "resource": "secret",
+        "why": "a credential change is the action that most needs attribution: the previous value "
+               "is gone the moment it happens, so an unrecorded rotation cannot be reconstructed, "
+               "and an unattributable one is indistinguishable from an attacker's",
+    },
+    {
+        "action": "operator.secret_cleared",
+        "source": "admin",
+        "critical": True,
+        "resource": "secret",
+        "why": "clearing a credential silently reverts the service to whatever the environment "
+               "holds, which is a behaviour change nobody would otherwise see",
+    },
+    {
+        "action": "operator.config_changed",
+        "source": "admin",
+        "critical": False,
+        "resource": "config",
+        "why": "policy changes explain later behaviour — why a sweep deleted more, why a limit "
+               "started refusing — and that history is unavailable anywhere else. Not critical: "
+               "refusing to change a retention period because the log is down protects nothing",
+    },
     # ── Delete these examples and declare your own ────────────────────────────
     {
         "action": "example.thing_created",

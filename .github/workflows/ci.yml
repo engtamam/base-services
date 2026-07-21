@@ -58,6 +58,10 @@ jobs:
       - name: safety:secrets — no credential material in the diff
         run: bash tools/ci/run_all_gates.sh --only safety:secrets
 
+      # gates: safety:no-secret-reads
+      - name: "safety:no-secret-reads — a stored credential never leaves through an API"
+        run: bash tools/ci/run_all_gates.sh --only safety:no-secret-reads
+
       # gates: safety:runner
       - name: "safety:runner — the gate runner's own guards, plus scripts/tests"
         run: |

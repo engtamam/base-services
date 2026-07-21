@@ -61,6 +61,16 @@ def build_manifest(
              "erasure_category": "subject"},
             {"path": "/api/v1/admin/ping", "tier": "user", "method": "GET"},
             {"path": "/api/v1/whoami", "tier": "user", "method": "GET"},
+            # The operator surface: credentials and policy an operator changes after launch.
+            # Declared like anything else — a route table built from manifests that omits the
+            # place credentials are set is a route table that hides the highest-privilege
+            # surface the service has.
+            {"path": "/api/v1/operator/secrets", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/operator/secrets", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/operator/secrets/{}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/operator/config", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/operator/config", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/operator/config/{}", "tier": "user", "method": "DELETE"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         # FILL THIS too, or leave it empty deliberately. Same trap as capabilities: an empty

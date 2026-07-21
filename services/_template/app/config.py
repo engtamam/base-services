@@ -96,6 +96,16 @@ class Settings(BaseSettings):
                 "CORS_ALLOWED_ORIGINS='*' in production lets any site on the internet call this "
                 "service with a user's browser. List the origins you actually serve.")
 
+    # ── Operator-managed credentials (Phase 44) ─────────────────────────────
+    # The key-encryption-key. Credentials an operator sets from the panel are sealed under this,
+    # and it is settable through NO api: secrecy cannot be bootstrapped from a form, so if the key
+    # protecting the secrets were itself editable in the panel, panel access would own everything.
+    # Empty means the operator surface refuses to store anything rather than storing it unsealed.
+    SECRETS_KEK: str = ""
+    # How long a replaced credential stays valid. A request in flight when a key rotates must not
+    # fail, and a mistaken paste needs a way back.
+    SECRETS_ROTATION_WINDOW_SECONDS: int = 300
+
     # ── Internal service-to-service auth (REQUIRED) ─────────────────────────
     # Shared token for /internal/* endpoints. Must be strong (>= 32 chars).
     INTERNAL_SERVICE_TOKEN: str = Field(min_length=32)
