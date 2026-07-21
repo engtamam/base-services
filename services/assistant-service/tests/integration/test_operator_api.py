@@ -119,10 +119,18 @@ def test_deploy_time_knobs_are_refused(client, key):
     assert key not in cfg
 
 
-def test_a_policy_knob_is_settable(client):
-    r = client.put("/api/v1/operator/config", headers=_tok(CAPS),
-                   json={"key": "MODEL_MAX_ANSWER_TOKENS", "value": "512"})
-    assert r.status_code == 200 and r.json()["value"] == 512, "a string would fail where it is used"
+def test_this_service_declares_no_runtime_policy_so_it_offers_none(client):
+    """It manages credentials at runtime, not policy — and the surface must say so.
+
+    Advertising a knob nothing reads is worse than not offering it: the panel reports success and
+    the audit log records a change that never took effect, leaving an operator holding a receipt
+    for a limit that was never raised. A key is added to RUNTIME_POLICY in the same change that
+    wires the read.
+    """
+    h = {"headers": _tok(CAPS)}
+    assert client.get("/api/v1/operator/config", **h).json()["config"] == {}
+    r = client.put("/api/v1/operator/config", json={"key": "KNOB", "value": 9}, **h)
+    assert r.status_code == 400, "an undeclared knob was accepted and would have been inert"
 
 
 # ── no KEK ────────────────────────────────────────────────────────────────────

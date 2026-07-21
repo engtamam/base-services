@@ -160,13 +160,18 @@ def test_the_config_view_never_carries_a_credential(client, operator_auth):
         assert banned not in view
 
 
-def test_a_policy_value_can_be_set_and_cleared(client, operator_auth):
-    h = {"headers": operator_auth}
-    r = client.put("/api/v1/operator/config", json={"key": "SYNC_MAX_ATTEMPTS", "value": 9}, **h)
-    assert r.status_code == 200 and r.json()["value"] == 9
-    assert client.get("/api/v1/operator/config", **h).json()["config"]["SYNC_MAX_ATTEMPTS"] == 9
-    assert client.delete("/api/v1/operator/config/SYNC_MAX_ATTEMPTS", **h).json()["cleared"] is True
+def test_this_service_declares_no_runtime_policy_so_it_offers_none(client, operator_auth):
+    """It manages credentials at runtime, not policy — and the surface must say so.
 
+    Advertising a knob nothing reads is worse than not offering it: the panel reports success and
+    the audit log records a change that never took effect, leaving an operator holding a receipt
+    for a limit that was never raised. A key is added to RUNTIME_POLICY in the same change that
+    wires the read.
+    """
+    h = {"headers": operator_auth}
+    assert client.get("/api/v1/operator/config", **h).json()["config"] == {}
+    r = client.put("/api/v1/operator/config", json={"key": "KNOB", "value": 9}, **h)
+    assert r.status_code == 400, "an undeclared knob was accepted and would have been inert"
 
 # ── availability ──────────────────────────────────────────────────────────────
 def test_without_a_kek_the_surface_refuses_rather_than_storing_in_the_clear(env_guard):

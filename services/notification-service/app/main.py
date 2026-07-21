@@ -124,7 +124,9 @@ def create_app() -> FastAPI:
             container.datastore, settings.SECRETS_KEK,
             rotation_window_s=settings.SECRETS_ROTATION_WINDOW_SECONDS)
     app.state.secret_store = secret_store
-    app.state.runtime_config = RuntimeConfig(container.datastore, Settings)
+    from app.runtime_policy import RUNTIME_POLICY
+    app.state.runtime_config = RuntimeConfig(
+        container.datastore, Settings, policy=RUNTIME_POLICY)
     app.state.provider_pool = make_provider_pool(
         settings, secret_store, app.state.runtime_config)
 

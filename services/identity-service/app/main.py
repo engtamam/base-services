@@ -21,8 +21,9 @@ from app.api import health, internal, metrics
 from app.api.errors import register_error_handlers
 from app.api.health import register_readiness_check
 from app.api.v1 import router as v1_router
+from app.api.v1.operator import router as operator_router
 from app.api.v1.tenancy import members_router, router as tenancy_router
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.core.audit import build_auditor
 from app.container import build_container
 from app.middleware import (
@@ -49,6 +50,7 @@ def create_app() -> FastAPI:
     # And a service that cannot pseudonymise must not claim it can erase anyone.
     # And a service that demands a proven address must be able to ask for proof.
     settings.assert_email_verification_ok()
+    settings.assert_operator_config_ok()
     configure_logging(settings.SERVICE_NAME, settings.ENV, settings.LOG_LEVEL)
     logger = get_logger("app.main")
 
@@ -102,6 +104,34 @@ def create_app() -> FastAPI:
     app.state.auditor = build_auditor(settings, container)
     app.state.cwe_guard = cwe_guard
 
+    # ── Operator-managed credentials and policy ────────────────────────────
+    # Without a KEK there is nothing to seal with, so the store is not built and the operator
+    # surface refuses with 503 rather than storing a credential in the clear. Resolution still
+    # happens — from the environment — so behaviour is exactly what it was before.
+    from app.core.operator_credentials import AUTHZ_INTERNAL_TOKEN, OperatorCredentials
+    from app.core.runtime_config import RuntimeConfig
+    from app.core.secret_store import SecretStore
+    from app.runtime_policy import RUNTIME_POLICY
+
+    secret_store = None
+    if settings.SECRETS_KEK:
+        secret_store = SecretStore(
+            container.datastore, settings.SECRETS_KEK,
+            rotation_window_s=settings.SECRETS_ROTATION_WINDOW_SECONDS)
+    app.state.secret_store = secret_store
+    app.state.runtime_config = RuntimeConfig(
+        container.datastore, Settings, policy=RUNTIME_POLICY)
+    app.state.operator_credentials = OperatorCredentials(
+        secret_store, ttl_s=settings.AUTHZ_CREDENTIAL_REFRESH_SECONDS)
+    # The caps resolver captured its token at construction, which is why changing it needed a
+    # redeploy. It now asks at mint time, with the configured value as the fallback.
+    caps_resolver = getattr(container, "caps_resolver", None)
+    if hasattr(caps_resolver, "set_token_provider"):
+        creds = app.state.operator_credentials
+        fallback = settings.AUTHZ_INTERNAL_TOKEN
+        caps_resolver.set_token_provider(
+            lambda: creds.get(AUTHZ_INTERNAL_TOKEN, fallback=fallback))
+
     # Readiness reflects real dependency health for the wired adapters.
     for name, probe in container.health_probes().items():
         register_readiness_check(name, probe)
@@ -144,6 +174,8 @@ def create_app() -> FastAPI:
     app.include_router(metrics.router)
     app.include_router(internal.router)
     app.include_router(v1_router)
+    # Operator controls: credentials and policy an operator changes after launch.
+    app.include_router(operator_router)
     # Multi-tenant membership (Phase 31) is opt-in. Off — the default — these routes do not exist
     # at all and the deployment 404s them, rather than exposing a feature it has no store for.
     if settings.IDENTITY_MULTI_TENANT:

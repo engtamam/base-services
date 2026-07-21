@@ -97,9 +97,11 @@ def create_app() -> FastAPI:
     # still resolves its token — from the environment — so behaviour is exactly what it was before.
     from app.config import Settings
     from app.core.runtime_config import RuntimeConfig
+    from app.runtime_policy import RUNTIME_POLICY
 
     app.state.secret_store = container.secret_store
-    app.state.runtime_config = RuntimeConfig(container.datastore, Settings)
+    app.state.runtime_config = RuntimeConfig(
+        container.datastore, Settings, policy=RUNTIME_POLICY)
 
     # Readiness reflects real dependency health for the wired adapters.
     for name, probe in container.health_probes().items():

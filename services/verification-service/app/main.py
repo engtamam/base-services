@@ -96,6 +96,7 @@ def create_app() -> FastAPI:
     from app.config import Settings
     from app.container import make_verifier_pool
     from app.core.runtime_config import RuntimeConfig
+    from app.runtime_policy import RUNTIME_POLICY
     from app.core.secret_store import SecretStore
 
     secret_store = None
@@ -104,7 +105,8 @@ def create_app() -> FastAPI:
             container.datastore, settings.SECRETS_KEK,
             rotation_window_s=settings.SECRETS_ROTATION_WINDOW_SECONDS)
     app.state.secret_store = secret_store
-    app.state.runtime_config = RuntimeConfig(container.datastore, Settings)
+    app.state.runtime_config = RuntimeConfig(
+        container.datastore, Settings, policy=RUNTIME_POLICY)
     app.state.provider_pool = make_verifier_pool(
         settings, secret_store, app.state.runtime_config, container.secrets)
 

@@ -6,6 +6,9 @@ webhooks.read for the views); there is no `_SELF` route. Actual delivery is inte
 panel action. What the operator drives: register / edit / delete endpoints, rotate a signing secret,
 inspect health, deliveries and the dead-letter queue, replay a delivery or a whole event, dispatch a
 test event, and sweep retries. Rotating a secret and deleting an endpoint are danger + confirm.
+Since Phase 44 the operator also owns the INBOUND source secrets and the runtime policy knobs, both
+declared at the end. Those are distinct from an ENDPOINT's signing secret, which this service
+generates and returns once to its owner — that is the customer's credential, not the operator's.
 Every action re-checks its capability at the route; this file only decides what is shown.
 """
 from __future__ import annotations
@@ -58,4 +61,54 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
     {"id": "webhooks.sweep", "label": "Sweep pending retries", "method": "POST",
      "path": "/api/v1/webhooks/sweep", "capability": "platform.webhooks", "group": "Deliveries",
      "confirm": True},
+    # ── Operator controls: credentials and policy, changeable after launch ────
+    # A panel that can only ACT is half a panel: the reads are declared too, so an operator can
+    # see which credential is loaded before replacing it. No action here returns a value — the
+    # list shows a four-character hint, and safety:no-secret-reads fails the build if that
+    # ever changes.
+    {
+        "id": "operator.list_secrets", "label": "Inbound source secrets", "method": "GET",
+        "path": "/api/v1/operator/secrets", "capability": "platform.secrets",
+        "group": "Credentials",
+    },
+    {
+        "id": "operator.set_secret", "label": "Set / rotate an inbound source secret", "method": "PUT",
+        "path": "/api/v1/operator/secrets", "capability": "platform.secrets",
+        "group": "Credentials", "confirm": True,
+        "params": [
+            {"name": "name", "in": "body", "type": "string", "required": True,
+             "help": "the setting it replaces, e.g. INBOUND_SECRET:stripe"},
+            {"name": "value", "in": "body", "type": "string", "required": True,
+             "help": "write-only: it is sealed on arrival and no route can read it back"},
+            {"name": "tenant", "in": "body", "type": "string", "required": False,
+             "help": "leave empty for platform-wide"},
+        ],
+    },
+    {
+        "id": "operator.clear_secret", "label": "Remove an inbound source secret", "method": "DELETE",
+        "path": "/api/v1/operator/secrets/{name}", "capability": "platform.secrets",
+        "group": "Credentials", "confirm": True,
+        "params": [{"name": "name", "in": "path", "type": "string", "required": True}],
+    },
+    {
+        "id": "operator.get_config", "label": "Runtime settings", "method": "GET",
+        "path": "/api/v1/operator/config", "capability": "platform.config", "group": "Settings",
+    },
+    {
+        "id": "operator.set_config", "label": "Change a runtime setting", "method": "PUT",
+        "path": "/api/v1/operator/config", "capability": "platform.config",
+        "group": "Settings", "confirm": True,
+        "params": [
+            {"name": "key", "in": "body", "type": "string", "required": True,
+             "help": "e.g. INBOUND_TIMESTAMP_TOLERANCE_SECONDS or RETRY_MAX_ATTEMPTS"},
+            {"name": "value", "in": "body", "type": "string", "required": True},
+            {"name": "tenant", "in": "body", "type": "string", "required": False},
+        ],
+    },
+    {
+        "id": "operator.clear_config", "label": "Reset a setting to its default", "method": "DELETE",
+        "path": "/api/v1/operator/config/{key}", "capability": "platform.config",
+        "group": "Settings", "confirm": True,
+        "params": [{"name": "key", "in": "path", "type": "string", "required": True}],
+    },
 ]

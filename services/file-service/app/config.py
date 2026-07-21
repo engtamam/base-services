@@ -230,6 +230,18 @@ class Settings(BaseSettings):
     PII_SALT: str = ""
     SIGNED_URL_TTL_SECONDS: int = 300
 
+    # ── operator-managed credentials ──────────────────────────────────────────
+    # Seals credentials an operator sets from the panel. Never settable through any API: a key
+    # that protects the secrets and is itself editable in the UI protects nothing from someone
+    # who has the UI. Empty means the operator surface refuses rather than storing in the clear.
+    SECRETS_KEK: str = ""
+    SECRETS_ROTATION_WINDOW_SECONDS: int = 300
+    # How long a resolved signer is reused before the credential is read again. The signer is
+    # touched by every share link and every public signed download, so reading the store per
+    # request would put a datastore read and a decrypt in front of the hot path to support a change
+    # that happens a few times a year.
+    SIGNER_REFRESH_SECONDS: int = 30
+
     @property
     def allowed_content_types(self) -> frozenset[str]:
         return frozenset(t.strip().lower() for t in self.ALLOWED_CONTENT_TYPES.split(",") if t.strip())
@@ -330,6 +342,21 @@ class Settings(BaseSettings):
             raise ValueError(
                 "LARGE_UPLOAD_SCAN=skip is refused in production — a large file would be served "
                 "without ever being scanned. Use 'async' (scan in the worker) or 'require'.")
+
+    def assert_secrets_ok(self) -> None:
+        """Boot guard: a replica must never outlive the rotation that is meant to cover it."""
+        if self.SECRETS_KEK and (
+                self.SIGNER_REFRESH_SECONDS > self.SECRETS_ROTATION_WINDOW_SECONDS):
+            # The refresh window is how long a replica may keep using the old credential; the
+            # rotation window is how long the old one stays valid. If refresh outlives rotation the
+            # two stop overlapping, and a rotation opens a gap where live replicas sign links with
+            # a credential the peer replicas have already stopped accepting — every share link
+            # 403ing, after a change that looked successful in the panel.
+            raise ValueError(
+                f"SIGNER_REFRESH_SECONDS ({self.SIGNER_REFRESH_SECONDS}) must not exceed "
+                f"SECRETS_ROTATION_WINDOW_SECONDS ({self.SECRETS_ROTATION_WINDOW_SECONDS}) — "
+                f"otherwise a rotation leaves a window where replicas sign with a credential the "
+                f"rest of the fleet no longer accepts")
 
     @field_validator("INTERNAL_SERVICE_TOKEN")
     @classmethod

@@ -66,9 +66,19 @@ def _secret_store(request: Request) -> SecretStore:
 
 
 def _runtime_config(request: Request) -> RuntimeConfig:
-    from app.config import Settings
+    """The instance wired at boot, so the service's RUNTIME_POLICY applies.
 
-    return RuntimeConfig(request.app.state.container.datastore, Settings)
+    Building a fresh one here would silently carry no policy, and a RuntimeConfig with no policy
+    refuses everything — the panel would report every knob as unsettable while the service believed
+    it had wired them.
+    """
+    rc = getattr(request.app.state, "runtime_config", None)
+    if rc is not None:
+        return rc
+    from app.config import Settings
+    from app.runtime_policy import RUNTIME_POLICY
+
+    return RuntimeConfig(request.app.state.container.datastore, Settings, policy=RUNTIME_POLICY)
 
 
 class SecretIn(BaseModel):
@@ -161,7 +171,12 @@ async def set_config(request: Request, body: ConfigIn,
     except RuntimeConfigError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     _invalidate(request, body.tenant)      # EMAIL_CHAIN/SMS_CHAIN reorder the providers
-    return {"key": o.key, "value": o.value, "tenant": o.tenant}
+    # The tenant is NOT echoed. The caller supplied it, so returning it adds nothing, and a
+    # response field named "tenant" is indistinguishable — to a reader and to the tenancy gate —
+    # from a verified claim. The one wall between every company on this platform is that the
+    # tenant is believed everywhere and checked in exactly one place; nothing here should look
+    # like that check.
+    return {"key": o.key, "value": o.value}
 
 
 @router.delete("/config/{key}", dependencies=[Depends(_CONFIG), Depends(rate_limit)])

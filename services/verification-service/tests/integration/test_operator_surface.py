@@ -130,15 +130,27 @@ def test_wiring_and_secrets_are_refused(client, key):
 
 
 def test_a_policy_knob_is_accepted_and_typed(client):
+    """VERIFY_PROVIDERS is declared in RUNTIME_POLICY because verifier_pool actually resolves it —
+    an operator repointing a claim type at another provider is the change that cannot wait for a
+    deployment."""
+    r = client.put("/api/v1/operator/config",
+                   json={"key": "VERIFY_PROVIDERS", "value": "cr=wathq"},
+                   headers=_auth("platform.config"))
+    assert r.status_code == 200 and r.json()["value"] == "cr=wathq"
+
+
+def test_a_knob_nothing_reads_is_refused_even_though_it_is_ordinary_policy(client):
+    """VERIFY_TIMEOUT_SECONDS is a real, non-secret setting, refused purely because nothing
+    resolves it through RuntimeConfig. Accepting it would report a change that never took effect."""
     r = client.put("/api/v1/operator/config",
                    json={"key": "VERIFY_TIMEOUT_SECONDS", "value": "20"},
                    headers=_auth("platform.config"))
-    assert r.status_code == 200 and r.json()["value"] == 20
+    assert r.status_code == 400
 
 
 def test_a_value_of_the_wrong_type_is_refused(client):
     r = client.put("/api/v1/operator/config",
-                   json={"key": "VERIFY_TIMEOUT_SECONDS", "value": "twenty"},
+                   json={"key": "VERIFY_MAX_ATTEMPTS", "value": "twenty"},
                    headers=_auth("platform.config"))
     assert r.status_code == 400
 

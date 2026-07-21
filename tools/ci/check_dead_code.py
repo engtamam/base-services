@@ -82,6 +82,14 @@ ALLOWLIST: dict[str, str] = {
     # legitimately contains symbols nothing calls yet.
     "services/_template/": "the scaffold: its symbols are used by the services generated FROM it",
 
+    # secret_name() defines the stored-name convention for inbound secrets. Production only
+    # parses those names — an operator types one in the panel — so nothing calls it, but the
+    # convention has to live in ONE place: the tests construct names with it and the pool parses
+    # them, so a change to either side breaks the pair immediately. Inlining the prefix in the
+    # tests instead would be the same rule written twice, which is what this gate exists to stop.
+    "app/core/inbound_credentials.py": "defines the stored-name convention; tests construct with "
+                                       "it and the pool parses it, so the pair cannot drift",
+
     # ── the replicated operator-credential core ──────────────────────────────────────────────
     # secret_store.py and runtime_config.py are copied verbatim into every service that gains
     # operator-managed credentials (self-contained by design). Two methods are live only where the

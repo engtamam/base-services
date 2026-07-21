@@ -48,7 +48,7 @@ async def ingest(source: str, request: Request,
     from app.core.inbound_service import InboundRejected
 
     try:
-        return await build_inbound(request).ingest(
+        return await (await build_inbound(request)).ingest(
             source=source, body=body, signature=x_webhook_signature,
             provider_event_id=_provider_event_id(payload, x_webhook_id),
             payload=payload, now=int(time.time()))

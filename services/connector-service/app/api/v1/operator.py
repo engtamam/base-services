@@ -152,7 +152,12 @@ async def set_config(request: Request, body: ConfigIn,
             tenant=body.tenant, key=body.key, value=body.value, actor_ref=_actor(principal))
     except RuntimeConfigError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
-    return {"key": o.key, "value": o.value, "tenant": o.tenant}
+    # The tenant is NOT echoed. The caller supplied it, so returning it adds nothing, and a
+    # response field named "tenant" is indistinguishable — to a reader and to the tenancy gate —
+    # from a verified claim. The one wall between every company on this platform is that the
+    # tenant is believed everywhere and checked in exactly one place; nothing here should look
+    # like that check.
+    return {"key": o.key, "value": o.value}
 
 
 @router.delete("/config/{key}", dependencies=[Depends(_CONFIG), Depends(rate_limit)])

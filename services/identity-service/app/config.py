@@ -331,6 +331,18 @@ class Settings(BaseSettings):
     AUTHZ_ROLES_PARAM: str = "roles"
     AUTHZ_ROLES_SEPARATOR: str = ","
 
+    # ── operator-managed credentials ──────────────────────────────────────────
+    # The key that seals every operator-stored credential. It stays in the ENVIRONMENT and is never
+    # settable through any API: a key that protects the secrets and is itself editable in the panel
+    # protects nothing from someone who has the panel. Empty means the operator surface refuses
+    # (503) rather than storing a credential in the clear.
+    SECRETS_KEK: str = ""
+    SECRETS_ROTATION_WINDOW_SECONDS: int = 300
+    # How long a resolved credential is reused before the store is read again. Mint is the hot path
+    # — login, tenant switch and every refresh — and a datastore read plus a scrypt-backed decrypt
+    # there, to support a change made a few times a year, is a cost every session would pay.
+    AUTHZ_CREDENTIAL_REFRESH_SECONDS: int = 30
+
     @property
     def egress_allowed_hosts(self) -> frozenset[str]:
         return frozenset(
@@ -438,6 +450,26 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"AUDIT_SERVICE_URL {self.AUDIT_SERVICE_URL!r} must start with http:// or https://"
             )
+
+    def assert_operator_config_ok(self) -> None:
+        """Boot guard for the operator credential surface.
+
+        Checked in every environment, not just production: a refresh window that outlives the
+        rotation window is wrong wherever it is set, and a rule that only bites in production is
+        one nobody discovers until the rotation that needed it.
+        """
+        if self.SECRETS_KEK and (
+                self.AUTHZ_CREDENTIAL_REFRESH_SECONDS > self.SECRETS_ROTATION_WINDOW_SECONDS):
+            # The refresh window is how long a replica may keep using the old credential; the
+            # rotation window is how long the old one stays valid. If refresh outlives rotation the
+            # two stop overlapping, and a rotation opens a gap where live replicas call authz with
+            # a credential it has already stopped accepting — and authz failing closed means
+            # nobody can log in, after a change that looked successful in the panel.
+            raise ValueError(
+                f"AUTHZ_CREDENTIAL_REFRESH_SECONDS ({self.AUTHZ_CREDENTIAL_REFRESH_SECONDS}) must "
+                f"not exceed SECRETS_ROTATION_WINDOW_SECONDS "
+                f"({self.SECRETS_ROTATION_WINDOW_SECONDS}) — otherwise a rotation leaves a window "
+                f"where replicas authenticate with a credential authz no longer accepts")
 
     @field_validator("INTERNAL_SERVICE_TOKEN")
     @classmethod

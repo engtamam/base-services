@@ -35,13 +35,17 @@ UNREGISTERED = "no PRIVACY_TARGETS entry for this service — it is in the data 
 
 class PrivacyDispatcher:
     def __init__(self, *, dsars, targets, transport, settings, clock, secrets=None,
-                 telemetry=None, random=None) -> None:
+                 telemetry=None, random=None, credentials=None) -> None:
         self._dsars = dsars
         self._targets = targets
         self._transport = transport
         self._cfg = settings
         self._clock = clock
         self._secrets = secrets
+        # An operator credential store, when one is wired. It is consulted FIRST and the secrets
+        # port is its fallback, so a deployment that has stored nothing dispatches with exactly the
+        # credential it dispatches with today.
+        self._credentials = credentials
         self._telemetry = telemetry
         # injected so backoff is deterministic under test; the production default is real jitter
         self._random = random
@@ -84,7 +88,7 @@ class PrivacyDispatcher:
             outcome_status, detail, ack = FAILED, UNREGISTERED, None
         else:
             out = await self._transport.erase(
-                url=url, token=self._token_for(service), request_id=dsar.id,
+                url=url, token=await self._token_for(service, dsar.tenant), request_id=dsar.id,
                 action=dsar.type, tenant=dsar.tenant, subject=dsar.subject,
                 timeout=self._cfg.PRIVACY_DISPATCH_TIMEOUT_SECONDS)
             outcome_status, detail, ack = out.status, out.detail, out.ack
@@ -149,18 +153,26 @@ class PrivacyDispatcher:
             return None
         return base + self._cfg.erase_path_for(service)
 
-    def _token_for(self, service: str) -> str:
-        """A third party gets ITS credential, resolved through the secrets port. Only our own
-        services — the ones with no override — ever see the internal token."""
+    async def _token_for(self, service: str, tenant: str = "") -> str:
+        """A third party gets ITS credential. Only our own services — the ones with no override —
+        ever see the internal token.
+
+        Resolution order is operator store, then the secrets port, then nothing. The port value is
+        passed as the FALLBACK rather than checked afterwards, so "no override stored" and "no
+        operator surface at all" resolve identically and an unmigrated deployment is unchanged.
+        """
         key = self._cfg.secret_key_for(service)
         if key is None:
             return self._cfg.INTERNAL_SERVICE_TOKEN
-        if self._secrets is None:
-            return ""
-        try:
-            return self._secrets.get(key) or ""
-        except Exception:
-            return ""
+        configured = ""
+        if self._secrets is not None:
+            try:
+                configured = self._secrets.get(key) or ""
+            except Exception:      # noqa: BLE001 — an unreachable vault is not a reason to raise
+                configured = ""
+        if self._credentials is None:
+            return configured
+        return await self._credentials.get(key, fallback=configured, tenant=tenant)
 
     # ── retry schedule ──────────────────────────────────────────────────────────
     def _is_due(self, st: dict) -> bool:

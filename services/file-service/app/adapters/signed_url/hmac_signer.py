@@ -27,11 +27,18 @@ def _unb64(s: str) -> bytes:
 class HmacSigner:
     driver = "hmac"
 
-    def __init__(self, secret: str, ttl_seconds: int) -> None:
+    def __init__(self, secret: str, ttl_seconds: int,
+                 also_accept: tuple[str, ...] = ()) -> None:
         if not secret or len(secret) < 16:
             raise ConfigError("SIGNED_URL_SECRET must be set (>= 16 chars)")
         self._secret = secret.encode()
         self._ttl = ttl_seconds
+        # Links already handed out are bearer credentials with their own expiry, and a rotation
+        # cannot recall them. Verifying against the new secret alone would break every share link
+        # in someone's inbox the instant the key changed — so the previous secret keeps VERIFYING
+        # for its rotation window. Signing always uses the current one, so nothing new is minted
+        # under a key that is on its way out.
+        self._also = tuple(s.encode() for s in also_accept if s and s != secret)
 
     def _sign_msg(self, msg: str) -> str:
         return _b64(hmac.new(self._secret, msg.encode(), hashlib.sha256).digest())
@@ -46,7 +53,8 @@ class HmacSigner:
             msg, sig = token.split(".", 1)
         except ValueError:
             return None
-        if not hmac.compare_digest(sig, self._sign_msg(msg)):
+        if not any(hmac.compare_digest(sig, _b64(hmac.new(k, msg.encode(), hashlib.sha256).digest()))
+                   for k in (self._secret, *self._also)):
             return None
         try:
             payload = json.loads(_unb64(msg))

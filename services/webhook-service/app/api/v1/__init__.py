@@ -5,7 +5,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from app.api.v1.operator import router as operator_router
 from app.api.v1.webhooks import router as webhooks_router
 
 router = APIRouter()
 router.include_router(webhooks_router)
+router.include_router(operator_router)

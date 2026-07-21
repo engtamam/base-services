@@ -79,7 +79,7 @@ async def internal_signed_url(request: Request, file_id: str,
     The TTL is CONFIG. A caller-supplied lifetime would let a job mint a link that outlives the
     reason it was issued, and a link is a bearer credential: whoever holds it is the reader.
     """
-    svc = build_files(request)
+    svc = await build_files(request)
     try:
         f = await svc.get(file_id)
     except NotFound:
@@ -109,7 +109,7 @@ async def drain_scan_queue(request: Request) -> dict:
     from app.api.v1.files import build_files   # local import avoids a route<->route import cycle
     c = request.app.state.container
     s = get_settings()
-    files = build_files(request)
+    files = await build_files(request)
     worker = ScanWorker(files=files, sessions=UploadSessionStore(c.datastore),
                         object_store=c.object_store, scanner=c.scanner, queue=c.queue,
                         scan_queue=s.FILE_SCAN_QUEUE, scan_policy=s.LARGE_UPLOAD_SCAN,
@@ -129,7 +129,7 @@ async def sweep_uploads(request: Request) -> dict:
 
     from app.api.v1.files import build_files
     s = get_settings()
-    files = build_files(request)
+    files = await build_files(request)
     cutoff = (_dt.datetime.now(_dt.timezone.utc)
               - _dt.timedelta(seconds=s.UPLOAD_SESSION_TTL_SECONDS)).isoformat()
     return await files.sweep_stale_sessions(cutoff)
@@ -181,7 +181,7 @@ async def link_subjects(request: Request, file_id: str, body: LinkSubjectsIn) ->
 
     c = request.app.state.container
     s = get_settings()
-    files = build_files(request)
+    files = await build_files(request)
     try:
         f = await files.get(file_id)
     except NotFound:

@@ -233,6 +233,18 @@ class Settings(BaseSettings):
 
     WEBHOOK_LIST_LIMIT: int = 100
 
+    # ── operator-managed credentials ──────────────────────────────────────────
+    # Seals credentials an operator sets from the panel. Never settable through any API: a key
+    # that protects the secrets and is itself editable in the UI protects nothing from someone
+    # who has the UI. Empty means the operator surface refuses rather than storing in the clear.
+    SECRETS_KEK: str = ""
+    SECRETS_ROTATION_WINDOW_SECONDS: int = 300
+    # How long a resolved set of inbound secrets is reused before the store is read again. Every
+    # third-party event lands on /inbound/{source}, so reading the store per request would put a
+    # datastore read and a decrypt in front of the hot path to support a change that happens a few
+    # times a year.
+    INBOUND_SECRET_REFRESH_SECONDS: int = 30
+
     @property
     def inbound_secrets(self) -> dict[str, list[str]]:
         """`source=secret|previous;source2=secret` — a source with no secret is never trusted."""
@@ -339,6 +351,21 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"AUDIT_SERVICE_URL {self.AUDIT_SERVICE_URL!r} must start with http:// or https://"
             )
+
+    def assert_secrets_ok(self) -> None:
+        """Boot guard: a replica must never outlive the rotation that is meant to cover it."""
+        if self.SECRETS_KEK and (
+                self.INBOUND_SECRET_REFRESH_SECONDS > self.SECRETS_ROTATION_WINDOW_SECONDS):
+            # The refresh window is how long a replica may keep using the old credential; the
+            # rotation window is how long the old one stays valid. If refresh outlives rotation the
+            # two stop overlapping, and a rotation opens a gap where live replicas verify against a
+            # secret the store has already dropped — genuine callbacks rejected as forged, after a
+            # change that looked successful in the panel.
+            raise ValueError(
+                f"INBOUND_SECRET_REFRESH_SECONDS ({self.INBOUND_SECRET_REFRESH_SECONDS}) must not "
+                f"exceed SECRETS_ROTATION_WINDOW_SECONDS ({self.SECRETS_ROTATION_WINDOW_SECONDS}) "
+                f"— otherwise a rotation leaves a window where replicas reject callbacks signed "
+                f"with a secret that is still legitimately in flight")
 
     @field_validator("INTERNAL_SERVICE_TOKEN")
     @classmethod

@@ -69,6 +69,20 @@ class AuthzCaps:
         self._roles_param = roles_param
         self._sep = roles_sep
         self._cache: dict[tuple[str, str, str], tuple[float, list[str]]] = {}
+        # Set by the composition root when an operator credential store exists. Resolving at USE
+        # time is the whole point: a token captured once at construction is never read again for
+        # the life of the process, which is precisely why changing it used to need a redeploy. The
+        # configured value stays the fallback, so an unmigrated deployment is unchanged.
+        self._token_provider = None
+
+    def set_token_provider(self, provider) -> None:
+        """An async callable returning the current internal token."""
+        self._token_provider = provider
+
+    async def _current_token(self) -> str:
+        if self._token_provider is None:
+            return self._token
+        return await self._token_provider()
 
     async def resolve(self, *, subject: str, tenant: str, roles: list[str],
                       caps: list[str]) -> list[str]:
@@ -80,7 +94,7 @@ class AuthzCaps:
             # already hold, so it costs nothing and must never be stale relative to that row.
             return sorted(set(hit[1]) | set(caps))
 
-        headers = {self._token_header: self._token}
+        headers = {self._token_header: await self._current_token()}
         if self._ua:
             headers["User-Agent"] = self._ua
         try:

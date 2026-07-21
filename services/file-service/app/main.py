@@ -46,6 +46,7 @@ def create_app() -> FastAPI:
     settings.assert_pii_config_ok()
     settings.assert_cors_config_ok()
     settings.assert_large_scan_ok()   # refuse LARGE_UPLOAD_SCAN=skip in production
+    settings.assert_secrets_ok()      # a refresh window must not outlive the rotation window
     configure_logging(settings.SERVICE_NAME, settings.ENV, settings.LOG_LEVEL)
     logger = get_logger("app.main")
 
@@ -88,6 +89,30 @@ def create_app() -> FastAPI:
     # surfacing months later as a hole in the log.
     app.state.auditor = build_auditor(settings, container)
     app.state.cwe_guard = cwe_guard
+
+    # ── Operator-managed credentials ────────────────────────────────────────
+    # Built only when a KEK is configured. Without one there is nothing to seal with, and the
+    # operator surface must refuse (503) rather than fall back to storing a credential in the
+    # clear while every check reports "encrypted" — so None here is a deliberate state, not an
+    # oversight, and the routes check for it.
+    app.state.secret_store = None
+    if settings.SECRETS_KEK:
+        from app.core.secret_store import SecretStore
+        app.state.secret_store = SecretStore(
+            container.datastore, settings.SECRETS_KEK,
+            rotation_window_s=settings.SECRETS_ROTATION_WINDOW_SECONDS)
+    from app.core.runtime_config import RuntimeConfig
+    app.state.runtime_config = RuntimeConfig(container.datastore, type(settings))
+
+    # The signer resolves its key through the store, with the configured value as the fallback, so
+    # a deployment that has stored nothing gets exactly the object the container built.
+    from app.adapters.signed_url.hmac_signer import HmacSigner
+    from app.core.signer_pool import SignerPool
+    app.state.signer_pool = SignerPool(
+        secret_store=app.state.secret_store,
+        configured=container.signed_url,
+        build=lambda secret, also: HmacSigner(secret, settings.SIGNED_URL_TTL_SECONDS, also),
+        refresh_seconds=settings.SIGNER_REFRESH_SECONDS)
 
     # Readiness reflects real dependency health for the wired adapters.
     for name, probe in container.health_probes().items():

@@ -18,9 +18,14 @@ def run(c):
     return asyncio.run(c)
 
 
-def _rc(validate=None):
+# The knobs this test-service claims to read at runtime. Everything else must be refused, because
+# a knob the panel accepts and nothing consults reports a change that never happened.
+POLICY = frozenset({"RATELIMIT_MAX", "AUDIT_FAIL_CLOSED"})
+
+
+def _rc(validate=None, policy=POLICY):
     return RuntimeConfig(MemoryDataStore(), Settings, now=lambda: "2026-01-01T00:00:00Z",
-                         validate=validate)
+                         validate=validate, policy=policy)
 
 
 def _settings():
@@ -38,9 +43,22 @@ def _settings():
     "ENV",
 ])
 def test_wiring_and_secrets_are_refused(key):
-    assert not settable(key, Settings)
+    assert not settable(key, Settings, POLICY)
     with pytest.raises(RuntimeConfigError, match="deploy-time"):
         run(_rc().set(tenant="acme", key=key, value="anything"))
+
+
+@pytest.mark.parametrize("key", [
+    "INBOUND_SECRETS", "PROVIDER_KEYS", "API_TOKENS", "DB_PASSWORDS",
+])
+def test_a_plural_credential_name_is_refused_too(key):
+    """The deny-list matches names LITERALLY, so plurals must be listed.
+
+    INBOUND_SECRETS does not end in "_SECRET". Without the plural it was settable from the panel
+    and readable back in the clear through the config view — a credential past every rule meant to
+    stop it. Declaring it in the policy must not rescue it either, which is what this asserts.
+    """
+    assert not settable(key, Settings, frozenset({key}))
 
 
 def test_an_unknown_knob_is_refused():
@@ -143,6 +161,26 @@ def test_the_effective_view_never_contains_a_secret_or_a_dsn():
     view = run(rc.effective(tenant="acme", settings=_settings()))
     for banned in ("INTERNAL_SERVICE_TOKEN", "PII_SALT", "DATASTORE_DSN", "CACHE_URL"):
         assert banned not in view
+
+
+def test_the_view_shows_only_what_the_service_actually_reads():
+    """An advertised knob nothing consults is worse than an absent one: the panel reports success
+    and the audit log records a change that never took effect."""
+    view = run(_rc().effective(tenant="acme", settings=_settings()))
+    assert set(view) == POLICY
+
+
+def test_a_knob_the_service_does_not_read_is_refused_even_though_it_is_ordinary_policy():
+    # FEED_PAGE_SIZE is a real, non-secret, non-wiring setting. It is refused purely because this
+    # service does not resolve it through RuntimeConfig — fail-closed, so forgetting to wire a read
+    # makes the knob unavailable rather than silently inert.
+    assert not settable("FEED_PAGE_SIZE", Settings, POLICY)
+    with pytest.raises(RuntimeConfigError):
+        run(_rc().set(tenant="acme", key="FEED_PAGE_SIZE", value=10))
+
+
+def test_a_service_declaring_nothing_offers_nothing():
+    assert run(_rc(policy=frozenset()).effective(tenant="acme", settings=_settings())) == {}
 
 
 def test_the_effective_view_shows_overrides_applied():

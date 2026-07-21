@@ -100,9 +100,9 @@ because an operator cannot tell which settings are live.
 - [x] **44.10** **verification-service** — provider keys
 - [x] **44.11** **assistant-service** — model and embeddings keys
 - [x] **44.12** **file-service**, **webhook-service**, **compliance-service**, **identity-service** — remaining credential knobs
-- [ ] **44.13** Runtime policy values: retention, quotas, thresholds, grace periods — per service, per tenant
-- [ ] **44.14** Fill the empty admin catalogs (api-gateway, file-service) so every service declares its operator controls
-- [ ] **44.15** Full gate run, docs, and a rotation runbook
+- [x] **44.13** Runtime policy values: retention, quotas, thresholds, grace periods — per service, per tenant
+- [x] **44.14** Fill the empty admin catalogs (api-gateway, file-service) so every service declares its operator controls
+- [x] **44.15** Full gate run, docs, and a rotation runbook
 
 ## Definition of done
 

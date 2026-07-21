@@ -217,6 +217,18 @@ class Settings(BaseSettings):
     PII_SALT: str = ""
     COMPLIANCE_LIST_LIMIT: int = 100
 
+    # ── operator-managed credentials ──────────────────────────────────────────
+    # The key that seals every operator-stored credential. It stays in the ENVIRONMENT and is never
+    # settable through any API: a key that protects the secrets and is itself editable in the panel
+    # protects nothing from someone who has the panel. Empty means the operator surface refuses
+    # (503) rather than storing a credential in the clear.
+    SECRETS_KEK: str = ""
+    SECRETS_ROTATION_WINDOW_SECONDS: int = 300
+    # How long a resolved erasure credential is reused before the store is read again. An erasure
+    # sweep drives every target of every open DSAR; resolving per attempt would be a datastore read
+    # and a scrypt-backed decrypt per target per sweep, to support a change made a few times a year.
+    PRIVACY_CREDENTIAL_REFRESH_SECONDS: int = 30
+
     # ── capacity to consent (Phase 39) ────────────────────────────────────────
     # The age at which a person may consent for themself. 0 = this platform does not serve minors,
     # which is the default because it is what every existing deployment was already asserting
@@ -376,6 +388,26 @@ class Settings(BaseSettings):
             raise ValueError(
                 "PRIVACY_TARGETS is empty in production: every DSAR would hang waiting for targets "
                 "that can never be reached")
+
+    def assert_operator_config_ok(self) -> None:
+        """Boot guard for the operator credential surface.
+
+        Checked in every environment, not just production: a refresh window that outlives the
+        rotation window is wrong wherever it is set, and a rule that only bites in production is
+        one nobody discovers until the rotation that needed it.
+        """
+        if self.SECRETS_KEK and (
+                self.PRIVACY_CREDENTIAL_REFRESH_SECONDS > self.SECRETS_ROTATION_WINDOW_SECONDS):
+            # The refresh window is how long a replica may keep using the old credential; the
+            # rotation window is how long the old one stays valid. If refresh outlives rotation the
+            # two stop overlapping, and a rotation opens a gap where live replicas authenticate
+            # with a credential the target has already stopped accepting — every erasure failing,
+            # for a change that looked successful in the panel.
+            raise ValueError(
+                f"PRIVACY_CREDENTIAL_REFRESH_SECONDS ({self.PRIVACY_CREDENTIAL_REFRESH_SECONDS}) "
+                f"must not exceed SECRETS_ROTATION_WINDOW_SECONDS "
+                f"({self.SECRETS_ROTATION_WINDOW_SECONDS}) — otherwise a rotation leaves a window "
+                f"where replicas dispatch with a credential the target no longer accepts")
 
     @property
     def egress_allowed_hosts(self) -> frozenset[str]:

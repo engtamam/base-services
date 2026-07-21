@@ -158,12 +158,18 @@ def test_the_config_view_never_carries_a_credential(client, operator_auth):
         assert banned not in view
 
 
-def test_a_policy_value_can_be_set_and_cleared(client, operator_auth):
+def test_the_scaffold_declares_no_runtime_policy_so_it_offers_none(client, operator_auth):
+    """The template deliberately declares nothing, and the surface must reflect that rather than
+    advertising every settable field.
+
+    A generated service adds a key to RUNTIME_POLICY in the same change that wires the read. Until
+    then the knob is unavailable, which is honest — an advertised knob nothing consults reports a
+    change that never happened, with an audit entry to prove it.
+    """
     h = {"headers": operator_auth}
+    assert client.get("/api/v1/operator/config", **h).json()["config"] == {}
     r = client.put("/api/v1/operator/config", json={"key": "RATELIMIT_MAX", "value": 250}, **h)
-    assert r.status_code == 200 and r.json()["value"] == 250
-    assert client.get("/api/v1/operator/config", **h).json()["config"]["RATELIMIT_MAX"] == 250
-    assert client.delete("/api/v1/operator/config/RATELIMIT_MAX", **h).json()["cleared"] is True
+    assert r.status_code == 400, "an undeclared knob was accepted and would have been inert"
 
 
 # ── availability ──────────────────────────────────────────────────────────────

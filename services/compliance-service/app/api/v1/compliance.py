@@ -65,7 +65,9 @@ def build_dispatcher(request: Request) -> PrivacyDispatcher:
     c = request.app.state.container
     return PrivacyDispatcher(dsars=DsarStore(c.datastore), targets=TargetStore(c.datastore),
                              transport=c.privacy_transport, settings=get_settings(),
-                             clock=c.clock, secrets=c.secrets, telemetry=c.telemetry)
+                             clock=c.clock, secrets=c.secrets, telemetry=c.telemetry,
+                             credentials=getattr(request.app.state,
+                                                 "operator_credentials", None))
 
 
 def build_sweeper(request: Request) -> PrivacySweeper:

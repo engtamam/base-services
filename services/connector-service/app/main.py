@@ -100,7 +100,9 @@ def create_app() -> FastAPI:
             container.datastore, settings.SECRETS_KEK,
             rotation_window_s=settings.SECRETS_ROTATION_WINDOW_SECONDS)
     from app.core.runtime_config import RuntimeConfig
-    app.state.runtime_config = RuntimeConfig(container.datastore, type(settings))
+    from app.runtime_policy import RUNTIME_POLICY
+    app.state.runtime_config = RuntimeConfig(
+        container.datastore, type(settings), policy=RUNTIME_POLICY)
 
     # Readiness reflects real dependency health for the wired adapters.
     for name, probe in container.health_probes().items():

@@ -44,11 +44,14 @@ def build_webhooks(request: Request) -> WebhookService:
         transport=c.webhook_transport, signer=c.signer, config=_config(), event_bus=c.event_bus)
 
 
-def build_inbound(request: Request) -> InboundService:
+async def build_inbound(request: Request) -> InboundService:
+    # ASYNC because the accepted secrets are RESOLVED, not captured: an operator may have entered
+    # or rotated one since boot. The pool answers from a short-lived cache rather than reading the
+    # credential store on every inbound event.
     c = request.app.state.container
     s = get_settings()
     return InboundService(store=InboundStore(c.datastore), signer=c.signer,
-                          secrets=s.inbound_secrets,
+                          secrets=await request.app.state.inbound_pool.get(),
                           tolerance_seconds=s.INBOUND_TIMESTAMP_TOLERANCE_SECONDS,
                           max_payload_bytes=s.MAX_PAYLOAD_BYTES,
                           dedupe_ttl_seconds=s.INBOUND_DEDUPE_TTL_SECONDS, event_bus=c.event_bus)

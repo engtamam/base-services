@@ -29,12 +29,15 @@ _UPLOAD = require_capability("files.upload")
 _READ = require_capability("files.read")
 
 
-def build_files(request: Request) -> FileService:
+async def build_files(request: Request) -> FileService:
+    # ASYNC because the signing key is resolved, not captured: an operator may have rotated
+    # SIGNED_URL_SECRET from the panel since boot, and the pool answers from a short-lived cache
+    # rather than reading the credential store on every request.
     c = request.app.state.container
     s = get_settings()
     return FileService(
         repo=FileRepository(c.datastore), object_store=c.object_store,
-        scanner=c.scanner, signed_url=c.signed_url,
+        scanner=c.scanner, signed_url=await request.app.state.signer_pool.get(),
         max_upload_bytes=s.MAX_UPLOAD_BYTES, allowed_content_types=s.allowed_content_types,
         max_page_limit=s.MAX_PAGE_LIMIT,
         sessions=UploadSessionStore(c.datastore), queue=c.queue,
@@ -86,7 +89,7 @@ async def _load_scoped(svc: FileService, file_id: str, principal: Principal) -> 
 async def upload(request: Request, principal: Principal = Depends(require_user),
                  x_filename: str = Header(default="upload.bin", alias="X-Filename")) -> dict:
     s = get_settings()
-    svc = build_files(request)
+    svc = await build_files(request)
     # Negotiation (fail-closed): a body over the inline boundary must use the direct-to-bucket path
     # if the store supports it — never silently buffer a huge object in the app. If it does not, the
     # inline cap stands and the client gets a plain 413.
@@ -116,7 +119,7 @@ async def initiate_large_upload(request: Request, body: InitiateIn,
                                 principal: Principal = Depends(require_user)) -> dict:
     """Begin a direct-to-bucket upload. Returns either a dedup hit (already yours) or a presigned
     multipart plan the client PUTs its parts to."""
-    svc = build_files(request)
+    svc = await build_files(request)
     try:
         result = await svc.begin_large_upload(
             tenant=principal.tenant or "", owner=principal.subject,
@@ -149,7 +152,7 @@ async def initiate_large_upload(request: Request, body: InitiateIn,
 async def complete_large_upload(request: Request, session_id: str, body: CompleteIn,
                                 principal: Principal = Depends(require_user)) -> dict:
     """Client finished the parts. We assemble, confirm the object landed, and queue the scan."""
-    svc = build_files(request)
+    svc = await build_files(request)
     try:
         parts = [CompletedPart(part_number=p.part_number, etag=p.etag) for p in body.parts]
         sess = await svc.complete_large_upload(session_id=session_id, tenant=principal.tenant or "",
@@ -162,7 +165,7 @@ async def complete_large_upload(request: Request, session_id: str, body: Complet
 @router.get("/uploads/{session_id}", dependencies=[Depends(_READ)])
 async def upload_status(request: Request, session_id: str,
                         principal: Principal = Depends(require_user)) -> dict:
-    svc = build_files(request)
+    svc = await build_files(request)
     try:
         sess = await svc.get_session(session_id, tenant=principal.tenant or "",
                                      owner=principal.subject)
@@ -175,7 +178,7 @@ async def upload_status(request: Request, session_id: str,
 async def abort_upload(request: Request, session_id: str,
                        principal: Principal = Depends(require_user)) -> dict:
     """Cancel an in-flight upload — releases the multipart's parts in the bucket, not just the row."""
-    svc = build_files(request)
+    svc = await build_files(request)
     try:
         sess = await svc.abort_session(session_id, tenant=principal.tenant or "",
                                        owner=principal.subject)
@@ -197,14 +200,14 @@ async def list_files(request: Request, principal: Principal = Depends(require_us
     A cursor is not an offset — an offset silently skips a row when a file is uploaded between
     two pages.
     """
-    svc = build_files(request)
+    svc = await build_files(request)
     return await svc.list(principal.tenant or "", limit=limit, after=after)
 
 
 @router.get("/{file_id}/metadata")
 async def metadata(request: Request, file_id: str, principal: Principal = Depends(_READ),
                    guard=Depends(get_guard)) -> dict:
-    f = await _load_scoped(build_files(request), file_id, principal)
+    f = await _load_scoped(await build_files(request), file_id, principal)
     async with guard.step("respond") as step:
         body = f.to_dict()
         step.result = body
@@ -215,7 +218,7 @@ async def metadata(request: Request, file_id: str, principal: Principal = Depend
 async def download(request: Request, file_id: str, principal: Principal = Depends(_READ)):
     """Serve the file. On a presign-capable store the bytes come STRAIGHT from the bucket via a
     short-lived redirect (the app is never in the data path); otherwise they stream through us."""
-    svc = build_files(request)
+    svc = await build_files(request)
     f = await _load_scoped(svc, file_id, principal)
     redirect = await svc.download_redirect(f)
     if redirect is not None:
@@ -233,7 +236,7 @@ async def signed_url(request: Request, file_id: str, principal: Principal = Depe
     await request.app.state.auditor.record(
         "file.signed_url_issued", actor=principal.subject, tenant=principal.tenant, resource=f"file:{file_id}",
         ip=request.client.host if request.client else "")
-    svc = build_files(request)
+    svc = await build_files(request)
     await _load_scoped(svc, file_id, principal)
     token = svc.signed_token(file_id)
     return {"url": f"/files/signed/{token}", "expires_in": get_settings().SIGNED_URL_TTL_SECONDS}
@@ -247,7 +250,7 @@ async def delete(request: Request, file_id: str, principal: Principal = Depends(
     await request.app.state.auditor.record(
         "file.deleted", actor=principal.subject, tenant=principal.tenant, resource=f"file:{file_id}",
         ip=request.client.host if request.client else "")
-    svc = build_files(request)
+    svc = await build_files(request)
     await _load_scoped(svc, file_id, principal)
     return await svc.delete(file_id)
 
@@ -255,7 +258,7 @@ async def delete(request: Request, file_id: str, principal: Principal = Depends(
 # ── Public: signed URL (no auth — the token IS the grant) ────────────────────
 @public_router.get("/files/signed/{token}")
 async def signed_download(request: Request, token: str):
-    svc = build_files(request)
+    svc = await build_files(request)
     f = await svc.resolve_signed_file(token)
     if f is None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "FORBIDDEN")

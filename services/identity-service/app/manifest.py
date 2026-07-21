@@ -46,7 +46,8 @@ def build_manifest(
         # here so the admin panel can gate its member actions on them — the cap NAMES default to
         # these and are overridable via IDENTITY_MEMBERS_READ_CAP / _WRITE_CAP.
         "capabilities": ["identity.register", "identity.login", "identity.refresh",
-                         "identity.self", "members:read", "members:write"],
+                         "identity.self", "members:read", "members:write",
+                         "platform.secrets", "platform.config"],
         "endpoints": [
             {"path": "/healthz", "tier": "public", "method": "GET"},
             {"path": "/readyz", "tier": "public", "method": "GET"},
@@ -81,6 +82,13 @@ def build_manifest(
             {"path": "/api/v1/auth/person/claim", "tier": "user", "method": "POST"},
             {"path": "/api/v1/auth/person/login", "tier": "user", "method": "POST"},
             {"path": "/api/v1/auth/tenant", "tier": "user", "method": "POST"},
+            # The operator surface: credentials and policy an operator changes after launch.
+            {"path": "/api/v1/operator/secrets", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/operator/secrets", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/operator/secrets/{}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/operator/config", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/operator/config", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/operator/config/{}", "tier": "user", "method": "DELETE"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         "events": {"emitted": [], "consumed": []},
