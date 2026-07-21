@@ -134,6 +134,32 @@ class AuditService:
                     "reason": "final hash does not match the recorded head hash"}
         return {"ok": True, "checked": len(events), "first_bad_seq": None}
 
+    async def verify_all(self) -> dict:
+        """Verify EVERY partition's chain, so a scheduled check can prove the whole log.
+
+        The chain is tamper-evident, but evidence nobody examines proves nothing — a break sits
+        undiscovered until a regulator asks, which is the worst moment to learn the log was edited.
+        `GET /api/v1/audit/verify` can check one partition, but it is user-tier (`platform.audit`),
+        so an internal-token cron cannot call it; and with AUDIT_PARTITION=tenant the chain is
+        per-tenant, so only this service knows the set of partitions to walk. This enumerates them
+        from the tiny _META index (never a scan) and verifies each.
+
+        Returns as soon as it finds a break — the FIRST break is what an operator acts on, and
+        walking the rest wastes time while an alarm is already due. A clean result names how many
+        partitions were checked, so "verified" cannot be confused with "found nothing to verify".
+        """
+        partitions = await self._repo.partitions() or ["global"]
+        checked = 0
+        for partition in partitions:
+            result = await self.verify(partition)
+            checked += 1
+            if not result["ok"]:
+                return {"ok": False, "partitions_checked": checked,
+                        "partitions_total": len(partitions),
+                        "broken_partition": partition, **result}
+        return {"ok": True, "partitions_checked": checked,
+                "partitions_total": len(partitions)}
+
     # ── export ─────────────────────────────────────────────────────────────────
     async def export(self, filters: dict[str, Any], fmt: str | None = None) -> tuple[str, bytes]:
         events = await self.query(filters, self._export_limit)

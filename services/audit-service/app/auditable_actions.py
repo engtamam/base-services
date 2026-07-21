@@ -31,6 +31,14 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "cannot distinguish lawful expiry from someone quietly trimming the evidence",
     },
     {
+        "action": "audit.verified",
+        "source": "system",
+        "critical": True,
+        "why": "the scheduled chain check runs on a timer; a record that it ran — and that the run "
+               "itself is in the chain — is what makes 'we verify continuously' provable rather "
+               "than asserted, and stops a gap in the schedule from passing for a clean log",
+    },
+    {
         # Reading the log is itself an investigative act. "Who looked up this person, and when"
         # is a question that gets asked after a leak, and until now this service — the one whose
         # entire job is answering that question about everyone else — could not answer it about

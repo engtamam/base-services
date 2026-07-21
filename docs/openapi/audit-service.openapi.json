@@ -55,7 +55,13 @@
       "EraseIn": {
         "properties": {
           "subject": {
+            "default": "",
             "title": "Subject",
+            "type": "string"
+          },
+          "subject_ref": {
+            "default": "",
+            "title": "Subject Ref",
             "type": "string"
           },
           "tenant": {
@@ -64,8 +70,7 @@
           }
         },
         "required": [
-          "tenant",
-          "subject"
+          "tenant"
         ],
         "title": "EraseIn",
         "type": "object"
@@ -466,6 +471,58 @@
           }
         },
         "summary": "Enforce Retention",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/audit/verify": {
+      "post": {
+        "description": "Verify EVERY partition's hash chain (a scheduler calls this on a timer).\n\nThe chain is tamper-evident but only proves anything when someone walks it. `/api/v1/audit/\nverify` is user-tier (`platform.audit`), so an internal-token cron cannot reach it, and with\nAUDIT_PARTITION=tenant only this service knows the partitions to check \u2014 so the scheduled\nverification has to live here, behind the internal token, enumerating partitions itself.\n\nFAILS LOUD. A broken chain returns 409, not a 200 with ok:false, so the cronJob's request\nfails, the Job is marked failed, and the alert fires. A silent 200 would make the schedule a\nformality \u2014 the exact \"verifiable but never verified\" gap this closes. The audit record is\nwritten BEFORE the check (write-ahead), because a verification that ran and could not be\nrecorded is one nobody can later prove happened.",
+        "operationId": "verify_all_internal_audit_verify_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Verify All Internal Audit Verify Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Verify All",
         "tags": [
           "internal"
         ]

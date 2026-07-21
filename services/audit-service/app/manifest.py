@@ -61,6 +61,9 @@ def build_manifest(
             {"path": "/api/v1/audit/export", "tier": "user", "method": "GET"},
             {"path": "/api/v1/audit/purge", "tier": "user", "method": "POST"},
             {"path": "/internal/audit/enforce-retention", "tier": "internal", "method": "POST"},
+            # Scheduled chain verification. The user-tier verify is unreachable by an internal-token
+            # cron, so continuous verification lives here — 409 on a break so the Job fails loudly.
+            {"path": "/internal/audit/verify", "tier": "internal", "method": "POST"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         "events": {"emitted": [], "consumed": []},

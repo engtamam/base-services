@@ -101,3 +101,41 @@ def test_purge_all_reanchors():
     assert res["purged"] == 3
     # a purge marker remains and the chain re-anchors -> still verifies
     assert run(svc.verify())["ok"] is True
+
+
+def _tenant_svc():
+    store = MemoryDataStore()
+    svc = AuditService(repo=AuditRepository(store), integrity=HashChainIntegrity(),
+                       exporters={"json": JsonExporter()}, default_format="json",
+                       partition_mode="tenant", query_limit=100)
+    return svc, store
+
+
+def test_verify_all_walks_every_partition():
+    svc, _ = _tenant_svc()
+    run(svc.record(service="s", action="a", actor="x", tenant="acme"))
+    run(svc.record(service="s", action="a", actor="x", tenant="globex"))
+    out = run(svc.verify_all())
+    assert out["ok"] is True
+    assert out["partitions_checked"] == 2 and out["partitions_total"] == 2
+
+
+def test_verify_all_reports_the_broken_partition():
+    svc, store = _tenant_svc()
+    run(svc.record(service="s", action="a", actor="x", tenant="acme"))
+    run(svc.record(service="s", action="a", actor="x", tenant="globex"))
+    # tamper globex's only event
+    repo = AuditRepository(store)
+    rows = run(repo.iterate(svc._partition("globex")))
+    victim = rows[0]
+    victim["actor"] = "tampered"
+    run(store.put("audit_events", victim["id"], victim))
+    out = run(svc.verify_all())
+    assert out["ok"] is False
+    assert out["broken_partition"] == svc._partition("globex")
+
+
+def test_verify_all_on_an_empty_log_is_a_clean_pass():
+    svc, _ = _tenant_svc()
+    out = run(svc.verify_all())
+    assert out["ok"] is True

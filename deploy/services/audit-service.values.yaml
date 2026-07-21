@@ -59,3 +59,10 @@ cronJobs:
   - name: enforce-retention
     schedule: "23 3 * * *"
     path: /internal/audit/enforce-retention
+  # Continuous verification. The chain is tamper-evident, but proves nothing until walked; a break
+  # found only when a regulator asks is found too late. The endpoint returns 409 on a break, and
+  # the cron caller raises on any non-2xx, so a tampered log fails this Job and fires the alert.
+  # Every 6 hours: often enough to catch tampering fast, cheap enough to run whole.
+  - name: verify
+    schedule: "47 */6 * * *"
+    path: /internal/audit/verify

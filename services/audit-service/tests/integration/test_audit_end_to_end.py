@@ -50,10 +50,10 @@ def test_an_emitted_action_is_sealed_into_the_chain(audit_client):
     # failure, so the ingest must always return them.
     assert receipt["hash"] and receipt["seq"] >= 1 and receipt["id"]
 
-    verified = audit_client.get("/internal/audit/verify", headers=_headers())
-    if verified.status_code == 404:                       # verify is exposed on the user tier
-        verified = audit_client.get("/api/v1/audit/verify", headers=_headers())
-    assert verified.status_code in (200, 401, 403)
+    # The scheduled internal verify (POST, internal-token) now exists; a freshly recorded chain
+    # verifies clean, so this is a 200. A broken chain would be 409 — see test_audit_api.
+    verified = audit_client.post("/internal/audit/verify", headers=_headers())
+    assert verified.status_code == 200 and verified.json()["ok"] is True
 
 
 def test_the_chain_holds_what_was_recorded_not_merely_a_valid_chain(audit_client):
