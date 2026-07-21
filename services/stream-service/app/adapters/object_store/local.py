@@ -5,11 +5,12 @@ import asyncio
 import os
 
 from app.adapters.object_store.keys import validate_key
-from app.ports.errors import NotFound
+from app.ports.errors import NotFound, Unsupported
 
 
 class LocalObjectStore:
     driver = "local"
+    supports_presign = False   # a local dir is not a bucket a client could reach
 
     def __init__(self, root: str) -> None:
         self._root = os.path.abspath(root or "./.objectstore")
@@ -48,6 +49,9 @@ class LocalObjectStore:
 
     async def exists(self, key: str) -> bool:
         return await asyncio.to_thread(os.path.isfile, self._path(key))
+
+    async def presign_get(self, key: str, expires_in: int) -> str:
+        raise Unsupported("local object store cannot presign — use an s3 store for segment download")
 
     async def health(self) -> bool:
         return await asyncio.to_thread(os.path.isdir, self._root)

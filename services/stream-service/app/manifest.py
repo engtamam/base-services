@@ -59,6 +59,9 @@ def build_manifest(
             {"path": "/internal/stream/retention", "tier": "internal", "method": "POST"},
             {"path": "/internal/stream/exports/run", "tier": "internal", "method": "POST"},
             {"path": "/internal/stream/sessions/{id}/heartbeat", "tier": "internal", "method": "POST"},
+            # Segment file_ids for a camera+window, so a service that HAS identity (squad) can link
+            # subjects to the footage in file-service. The fallback to stream's own erasure.
+            {"path": "/internal/stream/segments", "tier": "internal", "method": "GET"},
             {"path": "/api/v1/sources", "tier": "user", "method": "POST"},
             {"path": "/api/v1/sources", "tier": "user", "method": "GET"},
             {"path": "/api/v1/sources/{id}", "tier": "user", "method": "GET"},

@@ -1955,6 +1955,98 @@
         ]
       }
     },
+    "/internal/stream/segments": {
+      "get": {
+        "description": "The segment file_ids for footage identified by camera + window.\n\nStream stores footage by CAMERA and TIME, never by person \u2014 it cannot know who is in a frame\nwithout running facial recognition, which would create more biometric data than it answers.\nSo stream's own erasure needs the caller to identify footage by source_id + window (see\n/privacy/erase), and that is the primary path: it deletes the footage outright.\n\nThis is the OTHER path, for the service that DOES have identity (squad, which records who a\ncoach named). Given the same camera + window, it returns each segment's `file_id` in\nfile-service so the caller can attach the subject there via POST /internal/files/{id}/subjects\n\u2014 after which a file-service DSAR for that person reaches the footage through the subject-link.\nEither path erases the video; neither leaves it stranded.\n\n`source_id` is REQUIRED for the same reason erase requires it: returning \"every segment for a\ntenant\" would hand back other people's footage identifiers on an unscoped call. Locked\n(legal-hold) recordings are still listed \u2014 a hold governs deletion, not who may be linked.",
+        "operationId": "list_segments_internal_stream_segments_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Start",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "End",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Segments Internal Stream Segments Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Segments",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/stream/sessions/{session_id}/heartbeat": {
       "post": {
         "description": "Engine \u2192 service: extend the session lease and record stats (fps/bitrate/bytes). The size\nguard is checked here, so a recording that hit its cap stops immediately.",

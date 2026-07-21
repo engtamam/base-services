@@ -70,9 +70,12 @@ def test_file_service_sink_raises_on_upload_failure():
 # ── s3 sink ────────────────────────────────────────────────────────────────────
 class _FakeObjectStore:
     driver = "s3"
+    supports_presign = True
     def __init__(self): self.data = {}
     async def put(self, key, data, content_type=None): self.data[key] = bytes(data)
     async def delete(self, key): return self.data.pop(key, None) is not None
+    async def presign_get(self, key, expires_in):
+        return f"https://bucket.example/{key}?X-Expires={expires_in}"
 
 
 def test_s3_sink_stores_by_key_and_deletes():
@@ -83,3 +86,25 @@ def test_s3_sink_stores_by_key_and_deletes():
     assert ref.ref == "rec/t1/sess/00000005.mp4"
     assert store.data[ref.ref] == b"video"
     assert run(sink.delete(ref.ref)) is True and ref.ref not in store.data
+
+
+def test_s3_sink_signed_url_presigns_through_the_store():
+    # THE FIX. This used to raise NotImplementedError, so an s3-sink deployment could store and
+    # erase footage but never EXPORT it — export needs a download URL per segment.
+    store = _FakeObjectStore()
+    sink = S3RecordingSink(store)
+    url = run(sink.signed_url("rec/t1/sess/00000000.mp4", ttl=300))
+    assert url == "https://bucket.example/rec/t1/sess/00000000.mp4?X-Expires=300"
+
+
+def test_s3_sink_signed_url_on_a_store_that_cannot_presign_is_honest():
+    from app.ports.errors import Unsupported
+
+    class _NoPresign(_FakeObjectStore):
+        supports_presign = False
+        async def presign_get(self, key, expires_in):
+            raise Unsupported("cannot presign")
+
+    sink = S3RecordingSink(_NoPresign())
+    with pytest.raises(Unsupported):
+        run(sink.signed_url("k", ttl=60))

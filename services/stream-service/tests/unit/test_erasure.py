@@ -35,22 +35,30 @@ class _Store:
         self.data[collection] = [r for r in self.data[collection] if r["id"] != key]
 
 
-class _Objects:
+class _Sink:
+    """A recording sink: it deletes by the `ref` it handed back from put_segment. This is where a
+    segment's bytes actually live — and the store erasure MUST delete through. The old fake here
+    was an ObjectStore, and the recordings it was handed carried a `key` field no real segment
+    has, so the test deleted through the wrong store by the wrong name and still went green while
+    production deleted nothing."""
+
     def __init__(self):
         self.deleted = []
 
-    async def delete(self, key):
-        self.deleted.append(key)
+    async def delete(self, ref):
+        self.deleted.append(ref)
+        return True
 
 
 def _rec(id, started, ended, locked=False, source="cam1", segs=("seg1",)):
+    # Segments are keyed `ref` — what SegmentRef carries and what export reads. Not `key`.
     return {"id": id, "tenant": "acme", "source_id": source, "session_id": "s1",
             "started": started, "ended": ended, "locked": locked,
-            "segments": [{"key": s} for s in segs]}
+            "segments": [{"ref": s} for s in segs]}
 
 
-def _mk(store, objects=None):
-    return StreamErasure(store=store, pii_salt=_SALT, object_store=objects)
+def _mk(store, sink=None):
+    return StreamErasure(store=store, pii_salt=_SALT, sink=sink)
 
 
 # ── without identification ────────────────────────────────────────────────────
@@ -81,10 +89,10 @@ def test_identified_footage_is_deleted_with_its_segments():
     # The row is an index; the FOOTAGE is the personal data. Deleting only the row would leave the
     # video on disk and report success.
     store = _Store([_rec("r1", "2026-01-01T10:00", "2026-01-01T11:00", segs=("a", "b"))])
-    objects = _Objects()
-    out = run(_mk(store, objects).erase("acme", "u@example.com", source_id="cam1"))
+    sink = _Sink()
+    out = run(_mk(store, sink).erase("acme", "u@example.com", source_id="cam1"))
     assert store.deleted == [("recordings", "r1")]
-    assert objects.deleted == ["a", "b"]
+    assert sink.deleted == ["a", "b"], "the FOOTAGE must be deleted, not just the index row"
     assert out["erased"] == ["recordings:1"]
 
 
@@ -129,10 +137,10 @@ def test_exports_of_the_footage_go_too():
     store = _Store(exports=[{"id": "e1", "tenant": "acme", "source_id": "cam1",
                              "start": "2026-01-01T10:00", "end": "2026-01-01T11:00",
                              "file_id": "blob1"}])
-    objects = _Objects()
-    out = run(_mk(store, objects).erase("acme", "u@example.com", source_id="cam1"))
+    sink = _Sink()
+    out = run(_mk(store, sink).erase("acme", "u@example.com", source_id="cam1"))
     assert ("exports", "e1") in store.deleted
-    assert objects.deleted == ["blob1"]
+    assert sink.deleted == ["blob1"], "the export clip lives in the sink too"
     assert "exports:1" in out["erased"]
 
 

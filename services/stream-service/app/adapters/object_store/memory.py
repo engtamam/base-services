@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 from app.adapters.object_store.keys import validate_key
-from app.ports.errors import NotFound
+from app.ports.errors import Unsupported, NotFound
 
 
 class MemoryObjectStore:
     driver = "memory"
+    supports_presign = False   # no bucket URL a client could resolve
 
     def __init__(self) -> None:
         self._data: dict[str, bytes] = {}
@@ -25,6 +26,9 @@ class MemoryObjectStore:
 
     async def exists(self, key: str) -> bool:
         return validate_key(key) in self._data
+
+    async def presign_get(self, key: str, expires_in: int) -> str:
+        raise Unsupported("memory object store cannot presign — use an s3 store for segment download")
 
     async def health(self) -> bool:
         return True
