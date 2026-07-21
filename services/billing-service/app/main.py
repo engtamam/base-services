@@ -38,6 +38,14 @@ from app.security.cwe_guard import CweGuard
 from app.security.step_map import load_step_map
 
 
+async def _wallet_token(app) -> str:
+    """The current wallet credential, honouring an operator rotation."""
+    resolver = getattr(app.state, "credentials", None)
+    if resolver is None:
+        return get_settings().WALLET_SERVICE_TOKEN
+    return (await resolver.resolve(""))["WALLET_SERVICE_TOKEN"]
+
+
 def create_app() -> FastAPI:
     # Fail-fast: this raises (and aborts startup) if the environment is invalid.
     settings = get_settings()
@@ -103,6 +111,11 @@ def create_app() -> FastAPI:
     app.state.secret_store = secret_store
     app.state.runtime_config = RuntimeConfig(
         container.datastore, Settings, policy=RUNTIME_POLICY)
+    # The wallet the grant outbox delivers through. Its token is an operator-managed credential,
+    # so it is resolved per call rather than captured — a rotation must not require a redeploy.
+    from app.container import build_wallet
+    app.state.wallet = build_wallet(
+        settings, lambda: _wallet_token(app))
     app.state.credentials = CredentialResolver(
         settings, secret_store, ttl_s=settings.PROVIDER_REFRESH_SECONDS)
     # Validated at boot: a malformed declaration stops the service rather than

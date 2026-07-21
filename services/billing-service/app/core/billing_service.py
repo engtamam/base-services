@@ -39,7 +39,7 @@ class BillingService:
                  ledger: LedgerStore, idempo: IdempotencyStore,
                  gateway, tax, einvoicer, pdf, config: dict[str, Any], cache=None,
                  settlements: SettlementStore | None = None, clock=now_ts,
-                 emitter=None) -> None:
+                 emitter=None, grants=None) -> None:
         self._plans, self._coupons, self._subs = plans, coupons, subs
         self._invoices, self._payments, self._usage = invoices, payments, usage
         self._ledger, self._idempo = ledger, idempo
@@ -52,6 +52,9 @@ class BillingService:
         # None means nothing is wired and emitting is a no-op — this service records money
         # correctly with or without anyone listening.
         self._events = emitter
+        # The durable path from "they paid" to "they got what they paid for". None means no wallet
+        # is wired and nothing is recorded — see core/grants.py for why this is not an event.
+        self._grants = grants
         # The union resolver. Config is passed WHOLE and required — see EntitlementResolver's
         # REQUIRED_CFG: a missing key fails at construction rather than silently resolving a
         # tenant against a default nobody chose.
@@ -122,8 +125,48 @@ class BillingService:
                                              features=features or [], limits=limits or {},
                                              trial_days=trial_days))
 
-    async def list_plans(self) -> list[dict]:
-        return await self._plans.all(self._cfg["list_limit"])
+    async def update_plan(self, plan_id: str, **changes) -> Plan:
+        """Correct a live plan: price, limits, features, name, availability.
+
+        EXISTING SUBSCRIBERS ARE NOT REPRICED. They keep the price and limits snapshotted at
+        signup — silently changing what someone already agreed to pay is the failure customers
+        escalate rather than report, and it is the reason `GRANDFATHER` defaults to on. A platform
+        that genuinely wants the live rate turns it off; a tenant is moved deliberately through
+        migrate_terms(). Both are choices an adopter makes, not a behaviour baked in here.
+        """
+        plan = await self._plans.fetch(plan_id)
+        if plan is None:
+            raise ValueError("PLAN_NOT_FOUND")
+        allowed = ("name", "prices", "features", "limits", "trial_days", "active", "listed")
+        for key, value in changes.items():
+            if key not in allowed:
+                # An unknown field silently ignored is how an operator comes to believe they
+                # changed something they did not.
+                raise ValueError(f"PLAN_FIELD_NOT_EDITABLE:{key}")
+            if value is not None:
+                setattr(plan, key, value)
+        if not plan.prices:
+            # A plan with no price bills zero for ever, and the cycle would keep running.
+            raise ValueError("PLAN_NEEDS_A_PRICE")
+        # create() is an upsert and bumps the catalogue generation, which is what invalidates the
+        # cached limits for every non-grandfathered tenant on the very next request.
+        return await self._plans.create(plan)
+
+    async def set_plan_availability(self, plan_id: str, *, active: bool | None = None,
+                                    listed: bool | None = None) -> Plan:
+        """Retire a plan, or hide it, without touching anyone already on it."""
+        changes = {}
+        if active is not None:
+            changes["active"] = active
+        if listed is not None:
+            changes["listed"] = listed
+        return await self.update_plan(plan_id, **changes)
+
+    async def list_plans(self, *, include_hidden: bool = False) -> list[dict]:
+        rows = await self._plans.all(self._cfg["list_limit"])
+        if include_hidden:
+            return rows          # the operator view: everything, including retired plans
+        return [r for r in rows if r.get("listed", True) and r.get("active", True)]
 
     async def upsert_coupon(self, **kw) -> Coupon:
         return await self._coupons.upsert(Coupon(**kw))
@@ -150,6 +193,11 @@ class BillingService:
         plan = await self._plans.fetch(plan_id)
         if plan is None:
             raise ValueError("PLAN_NOT_FOUND")
+        if not plan.active:
+            # Enforced HERE, at the only place a subscription is created. The flag existed on the
+            # model and nothing read it, so "retired" was a label an operator could set and the
+            # service would keep selling the plan regardless.
+            raise ValueError("PLAN_NOT_AVAILABLE")
         now = now_ts()
         trial_days = plan.trial_days or self._cfg["trial_days"]
         coupon = await self._coupons.fetch(coupon_code) if coupon_code else None
@@ -310,9 +358,16 @@ class BillingService:
         lines = [{"description": (plan.name if plan else "Subscription"),
                   "quantity": sub.quantity, "unit_minor": price.get("amount_minor", 0),
                   "amount_minor": taxable}]
+        # Captured from the plan AS SOLD, onto the invoice. Recomputing this later from the live
+        # plan would mean a repriced plan silently changes what an old invoice granted.
+        granted = int((plan.limits or {}).get(self._cfg["plan_credit_limit_key"], 0) or 0) if plan else 0
         inv = Invoice(id=new_id("inv_"), tenant=sub.tenant, number=await self._invoices.next_number(sub.tenant),
                       subscription_id=sub.id, lines=lines, subtotal_minor=taxable, discount_minor=discount,
-                      tax_minor=tax, total_minor=total, currency=currency, status="open", created=iso())
+                      tax_minor=tax, total_minor=total, currency=currency, status="open", created=iso(),
+                      # period_end travels WITH the invoice so a `reset` grant expires at the end
+                      # of the period it was sold for, even if delivery is retried days later.
+                      meta={"grant_minor": granted,
+                            "period_end": sub.current_period_end} if granted > 0 else {})
         await self._invoices.save(inv)
         sub.current_period_start = sub.current_period_end
         sub.current_period_end += _INTERVAL.get(sub.interval, _INTERVAL["month"])
@@ -436,6 +491,22 @@ class BillingService:
         #
         # AFTER the ledger, never before: the event says the payment is recorded, and a consumer
         # that reads back on receipt must not find a row that is not there yet.
+        # The grant is written down BEFORE the event, and both come after the ledger. The order is
+        # deliberate: the durable promise must exist before anything announces the payment, or a
+        # consumer can act on a credit that nothing is committed to delivering.
+        if self._grants is not None:
+            grantable = int((inv.meta or {}).get("grant_minor", 0) or 0)
+            if grantable > 0:
+                # `reset` means a plan's monthly allowance does not roll over, expressed as an
+                # EXPIRY on the grant rather than by zeroing the balance first. Zeroing would also
+                # destroy credits the customer bought separately — which they paid for and which
+                # have nothing to do with the plan's allowance.
+                expires = None
+                if self._cfg["plan_credit_grant_mode"] == "reset":
+                    expires = float((inv.meta or {}).get("period_end", 0) or 0) or None
+                await self._grants.record(
+                    tenant=inv.tenant, invoice_id=inv.id, fund=self._cfg["grant_fund"],
+                    amount_minor=grantable, reason=f"invoice:{inv.number}", expires_at=expires)
         if self._events is not None:
             payload = _events.payment_payload(inv, source=source or inv.number)
             await self._events.emit(_events.INVOICE_PAID, payload)

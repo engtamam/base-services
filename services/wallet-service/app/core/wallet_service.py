@@ -29,7 +29,9 @@ import asyncio
 import random
 from typing import Any
 
+from app.core import events as _events
 from app.core import funds as _funds
+from app.core.events import Emitter
 from app.core.models import (CLAWBACK, CREDIT, HOLD_ACTIVE, HOLD_CONFIRMED, HOLD_EXPIRED,
                              HOLD_RELEASED, REFUND, SPEND, Grant, Hold, LedgerEntry, Wallet,
                              new_id)
@@ -40,7 +42,14 @@ _LEDGER = "ledger"
 _HOLDS = "holds"
 _GRANTS = "grants"
 _IDEMPO = "wallet_idempo"
+_ALERTS = "wallet_alerts"    # the low-balance armed/triggered state, ONE keyed row per tenant
 _SWEEP_PAGE = 500        # the sweepers page; they never read a collection whole
+
+# The two low-balance modes. `crossing` warns ONCE, on the mutation that takes the balance under
+# the threshold, and re-arms only after it recovers — an alert that fires every spend is noise, and
+# noise gets muted. `every_spend` is the running nag some platforms genuinely want.
+LOW_CROSSING = "crossing"
+LOW_EVERY_SPEND = "every_spend"
 
 
 class WalletError(Exception):
@@ -65,6 +74,18 @@ class WalletService:
         self._names = {f.name for f in self._funds}
         self._vat_bp = int(config["vat_bp"])
         self._currency = config["currency"]
+        self._events = Emitter(
+            event_bus,
+            fail_closed=str(config.get("event_publish_failure", _events.FAIL_OPEN))
+            == _events.FAIL_CLOSED,
+            clock=clock)
+        # 0 disables the warning entirely: a general platform opts IN to telling its customers
+        # anything, and a threshold guessed on their behalf is a wrong threshold for someone.
+        self._low_threshold = int(config.get("low_balance_threshold", 0) or 0)
+        self._low_mode = str(config.get("low_balance_mode", LOW_CROSSING) or LOW_CROSSING)
+        # Empty = the whole balance. A platform with a promo fund and a cash fund usually cares
+        # about the fund that pays the bills, not the gift that will expire anyway.
+        self._low_fund = str(config.get("low_balance_fund", "") or "")
 
     # ── wallet row ──────────────────────────────────────────────────────────────
     async def _wallet(self, tenant: str) -> Wallet:
@@ -151,7 +172,10 @@ class WalletService:
         avail = _funds.available(w.funds, w.held)
         return {"tenant": tenant, "currency": self._currency, "funds": w.funds,
                 "held": w.held, "available": avail, "balance": _funds.total(w.funds),
-                "available_total": _funds.total(avail)}
+                "available_total": _funds.total(avail),
+                # READABLE, not only emitted. The bus is at-most-once with no replay, so a consumer
+                # that missed `wallet.balance_low` would otherwise never learn it — for ever.
+                **self.low_balance_state(w.funds)}
 
     async def ledger(self, tenant: str, limit: int = 100, before_seq: int | None = None) -> list[dict]:
         """Bounded. A statement endpoint that returns the whole ledger is a denial of service."""
@@ -222,7 +246,9 @@ class WalletService:
 
         result = {"credited": int(amount), "fund": fund, **out}
         await self._remember(tenant, CREDIT, source, result)
-        await self._emit("wallet.credited", {"tenant": tenant, "fund": fund, "amount": int(amount)})
+        await self._emit(_events.WALLET_CREDITED,
+                         {"tenant": tenant, "fund": fund, "amount": int(amount)})
+        await self._check_low_balance(tenant, out["funds"], debit=False)
         return result
 
     # ── spend ───────────────────────────────────────────────────────────────────
@@ -243,8 +269,10 @@ class WalletService:
                                  entry=entry)
         result = {"spent": sum(plan.applied.values()), "plan": plan.to_dict(), **out}
         await self._remember(tenant, SPEND, source, result)
-        await self._emit("wallet.spent", {"tenant": tenant, "net": plan.net, "vat": plan.vat,
-                                          "currency": self._currency, "source": source})
+        await self._emit(_events.WALLET_SPENT,
+                         {"tenant": tenant, "net": plan.net, "vat": plan.vat,
+                          "currency": self._currency, "source": source})
+        await self._check_low_balance(tenant, out["funds"], debit=True)
         return result
 
     # ── holds ───────────────────────────────────────────────────────────────────
@@ -303,9 +331,11 @@ class WalletService:
                                  entry=entry)
         hold.state = HOLD_CONFIRMED
         await self._store.put(_HOLDS, hold.id, hold.to_dict())
-        await self._emit("wallet.spent", {"tenant": hold.tenant, "net": hold.plan.get("net", 0),
-                                          "vat": hold.plan.get("vat", 0),
-                                          "currency": self._currency, "source": hold.source})
+        await self._emit(_events.WALLET_SPENT,
+                         {"tenant": hold.tenant, "net": hold.plan.get("net", 0),
+                          "vat": hold.plan.get("vat", 0),
+                          "currency": self._currency, "source": hold.source})
+        await self._check_low_balance(hold.tenant, out["funds"], debit=True)
         return {"hold_id": hold.id, "state": HOLD_CONFIRMED, **out}
 
     async def release(self, *, hold_id: str) -> dict[str, Any]:
@@ -345,6 +375,9 @@ class WalletService:
         out = await self._mutate(tenant, funds_delta=applied, entry=entry)
         result = {"refunded": sum(applied.values()), "applied": applied, **out}
         await self._remember(tenant, REFUND, source, result)
+        # A refund can lift a wallet back over the line, and a customer never told they recovered
+        # is one whose alerting is stuck low for ever.
+        await self._check_low_balance(tenant, out["funds"], debit=False)
         return result
 
     # ── sweepers (cron, not the hot path - but still not a full-table read) ─────
@@ -410,8 +443,11 @@ class WalletService:
             if remaining > 0:
                 entry = self._entry(grant.tenant, CLAWBACK, {grant.fund: remaining}, -1,
                                     source=f"clawback:{grant.id}", reason="grant expired")
-                await self._mutate(grant.tenant, funds_delta={grant.fund: -remaining}, entry=entry)
+                out = await self._mutate(grant.tenant, funds_delta={grant.fund: -remaining},
+                                         entry=entry)
                 clawed += remaining
+                # An expiring grant is the commonest way a balance falls without anyone spending.
+                await self._check_low_balance(grant.tenant, out["funds"], debit=True)
             grant.state = "expired"
             grant.swept = remaining
             await self._store.put(_GRANTS, grant.id, grant.to_dict())
@@ -420,13 +456,79 @@ class WalletService:
 
     # ── events (optional consumer) ──────────────────────────────────────────────
     async def _emit(self, topic: str, payload: dict) -> None:
-        """billing-service invoices these IF it is listening. The wallet works standalone."""
-        if self._bus is None:
+        """billing-service invoices these IF it is listening. The wallet works standalone.
+
+        Published as an `Event`, never a raw dict: the port and every adapter type it that way, and
+        a dict raises inside the subscriber's handler where the bus swallows it — the publisher
+        looks successful and the consumer never acts.
+        """
+        await self._events.emit(topic, payload)
+
+    # ── low balance: warn BEFORE the money runs out ─────────────────────────────
+    def _measured(self, funds: dict[str, int]) -> int:
+        """What the threshold is compared against: one fund, or the whole balance."""
+        return int(funds.get(self._low_fund, 0)) if self._low_fund else _funds.total(funds)
+
+    def low_balance_state(self, funds: dict[str, int]) -> dict[str, Any]:
+        """The low-balance facts, derived from the CURRENT balance, for the balance read.
+
+        Derived and not read from the stored alert row on purpose. Events may be lost — the bus is
+        at-most-once with no replay — so a consumer must be able to LEARN the fact rather than only
+        be told it once. A read recomputed from the balance is self-healing; it is right even if
+        every event this wallet ever published was dropped, and right immediately after an operator
+        changes the threshold.
+        """
+        if self._low_threshold <= 0:
+            return {"low_balance": False, "low_balance_threshold": 0, "low_balance_fund": ""}
+        return {"low_balance": self._measured(funds) < self._low_threshold,
+                "low_balance_threshold": self._low_threshold,
+                "low_balance_fund": self._low_fund}
+
+    async def _check_low_balance(self, tenant: str, funds: dict[str, int], *,
+                                 debit: bool) -> None:
+        """Emit the warning on the CROSSING, and re-arm on recovery.
+
+        The armed/triggered flag is PERSISTED in a tenant-keyed row, never held in memory: in
+        process memory every replica warns separately about the same crossing, and a restart re-arms
+        everything so the next spend warns all over again — which is exactly the noise the crossing
+        rule exists to prevent.
+
+        Never raises. A warning is a courtesy; failing a spend that already succeeded because the
+        alert bookkeeping had a bad day would be strictly worse than not warning.
+        """
+        if self._low_threshold <= 0:      # opted out: no state written, no event, nothing to mute
             return
         try:
-            await self._bus.publish(topic, payload)
-        except Exception:      # noqa: BLE001 — a bus outage must never lose a customer's money
+            low = self._measured(funds) < self._low_threshold
+            row = await self._store.get(_ALERTS, tenant) or {}
+            # A threshold changed under a live wallet describes a DIFFERENT question, so the old
+            # answer is not evidence about the new one. Re-arm: a customer already below the
+            # operator's new line is warned once, rather than silently never — the operator just
+            # declared this balance low and expects to hear about it.
+            was_low = bool(row.get("low")) and int(row.get("threshold", 0)) == self._low_threshold
+
+            if low == was_low and not (low and self._low_mode == LOW_EVERY_SPEND and debit):
+                return
+            if low != was_low:
+                # Win the write before emitting. Two concurrent spends both crossing would
+                # otherwise both warn; the loser of the CAS sees the winner already recorded it.
+                nxt = {"tenant": tenant, "low": low, "threshold": self._low_threshold,
+                       "version": int(row.get("version", 0))}
+                if not await self._store.cas(_ALERTS, tenant, int(row.get("version", 0)), nxt):
+                    return
+            if low:
+                await self._emit(_events.BALANCE_LOW, self._low_payload(tenant, funds))
+            else:
+                await self._emit(_events.BALANCE_RECOVERED, self._low_payload(tenant, funds))
+        except Exception:      # noqa: BLE001 — see the docstring: never break the money movement
             pass
+
+    def _low_payload(self, tenant: str, funds: dict[str, int]) -> dict[str, Any]:
+        """No person, no reason text: a payload lands in every subscriber's store, and the tenant
+        is enough to look up anything more from a service that is allowed to hold it."""
+        return {"tenant": tenant, "balance": self._measured(funds),
+                "threshold": self._low_threshold, "fund": self._low_fund,
+                "currency": self._currency}
 
 
 __all__ = ["WalletService", "WalletError", "Conflict", "MoneyError"]

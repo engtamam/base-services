@@ -196,5 +196,8 @@ def test_manifest_advertises_the_optional_events(client):
     m = client.get("/internal/manifest", headers=IT).json()
     assert set(m["capabilities"]) == {"platform.wallet", "wallet.manage", "wallet.read"}
     # billing invoices these IF it listens; the wallet works standalone.
-    assert set(m["events"]["emitted"]) == {"wallet.credited", "wallet.spent"}
+    from app.core.events import EMITTED
+    # The manifest is the ONLY place a consumer can discover these; it must equal what the code
+    # declares, or an event fires that nobody can subscribe to.
+    assert set(m["events"]["emitted"]) == set(EMITTED)
     assert {"port": "clock", "driver": "system"} in m["ports"]

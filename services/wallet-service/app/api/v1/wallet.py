@@ -29,7 +29,11 @@ def wallet_config() -> dict[str, Any]:
             "grant_sweep_limit": s.GRANT_SWEEP_LIMIT,
             "idempotency_ttl": s.WALLET_IDEMPOTENCY_TTL_SECONDS,
             "ledger_list_limit": s.LEDGER_LIST_LIMIT, "cas_max_retries": s.CAS_MAX_RETRIES,
-            "cas_backoff_ms": s.CAS_BACKOFF_MS}
+            "cas_backoff_ms": s.CAS_BACKOFF_MS,
+            "low_balance_threshold": s.WALLET_LOW_BALANCE_THRESHOLD,
+            "low_balance_mode": s.WALLET_LOW_BALANCE_MODE,
+            "low_balance_fund": s.WALLET_LOW_BALANCE_FUND,
+            "event_publish_failure": s.EVENT_PUBLISH_FAILURE}
 
 
 def build_wallet(request: Request) -> WalletService:

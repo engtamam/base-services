@@ -105,5 +105,22 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "why": "policy changes explain later behaviour — why a sweep deleted more, why a limit "
                "started refusing — and that history is unavailable anywhere else. Not critical: "
                "refusing to change a retention period because the log is down protects nothing",
+    },
+    {
+        "action": "plan.updated",
+        "source": "admin",
+        "critical": True,
+        "resource": "plan",
+        "why": "a plan is the terms money is taken on. An unattributable price change is "
+               "indistinguishable from an attacker's, and the previous price is overwritten by "
+               "the change itself — so without this nobody can reconstruct what was agreed",
+    },
+    {
+        "action": "plan.availability_changed",
+        "source": "admin",
+        "critical": True,
+        "resource": "plan",
+        "why": "retiring a plan stops all new revenue on it; doing that by accident is a silent "
+               "outage of the signup funnel that nothing else would surface",
     }
 ]

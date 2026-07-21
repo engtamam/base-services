@@ -194,6 +194,15 @@ class InvoiceStore(_Repo):
         await self.put(inv.id, inv.to_dict())
         return inv
 
+    async def find_paid(self, *, limit: int = 200) -> tuple[list[dict], str]:
+        """Paid invoices, for the grant reconciliation sweep.
+
+        A FILTERED find, never a scan: this runs on a schedule against every tenant's invoice
+        history, and a full-collection read there grows without bound as the platform succeeds.
+        """
+        return await self._store.find(self.collection, {"status": "paid"}, limit=limit,
+                                      sort=("paid_at", "asc"))
+
     async def fetch(self, invoice_id: str) -> Invoice | None:
         r = await self.get(invoice_id)
         return Invoice.from_dict(r) if r else None

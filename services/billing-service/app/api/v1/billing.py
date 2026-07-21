@@ -9,11 +9,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from starlette.responses import Response
 
-from app.api.auth import Principal
+from app.api.auth import Principal, require_user
 from app.api.authz import require_any_capability
 from app.config import get_settings
 from app.core import settlement as _stl
 from app.core.events import Emitter
+from app.core.grants import GrantOutbox
 from app.core.billing_service import BillingService
 from app.core.stores import (CouponStore, IdempotencyStore, InvoiceStore, LedgerStore,
                              PaymentStore, PlanStore, SettlementStore, SubscriptionStore,
@@ -24,6 +25,23 @@ router = APIRouter(prefix="/api/v1/billing", tags=["billing"])
 
 _ADMIN = require_any_capability("platform.billing", "billing.manage")
 _SELF = require_any_capability("billing.self", "billing.manage", "platform.billing")
+
+
+def build_grants(request: Request, s) -> GrantOutbox:
+    """The grant outbox for this request.
+
+    Always built, even with the null driver: the promise is recorded whether or not anything can
+    deliver it yet, so turning a wallet on later delivers everything that accumulated rather than
+    starting from empty.
+    """
+    from app.core.models import iso, now_ts
+    return GrantOutbox(
+        request.app.state.container.datastore,
+        getattr(request.app.state, "wallet", None),
+        clock=now_ts, iso=iso,
+        cfg={"grant_fund": s.WALLET_GRANT_FUND,
+             "grant_retry_base_seconds": s.GRANT_RETRY_BASE_SECONDS,
+             "grant_retry_max_seconds": s.GRANT_RETRY_MAX_SECONDS})
 
 
 async def build_billing(request: Request, tenant: str = "") -> BillingService:
@@ -50,12 +68,16 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
         idempo=IdempotencyStore(c.datastore),
         emitter=Emitter(c.event_bus,
                         fail_closed=s.EVENT_PUBLISH_FAILURE == "fail_closed"),
+        grants=build_grants(request, s),
         gateway=gateway, tax=c.tax_calculator, einvoicer=c.einvoicer, pdf=c.pdf_renderer,
         cache=c.cache, settlements=SettlementStore(c.datastore),
         config={"currency": s.CURRENCY, "trial_days": s.TRIAL_DAYS, "vat_rate": s.VAT_RATE,
                 "reverse_charge": s.REVERSE_CHARGE_B2B, "grandfather": s.GRANDFATHER,
                 "dunning_base_hours": s.DUNNING_RETRY_BASE_HOURS, "dunning_max_attempts": s.DUNNING_MAX_ATTEMPTS,
                 "grace_days": s.GRACE_DAYS, "list_limit": s.BILLING_LIST_LIMIT,
+                "grant_fund": s.WALLET_GRANT_FUND,
+                "plan_credit_limit_key": s.PLAN_CREDIT_LIMIT_KEY,
+                "plan_credit_grant_mode": s.PLAN_CREDIT_GRANT_MODE,
                 # Entitlement resolution (Phase 42). Required by EntitlementResolver —
                 # every default lives in config.py, never inline at a call site.
                 "billable_statuses": s.billable_statuses,
@@ -100,6 +122,22 @@ class PlanIn(BaseModel):
     trial_days: int = 0
 
 
+class PlanUpdateIn(BaseModel):
+    """Every field optional: an operator correcting a price must not have to resend the limits and
+    risk clobbering them with whatever the form happened to hold."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    prices: list[dict[str, Any]] | None = Field(default=None, min_length=1)
+    features: list[str] | None = None
+    limits: dict[str, Any] | None = None
+    trial_days: int | None = Field(default=None, ge=0)
+
+
+class PlanAvailabilityIn(BaseModel):
+    active: bool | None = None      # False: nobody NEW may subscribe; existing subs are untouched
+    listed: bool | None = None      # False: hidden from the plan list, still subscribable
+
+
 class CouponIn(BaseModel):
     code: str = Field(min_length=1, max_length=64)
     type: str = Field(default="percent", pattern="^(percent|fixed|trial)$")
@@ -139,8 +177,45 @@ async def create_plan(request: Request, body: PlanIn) -> dict:
 
 
 @router.get("/plans", dependencies=[Depends(_SELF)])
-async def list_plans(request: Request) -> dict:
-    return {"plans": await (await build_billing(request)).list_plans()}
+async def list_plans(request: Request, include_hidden: bool = False,
+                     principal: Principal = Depends(require_user)) -> dict:
+    # `include_hidden` is an ADMIN view. Honouring it for any caller would turn the public plan
+    # list into a way to enumerate retired and unlisted pricing.
+    if include_hidden:
+        await _ADMIN(principal)
+    return {"plans": await (await build_billing(request)).list_plans(include_hidden=include_hidden)}
+
+
+@router.patch("/plans/{plan_id}", dependencies=[Depends(_ADMIN)])
+async def update_plan(request: Request, plan_id: str, body: PlanUpdateIn,
+                      principal: Principal = Depends(require_user)) -> dict:
+    """Correct a live plan. Existing subscribers keep the terms they were sold."""
+    await request.app.state.auditor.record(
+        "plan.updated", actor=principal.subject, tenant=principal.tenant,
+        resource=f"plan:{plan_id}", ip=request.client.host if request.client else "",
+        metadata={"fields": sorted(k for k, v in body.model_dump().items() if v is not None)})
+    try:
+        plan = await (await build_billing(request)).update_plan(
+            plan_id, **{k: v for k, v in body.model_dump().items() if v is not None})
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return plan.to_dict()
+
+
+@router.post("/plans/{plan_id}/availability", dependencies=[Depends(_ADMIN)])
+async def plan_availability(request: Request, plan_id: str, body: PlanAvailabilityIn,
+                            principal: Principal = Depends(require_user)) -> dict:
+    """Retire or hide a plan. Nobody already on it is affected."""
+    await request.app.state.auditor.record(
+        "plan.availability_changed", actor=principal.subject, tenant=principal.tenant,
+        resource=f"plan:{plan_id}", ip=request.client.host if request.client else "",
+        metadata={"active": body.active, "listed": body.listed})
+    try:
+        plan = await (await build_billing(request)).set_plan_availability(
+            plan_id, active=body.active, listed=body.listed)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return plan.to_dict()
 
 
 @router.post("/coupons", status_code=201, dependencies=[Depends(_ADMIN)])

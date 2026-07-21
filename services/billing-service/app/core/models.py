@@ -41,7 +41,13 @@ class Plan:
     features: list[str] = field(default_factory=list)
     limits: dict[str, Any] = field(default_factory=dict)
     trial_days: int = 0
+    # Two separate switches, because "stop selling this" and "hide this" are different decisions.
+    # active=False   nobody new may subscribe. Existing subscribers are UNAFFECTED — they bought
+    #                terms, and retiring a plan is not a reason to stop honouring them.
+    # listed=False   hidden from the public plan list but still subscribable, which is how a
+    #                legacy or negotiated plan keeps working without being on the pricing page.
     active: bool = True
+    listed: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -120,6 +126,11 @@ class Invoice:
     settled_minor: int = 0
     credit_note: bool = False
     einvoice: dict[str, Any] = field(default_factory=dict)
+    # What this invoice entitles the buyer to beyond the money itself — currently `grant_minor`,
+    # the wallet credits the plan included. Recorded ON THE INVOICE at the moment it is raised, so
+    # a plan repriced afterwards cannot change what an already-sold invoice grants, and so a
+    # reconciliation sweep can rebuild a lost grant from the invoice alone.
+    meta: dict[str, Any] = field(default_factory=dict)
     created: str = ""
     paid_at: str = ""
 

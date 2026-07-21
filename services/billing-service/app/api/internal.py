@@ -163,3 +163,28 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     eraser = BillingErasure(store=c.datastore, pii_salt=s.PII_SALT,
                             retention_years=s.INVOICE_RETENTION_YEARS)
     return await eraser.erase(body.tenant, body.subject)
+
+@router.post("/billing/grants/drain", dependencies=[Depends(require_internal_token)])
+async def drain_grants(request: Request, settings: Settings = Depends(get_settings)) -> dict:
+    """Deliver every credit grant that is due.
+
+    Driven by the platform's scheduler rather than a thread in here, so a restart cannot lose the
+    only thing that was retrying, and so an operator can see the schedule.
+    """
+    from app.api.v1.billing import build_grants
+    return await build_grants(request, settings).drain(limit=settings.GRANT_DRAIN_LIMIT)
+
+
+@router.post("/billing/grants/reconcile", dependencies=[Depends(require_internal_token)])
+async def reconcile_grants(request: Request, settings: Settings = Depends(get_settings)) -> dict:
+    """Rebuild grant rows for paid invoices that never got one.
+
+    This is what makes the path survivable. If the process died between recording the payment and
+    recording the grant, the outbox has no idea anything was owed — but the paid invoice is still
+    there, and it is the durable fact. A read is self-healing; a missed step is wrong for ever.
+    """
+    from app.api.v1.billing import build_grants
+    from app.core.stores import InvoiceStore
+    return await build_grants(request, settings).reconcile(
+        invoices=InvoiceStore(request.app.state.container.datastore),
+        limit=settings.GRANT_RECONCILE_LIMIT)

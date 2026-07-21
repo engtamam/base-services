@@ -317,6 +317,27 @@ class Settings(BaseSettings):
     # API: a key that protects the secrets and is itself editable in the UI protects nothing from
     # someone who has the UI. Empty means the operator surface refuses rather than storing in the
     # clear.
+    # ── wallet grants: the durable path from "they paid" to "they got it" ─────
+    # OFF by default. An adopter who does not run wallet-service must not acquire a background
+    # task that fails for ever against a service they never deployed. Recording still happens when
+    # this is off, so switching it on later delivers everything that accumulated.
+    WALLET_DRIVER: str = "null"                  # null | http
+    WALLET_SERVICE_URL: str = ""                 # host must be in EGRESS_ALLOWED_HOSTS
+    WALLET_SERVICE_TOKEN: str = ""               # operator-manageable; sealed in the SecretStore
+    WALLET_TIMEOUT_SECONDS: int = 10
+    # Which wallet fund a plan's included credits land in.
+    WALLET_GRANT_FUND: str = "credits"
+    # Where the grant amount comes from on a plan: plan.limits[<this key>], in minor units.
+    PLAN_CREDIT_LIMIT_KEY: str = "credits"
+    # Do unused included credits carry over at renewal, or start fresh?
+    PLAN_CREDIT_GRANT_MODE: str = "accumulate"   # accumulate | reset
+    # Retry backoff for an undelivered grant. There is no attempt CAP on purpose: giving up would
+    # silently keep money a customer paid for.
+    GRANT_RETRY_BASE_SECONDS: int = 30
+    GRANT_RETRY_MAX_SECONDS: int = 3600
+    GRANT_DRAIN_LIMIT: int = 100
+    GRANT_RECONCILE_LIMIT: int = 200
+
     # ── domain events ─────────────────────────────────────────────────────────
     # What happens when the event bus cannot be reached. The money has already moved by the time
     # these publish, so refusing to record a payment because a broker is unreachable turns a

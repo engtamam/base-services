@@ -136,5 +136,30 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         "path": "/api/v1/operator/config/{key}", "capability": "platform.config",
         "group": "Settings", "confirm": True,
         "params": [{"name": "key", "in": "path", "type": "string", "required": True}],
+    },
+    {
+        "id": "billing.update_plan", "label": "Edit a plan", "method": "PATCH",
+        "path": "/api/v1/billing/plans/{plan_id}", "capability": "billing.manage",
+        "group": "Catalogue", "confirm": True,
+        "params": [
+            {"name": "plan_id", "in": "path", "type": "string", "required": True},
+            {"name": "name", "in": "body", "type": "string", "required": False},
+            {"name": "prices", "in": "body", "type": "string", "required": False,
+             "help": "existing subscribers keep the price they were sold"},
+            {"name": "limits", "in": "body", "type": "string", "required": False},
+            {"name": "trial_days", "in": "body", "type": "string", "required": False},
+        ],
+    },
+    {
+        "id": "billing.plan_availability", "label": "Retire or hide a plan", "method": "POST",
+        "path": "/api/v1/billing/plans/{plan_id}/availability", "capability": "billing.manage",
+        "group": "Catalogue", "confirm": True,
+        "params": [
+            {"name": "plan_id", "in": "path", "type": "string", "required": True},
+            {"name": "active", "in": "body", "type": "string", "required": False,
+             "help": "false: nobody new may subscribe. Existing subscribers are untouched"},
+            {"name": "listed", "in": "body", "type": "string", "required": False,
+             "help": "false: hidden from the plan list, still subscribable"},
+        ],
     }
 ]

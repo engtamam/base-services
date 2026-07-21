@@ -179,6 +179,34 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "PlanAvailabilityIn": {
+        "properties": {
+          "active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active"
+          },
+          "listed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Listed"
+          }
+        },
+        "title": "PlanAvailabilityIn",
+        "type": "object"
+      },
       "PlanIn": {
         "properties": {
           "features": {
@@ -219,6 +247,80 @@
           "prices"
         ],
         "title": "PlanIn",
+        "type": "object"
+      },
+      "PlanUpdateIn": {
+        "description": "Every field optional: an operator correcting a price must not have to resend the limits and\nrisk clobbering them with whatever the form happened to hold.",
+        "properties": {
+          "features": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Features"
+          },
+          "limits": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limits"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "prices": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prices"
+          },
+          "trial_days": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trial Days"
+          }
+        },
+        "title": "PlanUpdateIn",
         "type": "object"
       },
       "ReverseIn": {
@@ -884,6 +986,18 @@
     "/api/v1/billing/plans": {
       "get": {
         "operationId": "list_plans_api_v1_billing_plans_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "include_hidden",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Hidden",
+              "type": "boolean"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -896,6 +1010,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "List Plans",
@@ -940,6 +1064,116 @@
           }
         },
         "summary": "Create Plan",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/plans/{plan_id}": {
+      "patch": {
+        "description": "Correct a live plan. Existing subscribers keep the terms they were sold.",
+        "operationId": "update_plan_api_v1_billing_plans__plan_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "plan_id",
+            "required": true,
+            "schema": {
+              "title": "Plan Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlanUpdateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Update Plan Api V1 Billing Plans  Plan Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Plan",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/plans/{plan_id}/availability": {
+      "post": {
+        "description": "Retire or hide a plan. Nobody already on it is affected.",
+        "operationId": "plan_availability_api_v1_billing_plans__plan_id__availability_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "plan_id",
+            "required": true,
+            "schema": {
+              "title": "Plan Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlanAvailabilityIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Plan Availability Api V1 Billing Plans  Plan Id  Availability Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Plan Availability",
         "tags": [
           "billing"
         ]
@@ -1895,6 +2129,110 @@
           }
         },
         "summary": "Entitlement Check",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/billing/grants/drain": {
+      "post": {
+        "description": "Deliver every credit grant that is due.\n\nDriven by the platform's scheduler rather than a thread in here, so a restart cannot lose the\nonly thing that was retrying, and so an operator can see the schedule.",
+        "operationId": "drain_grants_internal_billing_grants_drain_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Drain Grants Internal Billing Grants Drain Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Drain Grants",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/billing/grants/reconcile": {
+      "post": {
+        "description": "Rebuild grant rows for paid invoices that never got one.\n\nThis is what makes the path survivable. If the process died between recording the payment and\nrecording the grant, the outbox has no idea anything was owed \u2014 but the paid invoice is still\nthere, and it is the durable fact. A read is self-healing; a missed step is wrong for ever.",
+        "operationId": "reconcile_grants_internal_billing_grants_reconcile_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Reconcile Grants Internal Billing Grants Reconcile Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reconcile Grants",
         "tags": [
           "internal"
         ]

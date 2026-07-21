@@ -207,6 +207,23 @@ class Settings(BaseSettings):
     HOLD_SWEEP_LIMIT: int = 500               # bound one sweep run
     GRANT_SWEEP_LIMIT: int = 500
     WALLET_IDEMPOTENCY_TTL_SECONDS: int = 86_400
+    # ── Low balance: warn BEFORE the funds run out ───────────────────────────
+    # The only "you are low" without this is a 402 at spend time, which is not a warning — it is
+    # an outage for whoever was mid-task.
+    # 0 = OFF. A general platform opts in: a threshold guessed on an adopter's behalf is the
+    # wrong number for someone, and an alert nobody asked for is one they learn to mute.
+    WALLET_LOW_BALANCE_THRESHOLD: int = 0     # integer MINOR units, never a float
+    # crossing  = warn ONCE, on the mutation that takes the balance under the threshold, re-arming
+    #             only after it recovers
+    # every_spend = the running nag, for platforms that genuinely want one
+    WALLET_LOW_BALANCE_MODE: Literal["crossing", "every_spend"] = "crossing"
+    # Which fund the threshold measures. Empty = the whole balance. A platform with a promo fund
+    # and a cash fund usually cares about the fund that pays the bills.
+    WALLET_LOW_BALANCE_FUND: str = ""
+    # A broker outage must not fail a spend: the money has already moved, and the low-balance
+    # state is readable on the balance response regardless. fail_closed is there for platforms
+    # that would rather refuse than proceed unobserved.
+    EVENT_PUBLISH_FAILURE: Literal["fail_open", "fail_closed"] = "fail_open"
     LEDGER_LIST_LIMIT: int = 100              # a statement endpoint must never dump the ledger
     # Compare-and-swap contention. Losers back off with FULL JITTER before retrying; without
     # it every loser wakes in the same instant and collides again.

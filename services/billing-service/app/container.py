@@ -158,6 +158,28 @@ def _pay(cls):
                          webhook_secret=s.PAYMENT_WEBHOOK_SECRET)
 
 
+def build_wallet(settings, token_provider):
+    """The wallet the grant outbox delivers through.
+
+    Falls back to the null driver on a configuration error rather than refusing to boot: a bad
+    wallet URL must not stop the service from taking payments. The grants still accumulate and are
+    delivered once the configuration is corrected, which is the whole reason they are written down
+    before they are sent.
+    """
+    from app.adapters.wallet.null import NullWallet
+
+    if settings.WALLET_DRIVER != "http":
+        return NullWallet()
+    from app.adapters.wallet.http import HttpWallet
+    try:
+        return HttpWallet(settings.WALLET_SERVICE_URL, token_provider,
+                          allowed_hosts=settings.egress_allowed_hosts,
+                          timeout_seconds=settings.WALLET_TIMEOUT_SECONDS)
+    except ValueError as exc:
+        _log.error("wallet_driver_misconfigured_using_null", extra={"error": str(exc)})
+        return NullWallet()
+
+
 _PAYMENT: dict[str, Builder] = {
     "null": lambda s: NullGateway(),
     "recording": lambda s: RecordingGateway(),

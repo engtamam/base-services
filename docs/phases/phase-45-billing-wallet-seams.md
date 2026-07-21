@@ -89,9 +89,9 @@ double-granting credits, or nagging on every spend are all things a platform sho
 
 - [x] **45.1** billing emits domain events: `payment.succeeded`, `payment.failed`, `subscription.renewed`, `subscription.cancelled`, `creditpack.settled` — declared in the manifest, since an undeclared event is one no consumer can discover
 - [x] **45.2** A gate: a service that publishes an event must declare it in `emitted`, and a service that subscribes must declare it in `consumed` — the manifest is the contract or it is decoration
-- [ ] **45.3** The durable grant path: billing credits the wallet through `POST /internal/wallet/credit` keyed on the PAYMENT id, retried until acknowledged — because an event may be lost and a paid-for credit may not. Off unless configured.
-- [ ] **45.4** Plan lifecycle: edit price/limits, deactivate, hide from signup — with existing subscriptions pinned to the terms they were sold, because silently repricing a live subscription is the one outcome that must never happen
-- [ ] **45.5** wallet low-balance threshold (per tenant, runtime-editable via Phase 44's surface) emitting `wallet.balance_low` **on the crossing only**, re-arming on recovery
-- [ ] **45.6** Plans grant their included credits on renewal, through the same idempotent path as 45.3
-- [ ] **45.7** Mutation-test the idempotency and the re-arm: a double-credit test that cannot fail is the only kind of test that matters here
-- [ ] **45.8** Full gate run, and the event contract documented for adopters
+- [x] **45.3** The durable grant path: billing credits the wallet through `POST /internal/wallet/credit` keyed on the PAYMENT id, retried until acknowledged — because an event may be lost and a paid-for credit may not. Off unless configured.
+- [x] **45.4** Plan lifecycle: edit price/limits, deactivate, hide from signup — with existing subscriptions pinned to the terms they were sold, because silently repricing a live subscription is the one outcome that must never happen
+- [x] **45.5** wallet low-balance threshold (per tenant, runtime-editable via Phase 44's surface) emitting `wallet.balance_low` **on the crossing only**, re-arming on recovery
+- [x] **45.6** Plans grant their included credits on renewal, through the same idempotent path as 45.3
+- [x] **45.7** Mutation-test the idempotency and the re-arm: a double-credit test that cannot fail is the only kind of test that matters here
+- [x] **45.8** Full gate run, and the event contract documented for adopters

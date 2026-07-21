@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.config import Settings
+from app.core.events import EMITTED
 
 
 def _admin_actions() -> list[dict[str, Any]]:
@@ -70,7 +71,9 @@ def build_manifest(
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         # OPTIONAL consumer: billing invoices these IF it listens. Wallet stands alone.
-        "events": {"emitted": ["wallet.credited", "wallet.spent"], "consumed": []},
+        # One list, declared in app/core/events.py and read here: two hand-maintained lists drift,
+        # and a drifted manifest either hides an event or promises one that never fires.
+        "events": {"emitted": list(EMITTED), "consumed": []},
         "admin_actions": _admin_actions(),
         "user_actions": _user_actions(),
     }

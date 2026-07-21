@@ -83,6 +83,8 @@ def build_manifest(
             {"path": "/internal/billing/usage/release", "tier": "internal", "method": "POST"},
             {"path": "/internal/billing/usage/set", "tier": "internal", "method": "POST"},
             {"path": "/internal/billing/usage", "tier": "internal", "method": "GET"},
+            {"path": "/internal/billing/grants/drain", "tier": "internal", "method": "POST"},
+            {"path": "/internal/billing/grants/reconcile", "tier": "internal", "method": "POST"},
             {"path": "/api/v1/billing/ledger", "tier": "user", "method": "GET"},
             {"path": "/api/v1/billing/gateway/verify", "tier": "user", "method": "GET"},
             {"path": "/api/v1/billing/usage", "tier": "user", "method": "POST"},
@@ -97,6 +99,8 @@ def build_manifest(
             {"path": "/api/v1/operator/config", "tier": "user", "method": "GET"},
             {"path": "/api/v1/operator/config", "tier": "user", "method": "PUT"},
             {"path": "/api/v1/operator/config/{}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/billing/plans/{}", "tier": "user", "method": "PATCH"},
+            {"path": "/api/v1/billing/plans/{}/availability", "tier": "user", "method": "POST"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         # DECLARED, because a consumer cannot subscribe to an event it cannot discover. An
