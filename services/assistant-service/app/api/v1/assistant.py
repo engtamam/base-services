@@ -26,6 +26,7 @@ from app.api.ratelimit import rate_limit
 from app.config import get_settings
 from app.core.kb_service import KbService
 from app.core.pii import subject_ref
+from app.core.quota import DailyQuota
 from app.core.redaction import redact
 
 router = APIRouter(prefix="/api/v1/assistant", tags=["assistant"])
@@ -76,6 +77,19 @@ async def ask(request: Request, body: AskIn,
               principal: Principal = Depends(require_user)) -> dict:
     """Answer from the knowledge base — grounded and cited, or an honest abstention."""
     s = get_settings()
+    # The pseudonym identifies the spender without naming them; the quota store therefore holds no
+    # identities either.
+    spender = subject_ref(s.PII_SALT, principal.tenant or "", principal.subject)         if s.PII_SALT else principal.subject
+    quota = DailyQuota(request.app.state.container.rate_limiter,
+                       per_subject=s.QUOTA_DAILY_PER_SUBJECT,
+                       per_tenant=s.QUOTA_DAILY_PER_TENANT)
+    verdict = await quota.spend(tenant=principal.tenant or "", subject_ref=spender)
+    if not verdict.allowed:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"DAILY_QUOTA_EXCEEDED:{verdict.scope}",
+            headers={"Retry-After": str(verdict.retry_after_s or 3600)})
+
     # Redacted BEFORE anything: before it reaches a third-party model, before it is stored, and
     # before it is ranked. Redacting later would mean the raw text had already left the process.
     cleaned = redact(body.question, enabled=s.REDACT_PII, max_chars=s.REDACT_MAX_CHARS)
@@ -87,6 +101,11 @@ async def ask(request: Request, body: AskIn,
         lang=body.lang or s.DEFAULT_LANGUAGE,
         not_found_text=s.ASSISTANT_NOT_FOUND_TEXT,
     )
+    if answer.abstained:
+        # Refunded: an abstention did no work worth paying for, and charging for one would mean a
+        # user burns their day discovering a gap in the knowledge base.
+        await quota.refund(tenant=principal.tenant or "", subject_ref=spender)
+
     if answer.abstained:
         # NON-CRITICAL MEANS THE ANSWER SURVIVES THE LOG FAILING. This block is best-effort in
         # full: production refuses to boot without PII_SALT, but a development run has none, and

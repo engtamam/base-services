@@ -150,6 +150,15 @@ class Settings(BaseSettings):
     CONVERSATION_PAGE_SIZE: int = 20
     CONVERSATION_RETENTION_DAYS: int = 90     # 0 = keep until erased
 
+    # ── Daily quota — the spend ceiling, distinct from the burst limiter ─────
+    # A rate limiter stops hammering in a minute; it does nothing about a user who asks a
+    # reasonable question every thirty seconds all day. That is the one that reaches an invoice.
+    # TWO ceilings: a single tenant-wide counter lets the first enthusiastic user exhaust the day
+    # for every colleague, and the quota then reads as an outage to people who did nothing wrong.
+    # 0 = no ceiling.
+    QUOTA_DAILY_PER_SUBJECT: int = 200
+    QUOTA_DAILY_PER_TENANT: int = 5_000
+
     # The language used when a caller does not ask for one.
     DEFAULT_LANGUAGE: str = "en"
     # What the assistant says when the evidence is too thin. Deliberately configurable per

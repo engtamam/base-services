@@ -143,7 +143,7 @@ when the code exists.
 - [x] **43.11** Action deep-links from the catalog — suggest and link, never execute
 - [x] **43.12** Conversations: tenant+subject scoping, encryption at rest, pagination, export
 - [x] **43.13** PII redaction outbound and on stored content, default ON; bounded-time patterns
-- [ ] **43.14** Quotas + rate limiting per tenant and per subject, shared-store backed so it survives >1 replica
+- [x] **43.14** Quotas + rate limiting per tenant and per subject, shared-store backed so it survives >1 replica
 - [x] **43.15** Erasure contract + a retention sweeper that actually runs
 - [ ] **43.16** Audit: declared auditable actions; admin config changes witnessed
 - [ ] **43.17** Eval harness with a golden set — and it must be able to FAIL

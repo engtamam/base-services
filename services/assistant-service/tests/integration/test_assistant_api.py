@@ -195,3 +195,12 @@ def test_redaction_is_reported_so_the_answer_is_not_baffling(client):
 
 def test_an_ordinary_question_reports_no_redaction(client):
     assert _ask(client, "what is a vat number").json()["redacted"] == []
+
+
+# ── daily quota ───────────────────────────────────────────────────────────────
+def test_an_abstention_does_not_spend_quota(client):
+    """A user must not burn their day discovering a gap in the knowledge base."""
+    lim = client.app.state.container.rate_limiter
+    for _ in range(6):
+        r = _ask(client, "totally unrelated question zzzq")
+        assert r.status_code == 200 and r.json()["grounded"] is False
