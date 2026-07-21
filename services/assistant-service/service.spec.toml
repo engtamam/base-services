@@ -1,0 +1,6 @@
+# service.spec.toml — the record of how this service was generated.
+name = "assistant-service"
+description = "Grounded help assistant: answers about the product from a surface-scoped knowledge base, cited or absent"
+port = 8021
+
+[drivers]

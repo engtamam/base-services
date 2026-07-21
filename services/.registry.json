@@ -1,6 +1,7 @@
 {
   "analytics-service": 8016,
   "api-gateway": 8004,
+  "assistant-service": 8021,
   "audit-service": 8005,
   "authz-service": 8007,
   "billing-service": 8009,
