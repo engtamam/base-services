@@ -1,4 +1,4 @@
-"""Count only genuine failures (T6, ammar's insight, generalised to config).
+"""Count only genuine failures (T6), generalised to config.
 
 A correct password on an account pending approval returns 403 and must NOT spend the brute-force
 budget — or the user is locked out WHILE they wait for the approval that would let them in, and the

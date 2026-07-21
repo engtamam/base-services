@@ -30,7 +30,7 @@ Phase 3 is complete when **all** are true:
 
 1. **No new runtime deps.** Token verify uses the Phase 2 `TokenVerifier` (PyJWT, already present). The step→CWE map uses **`tomllib`** (Python 3.11+ **stdlib**) — chosen over YAML to avoid a dependency and shrink attack surface.
 2. **`cwe.json` source** — copy `docs/cwe.json` (MITRE catalog) into `app/security/cwe.json`. Self-contained rule: the file lives *inside* the service.
-3. **Generic, not domain-specific.** No `wir.*`/`platform.*` caps baked in — capabilities are arbitrary strings supplied by the token. The admin-bypass hardening is expressed generically (a configurable "no role-only escalation" rule), not with ammar cap names.
+3. **Generic, not domain-specific.** No `wir.*`/`platform.*` caps baked in — capabilities are arbitrary strings supplied by the token. The admin-bypass hardening is expressed generically (a configurable "no role-only escalation" rule), not with the reference implementation cap names.
 4. **CweGuard is a real engine, not theater** — pluggable pre/post checks with concrete built-ins; a service opts a step into the guard and the guard fails closed on a violated precondition.
 
 ---
@@ -46,7 +46,7 @@ Phase 3 is complete when **all** are true:
 ### Step 3.2 — Capability RBAC (`app/api/authz.py`)
 - `effective_caps(principal)` returns **only** the `caps` claim set (deny-by-default; empty if absent).
 - `require_capability(*caps)` — all required; `require_any_capability(*caps)` — at least one. Missing → generic **403** (never leaks which cap).
-- Generic anti-escalation: a `role` claim alone never grants a capability (caps are the sole authority — mirrors ammar's R5-A fix, generalized).
+- Generic anti-escalation: a `role` claim alone never grants a capability (caps are the sole authority — mirrors the reference implementation's R5-A fix, generalized).
 - **Check:** no-caps token → 403; token with the cap → 200; any-cap logic correct.
 
 ### Step 3.3 — Tenant / subject context (`app/api/context.py`)

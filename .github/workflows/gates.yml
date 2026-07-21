@@ -11,7 +11,7 @@
 #           units_dir: packages              # THEIR layout
 #           unit_marker: src
 #
-# Kobo copied two hundred lines because they could not call them. Copies drift within a month,
+# Two hundred lines get copied whenever they cannot be called. Copies drift within a month,
 # and the copy is the one that goes stale on the day it matters. Nothing here is specific to
 # base-services: gates are discovered from `gates_dir`, units from `units_dir`.
 #

@@ -29,7 +29,7 @@
 
 1. **Zero new deps.** Uploads use the **raw request body** (`request.body()`) + `X-Filename` / `Content-Type` headers — no `python-multipart`. Hashing is stdlib `hashlib`; signing is stdlib `hmac`. Storage is the `ObjectStore` port; metadata is `DataStore`.
 2. **Body limit.** file-service raises the inherited `BODY_LIMIT_BYTES` default (e.g. 25 MiB) so uploads fit; the route also enforces `MAX_UPLOAD_BYTES` (must be ≤ body limit).
-3. **Content-addressed + ref-count.** Blob key = `sha256`; a `blob_refs` counter enables dedup + safe delete (from ammar, generalized). Deleting a file decrements; the blob is removed only at 0.
+3. **Content-addressed + ref-count.** Blob key = `sha256`; a `blob_refs` counter enables dedup + safe delete (from the reference implementation, generalized). Deleting a file decrements; the blob is removed only at 0.
 4. **Thumbnails deferred.** Preview/thumbnail generation needs an image lib (Pillow) — a future optional `ThumbnailGenerator` adapter, kept out to preserve zero-new-deps.
 
 ---

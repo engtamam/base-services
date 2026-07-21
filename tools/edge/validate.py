@@ -15,7 +15,7 @@ That does not produce an invalid config. It produces a perfectly VALID one, with
 proxies traffic to the attacker — TLS terminated by us, served with our certificate, looking exactly
 like us. CWE-74. At the one machine every request on the platform touches.
 
-`ammar` interpolates `{$CADDY_DOMAIN}` straight from the environment. That is safe for exactly as
+Interpolating `{$CADDY_DOMAIN}` straight from the environment is safe for exactly as
 long as nobody ever lets a user, a tenant admin, or a settings page set it — which is a promise
 about the future, not a property of the code.
 

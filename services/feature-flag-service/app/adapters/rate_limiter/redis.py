@@ -1,14 +1,15 @@
 """Redis RateLimiter — GCRA sliding window, ATOMIC, and it DEGRADES rather than fails.
 
-Two things this fixes that the old INCR/EXPIRE version got wrong, and that `ammar` gets wrong too.
+Two things this fixes that the old INCR/EXPIRE version got wrong, and that almost every naive
+limiter gets wrong too.
 
 ATOMIC (T5). `if count < max: incr` is two round trips, and under load N concurrent requests all
 read the same count, all decide they are under the limit, and all increment. The limit is then
 exceeded by exactly the concurrency. The GCRA update below is a single Lua script — Redis runs it
 to completion with nothing interleaved, so the check and the store are indivisible.
 
-DEGRADES, does not fail (T4). `ammar` makes the Redis-outage behaviour a binary admin choice and
-both branches are bad: fail-closed returns 500 (the limiter causes the outage it exists to prevent),
+DEGRADES, does not fail (T4). Making the Redis-outage behaviour a binary admin choice gives two
+bad branches: fail-closed returns 500 (the limiter causes the outage it exists to prevent),
 fail-open removes the limit entirely (so the limit is only as strong as Redis's uptime). Neither.
 On an outage this falls back to a LOCAL per-pod limiter with the same policy: the budget becomes
 coarser (`replicas x limit` instead of one shared budget) and it KEEPS WORKING. Coarse beats off,

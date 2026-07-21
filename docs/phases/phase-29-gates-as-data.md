@@ -1,6 +1,6 @@
 # Phase 29 — Gates as data: a runner that fits any repository
 
-Triggered by a memo from the Kobo team. They wanted our gate runner. They could not use it, so
+Triggered by an adopter memo. They wanted our gate runner. They could not use it, so
 they copied it — two hundred lines that will drift within a month. Their words: *"That is a sign
 it should be general."*
 
@@ -15,7 +15,7 @@ RESULT: ALL RUNNABLE GATES PASSED.
 
 Zero tests. Zero scanners. Exit 0. **A loop over an empty set passes, loudly, in green.** That is
 the defect every gate in this repo exists to catch, sitting inside the thing that catches them.
-It is not Kobo's problem: rename `services/` here, or drop one `app/` marker, and our merge gate
+It is not their problem: rename `services/` here, or drop one `app/` marker, and our merge gate
 goes green while guarding nothing.
 
 ---
@@ -108,7 +108,7 @@ gate_main() { "$PY" tools/ci/check_scan_discipline.py; }
 gate_selftest() { ! "$PY" tools/ci/check_scan_discipline.py --selftest-should-fail; }
 ```
 
-Kobo's gates live in Kobo's `gates.d/`. Ours live in ours. Nobody edits the runner.
+Their gates live in their own `gates.d/`. Ours live in ours. Nobody edits the runner.
 
 ## 3. Steps
 
@@ -133,7 +133,7 @@ changes.
 
 ## 5. Credit
 
-The design is Kobo's. Three of their four proposals are adopted as written. The fourth — parity
+The design came from an adopter team. Three of their four proposals are adopted as written. The fourth — parity
 across three places — is adopted by removing the third place instead of checking it.
 
 **Where their patch was wrong.** They also reported that our `MIGRATION:` exemption was a
@@ -168,7 +168,7 @@ uses `git ls-files --eol`.
 
 `run_all_gates.sh` went from 560 lines containing twelve gates to ~230 lines containing none. The
 thirteen gates live in `tools/ci/gates.d/*.gate`. Point the runner at another repository, pass
-`GATE_GATES_DIR` and `GATE_UNITS_DIR`, and it gates that repository. Kobo's CI becomes three
+`GATE_GATES_DIR` and `GATE_UNITS_DIR`, and it gates that repository. Their CI becomes three
 lines calling `.github/workflows/gates.yml`.
 
 **The parser I wrote to fix the bug reintroduced the bug.** `meta()` matched only *quoted*

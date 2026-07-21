@@ -8,7 +8,7 @@
 > SDK behind a `ZatcaSigner` port**. Fatoora submission and QR rendering are ports too.
 > Config-driven, multi-tenant, zero new runtime deps.
 >
-> _Reference (studied): Security-tools `channels/cloud_api/zatca_*.py` + Java `services/zatca-service` (official SDK); ammar `billing-service/.../zatca-*`. Memory: [[zatca-service]], [[ksa-market]]._
+> _Reference (studied): a second reference implementation `channels/cloud_api/zatca_*.py` + Java `services/zatca-service` (official SDK); the reference implementation `billing-service/.../zatca-*`. Memory: [[zatca-service]], [[ksa-market]]._
 > _Rules: self-contained · zero-hardcoded · ports-and-adapters · production-ready · permissive · CWE-guard · backend-only._
 
 ---
@@ -96,7 +96,7 @@
 
 ## 3. Out of scope (deferred)
 
-- **The official-SDK Java sidecar itself** — a separate deployable we call (not bundled → base-services stays permissive). Reuse ammar/kobo's image or build from the studied Java.
+- **The official-SDK Java sidecar itself** — a separate deployable we call (not bundled → base-services stays permissive). Reuse the reference image or build from the studied Java.
 - **PDF (EN/AR) rendering** → billing-service.
 - **Phase-1 PDF/A-3** archival format → billing/export.
 - **Live Fatoora onboarding** (real OTP/CSID) → operational; code path is exercised against mocks.

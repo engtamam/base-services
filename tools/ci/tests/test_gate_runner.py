@@ -59,7 +59,7 @@ def run(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedPr
 
 # ── discovery: an empty set must never pass ─────────────────────────────────
 def test_no_units_is_fatal_not_a_clean_run(tmp_path):
-    """The bug Kobo found: pointed at a foreign repo it ran nothing and printed green."""
+    """The bug: pointed at a foreign repo it ran nothing and printed green."""
     empty = tmp_path / "no-units"
     empty.mkdir()
     r = run("--only", "safety:scans", env={"GATE_UNITS_DIR": str(empty)})
@@ -78,7 +78,7 @@ def test_no_gates_is_fatal(tmp_path):
 
 
 def test_a_foreign_layout_is_discovered_without_editing_the_runner(tmp_path):
-    """Kobo's whole ask: `packages/api/src`, not `services/api/app`."""
+    """An adopter's layout: `packages/api/src`, not `services/api/app`."""
     for unit in ("api", "web"):
         (tmp_path / "packages" / unit / "src").mkdir(parents=True)
 

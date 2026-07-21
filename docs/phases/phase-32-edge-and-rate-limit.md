@@ -7,7 +7,7 @@ We have neither. There is no edge — no TLS terminator, no single public listen
 security header once. And the rate limit, such as it is, is a per-pod in-memory counter: run three
 replicas and an attacker gets three times the budget, because each pod is counting on its own.
 
-Both `ammar` and `Security-tools` already solved the edge with Caddy, and both got real things
+Both the reference implementation and a second reference implementation already solved the edge with Caddy, and both got real things
 right. This phase steals what they got right, fixes what they got wrong, and refuses the one thing
 neither of them guarded.
 
@@ -17,7 +17,7 @@ neither of them guarded.
 
 **The edge is RENDERED from config, never hand-written.**
 
-`Security-tools` says it best in its own docstring: the domain comes from ONE place, *"so the cert,
+A second reference implementation says it best in its own docstring: the domain comes from ONE place, *"so the cert,
 the routing host, and the URLs the CLI/UI use can never drift."* A hand-edited Caddyfile is a
 fourth source of truth that agrees with the other three right up until it doesn't.
 
@@ -58,10 +58,10 @@ by that guard last phase and deleted; the same rule applies here and I expect it
 * **A shared counter, or it is not a rate limit.** The current memory driver counts per POD. Three
   replicas, three counters, three times the budget. That is not a limit, it is a suggestion.
 * **A `Retry-After` header.** A 429 with no `Retry-After` tells a client to guess, and clients
-  guess by retrying immediately. `ammar` gets this right and it is worth copying exactly.
+  guess by retrying immediately. The reference implementation gets this right and it is worth copying exactly.
 * **An operator unblock.** Someone WILL be locked out by a misconfigured limit at 3am. If the only
   remedy is `FLUSHALL`, the operator will use it, and take every other limit with it.
-* **The limiter must be TESTED.** `ammar` disables it entirely under test (`skip: () => isTest`),
+* **The limiter must be TESTED.** The reference implementation disables it entirely under test (`skip: () => isTest`),
   so the code that protects the platform is the only code never exercised. Ours runs in tests, with
   an injected clock so it is deterministic.
 
@@ -69,7 +69,7 @@ by that guard last phase and deleted; the same rule applies here and I expect it
 
 **Redis goes down. What happens?**
 
-`ammar` makes it a binary admin choice and both branches are bad:
+The reference implementation makes it a binary admin choice and both branches are bad:
 
 * **fail-closed** → `increment()` throws → **HTTP 500** → the site is down. A rate limiter that
   causes the outage it exists to prevent.
@@ -132,9 +132,9 @@ example.com
 does not produce an invalid config. It produces a **valid** one with an extra site block that
 proxies traffic to the attacker — TLS terminated by us, with our cert, looking exactly like us.
 
-`Security-tools` validates the host (RFC-1123) before it reaches the renderer and passes it as an
+a second reference implementation validates the host (RFC-1123) before it reaches the renderer and passes it as an
 argv element, never a shell string. That instinct is right and it is the single most important line
-in their edge. `ammar` interpolates `{$CADDY_DOMAIN}` from the environment, which is safe only for
+in their edge. The reference implementation interpolates `{$CADDY_DOMAIN}` from the environment, which is safe only for
 as long as nobody ever lets a user set it.
 
 *Mitigation:* **every** value reaching the renderer is validated against a strict allowlist pattern
@@ -153,7 +153,7 @@ silently multiplies with your scale is worse than no limit, because you believe 
 
 ### T3 — The window-boundary burst  (CWE-770) — HIGH, and invisible
 
-A fixed-window counter (`INCR` + `EXPIRE`, which is exactly what `ammar` does) allows **2× the
+A fixed-window counter (`INCR` + `EXPIRE`, which is exactly what the reference implementation does) allows **2× the
 budget** across a boundary: burn the full budget in the last second of the window, then the full
 budget again in the first second of the next. The graph looks fine. The origin sees a spike of
 double the number you configured.
@@ -178,9 +178,9 @@ same count, all pass, all increment. The limit is exceeded by exactly the concur
 `INCR`-family call). The in-memory adapter holds a lock. A concurrency test fires 200 requests at a
 limit of 10 and demands exactly 10 pass.
 
-### T6 — Lockout by rate limit  (CWE-645) — MEDIUM, and `ammar` got this right
+### T6 — Lockout by rate limit  (CWE-645) — MEDIUM, and the reference implementation got this right
 
-`ammar`'s login limiter counts **only 401s, never 403s**: a correct password on an account pending
+The reference implementation's login limiter counts **only 401s, never 403s**: a correct password on an account pending
 approval must not count toward a brute-force lockout, or the user is locked out *while waiting for
 the approval that would let them in*, and the approval does not clear it.
 
@@ -199,11 +199,11 @@ any combination. An authenticated request keys on the subject (fair), an anonymo
 ### T8 — HSTS on plain HTTP  (false assurance) — LOW
 
 An `HSTS` header served over `http://` does nothing except make you believe you are protected.
-`Security-tools` emits it only when ACME is actually on. Correct, and copied.
+a second reference implementation emits it only when ACME is actually on. Correct, and copied.
 
 ### T9 — The edge runs as root — MEDIUM, and BOTH repos do this
 
-`Security-tools`'s Caddy pod has no `securityContext` at all: root, every capability, writable
+a second reference implementation's Caddy pod has no `securityContext` at all: root, every capability, writable
 filesystem. It is the one container in the cluster that talks to the entire internet.
 
 *Mitigation:* non-root, `drop: [ALL]`, `readOnlyRootFilesystem`, `seccompProfile: RuntimeDefault`,
@@ -237,18 +237,18 @@ is mutation-tested:
 
 ## 7. What was built
 
-Learned from `ammar` and `Security-tools`, and beaten on every axis they left open.
+Learned from prior art, and extended on every axis it left open.
 
 | From the source repos | What we took | What we fixed |
 | --- | --- | --- |
-| Security-tools: render the edge from one config | render-from-one-source, testable with no Caddy binary | added **injection refusal** — they interpolate a validated host but a Caddyfile is a *language* |
-| Security-tools: pre-validate the hostname (RFC-1123) | the instinct, hardened into an allowlist that **refuses**, never escapes | extended to upstreams, paths, headers |
-| Security-tools: HSTS only with ACME on | copied exactly (T8) | — |
-| ammar: named limiters (api/auth/login) | route **classes**, config-driven | + per-route **cost weights** |
-| ammar: login counts 401 not 403 | the exact insight (T6) | generalised to `RATELIMIT_COUNT_STATUSES` + a GCRA **refund** |
-| ammar: `Retry-After` from resetTime | copied exactly (T10) | + `RateLimit-*` on every response so a client paces itself |
-| ammar: fixed window (INCR/EXPIRE) | — | **sliding window (GCRA)** — no boundary burst (T3) |
-| ammar: fail-open OR fail-closed on outage | — | **degrade to local** — coarser, alive, never down and never open (T4) |
+| a second reference implementation: render the edge from one config | render-from-one-source, testable with no Caddy binary | added **injection refusal** — they interpolate a validated host but a Caddyfile is a *language* |
+| a second reference implementation: pre-validate the hostname (RFC-1123) | the instinct, hardened into an allowlist that **refuses**, never escapes | extended to upstreams, paths, headers |
+| a second reference implementation: HSTS only with ACME on | copied exactly (T8) | — |
+| reference: named limiters (api/auth/login) | route **classes**, config-driven | + per-route **cost weights** |
+| reference: login counts 401 not 403 | the exact insight (T6) | generalised to `RATELIMIT_COUNT_STATUSES` + a GCRA **refund** |
+| reference: `Retry-After` from resetTime | copied exactly (T10) | + `RateLimit-*` on every response so a client paces itself |
+| reference: fixed window (INCR/EXPIRE) | — | **sliding window (GCRA)** — no boundary burst (T3) |
+| reference: fail-open OR fail-closed on outage | — | **degrade to local** — coarser, alive, never down and never open (T4) |
 | both: Caddy as root | — | non-root, `drop:[ALL]`, read-only root, seccomp (T9) |
 
 **Proven, not asserted.** The injection is demonstrated against the real Caddy binary: a hostname

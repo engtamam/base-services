@@ -7,7 +7,7 @@
 > overage policy all live in the plan document. No project's feature names appear anywhere in
 > `base-services`. Zero-hardcoded, plug-and-play, deny-by-default.
 
-Studied first: `Security-tools` (kobo) `channels/cloud_api/store.py` (dual-fund wallet, spend,
+Studied first: a second reference implementation `channels/cloud_api/store.py` (dual-fund wallet, spend,
 idempotency-on-source, promo expiry sweep) and `personal-care-company/hair-analysis-platform`
 (`credits_balance_reserve/confirm/release`, `SELECT … FOR UPDATE`, single-use scan token).
 Both are **money/credit balances** — that is Phase 26 (`wallet-service`). This phase is the
@@ -50,7 +50,7 @@ treatment. Claiming "zero reads" for both would be a lie:
 TOCTOU race: two pods read 24, both write 25, and the 26th seat slips through. Billing's copy
 of the port gains `incr_if_below(collection, key, delta, limit) -> (allowed, new_value)` —
 atomic. Memory adapter: an `asyncio.Lock`. Postgres adapter: a single
-`UPDATE … SET n = n + :d WHERE n + :d <= :limit RETURNING n`. This is exactly what kobo's
+`UPDATE … SET n = n + :d WHERE n + :d <= :limit RETURNING n`. This is exactly what the reference implementation's
 `FOR UPDATE` and hair's `credits_balance_reserve` do; a check-then-act cannot be made correct
 by caching harder. Self-contained rule permits it: we change **billing's** copy only.
 

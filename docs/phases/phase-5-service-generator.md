@@ -1,12 +1,12 @@
 # Phase 5 — Smart Service Generator (detailed steps)
 
-> **Goal:** the scaffolder that **beats ammar's** — a spec-driven, safe, and
+> **Goal:** a scaffolder that is — a spec-driven, safe, and
 > **self-verifying** generator. It clones the `_template` into a new
 > self-contained service, picks the ports/adapters you want, then **generates →
 > installs/reuses env → runs the tests + the security gate → reports green/red**.
 > If verification fails, it **rolls back**.
 >
-> _Reference: `docs/architecture-plan.md` §10 (scaffolder); the ammar comparison in chat._
+> _Reference: `docs/architecture-plan.md` §10 (scaffolder); the comparison discussed separately._
 > _Rules: self-contained output · zero-hardcoded · production-ready · no-silent-gaps · atomic/rollback._
 
 ---
@@ -108,9 +108,9 @@ _Legend: ⬜ pending · 🟡 in-progress · ✅ completed._
 
 ---
 
-## 5. Why it beats ammar
+## 5. What this improves on
 
-| ammar `create-service.mjs` | our `create_service.py` |
+| the reference `create-service.mjs` | our `create_service.py` |
 |---|---|
 | blind string replace, no verify | placeholder engine + **self-verify (tests + security gate)** |
 | hardcoded contexts/port scheme | config/spec-driven, generic |

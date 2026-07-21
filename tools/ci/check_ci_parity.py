@@ -12,7 +12,7 @@ declared, documented, and inert. We already guard that in every service; the CI
 deserves the same treatment.
 
 It used to compare THREE places: described in `--list`, implemented in the script, run by the
-workflow. Kobo asked us to check all three. We deleted the third instead -- a gate's description
+workflow. All three need checking. We deleted the third instead -- a gate's description
 now lives in its own gate file, beside its command, so "implemented but never described" cannot
 be expressed. Do not gate a class of bug you can make unrepresentable.
 """

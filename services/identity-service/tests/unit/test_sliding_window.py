@@ -2,7 +2,7 @@
 
 Every test here drives a specific attack with a fake clock — no sleeps, deterministic. The one that
 matters most is the boundary burst: it is the reason we do not use a fixed window, and it is exactly
-what ammar (INCR/EXPIRE) is vulnerable to.
+what a plain INCR/EXPIRE window is vulnerable to.
 """
 from __future__ import annotations
 

@@ -412,7 +412,7 @@ def _prov_service(provisioners, store=None):
 
 
 def test_a_failed_later_step_leaves_no_orphan_tenant():
-    """THE Kobo failure: provision the tenant, register the owner, owner fails, tenant orphaned
+    """THE failure this exists to prevent: provision the tenant, register the owner, owner fails, tenant orphaned
     with no rollback and manual recovery. Made impossible."""
     tenant, membership = _Prov("tenant"), _Prov("membership", fail=True)
     svc = _prov_service({"tenant": tenant, "membership": membership})

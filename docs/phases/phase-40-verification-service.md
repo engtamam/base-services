@@ -7,7 +7,7 @@ nothing.
 
 That is not a missing nice-to-have; it is the foundation the *next* phase stands on. The anti-abuse
 control for a GCP-style welcome gift is **one gift per commercial registration** — and both
-reference implementations studied (`ammar`, `Security-tools`) collect the CR number and never verify
+reference implementations studied (the reference implementation, a second reference implementation) collect the CR number and never verify
 it. One says so in a comment. Their strongest anti-fraud control rests on unverified input, so the
 gift is farmable with invented registration numbers.
 
@@ -77,7 +77,7 @@ control is two *people*, not two clicks.
 tier behind a capability, when its only caller is onboarding-service asking machine-to-machine. A
 capability check was standing in for machine auth. Moved to the internal tier.
 
-**A double route prefix** — `/api/v1/api/v1/verification/…` — the exact wart the Kobo review flagged
+**A double route prefix** — `/api/v1/api/v1/verification/…` — the exact wart that review flagged
 as "worth designing around".
 
 Mutation-tested the four paths that could manufacture a false verified (null verifies, unconfigured

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """META-GATE: every shipped service carries the guards this repo learned the hard way.
 
-Modelled on kobo's `capability:cover`. The idea that makes it work is not the check —
+The idea that makes this work is not the check —
 it is that the exceptions live in a **documented, shrinking allowlist**, so a gap is a
 visible debt with a name on it rather than an absence nobody notices.
 

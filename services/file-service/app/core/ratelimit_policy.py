@@ -4,8 +4,8 @@ The limiter (the port) answers "is this key over its budget". The policy decides
 and *which budget applies*, and both are things a platform must be able to configure without a code
 change.
 
-KEY (phase-32 T7). `ammar` keys on IP alone. Behind one NAT that is one bucket for a whole office,
-and one enthusiastic user throttles their colleagues. The key here is COMPOSITE and configured:
+KEY (phase-32 T7). Keying on IP alone is the obvious choice and the wrong one: behind a single NAT
+that is one bucket for a whole office, and one enthusiastic user throttles their colleagues. The key here is COMPOSITE and configured:
 
     RATELIMIT_KEY_PARTS = "subject,ip"
 

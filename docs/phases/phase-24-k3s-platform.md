@@ -4,7 +4,7 @@
 > Nothing is hand-written per service; nothing is hardcoded; nothing claims a guarantee it
 > cannot enforce.
 
-Studied: `Security-tools` (kobo) `channels/cloud_api/k8s`, `kobo/installer/k8s`. Its cloud stack
+Studied: a second reference implementation `channels/cloud_api/k8s`, `the reference implementation/installer/k8s`. Its cloud stack
 is sound; what we add is *enforcement of the things it gets right*, so they cannot be forgotten
 by the next person who writes a values file (see §5).
 
@@ -43,9 +43,9 @@ hot paths it **controls**, and both are proven, not asserted:
 
 | Need | Why |
 | --- | --- |
-| `resources.requests` **required** when HPA is enabled | utilization is a % *of the request*; with no request the HPA silently never scales. kobo sets this correctly in its cloud overlay — but nothing *enforces* the pairing, so an overlay written without it renders green and never scales |
-| CNI policy **preflight** that sends a packet | NetworkPolicy on stock K3s/flannel is inert and fails **open**. kobo installs Calico and checks a policy CNI is *present*; presence is not proof of *enforcement*, and its check can be waived interactively |
-| Default-deny NetworkPolicy **for services**, per-service egress allow | kobo's cloud base fences pods; we make deny-by-default the chart default for every service, with egress opt-in |
+| `resources.requests` **required** when HPA is enabled | utilization is a % *of the request*; with no request the HPA silently never scales. The reference implementation sets this correctly in its cloud overlay — but nothing *enforces* the pairing, so an overlay written without it renders green and never scales |
+| CNI policy **preflight** that sends a packet | NetworkPolicy on stock K3s/flannel is inert and fails **open**. The reference implementation installs Calico and checks a policy CNI is *present*; presence is not proof of *enforcement*, and its check can be waived interactively |
+| Default-deny NetworkPolicy **for services**, per-service egress allow | the reference implementation's cloud base fences pods; we make deny-by-default the chart default for every service, with egress opt-in |
 | **No PDB when `replicas: 1`** | `minAvailable: 1` on a singleton blocks node drains forever |
 | `preStop` sleep + `terminationGracePeriodSeconds` | endpoint removal is async → 502s on every deploy |
 | Ingress **must not** expose `/internal/*` or `/metrics` | internal tier is token-guarded, not internet-facing |
@@ -130,7 +130,7 @@ tests/deploy/                 # renders + guards (pytest, no cluster needed)
 Cloud-managed K8s (EKS/GKE/AKS) overlays · service mesh · multi-cluster · a UI. The chart is
 plain Kubernetes, so any of these layer on top without changes here.
 
-## 5. Learned from kobo — kept, and enforced
+## 5. Learned from prior art — kept, and enforced
 
 **Kept:** `startupProbe` with a generous budget so a slow first boot isn't restart-looped by
 liveness (with `timeoutSeconds: 5`, because probes touch a DB and the 1s default SIGTERMs
@@ -149,11 +149,11 @@ silently fall back to a weaker backend.
    "absent" from a truncated search.*
 2. *"Their NetworkPolicy is inert — flannel doesn't enforce it."* **False for the cloud stack.**
    `install/linux-setup.sh` provisions k3s **with Calico**, and `install-cloud.sh` refuses to
-   proceed without a policy CNI. The flannel caveat I quoted lives in `kobo/installer/k8s` —
+   proceed without a policy CNI. The flannel caveat I quoted lives in `the reference implementation/installer/k8s` —
    the **on-prem** channel, a different deployment path whose primary control is an air-gap.
    *Do not attribute one channel's caveat to another channel's stack.*
 
-**What genuinely differs (enforcement, not correctness):** kobo gets both of these right *by
+**What genuinely differs (enforcement, not correctness):** The reference implementation gets both of these right *by
 convention* — the right values happen to be in the right overlay. Nothing stops the next
 overlay from omitting `requests.cpu` beside an HPA and rendering green. And `install-cloud.sh`
 detects a policy CNI with `kubectl get pods -A | grep -qiE 'calico|cilium'` — that is
@@ -164,7 +164,7 @@ So this chart turns their conventions into **render-time errors** (`fail` in `_h
 and `preflight.sh` proves policy enforcement by *sending a packet that must be refused* rather
 than by looking for a pod name. Same destination; a guardrail instead of a habit.
 
-**Generalised:** kobo hand-writes a manifest per service (`20-cloud-api`, `40-zatca`,
+**Generalised:** prior art hand-writes a manifest per service (`20-cloud-api`, `40-zatca`,
 `25-advice-worker`). At 16 services that is 16 chances to forget a probe. Our services already
 share one contract (`/healthz`, `/readyz`, `/metrics`, `/internal/manifest`, config-driven
 ports, zero-hardcoded env), so **one chart + a short values file per service** is the natural
@@ -180,6 +180,6 @@ Every guard was verified to actually FIRE (a guard that never fires is decoratio
 
 **The mutation guard caught me shipping the exact defect this repo exists to prevent.** `image.tag` was a documented, configurable values knob that nothing read — I had rationalised it in a comment as "decoration". Every values key is now mutation-tested inside the context that enables its feature (testing `ingress.host` with ingress off only proves the `if` works), and a companion test fails if a new key is added without a mutation test. `image.tag` is deleted: the image is always resolved by digest.
 
-**Correction recorded** (see §5): two defects I initially attributed to kobo were my own errors — its cloud overlay *does* set `requests.cpu` beside the HPA, and its cloud installer *does* provision Calico. I concluded "absent" from a `head`-truncated grep, and attributed the on-prem channel's flannel caveat to the cloud stack. The chart's value is turning kobo's correct-by-convention into correct-by-construction, plus a preflight that proves policy enforcement by sending a packet rather than by finding a pod name.
+**Correction recorded** (see §5): two defects I initially attributed to the reference implementation were my own errors — its cloud overlay *does* set `requests.cpu` beside the HPA, and its cloud installer *does* provision Calico. I concluded "absent" from a `head`-truncated grep, and attributed the on-prem channel's flannel caveat to the cloud stack. The chart's value is turning the reference implementation's correct-by-convention into correct-by-construction, plus a preflight that proves policy enforcement by sending a packet rather than by finding a pod name.
 
 **Not yet done:** `make up` / `make verify` have not been run against a real K3s cluster (none available on this Windows machine). Everything that can be proven without a cluster is proven; cluster verification is the one open item.

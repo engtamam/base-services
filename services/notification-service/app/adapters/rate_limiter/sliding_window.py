@@ -2,7 +2,7 @@
 
 WHY NOT A FIXED WINDOW.
 
-A fixed window (INCR + EXPIRE — what this service, and `ammar`, and almost every naive limiter do)
+A fixed window (INCR + EXPIRE — what this service, and almost every naive limiter, do)
 allows **twice** the configured budget across a window boundary: spend the whole budget in the last
 millisecond of one window, and the whole budget again in the first millisecond of the next. Two
 bursts, back to back, adding up to 2× — and the per-window graph looks perfectly innocent while the
@@ -80,7 +80,7 @@ def check(tat: float, now_ms: float, *, limit: int, window_ms: int, cost: int = 
 def refund(tat: float, now_ms: float, *, limit: int, window_ms: int, cost: int = 1) -> float:
     """Give back the budget a request consumed, returning the TAT to store.
 
-    This is what makes "count only failed attempts" possible (T6, ammar's idea). The limiter must
+    This is what makes "count only failed attempts" possible (T6). The limiter must
     decide BEFORE the handler runs — so it counts every request up front, and then, once the
     response status is known, a request that should not have counted (a correct password on an
     account pending approval — a 403, not a 401) is REFUNDED here.

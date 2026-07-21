@@ -186,7 +186,7 @@ class Settings(BaseSettings):
     # Per-route budgets. First matching prefix (longest first) wins; unmatched uses RATELIMIT_MAX.
     # A login surface must be far stricter than a health check, so this is config, not a constant.
     RATELIMIT_ROUTES: str = ""                  # JSON: [{"prefix","class","limit","window_s","cost"}]
-    # Which HTTP statuses count as a "failed attempt" on a counted surface. ammar's insight: a
+    # Which HTTP statuses count as a "failed attempt" on a counted surface. The reasoning: a
     # correct password on an account pending approval returns 403 and must NOT count, or the user is
     # locked out while waiting for the approval that would let them in. Empty = count every request.
     RATELIMIT_COUNT_STATUSES: str = ""          # e.g. "401" for a login surface; comma list

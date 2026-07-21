@@ -71,7 +71,7 @@ Phase 2 is complete when **all** are true:
 
 ### Step 2.4 — Zero-infra real adapters
 - Adapters that need **no external system**, proving swappability today:
-  - `secrets/env.py`, `secrets/file.py` (read a KV file; env always wins — mirrors ammar's fail-open Vault seam, generalized).
+  - `secrets/env.py`, `secrets/file.py` (read a KV file; env always wins — mirrors the reference implementation's fail-open Vault seam, generalized).
   - `token_verifier/hs256.py`, `token_verifier/rs256.py` (verify with pinned alg + issuer + audience; **reject alg confusion**).
   - `object_store/local.py` (filesystem; **path-traversal-safe** keys, CWE-22).
   - `rate_limiter/memory.py` (token-bucket / fixed-window).

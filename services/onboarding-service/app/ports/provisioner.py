@@ -5,7 +5,7 @@ wallet-service for a credit. It owns none of them. What it owns is the ORDER, an
 put the world back if a later step fails.
 
 That obligation is why `undo` sits on the port rather than being left to each caller. A create
-without a matching delete is how Kobo ends up with orphan tenants: provisioning succeeds, owner
+without a matching delete is how a platform ends up with orphan tenants: provisioning succeeds, owner
 registration fails, and nothing un-provisions because nobody wrote the undo at the time they wrote
 the create. Pairing them in the interface makes forgetting it a visible omission rather than an
 invisible one.

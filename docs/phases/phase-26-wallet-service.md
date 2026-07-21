@@ -8,14 +8,14 @@
 > "cash". No currency, no VAT rate, no credit names.
 
 Studied (files read, not remembered):
-* `Security-tools` (kobo) `channels/cloud_api/store.py` — dual-fund wallet, `spend_wallet`
+* a second reference implementation `channels/cloud_api/store.py` — dual-fund wallet, `spend_wallet`
   (promo first as a pre-VAT discount, cash covers the gross, never negative, fail-closed),
   idempotency on `source`, append-only `wallet_ledger`, `sweep_expired_promos` clawback.
 * `personal-care-company/hair-analysis-platform` —
   `credits_balance_reserve/confirm/release`, `SELECT … FOR UPDATE`, available =
   `balance − Σ pending`, single-use RS256 scan token bound to `scan_id`.
 
-Each has what the other lacks. kobo has money, VAT, idempotency and an expiry sweep, but **no
+Each has what the other lacks. The reference implementation has money, VAT, idempotency and an expiry sweep, but **no
 holds**. hair has holds, but **nothing ever releases an abandoned one** — `credits_balance_release`
 has exactly two call sites, both explicit cancel paths, and reservations carry no `expires_at`.
 A phone that dies between authorize and submit locks those credits forever, while the balance
@@ -49,7 +49,7 @@ mutates *several funds at once* and appends a row, so it needs compare-and-swap:
 **full-jitter backoff** — see §5: without it, 100 concurrent spends on one wallet produced 33
 needless `409`s against real PostgreSQL.
 
-**A real fix over kobo:** its `_source_seen` runs `SELECT … WHERE source=?` against the ledger.
+**A real fix:** its `_source_seen` runs `SELECT … WHERE source=?` against the ledger.
 Postgres has an index there; our generic DataStore does not, so that is a **full ledger scan on
 every spend**. Idempotency here is a **keyed** lookup (`{tenant}|{type}|{source}`), never a scan.
 
@@ -79,7 +79,7 @@ negative is one someone flips during an incident and never flips back.
 | **`reconcile()`** | two writes, one truth: the materialized balance must be provably equal to `sum(ledger)` |
 | **Integer minor units** | floats lose halalas; money is `int` everywhere, and VAT rounding is stated once |
 | **Keyed idempotency + TTL**, replay returns the ORIGINAL result | at-least-once bus; a replay must not re-apply, and an unbounded dedupe table never forgets |
-| **Top-up credits only on PSP settlement** | kobo's rule: recording an intent is not money |
+| **Top-up credits only on PSP settlement** | the reference implementation's rule: recording an intent is not money |
 | **Expiring grants + clawback sweep** | an unused gift must expire; the customer keeps what they spent |
 | **Bounded ledger pagination** | a statement endpoint that returns the whole ledger is a DoS |
 | **Refund / clawback** | a failed action must return the money |
@@ -170,9 +170,9 @@ Built: `core/money.py` (integer minor units, half-up VAT, `gross == net + vat` e
 1. The first `_plan` derived reserved totals by `store.list(_HOLDS)` — a **full scan of the holds table on every spend**, killing the "0 scans" claim. Reserved totals moved *into* the wallet row, so `available = funds - held` costs nothing.
 2. The first `_commit` did `cas(wallet)` then a separate `put(ledger)`. A crash between them drifts the balance from the ledger forever. The ledger row is now **staged inside the same CAS** (`wallet.pending`) and replayed by the next write or by `reconcile()` — money never moves without its record. A test kills the append and proves the next write repairs it.
 
-**Kept from kobo:** dual-fund promo/cash, promo as a pre-VAT discount, never-negative fail-closed spend, idempotency on `source`, append-only ledger, expiry clawback that keeps what was spent.
+**Kept from prior art:** dual-fund promo/cash, promo as a pre-VAT discount, never-negative fail-closed spend, idempotency on `source`, append-only ledger, expiry clawback that keeps what was spent.
 **Kept from hair:** `reserve → confirm | release`.
-**Fixed in both:** kobo's `_source_seen` is a `WHERE source=?` ledger lookup (indexed there, a full scan on our generic DataStore) → keyed idempotency. hair's reservations have no `expires_at` and no age-based release → **holds expire and a bounded sweeper enforces it**.
+**Fixed in both:** The reference implementation's `_source_seen` is a `WHERE source=?` ledger lookup (indexed there, a full scan on our generic DataStore) → keyed idempotency. hair's reservations have no `expires_at` and no age-based release → **holds expire and a bounded sweeper enforces it**.
 
 **VERIFIED ON REAL POSTGRESQL (16.4, docker).** The DataStore contract runs against a live server whenever `DATASTORE_TEST_DSN` is set. `cas()`: 50 concurrent writers on the same version → **exactly one wins**; 30 concurrent creators of the same new key → **exactly one wins**. Full `WalletService` on Postgres: 50 concurrent spends of the last unit → **1 winner, 49 × InsufficientFunds, balance 0, reconcile consistent**; holds, confirm, refund-to-original-funds and the abandoned-hold sweep all behave identically to the memory adapter.
 

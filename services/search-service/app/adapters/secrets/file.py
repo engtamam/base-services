@@ -1,6 +1,6 @@
 """File SecretsProvider — reads a KEY=VALUE file. Zero infra.
 
-Fail-open + env-wins, mirroring (and generalizing) ammar's Vault seam: the
+Fail-open + env-wins, generalising the usual Vault seam: the
 process environment always overrides the file, so an operator can override any
 file secret without editing the file. Missing/unreadable file => no secrets,
 never a crash.

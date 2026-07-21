@@ -10,7 +10,7 @@
 Build a catalog of **general-purpose backend services** that plug into **any** SaaS or
 platform. Not for one project — for anyone, anywhere, potentially open-sourced for the world.
 
-We learn the good patterns from a reference project ([`ammar` / ProjectBrain], a hardened
+We take the good patterns from prior art (a hardened
 TypeScript microservices monorepo) and **do it better**: more generic, more secure, fully
 adapter-driven.
 
@@ -175,8 +175,8 @@ Every port defines an interface + a memory/null adapter + real adapters. Adapter
 | `RateLimiter` | throttling | `memory`, `redis` |
 | `Telemetry` | logs/metrics/traces | `stdout-json`, `otel` |
 
-> **Security note (beating ammar):** default `TokenVerifier` to **asymmetric** (`rs256`/`jwks`) so a
-> service holds only a *public* key and can never forge tokens (ammar used a shared HS256 secret —
+> **Security note:** default `TokenVerifier` to **asymmetric** (`rs256`/`jwks`) so a
+> service holds only a *public* key and can never forge tokens (a shared HS256 secret —
 > any service could forge). `hs256` stays available for simple single-issuer setups, by config.
 
 ---

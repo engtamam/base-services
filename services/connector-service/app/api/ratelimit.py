@@ -105,7 +105,7 @@ async def rate_limit(request: Request, response: Response,
                                      "RateLimit-Remaining": "0",
                                      "RateLimit-Reset": str(v.reset_s)})
 
-    # T6 (ammar's insight): on a COUNTED surface, only genuine failures should spend the budget. We
+    # T6: on a COUNTED surface, only genuine failures should spend the budget. We
     # cannot know the status yet — the handler has not run — so we count now and let the middleware
     # (register_ratelimit_refund) REFUND this key if the final status is not one that counts. That
     # is how a correct password on an account pending approval (a 403, not a 401) avoids locking the

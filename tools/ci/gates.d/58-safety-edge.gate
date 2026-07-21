@@ -5,7 +5,7 @@ gate_protects="The edge is the ONE machine every request on the platform touches
 terminates TLS. Its config is not data — a Caddyfile is a configuration
 language — so an operator-supplied hostname interpolated into it can inject a
 whole extra site block that proxies traffic to an attacker, TLS-terminated with
-our own cert, looking exactly like us. Neither source repo (ammar, Security-tools)
+our own cert, looking exactly like us. Prior art
 guards this.
 
 Six rules: every interpolated value is VALIDATED; a hostname carrying a Caddyfile
