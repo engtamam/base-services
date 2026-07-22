@@ -63,10 +63,15 @@ class Coupon:
     type: str = "percent"                # percent | fixed | trial
     value: int = 0                       # percent (0-100) | fixed minor | trial days
     currency: str = "SAR"
+    # A window, not just an end. A campaign that starts on Sunday had to be created on Sunday,
+    # by hand, because there was no way to say "valid from".
+    starts_at: float | None = None
     expires_at: float | None = None
     max_redemptions: int = 0             # 0 = unlimited
-    redeemed: int = 0
+    redeemed: int = 0                    # ENFORCED — see core/coupons.py
     active: bool = True
+    created: str = ""
+    note: str = ""                       # why this coupon exists; shown to operators, never to a buyer
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

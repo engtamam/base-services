@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from decimal import ROUND_HALF_UP, Decimal
 
+from app.core import coupons as _coupons
+
 
 def line_amount(price: dict, *, quantity: int = 1, usage_units: int = 0) -> int:
     """Subtotal (minor units) for one price under a subscription."""
@@ -20,9 +22,17 @@ def line_amount(price: dict, *, quantity: int = 1, usage_units: int = 0) -> int:
     return base
 
 
-def coupon_discount(coupon: dict | None, subtotal_minor: int) -> int:
-    """Discount (minor units) — never more than the subtotal."""
+def coupon_discount(coupon: dict | None, subtotal_minor: int, *, now: float | None = None) -> int:
+    """Discount (minor units) — never more than the subtotal.
+
+    `now` gates the campaign window. Without it this checked `active` and nothing else, so a
+    coupon that expired in March kept discounting in July: the expiry was stored, displayed, and
+    never consulted. Callers that have a clock pass it; the default keeps the old behaviour for a
+    caller that genuinely has no time to reason about.
+    """
     if not coupon or not coupon.get("active", True):
+        return 0
+    if now is not None and not _coupons.usable(coupon, now):
         return 0
     ctype, value = coupon.get("type", "percent"), int(coupon.get("value", 0))
     if ctype == "percent":

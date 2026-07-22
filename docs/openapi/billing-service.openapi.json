@@ -118,17 +118,58 @@
         "type": "object"
       },
       "CouponIn": {
+        "description": "Everything a coupon actually has.\n\nThe previous model carried four of these fields, so `expires_at` and `active` could not be set\nthrough the API at all and reset to their defaults on every write \u2014 a panel offering \"expires\non\" or \"turn off\" was offering something the service could not do.",
         "properties": {
+          "active": {
+            "default": true,
+            "title": "Active",
+            "type": "boolean"
+          },
           "code": {
             "maxLength": 64,
             "minLength": 1,
             "title": "Code",
             "type": "string"
           },
+          "currency": {
+            "default": "SAR",
+            "maxLength": 8,
+            "title": "Currency",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
           "max_redemptions": {
             "default": 0,
+            "minimum": 0.0,
             "title": "Max Redemptions",
             "type": "integer"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 512,
+            "title": "Note",
+            "type": "string"
+          },
+          "starts_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Starts At"
           },
           "type": {
             "default": "percent",
@@ -138,6 +179,7 @@
           },
           "value": {
             "default": 0,
+            "minimum": 0.0,
             "title": "Value",
             "type": "integer"
           }
@@ -146,6 +188,106 @@
           "code"
         ],
         "title": "CouponIn",
+        "type": "object"
+      },
+      "CouponPatchIn": {
+        "description": "A partial edit. Every field optional, and `redeemed` is not among them: the counter belongs\nto what customers did, not to what an operator is changing.",
+        "properties": {
+          "active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "maxLength": 8,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "max_redemptions": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Redemptions"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "starts_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Starts At"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "pattern": "^(percent|fixed|trial)$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Type"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "title": "CouponPatchIn",
         "type": "object"
       },
       "EraseIn": {
@@ -594,6 +736,51 @@
   "openapi": "3.1.0",
   "paths": {
     "/api/v1/billing/coupons": {
+      "get": {
+        "description": "Every coupon, with why each is or is not discounting.\n\nThere was no route at all: an operator could create a code and then had to remember it, for\never, because nothing could tell them what existed.",
+        "operationId": "list_coupons_api_v1_billing_coupons_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 16,
+              "title": "Status",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Coupons Api V1 Billing Coupons Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Coupons",
+        "tags": [
+          "billing"
+        ]
+      },
       "post": {
         "operationId": "create_coupon_api_v1_billing_coupons_post",
         "requestBody": {
@@ -631,6 +818,146 @@
           }
         },
         "summary": "Create Coupon",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/coupons/{code}": {
+      "delete": {
+        "description": "Remove a coupon outright.\n\nDistinct from turning one off: a mistyped code nobody used should disappear, while a campaign\ncustomers redeemed should be deactivated and KEPT, so the record of what was honoured survives.",
+        "operationId": "delete_coupon_api_v1_billing_coupons__code__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "title": "Code",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Coupon Api V1 Billing Coupons  Code  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Coupon",
+        "tags": [
+          "billing"
+        ]
+      },
+      "get": {
+        "operationId": "get_coupon_api_v1_billing_coupons__code__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "title": "Code",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Coupon Api V1 Billing Coupons  Code  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Coupon",
+        "tags": [
+          "billing"
+        ]
+      },
+      "patch": {
+        "description": "Edit a coupon without resetting what customers have already redeemed.",
+        "operationId": "update_coupon_api_v1_billing_coupons__code__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "title": "Code",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CouponPatchIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Update Coupon Api V1 Billing Coupons  Code  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Coupon",
         "tags": [
           "billing"
         ]

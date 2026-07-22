@@ -116,6 +116,8 @@ class PlanStore(_Repo):
 
 class CouponStore(_Repo):
     collection = "coupons"
+    # Global, like the plan catalogue: a coupon code is not owned by a tenant.
+    tenant_scoped = False
 
     async def upsert(self, c: Coupon) -> Coupon:
         await self.put(c.code, c.to_dict())
@@ -124,6 +126,58 @@ class CouponStore(_Repo):
     async def fetch(self, code: str) -> Coupon | None:
         r = await self.get(code)
         return Coupon.from_dict(r) if r else None
+
+    async def patch(self, code: str, changes: dict) -> Coupon | None:
+        """Change some fields of an existing coupon, leaving the rest alone.
+
+        `redeemed` is NEVER writable through here. A full-object write was the only way to edit a
+        coupon, and it reset the redemption counter to zero — so correcting a typo in a campaign
+        silently resurrected a coupon that customers had already used up. The counter belongs to
+        what happened, not to what an operator is editing.
+        """
+        row = await self.get(code)
+        if row is None:
+            return None
+        for key, value in changes.items():
+            if key in ("code", "redeemed"):
+                continue
+            if value is not None:
+                row[key] = value
+        await self.put(code, row)
+        return Coupon.from_dict(row)
+
+    async def redeem(self, code: str) -> int:
+        """Count one use. Returns the new total.
+
+        Nothing called anything like this before: `redeemed` was declared on the model and never
+        written, so `max_redemptions` was a number an operator set and the service ignored.
+        """
+        row = await self.get(code)
+        if row is None:
+            return 0
+        row["redeemed"] = int(row.get("redeemed", 0) or 0) + 1
+        await self.put(code, row)
+        return row["redeemed"]
+
+    async def all(self, limit: int = 100) -> list[dict]:
+        """The whole coupon catalogue."""
+        # sweeper: the coupon CATALOGUE is global and small (one row per campaign, not per
+        # tenant), exactly like the plan catalogue above. There is no tenant to scope by, so
+        # reading it whole IS the operation rather than a shortcut around an index — and it is
+        # bounded by _CATALOG_MAX so a runaway campaign list cannot become an unbounded read.
+        return (await self._store.scan_all(self.collection, _CATALOG_MAX))[:limit]
+
+    async def remove(self, code: str) -> bool:
+        """Delete a coupon outright.
+
+        Offered alongside deactivation because they are different intentions: a mistyped code that
+        was never used should disappear, while a campaign that customers redeemed should be turned
+        OFF and kept, so the history of what was honoured survives.
+        """
+        if await self.get(code) is None:
+            return False
+        await self.delete(code)
+        return True
 
 
 class SubscriptionStore(_Repo):

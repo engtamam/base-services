@@ -12,6 +12,7 @@ import json as _json
 import time
 from typing import Any
 
+from app.core import coupons as _coupons
 from app.core import entitlements as _ent
 from app.core.entitlement_resolver import EntitlementResolver
 from app.core import pricing
@@ -199,7 +200,41 @@ class BillingService:
         return [r for r in rows if r.get("listed", True) and r.get("active", True)]
 
     async def upsert_coupon(self, **kw) -> Coupon:
-        return await self._coupons.upsert(Coupon(**kw))
+        return await self._coupons.upsert(Coupon(created=iso(), **kw))
+
+    async def list_coupons(self, *, status: str = "") -> list[dict]:
+        """Every coupon, with WHY each one is or is not currently discounting.
+
+        There was no way to list coupons at all: an operator had to remember every code they had
+        ever created. Status is derived rather than stored, so a campaign that lapsed at midnight
+        reads as expired without anything having had to wake up and mark it.
+        """
+        now = self._clock()
+        rows = [_coupons.view(r, now) for r in await self._coupons.all(self._cfg["list_limit"])]
+        if status:
+            if status not in _coupons.STATUSES:
+                raise ValueError(f"UNKNOWN_STATUS:{status}")
+            rows = [r for r in rows if r["status"] == status]
+        return sorted(rows, key=lambda r: r.get("created", ""), reverse=True)
+
+    async def get_coupon(self, code: str) -> dict | None:
+        row = await self._coupons.get(code)
+        return _coupons.view(row, self._clock()) if row else None
+
+    async def update_coupon(self, code: str, **changes) -> dict:
+        """Edit a live coupon without disturbing what customers have already redeemed."""
+        allowed = ("type", "value", "currency", "starts_at", "expires_at", "max_redemptions",
+                   "active", "note")
+        for key in changes:
+            if key not in allowed:
+                raise ValueError(f"COUPON_FIELD_NOT_EDITABLE:{key}")
+        updated = await self._coupons.patch(code, changes)
+        if updated is None:
+            raise ValueError("COUPON_NOT_FOUND")
+        return _coupons.view(updated.to_dict(), self._clock())
+
+    async def delete_coupon(self, code: str) -> bool:
+        return await self._coupons.remove(code)
 
     # ── subscriptions ─────────────────────────────────────────────────────────────
     def _price_for(self, plan: Plan, interval: str) -> dict:
@@ -231,6 +266,18 @@ class BillingService:
         now = now_ts()
         trial_days = plan.trial_days or self._cfg["trial_days"]
         coupon = await self._coupons.fetch(coupon_code) if coupon_code else None
+        if coupon_code:
+            # Claimed HERE, once, when the code is attached to a subscription — not per billing
+            # cycle. max_redemptions means "how many customers may use this"; counting per cycle
+            # would make a monthly coupon consume its own cap every month and retire itself after
+            # N months for a single customer.
+            #
+            # Nothing incremented `redeemed` before this line existed, so the cap an operator set
+            # was never enforced at all.
+            reason = _coupons.status(coupon.to_dict() if coupon else None, now)
+            if reason != _coupons.ACTIVE:
+                raise ValueError(f"COUPON_{reason.upper()}")
+            await self._coupons.redeem(coupon_code)
         if coupon and coupon.type == "trial":
             trial_days += int(coupon.value)
         trial_end = now + trial_days * 86400 if trial_days else 0.0
@@ -382,7 +429,10 @@ class BillingService:
                                                       sub.current_period_start, sub.current_period_end)
         subtotal = pricing.line_amount(price, quantity=sub.quantity, usage_units=usage_units)
         coupon = await self._coupons.fetch(sub.coupon_code) if sub.coupon_code else None
-        discount = pricing.coupon_discount(coupon.to_dict() if coupon else None, subtotal)
+        # `now` gates the campaign window: an expired or exhausted coupon must stop
+        # discounting, and until this argument existed neither ever did.
+        discount = pricing.coupon_discount(coupon.to_dict() if coupon else None, subtotal,
+                                           now=self._clock())
         taxable, tax, total = self._split_tax(subtotal - discount, price.get("includes_tax", False),
                                               reverse_charge=bool(sub.buyer_vat) and self._cfg.get("reverse_charge", False))
         lines = [{"description": (plan.name if plan else "Subscription"),

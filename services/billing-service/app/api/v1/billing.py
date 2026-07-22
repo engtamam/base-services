@@ -140,10 +140,36 @@ class PlanAvailabilityIn(BaseModel):
 
 
 class CouponIn(BaseModel):
+    """Everything a coupon actually has.
+
+    The previous model carried four of these fields, so `expires_at` and `active` could not be set
+    through the API at all and reset to their defaults on every write — a panel offering "expires
+    on" or "turn off" was offering something the service could not do.
+    """
+
     code: str = Field(min_length=1, max_length=64)
     type: str = Field(default="percent", pattern="^(percent|fixed|trial)$")
-    value: int = 0
-    max_redemptions: int = 0
+    value: int = Field(default=0, ge=0)
+    currency: str = Field(default="SAR", max_length=8)
+    starts_at: float | None = None
+    expires_at: float | None = None
+    max_redemptions: int = Field(default=0, ge=0)     # 0 = unlimited
+    active: bool = True
+    note: str = Field(default="", max_length=512)
+
+
+class CouponPatchIn(BaseModel):
+    """A partial edit. Every field optional, and `redeemed` is not among them: the counter belongs
+    to what customers did, not to what an operator is changing."""
+
+    type: str | None = Field(default=None, pattern="^(percent|fixed|trial)$")
+    value: int | None = Field(default=None, ge=0)
+    currency: str | None = Field(default=None, max_length=8)
+    starts_at: float | None = None
+    expires_at: float | None = None
+    max_redemptions: int | None = Field(default=None, ge=0)
+    active: bool | None = None
+    note: str | None = Field(default=None, max_length=512)
 
 
 class SubscribeIn(BaseModel):
@@ -240,8 +266,64 @@ async def plan_availability(request: Request, plan_id: str, body: PlanAvailabili
 
 
 @router.post("/coupons", status_code=201, dependencies=[Depends(_ADMIN)])
-async def create_coupon(request: Request, body: CouponIn) -> dict:
+async def create_coupon(request: Request, body: CouponIn,
+                        principal: Principal = Depends(require_user)) -> dict:
+    await request.app.state.auditor.record(
+        "coupon.created", actor=principal.subject, tenant=principal.tenant,
+        resource=f"coupon:{body.code}", ip=request.client.host if request.client else "")
     return (await (await build_billing(request)).upsert_coupon(**body.model_dump())).to_dict()
+
+
+@router.get("/coupons", dependencies=[Depends(_ADMIN)])
+async def list_coupons(request: Request,
+                       status_: str = Query(default="", alias="status", max_length=16)) -> dict:
+    """Every coupon, with why each is or is not discounting.
+
+    There was no route at all: an operator could create a code and then had to remember it, for
+    ever, because nothing could tell them what existed.
+    """
+    try:
+        return {"coupons": await (await build_billing(request)).list_coupons(status=status_)}
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+
+@router.get("/coupons/{code}", dependencies=[Depends(_ADMIN)])
+async def get_coupon(request: Request, code: str) -> dict:
+    row = await (await build_billing(request)).get_coupon(code)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    return row
+
+
+@router.patch("/coupons/{code}", dependencies=[Depends(_ADMIN)])
+async def update_coupon(request: Request, code: str, body: CouponPatchIn,
+                        principal: Principal = Depends(require_user)) -> dict:
+    """Edit a coupon without resetting what customers have already redeemed."""
+    await request.app.state.auditor.record(
+        "coupon.updated", actor=principal.subject, tenant=principal.tenant,
+        resource=f"coupon:{code}", ip=request.client.host if request.client else "",
+        metadata={"fields": sorted(k for k, v in body.model_dump().items() if v is not None)})
+    try:
+        return await (await build_billing(request)).update_coupon(
+            code, **{k: v for k, v in body.model_dump().items() if v is not None})
+    except ValueError as exc:
+        code_ = status.HTTP_404_NOT_FOUND if "NOT_FOUND" in str(exc) else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(code_, str(exc)) from exc
+
+
+@router.delete("/coupons/{code}", dependencies=[Depends(_ADMIN)])
+async def delete_coupon(request: Request, code: str,
+                        principal: Principal = Depends(require_user)) -> dict:
+    """Remove a coupon outright.
+
+    Distinct from turning one off: a mistyped code nobody used should disappear, while a campaign
+    customers redeemed should be deactivated and KEPT, so the record of what was honoured survives.
+    """
+    await request.app.state.auditor.record(
+        "coupon.deleted", actor=principal.subject, tenant=principal.tenant,
+        resource=f"coupon:{code}", ip=request.client.host if request.client else "")
+    return {"deleted": await (await build_billing(request)).delete_coupon(code)}
 
 
 # ── subscriptions (customer) ────────────────────────────────────────────────────

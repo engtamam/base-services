@@ -122,5 +122,22 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "resource": "plan",
         "why": "retiring a plan stops all new revenue on it; doing that by accident is a silent "
                "outage of the signup funnel that nothing else would surface",
+    },
+    {
+        "action": "coupon.updated",
+        "source": "admin",
+        "critical": True,
+        "resource": "coupon",
+        "why": "raising a discount or extending a campaign changes what the platform earns, and "
+               "the previous terms are overwritten by the edit — without this nobody can say what "
+               "the coupon was worth yesterday",
+    },
+    {
+        "action": "coupon.deleted",
+        "source": "admin",
+        "critical": True,
+        "resource": "coupon",
+        "why": "the coupon and its redemption history are gone; if it is not recorded here there "
+               "is no evidence the campaign ever existed",
     }
 ]
