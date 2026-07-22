@@ -143,6 +143,28 @@ class ExportStore:
         await self._s.put(_EXPORTS, exp.id, exp.to_dict())
         return exp
 
+    async def list_for_tenant(self, tenant: str, limit: int = 50, after: str | None = None,
+                              status: str | None = None,
+                              source_id: str | None = None) -> tuple[list[Export], str | None]:
+        """One tenant's exports, newest first.
+
+        There was no way to list these at all: an export could be created and then fetched only by
+        the id the caller happened to keep. An export that a browser tab lost was unreachable —
+        still occupying storage, still holding footage, and invisible to the operator responsible
+        for both.
+
+        `status` is the filter that matters, because the question is almost always "which of my
+        exports are ready?" or "which failed?".
+        """
+        query: dict[str, Any] = {"tenant": tenant}
+        if status:
+            query["status"] = status
+        if source_id:
+            query["source_id"] = source_id
+        rows, cursor = await self._s.find(_EXPORTS, query, limit=limit, after=after,
+                                          sort=("created", "desc"))
+        return [Export.from_dict(r) for r in rows], cursor
+
 
 class TriggerStore:
     """Per-source triggers, stored as one row keyed by source id."""

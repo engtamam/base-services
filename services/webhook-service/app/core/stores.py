@@ -121,6 +121,20 @@ class EventStore:
         row = await self._store.get(_EVENTS, event_id)
         return Event.from_dict(row) if row else None
 
+    async def list(self, tenant: str, *, type_: str | None = None, limit: int = 100,
+                   after: str | None = None) -> tuple[list[dict], str | None]:
+        """One tenant's events, newest first.
+
+        Events were saved and could only be fetched by an id somebody already had — so replaying a
+        delivery required knowing the event id in advance, which is exactly what an operator
+        investigating a failure does not have. The list is what makes replay usable.
+        """
+        where: dict[str, Any] = {"tenant": tenant}
+        if type_:
+            where["type"] = type_
+        return await self._store.find(_EVENTS, where, limit=limit, after=after,
+                                      sort=("created", "desc"))
+
 
 class DeliveryStore:
     def __init__(self, store: DataStore) -> None:
@@ -136,16 +150,22 @@ class DeliveryStore:
         return Delivery.from_dict(row) if row else None
 
     async def list(self, tenant: str, *, status: str | None = None, limit: int = 100,
-                   after: str | None = None) -> list[dict]:
+                   after: str | None = None) -> tuple[list[dict], str | None]:
+        """One tenant's deliveries, newest first.
+
+        Returns the cursor the datastore gives us. It used to be discarded, so past the limit the
+        remaining deliveries were unreachable and nothing in the response said so — on the dead
+        letter queue of all places, where the whole point is to work through a backlog.
+        """
         where: dict[str, Any] = {"tenant": tenant}
         if status:
             where["status"] = status
-        rows, _ = await self._store.find(_DELIVERIES, where, limit=limit, after=after,
-                                         sort=("created", "desc"))
-        return rows
+        return await self._store.find(_DELIVERIES, where, limit=limit, after=after,
+                                      sort=("created", "desc"))
 
-    async def dead_letters(self, tenant: str, limit: int = 100) -> list[dict]:
-        return await self.list(tenant, status=DEAD, limit=limit)
+    async def dead_letters(self, tenant: str, limit: int = 100,
+                           after: str | None = None) -> tuple[list[dict], str | None]:
+        return await self.list(tenant, status=DEAD, limit=limit, after=after)
 
     async def due(self, now: float, limit: int = 100) -> list[Delivery]:
         """The retry queue. `status` is pushed down; the due time is compared here.

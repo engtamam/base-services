@@ -117,4 +117,16 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         "group": "Settings", "confirm": True,
         "params": [{"name": "key", "in": "path", "type": "string", "required": True}],
     },
+    {
+        "id": "webhooks.list_events", "label": "Events", "method": "GET",
+        "path": "/api/v1/webhooks/events", "capability": "webhooks.read", "group": "Events",
+        # Events were reachable only by an id somebody already held, so replaying a failed
+        # delivery required knowing the event id in advance — exactly what an operator
+        # investigating a failure does not have.
+        "params": [
+            {"name": "type", "in": "query", "type": "string", "required": False},
+            {"name": "limit", "in": "query", "type": "integer", "required": False},
+            {"name": "cursor", "in": "query", "type": "string", "required": False},
+        ],
+    }
 ]

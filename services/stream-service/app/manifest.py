@@ -89,6 +89,7 @@ def build_manifest(
             {"path": "/api/v1/exports", "tier": "user", "method": "POST"},
             {"path": "/api/v1/exports/{id}", "tier": "user", "method": "GET"},
             {"path": "/api/v1/exports/{id}/download", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/exports", "tier": "user", "method": "GET"},
             {"path": "/api/v1/recordings/{id}/lock", "tier": "user", "method": "POST"},
             {"path": "/api/v1/recordings/{id}/unlock", "tier": "user", "method": "POST"},
             {"path": "/api/v1/sources/{id}/ptz/move", "tier": "user", "method": "POST"},

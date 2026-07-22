@@ -143,4 +143,17 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         "group": "Settings", "confirm": True,
         "params": [{"name": "key", "in": "path", "type": "string", "required": True}],
     },
+    {
+        "id": "stream.list_exports", "label": "Exports", "method": "GET",
+        "path": "/api/v1/exports", "capability": "stream.view", "group": "Exports",
+        # An export could be created and then only fetched by an id the caller kept. One lost with
+        # a browser tab was unreachable — still holding footage and still costing storage.
+        "params": [
+            {"name": "status", "in": "query", "type": "string", "required": False,
+             "help": "pending | ready | failed"},
+            {"name": "source_id", "in": "query", "type": "string", "required": False},
+            {"name": "limit", "in": "query", "type": "integer", "required": False},
+            {"name": "after", "in": "query", "type": "string", "required": False},
+        ],
+    }
 ]

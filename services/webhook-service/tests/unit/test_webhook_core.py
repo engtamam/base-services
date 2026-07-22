@@ -180,7 +180,10 @@ def test_retries_exhaust_into_dead_letter_never_dropped():
         run(w._endpoints.save_state(e))
         out = run(w.deliver(d))
     assert out["status"] == DEAD and out["error"] == "retries_exhausted"
-    assert len(run(w._deliveries.dead_letters("t1"))) == 1
+    # (rows, cursor): the DLQ is paged now — the cursor used to be discarded, on the one
+    # queue whose whole purpose is working through a backlog until it is empty.
+    dead, _ = run(w._deliveries.dead_letters("t1"))
+    assert len(dead) == 1
     assert any(e == "webhook.dead_lettered" for e, _ in bus.events)
 
 
@@ -239,7 +242,7 @@ def test_replay_a_dead_letter_after_recovery():
     assert run(w.deliver(d))["status"] == DEAD
     tr.status = 200
     assert run(w.replay(d))["status"] == DELIVERED
-    assert run(w._deliveries.dead_letters("t1")) == []
+    assert run(w._deliveries.dead_letters("t1"))[0] == []
 
 
 def test_replay_event_replays_every_delivery():

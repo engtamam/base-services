@@ -69,6 +69,7 @@ def build_manifest(
             {"path": "/api/v1/webhooks/deliveries", "tier": "user", "method": "GET"},
             {"path": "/api/v1/webhooks/dead-letters", "tier": "user", "method": "GET"},
             {"path": "/api/v1/webhooks/deliveries/{id}/replay", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/webhooks/events", "tier": "user", "method": "GET"},
             {"path": "/api/v1/webhooks/events/{id}/replay", "tier": "user", "method": "POST"},
             {"path": "/api/v1/webhooks/dispatch", "tier": "user", "method": "POST"},
             {"path": "/api/v1/webhooks/sweep", "tier": "user", "method": "POST"},

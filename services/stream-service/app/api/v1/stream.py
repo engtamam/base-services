@@ -440,6 +440,23 @@ async def request_export(request: Request, body: ExportIn,
     return exp.public_dict()
 
 
+@router.get("/exports", dependencies=[Depends(_READ)])
+async def list_exports(request: Request, p: Principal = Depends(require_user),
+                       status_: str | None = Query(None, alias="status", max_length=16),
+                       source_id: str | None = Query(None, max_length=128),
+                       limit: int = Query(50, ge=1, le=200),
+                       after: str | None = Query(None, max_length=512)) -> dict:
+    """This tenant's exports.
+
+    There was no listing: an export could be created and then only fetched by an id the caller
+    kept. One lost with a browser tab was unreachable — still holding footage and still costing
+    storage, invisible to the operator responsible for both.
+    """
+    rows, cursor = await ExportStore(request.app.state.container.datastore).list_for_tenant(
+        p.tenant or "", limit=limit, after=after, status=status_, source_id=source_id)
+    return {"exports": [e.public_dict() for e in rows], "next": cursor}
+
+
 @router.get("/exports/{export_id}", dependencies=[Depends(_READ)])
 async def get_export(request: Request, export_id: str,
                      p: Principal = Depends(require_user)) -> dict:

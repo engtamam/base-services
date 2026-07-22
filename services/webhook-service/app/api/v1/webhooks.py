@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from app.api.auth import Principal
@@ -164,20 +164,50 @@ async def endpoint_health(request: Request, endpoint_id: str, principal: Princip
     return await svc.health(endpoint_id)
 
 
+# ── events ────────────────────────────────────────────────────────────────────
+@router.get("/events", dependencies=[Depends(_READ)])
+async def list_events(request: Request,
+                      type_: str | None = Query(default=None, alias="type", max_length=128),
+                      limit: int | None = Query(default=None, ge=1, le=1000),
+                      cursor: str | None = Query(default=None, max_length=512),
+                      principal: Principal = Depends(_READ)) -> dict:
+    """This tenant's events.
+
+    They were stored and reachable only by an id somebody already held — so replaying a delivery
+    meant knowing the event id in advance, which is precisely what an operator investigating a
+    failure does not have.
+    """
+    ceiling = get_settings().WEBHOOK_LIST_LIMIT
+    rows, nxt = await build_webhooks(request)._events.list(
+        _tenant(principal), type_=type_, limit=max(1, min(int(limit or ceiling), ceiling)),
+        after=cursor)
+    return {"events": rows, "next_cursor": nxt}
+
+
 # ── deliveries / DLQ / replay ──────────────────────────────────────────────────
 @router.get("/deliveries", dependencies=[Depends(_READ)])
 async def list_deliveries(request: Request, status_filter: str | None = None,
+                          limit: int | None = Query(default=None, ge=1, le=1000),
+                          cursor: str | None = Query(default=None, max_length=512),
                           principal: Principal = Depends(_READ)) -> dict:
-    svc = build_webhooks(request)
-    return {"deliveries": await svc._deliveries.list(_tenant(principal), status=status_filter,
-                                                     limit=get_settings().WEBHOOK_LIST_LIMIT)}
+    ceiling = get_settings().WEBHOOK_LIST_LIMIT
+    rows, nxt = await build_webhooks(request)._deliveries.list(
+        _tenant(principal), status=status_filter,
+        limit=max(1, min(int(limit or ceiling), ceiling)), after=cursor)
+    return {"deliveries": rows, "next_cursor": nxt}
 
 
 @router.get("/dead-letters", dependencies=[Depends(_READ)])
-async def dead_letters(request: Request, principal: Principal = Depends(_READ)) -> dict:
-    svc = build_webhooks(request)
-    return {"dead_letters": await svc._deliveries.dead_letters(_tenant(principal),
-                                                               get_settings().WEBHOOK_LIST_LIMIT)}
+async def dead_letters(request: Request,
+                       limit: int | None = Query(default=None, ge=1, le=1000),
+                       cursor: str | None = Query(default=None, max_length=512),
+                       principal: Principal = Depends(_READ)) -> dict:
+    """The dead letter queue, PAGED — the cursor was discarded here of all places, where the whole
+    job is working through a backlog until it is empty."""
+    ceiling = get_settings().WEBHOOK_LIST_LIMIT
+    rows, nxt = await build_webhooks(request)._deliveries.dead_letters(
+        _tenant(principal), max(1, min(int(limit or ceiling), ceiling)), after=cursor)
+    return {"dead_letters": rows, "next_cursor": nxt}
 
 
 @router.post("/deliveries/{delivery_id}/replay", dependencies=[Depends(_ADMIN)])
