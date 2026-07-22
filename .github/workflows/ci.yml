@@ -66,6 +66,10 @@ jobs:
       - name: "safety:event-contract — a service admits to the events it publishes"
         run: bash tools/ci/run_all_gates.sh --only safety:event-contract
 
+      # gates: safety:admin-params
+      - name: "safety:admin-params — a declared admin action can actually be performed"
+        run: bash tools/ci/run_all_gates.sh --only safety:admin-params
+
       # gates: safety:runner
       - name: "safety:runner — the gate runner's own guards, plus scripts/tests"
         run: |

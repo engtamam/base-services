@@ -26,7 +26,8 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         "path": "/api/v1/roles", "capability": "platform.authz", "group": "Roles", "confirm": True,
         "params": [
             {"name": "name", "in": "body", "type": "string", "required": True},
-            {"name": "capabilities", "in": "body", "type": "object", "required": True},
+            {"name": "capabilities", "in": "body", "type": "array", "required": False,
+             "help": "list of capability strings"},
         ],
     },
     {
@@ -35,7 +36,7 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         "danger": True, "confirm": True,
         "params": [
             {"name": "role_id", "in": "path", "type": "string", "required": True},
-            {"name": "capabilities", "in": "body", "type": "object", "required": True,
+            {"name": "capabilities", "in": "body", "type": "array", "required": False,
              "help": "changes what EVERYONE holding this role may do on their next mint"},
         ],
     },
@@ -54,6 +55,15 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         "id": "authz.create_policy", "label": "Create policy", "method": "POST",
         "path": "/api/v1/policies", "capability": "platform.authz", "group": "Policies",
         "confirm": True,
+        "params": [
+            {"name": "effect", "in": "body", "type": "enum", "required": True,
+             "enum": ["allow", "deny"]},
+            {"name": "action", "in": "body", "type": "string", "required": False},
+            {"name": "resource", "in": "body", "type": "string", "required": False},
+            {"name": "condition", "in": "body", "type": "object", "required": False},
+            {"name": "priority", "in": "body", "type": "integer", "required": False},
+            {"name": "description", "in": "body", "type": "string", "required": False},
+        ],
     },
     {
         "id": "authz.delete_policy", "label": "Delete policy", "method": "DELETE",
@@ -74,7 +84,10 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         "group": "Assignments", "confirm": True,
         "params": [
             {"name": "subject", "in": "path", "type": "string", "required": True},
-            {"name": "roles", "in": "body", "type": "object", "required": True},
+            {"name": "roles", "in": "body", "type": "array", "required": False,
+             "help": "role ids; replaces the subject's current set"},
+            {"name": "capabilities", "in": "body", "type": "array", "required": False,
+             "help": "direct capability grants, alongside the roles"},
         ],
     },
 ]

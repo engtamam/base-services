@@ -162,6 +162,36 @@ class BillingService:
             changes["listed"] = listed
         return await self.update_plan(plan_id, **changes)
 
+    # What a visitor may see of a plan. A WHITELIST, deliberately: a denylist would leak every
+    # field added later, and the person adding it would have no reason to think about this list.
+    # These are the terms of the offer — what it costs and what it includes — and nothing about
+    # how the platform is run.
+    PUBLIC_PLAN_FIELDS = ("id", "name", "prices", "features", "limits", "trial_days")
+    PUBLIC_PRICE_FIELDS = ("interval", "amount_minor", "currency", "type", "usage_metric",
+                           "included_units", "overage_minor", "includes_tax")
+
+    async def public_plans(self) -> list[dict]:
+        """The catalogue a pricing page can show to someone who has not signed up.
+
+        `list_plans` requires a capability, which is correct for the panel and useless for a
+        marketing page: a visitor has no principal, so the page that has to show prices was the one
+        surface that could not read them. This is the same catalogue, projected down to the offer
+        itself.
+
+        Retired and unlisted plans are excluded — `listed=False` is the operator's own "do not show
+        this" switch, and honouring it anywhere else while ignoring it here would make the switch a
+        lie.
+        """
+        out = []
+        for row in await self._plans.all(self._cfg["list_limit"]):
+            if not (row.get("active", True) and row.get("listed", True)):
+                continue
+            plan = {k: row.get(k) for k in self.PUBLIC_PLAN_FIELDS if k in row}
+            plan["prices"] = [{k: p.get(k) for k in self.PUBLIC_PRICE_FIELDS if k in p}
+                              for p in (row.get("prices") or [])]
+            out.append(plan)
+        return out
+
     async def list_plans(self, *, include_hidden: bool = False) -> list[dict]:
         rows = await self._plans.all(self._cfg["list_limit"])
         if include_hidden:

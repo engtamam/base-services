@@ -17,19 +17,22 @@ from typing import Any
 
 ADMIN_ACTIONS: list[dict[str, Any]] = [
     {
-        # THE READ AN OPERATOR MOST NEEDS, and it was the one the panel could not render.
-        # GET /api/v1/audit answers ACROSS tenants for a platform.audit holder, but it was
-        # declared only in user_actions as the self-service "my activity log". A panel builds
-        # itself from the ADMIN catalog, so an investigator had a purge button and a verify
-        # button and no way to look at the log.
         "id": "audit.query", "label": "Search the audit log", "method": "GET",
         "path": "/api/v1/audit", "capability": "platform.audit", "group": "Audit",
+        # An audit log that cannot be narrowed by actor or action is unusable at the size an audit
+        # log reaches. These filters always worked; they were read off the raw query string and so
+        # never reached the spec, which made them invisible to this catalog and to any generated
+        # client. They are declared on the route now.
         "params": [
-            {"name": "tenant", "in": "query", "type": "string", "required": False,
-             "help": "omit to search ACROSS tenants — platform.audit only"},
             {"name": "actor", "in": "query", "type": "string", "required": False,
-             "help": "a raw identifier is folded to its pseudonym before matching"},
+             "help": "a subject pseudonym, never a name"},
             {"name": "action", "in": "query", "type": "string", "required": False},
+            {"name": "service", "in": "query", "type": "string", "required": False},
+            {"name": "resource", "in": "query", "type": "string", "required": False},
+            {"name": "since", "in": "query", "type": "string", "required": False},
+            {"name": "until", "in": "query", "type": "string", "required": False},
+            {"name": "tenant", "in": "query", "type": "string", "required": False,
+             "help": "platform.audit only; a tenant admin is always scoped to their own"},
             {"name": "limit", "in": "query", "type": "integer", "required": False},
         ],
     },

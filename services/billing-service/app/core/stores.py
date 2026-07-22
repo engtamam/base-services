@@ -50,6 +50,29 @@ class _Repo:
                                          limit=limit, after=after, sort=("created", "desc"))
         return rows
 
+    # Filters a caller may narrow a listing by. A WHITELIST per repo, because the alternative —
+    # passing query parameters into the datastore — lets anyone filter by any stored field and
+    # turns a list endpoint into an arbitrary query engine over other people's rows.
+    filterable: tuple[str, ...] = ()
+
+    async def browse(self, tenant: str, *, limit: int = 100, after: str | None = None,
+                     where: dict | None = None,
+                     sort: tuple[str, str] = ("created", "desc")) -> tuple[list[dict], str | None]:
+        """A page of one tenant's rows, narrowed and RESUMABLE.
+
+        `list_tenant` discarded the cursor the datastore already returned, so a listing was
+        capped rather than paginated: past the limit the remaining rows were simply invisible,
+        with nothing in the response to say so. A UI cannot show a second page of invoices it is
+        never told exists.
+        """
+        query = {"tenant": tenant}
+        for key, value in (where or {}).items():
+            if key not in self.filterable:
+                raise ValueError(f"NOT_FILTERABLE:{key}")
+            if value not in (None, ""):
+                query[key] = value
+        return await self._store.find(self.collection, query, limit=limit, after=after, sort=sort)
+
 
 async def bump_generation(cache, scope: str) -> None:
     """Invalidate every cached limits lookup for `scope` (a tenant id, or 'global').
@@ -104,6 +127,7 @@ class CouponStore(_Repo):
 
 
 class SubscriptionStore(_Repo):
+    filterable = ("status", "plan_id")
     collection = "subscriptions"
 
     def __init__(self, store: DataStore, cache=None) -> None:
@@ -182,6 +206,9 @@ class SubscriptionStore(_Repo):
 
 class InvoiceStore(_Repo):
     collection = "invoices"
+    # Status is what a finance UI filters on: unpaid, paid, written off. Nothing else is
+    # exposed — an amount or a buyer name would let a caller probe rows by content.
+    filterable = ("status", "subscription_id")
     _SEQ = "billing_seq"
 
     async def next_number(self, tenant: str) -> str:

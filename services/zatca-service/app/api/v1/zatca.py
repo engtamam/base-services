@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from starlette.responses import Response
 
@@ -110,10 +110,25 @@ async def onboard_production(request: Request, principal: Principal = Depends(_A
 # ── invoices ──────────────────────────────────────────────────────────────────
 @router.get("/invoices")
 async def list_invoices(request: Request, needs_attention: bool = False,
+                        status_: str = Query(default="", alias="status", max_length=32),
+                        limit: int | None = Query(default=None, ge=1, le=1000),
+                        cursor: str | None = Query(default=None, max_length=512),
                         principal: Principal = Depends(_ADMIN)) -> dict:
+    """E-invoices, filterable by status and paginated — what a compliance screen needs.
+
+    Previously this returned an unfilterable, unpaginated slice, so an operator could not answer
+    "which invoices were rejected?" without reading the whole list themselves.
+    """
+    s = get_settings()
+    ceiling = s.ZATCA_LIST_LIMIT
     svc = (await build_zatca(request))
-    return {"invoices": await svc._inv.list(op_tenant(principal), needs_attention=needs_attention,
-                                            limit=get_settings().ZATCA_LIST_LIMIT)}
+    try:
+        rows, nxt = await svc._inv.browse(
+            op_tenant(principal), status=status_, needs_attention=needs_attention,
+            limit=max(1, min(int(limit or ceiling), ceiling)), after=cursor)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return {"invoices": rows, "next_cursor": nxt}
 
 
 @router.post("/invoices/{invoice_id}/resubmit")

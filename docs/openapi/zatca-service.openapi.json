@@ -583,6 +583,7 @@
     },
     "/api/v1/zatca/invoices": {
       "get": {
+        "description": "E-invoices, filterable by status and paginated \u2014 what a compliance screen needs.\n\nPreviously this returned an unfilterable, unpaginated slice, so an operator could not answer\n\"which invoices were rejected?\" without reading the whole list themselves.",
         "operationId": "list_invoices_api_v1_zatca_invoices_get",
         "parameters": [
           {
@@ -593,6 +594,52 @@
               "default": false,
               "title": "Needs Attention",
               "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 32,
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 1000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
             }
           }
         ],

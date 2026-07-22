@@ -740,7 +740,96 @@
     },
     "/api/v1/billing/invoices": {
       "get": {
+        "description": "Invoices, filterable and paginated.\n\nPreviously this returned one tenant's first N rows with no filter, no cursor and no way to\ntell that anything had been left out \u2014 so a finance page could not show unpaid invoices, could\nnot reach the second page, and a platform operator could not see across tenants at all.",
         "operationId": "list_invoices_api_v1_billing_invoices_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "subscription_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Subscription Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 1000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -753,6 +842,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "List Invoices",
@@ -1179,6 +1278,30 @@
         ]
       }
     },
+    "/api/v1/billing/public/plans": {
+      "get": {
+        "description": "The published catalogue, for a pricing page \u2014 NO capability required.\n\nThis was the missing line. Every other plan route needs a capability, which is right for the\npanel and useless for the surface that most needs prices: a visitor deciding whether to sign\nup has no principal, so the pricing page was the one page that could not read the prices.\n\nUNAUTHENTICATED, so three things are deliberate. It shows only plans the operator marked\n`listed` AND `active`, because those switches mean nothing if one route ignores them. It\nreturns a WHITELIST of fields rather than the stored row, so a field added to Plan later\ncannot leak by default. And it is rate limited like everything else, because an endpoint\nanyone can call is an endpoint anyone can hammer.\n\nDeliberately NOT here: coupons. A discount code that anybody can enumerate is a discount\neverybody has.",
+        "operationId": "public_plans_api_v1_billing_public_plans_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Public Plans Api V1 Billing Public Plans Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Public Plans",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
     "/api/v1/billing/settlements/{settlement_id}/reverse": {
       "post": {
         "description": "A recalled or bounced transfer. History is never deleted; a credit note is issued.",
@@ -1236,7 +1359,96 @@
     },
     "/api/v1/billing/subscriptions": {
       "get": {
+        "description": "Subscriptions, filterable and paginated, so a UI can actually browse them.",
         "operationId": "list_subs_api_v1_billing_subscriptions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "plan_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Plan Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 1000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -1249,6 +1461,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "List Subs",

@@ -5,12 +5,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from starlette.responses import Response
 
 from app.api.auth import Principal, require_user
 from app.api.authz import require_any_capability
+from app.api.ratelimit import rate_limit
 from app.config import get_settings
 from app.core import settlement as _stl
 from app.core.events import Emitter
@@ -176,6 +177,26 @@ async def create_plan(request: Request, body: PlanIn) -> dict:
     return p.to_dict()
 
 
+@router.get("/public/plans", dependencies=[Depends(rate_limit)])
+async def public_plans(request: Request) -> dict:
+    """The published catalogue, for a pricing page — NO capability required.
+
+    This was the missing line. Every other plan route needs a capability, which is right for the
+    panel and useless for the surface that most needs prices: a visitor deciding whether to sign
+    up has no principal, so the pricing page was the one page that could not read the prices.
+
+    UNAUTHENTICATED, so three things are deliberate. It shows only plans the operator marked
+    `listed` AND `active`, because those switches mean nothing if one route ignores them. It
+    returns a WHITELIST of fields rather than the stored row, so a field added to Plan later
+    cannot leak by default. And it is rate limited like everything else, because an endpoint
+    anyone can call is an endpoint anyone can hammer.
+
+    Deliberately NOT here: coupons. A discount code that anybody can enumerate is a discount
+    everybody has.
+    """
+    return {"plans": await (await build_billing(request)).public_plans()}
+
+
 @router.get("/plans", dependencies=[Depends(_SELF)])
 async def list_plans(request: Request, include_hidden: bool = False,
                      principal: Principal = Depends(require_user)) -> dict:
@@ -299,10 +320,44 @@ async def run_cycle(request: Request, sub_id: str) -> dict:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
 
 
+def _page(limit: int | None, s) -> int:
+    """A caller may ask for fewer rows, never more. An unbounded limit is a way to make the
+    service read an entire collection on request."""
+    ceiling = s.BILLING_LIST_LIMIT
+    return max(1, min(int(limit or ceiling), ceiling))
+
+
+def _scope(principal: Principal, tenant: str | None) -> str:
+    """Which tenant this listing covers.
+
+    `tenant` is honoured ONLY for a platform operator — _tenant() enforces that, and it is the
+    single place the rule lives. For everyone else a cross-tenant request is refused outright
+    rather than quietly answered with their own rows: silently substituting the caller's tenant
+    would show them their own invoices under someone else's name, which is worse than an error.
+    """
+    if tenant and "platform.billing" not in principal.caps:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "CROSS_TENANT_FORBIDDEN")
+    return _tenant(principal, tenant)
+
+
 @router.get("/subscriptions", dependencies=[Depends(_SELF)])
-async def list_subs(request: Request, principal: Principal = Depends(_SELF)) -> dict:
-    return {"subscriptions": await (await build_billing(request))._subs.list(_tenant(principal),
-                                                                     get_settings().BILLING_LIST_LIMIT)}
+async def list_subs(request: Request, status_: str | None = Query(default=None, alias="status",
+                                                                  max_length=32),
+                    plan_id: str | None = Query(default=None, max_length=64),
+                    limit: int | None = Query(default=None, ge=1, le=1000),
+                    cursor: str | None = Query(default=None, max_length=512),
+                    tenant: str | None = Query(default=None, max_length=128),
+                    principal: Principal = Depends(_SELF)) -> dict:
+    """Subscriptions, filterable and paginated, so a UI can actually browse them."""
+    s = get_settings()
+    svc = await build_billing(request)
+    try:
+        rows, nxt = await svc._subs.browse(
+            _scope(principal, tenant), limit=_page(limit, s), after=cursor,
+            where={"status": status_, "plan_id": plan_id})
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return {"subscriptions": rows, "next_cursor": nxt}
 
 
 @router.post("/usage", status_code=201)
@@ -314,9 +369,28 @@ async def record_usage(request: Request, body: UsageIn, principal: Principal = D
 
 # ── invoices ───────────────────────────────────────────────────────────────────
 @router.get("/invoices", dependencies=[Depends(_SELF)])
-async def list_invoices(request: Request, principal: Principal = Depends(_SELF)) -> dict:
-    return {"invoices": await (await build_billing(request))._invoices.list(_tenant(principal),
-                                                                    get_settings().BILLING_LIST_LIMIT)}
+async def list_invoices(request: Request, status_: str | None = Query(default=None, alias="status",
+                                                                      max_length=32),
+                        subscription_id: str | None = Query(default=None, max_length=64),
+                        limit: int | None = Query(default=None, ge=1, le=1000),
+                        cursor: str | None = Query(default=None, max_length=512),
+                        tenant: str | None = Query(default=None, max_length=128),
+                        principal: Principal = Depends(_SELF)) -> dict:
+    """Invoices, filterable and paginated.
+
+    Previously this returned one tenant's first N rows with no filter, no cursor and no way to
+    tell that anything had been left out — so a finance page could not show unpaid invoices, could
+    not reach the second page, and a platform operator could not see across tenants at all.
+    """
+    s = get_settings()
+    svc = await build_billing(request)
+    try:
+        rows, nxt = await svc._invoices.browse(
+            _scope(principal, tenant), limit=_page(limit, s), after=cursor,
+            where={"status": status_, "subscription_id": subscription_id})
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return {"invoices": rows, "next_cursor": nxt}
 
 
 @router.get("/invoices/{invoice_id}/pdf")

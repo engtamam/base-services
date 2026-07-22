@@ -65,6 +65,36 @@ class InvoiceStore:
         rows.sort(key=lambda r: int(r.get("icv", 0)), reverse=True)
         return [ZatcaInvoice.from_dict(r).public() for r in rows[:limit]]
 
+    # The statuses a UI filters on. A whitelist: the query goes into the datastore, so anything
+    # not listed here would let a caller probe rows by a field that is not theirs to query.
+    BROWSABLE_STATUS = ("none", "pending", "signed", "submitted", "cleared", "reported",
+                        "rejected", "failed")
+    ATTENTION_STATUS = ("pending", "signed", "submitted", "rejected")
+
+    async def browse(self, tenant: str, *, status: str = "", needs_attention: bool = False,
+                     limit: int = 100, after: str | None = None) -> tuple[list[dict], str | None]:
+        """A page of one taxpayer's invoices, narrowed and resumable.
+
+        `list()` reads the taxpayer's WHOLE invoice history into memory and filters in Python. That
+        is fine for a sweeper and wrong for a screen: a taxpayer with three years of invoices pays
+        for all of them every time somebody opens the page, and there was no cursor, so nothing
+        past the cap was reachable or even known to exist.
+
+        A single status is pushed into the datastore. `needs_attention` covers four statuses at
+        once, which an equality filter cannot express, so it stays a post-filter over a bounded
+        page — honest about what it is rather than pretending to be indexed.
+        """
+        if status and status not in self.BROWSABLE_STATUS:
+            raise ValueError(f"UNKNOWN_STATUS:{status}")
+        query: dict = {"tenant": tenant}
+        if status:
+            query["status"] = status
+        rows, cursor = await self._store.find(_INVOICES, query, limit=limit, after=after,
+                                              sort=("created", "desc"))
+        if needs_attention:
+            rows = [r for r in rows if r.get("status") in self.ATTENTION_STATUS]
+        return [ZatcaInvoice.from_dict(r).public() for r in rows], cursor
+
     async def due_for_retry(self, now_ts: float, limit: int = 100) -> list[ZatcaInvoice]:
         """Invoices not yet cleared by ZATCA and ready for another attempt.
 

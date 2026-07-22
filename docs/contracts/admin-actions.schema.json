@@ -45,7 +45,7 @@
           "properties": {
             "name": { "type": "string", "pattern": "^[a-z][a-zA-Z0-9_]{0,63}$" },
             "in": { "type": "string", "enum": ["path", "query", "body"] },
-            "type": { "type": "string", "enum": ["string", "integer", "number", "boolean", "enum", "object"] },
+            "type": { "type": "string", "enum": ["string", "integer", "number", "boolean", "enum", "object", "array"] },
             "required": { "type": "boolean", "default": false },
             "enum": { "type": "array", "items": { "type": "string" } },
             "label": { "type": "string", "maxLength": 120 },

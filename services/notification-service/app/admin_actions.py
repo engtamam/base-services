@@ -28,7 +28,7 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
             {"name": "locale", "in": "body", "type": "string", "required": True},
             {"name": "subject", "in": "body", "type": "string", "required": True},
             {"name": "body", "in": "body", "type": "string", "required": True},
-            {"name": "version", "in": "body", "type": "string", "required": False},
+            {"name": "version", "in": "body", "type": "integer", "required": False},
         ],
     },
     # ── Operator controls: credentials and policy, changeable after launch ────

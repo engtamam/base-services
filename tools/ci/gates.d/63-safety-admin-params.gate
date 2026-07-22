@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+gate_name="safety:admin-params"
+gate_desc="a declared admin action can actually be performed"
+gate_protects="safety:admin already proves an action's ROUTE and CAPABILITY exist. That is not
+enough. A console renders a form from the declaration, so an action whose params
+do not match the API is a button that 422s every time it is pressed — and the
+operator cannot tell why, because the panel never said what the API wanted.
+
+Found across fifteen services on the first run, in three shapes:
+
+  billing.create_plan declared NO params while the API requires a name and a
+  non-empty prices list. The console posted an empty body.
+
+  billing.update_plan declared prices/limits/trial_days as \"string\" where the API
+  wants array/object/integer. Three text boxes, every submit a 422 — introduced by
+  the same change that added the route, which is when nobody looks at a console.
+
+  The contract had no \"array\" type at all, so a list-valued field could not be
+  described truthfully by anyone trying. authz-service had been calling a list of
+  capabilities an \"object\" for exactly that reason.
+
+Checked against the GENERATED OpenAPI spec, so it cannot drift from the service.
+Path params are checked against the ACTION'S OWN path template, never the API's
+internal parameter name — the first draft compared those and reported twenty-five
+pieces of correct code."
+gate_needs="python"
+gate_env=""
+gate_subject="services/*/app/admin_actions.py"
+gate_units=0
+gate_slow=0
+
+gate_main() {
+  "$PY" tools/ci/check_admin_params.py || return 1
+  return 0
+}
+
+# A gate that cannot fail is decoration. Plant the exact defect — a required body field the
+# declaration does not mention — and require a refusal.
+gate_selftest() {
+  local probe="$RUN_TMP/admin-params"
+  mkdir -p "$probe/services/thing-service/app" "$probe/openapi"
+  cat > "$probe/services/thing-service/app/admin_actions.py" <<'PY'
+ADMIN_ACTIONS = [
+    {"id": "thing.make", "label": "Make", "method": "POST", "path": "/api/v1/things",
+     "capability": "platform.thing", "group": "Things"},
+]
+PY
+  cat > "$probe/openapi/thing-service.openapi.json" <<'JSON'
+{"paths": {"/api/v1/things": {"post": {"requestBody": {"content": {"application/json":
+ {"schema": {"type": "object", "required": ["name"],
+             "properties": {"name": {"type": "string"}}}}}}}}}}
+JSON
+  ! ( SERVICES_ROOT="$probe/services" OPENAPI_DIR="$probe/openapi" \
+      "$PY" tools/ci/check_admin_params.py >/dev/null 2>&1 )
+}

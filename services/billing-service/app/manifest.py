@@ -62,6 +62,9 @@ def build_manifest(
             {"path": "/internal/billing/dunning", "tier": "internal", "method": "POST"},
             {"path": "/api/v1/billing/plans", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/plans", "tier": "user", "method": "GET"},
+            # PUBLIC by design: a pricing page has no principal. Shows only listed+active plans,
+            # projected to a whitelist of offer fields.
+            {"path": "/api/v1/billing/public/plans", "tier": "public", "method": "GET"},
             {"path": "/api/v1/billing/coupons", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/subscriptions", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/subscriptions", "tier": "user", "method": "GET"},

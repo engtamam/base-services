@@ -31,7 +31,15 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
      "group": "Onboarding", "danger": True, "confirm": True},
     # ── Invoices ─────────────────────────────────────────────────────────────
     {"id": "zatca.list_invoices", "label": "List invoices", "method": "GET",
-     "path": "/api/v1/zatca/invoices", "capability": "platform.zatca", "group": "Invoices"},
+     "path": "/api/v1/zatca/invoices", "capability": "platform.zatca", "group": "Invoices",
+     "params": [
+         {"name": "status", "in": "query", "type": "string", "required": False,
+          "help": "pending | signed | submitted | cleared | reported | rejected | failed"},
+         {"name": "needs_attention", "in": "query", "type": "boolean", "required": False,
+          "help": "anything not yet cleared by the tax authority"},
+         {"name": "limit", "in": "query", "type": "integer", "required": False},
+         {"name": "cursor", "in": "query", "type": "string", "required": False},
+     ]},
     {"id": "zatca.resubmit", "label": "Resubmit a rejected invoice", "method": "POST",
      "path": "/api/v1/zatca/invoices/{id}/resubmit", "capability": "platform.zatca", "group": "Invoices",
      "confirm": True,

@@ -12,13 +12,65 @@ from typing import Any
 
 ADMIN_ACTIONS: list[dict[str, Any]] = [
     # ── Catalog ──────────────────────────────────────────────────────────────
+    # A panel that can only ACT is half a panel. Plan listing existed ONLY under billing.self,
+    # so a CUSTOMER could see the catalogue and an OPERATOR could not — they had a button to
+    # change a price and no way to see what the price was.
+    {
+        "id": "billing.list_plans", "label": "Plans & pricing", "method": "GET",
+        "path": "/api/v1/billing/plans", "capability": "billing.manage", "group": "Catalogue",
+        "params": [
+            {"name": "include_hidden", "in": "query", "type": "boolean", "required": False,
+             "help": "also show retired and unlisted plans — the operator view"},
+        ],
+    },
+    {
+        "id": "billing.list_invoices", "label": "Invoices", "method": "GET",
+        "path": "/api/v1/billing/invoices", "capability": "billing.manage", "group": "Invoices",
+        "params": [
+            {"name": "status", "in": "query", "type": "string", "required": False,
+             "help": "open | paid | void | uncollectible"},
+            {"name": "tenant", "in": "query", "type": "string", "required": False,
+             "help": "platform.billing only: look across tenants"},
+            {"name": "limit", "in": "query", "type": "integer", "required": False},
+            {"name": "cursor", "in": "query", "type": "string", "required": False},
+        ],
+    },
+    {
+        "id": "billing.list_subscriptions", "label": "Subscriptions", "method": "GET",
+        "path": "/api/v1/billing/subscriptions", "capability": "billing.manage",
+        "group": "Subscriptions",
+        "params": [
+            {"name": "status", "in": "query", "type": "string", "required": False},
+            {"name": "plan_id", "in": "query", "type": "string", "required": False},
+            {"name": "tenant", "in": "query", "type": "string", "required": False,
+             "help": "platform.billing only: look across tenants"},
+            {"name": "limit", "in": "query", "type": "integer", "required": False},
+            {"name": "cursor", "in": "query", "type": "string", "required": False},
+        ],
+    },
     {
         "id": "billing.create_plan", "label": "Create plan", "method": "POST",
         "path": "/api/v1/billing/plans", "capability": "platform.billing", "group": "Catalog",
+        "params": [
+            {"name": "name", "in": "body", "type": "string", "required": True},
+            {"name": "prices", "in": "body", "type": "array", "required": True,
+             "help": "[{interval, amount_minor, currency, type}] — the API rejects an empty list"},
+            {"name": "features", "in": "body", "type": "array", "required": False},
+            {"name": "limits", "in": "body", "type": "object", "required": False},
+            {"name": "trial_days", "in": "body", "type": "integer", "required": False},
+        ],
     },
     {
         "id": "billing.create_coupon", "label": "Create coupon", "method": "POST",
-        "path": "/api/v1/billing/coupons", "capability": "platform.billing", "group": "Catalog",
+        "path": "/api/v1/billing/coupons", "capability": "platform.billing",
+        "group": "Catalogue",
+        "params": [
+            {"name": "code", "in": "body", "type": "string", "required": True},
+            {"name": "type", "in": "body", "type": "enum", "required": False,
+             "help": "percent | fixed | trial"},
+            {"name": "value", "in": "body", "type": "integer", "required": False},
+            {"name": "max_redemptions", "in": "body", "type": "integer", "required": False},
+        ],
     },
     # ── Subscriptions (operator) ─────────────────────────────────────────────
     {
@@ -144,10 +196,10 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         "params": [
             {"name": "plan_id", "in": "path", "type": "string", "required": True},
             {"name": "name", "in": "body", "type": "string", "required": False},
-            {"name": "prices", "in": "body", "type": "string", "required": False,
+            {"name": "prices", "in": "body", "type": "array", "required": False,
              "help": "existing subscribers keep the price they were sold"},
-            {"name": "limits", "in": "body", "type": "string", "required": False},
-            {"name": "trial_days", "in": "body", "type": "string", "required": False},
+            {"name": "limits", "in": "body", "type": "object", "required": False},
+            {"name": "trial_days", "in": "body", "type": "integer", "required": False},
         ],
     },
     {
@@ -156,9 +208,9 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         "group": "Catalogue", "confirm": True,
         "params": [
             {"name": "plan_id", "in": "path", "type": "string", "required": True},
-            {"name": "active", "in": "body", "type": "string", "required": False,
+            {"name": "active", "in": "body", "type": "boolean", "required": False,
              "help": "false: nobody new may subscribe. Existing subscribers are untouched"},
-            {"name": "listed", "in": "body", "type": "string", "required": False,
+            {"name": "listed", "in": "body", "type": "boolean", "required": False,
              "help": "false: hidden from the plan list, still subscribable"},
         ],
     }

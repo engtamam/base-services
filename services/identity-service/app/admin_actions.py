@@ -34,7 +34,7 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         "params": [
             {"name": "identifier", "in": "body", "type": "string", "required": True,
              "help": "the person's login identifier — an invite is sent; the admin never sets the password"},
-            {"name": "roles", "in": "body", "type": "object", "required": False},
+            {"name": "roles", "in": "body", "type": "array", "required": False},
         ],
     },
     {
