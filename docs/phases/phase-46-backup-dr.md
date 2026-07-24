@@ -98,7 +98,7 @@ managed separately so restoring does not require handing out every service's own
 
 ## Tasks
 
-- [ ] **46.1** The `backup` manifest block + `safety:backup-coverage` gate (a written collection undeclared → build red), proven to fail on a planted gap
+- [x] **46.1** The `backup` manifest block + `safety:backup-coverage` gate (a written collection undeclared → build red), proven to fail on a planted gap
 - [ ] **46.2** Template `/internal/backup/export` + `/internal/backup/import`: streamed, sealed, checksummed, idempotent import keyed on row identity
 - [ ] **46.3a** The PUBLIC backup contract in `docs/contracts/`: manifest `backup` block, the export
   envelope format, and the two endpoint schemas — versioned, so a third party builds against a fixed

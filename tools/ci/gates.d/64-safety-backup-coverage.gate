@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+gate_name="safety:backup-coverage"
+gate_desc="a service backs up every collection it writes, or excludes it with a reason"
+gate_protects="This is the guarantee that makes backup plug-and-play. A service is backed up by
+DECLARING what it holds and answering two endpoints; the backup service never opens
+another service's database. That only works if the declaration is complete, and the
+failure it prevents is the kind nobody notices: a collection is added, the backup
+manifest is not updated, backups keep running green, and the day a restore is needed
+that data is simply not there.
+
+So completeness is mechanical, not a promise. This discovers every collection the
+code actually writes — the class 'collection' attribute and any string reaching a
+datastore method's first argument — and requires each to be in the manifest's backup
+block, either backed up or DELIBERATELY excluded with a reason. A collection that is
+neither fails the build.
+
+The discovery is narrow on purpose: it matches datastore receivers only, because the
+first draft counted every dict.get() and reported a hundred field names — the
+cries-wolf failure the event-contract and admin-params gates each hit before being
+narrowed. A service with no backup block yet is a note, not a failure: during rollout
+that is honest, and it becomes strict the moment the service declares its first block."
+gate_needs="python"
+gate_env=""
+gate_subject="services/*/app/backup_manifest.py"
+gate_units=0
+gate_slow=0
+
+gate_main() {
+  "$PY" tools/ci/check_backup_coverage.py || return 1
+  return 0
+}
+
+# A gate that cannot fail is decoration. Plant the exact defect — a written collection missing from
+# the block — and require a refusal.
+gate_selftest() {
+  local probe="$RUN_TMP/backup-cov/services/thing-service/app"
+  mkdir -p "$probe/core"
+  cat > "$probe/backup_manifest.py" <<'PY'
+BACKUP = {"object_prefix": "", "collections": [{"name": "widgets"}], "excluded": []}
+PY
+  cat > "$probe/core/stores.py" <<'PY'
+class WidgetStore:
+    collection = "widgets"
+
+class GadgetStore:
+    collection = "gadgets"   # written, and NOT in the backup block
+PY
+  ! ( SERVICES_ROOT="$RUN_TMP/backup-cov/services" \
+      "$PY" tools/ci/check_backup_coverage.py >/dev/null 2>&1 )
+}

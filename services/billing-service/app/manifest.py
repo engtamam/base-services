@@ -15,6 +15,18 @@ from app.core.events import EMITTED as _EMITTED
 from app.config import Settings
 
 
+def _backup() -> dict:
+    """This service's backup declaration (app/backup_manifest.py), or an empty one.
+
+    Published in the manifest so the backup fan-out discovers what to capture the same way the DSAR
+    fan-out discovers who holds a person — a holder nobody declares is one nobody backs up."""
+    try:
+        from app.backup_manifest import BACKUP
+    except Exception:
+        return {"object_prefix": "", "collections": [], "excluded": []}
+    return BACKUP
+
+
 def _admin_actions() -> list[dict[str, Any]]:
     """This service's declared admin actions (docs/contracts/admin-actions.schema.json), or [] if it
     declares none. Opt-in: a service with no app/admin_actions.py simply exposes nothing to the
@@ -115,5 +127,6 @@ def build_manifest(
         # safety:event-contract gate fails the build if this list and core/events.py disagree.
         "events": {"emitted": list(_EMITTED), "consumed": []},
         "admin_actions": _admin_actions(),
+        "backup": _backup(),
         "user_actions": _user_actions(),
     }
