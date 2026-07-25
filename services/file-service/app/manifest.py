@@ -46,7 +46,8 @@ def build_manifest(
         "name": settings.SERVICE_NAME,
         "version": settings.SERVICE_VERSION,
         "env": settings.ENV,
-        "capabilities": ["files.upload", "files.read", "platform.secrets", "platform.config"],
+        "capabilities": ["files.upload", "files.read", "platform.files", "platform.secrets",
+                         "platform.config"],
         "endpoints": [
             {"path": "/healthz", "tier": "public", "method": "GET"},
             {"path": "/readyz", "tier": "public", "method": "GET"},
@@ -75,6 +76,8 @@ def build_manifest(
             {"path": "/api/v1/files/{id}/metadata", "tier": "user", "method": "GET"},
             {"path": "/api/v1/files/{id}/signed-url", "tier": "user", "method": "POST"},
             {"path": "/api/v1/files/{id}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/files/admin/list", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/files/admin/{id}/metadata", "tier": "user", "method": "GET"},
             {"path": "/api/v1/files/uploads", "tier": "user", "method": "POST"},
             {"path": "/api/v1/files/uploads/{id}/complete", "tier": "user", "method": "POST"},
             {"path": "/api/v1/files/uploads/{id}", "tier": "user", "method": "GET"},

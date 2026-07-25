@@ -1,15 +1,14 @@
 """file-service — admin actions: the operator controls, and nothing else.
 
-Every file route is `_SELF` self-service: upload / list / download / delete — and the large
-direct-to-bucket flow (initiate / complete / status / abort) — operate ONLY on the caller's own
-tenant and owner, taken from the token, never from a parameter. The two capabilities —
-files.upload / files.read — are ordinary user grants, not a `platform.*` operator surface, and
-there is no cross-tenant "list all files" or "manage storage" route to expose. The scan-drain and
-session sweeper are internal-token, service-to-service routes, not operator actions either.
+The self-service file routes — upload / list / download / delete, and the large direct-to-bucket
+flow — operate ONLY on the caller's own tenant and owner, taken from the token, under the ordinary
+files.upload / files.read grants. Mutation stays self-service: there is no cross-tenant delete or
+upload from the panel, and the scan-drain and session sweeper are internal-token routes.
 
-What IS an operator action is the key that signs every share link, and the policy around it. That
-is declared below. If a genuine file-management operator route is ever added (e.g. a storage-quota
-or global-purge endpoint under a platform.files capability), declare it here too.
+The OPERATOR surface is read-only and platform-gated: the credentials and policy an operator manages
+(platform.secrets / platform.config), and — under platform.files — browsing and inspecting ANY
+tenant's files for support. The platform-wide reader already existed in the file-access check; this
+adds the browse it lacked and advertises the capability. Every cross-tenant look is audited.
 """
 from __future__ import annotations
 
@@ -66,5 +65,28 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         "path": "/api/v1/operator/config/{key}", "capability": "platform.config",
         "group": "Settings", "confirm": True,
         "params": [{"name": "key", "in": "path", "type": "string", "required": True}],
+    },
+    # ── File management: browse and inspect ANY tenant's files (platform.files) ─
+    # The platform-wide reader existed in code but could only OPEN a known file id; there was no way
+    # to browse to one, and platform.files was not even advertised. Both fixed. Read-only — deletion
+    # and upload stay self-service — and every cross-tenant look is audited.
+    {
+        "id": "files.browse", "label": "Browse a tenant's files", "method": "GET",
+        "path": "/api/v1/files/admin/list", "capability": "platform.files", "group": "Files",
+        "params": [
+            {"name": "tenant", "in": "query", "type": "string", "required": True,
+             "help": "the tenant whose files to browse"},
+            {"name": "limit", "in": "query", "type": "integer", "required": False,
+             "help": "page size (clamped by the service)"},
+            {"name": "after", "in": "query", "type": "string", "required": False,
+             "help": "keyset cursor from the previous page"},
+        ],
+    },
+    {
+        "id": "files.inspect", "label": "Inspect a file's metadata", "method": "GET",
+        "path": "/api/v1/files/admin/{file_id}/metadata", "capability": "platform.files",
+        "group": "Files",
+        "params": [{"name": "file_id", "in": "path", "type": "string", "required": True,
+                    "help": "the file id, across any tenant"}],
     },
 ]

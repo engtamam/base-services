@@ -50,6 +50,34 @@ def _upload(client, data=PNG, ct="image/png", name="pic.png", **h):
                        headers={**_h(**h), "Content-Type": ct, "X-Filename": name})
 
 
+def test_operator_browses_and_inspects_across_tenants(client):
+    # A file owned by tenant 'acme'.
+    fid = _upload(client, tenant="acme", sub="owner").json()["id"]
+    op = {"headers": _h(caps=("platform.files",), tenant="ops", sub="op1")}
+
+    # Browse acme's files as an operator whose own tenant is 'ops'.
+    listed = client.get("/api/v1/files/admin/list?tenant=acme", **op)
+    assert listed.status_code == 200
+    assert any(f["id"] == fid for f in listed.json()["files"])
+
+    # Inspect that file's metadata across the tenant boundary.
+    meta = client.get(f"/api/v1/files/admin/{fid}/metadata", **op)
+    assert meta.status_code == 200 and meta.json()["id"] == fid
+
+
+def test_operator_file_routes_need_platform_files(client):
+    """A plain files.read/upload user must not reach the cross-tenant operator routes."""
+    user = {"headers": _h(caps=("files.read", "files.upload"))}
+    assert client.get("/api/v1/files/admin/list?tenant=acme", **user).status_code == 403
+    assert client.get("/api/v1/files/admin/x/metadata", **user).status_code == 403
+    assert client.get("/api/v1/files/admin/list?tenant=acme").status_code == 401
+
+
+def test_operator_browse_requires_a_tenant(client):
+    op = {"headers": _h(caps=("platform.files",), tenant="ops")}
+    assert client.get("/api/v1/files/admin/list", **op).status_code == 422
+
+
 def test_upload_download_delete(client):
     r = _upload(client)
     assert r.status_code == 201

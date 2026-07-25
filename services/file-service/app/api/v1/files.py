@@ -255,6 +255,42 @@ async def delete(request: Request, file_id: str, principal: Principal = Depends(
     return await svc.delete(file_id)
 
 
+# ── Operator: browse and inspect ANY tenant's files (platform.files) ──────────
+# The platform-wide reader already exists in _load_scoped (a platform.files holder crosses tenants),
+# but it could only OPEN a file whose id you already knew — there was no way to browse to one. These
+# are the operator's browse + inspect, gated by platform.files ONLY, with the tenant explicit and
+# audited. Read-only; deletion and upload stay self-service.
+_FILES_OP = require_capability("platform.files")
+
+
+@router.get("/admin/list", dependencies=[Depends(_FILES_OP), Depends(rate_limit)])
+async def operator_list(request: Request, tenant: str = Query(..., min_length=1, max_length=128),
+                        limit: int = Query(default=100, ge=1, le=1000),
+                        after: str | None = Query(default=None, max_length=512),
+                        principal: Principal = Depends(require_user)) -> dict:
+    """Browse a SPECIFIC tenant's files, keyset-paged. The see-before-you-open read a support
+    operator needs; the tenant is an explicit, mandatory, audited argument."""
+    await request.app.state.auditor.record(
+        "file.inspected", actor=principal.subject, tenant=tenant, resource="file_list",
+        ip=request.client.host if request.client else "", metadata={"view": "list"})
+    return await (await build_files(request)).list(tenant, limit=limit, after=after)
+
+
+@router.get("/admin/{file_id}/metadata", dependencies=[Depends(_FILES_OP), Depends(rate_limit)])
+async def operator_metadata(request: Request, file_id: str,
+                            principal: Principal = Depends(require_user)) -> dict:
+    """One file's metadata for an operator, across tenants. Metadata only — not the bytes; a
+    platform reader browsing a support case does not need to pull the content to see the record."""
+    await request.app.state.auditor.record(
+        "file.inspected", actor=principal.subject, tenant="", resource=f"file:{file_id}",
+        ip=request.client.host if request.client else "", metadata={"view": "metadata"})
+    try:
+        f = await (await build_files(request)).get(file_id)
+    except NotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    return f.to_dict()
+
+
 # ── Public: signed URL (no auth — the token IS the grant) ────────────────────
 @public_router.get("/files/signed/{token}")
 async def signed_download(request: Request, token: str):

@@ -64,6 +64,14 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "show who removed a customer's data",
     },
     {
+        "action": "file.inspected",
+        "source": "admin",
+        "critical": False,
+        "why": "a platform operator browsed or inspected a specific tenant's files across the tenant "
+               "boundary; who looked at whose files, and when, is what a security review asks about. "
+               "Not critical: it is a read, and refusing it during an audit outage protects nothing",
+    },
+    {
         "action": "subject.erased",
         "source": "internal",
         "critical": True,

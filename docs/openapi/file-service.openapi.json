@@ -349,6 +349,127 @@
         ]
       }
     },
+    "/api/v1/files/admin/list": {
+      "get": {
+        "description": "Browse a SPECIFIC tenant's files, keyset-paged. The see-before-you-open read a support\noperator needs; the tenant is an explicit, mandatory, audited argument.",
+        "operationId": "operator_list_api_v1_files_admin_list_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Operator List Api V1 Files Admin List Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Operator List",
+        "tags": [
+          "files"
+        ]
+      }
+    },
+    "/api/v1/files/admin/{file_id}/metadata": {
+      "get": {
+        "description": "One file's metadata for an operator, across tenants. Metadata only \u2014 not the bytes; a\nplatform reader browsing a support case does not need to pull the content to see the record.",
+        "operationId": "operator_metadata_api_v1_files_admin__file_id__metadata_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "title": "File Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Operator Metadata Api V1 Files Admin  File Id  Metadata Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Operator Metadata",
+        "tags": [
+          "files"
+        ]
+      }
+    },
     "/api/v1/files/uploads": {
       "post": {
         "description": "Begin a direct-to-bucket upload. Returns either a dedup hit (already yours) or a presigned\nmultipart plan the client PUTs its parts to.",
