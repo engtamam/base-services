@@ -55,6 +55,36 @@ For one service at a time (never a blanket sweep — the whole point is reviewin
    `safety:audit-wiring`, `safety:manifest-routes`, `safety:openapi` all green; new routes tested for
    capability-gating and echo-confirm.
 
+## Outcome (all 22 complete)
+
+Every service reviewed against the completeness bar. Twelve had a real gap and were enriched; ten
+were verified complete as-is (their empty/limited surface a reviewed decision, not a leftover).
+Platform-wide declared admin actions rose to 274, each proven by `safety:admin` + `safety:admin-params`.
+
+Gaps found and closed:
+- **47.1 wallet** — cross-tenant operator reads (balance/ledger/reconcile), platform-only, audited.
+- **47.2 onboarding** — flow catalogue, provisioning-run view, resume stuck cleanup.
+- **47.3 audit** — the operator export (search was declared, export wasn't).
+- **47.4 search** — an index catalogue (you can't inspect an index you can't discover).
+- **47.5 file** — operator file browse/inspect; `platform.files` was enforced but unadvertised.
+- **47.6 job** — a job-detail read (see-before-you-replay), route-shadowing guard.
+- **47.7 analytics** — edit a saved report in place (create+delete ≠ update).
+- **47.8 identity** — change a member's roles in place, respecting the T2 credential boundary.
+- **47.9 tenant** — the tenant's own admin console (tenant.manage) declared.
+- **47.10 authz** — view a policy, and a subject's EFFECTIVE capabilities (was internal-only).
+- **47.12 notification** — the delivery log ("did it send?"), recipients masked.
+- **47.17 zatca** — an invoice-detail read (see why it was rejected before resubmitting).
+- **47.20 stream** — the rest of the export flow + session playback.
+
+Verified complete as-is (reviewed decision): 47.11 assistant, 47.13 verification (enumeration-oracle
+guard), 47.14 api-gateway (panel host, empty by design), 47.15 feature-flag, 47.16 connector,
+47.18 webhook, 47.19 compliance (list already returns full detail), 47.21 billing (drift already
+fixed in v0.10.x), 47.22 backup (the reference implementation).
+
+Recurring shapes: a **half-a-panel** (list/act declared, but not the companion read or the rest of a
+flow), an **intent-in-code / no-route** capability (delivery log, `platform.files`, authz effective),
+and a **see-before-you-act** detail read behind a mutating action (job/zatca).
+
 ## Definition of Done (the whole phase)
 
 - Every service meets the completeness bar above; the sum of declared actions reflects the real
