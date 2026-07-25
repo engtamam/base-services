@@ -102,7 +102,15 @@ class Orchestrator:
                                 error="archive checksum failed — corrupt or truncated export")
 
         key = f"{run_id}/{target.service}.json"
-        await self._objects.put(key, json.dumps(archive).encode("utf-8"), "application/json")
+        try:
+            await self._objects.put(key, json.dumps(archive).encode("utf-8"), "application/json")
+        except Exception as exc:  # noqa: BLE001 — storage full/unreachable: this ONE target fails
+            # The run fails loudly for this target, but does NOT abort — the other targets still get
+            # their backup, and nothing existing is deleted, so the previous good backup is retained.
+            # (Storing was the last write; a failure here means simply nothing new landed for it.)
+            return TargetResult(target.service, FAILED, row_counts=archive.get("row_counts", {}),
+                                error=f"could not store archive (storage full or unreachable?): "
+                                      f"{type(exc).__name__}")
 
         # Prove the STORED archive restores. Read it back from the store (not the in-memory copy),
         # so corruption the store introduced at rest is caught, then let the target test-restore it.
