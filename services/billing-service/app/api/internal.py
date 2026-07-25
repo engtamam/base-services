@@ -72,6 +72,18 @@ async def run_dunning(request: Request) -> dict:
     return await (await build_billing(request)).dunning_sweep()
 
 
+@router.post("/billing/cycle-due", dependencies=[Depends(require_internal_token)])
+async def cycle_due(request: Request) -> dict:
+    """Invoice every subscription whose period has ended — the renewal engine.
+
+    Driven by a daily cron beside dunning. Bounded, idempotent per cycle, and resilient to a single
+    unbillable subscription. The `<= now` guard lives in the service, never here: run_cycle charges
+    unconditionally, so the filter is the only thing between "renew what is due" and "charge
+    everyone today".
+    """
+    return await (await build_billing(request)).cycle_due_sweep()
+
+
 class ConsumeIn(BaseModel):
     tenant: str = Field(min_length=1, max_length=200)
     key: str = Field(min_length=1, max_length=200)

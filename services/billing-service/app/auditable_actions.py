@@ -139,5 +139,14 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "resource": "coupon",
         "why": "the coupon and its redemption history are gone; if it is not recorded here there "
                "is no evidence the campaign ever existed",
+    },
+    {
+        "action": "billing.platform_invoices_viewed",
+        "source": "admin",
+        "critical": False,
+        "resource": "invoices",
+        "why": "a cross-tenant read is a privileged act: it sees every customer's money, so who "
+               "looked across all tenants and when is worth recording even though it changes "
+               "nothing",
     }
 ]

@@ -55,6 +55,26 @@ class _Repo:
     # turns a list endpoint into an arbitrary query engine over other people's rows.
     filterable: tuple[str, ...] = ()
 
+    async def browse_platform(self, *, where: dict, limit: int = 100, after: str | None = None,
+                              sort: tuple[str, str] = ("created", "desc")) -> tuple[list[dict], str | None]:
+        """A page of rows ACROSS ALL TENANTS, narrowed by a mandatory filter.
+
+        This deliberately crosses the tenancy wall, so it is fenced on every side. It requires a
+        non-empty `where` — there is no "every row ever" call, both because find() forbids an empty
+        filter and because an unfiltered platform dump is a data-exfiltration primitive, not a
+        feature. The filter keys are still whitelisted, so a caller cannot probe by arbitrary
+        content. And the route above it is gated on platform.billing alone and audits every call.
+        """
+        query = {}
+        for key, value in where.items():
+            if key not in self.filterable:
+                raise ValueError(f"NOT_FILTERABLE:{key}")
+            if value not in (None, ""):
+                query[key] = value
+        if not query:
+            raise ValueError("PLATFORM_LISTING_NEEDS_A_FILTER")
+        return await self._store.find(self.collection, query, limit=limit, after=after, sort=sort)
+
     async def browse(self, tenant: str, *, limit: int = 100, after: str | None = None,
                      where: dict | None = None,
                      sort: tuple[str, str] = ("created", "desc")) -> tuple[list[dict], str | None]:

@@ -160,6 +160,11 @@
             "title": "Note",
             "type": "string"
           },
+          "public": {
+            "default": false,
+            "title": "Public",
+            "type": "boolean"
+          },
           "starts_at": {
             "anyOf": [
               {
@@ -250,6 +255,17 @@
               }
             ],
             "title": "Note"
+          },
+          "public": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Public"
           },
           "starts_at": {
             "anyOf": [
@@ -765,6 +781,99 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/billing/admin/invoices": {
+      "get": {
+        "description": "Invoices ACROSS ALL TENANTS \u2014 a platform finance view. platform.billing only.\n\nSix things make this safe to cross the tenancy wall: the capability is platform-only (a\ntenant admin gets 403, never their own rows silently); a filter is mandatory (there is no\nunbounded ledger dump); it is paginated and capped (a stolen token cannot drain it in one\ncall); it is audited write-ahead (who looked across every tenant, and when); it returns a\nmoney projection, not buyer PII; and it is a DISTINCT route, so it reads as the privileged one\nrather than a magic parameter on the tenant-scoped list.",
+        "operationId": "list_invoices_platform_api_v1_billing_admin_invoices_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 32,
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "subscription_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 64,
+              "title": "Subscription Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 1000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Invoices Platform Api V1 Billing Admin Invoices Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Invoices Platform",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
     "/api/v1/billing/coupons": {
       "get": {
         "description": "Every coupon, with why each is or is not discounting.\n\nThere was no route at all: an operator could create a code and then had to remember it, for\never, because nothing could tell them what existed.",
@@ -1374,6 +1483,30 @@
           }
         },
         "summary": "Ledger",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/offers": {
+      "get": {
+        "description": "Public discount campaigns, for a customer app \u2014 NO login required.\n\nThe customer could not learn a campaign existed: list_coupons is operator-only. This is the\nsingle source of truth an app reads and auto-applies, so a discount is not mirrored into a\nsecond store that drifts. Shows only coupons marked public AND currently usable, and only\ncustomer-safe fields \u2014 never max_redemptions, redeemed or the operator note.",
+        "operationId": "public_offers_api_v1_billing_offers_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Public Offers Api V1 Billing Offers Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Public Offers",
         "tags": [
           "billing"
         ]
@@ -2701,6 +2834,58 @@
           }
         },
         "summary": "Backup Import",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/billing/cycle-due": {
+      "post": {
+        "description": "Invoice every subscription whose period has ended \u2014 the renewal engine.\n\nDriven by a daily cron beside dunning. Bounded, idempotent per cycle, and resilient to a single\nunbillable subscription. The `<= now` guard lives in the service, never here: run_cycle charges\nunconditionally, so the filter is the only thing between \"renew what is due\" and \"charge\neveryone today\".",
+        "operationId": "cycle_due_internal_billing_cycle_due_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Cycle Due Internal Billing Cycle Due Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cycle Due",
         "tags": [
           "internal"
         ]

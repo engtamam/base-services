@@ -24,6 +24,18 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         ],
     },
     {
+        "id": "billing.platform_invoices", "label": "Invoices (all tenants)", "method": "GET",
+        "path": "/api/v1/billing/admin/invoices", "capability": "platform.billing",
+        "group": "Invoices",
+        "params": [
+            {"name": "status", "in": "query", "type": "string", "required": False,
+             "help": "a filter is required — open | paid | void"},
+            {"name": "subscription_id", "in": "query", "type": "string", "required": False},
+            {"name": "limit", "in": "query", "type": "integer", "required": False},
+            {"name": "cursor", "in": "query", "type": "string", "required": False},
+        ],
+    },
+    {
         "id": "billing.list_invoices", "label": "Invoices", "method": "GET",
         "path": "/api/v1/billing/invoices", "capability": "billing.manage", "group": "Invoices",
         "params": [
@@ -116,6 +128,8 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
             {"name": "starts_at", "in": "body", "type": "number", "required": False},
             {"name": "expires_at", "in": "body", "type": "number", "required": False},
             {"name": "active", "in": "body", "type": "boolean", "required": False},
+            {"name": "public", "in": "body", "type": "boolean", "required": False,
+             "help": "show this campaign to customers on GET /billing/offers"},
             {"name": "note", "in": "body", "type": "string", "required": False},
         ],
     },

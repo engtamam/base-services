@@ -193,3 +193,59 @@ def test_public_prices_are_projected_too():
     run(PlanStore(st).put(plan.id, plan.to_dict()))
     price = run(b.public_plans())[0]["prices"][0]
     assert "internal_cost_minor" not in price
+
+
+# ── the cross-tenant platform view (secure by construction) ───────────────────
+def test_the_platform_view_spans_all_tenants():
+    """The tenant-scoped listing answers 'this customer's invoices'; this answers 'every unpaid
+    invoice on the platform', which per-tenant queries cannot without a tenant list."""
+    st = MemoryDataStore()
+    _seed_invoices(st, tenant="acme", n=2, status="open")
+    _seed_invoices(st, tenant="globex", n=3, status="open")
+    store = InvoiceStore(st)
+    rows, _ = run(store.browse_platform(where={"status": "open"}, limit=100))
+    tenants = {r["tenant"] for r in rows}
+    assert tenants == {"acme", "globex"}
+
+
+def test_the_platform_view_requires_a_filter():
+    """No unfiltered ledger dump: an empty filter is a data-exfiltration primitive, not a feature."""
+    st = MemoryDataStore()
+    _seed_invoices(st, tenant="acme")
+    with pytest.raises(ValueError, match="NEEDS_A_FILTER"):
+        run(InvoiceStore(st).browse_platform(where={"status": None}, limit=100))
+
+
+def test_the_platform_view_still_whitelists_filter_keys():
+    st = MemoryDataStore()
+    _seed_invoices(st, tenant="acme")
+    with pytest.raises(ValueError, match="NOT_FILTERABLE"):
+        run(InvoiceStore(st).browse_platform(where={"total_minor": 1000}, limit=100))
+
+
+def test_the_platform_view_is_a_money_projection_not_pii():
+    """A cross-tenant view names the tenant, amount and status — never the buyer. A field added to
+    the invoice later must not leak into every operator's platform scan by default."""
+    from app.adapters.pdf.null import NullPdf
+    from app.adapters.tax.vat import VatCalculator
+    from app.core.billing_service import BillingService
+    from app.core.stores import (CouponStore, IdempotencyStore, LedgerStore, PaymentStore,
+                                 SettlementStore, SubscriptionStore, UsageStore)
+    from tests.unit.test_billing_core import CFG, MockEInv
+    st = MemoryDataStore()
+    run(InvoiceStore(st).save(Invoice(id="inv_1", tenant="acme", number="INV-0001",
+                                      total_minor=1000, currency="SAR", status="open",
+                                      created="2026-07-01")))
+    # A buyer name written onto the row must not appear in the platform view.
+    row = run(st.get("invoices", "inv_1")); row["buyer_name"] = "Jane Private"
+    run(st.put("invoices", "inv_1", row))
+
+    b = BillingService(plans=PlanStore(st), coupons=CouponStore(st), subs=SubscriptionStore(st),
+                       invoices=InvoiceStore(st), payments=PaymentStore(st), usage=UsageStore(st),
+                       ledger=LedgerStore(st), idempo=IdempotencyStore(st),
+                       settlements=SettlementStore(st), gateway=None, tax=VatCalculator("0.15"),
+                       einvoicer=MockEInv(), pdf=NullPdf(), config=CFG)
+    out = run(b.list_invoices_platform(status="open"))["invoices"][0]
+    assert "buyer_name" not in out
+    assert set(out) <= set(b.PLATFORM_INVOICE_FIELDS)
+    assert out["tenant"] == "acme" and out["total_minor"] == 1000

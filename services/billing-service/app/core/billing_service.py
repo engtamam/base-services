@@ -217,6 +217,53 @@ class BillingService:
             rows = [r for r in rows if r["status"] == status]
         return sorted(rows, key=lambda r: r.get("created", ""), reverse=True)
 
+    # What a CUSTOMER may see of a coupon. A whitelist, like the public plan fields: a denylist
+    # would leak max_redemptions, redeemed and note the day a field is added.
+    PUBLIC_OFFER_FIELDS = ("code", "type", "value", "currency", "starts_at", "expires_at")
+
+    async def public_offers(self) -> list[dict]:
+        """Active, PUBLIC campaigns, projected to customer-safe fields.
+
+        The customer app had no way to learn a campaign existed — list_coupons is operator-only —
+        so a discount had to be mirrored into a second store and kept in sync. This makes billing
+        the single source of truth: the app reads and auto-applies, with no mirror to drift.
+
+        Only coupons the operator marked `public` AND that are currently usable. A private code is
+        never disclosed, and an expired or exhausted one is not offered — status is derived, so a
+        campaign that lapsed at midnight drops out without anything having to mark it.
+        """
+        now = self._clock()
+        out = []
+        for row in await self._coupons.all(self._cfg["list_limit"]):
+            if not row.get("public"):
+                continue
+            if _coupons.status(row, now) != _coupons.ACTIVE:
+                continue
+            out.append({k: row.get(k) for k in self.PUBLIC_OFFER_FIELDS if k in row})
+        return out
+
+    # A cross-tenant invoice view is a MONEY view, never a personal-data dragnet: it names the
+    # tenant, the amount and the status, not the buyer. A platform operator scanning unpaid
+    # invoices across every customer has no need for a thousand buyers' names and VAT numbers, and
+    # a whitelist keeps a field added later from leaking into that view by default.
+    PLATFORM_INVOICE_FIELDS = ("id", "tenant", "number", "subscription_id", "status",
+                               "total_minor", "currency", "created", "paid_at")
+
+    async def list_invoices_platform(self, *, status: str = "", subscription_id: str = "",
+                                     limit: int = 100, cursor: str | None = None) -> dict:
+        """Invoices ACROSS ALL TENANTS, for a platform finance view. Requires a filter.
+
+        The tenant-scoped listing answers "this customer's invoices"; this answers "every unpaid
+        invoice on the platform", which a per-tenant query cannot without a tenant list. It is
+        gated on platform.billing alone and audited at the route.
+        """
+        rows, nxt = await self._invoices.browse_platform(
+            where={"status": status, "subscription_id": subscription_id},
+            limit=limit, after=cursor)
+        return {"invoices": [{k: r.get(k) for k in self.PLATFORM_INVOICE_FIELDS if k in r}
+                             for r in rows],
+                "next_cursor": nxt}
+
     async def get_coupon(self, code: str) -> dict | None:
         row = await self._coupons.get(code)
         return _coupons.view(row, self._clock()) if row else None
@@ -224,7 +271,7 @@ class BillingService:
     async def update_coupon(self, code: str, **changes) -> dict:
         """Edit a live coupon without disturbing what customers have already redeemed."""
         allowed = ("type", "value", "currency", "starts_at", "expires_at", "max_redemptions",
-                   "active", "note")
+                   "active", "public", "note")
         for key in changes:
             if key not in allowed:
                 raise ValueError(f"COUPON_FIELD_NOT_EDITABLE:{key}")
@@ -837,6 +884,44 @@ class BillingService:
             if sub:
                 sub.status = "past_due"
                 await self._subs.save(sub)
+
+    async def cycle_due_sweep(self) -> dict[str, Any]:
+        """Invoice every subscription whose period has ended. The renewal engine.
+
+        run_cycle() was built and correct, and SubscriptionStore.due() was built as "the renewal
+        sweeper's queue" — but nothing called either on a schedule, so year-two revenue was never
+        invoiced. This is the missing caller.
+
+        WHY THE `<= now` FILTER MUST LIVE HERE. run_cycle invoices UNCONDITIONALLY — a caller that
+        holds a sub id gets it charged. The due() filter is the only thing standing between "renew
+        what is due" and "charge everyone, today". So the guard belongs at the sweep, never pushed
+        out to whoever calls run_cycle.
+
+        The pass is BOUNDED and does not abort on a bad row. A single subscription that cannot be
+        invoiced — a deleted plan, a bad token — must not stop the other thousand from renewing, so
+        each is tried in isolation and its failure recorded. run_cycle is idempotent per
+        cycle:{sub}:{period_end}, so a re-run after a partial sweep re-charges nobody.
+
+        `lead_seconds` lets an operator invoice a little ahead of the period end (a grace so a
+        renewal is raised before access lapses); 0 keeps the exact boundary. Injected clock, never
+        now() inline, so the sweep is testable and a fixed point in time.
+        """
+        limit = self._cfg["cycle_sweep_limit"]
+        horizon = self._clock() + self._cfg.get("cycle_lead_seconds", 0)
+        due = await self._subs.due(horizon, limit)
+        invoiced = failed = 0
+        errors: list[dict[str, str]] = []
+        for sub in due:
+            try:
+                await self.run_cycle(sub.id)
+                invoiced += 1
+            except Exception as exc:  # noqa: BLE001 — one unbillable sub must not stop the sweep
+                failed += 1
+                # The reason is kept for the run report, never swallowed: an operator needs to see
+                # WHICH subscriptions are stuck, or a slow leak of unrenewed customers is invisible.
+                errors.append({"subscription_id": sub.id, "error": type(exc).__name__})
+        return {"due": len(due), "invoiced": invoiced, "failed": failed,
+                "capped": len(due) >= limit, "errors": errors}
 
     async def dunning_sweep(self) -> dict[str, Any]:
         due = await self._payments.due(now_ts(), self._cfg["list_limit"])

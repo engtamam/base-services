@@ -60,3 +60,6 @@ cronJobs:
   - name: dunning
     schedule: "31 4 * * *"
     path: /internal/billing/dunning
+  - name: cycle-due
+    schedule: "17 3 * * *"
+    path: /internal/billing/cycle-due

@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from starlette.responses import Response
 
 from app.api.auth import Principal, require_user
-from app.api.authz import require_any_capability
+from app.api.authz import require_any_capability, require_capability
 from app.api.ratelimit import rate_limit
 from app.config import get_settings
 from app.core import settlement as _stl
@@ -25,6 +25,9 @@ from app.core.usage_service import UsageService
 router = APIRouter(prefix="/api/v1/billing", tags=["billing"])
 
 _ADMIN = require_any_capability("platform.billing", "billing.manage")
+# Cross-tenant reads are a PLATFORM privilege — billing.manage may be a tenant-scoped
+# admin, and must never reach across tenants. platform.billing alone.
+_PLATFORM = require_capability("platform.billing")
 _SELF = require_any_capability("billing.self", "billing.manage", "platform.billing")
 
 
@@ -76,6 +79,8 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
                 "reverse_charge": s.REVERSE_CHARGE_B2B, "grandfather": s.GRANDFATHER,
                 "dunning_base_hours": s.DUNNING_RETRY_BASE_HOURS, "dunning_max_attempts": s.DUNNING_MAX_ATTEMPTS,
                 "grace_days": s.GRACE_DAYS, "list_limit": s.BILLING_LIST_LIMIT,
+                "cycle_sweep_limit": s.CYCLE_SWEEP_LIMIT,
+                "cycle_lead_seconds": s.CYCLE_LEAD_SECONDS,
                 "grant_fund": s.WALLET_GRANT_FUND,
                 "plan_credit_limit_key": s.PLAN_CREDIT_LIMIT_KEY,
                 "plan_credit_grant_mode": s.PLAN_CREDIT_GRANT_MODE,
@@ -155,6 +160,7 @@ class CouponIn(BaseModel):
     expires_at: float | None = None
     max_redemptions: int = Field(default=0, ge=0)     # 0 = unlimited
     active: bool = True
+    public: bool = False                              # show to customers on the offers endpoint
     note: str = Field(default="", max_length=512)
 
 
@@ -169,6 +175,7 @@ class CouponPatchIn(BaseModel):
     expires_at: float | None = None
     max_redemptions: int | None = Field(default=None, ge=0)
     active: bool | None = None
+    public: bool | None = None
     note: str | None = Field(default=None, max_length=512)
 
 
@@ -201,6 +208,18 @@ class UsageIn(BaseModel):
 async def create_plan(request: Request, body: PlanIn) -> dict:
     p = await (await build_billing(request)).create_plan(**body.model_dump())
     return p.to_dict()
+
+
+@router.get("/offers", dependencies=[Depends(rate_limit)])
+async def public_offers(request: Request) -> dict:
+    """Public discount campaigns, for a customer app — NO login required.
+
+    The customer could not learn a campaign existed: list_coupons is operator-only. This is the
+    single source of truth an app reads and auto-applies, so a discount is not mirrored into a
+    second store that drifts. Shows only coupons marked public AND currently usable, and only
+    customer-safe fields — never max_redemptions, redeemed or the operator note.
+    """
+    return {"offers": await (await build_billing(request)).public_offers()}
 
 
 @router.get("/public/plans", dependencies=[Depends(rate_limit)])
@@ -473,6 +492,37 @@ async def list_invoices(request: Request, status_: str | None = Query(default=No
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     return {"invoices": rows, "next_cursor": nxt}
+
+
+@router.get("/admin/invoices", dependencies=[Depends(_PLATFORM), Depends(rate_limit)])
+async def list_invoices_platform(request: Request,
+                                 status_: str = Query(default="", alias="status", max_length=32),
+                                 subscription_id: str = Query(default="", max_length=64),
+                                 limit: int | None = Query(default=None, ge=1, le=1000),
+                                 cursor: str | None = Query(default=None, max_length=512),
+                                 principal: Principal = Depends(require_user)) -> dict:
+    """Invoices ACROSS ALL TENANTS — a platform finance view. platform.billing only.
+
+    Six things make this safe to cross the tenancy wall: the capability is platform-only (a
+    tenant admin gets 403, never their own rows silently); a filter is mandatory (there is no
+    unbounded ledger dump); it is paginated and capped (a stolen token cannot drain it in one
+    call); it is audited write-ahead (who looked across every tenant, and when); it returns a
+    money projection, not buyer PII; and it is a DISTINCT route, so it reads as the privileged one
+    rather than a magic parameter on the tenant-scoped list.
+    """
+    if not (status_ or subscription_id):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "PLATFORM_LISTING_NEEDS_A_FILTER")
+    await request.app.state.auditor.record(
+        "billing.platform_invoices_viewed", actor=principal.subject, tenant=principal.tenant,
+        resource="invoices:all-tenants", ip=request.client.host if request.client else "",
+        metadata={"status": status_, "subscription_id": subscription_id})
+    s = get_settings()
+    try:
+        return await (await build_billing(request)).list_invoices_platform(
+            status=status_, subscription_id=subscription_id,
+            limit=_page(limit, s), cursor=cursor)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
 
 @router.get("/invoices/{invoice_id}/pdf")

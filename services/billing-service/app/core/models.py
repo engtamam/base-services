@@ -70,6 +70,9 @@ class Coupon:
     max_redemptions: int = 0             # 0 = unlimited
     redeemed: int = 0                    # ENFORCED — see core/coupons.py
     active: bool = True
+    # A campaign the CUSTOMER app may show. Default False: a targeted or partner code is private,
+    # and a public read must never leak one just because it is active. Opt IN to publish.
+    public: bool = False
     created: str = ""
     note: str = ""                       # why this coupon exists; shown to operators, never to a buyer
 

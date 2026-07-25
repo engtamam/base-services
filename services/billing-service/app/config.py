@@ -222,6 +222,14 @@ class Settings(BaseSettings):
     TRIAL_DAYS: int = 14
     GRANDFATHER: bool = True                  # existing subs keep signup price/limits until migrated
     DUNNING_RETRY_BASE_HOURS: int = 24
+    # ── renewal sweep ─────────────────────────────────────────────────────────
+    # The most subscriptions one cycle-due pass will invoice. A ceiling an operator sets to their
+    # real scale, so a runaway sweep is bounded and the daily cron finishes; the report says when
+    # it was capped so the next run picks up the rest.
+    CYCLE_SWEEP_LIMIT: int = 1000
+    # Invoice this many seconds BEFORE a period actually ends, so a renewal is raised before access
+    # lapses. 0 = exactly at the boundary. Never negative — that would skip due renewals.
+    CYCLE_LEAD_SECONDS: int = 0
     DUNNING_MAX_ATTEMPTS: int = 4
     GRACE_DAYS: int = 7
 

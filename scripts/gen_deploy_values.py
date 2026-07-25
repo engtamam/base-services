@@ -48,7 +48,11 @@ CRONS: dict[str, list[tuple[str, str, str]]] = {
         ("scan", "*/1 * * * *", "/internal/files/scan"),
         ("sweep-uploads", "*/15 * * * *", "/internal/files/sweep-uploads"),
     ],
-    "billing-service": [("dunning", "31 4 * * *", "/internal/billing/dunning")],
+    "billing-service": [("dunning", "31 4 * * *", "/internal/billing/dunning"),
+                        # The renewal engine — invoice subscriptions whose period has ended. Daily,
+                        # offset from dunning so the two sweeps do not contend. Without it, year-two
+                        # revenue is never invoiced.
+                        ("cycle-due", "17 3 * * *", "/internal/billing/cycle-due")],
     "job-service": [
         ("scheduler-tick", "* * * * *", "/internal/scheduler/tick"),
         ("reclaim", "*/5 * * * *", "/internal/jobs/reclaim"),
