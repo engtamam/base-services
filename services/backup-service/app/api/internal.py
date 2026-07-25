@@ -24,6 +24,8 @@ from app.core.orchestrator import Orchestrator
 from app.core import health as _health
 from app.core import alerts as _alerts
 from app.core.retention import RetentionSweeper
+from app.core.drill import RestoreDrill
+from app.core.drills import DrillStore
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 
@@ -321,3 +323,52 @@ async def backup_prune(request: Request, settings: Settings = Depends(get_settin
             metadata={"pruned": str(result["pruned_count"]),
                       "archives_deleted": str(result["archives_deleted"])})
     return result
+
+
+def _drill(request: Request, settings: Settings) -> RestoreDrill:
+    from app.core.token_resolver import make_token_resolver
+    c = request.app.state.container
+    return RestoreDrill(
+        targets=TargetStore(c.datastore), object_store=c.object_store, runs=RunStore(c.datastore),
+        drills=DrillStore(c.datastore),
+        resolve_token=make_token_resolver(getattr(request.app.state, "secret_store", None)),
+        iso=_now_iso,
+        cfg={"egress_allowed_hosts": settings.egress_allowed_hosts,
+             "target_timeout_seconds": settings.BACKUP_TARGET_TIMEOUT_SECONDS,
+             "target_limit": settings.BACKUP_TARGET_LIMIT,
+             "run_history": settings.BACKUP_RUN_HISTORY})
+
+
+@router.post("/backup/drill", dependencies=[Depends(require_internal_token)])
+async def backup_drill(request: Request, settings: Settings = Depends(get_settings)) -> dict:
+    """Prove — right now, against the AT-REST stored bytes — that every service can be restored from
+    its best backup. Read-only against live data (the test-restore is in the target's throwaway
+    namespace). Cron-driven; records the result and ALERTS if the drill fails.
+
+    This is the difference between 'the records say our backups are fine' and 'we just restored every
+    one of them and compared'. A backup that verified at capture but rotted at rest is caught here.
+    """
+    report = await _drill(request, settings).run()
+    failed = report["failed"]
+    await request.app.state.auditor.record(
+        "backup.drilled", actor="", resource="backup_drill",
+        ip=request.client.host if request.client else "",
+        metadata={"status": report["status"], "passed": str(len(report["passed"])),
+                  "failed": ",".join(failed)})
+    if failed:
+        # Shape the drill outcome as an alert so the same webhook that watches health hears it.
+        alert = {"status": "critical", "checked_at": report["at"],
+                 "summary": {"critical": len(failed), "degraded": 0},
+                 "alerts": [{"service": s, "severity": "critical",
+                             "reason": "restore drill FAILED — best backup no longer restores"}
+                            for s in failed]}
+        _alerts.push(alert, webhook_url=settings.BACKUP_ALERT_WEBHOOK_URL,
+                     allowed_hosts=settings.egress_allowed_hosts,
+                     timeout_seconds=settings.BACKUP_TARGET_TIMEOUT_SECONDS)
+    return report
+
+
+@router.get("/backup/drills", dependencies=[Depends(require_internal_token)])
+async def list_drills(request: Request, settings: Settings = Depends(get_settings)) -> dict:
+    return {"drills": await DrillStore(request.app.state.container.datastore).recent(
+        settings.BACKUP_RUN_HISTORY)}

@@ -183,6 +183,13 @@ def test_backup_health_read_needs_the_restore_capability(client):
     assert ok.status_code == 200 and "status" in ok.json()
 
 
+def test_drill_history_read_needs_the_restore_capability(client):
+    assert client.get("/api/v1/operator/backup/drills",
+                      headers=_auth("platform.config")).status_code == 403
+    ok = client.get("/api/v1/operator/backup/drills", headers=_auth("platform.restore"))
+    assert ok.status_code == 200 and "drills" in ok.json()
+
+
 # ── restore: the dangerous action, gated and confirmed ────────────────────────
 def test_restore_needs_its_own_capability(client):
     """Restoring overwrites live data — an operator with secrets or config caps must not, by that

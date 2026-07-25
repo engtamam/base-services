@@ -15,6 +15,7 @@ BACKUP: dict[str, Any] = {
         {"name": "backup_targets", "tenant_scoped": False},   # the services it protects
         {"name": "backup_runs", "tenant_scoped": False},      # the history that raises the alarm
         {"name": "backup_restores", "tenant_scoped": False},  # every restore/undo, for the record
+        {"name": "backup_drills", "tenant_scoped": False},    # the DR-works evidence, every drill
     ],
     "excluded": [],
 }

@@ -185,6 +185,15 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "and not critical because a failed record must never suppress the alert push itself",
     },
     {
+        "action": "backup.drilled",
+        "source": "system",
+        "critical": False,
+        "resource": "backup_drill",
+        "why": "a restore drill ran; when the platform last PROVED it could restore every service is "
+               "the evidence an auditor and an incident review both need, and not critical because a "
+               "failed record must not stop the drill itself from running and alerting",
+    },
+    {
         "action": "backup.pruned",
         "source": "system",
         "critical": False,

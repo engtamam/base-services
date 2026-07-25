@@ -55,6 +55,9 @@ CRONS: dict[str, list[tuple[str, str, str]]] = {
         ("health-check", "23 * * * *", "/internal/backup/health/check"),
         # Prune to the retention limits — never a target's last verified backup. Daily, offset.
         ("prune", "51 3 * * *", "/internal/backup/prune"),
+        # The restore drill — prove, against the at-rest bytes, that every service still restores.
+        # Weekly (Sunday 04:07): DR that is never rehearsed is DR that fails when it is needed.
+        ("drill", "7 4 * * 0", "/internal/backup/drill"),
     ],
     "billing-service": [("dunning", "31 4 * * *", "/internal/billing/dunning"),
                         # The renewal engine — invoice subscriptions whose period has ended. Daily,

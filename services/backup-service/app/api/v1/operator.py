@@ -305,3 +305,12 @@ async def backup_health(request: Request, principal: Principal = Depends(require
             pass
     return _health.evaluate(targets=targets, runs=runs, now_iso=_now_iso(),
                             stale_after_seconds=stale_after)
+
+
+@router.get("/backup/drills", dependencies=[Depends(_RESTORE), Depends(rate_limit)])
+async def list_drills(request: Request, principal: Principal = Depends(require_user)) -> dict:
+    """The restore-drill history — the standing evidence that DR actually works, newest first.
+    Answers 'when did we last PROVE we could restore everything?'."""
+    from app.core.drills import DrillStore
+    limit = get_settings().BACKUP_RUN_HISTORY
+    return {"drills": await DrillStore(request.app.state.container.datastore).recent(limit)}

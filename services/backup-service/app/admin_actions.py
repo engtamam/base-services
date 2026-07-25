@@ -136,4 +136,9 @@ ADMIN_ACTIONS = [
         "path": "/api/v1/operator/backup/health", "capability": "platform.restore",
         "group": "Restore",
     },
+    {
+        "id": "backup.drills", "label": "Restore-drill history", "method": "GET",
+        "path": "/api/v1/operator/backup/drills", "capability": "platform.restore",
+        "group": "Restore",
+    },
 ]

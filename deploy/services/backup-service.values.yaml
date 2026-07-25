@@ -65,3 +65,6 @@ cronJobs:
   - name: prune
     schedule: "51 3 * * *"
     path: /internal/backup/prune
+  - name: drill
+    schedule: "7 4 * * 0"
+    path: /internal/backup/drill

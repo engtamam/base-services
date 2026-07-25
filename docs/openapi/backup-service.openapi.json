@@ -374,6 +374,30 @@
         ]
       }
     },
+    "/api/v1/operator/backup/drills": {
+      "get": {
+        "description": "The restore-drill history \u2014 the standing evidence that DR actually works, newest first.\nAnswers 'when did we last PROVE we could restore everything?'.",
+        "operationId": "list_drills_api_v1_operator_backup_drills_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Drills Api V1 Operator Backup Drills Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Drills",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
     "/api/v1/operator/backup/health": {
       "get": {
         "description": "The panel's backup-health view: is every service protected by a recent verified backup, and\nwhich are not. Read-only; the same truth the monitor scrapes and the alerter pushes.",
@@ -898,6 +922,109 @@
         "summary": "Healthz",
         "tags": [
           "health"
+        ]
+      }
+    },
+    "/internal/backup/drill": {
+      "post": {
+        "description": "Prove \u2014 right now, against the AT-REST stored bytes \u2014 that every service can be restored from\nits best backup. Read-only against live data (the test-restore is in the target's throwaway\nnamespace). Cron-driven; records the result and ALERTS if the drill fails.\n\nThis is the difference between 'the records say our backups are fine' and 'we just restored every\none of them and compared'. A backup that verified at capture but rotted at rest is caught here.",
+        "operationId": "backup_drill_internal_backup_drill_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Backup Drill Internal Backup Drill Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Backup Drill",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/backup/drills": {
+      "get": {
+        "operationId": "list_drills_internal_backup_drills_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Drills Internal Backup Drills Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Drills",
+        "tags": [
+          "internal"
         ]
       }
     },
