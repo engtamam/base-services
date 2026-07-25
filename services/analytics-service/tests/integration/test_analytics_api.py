@@ -193,9 +193,18 @@ def test_report_lifecycle_and_cross_tenant_read_is_a_404(client):
     assert client.post(f"/api/v1/analytics/reports/{rid}/run", headers=h).json()["total"] == 1.0
     assert client.get("/api/v1/analytics/reports", headers=h).json()["count"] >= 1
 
+    # Edit in place: same id, new name — no delete-and-recreate.
+    upd = client.put(f"/api/v1/analytics/reports/{rid}",
+                     json={"name": "renamed", "query": q}, headers=h)
+    assert upd.status_code == 200 and upd.json()["id"] == rid and upd.json()["name"] == "renamed"
+    assert client.get(f"/api/v1/analytics/reports/{rid}", headers=h).json()["name"] == "renamed"
+
     other = tok(["analytics.manage"], tenant="t_other")
     assert client.get(f"/api/v1/analytics/reports/{rid}", headers=other).status_code == 404
     assert client.delete(f"/api/v1/analytics/reports/{rid}", headers=other).status_code == 404
+    # A cross-tenant edit is refused the same way — as absent.
+    assert client.put(f"/api/v1/analytics/reports/{rid}",
+                      json={"name": "x", "query": q}, headers=other).status_code == 404
 
     assert client.delete(f"/api/v1/analytics/reports/{rid}", headers=h).status_code == 204
     assert client.get(f"/api/v1/analytics/reports/{rid}", headers=h).status_code == 404

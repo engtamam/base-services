@@ -638,6 +638,59 @@
         "tags": [
           "analytics"
         ]
+      },
+      "put": {
+        "description": "Edit a saved report's name or query in place. Without this, changing a report meant deleting\nand recreating it \u2014 losing its id, and any dashboard or link that referenced it. Ownership is\nchecked; id, tenant and created are preserved.",
+        "operationId": "update_report_api_v1_analytics_reports__report_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "report_id",
+            "required": true,
+            "schema": {
+              "title": "Report Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Update Report Api V1 Analytics Reports  Report Id  Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Report",
+        "tags": [
+          "analytics"
+        ]
       }
     },
     "/api/v1/analytics/reports/{report_id}/run": {

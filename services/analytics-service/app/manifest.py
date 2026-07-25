@@ -64,6 +64,7 @@ def build_manifest(
             {"path": "/api/v1/analytics/reports", "tier": "user", "method": "GET"},
             {"path": "/api/v1/analytics/reports", "tier": "user", "method": "POST"},
             {"path": "/api/v1/analytics/reports/{report_id}", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/analytics/reports/{report_id}", "tier": "user", "method": "PUT"},
             {"path": "/api/v1/analytics/reports/{report_id}", "tier": "user", "method": "DELETE"},
             {"path": "/api/v1/analytics/reports/{report_id}/run", "tier": "user", "method": "POST"},
             {"path": "/api/v1/analytics/export", "tier": "user", "method": "POST"},

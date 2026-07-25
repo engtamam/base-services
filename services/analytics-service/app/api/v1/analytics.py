@@ -154,6 +154,20 @@ async def run_report(report_id: str, request: Request, p: Principal = Depends(_R
         raise HTTPException(status_code=400, detail="BAD_REPORT_QUERY") from e
 
 
+@router.put("/reports/{report_id}", dependencies=[Depends(rate_limit)])
+async def update_report(report_id: str, body: ReportIn, request: Request,
+                        p: Principal = Depends(_MANAGE)) -> dict:
+    """Edit a saved report's name or query in place. Without this, changing a report meant deleting
+    and recreating it — losing its id, and any dashboard or link that referenced it. Ownership is
+    checked; id, tenant and created are preserved."""
+    existing = await _owned_report(request, report_id, p)
+    c = request.app.state.container
+    r = ReportDef(id=existing.id, tenant=existing.tenant, name=body.name,
+                  query=body.query.model_dump(exclude_none=True), created=existing.created)
+    await ReportStore(c.datastore).save(r)
+    return r.to_dict()
+
+
 @router.delete("/reports/{report_id}", status_code=204, dependencies=[Depends(rate_limit)])
 async def delete_report(report_id: str, request: Request, p: Principal = Depends(_MANAGE)) -> Response:
     r = await _owned_report(request, report_id, p)
