@@ -133,6 +133,31 @@ async def remove_member(request: Request, person_id: str) -> dict:
     return {"removed": True, "person_id": person_id, "tenant": tenant}
 
 
+class UpdateMemberIn(BaseModel):
+    roles: list[str] | None = None
+    caps: list[str] | None = None
+
+
+@members_router.put("/members/{person_id}", dependencies=[Depends(rate_limit)])
+async def update_member(request: Request, person_id: str, body: UpdateMemberIn) -> dict:
+    """Change a member's roles/caps in THIS tenant — never their credential (T2).
+
+    Without this, changing what a member may do meant removing and re-inviting them: it dropped the
+    membership and forced a fresh password claim. This edits only the roles/caps on the membership.
+    A role change is a change in who holds power, so it is audited write-ahead as critical."""
+    principal, tenant = await _caller_tenant(request, _write_cap())
+    await request.app.state.auditor.record(
+        "member.roles_changed", actor=principal.subject, tenant=tenant,
+        resource=f"member:{person_id}", ip=request.client.host if request.client else "",
+        metadata={"roles": ",".join(body.roles or []), "caps": ",".join(body.caps or [])})
+    m = await _svc(request).update_member_roles(
+        tenant, person_id, roles=body.roles, caps=body.caps)
+    if m is None:
+        # Same 404 as remove: never distinguish "in another tenant" from "does not exist" (T6).
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_A_MEMBER")
+    return {"member": m.public() | {"person_id": m.person_id, "caps": m.caps}}
+
+
 @router.post("/person/claim", dependencies=[Depends(rate_limit)])
 async def claim_invite(request: Request, body: ClaimIn) -> dict:
     """The invited human sets their OWN password. No token, no admin, no session — just the invite.

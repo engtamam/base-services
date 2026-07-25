@@ -300,6 +300,25 @@ def test_add_member_then_the_directory_shows_them(mt):
     assert {m["identifier"] for m in listed} == {"boss@acme", "newhire@acme"}
 
 
+def test_change_a_members_roles_in_place(mt):
+    """Editing what a member may do must not require removing and re-inviting them."""
+    tok = _admin(mt)
+    pid = mt.post("/api/v1/tenancy/members",
+                  json={"identifier": "eng@acme", "roles": ["engineer"]},
+                  headers=tok).json()["member"]["person_id"]
+
+    upd = mt.put(f"/api/v1/tenancy/members/{pid}",
+                 json={"roles": ["engineer", "lead"]}, headers=tok)
+    assert upd.status_code == 200
+    assert set(upd.json()["member"]["roles"]) == {"engineer", "lead"}
+
+    # A member who is not in this tenant (or does not exist) is a 404 — never distinguished (T6).
+    assert mt.put("/api/v1/tenancy/members/nobody",
+                  json={"roles": ["x"]}, headers=tok).status_code == 404
+    # Unauthenticated is refused.
+    assert mt.put(f"/api/v1/tenancy/members/{pid}", json={"roles": ["x"]}).status_code == 401
+
+
 def test_an_invited_person_cannot_log_in_until_they_claim(mt):
     tok = _admin(mt)
     mt.post("/api/v1/tenancy/members", json={"identifier": "newhire@acme"}, headers=tok)

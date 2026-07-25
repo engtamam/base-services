@@ -347,6 +347,26 @@ class AuthService:
         await self._memberships.revoke(person_id, tenant)
         return True
 
+    async def update_member_roles(self, tenant: str, person_id: str, *,
+                                  roles=None, caps=None):
+        """Change an EXISTING member's roles/caps in this tenant — never their credential (T2).
+
+        Without this, changing what a member may do meant removing and re-inviting them, which drops
+        the membership and forces a fresh credential claim. This touches only the roles/caps on the
+        membership row, in this one tenant. Returns the updated membership, or None if absent."""
+        if self._memberships is None:
+            raise RuntimeError("IDENTITY_MULTI_TENANT is off — no membership store is wired")
+        if not tenant or not person_id:
+            raise TenantAccessDenied()
+        m = await self._memberships.membership(person_id, tenant)
+        if m is None:
+            return None
+        if roles is not None:
+            m.roles = list(roles)
+        if caps is not None:
+            m.caps = list(caps)
+        return await self._memberships.grant(m)
+
     async def claim_invite(self, token: str, password: str) -> Person | None:
         """The invited human sets their OWN password. Single-use; the admin never sees it."""
         if self._memberships is None or self._invites is None:

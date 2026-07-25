@@ -387,6 +387,40 @@
         "title": "UnblockIn",
         "type": "object"
       },
+      "UpdateMemberIn": {
+        "properties": {
+          "caps": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Caps"
+          },
+          "roles": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roles"
+          }
+        },
+        "title": "UpdateMemberIn",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -1415,6 +1449,59 @@
           }
         },
         "summary": "Remove Member",
+        "tags": [
+          "tenancy"
+        ]
+      },
+      "put": {
+        "description": "Change a member's roles/caps in THIS tenant \u2014 never their credential (T2).\n\nWithout this, changing what a member may do meant removing and re-inviting them: it dropped the\nmembership and forced a fresh password claim. This edits only the roles/caps on the membership.\nA role change is a change in who holds power, so it is audited write-ahead as critical.",
+        "operationId": "update_member_api_v1_tenancy_members__person_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "person_id",
+            "required": true,
+            "schema": {
+              "title": "Person Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateMemberIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Update Member Api V1 Tenancy Members  Person Id  Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Member",
         "tags": [
           "tenancy"
         ]

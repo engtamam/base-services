@@ -117,6 +117,14 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "why": "someone lost access and can dispute it; without a record we cannot say who "
                "removed them or when",
     },
+    {
+        "action": "member.roles_changed",
+        "source": "admin",
+        "critical": True,
+        "resource": "member",
+        "why": "changing a member's roles changes what power they hold in the tenant; an "
+               "unattributable elevation is indistinguishable from an attacker's, exactly like a grant",
+    },
 
     # ── internal: service-to-service, in no panel and no catalog ─────────────
     {

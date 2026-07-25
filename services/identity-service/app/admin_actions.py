@@ -38,6 +38,21 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         ],
     },
     {
+        "id": "identity.update_member",
+        "label": "Change a member's roles",
+        "method": "PUT",
+        "path": "/api/v1/tenancy/members/{person_id}",
+        "capability": "members:write",
+        "group": "Directory",
+        "confirm": True,
+        "params": [
+            {"name": "person_id", "in": "path", "type": "string", "required": True},
+            {"name": "roles", "in": "body", "type": "array", "required": False,
+             "help": "the roles the member holds in THIS tenant — never touches their credential"},
+            {"name": "caps", "in": "body", "type": "array", "required": False},
+        ],
+    },
+    {
         "id": "identity.remove_member",
         "label": "Remove member (revoke this tenant only)",
         "method": "DELETE",
