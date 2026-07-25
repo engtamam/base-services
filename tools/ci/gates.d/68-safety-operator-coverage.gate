@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+gate_name="safety:operator-coverage"
+gate_desc="every platform.* capability the code enforces is advertised in the manifest"
+gate_protects="file-service had a platform.files capability that let an operator read any tenant's
+file across the boundary. It was enforced in the code and worked — and it was NOT in the
+manifest's capabilities, so no admin panel, generated client or discovery consumer could
+know it existed. An operator power nothing advertises is one only whoever reads the
+source can use; to everyone else it is an invisible cross-tenant surface. This gate makes
+the manifest's promise (these are the platform capabilities this service recognises) true:
+a platform.* cap enforced but unadvertised fails the build."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_operator_coverage.py"
+gate_units=0
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_operator_coverage.py; }

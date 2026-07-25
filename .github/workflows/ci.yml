@@ -70,6 +70,10 @@ jobs:
       - name: "safety:admin-params — a declared admin action can actually be performed"
         run: bash tools/ci/run_all_gates.sh --only safety:admin-params
 
+      # gates: safety:operator-coverage
+      - name: "safety:operator-coverage — a platform capability the code enforces is advertised"
+        run: bash tools/ci/run_all_gates.sh --only safety:operator-coverage
+
       # gates: safety:backup-coverage
       - name: "safety:backup-coverage — a service backs up every collection it writes"
         run: bash tools/ci/run_all_gates.sh --only safety:backup-coverage
