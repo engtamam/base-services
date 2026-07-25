@@ -155,5 +155,35 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
             {"name": "limit", "in": "query", "type": "integer", "required": False},
             {"name": "after", "in": "query", "type": "string", "required": False},
         ],
-    }
+    },
+    # The rest of the export flow, and playback — stream.view routes that existed but were never
+    # declared, so a panel could list exports but not request, inspect or download one.
+    {
+        "id": "stream.request_export", "label": "Request a clip export", "method": "POST",
+        "path": "/api/v1/exports", "capability": "stream.view", "group": "Exports", "confirm": True,
+        "params": [
+            {"name": "source_id", "in": "body", "type": "string", "required": True},
+            {"name": "start", "in": "body", "type": "string", "required": True,
+             "help": "clip start, ISO timestamp"},
+            {"name": "end", "in": "body", "type": "string", "required": True},
+            {"name": "format", "in": "body", "type": "string", "required": False,
+             "help": "mp4 (default)"},
+        ],
+    },
+    {
+        "id": "stream.get_export", "label": "View an export's status", "method": "GET",
+        "path": "/api/v1/exports/{export_id}", "capability": "stream.view", "group": "Exports",
+        "params": [{"name": "export_id", "in": "path", "type": "string", "required": True}],
+    },
+    {
+        "id": "stream.download_export", "label": "Download an export", "method": "GET",
+        "path": "/api/v1/exports/{export_id}/download", "capability": "stream.view", "group": "Exports",
+        "params": [{"name": "export_id", "in": "path", "type": "string", "required": True}],
+    },
+    {
+        "id": "stream.session_playback", "label": "View session playback", "method": "GET",
+        "path": "/api/v1/sessions/{session_id}/playback", "capability": "stream.view",
+        "group": "Sessions",
+        "params": [{"name": "session_id", "in": "path", "type": "string", "required": True}],
+    },
 ]
