@@ -126,3 +126,18 @@ async def cancel(request: Request, job_id: str,
 @router.get("/stats", dependencies=[Depends(_READ)])
 async def stats(request: Request) -> dict:
     return await build_jobs(request).stats()
+
+
+# Registered LAST so the literal GET routes (/dead-letters, /stats) are matched before this
+# parameterised one — otherwise `/stats` would bind job_id="stats".
+@router.get("/{job_id}", dependencies=[Depends(_READ)])
+async def get_job(request: Request, job_id: str, principal: Principal = Depends(_READ)) -> dict:
+    """One job's full detail — status, attempts, last error, payload — the see-before-you-act read
+    behind replay and cancel: an operator decides whether to replay from WHY it failed. A platform
+    operator sees any job; a tenant reader is scoped to its own, and a job it may not see reads as
+    absent (404) rather than revealing that it exists."""
+    job = await build_jobs(request).get(job_id)
+    if job is None or (
+            "platform.jobs" not in principal.caps and job.tenant != (principal.tenant or "__none__")):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    return job.public()

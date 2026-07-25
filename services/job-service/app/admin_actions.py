@@ -34,6 +34,10 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
      "path": "/api/v1/jobs", "capability": "platform.jobs", "group": "Jobs"},
     {"id": "jobs.dead_letters", "label": "List dead-letters", "method": "GET",
      "path": "/api/v1/jobs/dead-letters", "capability": "platform.jobs", "group": "Jobs"},
+    {"id": "jobs.detail", "label": "View a job's detail", "method": "GET",
+     "path": "/api/v1/jobs/{id}", "capability": "platform.jobs", "group": "Jobs",
+     # The see-before-you-act read behind replay and cancel: status, attempts, last error, payload.
+     "params": [{"name": "id", "in": "path", "type": "string", "required": True}]},
     {"id": "jobs.replay", "label": "Replay a job", "method": "POST",
      "path": "/api/v1/jobs/{id}/replay", "capability": "platform.jobs", "group": "Jobs", "confirm": True,
      "params": [{"name": "id", "in": "path", "type": "string", "required": True}]},
