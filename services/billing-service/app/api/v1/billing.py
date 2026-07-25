@@ -79,6 +79,7 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
                 "reverse_charge": s.REVERSE_CHARGE_B2B, "grandfather": s.GRANDFATHER,
                 "dunning_base_hours": s.DUNNING_RETRY_BASE_HOURS, "dunning_max_attempts": s.DUNNING_MAX_ATTEMPTS,
                 "grace_days": s.GRACE_DAYS, "list_limit": s.BILLING_LIST_LIMIT,
+                "platform_max_pages": s.PLATFORM_MAX_PAGES,
                 "cycle_sweep_limit": s.CYCLE_SWEEP_LIMIT,
                 "cycle_lead_seconds": s.CYCLE_LEAD_SECONDS,
                 "grant_fund": s.WALLET_GRANT_FUND,
@@ -498,6 +499,9 @@ async def list_invoices(request: Request, status_: str | None = Query(default=No
 async def list_invoices_platform(request: Request,
                                  status_: str = Query(default="", alias="status", max_length=32),
                                  subscription_id: str = Query(default="", max_length=64),
+                                 tenant: str = Query(default="", max_length=128),
+                                 since: str = Query(default="", max_length=32),
+                                 until: str = Query(default="", max_length=32),
                                  limit: int | None = Query(default=None, ge=1, le=1000),
                                  cursor: str | None = Query(default=None, max_length=512),
                                  principal: Principal = Depends(require_user)) -> dict:
@@ -510,17 +514,19 @@ async def list_invoices_platform(request: Request,
     money projection, not buyer PII; and it is a DISTINCT route, so it reads as the privileged one
     rather than a magic parameter on the tenant-scoped list.
     """
-    if not (status_ or subscription_id):
+    if not (status_ or subscription_id or tenant or since or until):
+        # A filter is mandatory — an unfiltered cross-tenant ledger dump is an exfiltration
+        # primitive, not a feature. Any of status/tenant/subscription/date-window counts.
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "PLATFORM_LISTING_NEEDS_A_FILTER")
     await request.app.state.auditor.record(
         "billing.platform_invoices_viewed", actor=principal.subject, tenant=principal.tenant,
         resource="invoices:all-tenants", ip=request.client.host if request.client else "",
-        metadata={"status": status_, "subscription_id": subscription_id})
+        metadata={"status": status_, "tenant": tenant, "since": since, "until": until})
     s = get_settings()
     try:
         return await (await build_billing(request)).list_invoices_platform(
-            status=status_, subscription_id=subscription_id,
-            limit=_page(limit, s), cursor=cursor)
+            status=status_, subscription_id=subscription_id, tenant=tenant,
+            since=since, until=until, limit=_page(limit, s), cursor=cursor)
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 

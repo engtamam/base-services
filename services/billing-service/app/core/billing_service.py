@@ -250,18 +250,44 @@ class BillingService:
                                "total_minor", "currency", "created", "paid_at")
 
     async def list_invoices_platform(self, *, status: str = "", subscription_id: str = "",
+                                     tenant: str = "", since: str = "", until: str = "",
                                      limit: int = 100, cursor: str | None = None) -> dict:
-        """Invoices ACROSS ALL TENANTS, for a platform finance view. Requires a filter.
+        """Invoices ACROSS ALL TENANTS, newest first, for a platform finance view.
 
-        The tenant-scoped listing answers "this customer's invoices"; this answers "every unpaid
-        invoice on the platform", which a per-tenant query cannot without a tenant list. It is
-        gated on platform.billing alone and audited at the route.
+        The tenant-scoped listing answers "this customer's invoices"; this answers "every overdue
+        invoice on the platform", which no per-tenant query gives without a tenant list. Gated on
+        platform.billing and audited at the route.
+
+        `tenant` narrows to one customer (still the cross-tenant path, just scoped). `since`/`until`
+        bound the ISSUE DATE. The datastore is equality-only — it has no range operator — so the
+        date window is applied as a bounded post-filter over the keyset-ordered pages: results are
+        already newest-first, so paging stops as soon as a row falls before `since`, and the scan is
+        capped so a wide window cannot become an unbounded read. The cursor stays a real
+        (created, id) keyset, so two invoices issued in the same instant never drop a row off a page.
         """
-        rows, nxt = await self._invoices.browse_platform(
-            where={"status": status, "subscription_id": subscription_id},
-            limit=limit, after=cursor)
+        collected: list[dict] = []
+        nxt = cursor
+        for _ in range(self._cfg["platform_max_pages"]):
+            rows, nxt = await self._invoices.browse_platform(
+                where={"status": status, "subscription_id": subscription_id, "tenant": tenant},
+                limit=limit, after=nxt)
+            below_since = False
+            for r in rows:
+                created = r.get("created", "")
+                if until and created > until:
+                    continue                       # newer than the window; keep scanning down
+                if since and created < since:
+                    below_since = True             # created-desc: everything past here is older
+                    break
+                collected.append(r)
+                if len(collected) >= limit:
+                    break
+            if below_since or not nxt or len(collected) >= limit:
+                if below_since:
+                    nxt = None                     # the window is exhausted, not merely this page
+                break
         return {"invoices": [{k: r.get(k) for k in self.PLATFORM_INVOICE_FIELDS if k in r}
-                             for r in rows],
+                             for r in collected[:limit]],
                 "next_cursor": nxt}
 
     async def get_coupon(self, code: str) -> dict | None:

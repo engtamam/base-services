@@ -249,3 +249,58 @@ def test_the_platform_view_is_a_money_projection_not_pii():
     assert "buyer_name" not in out
     assert set(out) <= set(b.PLATFORM_INVOICE_FIELDS)
     assert out["tenant"] == "acme" and out["total_minor"] == 1000
+
+
+# ── the platform feed's new filters (tenant, since/until) ─────────────────────
+def _platform_svc(st):
+    from app.adapters.pdf.null import NullPdf
+    from app.adapters.tax.vat import VatCalculator
+    from app.core.billing_service import BillingService
+    from app.core.stores import (CouponStore, IdempotencyStore, LedgerStore, PaymentStore,
+                                 SettlementStore, SubscriptionStore, UsageStore)
+    from tests.unit.test_billing_core import CFG, MockEInv
+    return BillingService(
+        plans=PlanStore(st), coupons=CouponStore(st), subs=SubscriptionStore(st),
+        invoices=InvoiceStore(st), payments=PaymentStore(st), usage=UsageStore(st),
+        ledger=LedgerStore(st), idempo=IdempotencyStore(st), settlements=SettlementStore(st),
+        gateway=None, tax=VatCalculator("0.15"), einvoicer=MockEInv(), pdf=NullPdf(), config=CFG)
+
+
+def _inv(st, tenant, iid, created, status="open"):
+    run(InvoiceStore(st).save(Invoice(id=iid, tenant=tenant, number=iid, total_minor=1000,
+                                      currency="SAR", status=status, created=created)))
+
+
+def test_the_platform_feed_can_narrow_to_one_tenant():
+    st = MemoryDataStore()
+    b = _platform_svc(st)
+    _inv(st, "acme", "a1", "2026-07-01"); _inv(st, "globex", "g1", "2026-07-01")
+    out = run(b.list_invoices_platform(tenant="acme"))["invoices"]
+    assert [i["tenant"] for i in out] == ["acme"]
+
+
+def test_the_platform_feed_windows_by_issue_date():
+    """since/until bound the created date — a 'latest billing events since July' view."""
+    st = MemoryDataStore()
+    b = _platform_svc(st)
+    _inv(st, "acme", "old", "2026-06-15", status="open")
+    _inv(st, "acme", "new", "2026-07-10", status="open")
+    got = {i["id"] for i in run(b.list_invoices_platform(status="open", since="2026-07-01"))["invoices"]}
+    assert got == {"new"}, "the since window let an older invoice through"
+
+
+def test_until_excludes_newer_than_the_window():
+    st = MemoryDataStore()
+    b = _platform_svc(st)
+    _inv(st, "acme", "in", "2026-07-05", status="open")
+    _inv(st, "acme", "future", "2026-08-01", status="open")
+    got = {i["id"] for i in run(b.list_invoices_platform(status="open", until="2026-07-31"))["invoices"]}
+    assert got == {"in"}
+
+
+def test_a_tenant_only_filter_satisfies_the_mandatory_filter():
+    # tenant alone is a valid narrowing — the route must accept it without status.
+    st = MemoryDataStore()
+    b = _platform_svc(st)
+    _inv(st, "acme", "a1", "2026-07-01")
+    assert run(b.list_invoices_platform(tenant="acme"))["invoices"]

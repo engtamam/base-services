@@ -29,7 +29,12 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         "group": "Invoices",
         "params": [
             {"name": "status", "in": "query", "type": "string", "required": False,
-             "help": "a filter is required — open | paid | void"},
+             "help": "at least one filter is required — open | paid | void | uncollectible"},
+            {"name": "tenant", "in": "query", "type": "string", "required": False,
+             "help": "narrow to one customer"},
+            {"name": "since", "in": "query", "type": "string", "required": False,
+             "help": "issue-date lower bound, e.g. 2026-07-01"},
+            {"name": "until", "in": "query", "type": "string", "required": False},
             {"name": "subscription_id", "in": "query", "type": "string", "required": False},
             {"name": "limit", "in": "query", "type": "integer", "required": False},
             {"name": "cursor", "in": "query", "type": "string", "required": False},

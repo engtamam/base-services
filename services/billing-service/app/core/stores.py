@@ -55,6 +55,11 @@ class _Repo:
     # turns a list endpoint into an arbitrary query engine over other people's rows.
     filterable: tuple[str, ...] = ()
 
+    # The platform view MAY narrow by tenant — it is the cross-tenant read, so scoping it to one
+    # customer is a legitimate filter, not a wall breach. The tenant-scoped `browse` still forbids a
+    # tenant filter key, because there the tenant is the argument and must never be overridable.
+    platform_filterable: tuple[str, ...] = ()
+
     async def browse_platform(self, *, where: dict, limit: int = 100, after: str | None = None,
                               sort: tuple[str, str] = ("created", "desc")) -> tuple[list[dict], str | None]:
         """A page of rows ACROSS ALL TENANTS, narrowed by a mandatory filter.
@@ -65,9 +70,10 @@ class _Repo:
         feature. The filter keys are still whitelisted, so a caller cannot probe by arbitrary
         content. And the route above it is gated on platform.billing alone and audits every call.
         """
+        allowed = set(self.filterable) | set(self.platform_filterable)
         query = {}
         for key, value in where.items():
-            if key not in self.filterable:
+            if key not in allowed:
                 raise ValueError(f"NOT_FILTERABLE:{key}")
             if value not in (None, ""):
                 query[key] = value
@@ -283,6 +289,8 @@ class InvoiceStore(_Repo):
     # Status is what a finance UI filters on: unpaid, paid, written off. Nothing else is
     # exposed — an amount or a buyer name would let a caller probe rows by content.
     filterable = ("status", "subscription_id")
+    # The platform (all-tenants) view may additionally narrow to one tenant.
+    platform_filterable = ("tenant",)
     _SEQ = "billing_seq"
 
     async def next_number(self, tenant: str) -> str:

@@ -226,6 +226,10 @@ class Settings(BaseSettings):
     # The most subscriptions one cycle-due pass will invoice. A ceiling an operator sets to their
     # real scale, so a runaway sweep is bounded and the daily cron finishes; the report says when
     # it was capped so the next run picks up the rest.
+    # The most keyset pages the platform invoice view scans while applying a since/until window.
+    # A ceiling, because the datastore cannot range on a date: a very wide window would otherwise
+    # walk the whole ledger. When it caps, next_cursor is still returned so the caller can continue.
+    PLATFORM_MAX_PAGES: int = 50
     CYCLE_SWEEP_LIMIT: int = 1000
     # Invoice this many seconds BEFORE a period actually ends, so a renewal is raised before access
     # lapses. 0 = exactly at the boundary. Never negative — that would skip due renewals.
