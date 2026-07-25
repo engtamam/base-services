@@ -95,6 +95,20 @@ def main() -> int:
     else:
         problems.append("there is no LICENSE file at the repo root — silence is not a reservation")
 
+    # Each service that ships its OWN LICENSE file must say the same thing the root does. The scan
+    # that prompted this check found every service LICENSE was Apache-2.0 while the pyproject and the
+    # root LICENSE said proprietary — a grant the product denies, sitting in the file a licensee is
+    # most likely to actually open. The pyproject check above never looks at this file's CONTENT.
+    for lic in sorted(SERVICES.glob("*/LICENSE")):
+        svc = lic.parent.name
+        body = lic.read_text(encoding="utf-8", errors="replace").lower()
+        if "not open source" not in body and "no license is granted" not in body:
+            first = next((ln.strip() for ln in body.splitlines() if ln.strip()), "")
+            problems.append(
+                f"{svc}: its LICENSE file does not say the software is proprietary (starts "
+                f"{first[:40]!r}) — it grants rights the pyproject and root LICENSE deny, in the "
+                f"file a licensee actually reads. Ship the proprietary LICENSE, not an open one")
+
     if problems:
         print(f"own-license — {len(problems)} problem(s):\n")
         for p in problems:
