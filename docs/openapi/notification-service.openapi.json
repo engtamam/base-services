@@ -312,6 +312,30 @@
         ]
       }
     },
+    "/api/v1/notifications/deliveries": {
+      "get": {
+        "description": "Recent delivery attempts across the platform \u2014 status, channel, template, provider and the\nerror when one failed: the operator's answer to 'did that notification send, and why not?'. The\ndelivery log was recorded and listable but reachable from no route until now. Recipients are\nMASKED \u2014 enough to correlate, never a harvestable address \u2014 and the access is audited.",
+        "operationId": "list_deliveries_api_v1_notifications_deliveries_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Deliveries Api V1 Notifications Deliveries Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Deliveries",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
     "/api/v1/notifications/preferences": {
       "get": {
         "operationId": "get_preferences_api_v1_notifications_preferences_get",

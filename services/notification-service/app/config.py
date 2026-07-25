@@ -363,6 +363,7 @@ class Settings(BaseSettings):
     NOTIFY_BACKOFF_BASE_MS: int = 1_000
     NOTIFY_BACKOFF_MAX_MS: int = 300_000        # 5 min ceiling; a doubling series runs away fast
     NOTIFY_DRAIN_LIMIT: int = 100               # deliveries re-attempted per tick
+    NOTIFY_DELIVERY_LIST_LIMIT: int = 200       # rows the operator delivery-log read returns
 
     # WHAT COUNTS AS RETRYABLE IS A PLATFORM DECISION. One provider says "throttled", another says
     # "rate_limited", a Saudi SMS gateway may say something we have never seen. Substring match,

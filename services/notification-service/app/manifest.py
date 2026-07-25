@@ -66,6 +66,7 @@ def build_manifest(
             {"path": "/api/v1/notifications/preferences", "tier": "user", "method": "PUT"},
             {"path": "/api/v1/templates", "tier": "user", "method": "POST"},
             {"path": "/api/v1/templates", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/notifications/deliveries", "tier": "user", "method": "GET"},
             # The operator surface: credentials and policy an operator changes after launch.
             # A route table built from manifests that omits where credentials are set hides the
             # highest-privilege surface this service has.

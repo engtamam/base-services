@@ -129,3 +129,32 @@ async def upsert_template(request: Request, body: TemplateIn) -> dict:
 async def list_templates(request: Request) -> dict:
     rows = await TemplateStore(request.app.state.container.datastore).list()
     return {"templates": rows}
+
+
+def _mask_recipient(recipient: str) -> str:
+    """Enough to correlate a delivery, not enough to be a recipient list. An operator debugging why
+    a message failed needs to tell rows apart, not to harvest addresses."""
+    if not recipient:
+        return ""
+    if "@" in recipient:                       # email: first char + domain
+        local, _, domain = recipient.partition("@")
+        return f"{local[:1]}***@{domain}"
+    return recipient[:3] + "***" + recipient[-2:] if len(recipient) > 5 else "***"
+
+
+@notifications_router.get("/deliveries",
+                          dependencies=[Depends(require_capability("notifications.templates"))])
+async def list_deliveries(request: Request,
+                          principal: Principal = Depends(require_user)) -> dict:
+    """Recent delivery attempts across the platform — status, channel, template, provider and the
+    error when one failed: the operator's answer to 'did that notification send, and why not?'. The
+    delivery log was recorded and listable but reachable from no route until now. Recipients are
+    MASKED — enough to correlate, never a harvestable address — and the access is audited."""
+    await request.app.state.auditor.record(
+        "notification.deliveries_viewed", actor=principal.subject, tenant=principal.tenant,
+        resource="delivery_log", ip=request.client.host if request.client else "")
+    rows = await DeliveryStore(request.app.state.container.datastore).list(
+        get_settings().NOTIFY_DELIVERY_LIST_LIMIT)
+    for r in rows:
+        r["recipient"] = _mask_recipient(r.get("recipient", ""))
+    return {"deliveries": rows, "count": len(rows)}

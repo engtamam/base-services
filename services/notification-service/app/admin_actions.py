@@ -19,6 +19,13 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         "path": "/api/v1/templates", "capability": "notifications.templates", "group": "Templates",
     },
     {
+        "id": "notifications.deliveries", "label": "Delivery log (did it send?)", "method": "GET",
+        "path": "/api/v1/notifications/deliveries", "capability": "notifications.templates",
+        "group": "Deliveries",
+        # Recent delivery attempts across the platform — status, channel, provider, error. Recipients
+        # are masked; the access is audited. The log was recorded but reachable from no route.
+    },
+    {
         "id": "notifications.upsert_template", "label": "Create / update a template", "method": "POST",
         "path": "/api/v1/templates", "capability": "notifications.templates", "group": "Templates",
         "confirm": True,

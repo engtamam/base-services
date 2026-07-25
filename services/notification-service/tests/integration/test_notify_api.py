@@ -89,6 +89,27 @@ def test_internal_notify_sends_and_records(client):
     assert r.json()["provider"] == "console"
 
 
+def test_operator_delivery_log_masks_recipients_and_needs_the_cap(client):
+    _seed_template(client)
+    client.post("/internal/notify",
+                json={"recipient": "sara@example.com", "channel": "email",
+                      "template_key": "welcome", "variables": {"name": "Sara"}},
+                headers=_internal())
+
+    op = _user("op", caps=["notifications.templates"])
+    r = client.get("/api/v1/notifications/deliveries", headers=op)
+    assert r.status_code == 200
+    rows = r.json()["deliveries"]
+    assert rows, "the delivery was recorded but the log is empty"
+    # The recipient is masked — enough to correlate, never a harvestable address.
+    assert all("sara@example.com" not in d["recipient"] for d in rows)
+    assert any(d["recipient"] == "s***@example.com" for d in rows)
+
+    # A recipient (self) capability must not reach the operator delivery log.
+    assert client.get("/api/v1/notifications/deliveries",
+                      headers=_user("u", caps=["notifications.self"])).status_code == 403
+
+
 def test_inapp_feed_and_read(client):
     _seed_template(client, key="ping", subject="Title", body="Body $x")
     client.post("/internal/notify",

@@ -30,6 +30,13 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "critical": False,
     },
     {
+        "action": "notification.deliveries_viewed",
+        "source": "admin",
+        "critical": False,
+        "why": "an operator read the cross-tenant delivery log (recipients masked); who inspected "
+               "delivery outcomes and when is worth the trail. Not critical: it is a read",
+    },
+    {
         "action": "preferences.updated",
         "source": "user",
         "critical": True,
