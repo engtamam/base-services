@@ -1,0 +1,7 @@
+# service.spec.toml — the record of how this service was generated.
+name = "backup-service"
+description = "Verified backup and disaster recovery: discovers what every service holds from its manifest, captures sealed checksummed archives, proves them by test-restore, and restores on demand"
+port = 8022
+
+[drivers]
+object_store = "local"

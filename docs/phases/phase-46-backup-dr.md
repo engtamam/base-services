@@ -100,13 +100,13 @@ managed separately so restoring does not require handing out every service's own
 
 - [x] **46.1** The `backup` manifest block + `safety:backup-coverage` gate (a written collection undeclared → build red), proven to fail on a planted gap
 - [x] **46.2** Template `/internal/backup/export` + `/internal/backup/import`: streamed, sealed, checksummed, idempotent import keyed on row identity
-- [ ] **46.3a** The PUBLIC backup contract in `docs/contracts/`: manifest `backup` block, the export
+- [x] **46.3a** The PUBLIC backup contract in `docs/contracts/`: manifest `backup` block, the export
   envelope format, and the two endpoint schemas — versioned, so a third party builds against a fixed
   spec and a first-party service gets it from the template
-- [ ] **46.3b** Third-party registration: register a service's base URL + internal token, and it is
+- [x] **46.3b** Third-party registration: register a service's base URL + internal token, and it is
   discovered and scheduled like any first-party one — with a reference non-Python adapter proving the
   contract holds outside our stack
-- [ ] **46.3** `backup-service` core: manifest discovery, per-service orchestration, sealed+checksummed archive, retention
+- [x] **46.3** `backup-service` core: manifest discovery, per-service orchestration, sealed+checksummed archive, retention
 - [ ] **46.4** The verification pass — every backup test-restored into a throwaway namespace and compared; an unverified backup counts as none
 - [ ] **46.5** Restore: point-in-time, per-tenant or whole-platform, idempotent, capability-gated, audited write-ahead, confirmed
 - [ ] **46.6** The schedule (runtime-editable via Phase 44), and the alert when a run is MISSED, stale, or unverified

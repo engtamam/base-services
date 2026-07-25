@@ -4,6 +4,7 @@
   "assistant-service": 8021,
   "audit-service": 8005,
   "authz-service": 8007,
+  "backup-service": 8022,
   "billing-service": 8009,
   "compliance-service": 8014,
   "connector-service": 8015,

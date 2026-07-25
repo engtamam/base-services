@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://base-services/contracts/backup.schema.json",
+  "title": "backup",
+  "description": "A service declares what it holds, in its own /internal/manifest under a `backup` object, and answers two endpoints (export/import). backup-service orchestrates from the declaration and NEVER opens the service's database — what a collection means and how its rows are keyed is knowledge the service has and the orchestrator does not. Any service in any language that emits this shape and answers the two endpoints is discovered, scheduled, verified and restorable exactly like a first-party one. THE DECLARATION IS THE COVERAGE: a collection a service writes but does not list here is one a backup silently skips, so first-party services enforce completeness with the safety:backup-coverage gate; a third-party service is trusted to keep its own declaration honest, because only it can see its own database.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["collections"],
+  "properties": {
+    "object_prefix": {
+      "type": "string",
+      "maxLength": 256,
+      "description": "The key prefix under which this service stores files in the object store, or \"\" if it stores none. A restore of files scopes to this prefix so two services never overwrite each other's blobs."
+    },
+    "collections": {
+      "type": "array",
+      "description": "Every dataset that must be captured to restore this service. A collection absent from BOTH this list and `excluded` is a silent hole — the failure this contract exists to prevent.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_:.-]{1,128}$",
+            "description": "The collection/table/dataset identifier, as the service's own store names it."
+          },
+          "tenant_scoped": {
+            "type": "boolean",
+            "default": false,
+            "description": "True if rows carry a `tenant` and may be exported for one tenant in isolation. False for a global dataset (a shared catalogue), which is always captured whole — it is not one tenant's to omit. Get this wrong toward False and a per-tenant restore refuses; wrong toward True and it may restore rows that were never tenant-partitioned."
+          }
+        }
+      }
+    },
+    "excluded": {
+      "type": "array",
+      "description": "Datasets DELIBERATELY not backed up, each with a reason a person can read and challenge. Idempotency keys, rate-limit counters and short-lived caches are regenerated, and restoring them means nothing. An exclusion is a decision; a forgotten collection is a hole with no lid.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "reason"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[A-Za-z0-9_:.-]{1,128}$" },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "Why this dataset need not be restored. Empty is refused: an exclusion nobody can read is a hole with a lid on it."
+          }
+        }
+      }
+    }
+  }
+}

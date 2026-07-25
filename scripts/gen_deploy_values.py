@@ -48,6 +48,7 @@ CRONS: dict[str, list[tuple[str, str, str]]] = {
         ("scan", "*/1 * * * *", "/internal/files/scan"),
         ("sweep-uploads", "*/15 * * * *", "/internal/files/sweep-uploads"),
     ],
+    "backup-service": [("run", "42 2 * * *", "/internal/backup/run")],
     "billing-service": [("dunning", "31 4 * * *", "/internal/billing/dunning"),
                         # The renewal engine — invoice subscriptions whose period has ended. Daily,
                         # offset from dunning so the two sweeps do not contend. Without it, year-two
@@ -189,7 +190,7 @@ STATIC_ENV: dict[str, dict[str, str]] = {
                 "feature-flag-service", "search-service", "zatca-service", "wallet-service",
                 "stream-service", "webhook-service", "job-service", "connector-service",
                 "tenant-service", "api-gateway", "verification-service",
-                "onboarding-service", "assistant-service")),
+                "onboarding-service", "assistant-service", "backup-service")),
         # Retention for the records compliance-service OWNS. Every other service declares its own
         # period in its RoPA row and enforces it itself — only the owner knows which timestamp is
         # its retention clock. Consent PROOF outlives everything else: it is the evidence that
