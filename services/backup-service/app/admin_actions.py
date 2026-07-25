@@ -141,4 +141,66 @@ ADMIN_ACTIONS = [
         "path": "/api/v1/operator/backup/drills", "capability": "platform.restore",
         "group": "Restore",
     },
+    # ── Backup management — the full lifecycle a panel drives (platform.backup) ─
+    # Protected services: see them, add/repoint one, or stop protecting one. The reads come first so
+    # an operator can see what is protected before changing it.
+    {
+        "id": "backup.targets_list", "label": "Protected services", "method": "GET",
+        "path": "/api/v1/operator/backup/targets", "capability": "platform.backup",
+        "group": "Backup",
+    },
+    {
+        "id": "backup.target_register", "label": "Register / repoint a service", "method": "PUT",
+        "path": "/api/v1/operator/backup/targets", "capability": "platform.backup",
+        "group": "Backup", "confirm": True,
+        "params": [
+            {"name": "service", "in": "body", "type": "string", "required": True,
+             "help": "the service's name, e.g. billing-service"},
+            {"name": "base_url", "in": "body", "type": "string", "required": True,
+             "help": "its internal base URL, e.g. https://billing-service.internal — a wrong value "
+                     "silently stops it being backed up"},
+            {"name": "token_ref", "in": "body", "type": "string", "required": False,
+             "help": "the NAME of the stored internal-token secret, never the token itself"},
+            {"name": "enabled", "in": "body", "type": "boolean", "required": False,
+             "help": "default true; false pauses backups for this service without forgetting it"},
+            {"name": "note", "in": "body", "type": "string", "required": False},
+        ],
+    },
+    {
+        "id": "backup.target_remove", "label": "Stop protecting a service", "method": "DELETE",
+        "path": "/api/v1/operator/backup/targets/{service}", "capability": "platform.backup",
+        "group": "Backup", "confirm": True, "danger": True,
+        "params": [
+            {"name": "service", "in": "path", "type": "string", "required": True},
+            {"name": "confirm", "in": "query", "type": "string", "required": True,
+             "help": "repeat the service name — removing a target means it stops being backed up"},
+        ],
+    },
+    {
+        "id": "backup.runs_list", "label": "Backup run history", "method": "GET",
+        "path": "/api/v1/operator/backup/runs", "capability": "platform.backup", "group": "Backup",
+    },
+    {
+        "id": "backup.run_now", "label": "Back up now", "method": "POST",
+        "path": "/api/v1/operator/backup/run", "capability": "platform.backup",
+        "group": "Backup", "confirm": True,
+        "params": [
+            {"name": "tenant", "in": "body", "type": "string", "required": False,
+             "help": "back up just one tenant's data; empty = every service, whole platform"},
+        ],
+    },
+    {
+        "id": "backup.drill_now", "label": "Run a restore drill now", "method": "POST",
+        "path": "/api/v1/operator/backup/drill/run", "capability": "platform.backup",
+        "group": "Backup", "confirm": True,
+    },
+    {
+        "id": "backup.prune_now", "label": "Prune old backups now", "method": "POST",
+        "path": "/api/v1/operator/backup/prune", "capability": "platform.backup",
+        "group": "Backup", "confirm": True, "danger": True,
+        "params": [
+            {"name": "confirm", "in": "query", "type": "string", "required": True,
+             "help": "type 'prune' to confirm — this deletes old archives (never a last verified one)"},
+        ],
+    },
 ]

@@ -211,6 +211,18 @@
         "title": "RestorePlanIn",
         "type": "object"
       },
+      "RunIn": {
+        "properties": {
+          "tenant": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "title": "RunIn",
+        "type": "object"
+      },
       "SecretIn": {
         "properties": {
           "name": {
@@ -237,6 +249,45 @@
           "value"
         ],
         "title": "SecretIn",
+        "type": "object"
+      },
+      "TargetIn": {
+        "properties": {
+          "base_url": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Base Url",
+            "type": "string"
+          },
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 512,
+            "title": "Note",
+            "type": "string"
+          },
+          "service": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Service",
+            "type": "string"
+          },
+          "token_ref": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Token Ref",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "base_url"
+        ],
+        "title": "TargetIn",
         "type": "object"
       },
       "UndoIn": {
@@ -374,6 +425,30 @@
         ]
       }
     },
+    "/api/v1/operator/backup/drill/run": {
+      "post": {
+        "description": "Run a restore drill on demand \u2014 prove, right now, that every service still restores from its\nbest backup. Read-only against live data. Alerts if it fails.",
+        "operationId": "run_drill_now_api_v1_operator_backup_drill_run_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Run Drill Now Api V1 Operator Backup Drill Run Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Run Drill Now",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
     "/api/v1/operator/backup/drills": {
       "get": {
         "description": "The restore-drill history \u2014 the standing evidence that DR actually works, newest first.\nAnswers 'when did we last PROVE we could restore everything?'.",
@@ -417,6 +492,241 @@
           }
         },
         "summary": "Backup Health",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/v1/operator/backup/prune": {
+      "post": {
+        "description": "Prune old backups to the retention limits now \u2014 never a target's last verified backup.\nEcho-confirmed ('prune') and audited: it deletes archives.",
+        "operationId": "prune_backups_now_api_v1_operator_backup_prune_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "confirm",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Confirm",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Prune Backups Now Api V1 Operator Backup Prune Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Prune Backups Now",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/v1/operator/backup/run": {
+      "post": {
+        "description": "Capture an out-of-band backup now. The scheduled runs happen without this; it is for the\nbefore-a-risky-change snapshot. The run's status is the worst target's; a miss is never dropped.",
+        "operationId": "run_backup_now_api_v1_operator_backup_run_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Run Backup Now Api V1 Operator Backup Run Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Backup Now",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/v1/operator/backup/runs": {
+      "get": {
+        "description": "The backup run history \u2014 the record that proves backups actually happened, newest first.",
+        "operationId": "list_backup_runs_api_v1_operator_backup_runs_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Backup Runs Api V1 Operator Backup Runs Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Backup Runs",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/v1/operator/backup/targets": {
+      "get": {
+        "description": "The services backup-service protects. `token_ref` is a secret NAME; no token is ever shown.",
+        "operationId": "list_backup_targets_api_v1_operator_backup_targets_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Backup Targets Api V1 Operator Backup Targets Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Backup Targets",
+        "tags": [
+          "operator"
+        ]
+      },
+      "put": {
+        "description": "Register or repoint a protected service. Audited: a wrong base_url silently stops a service\nbeing backed up, so who changed what it points at must be on the record.",
+        "operationId": "register_backup_target_api_v1_operator_backup_targets_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TargetIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Register Backup Target Api V1 Operator Backup Targets Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register Backup Target",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/v1/operator/backup/targets/{service}": {
+      "delete": {
+        "description": "Stop protecting a service. Echo-confirmed and audited \u2014 removing a target means it is no\nlonger backed up, which must never be a mis-click.",
+        "operationId": "remove_backup_target_api_v1_operator_backup_targets__service__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "service",
+            "required": true,
+            "schema": {
+              "title": "Service",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "confirm",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Confirm",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Remove Backup Target Api V1 Operator Backup Targets  Service  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Backup Target",
         "tags": [
           "operator"
         ]

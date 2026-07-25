@@ -151,6 +151,14 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "protecting; a wrong base_url means a service silently stops being backed up",
     },
     {
+        "action": "backup.target_removed",
+        "source": "admin",
+        "critical": False,
+        "resource": "backup_target",
+        "why": "removing a target means a service is no longer backed up; the record of who stopped "
+               "protecting what is exactly what an incident review would ask for",
+    },
+    {
         "action": "backup.run_started",
         "source": "admin",
         "critical": False,

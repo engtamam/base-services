@@ -190,6 +190,51 @@ def test_drill_history_read_needs_the_restore_capability(client):
     assert ok.status_code == 200 and "drills" in ok.json()
 
 
+# ── backup management surface (platform.backup) ───────────────────────────────
+def test_backup_management_needs_its_own_capability(client):
+    """Managing the backup system is distinct from restoring; a restore operator does not
+    automatically get it, nor a config operator."""
+    h = _auth("platform.restore", "platform.config")   # everything except platform.backup
+    for method, url in [("get", "/api/v1/operator/backup/targets"),
+                        ("get", "/api/v1/operator/backup/runs")]:
+        assert getattr(client, method)(url, headers=h).status_code == 403
+    assert client.post("/api/v1/operator/backup/run", json={}, headers=h).status_code == 403
+
+
+def test_a_target_can_be_registered_listed_and_never_leaks_its_token(client):
+    h = _auth("platform.backup")
+    reg = client.put("/api/v1/operator/backup/targets",
+                     json={"service": "billing-service", "base_url": "https://billing.internal",
+                           "token_ref": "billing_internal_token"}, headers=h)
+    assert reg.status_code == 200, reg.text
+    body = reg.text
+    assert "token" not in reg.json() or reg.json().get("token") is None
+    listed = client.get("/api/v1/operator/backup/targets", headers=h).json()["targets"]
+    entry = next(t for t in listed if t["service"] == "billing-service")
+    assert entry["token_ref"] == "billing_internal_token"  # the NAME, not a token
+    assert "token" not in entry or entry.get("token") is None
+
+
+def test_removing_a_target_is_echo_confirmed(client):
+    h = _auth("platform.backup")
+    client.put("/api/v1/operator/backup/targets",
+               json={"service": "temp-svc", "base_url": "https://t.internal"}, headers=h)
+    assert client.delete("/api/v1/operator/backup/targets/temp-svc?confirm=wrong",
+                         headers=h).status_code == 400
+    ok = client.delete("/api/v1/operator/backup/targets/temp-svc?confirm=temp-svc", headers=h)
+    assert ok.status_code == 200 and ok.json()["removed"] is True
+
+
+def test_prune_and_run_and_drill_are_reachable_with_the_capability(client):
+    h = _auth("platform.backup")
+    # With no targets, a run completes cleanly (nothing to capture) — proves the route is wired.
+    assert client.post("/api/v1/operator/backup/run", json={}, headers=h).status_code == 200
+    assert client.post("/api/v1/operator/backup/drill/run", headers=h).status_code == 200
+    # Prune is echo-confirmed.
+    assert client.post("/api/v1/operator/backup/prune?confirm=nope", headers=h).status_code == 400
+    assert client.post("/api/v1/operator/backup/prune?confirm=prune", headers=h).status_code == 200
+
+
 # ── restore: the dangerous action, gated and confirmed ────────────────────────
 def test_restore_needs_its_own_capability(client):
     """Restoring overwrites live data — an operator with secrets or config caps must not, by that

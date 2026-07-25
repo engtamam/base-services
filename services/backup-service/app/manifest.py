@@ -58,7 +58,8 @@ def build_manifest(
         # adopter's client app reads as fact and renders nothing from. A blank app is the usual
         # symptom of a service that shipped this untouched. If a service genuinely grants none,
         # leaving it empty is correct; the point is that it must be a decision, not a leftover.
-        "capabilities": ["platform.secrets", "platform.config", "platform.restore"],
+        "capabilities": ["platform.secrets", "platform.config", "platform.restore",
+                         "platform.backup"],
         "endpoints": [
             {"path": "/healthz", "tier": "public", "method": "GET"},
             {"path": "/readyz", "tier": "public", "method": "GET"},
@@ -104,6 +105,14 @@ def build_manifest(
             {"path": "/api/v1/operator/restores", "tier": "user", "method": "GET"},
             {"path": "/api/v1/operator/backup/health", "tier": "user", "method": "GET"},
             {"path": "/api/v1/operator/backup/drills", "tier": "user", "method": "GET"},
+            # Backup management — the full lifecycle a panel drives (platform.backup).
+            {"path": "/api/v1/operator/backup/targets", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/operator/backup/targets", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/operator/backup/targets/{}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/operator/backup/runs", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/operator/backup/run", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/operator/backup/drill/run", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/operator/backup/prune", "tier": "user", "method": "POST"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         # FILL THIS too, or leave it empty deliberately. Same trap as capabilities: an empty

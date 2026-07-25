@@ -28,7 +28,13 @@ from app.core.secret_store import SecretError, SecretStore
 from app.core.restore import RestoreError, RestoreOrchestrator
 from app.core.restores import RestoreStore
 from app.core.runs import RunStore
-from app.core.targets import TargetStore
+from app.core.targets import Target, TargetStore
+from app.core.orchestrator import Orchestrator
+from app.core.retention import RetentionSweeper
+from app.core.drill import RestoreDrill
+from app.core.drills import DrillStore
+from app.core import alerts as _alerts
+from app.core import health as _health
 
 router = APIRouter(prefix="/api/v1/operator", tags=["operator"])
 
@@ -37,6 +43,10 @@ _CONFIG = require_capability("platform.config")
 # Restoring overwrites live data — its own capability, never folded into config or secrets. An
 # operator who may reorder providers must not, by that fact, be able to overwrite the platform.
 _RESTORE = require_capability("platform.restore")
+# Managing the backup system — which services are protected, triggering runs, drills, retention —
+# is operational and distinct from the destructive restore. Its own capability so a backup operator
+# is not, by that fact, handed the power to overwrite live data.
+_BACKUP = require_capability("platform.backup")
 
 
 def _actor(principal: Principal) -> str:
@@ -314,3 +324,135 @@ async def list_drills(request: Request, principal: Principal = Depends(require_u
     from app.core.drills import DrillStore
     limit = get_settings().BACKUP_RUN_HISTORY
     return {"drills": await DrillStore(request.app.state.container.datastore).recent(limit)}
+
+
+# ── backup MANAGEMENT — the full lifecycle, panel-drivable (platform.backup) ───
+def _backup_orchestrator(request: Request) -> Orchestrator:
+    from app.core.token_resolver import make_token_resolver
+    s = get_settings()
+    c = request.app.state.container
+    return Orchestrator(
+        targets=TargetStore(c.datastore), object_store=c.object_store, runs=RunStore(c.datastore),
+        resolve_token=make_token_resolver(getattr(request.app.state, "secret_store", None)),
+        clock=_now_iso, iso=_now_iso,
+        cfg={"egress_allowed_hosts": s.egress_allowed_hosts,
+             "target_timeout_seconds": s.BACKUP_TARGET_TIMEOUT_SECONDS,
+             "target_limit": s.BACKUP_TARGET_LIMIT})
+
+
+class TargetIn(BaseModel):
+    service: str = Field(..., min_length=1, max_length=128)
+    base_url: str = Field(..., min_length=1, max_length=512)
+    token_ref: str = Field(default="", max_length=128)   # the operator-secret NAME, never a token
+    enabled: bool = True
+    note: str = Field(default="", max_length=512)
+
+
+class RunIn(BaseModel):
+    tenant: str = Field(default="", max_length=128)
+
+
+@router.get("/backup/targets", dependencies=[Depends(_BACKUP), Depends(rate_limit)])
+async def list_backup_targets(request: Request,
+                              principal: Principal = Depends(require_user)) -> dict:
+    """The services backup-service protects. `token_ref` is a secret NAME; no token is ever shown."""
+    limit = get_settings().BACKUP_TARGET_LIMIT
+    targets = await TargetStore(request.app.state.container.datastore).all(limit)
+    return {"targets": [t.public() for t in targets]}
+
+
+@router.put("/backup/targets", dependencies=[Depends(_BACKUP), Depends(rate_limit)])
+async def register_backup_target(request: Request, body: TargetIn,
+                                 principal: Principal = Depends(require_user)) -> dict:
+    """Register or repoint a protected service. Audited: a wrong base_url silently stops a service
+    being backed up, so who changed what it points at must be on the record."""
+    await request.app.state.auditor.record(
+        "backup.target_registered", actor=_actor(principal), resource=f"backup_target:{body.service}",
+        ip=request.client.host if request.client else "", metadata={"base_url": body.base_url})
+    t = await TargetStore(request.app.state.container.datastore).upsert(
+        Target(service=body.service, base_url=body.base_url, token_ref=body.token_ref,
+               enabled=body.enabled, created=_now_iso(), note=body.note))
+    return t.public()
+
+
+@router.delete("/backup/targets/{service}", dependencies=[Depends(_BACKUP), Depends(rate_limit)])
+async def remove_backup_target(request: Request, service: str, confirm: str = "",
+                               principal: Principal = Depends(require_user)) -> dict:
+    """Stop protecting a service. Echo-confirmed and audited — removing a target means it is no
+    longer backed up, which must never be a mis-click."""
+    if confirm != service:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "CONFIRM_MISMATCH")
+    await request.app.state.auditor.record(
+        "backup.target_removed", actor=_actor(principal), resource=f"backup_target:{service}",
+        ip=request.client.host if request.client else "")
+    return {"removed": await TargetStore(request.app.state.container.datastore).remove(service)}
+
+
+@router.get("/backup/runs", dependencies=[Depends(_BACKUP), Depends(rate_limit)])
+async def list_backup_runs(request: Request,
+                           principal: Principal = Depends(require_user)) -> dict:
+    """The backup run history — the record that proves backups actually happened, newest first."""
+    limit = get_settings().BACKUP_RUN_HISTORY
+    return {"runs": await RunStore(request.app.state.container.datastore).recent(limit)}
+
+
+@router.post("/backup/run", dependencies=[Depends(_BACKUP), Depends(rate_limit)])
+async def run_backup_now(request: Request, body: RunIn,
+                         principal: Principal = Depends(require_user)) -> dict:
+    """Capture an out-of-band backup now. The scheduled runs happen without this; it is for the
+    before-a-risky-change snapshot. The run's status is the worst target's; a miss is never dropped."""
+    await request.app.state.auditor.record(
+        "backup.run_started", actor=_actor(principal), resource="backup_run",
+        ip=request.client.host if request.client else "", metadata={"tenant": body.tenant})
+    return await _backup_orchestrator(request).run(tenant=body.tenant)
+
+
+@router.post("/backup/drill/run", dependencies=[Depends(_BACKUP), Depends(rate_limit)])
+async def run_drill_now(request: Request, principal: Principal = Depends(require_user)) -> dict:
+    """Run a restore drill on demand — prove, right now, that every service still restores from its
+    best backup. Read-only against live data. Alerts if it fails."""
+    s = get_settings()
+    from app.core.token_resolver import make_token_resolver
+    c = request.app.state.container
+    drill = RestoreDrill(
+        targets=TargetStore(c.datastore), object_store=c.object_store, runs=RunStore(c.datastore),
+        drills=DrillStore(c.datastore),
+        resolve_token=make_token_resolver(getattr(request.app.state, "secret_store", None)),
+        iso=_now_iso,
+        cfg={"egress_allowed_hosts": s.egress_allowed_hosts,
+             "target_timeout_seconds": s.BACKUP_TARGET_TIMEOUT_SECONDS,
+             "target_limit": s.BACKUP_TARGET_LIMIT, "run_history": s.BACKUP_RUN_HISTORY})
+    report = await drill.run()
+    await request.app.state.auditor.record(
+        "backup.drilled", actor=_actor(principal), resource="backup_drill",
+        ip=request.client.host if request.client else "",
+        metadata={"status": report["status"], "failed": ",".join(report["failed"])})
+    return report
+
+
+@router.post("/backup/prune", dependencies=[Depends(_BACKUP), Depends(rate_limit)])
+async def prune_backups_now(request: Request, confirm: str = "",
+                            principal: Principal = Depends(require_user)) -> dict:
+    """Prune old backups to the retention limits now — never a target's last verified backup.
+    Echo-confirmed ('prune') and audited: it deletes archives."""
+    if confirm != "prune":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "CONFIRM_MISMATCH")
+    s = get_settings()
+    keep, max_age = s.BACKUP_RETENTION_RUNS, s.BACKUP_RETENTION_MAX_AGE_SECONDS
+    rc = getattr(request.app.state, "runtime_config", None)
+    if rc is not None:
+        try:
+            keep = int(await rc.get(tenant="", key="BACKUP_RETENTION_RUNS", default=keep))
+            max_age = int(await rc.get(tenant="", key="BACKUP_RETENTION_MAX_AGE_SECONDS",
+                                       default=max_age))
+        except (TypeError, ValueError):
+            pass
+    sweeper = RetentionSweeper(runs=RunStore(request.app.state.container.datastore),
+                               object_store=request.app.state.container.object_store, iso=_now_iso)
+    result = await sweeper.prune(keep_runs=keep, max_age_seconds=max_age, scan_limit=s.BACKUP_RUN_HISTORY)
+    if result["pruned_count"]:
+        await request.app.state.auditor.record(
+            "backup.pruned", actor=_actor(principal), resource="backup_run",
+            ip=request.client.host if request.client else "",
+            metadata={"pruned": str(result["pruned_count"])})
+    return result
