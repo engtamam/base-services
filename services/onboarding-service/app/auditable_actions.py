@@ -38,6 +38,15 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "resource": "onboarding_flow",
     },
     {
+        "action": "provisioning.resumed",
+        "source": "admin",
+        "critical": False,
+        "resource": "subject",
+        "why": "an operator re-ran the compensation a failed provisioning could not finish for a "
+               "customer; it acts against downstream services on their behalf, so who resumed whose "
+               "cleanup is worth the record. Not critical: it is idempotent and re-runnable",
+    },
+    {
         "action": "subject.erased",
         "source": "internal",
         "critical": True,

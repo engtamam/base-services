@@ -174,3 +174,52 @@ async def force_complete(request: Request, subject: str, body: ForceIn,
     await ledger.force(tenant=principal.tenant, subject=subject,
                        requirement=body.requirement, actor=principal.subject, reason=body.reason)
     return {"forced": body.requirement, "subject": subject}
+
+
+@router.get("/admin/flows", dependencies=[Depends(_ADMIN)])
+async def list_flows(request: Request, principal: Principal = Depends(_ADMIN)) -> dict:
+    """The flow catalogue — which onboarding flows exist, and each flow's requirements and the
+    resources it provisions. The see-before-you-act read: an operator inspecting a stuck customer
+    needs to know which flow they are on and what it demands, without reading the deployment config."""
+    flows = _flows()
+    return {"flows": [
+        {"name": f.get("name"), "match": f.get("match", {}),
+         "requirements": [r.get("name") for r in (f.get("requirements") or [])],
+         "provisions": [p.get("kind") for p in (f.get("provisions") or [])]}
+        for f in flows]}
+
+
+@router.get("/admin/provisioning/{subject}", dependencies=[Depends(_ADMIN)])
+async def provisioning_run(request: Request, subject: str,
+                           principal: Principal = Depends(_ADMIN)) -> dict:
+    """A customer's last provisioning run — what completed, what was rolled back, and the residue /
+    unfinished cleanup still outstanding. The read an operator looks at before deciding to resume."""
+    c = request.app.state.container
+    key = ProvisioningService._run_key(principal.tenant, subject)
+    record = await c.datastore.get("provisioning_runs", key)
+    if record is None:
+        # A stable, honest empty — 'never provisioned' and 'provisioned cleanly, nothing stored'
+        # both read as no outstanding work, which is what the operator needs to know.
+        return {"subject": subject, "found": False, "unfinished": [], "residue": []}
+    return {"subject": subject, "found": True, **record}
+
+
+@router.post("/admin/resume/{subject}", dependencies=[Depends(_ADMIN)])
+async def resume_provisioning(request: Request, subject: str,
+                              principal: Principal = Depends(_ADMIN)) -> dict:
+    """Re-attempt the compensation a failed provisioning could not finish for this customer.
+
+    Audited: it re-runs undo work against downstream services on a customer's behalf. It never
+    re-runs the forward steps (those succeeded), so it is safe to call repeatedly — it works the
+    'unfinished' queue and returns what is left. Nothing to resume is a clean, recorded no-op.
+    """
+    c = request.app.state.container
+    svc = ProvisioningService(provisioners=c.provisioners, store=c.datastore, clock=c.clock,
+                              auditor=request.app.state.auditor, telemetry=c.telemetry)
+    await request.app.state.auditor.record(
+        "provisioning.resumed", actor=principal.subject, tenant=principal.tenant,
+        resource=f"subject:{subject}")
+    result = await svc.resume(principal.tenant, subject)
+    if result is None:
+        return {"subject": subject, "resumed": False, "detail": "nothing outstanding to resume"}
+    return {"subject": subject, "resumed": True, **result}
