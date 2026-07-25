@@ -111,4 +111,36 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         "group": "Lifecycle",
         "params": [{"name": "tenant_id", "in": "path", "type": "string", "required": True}],
     },
+
+    # ── The tenant's OWN admin console (tenant.manage) ─────────────────────────
+    # A tenant admin managing their own tenant, tenant taken from the token — a *.manage surface, so
+    # a tenant-admin UI can render it. Distinct from the platform.tenants operator actions above:
+    # these never name a tenant_id, they act on the caller's own. The read comes before the writes.
+    {
+        "id": "tenant.self_view",
+        "label": "View my tenant",
+        "method": "GET",
+        "path": "/api/v1/tenant",
+        "capability": "tenant.manage",
+        "group": "My tenant",
+    },
+    {
+        "id": "tenant.self_config",
+        "label": "Update my tenant's config",
+        "method": "PUT",
+        "path": "/api/v1/tenant/config",
+        "capability": "tenant.manage",
+        "group": "My tenant",
+        "confirm": True,
+        "params": [{"name": "config", "in": "body", "type": "object", "required": True}],
+    },
+    {
+        "id": "tenant.self_branding",
+        "label": "Update my tenant's branding",
+        "method": "PUT",
+        "path": "/api/v1/tenant/branding",
+        "capability": "tenant.manage",
+        "group": "My tenant",
+        "params": [{"name": "branding", "in": "body", "type": "object", "required": True}],
+    },
 ]
