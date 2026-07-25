@@ -37,11 +37,11 @@ excluded-with-a-reason — the third state is the hole this contract exists to p
 services have this enforced mechanically by the `safety:backup-coverage` gate; a third-party service
 keeps its own declaration honest, because only it can see its own database.)
 
-## Step 2 — answer two endpoints
+## Step 2 — answer three endpoints
 
-Both are internal (service-to-service), authenticated however your service authenticates internal
-callers. How you read and write your own database is entirely your business — the orchestrator only
-sees the envelope.
+All three are internal (service-to-service), authenticated however your service authenticates
+internal callers. How you read and write your own database is entirely your business — the
+orchestrator only sees the envelope.
 
 **Export** — return a sealed, checksummed archive of your declared data:
 
@@ -88,6 +88,36 @@ X-Internal-Token: …
   after the backup, and a re-run of a half-finished restore must change nothing the second time.
 - **Refuse an id-less row.** Restoring it twice would duplicate it.
 
+**Verify** — prove an archive actually restores, without touching your live data:
+
+```http
+POST /internal/backup/verify
+X-Internal-Token: …
+{ "archive": { … } }
+→ 200
+{
+  "verified": true,          # every row the archive claims was restored and read back IDENTICAL
+  "expected": 43,            # rows the archive holds
+  "checked": 43,             # rows actually restored-and-compared (must equal expected to pass)
+  "collections": { "invoices": 40, "plans": 3 },
+  "mismatches": []           # a bounded sample of what differed, when verified is false
+}
+```
+
+This is the endpoint that makes the whole system worth trusting: a checksum proves the bytes are
+intact, not that they *restore*. After the orchestrator stores your archive it reads it back from
+the store (catching corruption at rest) and calls this, so an archive is never counted as a backup
+until it has been proven restorable.
+
+- **Test-restore into a throwaway namespace, then tear it down.** Restore every row into an isolated
+  scratch namespace, read each back, compare it byte-for-byte to the archive, then delete the
+  scratch namespace — always, even on failure. Live data is never touched and nothing is left behind.
+- **`verified` is true only when `checked == expected` and nothing differed.** An empty or partial
+  verify over a non-empty archive is *not* a pass. "We checked and it was fine" while checking
+  nothing is the exact false comfort this whole contract exists to kill.
+- **A key that cannot open the archive is a failed verification, not a 500.** A KEK rotated since the
+  backup means it is not restorable under the current key — say so plainly.
+
 ## Step 3 — register with backup-service
 
 Tell the orchestrator where you are and how to reach you — the same way billing registers a wallet
@@ -99,7 +129,7 @@ POST /internal/backup/targets
 { "service": "your-service", "base_url": "https://your-service.internal", "token_ref": "…" }
 ```
 
-You write two endpoints once. You never write a backup system.
+You write three endpoints once. You never write a backup system.
 
 ---
 

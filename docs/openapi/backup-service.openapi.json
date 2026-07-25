@@ -31,6 +31,20 @@
         "title": "BackupImportIn",
         "type": "object"
       },
+      "BackupVerifyIn": {
+        "properties": {
+          "archive": {
+            "additionalProperties": true,
+            "title": "Archive",
+            "type": "object"
+          }
+        },
+        "required": [
+          "archive"
+        ],
+        "title": "BackupVerifyIn",
+        "type": "object"
+      },
       "ConfigIn": {
         "properties": {
           "key": {
@@ -987,6 +1001,68 @@
           }
         },
         "summary": "Remove Target",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/backup/verify": {
+      "post": {
+        "description": "Prove an archive restores, by test-restoring it into a throwaway namespace and comparing.\n\nbackup-service calls this after it stores an archive (passing back the bytes it read FROM the\nstore, so corruption at rest is caught too). This service is the only party that can unseal its\nown archive and knows its own schema, so verification lives here; the orchestrator only records\nthe verdict. The throwaway namespace is torn down before this returns \u2014 nothing is left behind,\nand live data is never touched.",
+        "operationId": "backup_verify_internal_backup_verify_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackupVerifyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Backup Verify Internal Backup Verify Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Backup Verify",
         "tags": [
           "internal"
         ]

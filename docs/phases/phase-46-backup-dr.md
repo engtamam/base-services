@@ -107,7 +107,7 @@ managed separately so restoring does not require handing out every service's own
   discovered and scheduled like any first-party one — with a reference non-Python adapter proving the
   contract holds outside our stack
 - [x] **46.3** `backup-service` core: manifest discovery, per-service orchestration, sealed+checksummed archive, retention
-- [ ] **46.4** The verification pass — every backup test-restored into a throwaway namespace and compared; an unverified backup counts as none
+- [x] **46.4** The verification pass — every stored archive read BACK from the store and test-restored into a throwaway namespace by the target itself (the only party that can unseal it), compared row-for-row, then torn down. A target that cannot prove the restore is UNVERIFIED; one that restores WRONG is FAILED; only `ok AND verified` counts. Third parties implement a third endpoint, `/internal/backup/verify`, documented in the public contract
 - [ ] **46.5** Restore: point-in-time, per-tenant or whole-platform, idempotent, capability-gated, audited write-ahead, confirmed
 - [ ] **46.6** The schedule (runtime-editable via Phase 44), and the alert when a run is MISSED, stale, or unverified
 - [ ] **46.7** Edge-case tests, each mutation-tested — the half-write, the absent service, the mismatched KEK, the partial-restore re-run

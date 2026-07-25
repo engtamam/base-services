@@ -67,6 +67,7 @@ def build_manifest(
             {"path": "/internal/manifest", "tier": "internal", "method": "GET"},
             {"path": "/internal/backup/export", "tier": "internal", "method": "POST"},
             {"path": "/internal/backup/import", "tier": "internal", "method": "POST"},
+            {"path": "/internal/backup/verify", "tier": "internal", "method": "POST"},
             {"path": "/internal/backup/targets", "tier": "internal", "method": "POST"},
             {"path": "/internal/backup/targets", "tier": "internal", "method": "GET"},
             {"path": "/internal/backup/targets/{}", "tier": "internal", "method": "DELETE"},

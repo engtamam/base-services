@@ -121,6 +121,31 @@ async def backup_export(request: Request, body: BackupExportIn,
         scan_cap=settings.BACKUP_MAX_ROWS_PER_COLLECTION)
 
 
+class BackupVerifyIn(BaseModel):
+    archive: dict
+
+
+@router.post("/backup/verify", dependencies=[Depends(require_internal_token)])
+async def backup_verify(request: Request, body: BackupVerifyIn,
+                        settings: Settings = Depends(get_settings)) -> dict:
+    """Prove an archive restores, by test-restoring it into a throwaway namespace and comparing.
+
+    backup-service calls this after it stores an archive (passing back the bytes it read FROM the
+    store, so corruption at rest is caught too). This service is the only party that can unseal its
+    own archive and knows its own schema, so verification lives here; the orchestrator only records
+    the verdict. The throwaway namespace is torn down before this returns — nothing is left behind,
+    and live data is never touched.
+    """
+    import secrets
+    _, unseal = _sealer(settings)
+    try:
+        return await _backup.verify_restore(
+            request.app.state.container.datastore, body.archive,
+            unseal=unseal, token=secrets.token_hex(8))
+    except _backup.BackupError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+
 @router.post("/backup/import", dependencies=[Depends(require_internal_token)])
 async def backup_import(request: Request, body: BackupImportIn,
                         settings: Settings = Depends(get_settings)) -> dict:

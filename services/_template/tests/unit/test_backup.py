@@ -181,3 +181,59 @@ def test_a_per_tenant_backup_still_includes_global_collections():
     _seed(st, tenant="acme")
     archive = _export(st, tenant="acme")
     assert archive["row_counts"]["catalog"] == 1
+
+
+# ── verify_restore: prove the archive actually restores (Phase 46.4) ──────────
+def _verify(st, archive, kek="backup-key", token="t1"):
+    _, unseal = B.make_sealer(kek)
+    return run(B.verify_restore(st, archive, unseal=unseal, token=token))
+
+
+def test_verify_passes_for_a_good_archive_and_leaves_nothing_behind():
+    src = _seed(MemoryDataStore())
+    archive = _export(src)
+    scratch = MemoryDataStore()
+
+    verdict = _verify(scratch, archive)
+
+    assert verdict["verified"] is True
+    assert verdict["checked"] == verdict["expected"] == 4
+    # The throwaway namespace is torn down — a verification never leaves probe rows in the store.
+    leftover = run(scratch.scan_all("__bkpverify__t1__widgets", 1000))
+    assert leftover == [], "verify left throwaway rows behind"
+    assert run(scratch.scan_all("__bkpverify__t1__catalog", 1000)) == []
+
+
+def test_verify_refuses_a_corrupt_archive_before_touching_the_store():
+    src = _seed(MemoryDataStore())
+    archive = _export(src)
+    archive["checksum"] = "sha256:deadbeef"
+    scratch = MemoryDataStore()
+    with pytest.raises(B.BackupError):
+        _verify(scratch, archive)
+
+
+def test_verify_refuses_an_archive_the_key_cannot_open():
+    """A KEK rotated since the backup: it decrypts to nothing usable, so it is NOT restorable."""
+    src = _seed(MemoryDataStore())
+    archive = _export(src, kek="the-old-key")
+    with pytest.raises(B.BackupError):
+        _verify(MemoryDataStore(), archive, kek="a-different-key")
+
+
+class _TamperingStore(MemoryDataStore):
+    """A store whose read-back does not match the write — stands in for a schema/serialisation drift
+    that a checksum cannot see but a test-restore-and-compare must."""
+    async def get(self, collection, key):
+        row = await super().get(collection, key)
+        if row is not None and collection.startswith("__bkpverify__"):
+            row = {**row, "n": (row.get("n", 0) + 999)}   # not what was written
+        return row
+
+
+def test_verify_fails_when_a_row_does_not_round_trip():
+    src = _seed(MemoryDataStore())
+    archive = _export(src)
+    verdict = _verify(_TamperingStore(), archive)
+    assert verdict["verified"] is False
+    assert verdict["mismatches"], "a row that restored differently was reported as verified"

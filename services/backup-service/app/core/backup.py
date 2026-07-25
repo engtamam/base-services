@@ -147,6 +147,94 @@ async def import_archive(datastore, archive: dict[str, Any], *,
     return {"service": body.get("service"), "tenant": body.get("tenant", ""),
             "inserted": inserted, "overwritten": overwritten, "skipped": skipped}
 
+def _canon(row: dict[str, Any]) -> str:
+    """A dict's order-independent fingerprint, so a re-serialised row compares equal to its origin."""
+    return json.dumps(row, separators=(",", ":"), sort_keys=True)
+
+
+# A prefix a real collection can never carry, so a verify run's throwaway rows can never collide
+# with live data and are never themselves declared or backed up. Dynamic (per-run token), so the
+# safety:backup-coverage gate — which only reasons about literal collection names — ignores them.
+_VERIFY_NS = "__bkpverify__"
+
+
+async def verify_restore(datastore, archive: dict[str, Any], *, unseal: Callable[[str], str],
+                         token: str) -> dict[str, Any]:
+    """Prove an archive actually restores, by test-restoring it into a throwaway namespace.
+
+    A checksum proves the bytes are intact; it does not prove they RESTORE. This does: every row is
+    written into an isolated per-run namespace, read back, and compared byte-for-byte against the
+    archive, then the namespace is torn down. It catches what a checksum cannot — a row that will
+    not round-trip through this service's own put/get (a schema or serialisation drift), an archive
+    the backup key can no longer open (a KEK rotated since the backup), and corruption introduced by
+    the store between write and read (the caller passes the bytes it read BACK from the store).
+
+    `verified` is true ONLY when every row the archive claims was restored and read back identical —
+    an empty or partial verify over a non-empty archive is NOT a pass, because "we checked and it was
+    fine" while checking nothing is the exact false comfort this phase exists to kill.
+
+    The throwaway namespace is ALWAYS torn down, even when a comparison fails or the process raises
+    mid-verify, so a verification never leaves probe rows behind in the datastore.
+    """
+    verify(archive)  # cheap structural refusal before we decrypt or write anything
+    try:
+        body = json.loads(unseal(archive["sealed"]))
+    except BackupError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — a rotated/mismatched backup key, or a tampered blob
+        raise BackupError(
+            "archive could not be decrypted for verification — the backup key does not match the "
+            "one it was sealed with; this backup is NOT restorable under the current key") from exc
+
+    collections = body.get("collections") or {}
+    expected = sum(len(rows) for rows in collections.values())
+    written: list[tuple[str, str]] = []   # (throwaway collection, id) — the teardown list
+    checked = 0
+    mismatches: list[str] = []
+    per_collection: dict[str, int] = {}
+    try:
+        for name, rows in collections.items():
+            ns = f"{_VERIFY_NS}{token}__{name}"
+            ok = 0
+            for row in rows:
+                key = row.get("id")
+                if not key:
+                    mismatches.append(f"{name}: a row has no id — cannot be restored idempotently")
+                    continue
+                await datastore.put(ns, key, row)
+                written.append((ns, key))
+                back = await datastore.get(ns, key)
+                if back is None:
+                    mismatches.append(f"{name}/{key}: row did not survive restore (read back empty)")
+                elif _canon(back) != _canon(row):
+                    mismatches.append(f"{name}/{key}: restored row differs from the archived row")
+                else:
+                    ok += 1
+                    checked += 1
+            per_collection[name] = ok
+    finally:
+        # Tear the namespace down no matter what — a failed comparison or a raise must not leave
+        # probe rows in the store. Best-effort per row; teardown errors never mask the verdict.
+        for ns, key in written:
+            try:
+                await datastore.delete(ns, key)
+            except Exception:  # noqa: BLE001 — a delete that fails leaves a throwaway row, not live data
+                pass
+
+    verified = not mismatches and checked == expected
+    return {
+        "verified": verified,
+        "service": body.get("service"),
+        "tenant": body.get("tenant", ""),
+        "expected": expected,
+        "checked": checked,
+        "collections": per_collection,
+        # A bounded, non-sensitive sample — enough for an operator to see WHAT failed without
+        # dumping every id of a large archive into a log line.
+        "mismatches": mismatches[:20],
+    }
+
+
 _SEAL_PREFIX = "v1:gcm:"
 
 
