@@ -64,6 +64,14 @@ async def suggest(request: Request, index: str, prefix: str, principal: Principa
     return await build_search(request).suggest(index=index, tenant=_tenant(principal), prefix=prefix)
 
 
+@router.get("/indexes", dependencies=[Depends(_ADMIN)])
+async def list_indexes(request: Request) -> dict:
+    """The index catalogue — which indexes exist and how many documents each holds. The
+    see-before-you-inspect read: an operator cannot view an index's stats without first knowing its
+    name. Read-only; the panel never mutates an index (indexing is internal-token only)."""
+    return {"indexes": await build_search(request).list_indexes()}
+
+
 @router.get("/indexes/{index}/stats", dependencies=[Depends(_ADMIN)])
 async def index_stats(request: Request, index: str) -> dict:
     return await build_search(request).stats(index=index)

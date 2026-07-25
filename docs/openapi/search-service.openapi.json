@@ -275,6 +275,30 @@
         ]
       }
     },
+    "/api/v1/search/indexes": {
+      "get": {
+        "description": "The index catalogue \u2014 which indexes exist and how many documents each holds. The\nsee-before-you-inspect read: an operator cannot view an index's stats without first knowing its\nname. Read-only; the panel never mutates an index (indexing is internal-token only).",
+        "operationId": "list_indexes_api_v1_search_indexes_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Indexes Api V1 Search Indexes Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Indexes",
+        "tags": [
+          "search"
+        ]
+      }
+    },
     "/api/v1/search/indexes/{index}/stats": {
       "get": {
         "operationId": "index_stats_api_v1_search_indexes__index__stats_get",

@@ -212,6 +212,10 @@ class SearchService:
     async def stats(self, *, index: str) -> dict:
         return await self._index.stats(index=index)
 
+    async def list_indexes(self) -> list[dict]:
+        """The index catalogue for the operator panel — bounded by the configured list limit."""
+        return await self._index.list_indexes(limit=self._cfg["list_limit"])
+
     # ── cache helpers ────────────────────────────────────────────────────────────
     async def _cache_get(self, key: str):
         if self._cache is None:

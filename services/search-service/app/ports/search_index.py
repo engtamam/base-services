@@ -41,3 +41,8 @@ class SearchIndex(Protocol):
     async def iter_docs(self, *, index: str, limit: int) -> list[dict[str, Any]]:
         """Full document list (reindex / admin only — never on the query hot path)."""
         ...
+
+    async def list_indexes(self, *, limit: int) -> list[dict[str, Any]]:
+        """The indexes that exist, each with its doc count — the operator's see-before-inspect read.
+        Admin only; never on the query hot path."""
+        ...

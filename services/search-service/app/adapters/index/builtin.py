@@ -57,6 +57,7 @@ class BuiltinIndex:
             row[doc_id] = tf
             await self._store.put(_POST, self._pk(index, term), row)
         meta = await self._store.get(_META, index) or {"n_docs": 0, "total_len": 0.0}
+        meta["index"] = index                          # carry the name so indexes can be enumerated
         meta["n_docs"] = int(meta["n_docs"]) + 1
         meta["total_len"] = float(meta["total_len"]) + float(record.get("doc_len", 0))
         await self._store.put(_META, index, meta)
@@ -76,3 +77,11 @@ class BuiltinIndex:
     async def iter_docs(self, *, index: str, limit: int) -> list[dict[str, Any]]:
         rows = [r for r in await self._store.list(_DOCS, _SCAN) if r.get("index") == index]
         return rows[:limit]
+
+    async def list_indexes(self, *, limit: int) -> list[dict[str, Any]]:
+        # The meta collection holds one small row per index; enumerating it IS the catalogue read,
+        # not a shortcut around an index. Bounded by `limit`.
+        rows = await self._store.list(_META, limit)
+        return sorted(({"index": r["index"], "n_docs": int(r.get("n_docs", 0))}
+                       for r in rows if r.get("index")),
+                      key=lambda r: r["index"])

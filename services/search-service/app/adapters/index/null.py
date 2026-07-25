@@ -24,3 +24,6 @@ class NullIndex:
 
     async def iter_docs(self, **kwargs) -> list[dict[str, Any]]:
         return []
+
+    async def list_indexes(self, **kwargs) -> list[dict[str, Any]]:
+        return []

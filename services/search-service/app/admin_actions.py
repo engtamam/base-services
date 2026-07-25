@@ -32,6 +32,8 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
      "path": "/api/v1/search/suggest", "capability": "platform.search", "group": "Search",
      "params": [{"name": "index", "in": "query", "type": "string", "required": True},
                 {"name": "prefix", "in": "query", "type": "string", "required": True}]},
+    {"id": "search.indexes", "label": "List indexes", "method": "GET",
+     "path": "/api/v1/search/indexes", "capability": "platform.search", "group": "Indexes"},
     {"id": "search.index_stats", "label": "View index stats", "method": "GET",
      "path": "/api/v1/search/indexes/{index}/stats", "capability": "platform.search", "group": "Indexes",
      "params": [{"name": "index", "in": "path", "type": "string", "required": True}]},

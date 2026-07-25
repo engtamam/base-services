@@ -60,6 +60,7 @@ def build_manifest(
             {"path": "/internal/search/delete", "tier": "internal", "method": "POST"},
             {"path": "/api/v1/search", "tier": "user", "method": "POST"},
             {"path": "/api/v1/search/suggest", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/search/indexes", "tier": "user", "method": "GET"},
             {"path": "/api/v1/search/indexes/{index}/stats", "tier": "user", "method": "GET"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
