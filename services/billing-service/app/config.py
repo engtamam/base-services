@@ -362,6 +362,14 @@ class Settings(BaseSettings):
     EVENT_PUBLISH_FAILURE: str = "fail_open"      # fail_open | fail_closed
 
     SECRETS_KEK: str = ""
+    # Seals backup archives at rest. SEPARATE from SECRETS_KEK: restoring must not require the key
+    # this service uses for its own live secrets. Empty means the backup endpoint refuses rather
+    # than writing an archive in the clear.
+    BACKUP_KEK: str = ""
+    # The most rows a single collection may hold before a backup FAILS rather than reads on
+    # unbounded. Not a limit anyone "chose" at a million — a real ceiling an operator sets to the
+    # size their data actually reaches, so a runaway collection is a failed backup, not an OOM.
+    BACKUP_MAX_ROWS_PER_COLLECTION: int = 5_000_000
     SECRETS_ROTATION_WINDOW_SECONDS: int = 300
     # How long resolved gateway credentials are reused before being read again. Resolving on every
     # charge would put a datastore read and a scrypt-backed decrypt on the payment path.

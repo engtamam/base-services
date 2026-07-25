@@ -14,6 +14,8 @@ from pydantic import BaseModel, Field
 from app.api.v1.billing import build_billing, build_usage
 from app.config import Settings, get_settings
 from app.core.erasure import BillingErasure
+from app.core import backup as _backup
+from app.backup_manifest import BACKUP
 from app.manifest import build_manifest
 
 router = APIRouter(prefix="/internal", tags=["internal"])
@@ -188,3 +190,54 @@ async def reconcile_grants(request: Request, settings: Settings = Depends(get_se
     return await build_grants(request, settings).reconcile(
         invoices=InvoiceStore(request.app.state.container.datastore),
         limit=settings.GRANT_RECONCILE_LIMIT)
+
+
+class _BackupExportIn(BaseModel):
+    tenant: str = ""
+
+
+class _BackupImportIn(BaseModel):
+    archive: dict
+    overwrite: bool = False
+
+
+def _now_iso() -> str:
+    import datetime as _dt
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _sealer(settings: Settings):
+    """The backup (seal, unseal) pair, or 503 when no backup key is configured — refusing rather
+    than sealing a payment archive in the clear."""
+    if not settings.BACKUP_KEK:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "BACKUP_UNAVAILABLE")
+    return _backup.make_sealer(settings.BACKUP_KEK)
+
+
+@router.post("/backup/export", dependencies=[Depends(require_internal_token)])
+async def backup_export(request: Request, body: _BackupExportIn,
+                        settings: Settings = Depends(get_settings)) -> dict:
+    """A sealed, checksummed archive of billing's declared data — the money record included.
+
+    Called by backup-service over the internal token. billing knows its own shape (see
+    app/backup_manifest.py); the orchestrator only stores the ciphertext.
+    """
+    seal, _ = _sealer(settings)
+    return await _backup.export(
+        request.app.state.container.datastore, BACKUP,
+        service=settings.SERVICE_NAME, version=settings.SERVICE_VERSION,
+        taken_at=_now_iso(), seal=seal, tenant=body.tenant,
+        scan_cap=settings.BACKUP_MAX_ROWS_PER_COLLECTION)
+
+
+@router.post("/backup/import", dependencies=[Depends(require_internal_token)])
+async def backup_import(request: Request, body: _BackupImportIn,
+                        settings: Settings = Depends(get_settings)) -> dict:
+    """Restore a billing archive. Idempotent; leaves newer rows alone unless overwrite is set."""
+    _, unseal = _sealer(settings)
+    try:
+        return await _backup.import_archive(
+            request.app.state.container.datastore, body.archive,
+            unseal=unseal, overwrite=body.overwrite)
+    except _backup.BackupError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc

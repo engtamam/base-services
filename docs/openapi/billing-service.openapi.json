@@ -726,6 +726,36 @@
         ],
         "title": "ValidationError",
         "type": "object"
+      },
+      "_BackupExportIn": {
+        "properties": {
+          "tenant": {
+            "default": "",
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "title": "_BackupExportIn",
+        "type": "object"
+      },
+      "_BackupImportIn": {
+        "properties": {
+          "archive": {
+            "additionalProperties": true,
+            "title": "Archive",
+            "type": "object"
+          },
+          "overwrite": {
+            "default": false,
+            "title": "Overwrite",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "archive"
+        ],
+        "title": "_BackupImportIn",
+        "type": "object"
       }
     }
   },
@@ -2549,6 +2579,130 @@
         "summary": "Healthz",
         "tags": [
           "health"
+        ]
+      }
+    },
+    "/internal/backup/export": {
+      "post": {
+        "description": "A sealed, checksummed archive of billing's declared data \u2014 the money record included.\n\nCalled by backup-service over the internal token. billing knows its own shape (see\napp/backup_manifest.py); the orchestrator only stores the ciphertext.",
+        "operationId": "backup_export_internal_backup_export_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_BackupExportIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Backup Export Internal Backup Export Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Backup Export",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/backup/import": {
+      "post": {
+        "description": "Restore a billing archive. Idempotent; leaves newer rows alone unless overwrite is set.",
+        "operationId": "backup_import_internal_backup_import_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_BackupImportIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Backup Import Internal Backup Import Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Backup Import",
+        "tags": [
+          "internal"
         ]
       }
     },

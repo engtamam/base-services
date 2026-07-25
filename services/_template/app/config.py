@@ -102,6 +102,14 @@ class Settings(BaseSettings):
     # protecting the secrets were itself editable in the panel, panel access would own everything.
     # Empty means the operator surface refuses to store anything rather than storing it unsealed.
     SECRETS_KEK: str = ""
+    # Seals backup archives at rest. SEPARATE from SECRETS_KEK by design: restoring must not
+    # require the key a running service uses for its own live secrets. Empty means this service
+    # cannot produce a backup, and its export endpoint refuses rather than writing one in the clear.
+    BACKUP_KEK: str = ""
+    # The most rows a single collection may hold before a backup FAILS rather than reads on
+    # unbounded. Not a limit anyone "chose" at a million — a real ceiling an operator sets to the
+    # size their data actually reaches, so a runaway collection is a failed backup, not an OOM.
+    BACKUP_MAX_ROWS_PER_COLLECTION: int = 5_000_000
     # How long a replaced credential stays valid. A request in flight when a key rotates must not
     # fail, and a mistaken paste needs a way back.
     SECRETS_ROTATION_WINDOW_SECONDS: int = 300
