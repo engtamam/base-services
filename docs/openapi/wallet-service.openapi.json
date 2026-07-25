@@ -235,6 +235,176 @@
         ]
       }
     },
+    "/api/v1/wallet/admin/balance": {
+      "get": {
+        "description": "A specific tenant's balance, for support/ops. Read-only \u2014 money never moves here; it is a\nmoney projection, not the subject's PII. `tenant` is mandatory and explicit, and audited.",
+        "operationId": "operator_balance_api_v1_wallet_admin_balance_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Tenant",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Operator Balance Api V1 Wallet Admin Balance Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Operator Balance",
+        "tags": [
+          "wallet"
+        ]
+      }
+    },
+    "/api/v1/wallet/admin/ledger": {
+      "get": {
+        "description": "A specific tenant's statement, paginated (the service clamps `limit`). Audited.",
+        "operationId": "operator_ledger_api_v1_wallet_admin_ledger_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before_seq",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before Seq"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Operator Ledger Api V1 Wallet Admin Ledger Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Operator Ledger",
+        "tags": [
+          "wallet"
+        ]
+      }
+    },
+    "/api/v1/wallet/admin/reconcile": {
+      "get": {
+        "description": "Prove a tenant's wallet is internally consistent: sum(ledger) == the materialized balance.\nA read-only integrity check for support \u2014 it computes and compares, it does not mutate. Audited.",
+        "operationId": "operator_reconcile_api_v1_wallet_admin_reconcile_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Tenant",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Operator Reconcile Api V1 Wallet Admin Reconcile Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Operator Reconcile",
+        "tags": [
+          "wallet"
+        ]
+      }
+    },
     "/api/v1/wallet/ledger": {
       "get": {
         "description": "Paginated. The service clamps `limit` to LEDGER_LIST_LIMIT regardless of what is asked.",

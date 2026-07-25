@@ -68,6 +68,11 @@ def build_manifest(
             {"path": "/internal/wallet/sweep-grants", "tier": "internal", "method": "POST"},
             {"path": "/api/v1/wallet", "tier": "user", "method": "GET"},
             {"path": "/api/v1/wallet/ledger", "tier": "user", "method": "GET"},
+            # Operator (platform.wallet only): read ANY tenant's wallet for support/ops. Read-only —
+            # money never moves here — and every access is audited.
+            {"path": "/api/v1/wallet/admin/balance", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/wallet/admin/ledger", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/wallet/admin/reconcile", "tier": "user", "method": "GET"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         # OPTIONAL consumer: billing invoices these IF it listens. Wallet stands alone.

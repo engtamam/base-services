@@ -84,6 +84,43 @@ def test_a_tenant_reads_only_its_own_wallet(client):
     assert body["tenant"] == "attacker" and body["balance"] == 0
 
 
+# ── operator: cross-tenant reads, platform-only, money never moves ────────────
+def test_operator_reads_are_platform_only_not_a_tenant_capability(client):
+    """The one wall between companies: a tenant user who can read its OWN wallet must NOT be able to
+    name and read another tenant's. The /admin reads require platform.wallet, never wallet.read."""
+    for path in ("/api/v1/wallet/admin/balance?tenant=victim",
+                 "/api/v1/wallet/admin/ledger?tenant=victim",
+                 "/api/v1/wallet/admin/reconcile?tenant=victim"):
+        assert client.get(path, headers=tok(["wallet.read"])).status_code == 403, path
+        assert client.get(path, headers=tok(["wallet.manage"])).status_code == 403, path
+        assert client.get(path).status_code == 401, path
+
+
+def test_an_operator_reads_any_tenants_wallet(client):
+    credit(client, "cust_a", "cash", 7_000, "c")
+    # The operator's own token tenant is 'ops', but it reads cust_a's wallet explicitly.
+    body = client.get("/api/v1/wallet/admin/balance?tenant=cust_a",
+                      headers=tok(["platform.wallet"], tenant="ops")).json()
+    assert body["tenant"] == "cust_a" and body["balance"] == 7_000
+
+
+def test_the_operator_tenant_argument_is_mandatory(client):
+    r = client.get("/api/v1/wallet/admin/balance", headers=tok(["platform.wallet"]))
+    assert r.status_code == 422, "a cross-tenant read with no tenant must be refused, not defaulted"
+
+
+def test_operator_reconcile_proves_consistency_without_moving_money(client):
+    credit(client, "cust_r", "cash", 9_000, "c")
+    client.post("/internal/wallet/spend", json={"tenant": "cust_r", "net": 200, "source": "s"},
+                headers=IT)
+    before = client.get("/internal/wallet/cust_r", headers=IT).json()["balance"]
+    out = client.get("/api/v1/wallet/admin/reconcile?tenant=cust_r",
+                     headers=tok(["platform.wallet"], tenant="ops")).json()
+    assert out["consistent"] is True
+    # Read-only: reconciling did not move a cent.
+    assert client.get("/internal/wallet/cust_r", headers=IT).json()["balance"] == before
+
+
 # ── money ───────────────────────────────────────────────────────────────────
 def test_credit_then_spend_applies_promo_before_vat(client):
     credit(client, "t_spend", "cash", 10_000, "c1")

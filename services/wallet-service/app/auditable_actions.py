@@ -59,6 +59,15 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "way to say who authorised it",
     },
     {
+        "action": "wallet.inspected",
+        "source": "admin",
+        "critical": False,
+        "why": "a platform operator read a specific tenant's balance, statement or reconciliation — "
+               "cross-tenant access to a customer's money data is exactly what a security review "
+               "asks about: who looked at whose wallet, and when. Not critical: it is a read, and "
+               "refusing it during an audit outage protects nothing",
+    },
+    {
         "action": "subject.erased",
         "source": "internal",
         "critical": True,
