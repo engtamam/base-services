@@ -158,18 +158,29 @@ def test_the_config_view_never_carries_a_credential(client, operator_auth):
         assert banned not in view
 
 
-def test_the_scaffold_declares_no_runtime_policy_so_it_offers_none(client, operator_auth):
-    """The template deliberately declares nothing, and the surface must reflect that rather than
-    advertising every settable field.
-
-    A generated service adds a key to RUNTIME_POLICY in the same change that wires the read. Until
-    then the knob is unavailable, which is honest — an advertised knob nothing consults reports a
-    change that never happened, with an audit entry to prove it.
-    """
+def test_only_declared_runtime_knobs_are_offered_and_others_refused(client, operator_auth):
+    """backup-service declares exactly its backup-health/retention policy knobs (46.6), each wired to
+    a real read at its point of use. The surface offers those and refuses anything else — an
+    advertised knob nothing consults reports a change that never happened."""
     h = {"headers": operator_auth}
-    assert client.get("/api/v1/operator/config", **h).json()["config"] == {}
+    config = client.get("/api/v1/operator/config", **h).json()["config"]
+    assert set(config) == {"BACKUP_STALE_AFTER_SECONDS", "BACKUP_RETENTION_RUNS",
+                           "BACKUP_RETENTION_MAX_AGE_SECONDS"}
+    # A real settable knob is accepted…
+    ok = client.put("/api/v1/operator/config",
+                    json={"key": "BACKUP_STALE_AFTER_SECONDS", "value": 86_400}, **h)
+    assert ok.status_code == 200, ok.text
+    # …and an undeclared one is refused rather than accepted-and-inert.
     r = client.put("/api/v1/operator/config", json={"key": "RATELIMIT_MAX", "value": 250}, **h)
     assert r.status_code == 400, "an undeclared knob was accepted and would have been inert"
+
+
+def test_backup_health_read_needs_the_restore_capability(client):
+    """Seeing whether the platform is protected is part of the DR operator's job, gated the same."""
+    assert client.get("/api/v1/operator/backup/health",
+                      headers=_auth("platform.config")).status_code == 403
+    ok = client.get("/api/v1/operator/backup/health", headers=_auth("platform.restore"))
+    assert ok.status_code == 200 and "status" in ok.json()
 
 
 # ── restore: the dangerous action, gated and confirmed ────────────────────────

@@ -48,7 +48,14 @@ CRONS: dict[str, list[tuple[str, str, str]]] = {
         ("scan", "*/1 * * * *", "/internal/files/scan"),
         ("sweep-uploads", "*/15 * * * *", "/internal/files/sweep-uploads"),
     ],
-    "backup-service": [("run", "42 2 * * *", "/internal/backup/run")],
+    "backup-service": [
+        ("run", "42 2 * * *", "/internal/backup/run"),
+        # Watch for a missed/stale/unverified backup and alert — more often than the daily capture,
+        # so a schedule that stops firing is caught within the hour, not the next day.
+        ("health-check", "23 * * * *", "/internal/backup/health/check"),
+        # Prune to the retention limits — never a target's last verified backup. Daily, offset.
+        ("prune", "51 3 * * *", "/internal/backup/prune"),
+    ],
     "billing-service": [("dunning", "31 4 * * *", "/internal/billing/dunning"),
                         # The renewal engine — invoice subscriptions whose period has ended. Daily,
                         # offset from dunning so the two sweeps do not contend. Without it, year-two

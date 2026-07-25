@@ -59,3 +59,9 @@ cronJobs:
   - name: run
     schedule: "42 2 * * *"
     path: /internal/backup/run
+  - name: health-check
+    schedule: "23 * * * *"
+    path: /internal/backup/health/check
+  - name: prune
+    schedule: "51 3 * * *"
+    path: /internal/backup/prune

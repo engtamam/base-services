@@ -374,6 +374,30 @@
         ]
       }
     },
+    "/api/v1/operator/backup/health": {
+      "get": {
+        "description": "The panel's backup-health view: is every service protected by a recent verified backup, and\nwhich are not. Read-only; the same truth the monitor scrapes and the alerter pushes.",
+        "operationId": "backup_health_api_v1_operator_backup_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Backup Health Api V1 Operator Backup Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Backup Health",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
     "/api/v1/operator/config": {
       "get": {
         "description": "Every knob an operator may change, with its current effective value.\n\nBuilt from the settable set, so a credential, a DSN or a frozen identifier cannot appear here\neven by accident \u2014 the filter is in one place rather than repeated per field.",
@@ -939,6 +963,110 @@
         ]
       }
     },
+    "/internal/backup/health": {
+      "get": {
+        "description": "Is there a recent, complete, VERIFIED backup of every service? Read-only \u2014 for a monitor to\nscrape. A response of `status: critical` means a service is not protected.",
+        "operationId": "backup_health_internal_backup_health_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Backup Health Internal Backup Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Backup Health",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/backup/health/check": {
+      "post": {
+        "description": "Evaluate health and, if it is not green, RECORD and PUSH the alert. Cron-driven.\n\nThe record is written even if the push fails: the alarm surviving a down alert channel is the\nwhole point \u2014 'the thing that tells you backups are broken is broken' is when you need it most.",
+        "operationId": "backup_health_check_internal_backup_health_check_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Backup Health Check Internal Backup Health Check Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Backup Health Check",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/backup/import": {
       "post": {
         "description": "Restore an archive this service produced. Idempotent; leaves newer rows alone by default.",
@@ -996,6 +1124,58 @@
           }
         },
         "summary": "Backup Import",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/backup/prune": {
+      "post": {
+        "description": "Prune old backups to the retention limits \u2014 never the last verified backup of any target.\nCron-driven. Retention limits are operator-editable at runtime.",
+        "operationId": "backup_prune_internal_backup_prune_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Backup Prune Internal Backup Prune Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Backup Prune",
         "tags": [
           "internal"
         ]

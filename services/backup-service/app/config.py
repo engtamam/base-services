@@ -39,6 +39,23 @@ class Settings(BaseSettings):
     BACKUP_TARGET_LIMIT: int = 500
     # How many recent runs a staleness/alert read returns.
     BACKUP_RUN_HISTORY: int = 200
+
+    # ── health, staleness & alerting (46.6) ───────────────────────────────────
+    # A target whose most recent COMPLETE+VERIFIED backup is older than this is STALE — the alarm
+    # that catches "the cron silently stopped firing three days ago". Runtime-editable: how long an
+    # operator tolerates before a gap is an incident is a policy call, not a redeploy.
+    BACKUP_STALE_AFTER_SECONDS: int = 172_800          # 48h — two missed daily runs
+    # Retention: keep at least this many recent runs. The last VERIFIED backup of every target is
+    # ALWAYS kept on top of this, however old — a retention sweep must never delete a service's only
+    # working backup. Runtime-editable.
+    BACKUP_RETENTION_RUNS: int = 30
+    # Also prune runs older than this (0 = disabled; prune by count only). The last-good-per-target
+    # is still exempt. Runtime-editable.
+    BACKUP_RETENTION_MAX_AGE_SECONDS: int = 0
+    # Where an alert is POSTed when a backup is missed, stale or unverified. Empty = alerts are still
+    # recorded (audit) and readable (health endpoint), just not pushed. Deploy-time: it is an egress
+    # destination, and must be on EGRESS_ALLOWED_HOSTS to be called.
+    BACKUP_ALERT_WEBHOOK_URL: str = ""
     # Seals the internal tokens backup-service holds for its targets — separate from any live key.
     SECRETS_KEK: str = ""
     ENV: Literal["development", "production", "test"] = "production"

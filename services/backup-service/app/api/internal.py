@@ -21,6 +21,9 @@ from app.manifest import build_manifest
 from app.core.targets import Target, TargetStore
 from app.core.runs import RunStore
 from app.core.orchestrator import Orchestrator
+from app.core import health as _health
+from app.core import alerts as _alerts
+from app.core.retention import RetentionSweeper
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 
@@ -246,3 +249,75 @@ async def run_backup(request: Request, body: _RunIn,
 @router.get("/backup/runs", dependencies=[Depends(require_internal_token)])
 async def list_runs(request: Request, settings: Settings = Depends(get_settings)) -> dict:
     return {"runs": await RunStore(request.app.state.container.datastore).recent(settings.BACKUP_RUN_HISTORY)}
+
+
+# ── health, alerting & retention (46.6) ────────────────────────────────────────
+async def _effective_int(request: Request, key: str, default: int) -> int:
+    """The operator's runtime override for a policy knob, or the configured default. Read HERE, at
+    the point of use, which is the promise RUNTIME_POLICY makes — an advertised knob nothing reads
+    is a receipt for a change that never happened."""
+    rc = getattr(request.app.state, "runtime_config", None)
+    if rc is None:
+        return default
+    try:
+        return int(await rc.get(tenant="", key=key, default=default))
+    except (TypeError, ValueError):
+        return default
+
+
+async def _health_report(request: Request, settings: Settings) -> dict:
+    c = request.app.state.container
+    targets = [t.public() for t in await TargetStore(c.datastore).all(settings.BACKUP_TARGET_LIMIT)]
+    runs = await RunStore(c.datastore).recent(settings.BACKUP_RUN_HISTORY)
+    stale_after = await _effective_int(request, "BACKUP_STALE_AFTER_SECONDS",
+                                       settings.BACKUP_STALE_AFTER_SECONDS)
+    return _health.evaluate(targets=targets, runs=runs, now_iso=_now_iso(),
+                            stale_after_seconds=stale_after)
+
+
+@router.get("/backup/health", dependencies=[Depends(require_internal_token)])
+async def backup_health(request: Request, settings: Settings = Depends(get_settings)) -> dict:
+    """Is there a recent, complete, VERIFIED backup of every service? Read-only — for a monitor to
+    scrape. A response of `status: critical` means a service is not protected."""
+    return await _health_report(request, settings)
+
+
+@router.post("/backup/health/check", dependencies=[Depends(require_internal_token)])
+async def backup_health_check(request: Request, settings: Settings = Depends(get_settings)) -> dict:
+    """Evaluate health and, if it is not green, RECORD and PUSH the alert. Cron-driven.
+
+    The record is written even if the push fails: the alarm surviving a down alert channel is the
+    whole point — 'the thing that tells you backups are broken is broken' is when you need it most.
+    """
+    report = await _health_report(request, settings)
+    if report["alerts"]:
+        await request.app.state.auditor.record(
+            "backup.alerted", actor="", resource="backup_health",
+            ip=request.client.host if request.client else "",
+            metadata={"status": report["status"],
+                      "critical": str(report["summary"]["critical"]),
+                      "degraded": str(report["summary"]["degraded"])})
+    delivery = _alerts.push(report, webhook_url=settings.BACKUP_ALERT_WEBHOOK_URL,
+                            allowed_hosts=settings.egress_allowed_hosts,
+                            timeout_seconds=settings.BACKUP_TARGET_TIMEOUT_SECONDS)
+    return {**report, "delivery": delivery}
+
+
+@router.post("/backup/prune", dependencies=[Depends(require_internal_token)])
+async def backup_prune(request: Request, settings: Settings = Depends(get_settings)) -> dict:
+    """Prune old backups to the retention limits — never the last verified backup of any target.
+    Cron-driven. Retention limits are operator-editable at runtime."""
+    keep = await _effective_int(request, "BACKUP_RETENTION_RUNS", settings.BACKUP_RETENTION_RUNS)
+    max_age = await _effective_int(request, "BACKUP_RETENTION_MAX_AGE_SECONDS",
+                                   settings.BACKUP_RETENTION_MAX_AGE_SECONDS)
+    sweeper = RetentionSweeper(runs=RunStore(request.app.state.container.datastore),
+                               object_store=request.app.state.container.object_store, iso=_now_iso)
+    result = await sweeper.prune(keep_runs=keep, max_age_seconds=max_age,
+                                 scan_limit=settings.BACKUP_RUN_HISTORY)
+    if result["pruned_count"]:
+        await request.app.state.auditor.record(
+            "backup.pruned", actor="", resource="backup_run",
+            ip=request.client.host if request.client else "",
+            metadata={"pruned": str(result["pruned_count"]),
+                      "archives_deleted": str(result["archives_deleted"])})
+    return result

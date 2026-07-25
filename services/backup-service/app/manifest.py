@@ -73,6 +73,9 @@ def build_manifest(
             {"path": "/internal/backup/targets/{}", "tier": "internal", "method": "DELETE"},
             {"path": "/internal/backup/run", "tier": "internal", "method": "POST"},
             {"path": "/internal/backup/runs", "tier": "internal", "method": "GET"},
+            {"path": "/internal/backup/health", "tier": "internal", "method": "GET"},
+            {"path": "/internal/backup/health/check", "tier": "internal", "method": "POST"},
+            {"path": "/internal/backup/prune", "tier": "internal", "method": "POST"},
             {"path": "/internal/privacy/erase", "tier": "internal", "method": "POST",
              # DECLARED, because a data map built from manifests is how a DSAR fan-out
              # finds who holds a person. An undeclared holder is never asked, never acks,
@@ -97,6 +100,7 @@ def build_manifest(
             {"path": "/api/v1/operator/restore", "tier": "user", "method": "POST"},
             {"path": "/api/v1/operator/restore/{}/undo", "tier": "user", "method": "POST"},
             {"path": "/api/v1/operator/restores", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/operator/backup/health", "tier": "user", "method": "GET"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         # FILL THIS too, or leave it empty deliberately. Same trap as capabilities: an empty

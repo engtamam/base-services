@@ -21,6 +21,10 @@ class RunStore:
     async def get(self, run_id: str) -> dict | None:
         return await self._s.get(_COLL, run_id)
 
+    async def remove(self, run_id: str) -> bool:
+        """Drop a run record — used by the retention sweep after its archives are deleted."""
+        return await self._s.delete(_COLL, run_id)
+
     async def recent(self, limit: int) -> list[dict]:
         """The most recent runs, newest first — what the staleness alert reads."""
         # sweeper: the run log is the orchestrator's own control data, global and bounded by

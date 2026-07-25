@@ -176,6 +176,23 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "same attribution a restore needs, a rollback needs — it changed the platform's data",
     },
     {
+        "action": "backup.alerted",
+        "source": "system",
+        "critical": False,
+        "resource": "backup_health",
+        "why": "a backup was found missed, stale or unverified and an alert was raised; the trail of "
+               "when the platform knew a service was unprotected is what an incident review needs, "
+               "and not critical because a failed record must never suppress the alert push itself",
+    },
+    {
+        "action": "backup.pruned",
+        "source": "system",
+        "critical": False,
+        "resource": "backup_run",
+        "why": "retention deleted old backups; what was removed and when explains a later 'why is "
+               "that run gone', and the sweep never touches a target's last verified backup",
+    },
+    {
         "action": "subject.erased",
         "source": "internal",
         "critical": True,

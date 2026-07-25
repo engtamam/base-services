@@ -131,4 +131,9 @@ ADMIN_ACTIONS = [
         "id": "restore.list", "label": "Restore history", "method": "GET",
         "path": "/api/v1/operator/restores", "capability": "platform.restore", "group": "Restore",
     },
+    {
+        "id": "backup.health", "label": "Backup health", "method": "GET",
+        "path": "/api/v1/operator/backup/health", "capability": "platform.restore",
+        "group": "Restore",
+    },
 ]

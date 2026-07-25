@@ -11,4 +11,11 @@ the read, never before: unavailable is honest, inert is not.
 """
 from __future__ import annotations
 
-RUNTIME_POLICY: frozenset[str] = frozenset()
+# Backup health & retention policy an operator tunes without a redeploy. Each is READ through
+# RuntimeConfig at its point of use (the health check and the retention sweep), which is the promise
+# this file makes — see app/api/internal.py where they are consulted.
+RUNTIME_POLICY: frozenset[str] = frozenset({
+    "BACKUP_STALE_AFTER_SECONDS",
+    "BACKUP_RETENTION_RUNS",
+    "BACKUP_RETENTION_MAX_AGE_SECONDS",
+})

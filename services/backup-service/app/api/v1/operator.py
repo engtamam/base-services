@@ -284,3 +284,24 @@ async def list_restores(request: Request,
     """The restore history — every restore and undo, newest first."""
     limit = get_settings().BACKUP_RUN_HISTORY
     return {"restores": await RestoreStore(request.app.state.container.datastore).recent(limit)}
+
+
+@router.get("/backup/health", dependencies=[Depends(_RESTORE), Depends(rate_limit)])
+async def backup_health(request: Request, principal: Principal = Depends(require_user)) -> dict:
+    """The panel's backup-health view: is every service protected by a recent verified backup, and
+    which are not. Read-only; the same truth the monitor scrapes and the alerter pushes."""
+    from app.core import health as _health
+    s = get_settings()
+    c = request.app.state.container
+    targets = [t.public() for t in await TargetStore(c.datastore).all(s.BACKUP_TARGET_LIMIT)]
+    runs = await RunStore(c.datastore).recent(s.BACKUP_RUN_HISTORY)
+    stale_after = s.BACKUP_STALE_AFTER_SECONDS
+    rc = getattr(request.app.state, "runtime_config", None)
+    if rc is not None:
+        try:
+            stale_after = int(await rc.get(tenant="", key="BACKUP_STALE_AFTER_SECONDS",
+                                           default=stale_after))
+        except (TypeError, ValueError):
+            pass
+    return _health.evaluate(targets=targets, runs=runs, now_iso=_now_iso(),
+                            stale_after_seconds=stale_after)
