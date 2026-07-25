@@ -131,6 +131,21 @@ async def list_invoices(request: Request, needs_attention: bool = False,
     return {"invoices": rows, "next_cursor": nxt}
 
 
+@router.get("/invoices/{invoice_id}")
+async def invoice_detail(request: Request, invoice_id: str,
+                         principal: Principal = Depends(_ADMIN)) -> dict:
+    """One invoice's compliance detail — status, warnings, ZATCA errors, the message, the retry
+    state and the hash-chain fields. The see-before-you-resubmit read: an operator decides whether
+    to resubmit from WHY it was rejected. Omits the heavy signed/cleared XML. Tenant-guarded — a
+    platform operator sees any invoice; a tenant admin only its own, and one it may not see is 404."""
+    svc = (await build_zatca(request))
+    inv = await svc._inv.get(invoice_id)
+    if inv is None or (
+            "platform.zatca" not in principal.caps and inv.tenant != (principal.tenant or "__none__")):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    return inv.public()
+
+
 @router.post("/invoices/{invoice_id}/resubmit")
 async def resubmit(request: Request, invoice_id: str, principal: Principal = Depends(_ADMIN)) -> dict:
     svc = (await build_zatca(request))

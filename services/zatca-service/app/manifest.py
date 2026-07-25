@@ -63,6 +63,7 @@ def build_manifest(
             {"path": "/api/v1/zatca/onboard/compliance", "tier": "user", "method": "POST"},
             {"path": "/api/v1/zatca/onboard/production", "tier": "user", "method": "POST"},
             {"path": "/api/v1/zatca/invoices", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/zatca/invoices/{id}", "tier": "user", "method": "GET"},
             {"path": "/api/v1/zatca/invoices/{id}/resubmit", "tier": "user", "method": "POST"},
             {"path": "/api/v1/zatca/invoices/{id}/qr", "tier": "user", "method": "GET"},
             {"path": "/api/v1/zatca/chain/verify", "tier": "user", "method": "GET"},

@@ -40,6 +40,10 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
          {"name": "limit", "in": "query", "type": "integer", "required": False},
          {"name": "cursor", "in": "query", "type": "string", "required": False},
      ]},
+    {"id": "zatca.invoice_detail", "label": "View an invoice's compliance detail", "method": "GET",
+     "path": "/api/v1/zatca/invoices/{id}", "capability": "platform.zatca", "group": "Invoices",
+     # Status, warnings, ZATCA errors, retry state — the see-before-you-resubmit read.
+     "params": [{"name": "id", "in": "path", "type": "string", "required": True}]},
     {"id": "zatca.resubmit", "label": "Resubmit a rejected invoice", "method": "POST",
      "path": "/api/v1/zatca/invoices/{id}/resubmit", "capability": "platform.zatca", "group": "Invoices",
      "confirm": True,

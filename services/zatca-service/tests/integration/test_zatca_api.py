@@ -69,6 +69,16 @@ def test_finalize_fail_closed_then_chain(client):
     assert len(na["invoices"]) >= 1 and "signed_xml" not in na["invoices"][0]  # bodies omitted
 
 
+def test_invoice_detail_is_the_see_before_resubmit_read(client):
+    client.post("/internal/zatca/finalize", json={"tenant": "t1", "invoice": INV}, headers=_int())
+    fid = client.get("/api/v1/zatca/invoices", headers=_adm()).json()["invoices"][0]["id"]
+    d = client.get(f"/api/v1/zatca/invoices/{fid}", headers=_adm())
+    assert d.status_code == 200 and d.json()["id"] == fid and "status" in d.json()
+    assert "signed_xml" not in d.json() and "cleared_xml" not in d.json()   # heavy bodies omitted
+    assert client.get("/api/v1/zatca/invoices/nope", headers=_adm()).status_code == 404
+    assert client.get(f"/api/v1/zatca/invoices/{fid}", headers=_adm(caps=())).status_code == 403
+
+
 def test_finalize_requires_number(client):
     r = client.post("/internal/zatca/finalize", json={"tenant": "t1", "invoice": {"lines": []}}, headers=_int())
     assert r.status_code == 422

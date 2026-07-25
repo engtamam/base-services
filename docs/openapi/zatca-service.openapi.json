@@ -673,6 +673,51 @@
         ]
       }
     },
+    "/api/v1/zatca/invoices/{invoice_id}": {
+      "get": {
+        "description": "One invoice's compliance detail \u2014 status, warnings, ZATCA errors, the message, the retry\nstate and the hash-chain fields. The see-before-you-resubmit read: an operator decides whether\nto resubmit from WHY it was rejected. Omits the heavy signed/cleared XML. Tenant-guarded \u2014 a\nplatform operator sees any invoice; a tenant admin only its own, and one it may not see is 404.",
+        "operationId": "invoice_detail_api_v1_zatca_invoices__invoice_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invoice_id",
+            "required": true,
+            "schema": {
+              "title": "Invoice Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Invoice Detail Api V1 Zatca Invoices  Invoice Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Invoice Detail",
+        "tags": [
+          "zatca"
+        ]
+      }
+    },
     "/api/v1/zatca/invoices/{invoice_id}/qr": {
       "get": {
         "operationId": "invoice_qr_api_v1_zatca_invoices__invoice_id__qr_get",
