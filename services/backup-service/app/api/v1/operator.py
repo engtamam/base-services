@@ -25,11 +25,18 @@ from app.config import get_settings
 from app.core.pii import subject_ref
 from app.core.runtime_config import RuntimeConfig, RuntimeConfigError
 from app.core.secret_store import SecretError, SecretStore
+from app.core.restore import RestoreError, RestoreOrchestrator
+from app.core.restores import RestoreStore
+from app.core.runs import RunStore
+from app.core.targets import TargetStore
 
 router = APIRouter(prefix="/api/v1/operator", tags=["operator"])
 
 _SECRETS = require_capability("platform.secrets")
 _CONFIG = require_capability("platform.config")
+# Restoring overwrites live data — its own capability, never folded into config or secrets. An
+# operator who may reorder providers must not, by that fact, be able to overwrite the platform.
+_RESTORE = require_capability("platform.restore")
 
 
 def _actor(principal: Principal) -> str:
@@ -172,3 +179,108 @@ async def clear_config(request: Request, key: str, tenant: str = "",
         resource=f"config:{key}", ip=request.client.host if request.client else "",
         metadata={"key": key, "cleared": True})
     return {"cleared": await _runtime_config(request).clear(tenant=tenant, key=key)}
+
+
+# ── restore — the one dangerous action ─────────────────────────────────────────
+def _now_iso() -> str:
+    import datetime as _dt
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _restore_orchestrator(request: Request) -> RestoreOrchestrator:
+    from app.core.token_resolver import make_token_resolver
+    s = get_settings()
+    c = request.app.state.container
+    return RestoreOrchestrator(
+        targets=TargetStore(c.datastore), object_store=c.object_store,
+        runs=RunStore(c.datastore), restores=RestoreStore(c.datastore),
+        resolve_token=make_token_resolver(getattr(request.app.state, "secret_store", None)),
+        iso=_now_iso,
+        cfg={"egress_allowed_hosts": s.egress_allowed_hosts,
+             "target_timeout_seconds": s.BACKUP_TARGET_TIMEOUT_SECONDS})
+
+
+class RestorePlanIn(BaseModel):
+    run_id: str = Field(..., min_length=1, max_length=128)
+    tenant: str = Field(default="", max_length=128)
+    services: list[str] = Field(default_factory=list, max_length=64)
+    require_verified: bool = True
+
+
+class RestoreIn(BaseModel):
+    run_id: str = Field(..., min_length=1, max_length=128)
+    # Echo-to-confirm: the caller must repeat the run id they intend to restore. A restore is not
+    # something a mis-click or a replayed request should ever trigger; the intent must be explicit.
+    confirm: str = Field(..., min_length=1, max_length=128)
+    tenant: str = Field(default="", max_length=128)
+    # Restore-as-clone: stand this backup up under a DIFFERENT tenant (migration, sandbox, repro).
+    into_tenant: str = Field(default="", max_length=128)
+    services: list[str] = Field(default_factory=list, max_length=64)
+    overwrite: bool = False
+    require_verified: bool = True
+    safety_snapshot: bool = True
+
+
+class UndoIn(BaseModel):
+    services: list[str] = Field(default_factory=list, max_length=64)
+
+
+@router.post("/restore/plan", dependencies=[Depends(_RESTORE), Depends(rate_limit)])
+async def restore_plan(request: Request, body: RestorePlanIn,
+                       principal: Principal = Depends(require_user)) -> dict:
+    """Preview what a restore WOULD do — which targets are eligible, which are blocked and why, and
+    how many rows each holds. Writes nothing; this is the screen an operator confirms against."""
+    return await _restore_orchestrator(request).plan(
+        body.run_id, tenant=body.tenant, services=body.services,
+        require_verified=body.require_verified)
+
+
+@router.post("/restore", dependencies=[Depends(_RESTORE), Depends(rate_limit)])
+async def run_restore(request: Request, body: RestoreIn,
+                      principal: Principal = Depends(require_user)) -> dict:
+    """Restore a backup run. Overwrites live data, so: capability-gated, echo-confirmed, audited
+    write-ahead, snapshot-before-overwrite, and never aborting the whole restore on one target.
+
+    Audited BEFORE it runs and as CRITICAL: a bulk overwrite of live data that cannot be recorded
+    must not happen — 'who restored the platform, from which backup, into which tenant' is exactly
+    what an incident review will need, and it is unreconstructable after the fact.
+    """
+    if body.confirm != body.run_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "CONFIRM_MISMATCH")
+    await request.app.state.auditor.record(
+        "backup.restored", actor=_actor(principal), tenant=body.tenant or "",
+        resource=f"backup_run:{body.run_id}", ip=request.client.host if request.client else "",
+        metadata={"into_tenant": body.into_tenant, "overwrite": body.overwrite,
+                  "require_verified": body.require_verified,
+                  "services": ",".join(body.services)})
+    try:
+        return await _restore_orchestrator(request).restore(
+            body.run_id, actor=_actor(principal), tenant=body.tenant,
+            into_tenant=body.into_tenant, services=body.services, overwrite=body.overwrite,
+            require_verified=body.require_verified, safety_snapshot=body.safety_snapshot)
+    except RestoreError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+
+@router.post("/restore/{restore_id}/undo", dependencies=[Depends(_RESTORE), Depends(rate_limit)])
+async def undo_restore(request: Request, restore_id: str,
+                       body: UndoIn = UndoIn(),  # noqa: B008 — an empty body is the common case
+                       principal: Principal = Depends(require_user)) -> dict:
+    """Roll a restore back by re-applying each target's pre-restore snapshot. Audited, critical."""
+    await request.app.state.auditor.record(
+        "backup.restore_undone", actor=_actor(principal),
+        resource=f"restore:{restore_id}", ip=request.client.host if request.client else "",
+        metadata={"services": ",".join(body.services)})
+    try:
+        return await _restore_orchestrator(request).undo(
+            restore_id, actor=_actor(principal), services=body.services)
+    except RestoreError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+
+@router.get("/restores", dependencies=[Depends(_RESTORE), Depends(rate_limit)])
+async def list_restores(request: Request,
+                        principal: Principal = Depends(require_user)) -> dict:
+    """The restore history — every restore and undo, newest first."""
+    limit = get_settings().BACKUP_RUN_HISTORY
+    return {"restores": await RestoreStore(request.app.state.container.datastore).recent(limit)}

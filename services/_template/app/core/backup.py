@@ -108,11 +108,18 @@ def verify(archive: dict[str, Any]) -> None:
 
 
 async def import_archive(datastore, archive: dict[str, Any], *,
-                         unseal: Callable[[str], str], overwrite: bool = False) -> dict[str, Any]:
+                         unseal: Callable[[str], str], overwrite: bool = False,
+                         into_tenant: str = "") -> dict[str, Any]:
     """Restore an archive, idempotently and without clobbering newer rows.
 
     `unseal` reverses `seal`; if the backup key does not match the one the archive was sealed with,
     it raises, and this surfaces that as a clear refusal rather than writing garbage.
+
+    `into_tenant` REMAPS the restore into a different tenant — restore-as-clone, for standing a
+    customer's data up under a new tenant (a migration, a sandbox, a support repro). Only rows that
+    CARRY a tenant are reassigned; a global dataset (a shared catalogue) has no tenant field and is
+    left as-is, because it is not one tenant's to move. Row ids are preserved, so no-clobber still
+    protects whatever already exists under the destination tenant. Empty means restore in place.
     """
     verify(archive)
     try:
@@ -124,7 +131,7 @@ async def import_archive(datastore, archive: dict[str, Any], *,
             "archive could not be decrypted — the backup key does not match the one it was sealed "
             "with. Restore with the key the backup was taken under.") from exc
 
-    inserted = skipped = overwritten = 0
+    inserted = skipped = overwritten = remapped = 0
     for name, rows in (body.get("collections") or {}).items():
         for row in rows:
             key = row.get("id")
@@ -132,6 +139,10 @@ async def import_archive(datastore, archive: dict[str, Any], *,
                 # A row with no identity cannot be restored idempotently — restoring it twice would
                 # duplicate it. Refuse the archive rather than quietly double-write.
                 raise BackupError(f"{name}: a row has no id; cannot restore without a row identity")
+            if into_tenant and "tenant" in row:
+                # Reassign only rows that were tenant-partitioned; leave the id and everything else.
+                row = {**row, "tenant": into_tenant}
+                remapped += 1
             existing = await datastore.get(name, key)
             if existing is None:
                 await datastore.put(name, key, row)
@@ -145,7 +156,8 @@ async def import_archive(datastore, archive: dict[str, Any], *,
                 # no-op on what already landed.
                 skipped += 1
     return {"service": body.get("service"), "tenant": body.get("tenant", ""),
-            "inserted": inserted, "overwritten": overwritten, "skipped": skipped}
+            "into_tenant": into_tenant, "inserted": inserted, "overwritten": overwritten,
+            "skipped": skipped, "remapped": remapped}
 
 def _canon(row: dict[str, Any]) -> str:
     """A dict's order-independent fingerprint, so a re-serialised row compares equal to its origin."""

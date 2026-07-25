@@ -58,7 +58,7 @@ def build_manifest(
         # adopter's client app reads as fact and renders nothing from. A blank app is the usual
         # symptom of a service that shipped this untouched. If a service genuinely grants none,
         # leaving it empty is correct; the point is that it must be a decision, not a leftover.
-        "capabilities": ["platform.secrets", "platform.config"],
+        "capabilities": ["platform.secrets", "platform.config", "platform.restore"],
         "endpoints": [
             {"path": "/healthz", "tier": "public", "method": "GET"},
             {"path": "/readyz", "tier": "public", "method": "GET"},
@@ -91,6 +91,12 @@ def build_manifest(
             {"path": "/api/v1/operator/config", "tier": "user", "method": "GET"},
             {"path": "/api/v1/operator/config", "tier": "user", "method": "PUT"},
             {"path": "/api/v1/operator/config/{}", "tier": "user", "method": "DELETE"},
+            # Restore: preview, execute, undo, and the history. The one action that overwrites live
+            # data — declared like anything else, under its own platform.restore capability.
+            {"path": "/api/v1/operator/restore/plan", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/operator/restore", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/operator/restore/{}/undo", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/operator/restores", "tier": "user", "method": "GET"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         # FILL THIS too, or leave it empty deliberately. Same trap as capabilities: an empty

@@ -79,5 +79,56 @@ ADMIN_ACTIONS = [
         "path": "/api/v1/operator/config/{key}", "capability": "platform.config",
         "group": "Settings", "confirm": True,
         "params": [{"name": "key", "in": "path", "type": "string", "required": True}],
-    }
+    },
+    # ── Restore & disaster recovery ───────────────────────────────────────────
+    # The read (plan) comes before the act (restore): an operator previews which services a backup
+    # can restore, and which are blocked because they were never verified, BEFORE overwriting a
+    # thing. The restore itself is danger + confirm, and echoes the run id to fire.
+    {
+        "id": "restore.plan", "label": "Preview a restore", "method": "POST",
+        "path": "/api/v1/operator/restore/plan", "capability": "platform.restore",
+        "group": "Restore",
+        "params": [
+            {"name": "run_id", "in": "body", "type": "string", "required": True,
+             "help": "the backup run to restore from (see the backup runs list)"},
+            {"name": "tenant", "in": "body", "type": "string", "required": False,
+             "help": "restore just one tenant's data; empty = the whole platform"},
+            {"name": "services", "in": "body", "type": "array", "required": False,
+             "help": "restore only these services; empty = every service in the backup"},
+            {"name": "require_verified", "in": "body", "type": "boolean", "required": False,
+             "help": "default true — only ever restore an archive proven restorable"},
+        ],
+    },
+    {
+        "id": "restore.run", "label": "Restore from a backup", "method": "POST",
+        "path": "/api/v1/operator/restore", "capability": "platform.restore",
+        "group": "Restore", "confirm": True, "danger": True,
+        "params": [
+            {"name": "run_id", "in": "body", "type": "string", "required": True},
+            {"name": "confirm", "in": "body", "type": "string", "required": True,
+             "help": "repeat the run id to confirm — a restore overwrites live data"},
+            {"name": "tenant", "in": "body", "type": "string", "required": False},
+            {"name": "into_tenant", "in": "body", "type": "string", "required": False,
+             "help": "restore-as-clone: stand the data up under a DIFFERENT tenant"},
+            {"name": "services", "in": "body", "type": "array", "required": False},
+            {"name": "overwrite", "in": "body", "type": "boolean", "required": False,
+             "help": "default false — leave rows written after the backup alone"},
+            {"name": "require_verified", "in": "body", "type": "boolean", "required": False},
+            {"name": "safety_snapshot", "in": "body", "type": "boolean", "required": False,
+             "help": "default true — snapshot current state first, so the restore is undoable"},
+        ],
+    },
+    {
+        "id": "restore.undo", "label": "Undo a restore", "method": "POST",
+        "path": "/api/v1/operator/restore/{restore_id}/undo", "capability": "platform.restore",
+        "group": "Restore", "confirm": True, "danger": True,
+        "params": [
+            {"name": "restore_id", "in": "path", "type": "string", "required": True},
+            {"name": "services", "in": "body", "type": "array", "required": False},
+        ],
+    },
+    {
+        "id": "restore.list", "label": "Restore history", "method": "GET",
+        "path": "/api/v1/operator/restores", "capability": "platform.restore", "group": "Restore",
+    },
 ]

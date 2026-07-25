@@ -775,6 +775,11 @@
             "title": "Archive",
             "type": "object"
           },
+          "into_tenant": {
+            "default": "",
+            "title": "Into Tenant",
+            "type": "string"
+          },
           "overwrite": {
             "default": false,
             "title": "Overwrite",

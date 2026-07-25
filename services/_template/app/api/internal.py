@@ -91,6 +91,9 @@ class BackupImportIn(BaseModel):
     # Off by default: a restore must not bulldoze rows written after the backup unless the operator
     # driving the restore says so.
     overwrite: bool = False
+    # Empty = restore in place. A value REMAPS the restore into that tenant (restore-as-clone):
+    # only rows that carry a tenant are reassigned; a global dataset is left alone.
+    into_tenant: str = ""
 
 
 def _sealer(settings: Settings):
@@ -154,7 +157,7 @@ async def backup_import(request: Request, body: BackupImportIn,
     try:
         return await _backup.import_archive(
             request.app.state.container.datastore, body.archive,
-            unseal=unseal, overwrite=body.overwrite)
+            unseal=unseal, overwrite=body.overwrite, into_tenant=body.into_tenant)
     except _backup.BackupError as exc:
         # A bad archive is the caller's problem, not a 500: the checksum failed, the key did not
         # match, or a row had no identity. Say which, so an operator can act.

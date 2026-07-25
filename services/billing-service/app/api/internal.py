@@ -211,6 +211,9 @@ class _BackupExportIn(BaseModel):
 class _BackupImportIn(BaseModel):
     archive: dict
     overwrite: bool = False
+    # Empty = restore in place. A value REMAPS the restore into that tenant (restore-as-clone):
+    # only rows that carry a tenant are reassigned; a global dataset is left alone.
+    into_tenant: str = ""
 
 
 def _now_iso() -> str:
@@ -275,6 +278,6 @@ async def backup_import(request: Request, body: _BackupImportIn,
     try:
         return await _backup.import_archive(
             request.app.state.container.datastore, body.archive,
-            unseal=unseal, overwrite=body.overwrite)
+            unseal=unseal, overwrite=body.overwrite, into_tenant=body.into_tenant)
     except _backup.BackupError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc

@@ -172,6 +172,33 @@ def test_the_scaffold_declares_no_runtime_policy_so_it_offers_none(client, opera
     assert r.status_code == 400, "an undeclared knob was accepted and would have been inert"
 
 
+# ── restore: the dangerous action, gated and confirmed ────────────────────────
+def test_restore_needs_its_own_capability(client):
+    """Restoring overwrites live data — an operator with secrets or config caps must not, by that
+    fact alone, be able to overwrite the platform."""
+    h = _auth("platform.secrets", "platform.config")   # everything EXCEPT platform.restore
+    assert client.post("/api/v1/operator/restore/plan",
+                       json={"run_id": "run_1"}, headers=h).status_code == 403
+    assert client.post("/api/v1/operator/restore",
+                       json={"run_id": "run_1", "confirm": "run_1"}, headers=h).status_code == 403
+    assert client.get("/api/v1/operator/restores", headers=h).status_code == 403
+
+
+def test_a_restore_without_the_matching_confirm_is_refused(client):
+    """Echo-to-confirm: a mis-click or a replayed request must not trigger a restore. Checked before
+    anything is audited or touched."""
+    h = _auth("platform.restore")
+    r = client.post("/api/v1/operator/restore",
+                    json={"run_id": "run_9", "confirm": "not-run_9"}, headers=h)
+    assert r.status_code == 400
+
+
+def test_plan_of_an_unknown_run_reports_not_found_not_an_error(client):
+    h = _auth("platform.restore")
+    r = client.post("/api/v1/operator/restore/plan", json={"run_id": "no_such_run"}, headers=h)
+    assert r.status_code == 200 and r.json()["found"] is False
+
+
 # ── availability ──────────────────────────────────────────────────────────────
 def test_without_a_kek_the_surface_refuses_rather_than_storing_in_the_clear(env_guard):
     """No KEK means nothing to seal with. Storing the credential anyway — in the clear, while

@@ -87,6 +87,11 @@ X-Internal-Token: …
   unless `overwrite` is set. A restore into a tenant that partly exists must not bulldoze rows written
   after the backup, and a re-run of a half-finished restore must change nothing the second time.
 - **Refuse an id-less row.** Restoring it twice would duplicate it.
+- **Honour `into_tenant` if you support restore-as-clone.** An optional `into_tenant` on the import
+  body REMAPS the restore into a different tenant — reassign only rows that carry a tenant (a global
+  dataset is left alone), preserve row ids, and let no-clobber protect whatever already exists there.
+  Omit it and you restore in place. This is what lets an operator stand a customer's backup up under
+  a new tenant for a migration, a sandbox, or a support repro.
 
 **Verify** — prove an archive actually restores, without touching your live data:
 

@@ -159,6 +159,23 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "leave their trail in the run log either way",
     },
     {
+        "action": "backup.restored",
+        "source": "admin",
+        "critical": True,
+        "resource": "backup_run",
+        "why": "a restore overwrites live data in bulk; who ran it, from which backup, into which "
+               "tenant, and whether it overwrote — is exactly what an incident review needs and is "
+               "unreconstructable after the fact, so an unrecordable restore must not proceed",
+    },
+    {
+        "action": "backup.restore_undone",
+        "source": "admin",
+        "critical": True,
+        "resource": "restore",
+        "why": "undoing a restore is itself a bulk overwrite (the pre-restore state re-applied); the "
+               "same attribution a restore needs, a rollback needs — it changed the platform's data",
+    },
+    {
         "action": "subject.erased",
         "source": "internal",
         "critical": True,

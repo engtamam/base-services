@@ -19,6 +19,11 @@
             "title": "Archive",
             "type": "object"
           },
+          "into_tenant": {
+            "default": "",
+            "title": "Into Tenant",
+            "type": "string"
+          },
           "overwrite": {
             "default": false,
             "title": "Overwrite",
@@ -115,6 +120,97 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "RestoreIn": {
+        "properties": {
+          "confirm": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Confirm",
+            "type": "string"
+          },
+          "into_tenant": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Into Tenant",
+            "type": "string"
+          },
+          "overwrite": {
+            "default": false,
+            "title": "Overwrite",
+            "type": "boolean"
+          },
+          "require_verified": {
+            "default": true,
+            "title": "Require Verified",
+            "type": "boolean"
+          },
+          "run_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Run Id",
+            "type": "string"
+          },
+          "safety_snapshot": {
+            "default": true,
+            "title": "Safety Snapshot",
+            "type": "boolean"
+          },
+          "services": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Services",
+            "type": "array"
+          },
+          "tenant": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "confirm"
+        ],
+        "title": "RestoreIn",
+        "type": "object"
+      },
+      "RestorePlanIn": {
+        "properties": {
+          "require_verified": {
+            "default": true,
+            "title": "Require Verified",
+            "type": "boolean"
+          },
+          "run_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Run Id",
+            "type": "string"
+          },
+          "services": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Services",
+            "type": "array"
+          },
+          "tenant": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id"
+        ],
+        "title": "RestorePlanIn",
+        "type": "object"
+      },
       "SecretIn": {
         "properties": {
           "name": {
@@ -141,6 +237,20 @@
           "value"
         ],
         "title": "SecretIn",
+        "type": "object"
+      },
+      "UndoIn": {
+        "properties": {
+          "services": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Services",
+            "type": "array"
+          }
+        },
+        "title": "UndoIn",
         "type": "object"
       },
       "ValidationError": {
@@ -402,6 +512,175 @@
           }
         },
         "summary": "Clear Config",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/v1/operator/restore": {
+      "post": {
+        "description": "Restore a backup run. Overwrites live data, so: capability-gated, echo-confirmed, audited\nwrite-ahead, snapshot-before-overwrite, and never aborting the whole restore on one target.\n\nAudited BEFORE it runs and as CRITICAL: a bulk overwrite of live data that cannot be recorded\nmust not happen \u2014 'who restored the platform, from which backup, into which tenant' is exactly\nwhat an incident review will need, and it is unreconstructable after the fact.",
+        "operationId": "run_restore_api_v1_operator_restore_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoreIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Run Restore Api V1 Operator Restore Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Restore",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/v1/operator/restore/plan": {
+      "post": {
+        "description": "Preview what a restore WOULD do \u2014 which targets are eligible, which are blocked and why, and\nhow many rows each holds. Writes nothing; this is the screen an operator confirms against.",
+        "operationId": "restore_plan_api_v1_operator_restore_plan_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestorePlanIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Restore Plan Api V1 Operator Restore Plan Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Restore Plan",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/v1/operator/restore/{restore_id}/undo": {
+      "post": {
+        "description": "Roll a restore back by re-applying each target's pre-restore snapshot. Audited, critical.",
+        "operationId": "undo_restore_api_v1_operator_restore__restore_id__undo_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "restore_id",
+            "required": true,
+            "schema": {
+              "title": "Restore Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UndoIn",
+                "default": {
+                  "services": []
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Undo Restore Api V1 Operator Restore  Restore Id  Undo Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Undo Restore",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/v1/operator/restores": {
+      "get": {
+        "description": "The restore history \u2014 every restore and undo, newest first.",
+        "operationId": "list_restores_api_v1_operator_restores_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Restores Api V1 Operator Restores Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Restores",
         "tags": [
           "operator"
         ]
