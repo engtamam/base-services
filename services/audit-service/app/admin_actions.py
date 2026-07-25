@@ -37,6 +37,28 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         ],
     },
     {
+        "id": "audit.export", "label": "Export the audit log (for an investigation)", "method": "GET",
+        "path": "/api/v1/audit/export", "capability": "platform.audit", "group": "Audit",
+        # The companion to search: a panel that can narrow the log but not export the result is half
+        # a tool. Same filters as the query — an export that cannot be narrowed is a full extraction
+        # of the log every time. A bulk extraction of sensitive data, so it confirms and is audited
+        # write-ahead (audit.exported); platform.audit crosses tenants, a tenant admin stays scoped.
+        "confirm": True,
+        "params": [
+            {"name": "format", "in": "query", "type": "string", "required": False,
+             "help": "e.g. json or csv; defaults to the service default"},
+            {"name": "actor", "in": "query", "type": "string", "required": False,
+             "help": "a subject pseudonym, never a name"},
+            {"name": "action", "in": "query", "type": "string", "required": False},
+            {"name": "service", "in": "query", "type": "string", "required": False},
+            {"name": "resource", "in": "query", "type": "string", "required": False},
+            {"name": "since", "in": "query", "type": "string", "required": False},
+            {"name": "until", "in": "query", "type": "string", "required": False},
+            {"name": "tenant", "in": "query", "type": "string", "required": False,
+             "help": "platform.audit only; a tenant admin is always scoped to their own"},
+        ],
+    },
+    {
         "id": "audit.verify", "label": "Verify log integrity (hash chain)", "method": "GET",
         "path": "/api/v1/audit/verify", "capability": "platform.audit", "group": "Audit",
         "params": [{"name": "partition", "in": "query", "type": "string", "required": False,
