@@ -370,6 +370,49 @@
         "tags": [
           "authz"
         ]
+      },
+      "get": {
+        "description": "One policy's full detail \u2014 effect, action, resource, condition, priority. The see-before-you-\ndelete read: policies could be listed and deleted but never inspected on their own.",
+        "operationId": "view_policy_api_v1_policies__policy_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "policy_id",
+            "required": true,
+            "schema": {
+              "title": "Policy Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response View Policy Api V1 Policies  Policy Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "View Policy",
+        "tags": [
+          "authz"
+        ]
       }
     },
     "/api/v1/roles": {
@@ -569,6 +612,51 @@
           }
         },
         "summary": "Update Role",
+        "tags": [
+          "authz"
+        ]
+      }
+    },
+    "/api/v1/subjects/{subject}/effective": {
+      "get": {
+        "description": "What a subject can ACTUALLY do \u2014 the resolved capability set from its roles and direct grants.\n'View a subject's roles' shows the inputs; this shows the derived answer, the read an operator\nneeds to debug 'why can/can't this person do X'. The same resolution the internal PDP uses, on\nthe panel. Roles are the input, capabilities are derived.",
+        "operationId": "subject_effective_api_v1_subjects__subject__effective_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "subject",
+            "required": true,
+            "schema": {
+              "title": "Subject",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Subject Effective Api V1 Subjects  Subject  Effective Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Subject Effective",
         "tags": [
           "authz"
         ]

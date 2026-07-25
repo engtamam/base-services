@@ -63,6 +63,31 @@ def test_full_rbac_flow(client):
     assert chk.json()["allow"] is True
 
 
+def test_operator_reads_a_policy_and_a_subjects_effective_caps(client):
+    role = client.post("/api/v1/roles",
+                       json={"name": "viewer", "capabilities": ["docs.read"], "tenant": "t1"},
+                       headers=_plat()).json()
+    client.put("/api/v1/subjects/u_eff/roles",
+               json={"roles": [role["id"]], "capabilities": ["extra.cap"]}, headers=_plat())
+
+    # The operator can now see, on the PANEL, what the subject can actually do (was internal-only).
+    eff = client.get("/api/v1/subjects/u_eff/effective", headers=_plat())
+    assert eff.status_code == 200
+    assert set(eff.json()["capabilities"]) == {"docs.read", "extra.cap"}
+
+    # And view a single policy's detail (was list/delete only).
+    pid = client.post("/api/v1/policies",
+                      json={"effect": "deny", "action": "x.*", "resource": "*", "tenant": "t1"},
+                      headers=_plat()).json()["id"]
+    got = client.get(f"/api/v1/policies/{pid}", headers=_plat())
+    assert got.status_code == 200 and got.json()["effect"] == "deny"
+    assert client.get("/api/v1/policies/nope", headers=_plat()).status_code == 404
+
+    # Both need the capability.
+    assert client.get("/api/v1/subjects/u_eff/effective",
+                      headers={"Authorization": "Bearer " + _tok(["unrelated"])}).status_code == 403
+
+
 def test_abac_deny(client):
     role = client.post("/api/v1/roles", json={"name": "w", "capabilities": ["files.*"], "tenant": "t1"},
                        headers=_plat()).json()

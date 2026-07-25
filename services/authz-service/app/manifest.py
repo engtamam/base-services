@@ -64,9 +64,11 @@ def build_manifest(
             {"path": "/api/v1/roles/{role_id}", "tier": "user", "method": "DELETE"},
             {"path": "/api/v1/policies", "tier": "user", "method": "POST"},
             {"path": "/api/v1/policies", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/policies/{policy_id}", "tier": "user", "method": "GET"},
             {"path": "/api/v1/policies/{policy_id}", "tier": "user", "method": "DELETE"},
             {"path": "/api/v1/subjects/{subject}/roles", "tier": "user", "method": "PUT"},
             {"path": "/api/v1/subjects/{subject}/roles", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/subjects/{subject}/effective", "tier": "user", "method": "GET"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         "events": {"emitted": [], "consumed": []},

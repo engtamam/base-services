@@ -66,6 +66,11 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         ],
     },
     {
+        "id": "authz.get_policy", "label": "View a policy", "method": "GET",
+        "path": "/api/v1/policies/{policy_id}", "capability": "platform.authz", "group": "Policies",
+        "params": [{"name": "policy_id", "in": "path", "type": "string", "required": True}],
+    },
+    {
         "id": "authz.delete_policy", "label": "Delete policy", "method": "DELETE",
         "path": "/api/v1/policies/{policy_id}", "capability": "platform.authz", "group": "Policies",
         "danger": True, "confirm": True,
@@ -76,6 +81,14 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         "id": "authz.get_subject_roles", "label": "View a subject's roles", "method": "GET",
         "path": "/api/v1/subjects/{subject}/roles", "capability": "platform.authz",
         "group": "Assignments",
+        "params": [{"name": "subject", "in": "path", "type": "string", "required": True}],
+    },
+    {
+        "id": "authz.subject_effective", "label": "View a subject's effective capabilities",
+        "method": "GET", "path": "/api/v1/subjects/{subject}/effective",
+        "capability": "platform.authz", "group": "Assignments",
+        # The resolved answer, not just the assigned roles: what the subject can actually do. The
+        # read behind "why can/can't this person do X".
         "params": [{"name": "subject", "in": "path", "type": "string", "required": True}],
     },
     {

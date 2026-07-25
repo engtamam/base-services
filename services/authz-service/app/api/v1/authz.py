@@ -152,6 +152,18 @@ async def list_policies(request: Request, principal: Principal = Depends(_ADMIN)
     return {"policies": await build_authz(request).list_policies(_op_tenant(principal))}
 
 
+@router.get("/policies/{policy_id}")
+async def view_policy(request: Request, policy_id: str,
+                      principal: Principal = Depends(_ADMIN)) -> dict:
+    """One policy's full detail — effect, action, resource, condition, priority. The see-before-you-
+    delete read: policies could be listed and deleted but never inspected on their own."""
+    p = await build_authz(request).get_policy(policy_id)
+    if p is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    _guard_tenant(principal, p.tenant)
+    return p.to_dict()
+
+
 @router.delete("/policies/{policy_id}")
 async def delete_policy(request: Request, policy_id: str, principal: Principal = Depends(_ADMIN)) -> dict:
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
@@ -187,3 +199,15 @@ async def set_roles(request: Request, subject: str, body: AssignIn,
 @router.get("/subjects/{subject}/roles")
 async def get_roles(request: Request, subject: str, principal: Principal = Depends(_ADMIN)) -> dict:
     return (await build_authz(request).get_assignment(subject, _op_tenant(principal))).to_dict()
+
+
+@router.get("/subjects/{subject}/effective")
+async def subject_effective(request: Request, subject: str,
+                            principal: Principal = Depends(_ADMIN)) -> dict:
+    """What a subject can ACTUALLY do — the resolved capability set from its roles and direct grants.
+    'View a subject's roles' shows the inputs; this shows the derived answer, the read an operator
+    needs to debug 'why can/can't this person do X'. The same resolution the internal PDP uses, on
+    the panel. Roles are the input, capabilities are derived."""
+    tenant = _op_tenant(principal)
+    caps = await build_authz(request).effective(subject, tenant)
+    return {"subject": subject, "tenant": tenant, "capabilities": sorted(caps)}
