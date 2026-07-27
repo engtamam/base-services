@@ -80,6 +80,7 @@ def build_manifest(
              "caller": "service"},
             {"path": "/internal/tenancy/members", "tier": "internal", "method": "GET"},
             {"path": "/internal/tenancy/seed-owner", "tier": "internal", "method": "POST"},
+            {"path": "/internal/tenancy/membership/{ref}", "tier": "internal", "method": "DELETE"},
             {"path": "/internal/ratelimit/unblock", "tier": "internal", "method": "POST"},
             {"path": "/api/v1/auth/person/claim", "tier": "user", "method": "POST"},
             {"path": "/api/v1/auth/person/login", "tier": "user", "method": "POST"},

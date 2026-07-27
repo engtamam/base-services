@@ -94,6 +94,27 @@ def test_only_if_empty_blocks_a_different_second_owner(client):
     assert forced.status_code == 201 and forced.json()["seeded"] is True
 
 
+# ── compensation: the seed carries an undo reference, and it revokes idempotently ──
+def test_seed_returns_an_undo_id_and_revoke_compensates(client):
+    seeded = _seed(client, tenant="saga", identifier="owner@saga", caps=["members:write"]).json()
+    ref = seeded["id"]
+    assert ref == f"saga::{seeded['person_id']}"
+
+    # The onboarding saga's compensation: DELETE the reference. First time removes it…
+    r1 = client.delete(f"/internal/tenancy/membership/{ref}", headers=_h())
+    assert r1.status_code == 200 and r1.json()["revoked"] is True
+    assert not client.get("/internal/tenancy/members?tenant=saga",
+                          headers=_h()).json()["members"]
+    # …a resumed rollback re-attempts an already-gone undo: success, not an error.
+    r2 = client.delete(f"/internal/tenancy/membership/{ref}", headers=_h())
+    assert r2.status_code == 200 and r2.json()["revoked"] is False
+
+
+def test_revoke_needs_the_token_and_a_well_formed_reference(client):
+    assert client.delete("/internal/tenancy/membership/t::p").status_code == 401
+    assert client.delete("/internal/tenancy/membership/no-separator", headers=_h()).status_code == 400
+
+
 # ── refusals ──────────────────────────────────────────────────────────────────
 def test_it_needs_the_internal_token(client):
     assert client.post("/internal/tenancy/seed-owner",

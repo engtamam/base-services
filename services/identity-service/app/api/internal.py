@@ -224,10 +224,15 @@ async def seed_owner(request: Request, body: SeedOwnerIn) -> dict:
             metadata={"owner_ref": owner_ref, "roles": ",".join(body.roles)})
 
     try:
-        return await _svc(request).seed_owner(
+        res = await _svc(request).seed_owner(
             body.tenant, body.identifier, roles=body.roles, caps=caps, password=body.password,
             invite_ttl=s.IDENTITY_INVITE_TTL_SECONDS, only_if_empty=body.only_if_empty,
             write_cap=write_cap, on_commit=_audit_write_ahead)
+        # `id` is the undo reference an orchestrator (onboarding saga) captures to compensate: if a
+        # later provisioning step fails, it DELETEs this membership so a failed signup leaves no
+        # orphan owner. tenant::person_id — neither contains "::".
+        res["id"] = f"{res['tenant']}::{res['person_id']}"
+        return res
     except SeedError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except CredentialNotYours:
@@ -236,3 +241,28 @@ async def seed_owner(request: Request, body: SeedOwnerIn) -> dict:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "WEAK_PASSWORD")
     except TenantAccessDenied:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "TENANT_ACCESS_DENIED")
+
+
+@router.delete("/tenancy/membership/{ref}", dependencies=[Depends(require_internal_token)])
+async def revoke_membership(request: Request, ref: str) -> dict:
+    """Compensation for a seeded owner: revoke ONE membership, idempotently.
+
+    `ref` is the `id` seed-owner returned (tenant::person_id). This is the undo the onboarding saga
+    calls when a later provisioning step fails, so a failed signup does not leave an orphan owner. It
+    revokes the membership only — never the Person (they may work elsewhere, T2). Idempotent:
+    revoking an already-gone membership is success, which is what a resumed rollback re-attempts.
+    """
+    if not get_settings().IDENTITY_MULTI_TENANT:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "MULTI_TENANT_OFF")
+    tenant, sep, person_id = ref.partition("::")
+    if not sep or not tenant or not person_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "BAD_REFERENCE")
+    store = MembershipStore(request.app.state.container.datastore)
+    existed = await store.membership(person_id, tenant) is not None
+    if existed:
+        # member.removed is CRITICAL and write-ahead: removing access must be provable.
+        await request.app.state.auditor.record(
+            "member.removed", actor="", tenant=tenant, resource=f"member:{person_id}",
+            ip=request.client.host if request.client else "")
+        await store.revoke(person_id, tenant)
+    return {"revoked": existed, "tenant": tenant, "person_id": person_id}

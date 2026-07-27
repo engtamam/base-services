@@ -1990,6 +1990,67 @@
         ]
       }
     },
+    "/internal/tenancy/membership/{ref}": {
+      "delete": {
+        "description": "Compensation for a seeded owner: revoke ONE membership, idempotently.\n\n`ref` is the `id` seed-owner returned (tenant::person_id). This is the undo the onboarding saga\ncalls when a later provisioning step fails, so a failed signup does not leave an orphan owner. It\nrevokes the membership only \u2014 never the Person (they may work elsewhere, T2). Idempotent:\nrevoking an already-gone membership is success, which is what a resumed rollback re-attempts.",
+        "operationId": "revoke_membership_internal_tenancy_membership__ref__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ref",
+            "required": true,
+            "schema": {
+              "title": "Ref",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Revoke Membership Internal Tenancy Membership  Ref  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Membership",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/tenancy/seed-owner": {
       "post": {
         "description": "Bootstrap a tenant's FIRST owner as a Person, over the internal token.\n\nThe chicken-and-egg breaker: a freshly provisioned tenant has nobody holding members:write, so\nno USER route can add the first admin. This service-to-service door does \u2014 guarded so it stays a\nbootstrap primitive, not a grant backdoor: the owner must hold the members-write cap, and\n`only_if_empty` refuses a DIFFERENT owner on an already-staffed tenant. Idempotent; reuses an\nexisting Person without touching their credential (T2).\n\nAudited WRITE-AHEAD and CRITICAL: an owner grant that cannot be recorded must not happen \u2014 an\nunattributable owner is exactly what an attacker wants. The seeded human is recorded as a\nPSEUDONYM, never the raw identifier, so the trail is provable (resolve it here) yet erasable.",
