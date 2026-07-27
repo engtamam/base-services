@@ -232,6 +232,20 @@ async def seed_owner(request: Request, body: SeedOwnerIn) -> dict:
         # later provisioning step fails, it DELETEs this membership so a failed signup leaves no
         # orphan owner. tenant::person_id — neither contains "::".
         res["id"] = f"{res['tenant']}::{res['person_id']}"
+        if res["seeded"]:
+            # Emit the fact so consumers can light up (notification welcome, billing trial-start).
+            # BEST-EFFORT and at-most-once: the durable record is the membership row and the audit,
+            # never this event — a bus that is down must not fail a seed that already committed. No
+            # raw identifier on the bus; person_id is the link a consumer resolves through identity.
+            from app.ports.event_bus import Event
+            try:
+                await request.app.state.container.event_bus.publish(
+                    "tenant.owner_seeded",
+                    Event(type="tenant.owner_seeded",
+                          payload={"tenant": res["tenant"], "person_id": res["person_id"],
+                                   "created_person": res["created_person"], "roles": res["roles"]}))
+            except Exception:  # noqa: BLE001 — a hint that fails to publish is not a failed seed
+                pass
         return res
     except SeedError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc

@@ -127,13 +127,27 @@ consumer can discover it), while keeping every consumer optional.
 
 ## Tasks
 
-- [ ] **48.1** identity-service: `seed_owner` service method (wrapping `add_member` with the
-  `members:write` guard and `only_if_empty` bootstrap check) + the `POST /internal/tenancy/seed-owner`
-  route, audited CRITICAL as `tenant.owner_seeded`, declared in manifest + auditable actions, with a
-  test per edge-case row.
-- [ ] **48.2** onboarding-service: a `seed_owner` provisioning-saga step (with compensation that
-  revokes the membership on later failure), calling identity over the internal token — the
-  self-service loop closed end to end.
-- [ ] **48.3** (optional, if emitting) `tenant.owner_seeded` domain event: declared in the manifest,
-  and a reference consumer (notification welcome-email or billing trial-start) proving the hint wiring
-  — durable fact stays the membership row.
+- [x] **48.1** identity-service: `seed_owner` service method (wrapping `add_member` with the
+  `members:write` guard and `only_if_empty` bootstrap check) + `POST /internal/tenancy/seed-owner`,
+  audited WRITE-AHEAD + CRITICAL as `tenant.owner_seeded` via an `on_commit` callback (fired only after
+  the guards pass, before the grant), actor pseudonymised. Declared in manifest + auditable actions.
+  A test per edge-case row (8).
+- [x] **48.2** identity + onboarding: made seed-owner orchestration-safe. seed-owner returns an `id`
+  (`tenant::person_id`) undo reference, and a new `DELETE /internal/tenancy/membership/{ref}` revokes
+  one membership idempotently (never the Person; T2) — the compensation a saga calls so a failed
+  signup leaves no orphan owner. Onboarding's provisioner is deploy-config (`ONBOARDING_PROVISIONERS =
+  tenant_owner=<seed-url>|<revoke-url>`); a contract test proves its generic HttpProvisioner speaks the
+  seed-owner/revoke shapes (captures the id, DELETEs it, 404 = success, no-id = fail-loud).
+- [x] **48.3** `tenant.owner_seeded` domain event: emitted best-effort (at-most-once HINT) on a real
+  seed — not on an idempotent no-op re-seed, and a failing bus never fails a committed seed — carrying
+  `tenant`/`person_id`/`created_person`/`roles` (no raw identifier). Declared in manifest
+  `events.emitted`; `safety:event-contract` green. A live consumer stays opt-in by design: the durable
+  fact is the membership row + audit, so any team can subscribe (notification welcome, billing
+  trial-start) without the seed depending on it.
+
+---
+
+**Phase 48 complete.** The chicken-and-egg is broken: self-service onboarding can bootstrap a tenant
+owner as a `Person` over the internal token — idempotent, T2-safe, fail-closed audited, orchestration-
+safe (undo reference + revoke), and announced on the bus for anyone who wants to react. identity 391
+tests green; the seed is the one door, guarded so it stays a bootstrap and not a backdoor.

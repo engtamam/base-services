@@ -94,7 +94,11 @@ def build_manifest(
             {"path": "/api/v1/operator/config/{}", "tier": "user", "method": "DELETE"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
-        "events": {"emitted": [], "consumed": []},
+        # tenant.owner_seeded — a tenant's first owner was bootstrapped as a Person. At-most-once
+        # HINT: the durable fact is the membership row + the audit, never this event. A consumer
+        # (notification welcome, billing trial-start) resolves the human from person_id, since no
+        # raw identifier travels on the bus. Declared so a consumer can discover it exists.
+        "events": {"emitted": ["tenant.owner_seeded"], "consumed": []},
         "admin_actions": _admin_actions(),
         "user_actions": _user_actions(),
     }

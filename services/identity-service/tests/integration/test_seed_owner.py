@@ -115,6 +115,45 @@ def test_revoke_needs_the_token_and_a_well_formed_reference(client):
     assert client.delete("/internal/tenancy/membership/no-separator", headers=_h()).status_code == 400
 
 
+# ── the tenant.owner_seeded hint (best-effort, at-most-once) ──────────────────
+def test_a_real_seed_emits_tenant_owner_seeded(client):
+    seen = []
+
+    async def _handler(ev):
+        seen.append(ev)
+
+    import asyncio
+    asyncio.run(client.app.state.container.event_bus.subscribe("tenant.owner_seeded", _handler))
+
+    _seed(client, tenant="evt", identifier="owner@evt", caps=["members:write"])
+    assert seen, "a successful seed must emit tenant.owner_seeded"
+    ev = seen[0]
+    assert ev.payload["tenant"] == "evt" and ev.payload["person_id"]
+    # No raw identifier travels on the bus — person_id is the link, not the email.
+    assert "owner@evt" not in str(ev.payload)
+
+
+def test_a_no_op_reseed_does_not_re_emit(client):
+    import asyncio
+    _seed(client, tenant="evt2", identifier="o@evt2", caps=["members:write"])   # first seed
+    seen = []
+
+    async def _handler(ev):
+        seen.append(ev)
+
+    asyncio.run(client.app.state.container.event_bus.subscribe("tenant.owner_seeded", _handler))
+    _seed(client, tenant="evt2", identifier="o@evt2", caps=["members:write"])   # no-op re-seed
+    assert not seen, "an idempotent re-seed must not re-emit the hint"
+
+
+def test_a_failing_bus_does_not_fail_the_seed(client, monkeypatch):
+    async def _boom(*a, **k):
+        raise RuntimeError("bus down")
+    monkeypatch.setattr(client.app.state.container.event_bus, "publish", _boom)
+    r = _seed(client, tenant="evt3", identifier="o@evt3", caps=["members:write"])
+    assert r.status_code == 201 and r.json()["seeded"] is True   # the seed committed regardless
+
+
 # ── refusals ──────────────────────────────────────────────────────────────────
 def test_it_needs_the_internal_token(client):
     assert client.post("/internal/tenancy/seed-owner",
