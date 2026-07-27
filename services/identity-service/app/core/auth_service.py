@@ -37,6 +37,12 @@ class CredentialNotYours(Exception):
     """A tenant admin tried to set the credential of a person who already exists (T2)."""
 
 
+class SeedError(Exception):
+    """A founder-seed that cannot proceed as a BOOTSTRAP: the seeded owner would not hold the
+    membership-write capability (the egg would stay unbroken), or a DIFFERENT owner would be seeded
+    onto a tenant that already has members (only_if_empty)."""
+
+
 class AuthService:
     # Class-level defaults so a partially-constructed instance (tests build these directly) has
     # the SAFE value rather than an AttributeError — and so that adding a dependency here can
@@ -330,6 +336,73 @@ class AuthService:
             status=PENDING if person.status == PENDING else ACTIVE,
         ))
         return m, invite
+
+    async def seed_owner(self, tenant: str, identifier: str, *, roles=None, caps=None,
+                         password: str | None = None, invite_ttl: int = 0,
+                         only_if_empty: bool = True,
+                         write_cap: str = "members:write", on_commit=None) -> dict:
+        """Bootstrap a tenant's FIRST owner as a Person — the one door that breaks the
+        chicken-and-egg where a freshly provisioned tenant has NOBODY holding `write_cap`, so nobody
+        can add the first admin.
+
+        A thin wrapper over add_member — which is already T2-safe (an existing human's credential is
+        never touched) and idempotent — plus two guards that make this a BOOTSTRAP primitive rather
+        than a general grant backdoor:
+
+          1. THE EGG MUST ACTUALLY BREAK. The seeded owner must hold `write_cap`; otherwise the
+             tenant stays unenterable and the bootstrap has silently failed. Refused, not defaulted.
+          2. only_if_empty (default) refuses seeding a DIFFERENT owner onto a tenant that already has
+             members — so this cannot become an accidental or malicious second owner on a live
+             tenant. Re-seeding the SAME identifier stays a no-op, so a provisioning retry is safe.
+
+        Returns a record: person_id, whether the Person was created, whether a grant happened, and a
+        one-time invite token when a brand-new Person was created without a password.
+        """
+        if self._memberships is None:
+            raise RuntimeError("IDENTITY_MULTI_TENANT is off — no membership store is wired")
+        if not tenant:
+            raise TenantAccessDenied()
+        caps = list(caps or [])
+        if write_cap not in caps:
+            raise SeedError(
+                f"a seeded owner must hold {write_cap!r} — without it the tenant stays unenterable, "
+                f"which is the exact bootstrap this endpoint exists to solve")
+
+        self._identifier.validate(identifier)
+        ident = self._identifier.display(identifier)
+        person_before = await self._memberships.person_by_identifier(ident)
+        already_member = (
+            person_before is not None
+            and await self._memberships.membership(person_before.id, tenant) is not None)
+
+        if only_if_empty and not already_member:
+            # A staffed tenant plus a NEW/different owner is refused. One row is enough to know it is
+            # staffed; `members` pushes the filter into the datastore, never a scan (safety:scans).
+            rows, _ = await self._memberships.members(tenant, limit=1)
+            if rows:
+                raise SeedError(
+                    "tenant already has members — seed-owner refuses to add a different owner "
+                    "(only_if_empty). Re-seeding the same identifier is a no-op; pass "
+                    "only_if_empty=false to override, deliberately.")
+
+        # WRITE-AHEAD, but only once the guards have PASSED — so a refused seed is never recorded as
+        # a grant that happened, and a critical audit that cannot be taken (AuditUnavailable) aborts
+        # BEFORE anything is written, leaving no owner nobody can account for.
+        if on_commit is not None:
+            await on_commit()
+
+        # A password issues an immediately-usable account; its absence issues a one-time invite.
+        mode = PASSWORD if password is not None else INVITE
+        m, invite = await self.add_member(
+            tenant, identifier, roles=roles, caps=caps, password=password,
+            mode=mode, invite_ttl=invite_ttl)
+        return {
+            "person_id": m.person_id, "tenant": tenant,
+            "created_person": person_before is None,
+            "seeded": not already_member,
+            "invite_token": invite,
+            "roles": list(m.roles), "caps": list(m.caps),
+        }
 
     async def remove_member(self, tenant: str, person_id: str) -> bool:
         """Revoke ONE membership. The person survives — she still works somewhere else.

@@ -324,6 +324,61 @@
         "title": "SecretIn",
         "type": "object"
       },
+      "SeedOwnerIn": {
+        "properties": {
+          "caps": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Caps",
+            "type": "array"
+          },
+          "identifier": {
+            "maxLength": 320,
+            "minLength": 1,
+            "title": "Identifier",
+            "type": "string"
+          },
+          "only_if_empty": {
+            "default": true,
+            "title": "Only If Empty",
+            "type": "boolean"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "maxLength": 1024,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password"
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Roles",
+            "type": "array"
+          },
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant",
+          "identifier"
+        ],
+        "title": "SeedOwnerIn",
+        "type": "object"
+      },
       "TenantIn": {
         "properties": {
           "code": {
@@ -1930,6 +1985,68 @@
           }
         },
         "summary": "Internal Members",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/tenancy/seed-owner": {
+      "post": {
+        "description": "Bootstrap a tenant's FIRST owner as a Person, over the internal token.\n\nThe chicken-and-egg breaker: a freshly provisioned tenant has nobody holding members:write, so\nno USER route can add the first admin. This service-to-service door does \u2014 guarded so it stays a\nbootstrap primitive, not a grant backdoor: the owner must hold the members-write cap, and\n`only_if_empty` refuses a DIFFERENT owner on an already-staffed tenant. Idempotent; reuses an\nexisting Person without touching their credential (T2).\n\nAudited WRITE-AHEAD and CRITICAL: an owner grant that cannot be recorded must not happen \u2014 an\nunattributable owner is exactly what an attacker wants. The seeded human is recorded as a\nPSEUDONYM, never the raw identifier, so the trail is provable (resolve it here) yet erasable.",
+        "operationId": "seed_owner_internal_tenancy_seed_owner_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SeedOwnerIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Seed Owner Internal Tenancy Seed Owner Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Seed Owner",
         "tags": [
           "internal"
         ]

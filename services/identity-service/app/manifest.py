@@ -79,6 +79,7 @@ def build_manifest(
              # onboarding declares identity as the OWNER of these facts; it must be able to ask.
              "caller": "service"},
             {"path": "/internal/tenancy/members", "tier": "internal", "method": "GET"},
+            {"path": "/internal/tenancy/seed-owner", "tier": "internal", "method": "POST"},
             {"path": "/internal/ratelimit/unblock", "tier": "internal", "method": "POST"},
             {"path": "/api/v1/auth/person/claim", "tier": "user", "method": "POST"},
             {"path": "/api/v1/auth/person/login", "tier": "user", "method": "POST"},

@@ -125,6 +125,16 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "why": "changing a member's roles changes what power they hold in the tenant; an "
                "unattributable elevation is indistinguishable from an attacker's, exactly like a grant",
     },
+    {
+        "action": "tenant.owner_seeded",
+        "source": "internal",
+        "critical": True,
+        "resource": "tenant",
+        "why": "seeding a tenant's FIRST owner is the most consequential grant this service makes — "
+               "it hands the keys to a whole organisation to a human, over a service-to-service "
+               "call, with nobody already inside to witness it. An owner nobody can account for is "
+               "exactly what an attacker wants, so the grant is refused if it cannot be recorded",
+    },
 
     # ── internal: service-to-service, in no panel and no catalog ─────────────
     {

@@ -175,3 +175,64 @@ async def internal_members(request: Request, tenant: str = Query(..., min_length
     page = min(limit or s.IDENTITY_MEMBERS_PAGE_SIZE, s.IDENTITY_MEMBERS_MAX_PAGE_SIZE)
     store = MembershipStore(request.app.state.container.datastore)
     return await list_members_of(store, tenant, page, after)
+
+
+class SeedOwnerIn(BaseModel):
+    tenant: str = Field(min_length=1, max_length=128)
+    identifier: str = Field(min_length=1, max_length=320)
+    roles: list[str] = Field(default_factory=lambda: ["owner"], max_length=32)
+    # Empty means "the configured members-write cap" — the route fills it in. A caller may pass more.
+    caps: list[str] = Field(default_factory=list, max_length=64)
+    password: str | None = Field(default=None, max_length=1024)
+    only_if_empty: bool = True
+
+
+@router.post("/tenancy/seed-owner", status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_internal_token)])
+async def seed_owner(request: Request, body: SeedOwnerIn) -> dict:
+    """Bootstrap a tenant's FIRST owner as a Person, over the internal token.
+
+    The chicken-and-egg breaker: a freshly provisioned tenant has nobody holding members:write, so
+    no USER route can add the first admin. This service-to-service door does — guarded so it stays a
+    bootstrap primitive, not a grant backdoor: the owner must hold the members-write cap, and
+    `only_if_empty` refuses a DIFFERENT owner on an already-staffed tenant. Idempotent; reuses an
+    existing Person without touching their credential (T2).
+
+    Audited WRITE-AHEAD and CRITICAL: an owner grant that cannot be recorded must not happen — an
+    unattributable owner is exactly what an attacker wants. The seeded human is recorded as a
+    PSEUDONYM, never the raw identifier, so the trail is provable (resolve it here) yet erasable.
+    """
+    from app.api.v1.auth import _svc
+    from app.core.auth_service import CredentialNotYours, SeedError, WeakPassword
+    from app.core.pii import subject_ref
+    from app.core.tenancy import TenantAccessDenied
+
+    s = get_settings()
+    if not s.IDENTITY_MULTI_TENANT:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "MULTI_TENANT_OFF")
+    write_cap = s.IDENTITY_MEMBERS_WRITE_CAP
+    caps = list(body.caps) or [write_cap]
+    owner_ref = subject_ref(s.PII_SALT, body.tenant, body.identifier) if s.PII_SALT else ""
+
+    async def _audit_write_ahead() -> None:
+        # CRITICAL (declared in auditable_actions): if this raises AuditUnavailable, seed_owner
+        # aborts before any grant. Records the tenant + a PSEUDONYM of the seeded human + the roles —
+        # never the raw identifier and never the credential.
+        await request.app.state.auditor.record(
+            "tenant.owner_seeded", actor="", tenant=body.tenant, resource=f"tenant:{body.tenant}",
+            ip=request.client.host if request.client else "",
+            metadata={"owner_ref": owner_ref, "roles": ",".join(body.roles)})
+
+    try:
+        return await _svc(request).seed_owner(
+            body.tenant, body.identifier, roles=body.roles, caps=caps, password=body.password,
+            invite_ttl=s.IDENTITY_INVITE_TTL_SECONDS, only_if_empty=body.only_if_empty,
+            write_cap=write_cap, on_commit=_audit_write_ahead)
+    except SeedError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except CredentialNotYours:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "CANNOT_SET_EXISTING_PERSON_CREDENTIAL")
+    except WeakPassword:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "WEAK_PASSWORD")
+    except TenantAccessDenied:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "TENANT_ACCESS_DENIED")
