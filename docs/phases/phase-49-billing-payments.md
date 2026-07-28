@@ -118,15 +118,20 @@ signature carries no `currency` at all, so no adapter CAN get it right.
 
 ## Tasks
 
-- [ ] **49.4** Fix the HyperPay webhook: AES-256-GCM decrypt + verify (auth tag), map result codes,
+- [x] **49.4** Fix the HyperPay webhook: AES-256-GCM decrypt + verify (auth tag), map result codes,
   no-key ⇒ verified=False with a reason. Mutation-test: a tampered tag must be refused. *(Priority —
   it is a live security/reconciliation bug.)*
-- [ ] **49.5** Fix refund currency: add `currency` to the `refund` port + all adapters + callers;
+- [x] **49.5** Fix refund currency: add `currency` to the `refund` port + all adapters + callers;
   test the 3-dp case.
-- [ ] **49.1** Runtime per-tenant gateway driver: `RUNTIME_POLICY` + `rebuild_gateway`/resolver read
+- [x] **49.1** Runtime per-tenant gateway driver: `RUNTIME_POLICY` + `rebuild_gateway`/resolver read
   the override, cache-keyed on `(tenant, driver, creds-gen)`, fail-closed on an unconfigured driver.
-- [ ] **49.3** Auto-reactivate on payment: hook `_mark_paid` (paused → active), runtime knob
+- [x] **49.3** Auto-reactivate on payment: hook `_mark_paid` (paused → active), runtime knob
   `BILLING_AUTO_REACTIVATE`, idempotent, event emitted; test every paid path.
-- [ ] **49.2** Checkout session: `prepare_checkout` port + HyperPay/Geidea adapters + customer route
+- [x] **49.2** Checkout session: `prepare_checkout` port + HyperPay/Geidea adapters + customer route
   returning `{id, provider, redirect_url, widget}` (never a key), unsupported fallback, completion via
   `_mark_paid`.
+
+
+---
+
+**Phase 49 complete.** Two payment bugs fixed (HyperPay webhook now verifies via AES-256-GCM; refund carries the currency so 3-dp currencies are no longer refunded 10x) and three features shipped (runtime per-tenant gateway switch, fail-closed; auto-reactivate on payment from every paid path; customer checkout-session that never proxies a key). The payment layer stays general and plug-and-play, with one money truth in _mark_paid. billing 584 tests green.
