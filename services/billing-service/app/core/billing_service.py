@@ -665,6 +665,17 @@ class BillingService:
             await self._events.emit(_events.INVOICE_PAID, payload)
             await self._events.emit(_events.PAYMENT_SUCCEEDED, payload)
 
+        # AUTO-REACTIVATE: a subscription paused for non-payment reopens the instant the money lands,
+        # from EVERY paid path (this is the one place all three converge), no manual reactivate. Only
+        # `paused → active` — reactivate refuses a canceled or already-active subscription, so a
+        # customer who left is not resumed. Idempotent: re-delivery finds it already active and the
+        # allowed-from guard makes the second call a no-op. Last, so a paid invoice is fully recorded
+        # before the subscription changes state.
+        if self._cfg.get("auto_reactivate", True) and inv.subscription_id:
+            sub = await self._subs.fetch(inv.subscription_id)
+            if sub is not None and sub.status == "paused":
+                await self.reactivate(inv.subscription_id)
+
     # ── off-gateway settlement (Phase 27) ───────────────────────────────────────
     async def settle(self, *, invoice_id: str, method: str, reference: str, amount_minor: int,
                      paid_at: float, issuer: str = "", currency: str = "", actor: str = "",

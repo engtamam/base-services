@@ -236,6 +236,10 @@ class Settings(BaseSettings):
     CYCLE_LEAD_SECONDS: int = 0
     DUNNING_MAX_ATTEMPTS: int = 4
     GRACE_DAYS: int = 7
+    # When a paused subscription's invoice is paid (card, webhook or off-gateway settle), reactivate
+    # it automatically — the standard reopens the instant the money lands, no manual reactivate.
+    # Runtime-editable per tenant (RUNTIME_POLICY); read at the point of use in _mark_paid.
+    BILLING_AUTO_REACTIVATE: bool = True
 
     # ── entitlement resolution (Phase 42) ─────────────────────────────────────
     # A tenant's entitlements are the UNION of everything they pay for. Resolution used to read

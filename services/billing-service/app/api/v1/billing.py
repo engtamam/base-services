@@ -75,6 +75,17 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
         gateway = await resolver.gateway(
             tenant, lambda resolved, boot: rebuild_gateway(s, resolved, boot, driver=driver),
             c.payment_gateway, cache_key_extra=driver)
+    # Auto-reactivate policy — per tenant, runtime-editable, read at the point of use.
+    auto_reactivate = bool(s.BILLING_AUTO_REACTIVATE)
+    rc = getattr(request.app.state, "runtime_config", None)
+    if rc is not None:
+        try:
+            v = await rc.get(tenant=tenant, key="BILLING_AUTO_REACTIVATE",
+                             default=auto_reactivate)
+            auto_reactivate = (v.strip().lower() not in ("false", "0", "no", "off", "")
+                               if isinstance(v, str) else bool(v))
+        except Exception:  # noqa: BLE001 — a config read must never break a charge
+            auto_reactivate = bool(s.BILLING_AUTO_REACTIVATE)
     return BillingService(
         plans=PlanStore(c.datastore, c.cache), coupons=CouponStore(c.datastore),
         subs=SubscriptionStore(c.datastore, c.cache),
@@ -97,6 +108,7 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
                 "grant_fund": s.WALLET_GRANT_FUND,
                 "plan_credit_limit_key": s.PLAN_CREDIT_LIMIT_KEY,
                 "plan_credit_grant_mode": s.PLAN_CREDIT_GRANT_MODE,
+                "auto_reactivate": auto_reactivate,
                 # Entitlement resolution (Phase 42). Required by EntitlementResolver —
                 # every default lives in config.py, never inline at a call site.
                 "billable_statuses": s.billable_statuses,

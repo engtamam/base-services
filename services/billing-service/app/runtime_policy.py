@@ -15,4 +15,4 @@ from __future__ import annotations
 # app/api/v1/billing.py's build_billing (via RuntimeConfig) and applied by container.rebuild_gateway,
 # which is the promise this file makes. A switch to a driver that is not configured fails CLOSED (a
 # gateway whose charge raises GatewayUnavailable) rather than charging through the boot provider.
-RUNTIME_POLICY: frozenset[str] = frozenset({"PAYMENT_GATEWAY_DRIVER"})
+RUNTIME_POLICY: frozenset[str] = frozenset({"PAYMENT_GATEWAY_DRIVER", "BILLING_AUTO_REACTIVATE"})
