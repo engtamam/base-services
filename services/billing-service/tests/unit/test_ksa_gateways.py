@@ -93,3 +93,78 @@ def test_aps_requires_three_credentials():
 def test_both_registered():
     from app.container import _PAYMENT
     assert {"geidea", "aps", "recording"} <= set(_PAYMENT)
+
+
+# ── HyperPay webhook: AES-256-GCM decrypt-and-verify (the tag IS the auth) ────────
+import app.adapters.payment.hyperpay as HP  # noqa: E402
+
+
+def _hp_webhook(payload: dict, key_hex: str, *, iv: bytes = b"\x00" * 16):
+    """Build a real HyperPay-shaped encrypted webhook: hex body + IV/tag headers."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    plaintext = json.dumps(payload).encode("utf-8")
+    out = AESGCM(bytes.fromhex(key_hex)).encrypt(iv, plaintext, None)
+    ciphertext, tag = out[:-16], out[-16:]
+    headers = {"X-Initialization-Vector": iv.hex(), "X-Authentication-Tag": tag.hex()}
+    return headers, ciphertext.hex().encode("ascii")
+
+
+_KEY = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"  # 32 bytes = AES-256
+_PAYLOAD = {"type": "PAYMENT",
+            "payload": {"id": "8ac7a4a1pay01", "paymentType": "DB",
+                        "merchantTransactionId": "inv_42",
+                        "result": {"code": "000.100.110", "description": "ok"}}}
+
+
+def test_hyperpay_webhook_verifies_and_maps_success():
+    gw = HP.HyperPayGateway("apikey", extra_id="ent1", webhook_secret=_KEY)
+    headers, body = _hp_webhook(_PAYLOAD, _KEY)
+    ev = gw.verify_webhook(headers=headers, body=body, secret=_KEY)
+    assert ev.verified is True and ev.type == "payment.succeeded"
+    assert ev.provider_id == "8ac7a4a1pay01"
+    assert ev.raw["merchant_transaction_id"] == "inv_42"
+
+
+def test_hyperpay_webhook_maps_decline_and_refund():
+    gw = HP.HyperPayGateway("apikey", extra_id="ent1", webhook_secret=_KEY)
+    decl = {"type": "PAYMENT", "payload": {"id": "p", "result": {"code": "800.100.100"}}}
+    h, b = _hp_webhook(decl, _KEY)
+    assert gw.verify_webhook(headers=h, body=b, secret=_KEY).type == "payment.failed"
+    rf = {"type": "PAYMENT", "payload": {"id": "p", "paymentType": "RF",
+                                         "result": {"code": "000.000.000"}}}
+    h, b = _hp_webhook(rf, _KEY)
+    assert gw.verify_webhook(headers=h, body=b, secret=_KEY).type == "refund"
+
+
+def test_hyperpay_webhook_refuses_a_tampered_tag():
+    """The security property: a flipped auth tag fails GCM verification — verified=False, no crash."""
+    gw = HP.HyperPayGateway("apikey", extra_id="ent1", webhook_secret=_KEY)
+    headers, body = _hp_webhook(_PAYLOAD, _KEY)
+    bad = bytearray(bytes.fromhex(headers["X-Authentication-Tag"])); bad[0] ^= 0x01
+    headers["X-Authentication-Tag"] = bad.hex()
+    ev = gw.verify_webhook(headers=headers, body=body, secret=_KEY)
+    assert ev.verified is False
+
+
+def test_hyperpay_webhook_refuses_a_tampered_body():
+    gw = HP.HyperPayGateway("apikey", extra_id="ent1", webhook_secret=_KEY)
+    headers, body = _hp_webhook(_PAYLOAD, _KEY)
+    ba = bytearray(bytes.fromhex(body.decode())); ba[0] ^= 0x01
+    ev = gw.verify_webhook(headers=headers, body=ba.hex().encode(), secret=_KEY)
+    assert ev.verified is False
+
+
+def test_hyperpay_webhook_refuses_a_wrong_key():
+    gw = HP.HyperPayGateway("apikey", extra_id="ent1", webhook_secret=_KEY)
+    headers, body = _hp_webhook(_PAYLOAD, _KEY)
+    other = "ff" * 32
+    assert gw.verify_webhook(headers=headers, body=body, secret=other).verified is False
+
+
+def test_hyperpay_webhook_no_key_or_headers_is_unverified_not_a_pass():
+    gw = HP.HyperPayGateway("apikey", extra_id="ent1", webhook_secret="")
+    headers, body = _hp_webhook(_PAYLOAD, _KEY)
+    # no key configured
+    assert gw.verify_webhook(headers=headers, body=body, secret="").verified is False
+    # missing the IV/tag headers
+    assert gw.verify_webhook(headers={}, body=body, secret=_KEY).verified is False

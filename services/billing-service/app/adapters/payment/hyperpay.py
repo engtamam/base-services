@@ -50,6 +50,49 @@ class HyperPayGateway:
                       provider_id=str(resp.get("id", provider_id)))
 
     def verify_webhook(self, *, headers, body, secret):
-        # HyperPay webhooks are AES-encrypted; decryption is deployment-specific.
-        # We surface the event unverified for the caller to reconcile via GET status.
-        return WebhookEvent(verified=False, type="unknown")
+        """Decrypt-and-verify a HyperPay (OPP) webhook.
+
+        HyperPay does not sign its webhooks — it ENCRYPTS them with AES-256-GCM: the body is hex
+        ciphertext, the IV is in `X-Initialization-Vector` and the GCM auth tag in
+        `X-Authentication-Tag` (both hex), decrypted with the configured webhook key (hex). The GCM
+        auth tag IS the verification: a wrong key or a tampered body fails the tag, so `verified`
+        is True only when the decryption succeeds. No key configured is `verified=False` with a
+        reason — never a silent pass, which is the one outcome a payment webhook must not have.
+        """
+        key_hex = secret or self._whsec
+        if not key_hex:
+            return WebhookEvent(verified=False, type="unknown",
+                                raw={"error": "no webhook key configured (PAYMENT_WEBHOOK_SECRET)"})
+        h = {str(k).lower(): v for k, v in (headers or {}).items()}
+        iv_hex = h.get("x-initialization-vector", "")
+        tag_hex = h.get("x-authentication-tag", "")
+        if not iv_hex or not tag_hex:
+            return WebhookEvent(verified=False, type="unknown",
+                                raw={"error": "missing X-Initialization-Vector / X-Authentication-Tag"})
+        try:
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+            raw = body.decode("ascii") if isinstance(body, (bytes, bytearray)) else str(body)
+            ciphertext = bytes.fromhex(raw.strip())
+            tag = bytes.fromhex(tag_hex.strip())
+            # AESGCM.decrypt expects ciphertext||tag and verifies the tag — InvalidTag on mismatch.
+            plaintext = AESGCM(bytes.fromhex(key_hex.strip())).decrypt(
+                bytes.fromhex(iv_hex.strip()), ciphertext + tag, None)
+        except Exception as exc:  # noqa: BLE001 — bad hex, wrong key, or a tampered body: unverified
+            return WebhookEvent(verified=False, type="unknown", raw={"error": type(exc).__name__})
+
+        import json
+        try:
+            data = json.loads(plaintext.decode("utf-8"))
+        except Exception:  # noqa: BLE001 — verified bytes that are not the JSON we expect
+            return WebhookEvent(verified=False, type="unknown", raw={"error": "decrypted body is not JSON"})
+
+        payload = data.get("payload") or {}
+        code = str((payload.get("result") or {}).get("code", ""))
+        ok, _ = self._result_ok({"result": {"code": code}})
+        kind = "refund" if str(payload.get("paymentType", "")).upper() == "RF" else (
+            "payment.succeeded" if ok else "payment.failed")
+        return WebhookEvent(
+            verified=True, type=kind, provider_id=str(payload.get("id", "")),
+            # A small projection, not the whole card-bearing payload: enough to reconcile.
+            raw={"result_code": code,
+                 "merchant_transaction_id": str(payload.get("merchantTransactionId", ""))})
