@@ -184,6 +184,24 @@ def test_the_zatca_qr_is_embedded_when_the_einvoicer_returned_one():
     assert _image_count(without) == 0, "an image appeared with no QR to draw"
 
 
+# ── premium bilingual presentation ────────────────────────────────────────────
+def test_the_masthead_band_names_the_seller_and_the_amount_due_is_labelled():
+    text = _text(ReportLabPdf().render(_invoice())[1])
+    assert "Nadeem Technologies" in text, "the seller name is missing from the masthead band"
+    assert "TOTAL DUE" in text, "the amount-due panel is not labelled"
+    assert "TAX INVOICE" in text
+
+
+def test_a_brand_accent_hex_is_parsed_and_a_bad_one_falls_back():
+    from app.adapters.pdf.reportlab_renderer import _ACCENT, _hex_rgb
+    assert _hex_rgb("#0F5F4E", _ACCENT) == (15 / 255, 95 / 255, 78 / 255)
+    assert _hex_rgb("not-a-colour", _ACCENT) == _ACCENT
+    assert _hex_rgb("", _ACCENT) == _ACCENT
+    # a branded renderer still produces a valid document
+    r = ReportLabPdf(brand={"name": "X", "accent": "#8A1538"})
+    assert r.render(_invoice())[0] == "application/pdf"
+
+
 def test_a_named_buyer_prints_the_name_not_the_tenant_id():
     text = _text(ReportLabPdf().render(_invoice(
         tenant="3477400ca907440297631def92b27a07",

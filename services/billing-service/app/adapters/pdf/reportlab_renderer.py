@@ -56,6 +56,21 @@ _INK = (0.11, 0.12, 0.14)
 _MUTED = (0.42, 0.45, 0.50)
 _HAIRLINE = (0.85, 0.86, 0.88)
 _BAND = (0.96, 0.965, 0.97)
+# One accent, used only where it earns attention: the masthead band and the amount due. A premium
+# document is disciplined, not colourful. Overridable per brand (a hex string like "#0F5F4E").
+_ACCENT = (0.06, 0.36, 0.30)
+_ACCENT_WASH = (0.93, 0.955, 0.95)
+
+
+def _hex_rgb(value: str, fallback: tuple[float, float, float]) -> tuple[float, float, float]:
+    """A brand hex colour (#RRGGBB) as 0–1 RGB, or the fallback if it is absent or malformed."""
+    s = str(value or "").strip().lstrip("#")
+    if len(s) != 6:
+        return fallback
+    try:
+        return tuple(int(s[i:i + 2], 16) / 255 for i in (0, 2, 4))  # type: ignore[return-value]
+    except ValueError:
+        return fallback
 
 
 def _shape(text: str) -> str:
@@ -113,6 +128,8 @@ class ReportLabPdf:
         # Arabic one cannot. The Arabic face is used only for Arabic runs — see _ar().
         self._font = "Helvetica"
         self._arabic = self._register_font()
+        # The accent is a brand choice; a malformed value falls back rather than breaking the page.
+        self._accent = _hex_rgb((self._brand.get("accent") or ""), _ACCENT)
 
     # ── font ──────────────────────────────────────────────────────────────────
     def _register_font(self) -> str | None:
@@ -141,23 +158,33 @@ class ReportLabPdf:
         base = ss.getSampleStyleSheet()
         ink = colors.Color(*_INK)
         muted = colors.Color(*_MUTED)
+        accent = colors.Color(*self._accent)
+        paper = colors.Color(1, 1, 1)
 
-        def style(name, size, leading, color=ink, bold=False, align=0, space_after=0):
-            return ss.ParagraphStyle(
+        def style(name, size, leading, color=ink, bold=False, align=0, space_after=0, tracking=0):
+            s = ss.ParagraphStyle(
                 name, parent=base["Normal"], fontName=self._font, fontSize=size,
                 leading=leading, textColor=color, alignment=align, spaceAfter=space_after)
+            if tracking:
+                s.charSpace = tracking          # letter-spacing on the small-caps labels
+            return s
 
         return {
             "title": style("t", 22, 26, ink, space_after=2),
+            "brand": style("br", 15, 18, paper),             # reversed out on the accent band
+            "brand_r": style("brr", 9, 13, paper, align=2),  # the Arabic mirror on the band
             "sub": style("s", 9.5, 13, muted),
-            "label": style("l", 7.5, 10, muted),
+            "label": style("l", 7.5, 10, muted, tracking=0.6),
+            "label_r": style("lr", 7.5, 10, muted, align=2, tracking=0.6),
             "value": style("v", 10, 14, ink),
             "value_r": style("vr", 10, 14, ink, align=2),
-            "th": style("th", 8, 11, muted),
-            "th_r": style("thr", 8, 11, muted, align=2),
+            "th": style("th", 8, 11, muted, tracking=0.4),
+            "th_r": style("thr", 8, 11, muted, align=2, tracking=0.4),
             "cell": style("c", 9.5, 13, ink),
             "cell_r": style("cr", 9.5, 13, ink, align=2),
             "total": style("tot", 13, 17, ink, align=2),
+            "due_label": style("dl", 9, 12, paper),
+            "due": style("due", 15, 19, paper, align=2),
             "foot": style("f", 7.5, 10, muted, align=1),
         }
 
@@ -180,6 +207,24 @@ class ReportLabPdf:
         except Exception as exc:  # noqa: BLE001
             _log.warning("invoice_qr_render_failed", extra={"error": type(exc).__name__})
             return None
+
+    def _brand_band(self, st, colors, seller: dict, kind_en: str, kind_ar: str):
+        """A full-width accent masthead: the seller's name reversed out on the brand colour, with the
+        invoice KIND named in both languages — English on the left, Arabic mirrored on the right. It
+        is the single strongest 'this is a real, premium document' signal, and it costs one table."""
+        name = _safe(seller.get("name", self._brand.get("name", "")))
+        band = self._rl.Table(
+            [[[self._rl.Paragraph(name, st["brand"]),
+               self._rl.Paragraph(_safe(kind_en), st["due_label"])],
+              [self._rl.Paragraph(_ar(kind_ar, self._arabic), st["brand_r"])]]],
+            colWidths=[300, 199])
+        band.setStyle(self._rl.TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.Color(*self._accent)),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (0, 0), 18), ("RIGHTPADDING", (-1, 0), (-1, 0), 18),
+            ("TOPPADDING", (0, 0), (-1, -1), 14), ("BOTTOMPADDING", (0, 0), (-1, -1), 14),
+        ]))
+        return band
 
     def _party_block(self, st, title_en: str, title_ar: str, party: dict) -> list:
         rows = [[self._rl.Paragraph(f"{_safe(title_en)} · {_ar(title_ar, self._arabic)}", st["label"])]]
@@ -254,16 +299,24 @@ class ReportLabPdf:
 
         data = [[self._rl.Paragraph(f"{_safe(en)} · {ar}", st["sub"]),
                  self._rl.Paragraph(val, st["value_r"])] for en, ar, val in rows]
-        data.append([self._rl.Paragraph(f"TOTAL · {_ar('الإجمالي', self._arabic)}", st["label"]),
-                     self._rl.Paragraph(money(invoice.get("total_minor", 0), cur), st["total"])])
+        # The amount due is the one number that matters, so it gets the accent — a filled panel with
+        # the total reversed out, labelled in both languages ("TOTAL DUE / الإجمالي المستحق").
+        data.append([self._rl.Paragraph(
+                         f"TOTAL DUE · {_ar('الإجمالي المستحق', self._arabic)}", st["due_label"]),
+                     self._rl.Paragraph(money(invoice.get("total_minor", 0), cur), st["due"])])
 
         table = self._rl.Table(data, colWidths=[190, 128], hAlign="RIGHT")
         table.setStyle(self._rl.TableStyle([
             ("FONTNAME", (0, 0), (-1, -1), self._font),
-            ("TOPPADDING", (0, 0), (-1, -1), 5),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-            ("LINEABOVE", (0, -1), (-1, -1), 0.9, colors.Color(*_INK)),
-            ("TOPPADDING", (0, -1), (-1, -1), 9),
+            ("TOPPADDING", (0, 0), (-1, -2), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -2), 5),
+            # The grand-total panel.
+            ("BACKGROUND", (0, -1), (-1, -1), colors.Color(*self._accent)),
+            ("TOPPADDING", (0, -1), (-1, -1), 10),
+            ("BOTTOMPADDING", (0, -1), (-1, -1), 10),
+            ("LEFTPADDING", (0, -1), (0, -1), 12),
+            ("RIGHTPADDING", (-1, -1), (-1, -1), 12),
+            ("VALIGN", (0, -1), (-1, -1), "MIDDLE"),
         ]))
         return table
 
@@ -287,16 +340,19 @@ class ReportLabPdf:
             story: list = []
             P = self._rl.Paragraph
 
-            # Masthead: the document says what it IS in both languages, because ZATCA requires the
-            # Arabic title and a buyer is entitled to know which kind of invoice they hold.
+            # The masthead is a full-width accent band naming the seller and the invoice KIND in both
+            # languages — ZATCA requires the Arabic title, and the band is what makes the document
+            # read as premium rather than a printout.
+            story += [self._brand_band(st, colors, seller, kind_en, kind_ar),
+                      self._rl.Spacer(1, 16)]
+
+            # Beneath it, the invoice's own identity: number and issue date, quietly.
             head = self._rl.Table([[
-                [P(_safe(seller.get("name", self._brand.get("name", ""))), st["title"]),
-                 P(_safe(kind_en), st["sub"]),
-                 P(_ar(kind_ar, self._arabic), st["sub"])],
-                [P("INVOICE No.", st["label"]), P(_safe(invoice.get("number", "")), st["value"]),
-                 P("ISSUED", st["label"]),
+                [P("INVOICE No. · " + _ar("رقم الفاتورة", self._arabic), st["label"]),
+                 P(_safe(invoice.get("number", "")), st["value"])],
+                [P("ISSUED · " + _ar("تاريخ الإصدار", self._arabic), st["label_r"]),
                  P(_safe(issued(invoice.get("created", "") or invoice.get("paid_at", ""))),
-                   st["sub"])],
+                   st["value_r"])],
             ]], colWidths=[300, 199])
             head.setStyle(self._rl.TableStyle([
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
