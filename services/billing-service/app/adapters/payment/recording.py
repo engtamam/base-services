@@ -16,7 +16,7 @@ class RecordingGateway:
                       provider_id="rec_" + idempotency_key[:12], amount_minor=amount_minor,
                       currency=currency, error="recording mode — no live settlement")
 
-    def refund(self, *, provider_id, amount_minor=None):
+    def refund(self, *, provider_id, amount_minor=None, currency="SAR"):
         return Charge(ok=False, status="pending", provider="recording", provider_id=provider_id)
 
     def verify_webhook(self, *, headers, body, secret):

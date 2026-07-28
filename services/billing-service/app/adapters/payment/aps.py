@@ -55,10 +55,10 @@ class ApsGateway:
                       provider_id=str(resp.get("fort_id", "")), amount_minor=int(amount_minor),
                       currency=currency, error="" if ok else str(resp.get("response_message", "declined")))
 
-    def refund(self, *, provider_id, amount_minor=None):
+    def refund(self, *, provider_id, amount_minor=None, currency="SAR"):
         resp = self._post({"command": "REFUND", "access_code": self._access,
                            "merchant_identifier": self._merchant, "fort_id": provider_id,
-                           "amount": str(int(amount_minor or 0)), "currency": "SAR", "language": "en"})
+                           "amount": str(int(amount_minor or 0)), "currency": currency.upper(), "language": "en"})
         ok = str(resp.get("status", "")) == _REFUND_OK
         return Charge(ok=ok, status="refunded" if ok else "failed", provider="aps",
                       provider_id=str(resp.get("fort_id", provider_id)))

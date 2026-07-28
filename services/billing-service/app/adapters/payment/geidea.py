@@ -45,10 +45,10 @@ class GeideaGateway:
                       amount_minor=int(amount_minor), currency=currency,
                       error="" if ok else str(resp.get("responseMessage", self._code(resp))))
 
-    def refund(self, *, provider_id, amount_minor=None):
+    def refund(self, *, provider_id, amount_minor=None, currency="SAR"):
         body = {"orderId": provider_id}
         if amount_minor is not None:
-            body["amount"] = float(major(amount_minor, "SAR"))
+            body["amount"] = float(major(amount_minor, currency))
         code, resp = post_json(f"{self._base}/pgw/api/v1/direct/refund", body, self._h)
         if code == 0:
             raise GatewayUnavailable("Geidea unreachable")

@@ -39,9 +39,9 @@ class PayPalGateway:
                       provider_id=str(resp.get("id", token)), amount_minor=int(amount_minor),
                       currency=currency, error="" if ok else str(resp.get("status", "failed")))
 
-    def refund(self, *, provider_id, amount_minor=None):
+    def refund(self, *, provider_id, amount_minor=None, currency="SAR"):
         body = {} if amount_minor is None else {
-            "amount": {"value": major(amount_minor), "currency_code": "SAR"}}
+            "amount": {"value": major(amount_minor, currency), "currency_code": currency.upper()}}
         code, resp = post_json(f"{self._base}/v2/payments/captures/{provider_id}/refund", body,
                                {"Authorization": bearer(self._token())})
         if code == 0:

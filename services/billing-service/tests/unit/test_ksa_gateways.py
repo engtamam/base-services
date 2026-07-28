@@ -168,3 +168,21 @@ def test_hyperpay_webhook_no_key_or_headers_is_unverified_not_a_pass():
     assert gw.verify_webhook(headers=headers, body=body, secret="").verified is False
     # missing the IV/tag headers
     assert gw.verify_webhook(headers={}, body=body, secret=_KEY).verified is False
+
+
+# ── refund currency precision: a 3-dp currency must not be formatted as 2-dp (10x bug) ──
+def test_geidea_refund_uses_the_real_currency_exponent():
+    seen = {}
+    G.post_json = lambda u, b, h=None: (seen.update(b=b) or (200, {"responseCode": "000",
+                                                                   "order": {"orderId": "r1"}}))
+    # 1500 minor KWD = 1.500 KWD (3-dp). The SAR-default bug would send 15.00.
+    G.GeideaGateway("k", extra_secret="p").refund(provider_id="p1", amount_minor=1500, currency="KWD")
+    assert seen["b"]["amount"] == 1.5, "3-dp currency refunded with the wrong exponent"
+
+
+def test_hyperpay_refund_uses_the_real_currency_exponent():
+    seen = {}
+    HP.post_form = lambda u, f, h=None: (seen.update(f=f) or (200, {"id": "r1",
+                                                                    "result": {"code": "000.000.000"}}))
+    HP.HyperPayGateway("k", extra_id="e").refund(provider_id="p1", amount_minor=1500, currency="KWD")
+    assert seen["f"]["amount"] == "1.500", "HyperPay refund formatted a 3-dp currency as 2-dp"

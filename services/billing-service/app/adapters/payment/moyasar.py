@@ -32,7 +32,7 @@ class MoyasarGateway:
                       amount_minor=int(amount_minor), currency=currency,
                       error="" if status in _OK else str((resp.get("source") or {}).get("message", status)))
 
-    def refund(self, *, provider_id, amount_minor=None):
+    def refund(self, *, provider_id, amount_minor=None, currency="SAR"):
         fields = {} if amount_minor is None else {"amount": int(amount_minor)}
         code, resp = post_form(f"{self._base}/v1/payments/{provider_id}/refund", fields, self._h)
         if code == 0:

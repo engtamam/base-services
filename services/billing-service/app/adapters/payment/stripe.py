@@ -38,7 +38,7 @@ class StripeGateway:
                       amount_minor=int(amount_minor), currency=currency,
                       error="" if status in _OK else str((resp.get("last_payment_error") or {}).get("message", status)))
 
-    def refund(self, *, provider_id, amount_minor=None):
+    def refund(self, *, provider_id, amount_minor=None, currency="SAR"):
         fields = {"payment_intent": provider_id}
         if amount_minor is not None:
             fields["amount"] = int(amount_minor)

@@ -32,7 +32,7 @@ class CheckoutGateway:
                       amount_minor=int(amount_minor), currency=currency,
                       error="" if status in _OK else str(resp.get("response_summary", status)))
 
-    def refund(self, *, provider_id, amount_minor=None):
+    def refund(self, *, provider_id, amount_minor=None, currency="SAR"):
         body = {} if amount_minor is None else {"amount": int(amount_minor)}
         code, resp = post_json(f"{self._base}/payments/{provider_id}/refunds", body, self._h)
         if code == 0:

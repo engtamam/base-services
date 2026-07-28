@@ -49,7 +49,11 @@ class PaymentGateway(Protocol):
                idempotency_key: str, description: str = "", metadata: dict | None = None) -> Charge:
         ...
 
-    def refund(self, *, provider_id: str, amount_minor: int | None = None) -> Charge:
+    def refund(self, *, provider_id: str, amount_minor: int | None = None,
+               currency: str = "SAR") -> Charge:
+        # `currency` is REQUIRED for a partial refund: the amount is formatted to the currency's real
+        # precision (KWD/BHD/OMR = 3-dp), and a wrong exponent refunds 10x the intended amount. A
+        # full refund (amount_minor=None) does not use it.
         ...
 
     def verify_webhook(self, *, headers: dict[str, str], body: bytes, secret: str) -> WebhookEvent:

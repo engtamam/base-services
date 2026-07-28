@@ -1026,7 +1026,8 @@ class BillingService:
         pay = await self._payments.fetch(payment_id)
         if pay is None:
             return {"ok": False, "reason": "NOT_FOUND"}
-        charge = self._gw.refund(provider_id=pay.provider_id, amount_minor=amount_minor)
+        charge = self._gw.refund(provider_id=pay.provider_id, amount_minor=amount_minor,
+                                 currency=pay.currency)
         if charge.ok:
             pay.status = "refunded"
             await self._payments.save(pay)

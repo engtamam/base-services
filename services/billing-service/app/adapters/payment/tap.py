@@ -32,10 +32,10 @@ class TapGateway:
                       amount_minor=int(amount_minor), currency=currency,
                       error="" if status in _OK else str((resp.get("response") or {}).get("message", status)))
 
-    def refund(self, *, provider_id, amount_minor=None):
+    def refund(self, *, provider_id, amount_minor=None, currency="SAR"):
         body = {"charge_id": provider_id, "reason": "requested_by_customer"}
         if amount_minor is not None:
-            body["amount"] = float(major(amount_minor, "SAR"))
+            body["amount"] = float(major(amount_minor, currency))
         code, resp = post_json(f"{self._base}/v2/refunds", body, self._h)
         if code == 0:
             raise GatewayUnavailable("Tap unreachable")

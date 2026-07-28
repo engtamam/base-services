@@ -38,10 +38,10 @@ class HyperPayGateway:
                       provider_id=str(resp.get("id", "")), amount_minor=int(amount_minor),
                       currency=currency, error="" if ok else rc)
 
-    def refund(self, *, provider_id, amount_minor=None):
+    def refund(self, *, provider_id, amount_minor=None, currency="SAR"):
         fields = {"entityId": self._entity, "paymentType": "RF"}
         if amount_minor is not None:
-            fields["amount"] = major(amount_minor)
+            fields["amount"] = major(amount_minor, currency)
         code, resp = post_form(f"{self._base}/v1/payments/{provider_id}", fields, self._h)
         if code == 0:
             raise GatewayUnavailable("HyperPay unreachable")

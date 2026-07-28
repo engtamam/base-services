@@ -36,10 +36,10 @@ class PayTabsGateway:
                       currency=currency,
                       error="" if ok else str((resp.get("payment_result") or {}).get("response_message", "declined")))
 
-    def refund(self, *, provider_id, amount_minor=None):
+    def refund(self, *, provider_id, amount_minor=None, currency="SAR"):
         body = {"profile_id": self._profile, "tran_type": "refund", "tran_class": "ecom",
-                "tran_ref": provider_id, "cart_id": provider_id, "cart_currency": "SAR",
-                "cart_amount": float(major(amount_minor or 0)), "cart_description": "refund"}
+                "tran_ref": provider_id, "cart_id": provider_id, "cart_currency": currency.upper(),
+                "cart_amount": float(major(amount_minor or 0, currency)), "cart_description": "refund"}
         code, resp = post_json(f"{self._base}/payment/request", body, self._h)
         if code == 0:
             raise GatewayUnavailable("PayTabs unreachable")
