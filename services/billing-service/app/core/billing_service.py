@@ -1075,5 +1075,18 @@ class BillingService:
                      reference=reference, return_url=return_url, metadata=metadata or {})
         return {"supported": True, **session.to_dict()}
 
-    def render_pdf(self, invoice: dict) -> tuple[str, bytes] | None:
-        return self._pdf.render(invoice)
+    async def render_pdf(self, inv: Invoice) -> tuple[str, bytes] | None:
+        # BILL TO must be a real party, not a database key. The buyer's legal identity lives on the
+        # subscription (name / VAT / CR), not on the invoice, so resolve it here rather than let the
+        # renderer fall back to printing the raw tenant id as if it were a name. A B2C invoice with
+        # no named buyer carries the tenant only as an ACCOUNT reference — honest, and ZATCA does not
+        # require a buyer name on a simplified invoice.
+        data = inv.to_dict()
+        buyer = await self._buyer_for(inv)
+        name = (buyer.get("name") or "").strip()
+        if name:
+            data["buyer"] = {k: v for k, v in buyer.items()
+                             if k in ("name", "vat_number", "cr_number", "address") and v}
+        else:
+            data["buyer"] = {"account": inv.tenant}
+        return self._pdf.render(data)

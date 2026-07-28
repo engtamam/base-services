@@ -184,6 +184,22 @@ def test_the_zatca_qr_is_embedded_when_the_einvoicer_returned_one():
     assert _image_count(without) == 0, "an image appeared with no QR to draw"
 
 
+def test_a_named_buyer_prints_the_name_not_the_tenant_id():
+    text = _text(ReportLabPdf().render(_invoice(
+        tenant="3477400ca907440297631def92b27a07",
+        buyer={"name": "Acme Trading Co", "vat_number": "300987654300003"}))[1])
+    assert "Acme Trading Co" in text
+    assert "3477400ca907440297631def92b27a07" not in text, "the raw tenant id was printed as a name"
+
+
+def test_an_unnamed_buyer_shows_the_tenant_as_an_account_reference_not_a_name():
+    """A B2C simplified invoice has no buyer name; the tenant id must appear as a labelled ACCOUNT
+    reference, never masquerading as a legal name in the BILL TO block."""
+    uid = "3477400ca907440297631def92b27a07"
+    text = _text(ReportLabPdf().render(_invoice(tenant=uid, buyer={"account": uid}))[1])
+    assert "Account" in text and uid in text
+
+
 def test_an_invoice_with_no_qr_still_renders():
     # Legitimate: the null e-invoicer, or a submission still pending.
     assert ReportLabPdf().render(_invoice(einvoice={"status": "skipped"})) is not None

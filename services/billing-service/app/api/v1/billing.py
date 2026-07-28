@@ -591,7 +591,7 @@ async def invoice_pdf(request: Request, invoice_id: str, principal: Principal = 
     if inv is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
     _guard(principal, inv.tenant)
-    rendered = svc.render_pdf(inv.to_dict())
+    rendered = await svc.render_pdf(inv)
     if rendered is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "PDF_UNAVAILABLE")
     ct, data = rendered

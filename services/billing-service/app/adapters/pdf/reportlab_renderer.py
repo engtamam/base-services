@@ -186,6 +186,12 @@ class ReportLabPdf:
         name = _safe(party.get("name", ""))
         if name:
             rows.append([self._rl.Paragraph(name, st["value"])])
+        elif party.get("account"):
+            # No named buyer (a simplified B2C invoice): show the tenant as an ACCOUNT reference,
+            # clearly labelled — never as a bare legal name, which a raw id is not.
+            rows.append([self._rl.Paragraph(
+                f"{_safe('Account')} · {_ar('الحساب', self._arabic)}", st["label"])])
+            rows.append([self._rl.Paragraph(_safe(party.get("account")), st["sub"])])
         for key, label in (("vat_number", "VAT"), ("cr_number", "CR"), ("address", "")):
             val = _safe(party.get(key, ""))
             if val:
@@ -302,7 +308,7 @@ class ReportLabPdf:
 
             parties = self._rl.Table(
                 [[self._party_block(st, "FROM", "من", seller),
-                  self._party_block(st, "BILL TO", "إلى", buyer or {"name": invoice.get("tenant", "")})]],
+                  self._party_block(st, "BILL TO", "إلى", buyer or {"account": invoice.get("tenant", "")})]],
                 colWidths=[250, 249])
             parties.setStyle(self._rl.TableStyle([
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
