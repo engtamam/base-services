@@ -126,30 +126,69 @@ from app.adapters.tax.null import NullTax
 from app.adapters.tax.vat import VatCalculator
 
 
-def rebuild_gateway(settings, resolved: dict, current):
-    """The payment gateway, rebuilt with operator-set credentials laid over the environment.
+class _UnconfiguredGateway:
+    """A tenant was switched to a payment driver that is not configured (unknown name, or missing
+    keys). Charging through the BOOT provider instead would put the money through the WRONG gateway,
+    which is the one thing a per-tenant switch must never do. So every operation raises
+    GatewayUnavailable — retryable by dunning — until the operator configures the chosen driver.
+    """
+    driver = "unconfigured"
 
-    Returns `current` unchanged when nothing is stored, so a deployment that has not migrated keeps
-    the exact object it built at boot. Falls back to `current` on any build failure too: a bad
-    stored key must not make every charge raise — the boot-built gateway is a working answer, and a
-    broken credential is an operator problem rather than a total payment outage.
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    def _fail(self):
+        from app.ports.payment_gateway import GatewayUnavailable
+        raise GatewayUnavailable(
+            f"gateway {self._name!r} is selected for this tenant but not configured — set its "
+            f"credentials, or change PAYMENT_GATEWAY_DRIVER for the tenant")
+
+    def charge(self, **_):
+        self._fail()
+
+    def refund(self, **_):
+        self._fail()
+
+    def verify_webhook(self, **_):
+        from app.ports.payment_gateway import WebhookEvent
+        return WebhookEvent(verified=False, type="unknown",
+                            raw={"error": f"gateway {self._name!r} not configured"})
+
+
+def rebuild_gateway(settings, resolved: dict, current, *, driver: str = ""):
+    """The payment gateway for a tenant: the chosen DRIVER with operator-set credentials over env.
+
+    `driver` is the tenant's runtime PAYMENT_GATEWAY_DRIVER (empty ⇒ the boot driver). Two failure
+    directions, deliberately different:
+
+      * SAME driver as boot, a bad/absent stored key ⇒ fall back to `current` (the boot gateway). A
+        broken credential is an operator problem, not a total payment outage, and the boot gateway is
+        a working answer for the provider this deployment actually runs.
+      * SWITCHED to a different driver that will not build ⇒ FAIL CLOSED with _UnconfiguredGateway,
+        NEVER `current`. Falling back to the boot provider would charge the wrong gateway — exactly
+        the mistake a per-tenant switch exists to make impossible.
     """
     from app.core.credentials import Overlay
 
-    # Only when a stored credential actually DIFFERS from the configured one. Equal values mean
-    # the boot-built gateway is already correct, and handing back a fresh object instead would
-    # discard whatever that gateway holds between calls for no benefit at all.
-    if all(v == (getattr(settings, k, "") or "") for k, v in resolved.items()):
+    driver = driver or settings.PAYMENT_GATEWAY_DRIVER
+    switched = driver != settings.PAYMENT_GATEWAY_DRIVER
+
+    # Nothing to change: same driver AND no stored credential differs from the configured one. Handing
+    # back a fresh object would discard whatever the boot gateway holds between calls for no benefit.
+    creds_same = all(v == (getattr(settings, k, "") or "") for k, v in resolved.items())
+    if not switched and creds_same:
         return current
-    driver = settings.PAYMENT_GATEWAY_DRIVER
+
     builder = _PAYMENT.get(driver)
     if builder is None:
-        return current
+        # Unknown driver name. A switch to it fails closed; the boot driver being unknown is a boot
+        # bug, so keep `current` there.
+        return _UnconfiguredGateway(driver) if switched else current
     try:
         return builder(Overlay(settings, resolved))
-    except Exception:  # noqa: BLE001 - GatewayUnavailable for a missing key, anything a client raises
-        _log.warning("gateway_rebuild_failed_using_boot_credentials", extra={"driver": driver})
-        return current
+    except Exception:  # noqa: BLE001 — GatewayUnavailable for a missing key, anything a client raises
+        _log.warning("gateway_rebuild_failed", extra={"driver": driver, "switched": switched})
+        return _UnconfiguredGateway(driver) if switched else current
 
 
 def _pay(cls):

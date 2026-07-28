@@ -61,8 +61,20 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
     resolver = getattr(request.app.state, "credentials", None)
     if resolver is not None:
         from app.container import rebuild_gateway
+        # The tenant's runtime provider choice (operator-settable via /operator/config), or the boot
+        # driver. Read at the point of use — the promise RUNTIME_POLICY makes — and folded into the
+        # gateway cache key so a switch takes effect on the next charge without a redeploy.
+        driver = s.PAYMENT_GATEWAY_DRIVER
+        rc = getattr(request.app.state, "runtime_config", None)
+        if rc is not None:
+            try:
+                driver = str(await rc.get(tenant=tenant, key="PAYMENT_GATEWAY_DRIVER",
+                                          default=driver)) or driver
+            except Exception:  # noqa: BLE001 — a config read must never break a charge; fall to boot driver
+                driver = s.PAYMENT_GATEWAY_DRIVER
         gateway = await resolver.gateway(
-            tenant, lambda resolved, boot: rebuild_gateway(s, resolved, boot), c.payment_gateway)
+            tenant, lambda resolved, boot: rebuild_gateway(s, resolved, boot, driver=driver),
+            c.payment_gateway, cache_key_extra=driver)
     return BillingService(
         plans=PlanStore(c.datastore, c.cache), coupons=CouponStore(c.datastore),
         subs=SubscriptionStore(c.datastore, c.cache),

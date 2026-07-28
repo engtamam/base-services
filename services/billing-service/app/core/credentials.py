@@ -86,15 +86,19 @@ class CredentialResolver:
             out.append(fallback)
         return tuple(out)
 
-    async def gateway(self, tenant: str, build, boot):
+    async def gateway(self, tenant: str, build, boot, *, cache_key_extra: str = ""):
         """The gateway for this tenant, built ONCE per credential set rather than per request.
 
         Rebuilding per request looked harmless and was not: a gateway is an object, and one rebuilt
         on every call loses anything it holds between calls. Keying the cache on the resolved
         credentials means a rotation produces a new gateway and nothing else does.
+
+        `cache_key_extra` folds a non-credential input (the tenant's runtime PAYMENT_GATEWAY_DRIVER)
+        into the key, so switching a tenant's PROVIDER — even with the credentials unchanged —
+        produces a new gateway instead of silently reusing the old provider's from cache.
         """
         resolved = await self.resolve(tenant)
-        fingerprint = tuple(sorted(resolved.items()))
+        fingerprint = (tuple(sorted(resolved.items())), cache_key_extra)
         hit = self._gateways.get(tenant)
         if hit and hit[0] == fingerprint:
             return hit[1]
