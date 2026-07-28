@@ -1059,5 +1059,21 @@ class BillingService:
                     })
         return {"ok": charge.ok, "status": charge.status}
 
+    async def prepare_checkout(self, *, amount_minor: int, currency: str = "", reference: str = "",
+                               return_url: str = "", metadata: dict | None = None) -> dict[str, Any]:
+        """Server-create a checkout/session for the customer's widget or redirect — so the app never
+        proxies a provider key. Delegates to the gateway; a provider with no server-side session
+        SAYS so (`supported: False`) rather than faking one. Completion still reconciles through the
+        webhook / GET-status path into _mark_paid, so a completed checkout is the same paid invoice
+        as a direct charge — there is no second money path.
+        """
+        fn = getattr(self._gw, "prepare_checkout", None)
+        if fn is None:
+            return {"supported": False, "ok": False, "provider": getattr(self._gw, "driver", ""),
+                    "error": "this provider has no server-side checkout"}
+        session = fn(amount_minor=int(amount_minor), currency=currency or self._cfg["currency"],
+                     reference=reference, return_url=return_url, metadata=metadata or {})
+        return {"supported": True, **session.to_dict()}
+
     def render_pdf(self, invoice: dict) -> tuple[str, bytes] | None:
         return self._pdf.render(invoice)

@@ -52,6 +52,49 @@
         "title": "ChangeIn",
         "type": "object"
       },
+      "CheckoutIn": {
+        "properties": {
+          "amount_minor": {
+            "exclusiveMinimum": 0.0,
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "currency": {
+            "default": "",
+            "maxLength": 8,
+            "title": "Currency",
+            "type": "string"
+          },
+          "reference": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Reference",
+            "type": "string"
+          },
+          "return_url": {
+            "default": "",
+            "maxLength": 1024,
+            "title": "Return Url",
+            "type": "string"
+          },
+          "tenant": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant"
+          }
+        },
+        "required": [
+          "amount_minor"
+        ],
+        "title": "CheckoutIn",
+        "type": "object"
+      },
       "ConfigIn": {
         "properties": {
           "key": {
@@ -921,6 +964,50 @@
           }
         },
         "summary": "List Invoices Platform",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/checkouts": {
+      "post": {
+        "description": "Server-create a payment checkout/session for the customer's widget or redirect.\n\nWe never proxy a provider key: the client gets the session/checkout id (and, for a widget, the\nprovider's own script URL), never our credentials. A provider with no server-side session says\nso (`supported: false`). Completion reconciles through the existing webhook / GET-status path\ninto _mark_paid, so a completed checkout is the SAME paid invoice as a direct charge.",
+        "operationId": "create_checkout_api_v1_billing_checkouts_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckoutIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Checkout Api V1 Billing Checkouts Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Checkout",
         "tags": [
           "billing"
         ]

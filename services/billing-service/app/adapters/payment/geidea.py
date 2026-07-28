@@ -56,6 +56,25 @@ class GeideaGateway:
         return Charge(ok=ok, status="refunded" if ok else "failed", provider="geidea",
                       provider_id=provider_id)
 
+    def prepare_checkout(self, *, amount_minor, currency, reference, return_url="", metadata=None):
+        """Server-create a Geidea session; the client completes it with the returned session id. The
+        Basic-auth key never crosses to the browser."""
+        from app.ports.payment_gateway import CheckoutSession
+        body = {"amount": float(major(amount_minor, currency)), "currency": currency.upper(),
+                "merchantReferenceId": reference}
+        if return_url:
+            body["returnUrl"] = return_url
+        code, resp = post_json(f"{self._base}/pgw/api/v2/direct/session", body, self._h)
+        if code == 0:
+            raise GatewayUnavailable("Geidea unreachable")
+        if self._code(resp) != _OK:
+            return CheckoutSession(ok=False, provider="geidea",
+                                   error=str(resp.get("responseMessage", self._code(resp))))
+        session = resp.get("session") or {}
+        return CheckoutSession(ok=True, provider="geidea", id=str(session.get("id", "")),
+                               widget={"kind": "geidea", "session_id": str(session.get("id", ""))},
+                               expires_at=str(session.get("expiryDate", "")))
+
     def verify_webhook(self, *, headers, body, secret):
         sig = headers.get("x-geidea-signature", "") or headers.get("signature", "")
         expected = base64.b64encode(

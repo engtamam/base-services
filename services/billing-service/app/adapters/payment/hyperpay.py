@@ -49,6 +49,25 @@ class HyperPayGateway:
         return Charge(ok=ok, status="refunded" if ok else "failed", provider="hyperpay",
                       provider_id=str(resp.get("id", provider_id)))
 
+    def prepare_checkout(self, *, amount_minor, currency, reference, return_url="", metadata=None):
+        """Server-create a HyperPay COPYandPAY checkout. The client loads the widget script with the
+        returned checkoutId — the entityId/Bearer key never crosses to the browser."""
+        from app.ports.payment_gateway import CheckoutSession
+        fields = {"entityId": self._entity, "amount": major(amount_minor, currency),
+                  "currency": currency.upper(), "paymentType": "DB",
+                  "merchantTransactionId": reference}
+        code, resp = post_form(f"{self._base}/v1/checkouts", fields, self._h)
+        if code == 0:
+            raise GatewayUnavailable("HyperPay unreachable")
+        checkout_id = str(resp.get("id", ""))
+        if not checkout_id:
+            return CheckoutSession(ok=False, provider="hyperpay",
+                                   error=str((resp.get("result") or {}).get("code", "no checkout id")))
+        return CheckoutSession(
+            ok=True, provider="hyperpay", id=checkout_id,
+            widget={"kind": "copyandpay", "checkout_id": checkout_id,
+                    "script_url": f"{self._base}/v1/paymentWidgets.js?checkoutId={checkout_id}"})
+
     def verify_webhook(self, *, headers, body, secret):
         """Decrypt-and-verify a HyperPay (OPP) webhook.
 

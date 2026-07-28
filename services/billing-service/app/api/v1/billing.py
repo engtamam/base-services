@@ -383,6 +383,35 @@ async def subscribe(request: Request, body: SubscribeIn, principal: Principal = 
     return sub.to_dict()
 
 
+class CheckoutIn(BaseModel):
+    amount_minor: int = Field(gt=0)
+    currency: str = Field(default="", max_length=8)
+    reference: str = Field(default="", max_length=128)
+    return_url: str = Field(default="", max_length=1024)
+    tenant: str | None = None
+
+
+@router.post("/checkouts", status_code=201, dependencies=[Depends(rate_limit)])
+async def create_checkout(request: Request, body: CheckoutIn,
+                          principal: Principal = Depends(_SELF)) -> dict:
+    """Server-create a payment checkout/session for the customer's widget or redirect.
+
+    We never proxy a provider key: the client gets the session/checkout id (and, for a widget, the
+    provider's own script URL), never our credentials. A provider with no server-side session says
+    so (`supported: false`). Completion reconciles through the existing webhook / GET-status path
+    into _mark_paid, so a completed checkout is the SAME paid invoice as a direct charge.
+    """
+    from app.ports.payment_gateway import GatewayUnavailable
+    tenant = _tenant(principal, body.tenant)
+    try:
+        return await (await build_billing(request, tenant)).prepare_checkout(
+            amount_minor=body.amount_minor, currency=body.currency, reference=body.reference,
+            return_url=body.return_url)
+    except GatewayUnavailable as exc:
+        # Unreachable / unconfigured gateway — retryable, not a client error.
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+
+
 @router.post("/subscriptions/{sub_id}/change")
 async def change_plan(request: Request, sub_id: str, body: ChangeIn,
                       principal: Principal = Depends(_SELF)) -> dict:

@@ -41,6 +41,25 @@ class WebhookEvent:
     raw: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class CheckoutSession:
+    """A server-created checkout/session the CUSTOMER's widget or redirect completes — so the app
+    never proxies a provider key. `ok=False` with a reason for a provider that has no server-side
+    session (plug-and-play: it SAYS so, it does not fake one)."""
+    ok: bool
+    provider: str = ""
+    id: str = ""                          # the provider's checkout/session id
+    redirect_url: str = ""                # redirect-flow providers
+    widget: dict[str, Any] = field(default_factory=dict)   # config the client widget needs (no key)
+    expires_at: str = ""
+    error: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"ok": self.ok, "provider": self.provider, "id": self.id,
+                "redirect_url": self.redirect_url, "widget": self.widget,
+                "expires_at": self.expires_at, "error": self.error}
+
+
 @runtime_checkable
 class PaymentGateway(Protocol):
     driver: str
@@ -57,4 +76,10 @@ class PaymentGateway(Protocol):
         ...
 
     def verify_webhook(self, *, headers: dict[str, str], body: bytes, secret: str) -> WebhookEvent:
+        ...
+
+    def prepare_checkout(self, *, amount_minor: int, currency: str, reference: str,
+                         return_url: str = "", metadata: dict | None = None) -> CheckoutSession:
+        # OPTIONAL: only providers with a server-side checkout/session implement this. The route
+        # checks for it and returns 'unsupported' otherwise — a provider that cannot must not fake it.
         ...

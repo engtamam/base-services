@@ -186,3 +186,31 @@ def test_hyperpay_refund_uses_the_real_currency_exponent():
                                                                     "result": {"code": "000.000.000"}}))
     HP.HyperPayGateway("k", extra_id="e").refund(provider_id="p1", amount_minor=1500, currency="KWD")
     assert seen["f"]["amount"] == "1.500", "HyperPay refund formatted a 3-dp currency as 2-dp"
+
+
+# ── prepare_checkout: server-created session, never a key to the client ──────────
+def test_hyperpay_prepare_checkout_returns_a_widget_no_key():
+    HP.post_form = lambda u, f, h=None: (seen := {}) or (200, {"id": "chk_1",
+                                                              "result": {"code": "000.200.100"}})
+    s = HP.HyperPayGateway("apikey", extra_id="ent1").prepare_checkout(
+        amount_minor=5000, currency="SAR", reference="inv_1")
+    assert s.ok and s.provider == "hyperpay" and s.id == "chk_1"
+    assert s.widget["checkout_id"] == "chk_1" and "paymentWidgets.js?checkoutId=chk_1" in s.widget["script_url"]
+    # the entityId/api key never appears in what goes to the client
+    assert "apikey" not in str(s.to_dict())
+
+
+def test_geidea_prepare_checkout_returns_a_session():
+    G.post_json = lambda u, b, h=None: (200, {"responseCode": "000",
+                                             "session": {"id": "sess_9", "expiryDate": "2026-01-01"}})
+    s = G.GeideaGateway("pubkey", extra_secret="apipass").prepare_checkout(
+        amount_minor=5000, currency="SAR", reference="inv_1")
+    assert s.ok and s.provider == "geidea" and s.id == "sess_9"
+    assert s.widget["session_id"] == "sess_9" and s.expires_at == "2026-01-01"
+
+
+def test_prepare_checkout_reports_a_provider_failure_not_a_fake_session():
+    G.post_json = lambda u, b, h=None: (200, {"responseCode": "099", "responseMessage": "bad amount"})
+    s = G.GeideaGateway("k", extra_secret="p").prepare_checkout(
+        amount_minor=1, currency="SAR", reference="x")
+    assert s.ok is False and "bad amount" in s.error
