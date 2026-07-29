@@ -183,6 +183,30 @@ class MembershipStore:
                                          limit=limit, sort=("created_at", "asc"))
         return [Membership.from_dict(r) for r in rows]
 
+    async def has_other_active_owner(self, tenant: str, person_id: str, *,
+                                     page: int = 200, max_pages: int = 50) -> bool:
+        """Is there an ACTIVE owner of this tenant who is NOT this person?
+
+        The sole-owner guard's question. It stops at the FIRST other owner found, so the common
+        case is one bounded page; it only walks further when a tenant genuinely has few owners. The
+        tenant is pushed into the datastore (never a platform-wide scan) — `safety:scans` holds.
+        A False answer must be TRUSTWORTHY: it is what refuses to strand a tenant, so the walk is
+        exhaustive within its page bound rather than sampling one page and guessing.
+        """
+        if not tenant:
+            raise ValueError("has_other_active_owner requires a tenant")
+        after = None
+        for _ in range(max_pages):
+            rows, after = await self._store.find(_MEMBERSHIPS, {"tenant": tenant}, limit=page,
+                                                 after=after, sort=("created_at", "asc"))
+            for r in rows:
+                m = Membership.from_dict(r)
+                if m.person_id != person_id and "owner" in m.roles and m.active:
+                    return True
+            if not after:
+                break
+        return False
+
     async def members(self, tenant: str, *, limit: int,
                       after: str | None = None) -> tuple[list[Membership], str | None]:
         """Everyone who works HERE — one tenant, paginated.

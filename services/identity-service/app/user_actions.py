@@ -27,6 +27,9 @@ USER_ACTIONS: list[dict[str, Any]] = [
     {"id": "identity.mfa_verify", "label": "Verify MFA", "method": "POST",
      "path": "/api/v1/auth/mfa/verify", "capability": "identity.self", "group": "My account",
      "params": [{"name": "code", "in": "body", "type": "string", "required": True}]},
+    {"id": "identity.delete_me", "label": "Delete my account", "method": "DELETE",
+     "path": "/api/v1/auth/me", "capability": "identity.self", "group": "My account",
+     "confirm": True, "danger": True},
 ]
 
 # Routes deliberately NOT rendered as controls. Machine-checked by safety:action-coverage: every

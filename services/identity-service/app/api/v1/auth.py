@@ -13,11 +13,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from app.api.auth import Principal, require_user
+from app.api.authz import require_any_capability
 from app.api.deps import get_guard
 from app.api.ratelimit import rate_limit
 from app.config import get_settings
 from app.observability.logging import get_logger
-from app.core.auth_service import AuthService, WeakPassword
+from app.core.auth_service import AuthService, SoleOwnerError, WeakPassword
 from app.ports.errors import ValidationError
 from app.core.login_attempts import LoginAttemptStore
 from app.core.invites import InviteStore
@@ -259,6 +260,29 @@ async def me(request: Request, principal: Principal = Depends(require_user),
         body = user.public()  # excludes password_hash / mfa_secret
         step.result = body
     return body
+
+
+@router.delete("/me", dependencies=[Depends(rate_limit)])
+async def delete_me(request: Request,
+                    principal: Principal = Depends(require_any_capability("identity.self"))) -> dict:
+    """A person erases themselves: revoke this membership; delete the Person on the last one.
+
+    The subject is the caller's OWN token — there is no id to pass, so this cannot be aimed at
+    anyone else. Refused for the tenant's sole owner (that would strand the tenant — close it
+    instead). Idempotent when the membership is already gone.
+    """
+    # Write-ahead: a critical action the log cannot take must not happen at all.
+    await request.app.state.auditor.record(
+        "auth.self_deleted", actor=principal.subject, tenant=principal.tenant,
+        resource=f"user:{principal.subject}",
+        ip=request.client.host if request.client else "")
+    try:
+        res = await _svc(request).delete_self(principal.subject, principal.tenant)
+    except SoleOwnerError:
+        raise HTTPException(status.HTTP_409_CONFLICT, "SOLE_OWNER")
+    if not res.get("deleted") and res.get("reason") == "NOT_FOUND":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    return res
 
 
 @router.post("/change-password")

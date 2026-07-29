@@ -126,6 +126,15 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "unattributable elevation is indistinguishable from an attacker's, exactly like a grant",
     },
     {
+        "action": "auth.self_deleted",
+        "source": "user",
+        "critical": True,
+        "resource": "user",
+        "why": "a person erasing themselves revokes their own access and may delete the Person "
+               "entirely; they can later dispute it, and a self-service deletion with no record is "
+               "indistinguishable from an account takeover that removed the real owner",
+    },
+    {
         "action": "tenant.owner_seeded",
         "source": "internal",
         "critical": True,

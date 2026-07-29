@@ -669,6 +669,28 @@
       }
     },
     "/api/v1/auth/me": {
+      "delete": {
+        "description": "A person erases themselves: revoke this membership; delete the Person on the last one.\n\nThe subject is the caller's OWN token \u2014 there is no id to pass, so this cannot be aimed at\nanyone else. Refused for the tenant's sole owner (that would strand the tenant \u2014 close it\ninstead). Idempotent when the membership is already gone.",
+        "operationId": "delete_me_api_v1_auth_me_delete",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Me Api V1 Auth Me Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Delete Me",
+        "tags": [
+          "auth"
+        ]
+      },
       "get": {
         "operationId": "me_api_v1_auth_me_get",
         "responses": {

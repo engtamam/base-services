@@ -43,6 +43,11 @@ class SeedError(Exception):
     onto a tenant that already has members (only_if_empty)."""
 
 
+class SoleOwnerError(Exception):
+    """A self-service action refused because it would leave a live tenant with NO owner — the last
+    owner cannot delete their own membership out from under the tenant. Close the tenant first."""
+
+
 class AuthService:
     # Class-level defaults so a partially-constructed instance (tests build these directly) has
     # the SAFE value rather than an AttributeError — and so that adding a dependency here can
@@ -419,6 +424,43 @@ class AuthService:
             return False
         await self._memberships.revoke(person_id, tenant)
         return True
+
+    async def delete_self(self, person_id: str, tenant: str) -> dict:
+        """A person erases THEMSELVES: revoke this membership, and delete the Person on the last one.
+
+        Two guards make this safe:
+          * SOLE OWNER — if the caller is this tenant's only active owner, refuse. Deleting the last
+            owner's membership strands the tenant exactly as a close would; the right path is to
+            close the tenant, not to orphan it.
+          * LAST MEMBERSHIP (T2/CWE-640) — the Person is deleted ONLY when they hold no other
+            membership anywhere. A person who still works for another company is never touched by
+            one company's self-service.
+
+        Idempotent: revoking an already-gone membership is a no-op success.
+        """
+        if self._memberships is None:
+            # Single-tenant deployment: no membership graph, so self-delete is the account itself.
+            user = await self._users.get(person_id)
+            if user is None:
+                return {"deleted": False, "reason": "NOT_FOUND"}
+            await self._users.delete(user)
+            return {"deleted": True, "membership_revoked": False, "person_deleted": True}
+        if not tenant or not person_id:
+            raise TenantAccessDenied()
+        m = await self._memberships.membership(person_id, tenant)
+        if m is None:
+            return {"deleted": False, "reason": "NOT_FOUND"}
+        if "owner" in m.roles and not await self._memberships.has_other_active_owner(tenant, person_id):
+            raise SoleOwnerError()
+        await self._memberships.revoke(person_id, tenant)
+        person_deleted = False
+        if not await self._memberships.memberships(person_id):
+            person = await self._memberships.person(person_id)
+            if person is not None:
+                await self._memberships.delete_person(person)
+                person_deleted = True
+        return {"deleted": True, "membership_revoked": True, "person_deleted": person_deleted,
+                "tenant": tenant}
 
     async def update_member_roles(self, tenant: str, person_id: str, *,
                                   roles=None, caps=None):
