@@ -91,15 +91,20 @@ Every route below binds identity to the token and delegates the actual work to o
 
 ## Tasks
 
-- [ ] **52.1** `POST /api/v1/compliance/me/dsar` (`compliance.self`) — token-bound self DSAR over the
+- [x] **52.1** `POST /api/v1/compliance/me/dsar` (`compliance.self`) — token-bound self DSAR over the
   existing flow; body carries kind, never an id; grace as config; audit as subject.
-- [ ] **52.2** `DELETE /api/v1/auth/me` (`identity.self`) — revoke this membership, delete the Person
+- [x] **52.2** `DELETE /api/v1/auth/me` (`identity.self`) — revoke this membership, delete the Person
   on the last one (T2-safe), idempotent, behind the sole-owner guard.
-- [ ] **52.3** `POST /api/v1/tenant/close` (`tenant.manage`) — owner self-close, grace as config,
+- [x] **52.3** `POST /api/v1/tenant/close` (`tenant.manage`) — owner self-close, grace as config,
   fail-closed, idempotent.
-- [ ] **52.4** Shared sole-owner / last-owner guard + grace config (RUNTIME_POLICY, read at use),
+- [x] **52.4** Shared sole-owner / last-owner guard + grace config (RUNTIME_POLICY, read at use),
   used by 52.2 and 52.3.
-- [ ] **52.5** Draw the DSAR ↔ /auth/me boundary in code + doc; a test proves the two never
+- [x] **52.5** Draw the DSAR ↔ /auth/me boundary in code + doc; a test proves the two never
   double-erase.
-- [ ] **52.6** Mutation tests: body-id ignored (IDOR refused), sole-owner refused, last-membership
+- [x] **52.6** Mutation tests: body-id ignored (IDOR refused), sole-owner refused, last-membership
   cascade vs person-kept, grace scheduling + immediate audit, idempotent re-close/re-revoke.
+
+
+---
+
+**Phase 52 complete.** Three token-bound self-service routes over the existing erasure primitives: `POST /compliance/me/dsar` (compliance.self), `DELETE /auth/me` (identity.self), `POST /tenant/close` (tenant.manage). Subject and tenant come from the token, never a body id (CWE-639). The sole-owner/last-owner guard refuses stranding a live tenant; grace is config; audit is the pseudonymised subject; and the DSAR ↔ /auth/me boundary is proven — the two paths apply one rule and never double-erase. All three service suites green.

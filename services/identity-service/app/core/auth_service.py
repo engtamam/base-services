@@ -437,6 +437,13 @@ class AuthService:
             one company's self-service.
 
         Idempotent: revoking an already-gone membership is a no-op success.
+
+        BOUNDARY with the DSAR path. This is the identity-LOCAL account delete; the erase-me-
+        everywhere orchestration is compliance's `/me/dsar`, which fans out to this service's
+        internal erase_subject (`IdentityErasure`). Both apply the SAME rule (revoke this membership;
+        delete the Person on the last one) and both check existence first, so running one then the
+        other produces ONE erasure — never a double-delete. This path does NOT trigger the cross-
+        service fan-out, and the DSAR path does not assume this ran; each is complete on its own seam.
         """
         if self._memberships is None:
             # Single-tenant deployment: no membership graph, so self-delete is the account itself.
