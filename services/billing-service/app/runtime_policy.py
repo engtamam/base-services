@@ -15,4 +15,8 @@ from __future__ import annotations
 # app/api/v1/billing.py's build_billing (via RuntimeConfig) and applied by container.rebuild_gateway,
 # which is the promise this file makes. A switch to a driver that is not configured fails CLOSED (a
 # gateway whose charge raises GatewayUnavailable) rather than charging through the boot provider.
-RUNTIME_POLICY: frozenset[str] = frozenset({"PAYMENT_GATEWAY_DRIVER", "BILLING_AUTO_REACTIVATE"})
+# BILLING_CLAWBACK_ENABLED — whether a refund/chargeback reverses the wallet grant. READ per tenant
+# in build_billing and applied in _claw_back. The other clawback knobs (allow-negative, on-partial,
+# skip-expired) are deploy-time config, not per-tenant runtime — only the master switch is here.
+RUNTIME_POLICY: frozenset[str] = frozenset({
+    "PAYMENT_GATEWAY_DRIVER", "BILLING_AUTO_REACTIVATE", "BILLING_CLAWBACK_ENABLED"})

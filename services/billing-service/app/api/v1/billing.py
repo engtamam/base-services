@@ -45,7 +45,12 @@ def build_grants(request: Request, s) -> GrantOutbox:
         clock=now_ts, iso=iso,
         cfg={"grant_fund": s.WALLET_GRANT_FUND,
              "grant_retry_base_seconds": s.GRANT_RETRY_BASE_SECONDS,
-             "grant_retry_max_seconds": s.GRANT_RETRY_MAX_SECONDS})
+             "grant_retry_max_seconds": s.GRANT_RETRY_MAX_SECONDS,
+             "clawback_allow_negative": s.BILLING_CLAWBACK_ALLOW_NEGATIVE},
+        # Best-effort: emits grant.clawback_failed when a reversal is permanently refused. The
+        # durable FAILED row is the truth regardless; the event just lets an operator surface react.
+        emitter=Emitter(request.app.state.container.event_bus,
+                        fail_closed=s.EVENT_PUBLISH_FAILURE == "fail_closed"))
 
 
 async def build_billing(request: Request, tenant: str = "") -> BillingService:
@@ -86,6 +91,15 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
                                if isinstance(v, str) else bool(v))
         except Exception:  # noqa: BLE001 — a config read must never break a charge
             auto_reactivate = bool(s.BILLING_AUTO_REACTIVATE)
+    # Grant clawback master switch — per tenant, runtime-editable, read at the point of use.
+    clawback_enabled = bool(s.BILLING_CLAWBACK_ENABLED)
+    if rc is not None:
+        try:
+            v = await rc.get(tenant=tenant, key="BILLING_CLAWBACK_ENABLED", default=clawback_enabled)
+            clawback_enabled = (v.strip().lower() not in ("false", "0", "no", "off", "")
+                                if isinstance(v, str) else bool(v))
+        except Exception:  # noqa: BLE001 — a config read must never break a refund
+            clawback_enabled = bool(s.BILLING_CLAWBACK_ENABLED)
     return BillingService(
         plans=PlanStore(c.datastore, c.cache), coupons=CouponStore(c.datastore),
         subs=SubscriptionStore(c.datastore, c.cache),
@@ -108,6 +122,11 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
                 "grant_fund": s.WALLET_GRANT_FUND,
                 "plan_credit_limit_key": s.PLAN_CREDIT_LIMIT_KEY,
                 "plan_credit_grant_mode": s.PLAN_CREDIT_GRANT_MODE,
+                # Refund/chargeback grant clawback — a set of operator choices, all read at use.
+                "clawback_enabled": clawback_enabled,
+                "clawback_allow_negative": s.BILLING_CLAWBACK_ALLOW_NEGATIVE,
+                "clawback_on_partial": s.BILLING_CLAWBACK_ON_PARTIAL,
+                "clawback_skip_expired": s.BILLING_CLAWBACK_SKIP_EXPIRED,
                 "auto_reactivate": auto_reactivate,
                 # Entitlement resolution (Phase 42). Required by EntitlementResolver —
                 # every default lives in config.py, never inline at a call site.

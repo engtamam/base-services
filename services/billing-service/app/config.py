@@ -241,6 +241,20 @@ class Settings(BaseSettings):
     # Runtime-editable per tenant (RUNTIME_POLICY); read at the point of use in _mark_paid.
     BILLING_AUTO_REACTIVATE: bool = True
 
+    # ── grant clawback on refund / chargeback (Phase 51) ──────────────────────
+    # When a paid invoice granted wallet credits and is later refunded or charged back, reverse the
+    # grant so the customer does not keep both the money and the credits. Every line here is an
+    # operator CHOICE — how a business handles a refunded credit is policy, not law:
+    #   ENABLED         master switch; runtime-editable per tenant (RUNTIME_POLICY), read at use.
+    #   ALLOW_NEGATIVE  let the wallet go below zero when the credits are already spent — otherwise
+    #                   the reversal is refused (grant.clawback_failed) and the customer keeps them.
+    #   ON_PARTIAL      reverse the grant on a PARTIAL refund too (off: only a full void reverses).
+    #   SKIP_EXPIRED    do not reverse a `reset` grant that already lapsed — the credits are gone.
+    BILLING_CLAWBACK_ENABLED: bool = True
+    BILLING_CLAWBACK_ALLOW_NEGATIVE: bool = True
+    BILLING_CLAWBACK_ON_PARTIAL: bool = False
+    BILLING_CLAWBACK_SKIP_EXPIRED: bool = True
+
     # ── entitlement resolution (Phase 42) ─────────────────────────────────────
     # A tenant's entitlements are the UNION of everything they pay for. Resolution used to read
     # ONE subscription, so a customer who bought three things could use one — and which one

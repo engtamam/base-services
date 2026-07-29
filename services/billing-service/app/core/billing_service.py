@@ -864,6 +864,9 @@ class BillingService:
                                           amount_minor=-stl.amount_minor, currency=inv.currency,
                                           invoice_id=inv.id, source=f"reversal:{stl.id}")
                 credit_note = {"invoice_id": inv.id, "amount_minor": stl.amount_minor}
+                # A recalled transfer that had fully paid the invoice reverses the grant too — the
+                # same seam as a card refund, so an off-gateway chargeback leaks nothing.
+                await self._claw_back(inv)
 
         state = await self.invoice_state(stl.invoice_id) if inv else "unknown"
         return {"settlement": stl.to_dict(), "invoice_status": state,
@@ -1031,7 +1034,40 @@ class BillingService:
             if inv:
                 inv.status = "void"
                 await self._invoices.save(inv)
+                await self._claw_back(inv)      # same reversal as a manual refund / a settlement recall
         return {"ok": True, "reconciled": True, "type": event.type, "payment_status": pay.status}
+
+    async def _claw_back(self, inv: Invoice, *, partial: bool = False) -> None:
+        """Reverse the wallet grant an invoice made, when that invoice is refunded or charged back.
+
+        The mirror of the grant in `_mark_paid`: ONE seam every reversal path funnels into, so a
+        chargeback settled off-gateway reverses the same credits a card refund does. It is a set of
+        operator CHOICES — the whole thing can be off, negative balances allowed or not, partials
+        reversed or not, expired grants skipped or not — because how a business handles a refunded
+        credit is a policy, not a law.
+
+        Fail-safe: it records a DURABLE clawback row (delivered by the outbox drain) and never
+        blocks the refund on the wallet. A no-op when no grant was made, no wallet is wired, or the
+        operator disabled it.
+        """
+        if self._grants is None or not self._cfg.get("clawback_enabled", True):
+            return
+        if partial and not self._cfg.get("clawback_on_partial", False):
+            return
+        grantable = int((inv.meta or {}).get("grant_minor", 0) or 0)
+        if grantable <= 0:
+            return
+        # An expired `reset` grant already lapsed in the wallet; reversing it would drive the
+        # balance negative for credits the customer never effectively held. Skip by default.
+        if (self._cfg.get("clawback_skip_expired", True)
+                and self._cfg.get("plan_credit_grant_mode") == "reset"):
+            period_end = float((inv.meta or {}).get("period_end", 0) or 0)
+            if period_end and period_end <= now_ts():
+                return
+        await self._grants.record_clawback(
+            tenant=inv.tenant, invoice_id=inv.id, fund=self._cfg["grant_fund"],
+            amount_minor=grantable, reason=f"refund:{inv.number}",
+            allow_negative=bool(self._cfg.get("clawback_allow_negative", True)))
 
     async def refund(self, payment_id: str, amount_minor: int | None = None) -> dict[str, Any]:
         pay = await self._payments.fetch(payment_id)
@@ -1050,6 +1086,10 @@ class BillingService:
                 await self._ledger.record(tenant=inv.tenant, kind="refund",
                                           amount_minor=-(amount_minor or inv.total_minor),
                                           currency=inv.currency, invoice_id=inv.id, source="refund")
+                # Reverse the wallet grant this invoice made — else the customer keeps the credits
+                # the refunded money bought. A partial refund reverses only if the operator opted in.
+                await self._claw_back(inv, partial=amount_minor is not None
+                                      and amount_minor < inv.total_minor)
                 if self._events is not None:
                     # A consumer that granted something on payment.succeeded needs to know to take
                     # it back. Without this, a refunded customer keeps whatever the payment bought.

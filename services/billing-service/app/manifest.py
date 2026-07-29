@@ -105,6 +105,7 @@ def build_manifest(
             {"path": "/internal/billing/usage", "tier": "internal", "method": "GET"},
             {"path": "/internal/billing/grants/drain", "tier": "internal", "method": "POST"},
             {"path": "/internal/billing/grants/reconcile", "tier": "internal", "method": "POST"},
+            {"path": "/internal/billing/grants/reconcile-clawbacks", "tier": "internal", "method": "POST"},
             {"path": "/internal/billing/cycle-due", "tier": "internal", "method": "POST"},
             {"path": "/api/v1/billing/ledger", "tier": "user", "method": "GET"},
             {"path": "/api/v1/billing/gateway/verify", "tier": "user", "method": "GET"},

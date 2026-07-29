@@ -204,6 +204,22 @@ async def reconcile_grants(request: Request, settings: Settings = Depends(get_se
         limit=settings.GRANT_RECONCILE_LIMIT)
 
 
+@router.post("/billing/grants/reconcile-clawbacks", dependencies=[Depends(require_internal_token)])
+async def reconcile_clawbacks(request: Request, settings: Settings = Depends(get_settings)) -> dict:
+    """Rebuild clawback rows for voided invoices whose delivered grant was never reversed.
+
+    The mirror of the grant reconcile: if the process died between voiding an invoice and recording
+    the clawback, nothing in the outbox knows a reversal is owed — but the voided invoice is the
+    durable fact. Only invoices whose grant was actually DELIVERED get a clawback; an undelivered
+    grant is cancelled, not reversed. Drained by the same grants/drain sweep as everything else.
+    """
+    from app.api.v1.billing import build_grants
+    from app.core.stores import InvoiceStore
+    return await build_grants(request, settings).reconcile_clawbacks(
+        invoices=InvoiceStore(request.app.state.container.datastore),
+        limit=settings.GRANT_RECONCILE_LIMIT)
+
+
 class _BackupExportIn(BaseModel):
     tenant: str = ""
 

@@ -3327,6 +3327,58 @@
         ]
       }
     },
+    "/internal/billing/grants/reconcile-clawbacks": {
+      "post": {
+        "description": "Rebuild clawback rows for voided invoices whose delivered grant was never reversed.\n\nThe mirror of the grant reconcile: if the process died between voiding an invoice and recording\nthe clawback, nothing in the outbox knows a reversal is owed \u2014 but the voided invoice is the\ndurable fact. Only invoices whose grant was actually DELIVERED get a clawback; an undelivered\ngrant is cancelled, not reversed. Drained by the same grants/drain sweep as everything else.",
+        "operationId": "reconcile_clawbacks_internal_billing_grants_reconcile_clawbacks_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Reconcile Clawbacks Internal Billing Grants Reconcile Clawbacks Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reconcile Clawbacks",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/billing/usage": {
       "get": {
         "operationId": "usage_summary_internal_internal_billing_usage_get",
