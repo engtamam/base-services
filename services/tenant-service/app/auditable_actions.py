@@ -50,6 +50,14 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "authorised it",
     },
     {
+        "action": "tenant.close_requested",
+        "source": "user",
+        "critical": True,
+        "why": "an owner closing their own organisation begins its erasure after a grace window; it "
+               "is the most consequential self-service action there is, and a disputed or "
+               "unauthorised close must be attributable to whoever asked for it",
+    },
+    {
         "action": "subject.erased",
         "source": "internal",
         "critical": True,

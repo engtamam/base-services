@@ -6,10 +6,11 @@ DomainResolver, EventBus). Lifecycle changes emit domain events so peers can rea
 """
 from __future__ import annotations
 
+import datetime as _dt
 import re
 from typing import Any
 
-from app.core.models import DELETED, Tenant, new_id
+from app.core.models import DELETED, SUSPENDED, Tenant, new_id
 from app.ports.errors import ConfigError
 
 # How a delete behaves. The PLATFORM decides; we enforce. `tombstone` is the default because the
@@ -111,9 +112,57 @@ class TenantService:
 
     async def reactivate(self, tenant: Tenant) -> Tenant:
         tenant.status = "active"
+        # Reactivating a tenant that was closing is how the owner takes it back within the grace
+        # window — clear the schedule so the sweep does not erase a tenant that is live again.
+        tenant.config.pop("_close", None)
         await self._repo.update(tenant)
         await self._emit("tenant.reactivated", tenant)
         return tenant
+
+    async def close(self, tenant: Tenant, *, grace_days: int, actor: str = "") -> dict:
+        """Owner self-close: suspend now, erase after grace — recoverable until then.
+
+        The tenant is SUSPENDED immediately (access stops), and a grace deadline is written on it.
+        Reactivating before the deadline takes the close back; the sweep erases it after. With
+        grace_days <= 0 there is no recovery window and it is erased at once. Idempotent: closing an
+        already-closed/closing tenant returns its existing schedule rather than resetting the clock.
+        """
+        if tenant.status == DELETED:
+            return {"status": DELETED, "tenant_id": tenant.id, "idempotent": True}
+        if grace_days <= 0:
+            res = await self.delete(tenant)
+            res["closed"] = True
+            return res
+        existing = tenant.config.get("_close") or {}
+        if tenant.status == SUSPENDED and existing.get("grace_until"):
+            return {"status": SUSPENDED, "tenant_id": tenant.id,
+                    "grace_until": existing["grace_until"], "closed": True, "idempotent": True}
+        now_dt = _dt.datetime.now(_dt.timezone.utc)
+        grace_until = (now_dt + _dt.timedelta(days=grace_days)).isoformat()
+        tenant.status = SUSPENDED
+        tenant.config["_close"] = {"scheduled_at": now_dt.isoformat(),
+                                   "grace_until": grace_until, "closed_by": actor}
+        tenant.touch()
+        await self._repo.update(tenant)
+        await self._emit("tenant.close_scheduled", tenant)
+        return {"status": SUSPENDED, "tenant_id": tenant.id, "grace_until": grace_until,
+                "closed": True}
+
+    async def close_sweep(self, *, now_iso: str, limit: int = 200) -> dict:
+        """Erase tenants whose close grace has elapsed. Driven by the platform scheduler.
+
+        A bounded read (never a platform-wide scan), so a deployment with more closing tenants than
+        `limit` in one window simply finishes them on the next pass rather than doing an unbounded
+        read on a schedule."""
+        rows = await self._repo.list(limit)
+        erased = 0
+        for r in rows:
+            sched = (r.get("config") or {}).get("_close") or {}
+            grace_until = sched.get("grace_until")
+            if r.get("status") == SUSPENDED and grace_until and grace_until <= now_iso:
+                await self.delete(Tenant.from_dict(r))
+                erased += 1
+        return {"scanned": len(rows), "erased": erased}
 
     async def delete(self, tenant: Tenant) -> dict:
         """Delete the tenant, and leave something a peer can READ that says so.

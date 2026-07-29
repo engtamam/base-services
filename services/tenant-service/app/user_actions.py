@@ -20,4 +20,7 @@ USER_ACTIONS: list[dict[str, Any]] = [
      "confirm": True},
     {"id": "tenant.update_branding", "label": "Update my branding", "method": "PUT",
      "path": "/api/v1/tenant/branding", "capability": "tenant.manage", "group": "Organization"},
+    {"id": "tenant.close", "label": "Close my organization", "method": "POST",
+     "path": "/api/v1/tenant/close", "capability": "tenant.manage", "group": "Organization",
+     "confirm": True, "danger": True},
 ]

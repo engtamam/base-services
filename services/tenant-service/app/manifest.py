@@ -55,6 +55,7 @@ def build_manifest(
              # and is therefore never MISSED — the request closes green on an erasure
              # that did not happen.
              "erasure_category": "subject"},
+            {"path": "/internal/tenants/close-sweep", "tier": "internal", "method": "POST"},
             {"path": "/internal/tenants/resolve", "tier": "internal", "method": "GET"},
             {"path": "/internal/tenants/{id}", "tier": "internal", "method": "GET"},
             {"path": "/api/v1/tenants", "tier": "user", "method": "POST"},
@@ -69,6 +70,7 @@ def build_manifest(
             {"path": "/api/v1/tenant", "tier": "user", "method": "GET"},
             {"path": "/api/v1/tenant/config", "tier": "user", "method": "PUT"},
             {"path": "/api/v1/tenant/branding", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/tenant/close", "tier": "user", "method": "POST"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         "events": {"emitted": [], "consumed": []},

@@ -182,3 +182,18 @@ async def my_branding(request: Request, body: BrandingIn,
                       principal: Principal = Depends(require_user)) -> dict:
     svc, tenant = await _own(request, principal)
     return (await svc.set_branding(tenant, body.branding)).public()
+
+
+@self_router.post("/close", dependencies=[Depends(_TENANT_ADMIN), Depends(rate_limit)])
+async def close_my_tenant(request: Request,
+                          principal: Principal = Depends(require_user)) -> dict:
+    """An owner closes their OWN tenant. Scoped to the caller's tenant (never a body id), suspended
+    now and erased after a grace window it can be reactivated within. Idempotent."""
+    # Write-ahead: a critical action the log cannot take must not happen at all.
+    await request.app.state.auditor.record(
+        "tenant.close_requested", actor=principal.subject, tenant=principal.tenant,
+        resource=f"tenant:{principal.tenant}",
+        ip=request.client.host if request.client else "")
+    svc, tenant = await _own(request, principal)
+    grace = get_settings().TENANT_CLOSE_GRACE_DAYS
+    return await svc.close(tenant, grace_days=grace, actor=principal.subject)

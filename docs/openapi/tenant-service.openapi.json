@@ -219,6 +219,30 @@
         ]
       }
     },
+    "/api/v1/tenant/close": {
+      "post": {
+        "description": "An owner closes their OWN tenant. Scoped to the caller's tenant (never a body id), suspended\nnow and erased after a grace window it can be reactivated within. Idempotent.",
+        "operationId": "close_my_tenant_api_v1_tenant_close_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Close My Tenant Api V1 Tenant Close Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Close My Tenant",
+        "tags": [
+          "tenant-self"
+        ]
+      }
+    },
     "/api/v1/tenant/config": {
       "put": {
         "operationId": "my_config_api_v1_tenant_config_put",
@@ -838,6 +862,58 @@
           }
         },
         "summary": "Erase Subject",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/tenants/close-sweep": {
+      "post": {
+        "description": "Erase tenants whose owner-close grace window has elapsed. Driven by the platform scheduler,\nnot a thread in here, so a restart cannot lose the only thing tracking a due closure.",
+        "operationId": "close_sweep_internal_tenants_close_sweep_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Close Sweep Internal Tenants Close Sweep Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Close Sweep",
         "tags": [
           "internal"
         ]

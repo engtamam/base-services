@@ -119,3 +119,12 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     s = get_settings()
     eraser = TenantErasure(store=c.datastore, pii_salt=s.PII_SALT, max_scan=s.ERASURE_MAX_SCAN)
     return await eraser.erase(body.tenant, body.subject)
+
+
+@router.post("/tenants/close-sweep", dependencies=[Depends(require_internal_token)])
+async def close_sweep(request: Request) -> dict:
+    """Erase tenants whose owner-close grace window has elapsed. Driven by the platform scheduler,
+    not a thread in here, so a restart cannot lose the only thing tracking a due closure."""
+    import datetime as _dt
+    now_iso = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    return await build_service(request).close_sweep(now_iso=now_iso)

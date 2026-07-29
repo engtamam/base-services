@@ -103,6 +103,13 @@ class Settings(BaseSettings):
     PII_SALT: str = ""
     ERASURE_MAX_SCAN: int = 100_000
 
+    # ── owner self-close (Phase 52) ──────────────────────────────────────────
+    # When an owner closes their own tenant, it is SUSPENDED immediately (access stops) and erased
+    # only after a grace window, so an accidental or regretted close is recoverable by reactivating
+    # within it. Grace is config because "how long can we take it back" is a policy each deployment
+    # (and regulator) sets, not a constant. 0 = erase immediately, no recovery window.
+    TENANT_CLOSE_GRACE_DAYS: int = 30
+
 
     # ── audit trail (Phase 38) — where privileged actions are witnessed ───────
     # `null` records NOTHING and says so; the boot guard refuses it in production, because a
