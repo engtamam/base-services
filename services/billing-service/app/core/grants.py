@@ -55,6 +55,17 @@ def source_for(invoice_id: str) -> str:
     return f"billing:invoice:{invoice_id}"
 
 
+def clawback_source_for(invoice_id: str) -> str:
+    """The idempotency key for REVERSING a grant — deliberately DISTINCT from `source_for`.
+
+    This is the single most important correctness point of the clawback. The wallet de-duplicates
+    on `source`; a clawback that reused the grant's key would be swallowed as if it were the
+    original credit and reverse nothing. A distinct `:clawback` suffix makes the reversal its own
+    idempotent promise: redelivered once, never confused with the credit it undoes.
+    """
+    return f"billing:invoice:{invoice_id}:clawback"
+
+
 @dataclass
 class Grant:
     id: str
@@ -73,6 +84,12 @@ class Grant:
     # it does. Stored on the row so a retry days later still delivers the ORIGINAL expiry rather
     # than one computed from whenever the retry happened to succeed.
     expires_at: float | None = None
+    # "grant" delivers via wallet.credit; "clawback" reverses it via wallet.debit. One row shape,
+    # one outbox, one reconcile — the reversal is the same durable promise as the grant it undoes.
+    kind: str = "grant"
+    # Only meaningful for a clawback: let the balance go below zero when the refunded credits are
+    # already spent, so a customer cannot keep both the money and the goods.
+    allow_negative: bool = False
     meta: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -85,12 +102,16 @@ class Grant:
 
 
 class GrantOutbox:
-    def __init__(self, store, wallet, *, clock, iso, cfg: dict[str, Any]) -> None:
+    def __init__(self, store, wallet, *, clock, iso, cfg: dict[str, Any], emitter=None) -> None:
         self._s = store
         self._wallet = wallet          # None when no wallet is wired: recording still happens
         self._clock = clock
         self._iso = iso
         self._cfg = cfg
+        # Optional, best-effort: emits grant.clawback_failed when a reversal is permanently refused
+        # (the credits were spent and allow_negative was off). A dropped hint never blocks the
+        # durable row, which stays FAILED and visible to an operator regardless.
+        self._emitter = emitter
 
     # ── record ────────────────────────────────────────────────────────────────
     async def record(self, *, tenant: str, invoice_id: str, fund: str, amount_minor: int,
@@ -117,24 +138,64 @@ class GrantOutbox:
         await self._s.put(_COLL, grant.id, grant.to_dict())
         return grant
 
+    async def record_clawback(self, *, tenant: str, invoice_id: str, fund: str, amount_minor: int,
+                              reason: str = "", allow_negative: bool = False) -> Grant | None:
+        """Write down the promise to REVERSE a grant. Returns None when there is nothing to reverse.
+
+        Keyed on `clawback_source_for` — DISTINCT from the grant — so a redelivered refund reverses
+        once and is never mistaken for the credit. Recording twice overwrites one row, exactly like
+        a grant, so a double refund produces one clawback.
+        """
+        if amount_minor <= 0:
+            return None
+        source = clawback_source_for(invoice_id)
+        existing = await self._s.get(_COLL, source)
+        if existing:
+            return Grant.from_dict(existing)
+        row = Grant(id=source, tenant=tenant, source=source, fund=fund,
+                    amount_minor=int(amount_minor), reason=reason, kind="clawback",
+                    allow_negative=allow_negative, created=self._iso())
+        await self._s.put(_COLL, row.id, row.to_dict())
+        return row
+
     # ── deliver ───────────────────────────────────────────────────────────────
     async def deliver(self, grant: Grant) -> bool:
-        """One delivery attempt. Never raises: a failure is recorded and retried."""
+        """One delivery attempt. Never raises: a failure is recorded and retried.
+
+        A grant delivers via wallet.credit; a clawback reverses via wallet.debit. Same row, same
+        retry and refusal handling — a reversal is the durable mirror of the grant, not a special
+        case bolted on beside it.
+        """
         if self._wallet is None:
             return False
         try:
-            await self._wallet.credit(tenant=grant.tenant, fund=grant.fund,
-                                      amount_minor=grant.amount_minor,
-                                      source=grant.source, reason=grant.reason,
-                                      expires_at=grant.expires_at)
+            if grant.kind == "clawback":
+                await self._wallet.debit(tenant=grant.tenant, fund=grant.fund,
+                                         amount_minor=grant.amount_minor, source=grant.source,
+                                         reason=grant.reason, allow_negative=grant.allow_negative)
+            else:
+                await self._wallet.credit(tenant=grant.tenant, fund=grant.fund,
+                                          amount_minor=grant.amount_minor,
+                                          source=grant.source, reason=grant.reason,
+                                          expires_at=grant.expires_at)
         except WalletRefused as exc:
             # Permanent. Retrying a thousand times cannot make a fund exist, and a queue that only
-            # grows hides the misconfiguration that caused it.
+            # grows hides the misconfiguration that caused it. For a clawback the common permanent
+            # refusal is "insufficient balance, allow_negative off" — the credits were spent — which
+            # an operator must see, so we mark it failed AND emit grant.clawback_failed.
             grant.status = FAILED
             grant.last_error = f"refused: {type(exc).__name__}"
             await self._s.put(_COLL, grant.id, grant.to_dict())
-            _log.error("grant_refused_permanently",
-                       extra={"grant": grant.id, "tenant": grant.tenant})
+            if grant.kind == "clawback":
+                _log.error("grant_clawback_failed",
+                           extra={"grant": grant.id, "tenant": grant.tenant})
+                await self._emit("grant.clawback_failed", {
+                    "tenant": grant.tenant, "fund": grant.fund,
+                    "amount_minor": grant.amount_minor, "source": grant.source,
+                    "reason": grant.last_error})
+            else:
+                _log.error("grant_refused_permanently",
+                           extra={"grant": grant.id, "tenant": grant.tenant})
             return False
         except (WalletUnavailable, Exception) as exc:  # noqa: BLE001 — any transport failure
             grant.attempts += 1
@@ -153,6 +214,15 @@ class GrantOutbox:
         grant.last_error = ""
         await self._s.put(_COLL, grant.id, grant.to_dict())
         return True
+
+    async def _emit(self, event: str, payload: dict) -> None:
+        """Best-effort hint. A dropped emit never touches the durable row."""
+        if self._emitter is None:
+            return
+        try:
+            await self._emitter.emit(event, payload)
+        except Exception:  # noqa: BLE001 — the row is the truth; the event is a courtesy
+            _log.warning("grant_event_emit_failed", extra={"event": event})
 
     async def drain(self, *, limit: int = 100) -> dict[str, int]:
         """Deliver every grant that is due. Driven by the platform's scheduler."""
@@ -189,6 +259,33 @@ class GrantOutbox:
             await self.record(tenant=inv["tenant"], invoice_id=inv["id"],
                               fund=self._cfg["grant_fund"], amount_minor=amount,
                               reason="reconciled")
+            created += 1
+        return {"scanned": len(rows), "created": created}
+
+    async def reconcile_clawbacks(self, *, invoices, limit: int = 200) -> dict[str, int]:
+        """Create clawback rows for voided invoices whose delivered grant was never reversed.
+
+        The mirror of `reconcile`: if the process died between voiding an invoice and recording the
+        clawback, nothing in the outbox knows a reversal is owed — but the VOIDED INVOICE is the
+        durable fact. A clawback is created only when the original grant was actually DELIVERED (an
+        undelivered grant is cancelled, not reversed — there is nothing in the wallet to take back)
+        and no clawback row exists yet.
+        """
+        rows, _ = await invoices.find_voided(limit=limit)
+        created = 0
+        for inv in rows:
+            amount = self._grantable(inv)
+            if amount <= 0:
+                continue
+            grant = await self._s.get(_COLL, source_for(inv["id"]))
+            if not grant or grant.get("status") != DELIVERED:
+                continue                      # nothing delivered → nothing to reverse
+            if await self._s.get(_COLL, clawback_source_for(inv["id"])):
+                continue                      # already reversing
+            await self.record_clawback(
+                tenant=inv["tenant"], invoice_id=inv["id"], fund=self._cfg["grant_fund"],
+                amount_minor=amount, reason="reconciled",
+                allow_negative=bool(self._cfg.get("clawback_allow_negative", True)))
             created += 1
         return {"scanned": len(rows), "created": created}
 

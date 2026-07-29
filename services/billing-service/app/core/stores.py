@@ -312,6 +312,15 @@ class InvoiceStore(_Repo):
         return await self._store.find(self.collection, {"status": "paid"}, limit=limit,
                                       sort=("paid_at", "asc"))
 
+    async def find_voided(self, *, limit: int = 200) -> tuple[list[dict], str]:
+        """Voided (refunded / charged-back) invoices, for the grant-clawback reconciliation sweep.
+
+        The mirror of `find_paid`: a FILTERED find, never a scan, so healing a dropped clawback
+        costs one bounded read per sweep rather than a full-history scan that grows for ever.
+        """
+        return await self._store.find(self.collection, {"status": "void"}, limit=limit,
+                                      sort=("paid_at", "asc"))
+
     async def fetch(self, invoice_id: str) -> Invoice | None:
         r = await self.get(invoice_id)
         return Invoice.from_dict(r) if r else None
