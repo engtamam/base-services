@@ -43,7 +43,7 @@ def build_manifest(
         "version": settings.SERVICE_VERSION,
         "env": settings.ENV,
         "capabilities": ["platform.compliance", "compliance.manage", "compliance.read",
-                         "platform.secrets", "platform.config"],
+                         "compliance.self", "platform.secrets", "platform.config"],
         "endpoints": [
             {"path": "/healthz", "tier": "public", "method": "GET"},
             {"path": "/readyz", "tier": "public", "method": "GET"},
@@ -69,6 +69,7 @@ def build_manifest(
             {"path": "/api/v1/compliance/consent/grant", "tier": "user", "method": "POST"},
             {"path": "/api/v1/compliance/consent/withdraw", "tier": "user", "method": "POST"},
             {"path": "/api/v1/compliance/consent/history", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/compliance/me/dsar", "tier": "user", "method": "POST"},
             {"path": "/api/v1/compliance/dsar", "tier": "user", "method": "POST"},
             {"path": "/api/v1/compliance/dsar", "tier": "user", "method": "GET"},
             {"path": "/api/v1/compliance/dsar/{id}/verify", "tier": "user", "method": "POST"},

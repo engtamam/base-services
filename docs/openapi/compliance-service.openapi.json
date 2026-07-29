@@ -248,6 +248,25 @@
         "title": "HoldIn",
         "type": "object"
       },
+      "MeDsarIn": {
+        "description": "A self-service DSAR. Carries only the KIND of request \u2014 never a subject id: the subject is\nthe caller's own token, so this shape makes opening a request against someone else impossible,\nnot merely forbidden (CWE-639).",
+        "properties": {
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "title": "MeDsarIn",
+        "type": "object"
+      },
       "RopaIn": {
         "properties": {
           "cross_border": {
@@ -1045,6 +1064,50 @@
           }
         },
         "summary": "Release Hold",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/me/dsar": {
+      "post": {
+        "description": "A data subject opens a DSAR about THEMSELVES.\n\nSubject and tenant are the caller's own token, never the body \u2014 the same DSAR machinery an\noperator drives, but with no way to name another subject. The verification token is returned\nonce so the subject can confirm the request from the channel they own.",
+        "operationId": "create_my_dsar_api_v1_compliance_me_dsar_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MeDsarIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create My Dsar Api V1 Compliance Me Dsar Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create My Dsar",
         "tags": [
           "compliance"
         ]

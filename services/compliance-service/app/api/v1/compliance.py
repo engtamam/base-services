@@ -27,6 +27,9 @@ router = APIRouter(prefix="/api/v1/compliance", tags=["compliance"])
 
 _ADMIN = require_any_capability("platform.compliance", "compliance.manage")
 _READ = require_any_capability("platform.compliance", "compliance.manage", "compliance.read")
+# The data subject acting FOR THEMSELVES. Never resolves a subject from a body — it is always the
+# caller's own token — so a self-service DSAR cannot be opened against anyone else.
+_SELF = require_any_capability("compliance.self", "compliance.manage", "platform.compliance")
 
 
 def _cfg() -> dict[str, Any]:
@@ -138,6 +141,14 @@ class DsarIn(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class MeDsarIn(BaseModel):
+    """A self-service DSAR. Carries only the KIND of request — never a subject id: the subject is
+    the caller's own token, so this shape makes opening a request against someone else impossible,
+    not merely forbidden (CWE-639)."""
+    type: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class HoldIn(BaseModel):
     subject: str = Field(min_length=1, max_length=256)
     reason: str = Field(min_length=1, max_length=512)
@@ -236,6 +247,31 @@ async def create_dsar(request: Request, body: DsarIn, principal: Principal = Dep
     out["created"] = created
     if created:
         out["verification_token"] = d.verification_token   # returned ONCE, to send to the subject
+    return out
+
+
+@router.post("/me/dsar", status_code=201)
+async def create_my_dsar(request: Request, body: MeDsarIn,
+                         principal: Principal = Depends(_SELF)) -> dict:
+    """A data subject opens a DSAR about THEMSELVES.
+
+    Subject and tenant are the caller's own token, never the body — the same DSAR machinery an
+    operator drives, but with no way to name another subject. The verification token is returned
+    once so the subject can confirm the request from the channel they own.
+    """
+    if body.type not in DSAR_TYPES:
+        raise HTTPException(422, f"type must be one of {DSAR_TYPES}")
+    tenant = _tenant(principal)
+    d, created = await build_dsar(request).create(tenant=tenant, subject=principal.subject,
+                                                  type=body.type, payload=body.payload)
+    await request.app.state.auditor.record(
+        "dsar.created", actor=principal.subject, tenant=tenant,
+        resource=f"dsar:{d.id}", ip=request.client.host if request.client else "",
+        metadata={"type": body.type, "created": created, "self_service": True})
+    out = d.public()
+    out["created"] = created
+    if created:
+        out["verification_token"] = d.verification_token
     return out
 
 
