@@ -53,6 +53,22 @@ class _Wallet:
         self.applied[source] = amount_minor
         return True
 
+    async def debit(self, *, tenant, fund, amount_minor, source, reason="", allow_negative=False):
+        # Modelled like the real wallet: de-duplicate on the (distinct clawback) source, and refuse
+        # to go below zero unless allow_negative — the balance here is the sum of applied credits
+        # under the ORIGINAL grant source for this fund.
+        self.calls.append({"tenant": tenant, "fund": fund, "amount_minor": amount_minor,
+                           "source": source, "debit": True, "allow_negative": allow_negative})
+        if self._fail:
+            raise self._fail
+        if source in self.applied:                 # already clawed back on this key → idempotent
+            return True
+        balance = sum(v for k, v in self.applied.items() if not k.endswith(":clawback"))
+        if amount_minor > balance and not allow_negative:
+            raise WalletRefused("insufficient balance")
+        self.applied[source] = -amount_minor
+        return True
+
     async def health(self):
         return True
 

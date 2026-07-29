@@ -60,5 +60,24 @@ class HttpWallet:
             raise WalletRefused(f"wallet refused the credit (status {status})")
         raise WalletUnavailable(f"wallet unavailable (status {status})")
 
+    async def debit(self, *, tenant: str, fund: str, amount_minor: int, source: str,
+                    reason: str = "", allow_negative: bool = False) -> bool:
+        token = await self._token()
+        status, body = post_json(
+            f"{self._base}/internal/wallet/debit",
+            {"tenant": tenant, "fund": fund, "amount": int(amount_minor),
+             "source": source, "reason": reason, "allow_negative": bool(allow_negative)},
+            {"X-Internal-Token": token},
+            timeout=self._timeout,
+        )
+        if 200 <= status < 300:
+            return True
+        # 409 = insufficient balance with allow_negative off. Permanent for THIS clawback: the
+        # caller records grant.clawback_failed rather than retrying a balance that will not grow
+        # back on its own. A fund/tenant that does not exist (400/404/422) is permanent too.
+        if status in (400, 404, 409, 422):
+            raise WalletRefused(f"wallet refused the debit (status {status})")
+        raise WalletUnavailable(f"wallet unavailable (status {status})")
+
     async def health(self) -> bool:
         return True

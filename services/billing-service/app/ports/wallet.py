@@ -50,4 +50,23 @@ class Wallet(Protocol):
         """
         ...
 
+    async def debit(self, *, tenant: str, fund: str, amount_minor: int, source: str,
+                    reason: str = "", allow_negative: bool = False) -> bool:
+        """Take funds back, idempotently on `source`. True when the debit is durably applied.
+
+        This is how a refund or chargeback reverses the credits the payment bought. `source` is a
+        DISTINCT clawback key (never the original credit's), so a redelivered clawback debits once
+        and is never confused with the credit it undoes.
+
+        `allow_negative` is the crux of a clawback: the customer may already have SPENT the credits
+        being refunded, so refusing to go below zero would let them keep both the money and the
+        goods. With it True the balance is allowed below zero; with it False an insufficient balance
+        is a permanent `WalletRefused` the caller turns into a `grant.clawback_failed` signal rather
+        than a retry-for-ever.
+
+        Raises WalletUnavailable for anything worth retrying and WalletRefused for anything that
+        never will be (including insufficient balance when `allow_negative` is False).
+        """
+        ...
+
     async def health(self) -> bool: ...

@@ -14,5 +14,9 @@ class NullWallet:
                      reason: str = "", expires_at: float | None = None) -> bool:
         return False
 
+    async def debit(self, *, tenant: str, fund: str, amount_minor: int, source: str,
+                    reason: str = "", allow_negative: bool = False) -> bool:
+        return False
+
     async def health(self) -> bool:
         return True
