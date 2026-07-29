@@ -91,13 +91,18 @@ is a hint. The reversal has to be a promise, the same shape as the grant it undo
 
 ## Tasks
 
-- [ ] **51.1** Wallet `debit(*, allow_negative=False)` on the port, HTTP adapter, and null driver.
-- [ ] **51.2** `GrantOutbox.record_clawback` + `deliver`-via-debit + `reconcile` heal from voided
+- [x] **51.1** Wallet `debit(*, allow_negative=False)` on the port, HTTP adapter, and null driver.
+- [x] **51.2** `GrantOutbox.record_clawback` + `deliver`-via-debit + `reconcile` heal from voided
   invoices; distinct key `billing:invoice:{id}:clawback`; `grant.clawback_failed` on refusal.
-- [ ] **51.3** `_claw_back` seam wired into `refund`, `reverse_settlement`, and the webhook refund
+- [x] **51.3** `_claw_back` seam wired into `refund`, `reverse_settlement`, and the webhook refund
   branch; reverse the granted amount, full-on-void, `BILLING_CLAWBACK_ON_PARTIAL` (default off).
-- [ ] **51.4** Edges + knobs: `BILLING_CLAWBACK_SKIP_EXPIRED` (default on), fail-safe (never blocks
+- [x] **51.4** Edges + knobs: `BILLING_CLAWBACK_SKIP_EXPIRED` (default on), fail-safe (never blocks
   the refund; no-op with no wallet), RUNTIME_POLICY entries for the two knobs.
-- [ ] **51.5** Mutation tests: double-refund idempotency, already-spent → negative vs `FAILED`
+- [x] **51.5** Mutation tests: double-refund idempotency, already-spent → negative vs `FAILED`
   + `grant.clawback_failed`, chargeback-via-`reverse_settlement`, reconcile heals a dropped
   clawback, expired-grant skip, no-op when wallet unwired.
+
+
+---
+
+**Phase 51 complete.** A refunded/charged-back invoice now reverses the wallet grant it made, as a durable reverse-outbox (distinct key `billing:invoice:{id}:clawback`, reconciled from the void fact) — not an event the bus could drop. One `_claw_back` seam funnels refund, settlement reversal, and the webhook refund branch. Behaviour is a set of operator choices (enable per-tenant, allow-negative, on-partial, skip-expired). 620 billing tests green.

@@ -132,3 +132,46 @@ def test_a_reversed_settlement_that_had_paid_records_one_clawback():
     run(SettlementStore(st).save(stl))
     run(svc.reverse_settlement(settlement_id="stl_1", reason="recall"))
     assert _has_clawback(st)
+
+
+# ── edges (51.5) ──────────────────────────────────────────────────────────────
+def test_no_grants_outbox_wired_is_a_safe_noop():
+    """A deployment with no wallet must not acquire a broken reversal path."""
+    st = MemoryDataStore()
+    svc = _svc(st, grants=None)
+    inv = _granted_invoice(st)
+    run(svc._claw_back(inv))
+    assert not _has_clawback(st)
+
+
+def test_an_expired_reset_grant_is_not_clawed_back():
+    """The credits already lapsed in the wallet — reversing would drive the balance negative for
+    credits the customer never effectively held."""
+    st = MemoryDataStore()
+    svc = _svc(st, grants=_outbox(st))
+    svc._cfg["plan_credit_grant_mode"] = "reset"
+    inv = Invoice(id="inv_1", tenant="acme", number="INV-1", status="paid", total_minor=5000,
+                  currency="SAR", meta={"grant_minor": 5000, "period_end": 1.0})  # long past
+    run(InvoiceStore(st).save(inv))
+    run(svc._claw_back(inv))
+    assert not _has_clawback(st)
+
+
+def test_a_double_refund_produces_one_clawback():
+    st = MemoryDataStore()
+    svc = _svc(st, grants=_outbox(st))
+    inv = _granted_invoice(st)
+    run(svc._claw_back(inv))
+    run(svc._claw_back(inv))              # a redelivered refund / a reconcile racing the seam
+    rows, _ = run(st.find("credit_grants", {"kind": "clawback"}, limit=10))
+    assert len(rows) == 1
+
+
+def test_an_invoice_that_granted_nothing_reverses_nothing():
+    st = MemoryDataStore()
+    svc = _svc(st, grants=_outbox(st))
+    inv = Invoice(id="inv_1", tenant="acme", number="INV-1", status="paid", total_minor=5000,
+                  currency="SAR", meta={})           # no grant_minor
+    run(InvoiceStore(st).save(inv))
+    run(svc._claw_back(inv))
+    assert not _has_clawback(st)
