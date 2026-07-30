@@ -188,6 +188,20 @@
         "title": "LoginIn",
         "type": "object"
       },
+      "MemberStatusIn": {
+        "properties": {
+          "status": {
+            "pattern": "^(active|suspended)$",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "MemberStatusIn",
+        "type": "object"
+      },
       "MfaVerifyIn": {
         "properties": {
           "code": {
@@ -1579,6 +1593,62 @@
           }
         },
         "summary": "Update Member",
+        "tags": [
+          "tenancy"
+        ]
+      },
+      "x-available-when": "IDENTITY_MULTI_TENANT=true"
+    },
+    "/api/v1/tenancy/members/{person_id}/status": {
+      "post": {
+        "description": "Suspend or reactivate a member in THIS tenant, without deleting them.\n\nSuspension revokes ACCESS while keeping the person, their roles and their caps: the same seam\nthat enforces removal (`authorize_tenant` refuses a non-active membership) ends a suspended\nmember's access on their next refresh, within the access-token TTL. Reactivation restores it.\nTenant comes from the token, never the body. Idempotent, and audited write-ahead as critical \u2014\na change in whether someone can act is disputable exactly like a role change.",
+        "operationId": "set_member_status_api_v1_tenancy_members__person_id__status_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "person_id",
+            "required": true,
+            "schema": {
+              "title": "Person Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemberStatusIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Member Status Api V1 Tenancy Members  Person Id  Status Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Member Status",
         "tags": [
           "tenancy"
         ]

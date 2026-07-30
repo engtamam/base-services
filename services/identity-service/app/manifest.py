@@ -75,6 +75,7 @@ def build_manifest(
             {"path": "/api/v1/tenancy/members", "tier": "user", "method": "GET"},
             {"path": "/api/v1/tenancy/members", "tier": "user", "method": "POST"},
             {"path": "/api/v1/tenancy/members/{person_id}", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/tenancy/members/{person_id}/status", "tier": "user", "method": "POST"},
             {"path": "/api/v1/tenancy/members/{person_id}", "tier": "user", "method": "DELETE"},
             {"path": "/internal/identity/facts/{fact}", "tier": "internal", "method": "GET",
              # onboarding declares identity as the OWNER of these facts; it must be able to ask.

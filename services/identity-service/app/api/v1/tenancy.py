@@ -158,6 +158,30 @@ async def update_member(request: Request, person_id: str, body: UpdateMemberIn) 
     return {"member": m.public() | {"person_id": m.person_id, "caps": m.caps}}
 
 
+class MemberStatusIn(BaseModel):
+    status: str = Field(pattern="^(active|suspended)$")
+
+
+@members_router.post("/members/{person_id}/status", dependencies=[Depends(rate_limit)])
+async def set_member_status(request: Request, person_id: str, body: MemberStatusIn) -> dict:
+    """Suspend or reactivate a member in THIS tenant, without deleting them.
+
+    Suspension revokes ACCESS while keeping the person, their roles and their caps: the same seam
+    that enforces removal (`authorize_tenant` refuses a non-active membership) ends a suspended
+    member's access on their next refresh, within the access-token TTL. Reactivation restores it.
+    Tenant comes from the token, never the body. Idempotent, and audited write-ahead as critical —
+    a change in whether someone can act is disputable exactly like a role change."""
+    principal, tenant = await _caller_tenant(request, _write_cap())
+    await request.app.state.auditor.record(
+        "member.status_changed", actor=principal.subject, tenant=tenant,
+        resource=f"member:{person_id}", ip=request.client.host if request.client else "",
+        metadata={"status": body.status})
+    m = await _svc(request).set_member_status(tenant, person_id, body.status)
+    if m is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_A_MEMBER")
+    return {"member": m.public() | {"person_id": m.person_id, "caps": m.caps}}
+
+
 @router.post("/person/claim", dependencies=[Depends(rate_limit)])
 async def claim_invite(request: Request, body: ClaimIn) -> dict:
     """The invited human sets their OWN password. No token, no admin, no session — just the invite.

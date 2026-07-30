@@ -126,6 +126,15 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "unattributable elevation is indistinguishable from an attacker's, exactly like a grant",
     },
     {
+        "action": "member.status_changed",
+        "source": "admin",
+        "critical": True,
+        "resource": "member",
+        "why": "suspending a member revokes their access to the organisation and reactivating "
+               "restores it; either is disputable exactly like a role change, and an unattributable "
+               "suspension is indistinguishable from an attacker locking a rival out",
+    },
+    {
         "action": "auth.self_deleted",
         "source": "user",
         "critical": True,

@@ -12,6 +12,7 @@ import datetime as _dt
 from app.core.membership import (
     ACTIVE,
     PENDING,
+    SUSPENDED,
     UNUSABLE_PASSWORD,
     Membership,
     Person,
@@ -487,6 +488,30 @@ class AuthService:
             m.roles = list(roles)
         if caps is not None:
             m.caps = list(caps)
+        return await self._memberships.grant(m)
+
+    async def set_member_status(self, tenant: str, person_id: str, status: str):
+        """Suspend or reactivate a member in THIS tenant, without deleting them.
+
+        Suspension revokes ACCESS while keeping the person, their roles and their caps intact:
+        `authorize_tenant` refuses a membership that is not active, so a suspended member's next
+        refresh fails and access ends within the access-token TTL (T4) — the same seam that enforces
+        removal. Reactivation restores it. Never touches the credential (T2). Returns the updated
+        membership, or None if the person is not a member here. Idempotent: setting the status it
+        already holds is a no-op success.
+        """
+        if self._memberships is None:
+            raise RuntimeError("IDENTITY_MULTI_TENANT is off — no membership store is wired")
+        if not tenant or not person_id:
+            raise TenantAccessDenied()
+        if status not in (ACTIVE, SUSPENDED):
+            raise ValueError(f"status must be {ACTIVE!r} or {SUSPENDED!r}")
+        m = await self._memberships.membership(person_id, tenant)
+        if m is None:
+            return None
+        if m.status == status:
+            return m                       # idempotent: already in the requested state
+        m.status = status
         return await self._memberships.grant(m)
 
     async def claim_invite(self, token: str, password: str) -> Person | None:

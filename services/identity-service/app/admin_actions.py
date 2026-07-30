@@ -53,6 +53,20 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         ],
     },
     {
+        "id": "identity.set_member_status",
+        "label": "Suspend or reactivate a member",
+        "method": "POST",
+        "path": "/api/v1/tenancy/members/{person_id}/status",
+        "capability": "members:write",
+        "group": "Directory",
+        "confirm": True,
+        "params": [
+            {"name": "person_id", "in": "path", "type": "string", "required": True},
+            {"name": "status", "in": "body", "type": "string", "required": True,
+             "help": "active | suspended — suspend revokes access without deleting the member"},
+        ],
+    },
+    {
         "id": "identity.remove_member",
         "label": "Remove member (revoke this tenant only)",
         "method": "DELETE",
