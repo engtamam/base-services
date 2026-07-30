@@ -21,7 +21,7 @@ from app.api.auth import Principal, require_cap
 from app.api.ratelimit import rate_limit
 from app.api.v1.auth import _svc
 from app.config import get_settings
-from app.core.auth_service import CredentialNotYours, WeakPassword
+from app.core.auth_service import CredentialNotYours, SoleOwnerError, WeakPassword
 from app.ports.caps_resolver import CapsUnavailable
 from app.core.tenancy import NoTenantClaim, TenantAccessDenied, tenant_of
 from app.ports.errors import InvalidToken, ValidationError
@@ -125,7 +125,12 @@ async def remove_member(request: Request, person_id: str) -> dict:
         "member.removed", actor=principal.subject, tenant=tenant,
         resource=f"member:{person_id}",
         ip=request.client.host if request.client else "")
-    removed = await _svc(request).remove_member(tenant, person_id)
+    try:
+        removed = await _svc(request).remove_member(tenant, person_id)
+    except SoleOwnerError:
+        # Removing the tenant's last owner would strand it — the same invariant identity.self
+        # enforces for a sole owner deleting themselves.
+        raise HTTPException(status.HTTP_409_CONFLICT, "LAST_OWNER")
     if not removed:
         # Same answer whether they are in another tenant or do not exist at all: a 404 that
         # distinguished the two would let an admin probe for who works elsewhere (T6).
@@ -150,8 +155,12 @@ async def update_member(request: Request, person_id: str, body: UpdateMemberIn) 
         "member.roles_changed", actor=principal.subject, tenant=tenant,
         resource=f"member:{person_id}", ip=request.client.host if request.client else "",
         metadata={"roles": ",".join(body.roles or []), "caps": ",".join(body.caps or [])})
-    m = await _svc(request).update_member_roles(
-        tenant, person_id, roles=body.roles, caps=body.caps)
+    try:
+        m = await _svc(request).update_member_roles(
+            tenant, person_id, roles=body.roles, caps=body.caps)
+    except SoleOwnerError:
+        # Stripping `owner` from the tenant's last owner strands it.
+        raise HTTPException(status.HTTP_409_CONFLICT, "LAST_OWNER")
     if m is None:
         # Same 404 as remove: never distinguish "in another tenant" from "does not exist" (T6).
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_A_MEMBER")
@@ -176,7 +185,11 @@ async def set_member_status(request: Request, person_id: str, body: MemberStatus
         "member.status_changed", actor=principal.subject, tenant=tenant,
         resource=f"member:{person_id}", ip=request.client.host if request.client else "",
         metadata={"status": body.status})
-    m = await _svc(request).set_member_status(tenant, person_id, body.status)
+    try:
+        m = await _svc(request).set_member_status(tenant, person_id, body.status)
+    except SoleOwnerError:
+        # Suspending the tenant's last owner revokes the only access that can manage it.
+        raise HTTPException(status.HTTP_409_CONFLICT, "LAST_OWNER")
     if m is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_A_MEMBER")
     return {"member": m.public() | {"person_id": m.person_id, "caps": m.caps}}

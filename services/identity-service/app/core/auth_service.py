@@ -410,19 +410,41 @@ class AuthService:
             "roles": list(m.roles), "caps": list(m.caps),
         }
 
+    async def _guard_last_owner(self, tenant: str, m: "Membership", *, keeps_owner: bool) -> None:
+        """Refuse an admin action that would leave a tenant with ZERO owner memberships.
+
+        The same invariant `delete_self` enforces for `/auth/me`, but here the actor is an ADMIN
+        acting on ANOTHER member — and it was missing, so removing / de-owning / suspending the last
+        owner stranded the tenant (no one could manage billing, members or the tenant), recoverable
+        only by a manual datastore write. A member who is not an active owner cannot orphan anyone;
+        an action that keeps them an active owner (a role change that still includes `owner`) is
+        fine; only removing the LAST active owner is refused.
+        """
+        if "owner" not in m.roles or not m.active:
+            return
+        if keeps_owner:
+            return
+        if not await self._memberships.has_other_active_owner(tenant, m.person_id):
+            raise SoleOwnerError()
+
     async def remove_member(self, tenant: str, person_id: str) -> bool:
         """Revoke ONE membership. The person survives — she still works somewhere else.
 
         Deleting the Person here would delete her access to every other company on the platform,
         from one company's admin panel. Revoking is a statement about this tenant and no other.
         Refresh re-verifies membership (T4), so this bites within the access-token TTL.
+
+        Refused (SoleOwnerError) when it would remove the tenant's LAST owner — that strands the
+        tenant exactly as a sole owner deleting themselves would.
         """
         if self._memberships is None:
             raise RuntimeError("IDENTITY_MULTI_TENANT is off — no membership store is wired")
         if not tenant or not person_id:
             raise TenantAccessDenied()
-        if await self._memberships.membership(person_id, tenant) is None:
+        m = await self._memberships.membership(person_id, tenant)
+        if m is None:
             return False
+        await self._guard_last_owner(tenant, m, keeps_owner=False)
         await self._memberships.revoke(person_id, tenant)
         return True
 
@@ -484,6 +506,10 @@ class AuthService:
         m = await self._memberships.membership(person_id, tenant)
         if m is None:
             return None
+        # A role change that drops `owner` from the LAST owner strands the tenant. A caps-only
+        # change (roles is None) never touches ownership, so it is always allowed.
+        if roles is not None:
+            await self._guard_last_owner(tenant, m, keeps_owner="owner" in roles)
         if roles is not None:
             m.roles = list(roles)
         if caps is not None:
@@ -511,6 +537,10 @@ class AuthService:
             return None
         if m.status == status:
             return m                       # idempotent: already in the requested state
+        # Suspending the LAST owner revokes the only access that can manage the tenant — refuse.
+        # Reactivating (status → active) restores an owner, so it never orphans and needs no guard.
+        if status == SUSPENDED:
+            await self._guard_last_owner(tenant, m, keeps_owner=False)
         m.status = status
         return await self._memberships.grant(m)
 
