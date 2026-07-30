@@ -218,7 +218,35 @@ class Settings(BaseSettings):
     # not a 200 with an empty capability set.
     AUTHZ_UNKNOWN_ROLE_STATUS: int = 400
 
+    # ── tenant-scoped capability assignment (privilege-escalation guard) ──────
+    # A tenant-scoped `authz.manage` holder may assign capabilities into a role/subject, but not
+    # ones that escalate beyond their tenant. A platform operator (`platform.authz`) is unrestricted.
+    # These three knobs are the operator's CHOICES; nothing about which caps are "platform" is
+    # hardcoded in the policy.
+    #   DENIED_CAP_PREFIXES — any capability under one of these prefixes is refused for a tenant
+    #     caller. `platform.` covers platform.authz / platform.operators / platform.* by construction.
+    AUTHZ_TENANT_DENIED_CAP_PREFIXES: str = "platform."
+    #   DENIED_CAPS — exact capabilities refused for a tenant caller. `authz.manage` is here because
+    #     a tenant admin granting it would let the grantee mint further roles — escalation by proxy.
+    AUTHZ_TENANT_DENIED_CAPS: str = "authz.manage"
+    #   ASSIGNABLE_CAPS — the positive allowlist. EMPTY = no positive restriction beyond the denylist
+    #     above (so this guard is safe-by-default without bricking benign tenant roles). Set it to a
+    #     curated tenant-safe set before enabling customer self-service role management.
+    AUTHZ_TENANT_ASSIGNABLE_CAPS: str = ""
+
     # ── Derived helpers ─────────────────────────────────────────────────────
+    @property
+    def authz_tenant_denied_cap_prefixes(self) -> tuple[str, ...]:
+        return tuple(p.strip() for p in self.AUTHZ_TENANT_DENIED_CAP_PREFIXES.split(",") if p.strip())
+
+    @property
+    def authz_tenant_denied_caps(self) -> frozenset[str]:
+        return frozenset(c.strip() for c in self.AUTHZ_TENANT_DENIED_CAPS.split(",") if c.strip())
+
+    @property
+    def authz_tenant_assignable_caps(self) -> frozenset[str]:
+        return frozenset(c.strip() for c in self.AUTHZ_TENANT_ASSIGNABLE_CAPS.split(",") if c.strip())
+
     @property
     def is_test(self) -> bool:
         return self.ENV == "test"

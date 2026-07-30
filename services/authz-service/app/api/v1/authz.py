@@ -12,6 +12,7 @@ from app.api.auth import Principal
 from app.api.authz import require_any_capability
 from app.config import get_settings
 from app.core.authz_service import AuthzService
+from app.core.cap_policy import forbidden_caps
 from app.core.stores import AssignmentStore, PolicyStore, RoleStore
 
 router = APIRouter(prefix="/api/v1", tags=["authz"])
@@ -40,6 +41,28 @@ def _guard_tenant(principal: Principal, obj_tenant: str) -> None:
         return
     if obj_tenant != (principal.tenant or "__none__"):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+
+
+def _guard_caps(principal: Principal, caps: list[str] | None) -> None:
+    """Refuse a tenant-scoped caller assigning capabilities that escalate beyond their tenant.
+
+    Isolating the ROW to the tenant (`_op_tenant`) is not isolating the POWER the row grants: without
+    this, an `authz.manage` holder could put `platform.*` / `authz.manage` in a role and assign it to
+    themselves. A platform operator (`platform.authz`) is unrestricted — delegated administration is
+    their job. Enforced server-side, at every route that accepts `capabilities`.
+    """
+    if caps is None:
+        return
+    s = get_settings()
+    bad = forbidden_caps(
+        caps, is_operator="platform.authz" in principal.caps,
+        denied_prefixes=s.authz_tenant_denied_cap_prefixes,
+        denied_caps=s.authz_tenant_denied_caps,
+        allowlist=s.authz_tenant_assignable_caps)
+    if bad:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"capabilities not assignable by a tenant admin: {', '.join(bad)}")
 
 
 class RoleIn(BaseModel):
@@ -72,6 +95,9 @@ class AssignIn(BaseModel):
 # ── roles ────────────────────────────────────────────────────────────────────
 @router.post("/roles", status_code=201)
 async def create_role(request: Request, body: RoleIn, principal: Principal = Depends(_ADMIN)) -> dict:
+    # Reject an escalating capability set BEFORE anything else — it is neither a mutation to record
+    # nor an audited attempt, it is a request that must not be honoured at all.
+    _guard_caps(principal, body.capabilities)
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
@@ -101,6 +127,7 @@ async def get_role(request: Request, role_id: str, principal: Principal = Depend
 @router.put("/roles/{role_id}")
 async def update_role(request: Request, role_id: str, body: RoleUpdate,
                       principal: Principal = Depends(_ADMIN)) -> dict:
+    _guard_caps(principal, body.capabilities)
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
@@ -185,6 +212,8 @@ async def delete_policy(request: Request, policy_id: str, principal: Principal =
 @router.put("/subjects/{subject}/roles")
 async def set_roles(request: Request, subject: str, body: AssignIn,
                     principal: Principal = Depends(_ADMIN)) -> dict:
+    # The most direct escalation vector: a DIRECT capability grant to a subject, no role in between.
+    _guard_caps(principal, body.capabilities)
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
