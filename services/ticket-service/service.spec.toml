@@ -1,0 +1,6 @@
+# service.spec.toml — the record of how this service was generated.
+name = "ticket-service"
+description = "General ticketing: typed threads over a config-driven workflow (feedback, support, billing…)"
+port = 8023
+
+[drivers]

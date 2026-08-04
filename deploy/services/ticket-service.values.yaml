@@ -1,0 +1,55 @@
+# ticket-service — deployment values.
+#
+# Defaults are SAFE, not scalable: one replica, in-memory drivers. To scale out, move every
+# stateful port to a shared driver below; the chart REFUSES to render replicas>1 otherwise,
+# because an in-memory cache is per-pod and our generation-keyed invalidation would silently
+# serve stale reads.
+service:
+  name: ticket-service
+  port: 8000
+
+image:
+  repository: ghcr.io/base-services/ticket-service
+  digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"   # CI rewrites this at publish; never a :latest tag
+
+replicas: 1
+
+drivers:
+  datastore: postgres
+  cache: redis
+  eventbus: redis
+  queue: redis
+  ratelimiter: redis
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 256Mi
+
+autoscaling:
+  enabled: false        # flip on once you have load; requests.cpu above makes it real
+
+existingSecret: ticket-service-secrets   # INTERNAL_SERVICE_TOKEN, DATASTORE_DSN, CACHE_URL, TOKEN_*
+
+networkPolicy:
+  enabled: true
+  ingressFromNamespace: ""
+  egress:
+    dns: true
+    datastore: true
+    internet: false
+
+metrics:
+  serviceMonitor: true
+
+# From config/product.json — regenerate with scripts/gen_deploy_values.py.
+# Do not hand-edit: `identifiers` are frozen and guarded by safety:product.
+env:
+  AUDIT_SERVICE_URL: "http://audit-service:8000"
+  AUDIT_SINK_DRIVER: "http"
+
+# No ingress: reached service-to-service on the internal tier only.
+ingress:
+  enabled: false

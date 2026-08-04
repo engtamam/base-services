@@ -1,0 +1,65 @@
+PROPRIETARY SOFTWARE LICENSE
+============================
+
+Copyright (c) 2026 Tamam Alahdal. All rights reserved.
+
+Unpublished proprietary work of Tamam Alahdal (the "Owner").
+
+Copyright subsists in this Software from the moment of its creation and is not
+conditional on this notice, on registration, or on the naming of the Owner. The
+Owner's identity is further evidenced by the version control history of this
+repository and by the account under which it is hosted.
+
+  Note for the Owner: if a company is later formed to hold these rights, assign
+  them to it IN WRITING and name it above. The assignment is what moves the
+  copyright — incorporating a company does not, by itself, transfer anything you
+  own personally today.
+
+This software and its source code, documentation, configuration, container
+images, and all accompanying materials (collectively, the "Software") are the
+exclusive property of the Owner and are protected by copyright law and
+international treaties.
+
+THIS IS NOT OPEN SOURCE SOFTWARE.
+
+NO LICENSE IS GRANTED
+---------------------
+No permission is granted to any person or entity to use, copy, modify, merge,
+publish, distribute, sublicense, sell, host, deploy, or create derivative works
+from the Software, in whole or in part, in any form or by any means.
+
+Possession of a copy of the Software, by any means including but not limited to
+receipt of a repository clone, a container image, a build artifact, or a
+disclosure made in error, confers no right of use.
+
+RESERVED RIGHTS
+---------------
+The Owner retains all rights, including the exclusive right to use the Software
+in the Owner's own products and services.
+
+Any use of the Software by any other party requires a separate, prior, written
+licence agreement signed by the Owner. No implied licence, estoppel, or course
+of dealing shall be construed to grant any right. Nothing in this notice, and no
+absence of a named holder within it, shall be construed as a waiver, dedication
+to the public domain, or abandonment of any right.
+
+THIRD-PARTY COMPONENTS
+----------------------
+The Software depends on third-party open-source components, each governed by
+its own licence. Those licences apply to those components only and grant no
+rights in the Software itself. Dependency licences are enforced in CI to be
+permissive (MIT, BSD, Apache-2.0, ISC, PSF); see services/*/ci/check_licenses.py.
+
+NO WARRANTY
+-----------
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+OWNER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+CONTACT
+-------
+Licensing enquiries: open an issue on this repository, or contact the account
+under which it is hosted.

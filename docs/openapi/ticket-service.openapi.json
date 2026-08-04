@@ -1,0 +1,947 @@
+{
+  "components": {
+    "schemas": {
+      "BackupExportIn": {
+        "properties": {
+          "tenant": {
+            "default": "",
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "title": "BackupExportIn",
+        "type": "object"
+      },
+      "BackupImportIn": {
+        "properties": {
+          "archive": {
+            "additionalProperties": true,
+            "title": "Archive",
+            "type": "object"
+          },
+          "into_tenant": {
+            "default": "",
+            "title": "Into Tenant",
+            "type": "string"
+          },
+          "overwrite": {
+            "default": false,
+            "title": "Overwrite",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "archive"
+        ],
+        "title": "BackupImportIn",
+        "type": "object"
+      },
+      "BackupVerifyIn": {
+        "properties": {
+          "archive": {
+            "additionalProperties": true,
+            "title": "Archive",
+            "type": "object"
+          }
+        },
+        "required": [
+          "archive"
+        ],
+        "title": "BackupVerifyIn",
+        "type": "object"
+      },
+      "ConfigIn": {
+        "properties": {
+          "key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Key",
+            "type": "string"
+          },
+          "tenant": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Tenant",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "key",
+          "value"
+        ],
+        "title": "ConfigIn",
+        "type": "object"
+      },
+      "EraseIn": {
+        "properties": {
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "tenant": {
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant",
+          "subject"
+        ],
+        "title": "EraseIn",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "SecretIn": {
+        "properties": {
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "tenant": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Tenant",
+            "type": "string"
+          },
+          "value": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "value"
+        ],
+        "title": "SecretIn",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "ticket-service",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/admin/ping": {
+      "get": {
+        "operationId": "admin_ping_api_v1_admin_ping_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Ping Api V1 Admin Ping Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Admin Ping",
+        "tags": [
+          "v1"
+        ]
+      }
+    },
+    "/api/v1/operator/config": {
+      "get": {
+        "description": "Every knob an operator may change, with its current effective value.\n\nBuilt from the settable set, so a credential, a DSN or a frozen identifier cannot appear here\neven by accident \u2014 the filter is in one place rather than repeated per field.",
+        "operationId": "effective_config_api_v1_operator_config_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Tenant",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Effective Config Api V1 Operator Config Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Effective Config",
+        "tags": [
+          "operator"
+        ]
+      },
+      "put": {
+        "description": "Override one policy value. Refused if the boot guard would refuse it.",
+        "operationId": "set_config_api_v1_operator_config_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfigIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Config Api V1 Operator Config Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Config",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/v1/operator/config/{key}": {
+      "delete": {
+        "description": "Drop an override so the configured default applies again.",
+        "operationId": "clear_config_api_v1_operator_config__key__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "title": "Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Tenant",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Clear Config Api V1 Operator Config  Key  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Clear Config",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/v1/operator/secrets": {
+      "get": {
+        "description": "Which credentials are set, and a four-character hint for each.\n\nThere is no value in this response and no route that would return one. The hint exists so an\noperator can tell which key is loaded before replacing it \u2014 replacing the wrong one is the\nmistake this prevents.",
+        "operationId": "list_secrets_api_v1_operator_secrets_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Tenant",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Secrets Api V1 Operator Secrets Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Secrets",
+        "tags": [
+          "operator"
+        ]
+      },
+      "put": {
+        "description": "Set or rotate a credential. The previous one stays valid for a bounded window.\n\nAudited BEFORE the write: a change the log cannot take must not happen, and here the old value\nis overwritten by the action itself, so an unrecorded rotation is unreconstructable.",
+        "operationId": "set_secret_api_v1_operator_secrets_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SecretIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Secret Api V1 Operator Secrets Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Secret",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/v1/operator/secrets/{name}": {
+      "delete": {
+        "description": "Remove a credential so the configured environment value applies again.",
+        "operationId": "clear_secret_api_v1_operator_secrets__name__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Tenant",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Clear Secret Api V1 Operator Secrets  Name  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Clear Secret",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/v1/whoami": {
+      "get": {
+        "operationId": "whoami_api_v1_whoami_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Whoami Api V1 Whoami Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Whoami",
+        "tags": [
+          "v1"
+        ]
+      }
+    },
+    "/healthz": {
+      "get": {
+        "operationId": "healthz_healthz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Healthz Healthz Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Healthz",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/internal/backup/export": {
+      "post": {
+        "description": "Produce a sealed, checksummed archive of this service's declared data.\n\nCalled by backup-service, on a schedule, over the internal token. What this service holds is\ndeclared in app/backup_manifest.py; how it is read lives in core/backup.py. The orchestrator\nstores the archive and never sees the plaintext.",
+        "operationId": "backup_export_internal_backup_export_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackupExportIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Backup Export Internal Backup Export Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Backup Export",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/backup/import": {
+      "post": {
+        "description": "Restore an archive this service produced. Idempotent; leaves newer rows alone by default.",
+        "operationId": "backup_import_internal_backup_import_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackupImportIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Backup Import Internal Backup Import Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Backup Import",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/backup/verify": {
+      "post": {
+        "description": "Prove an archive restores, by test-restoring it into a throwaway namespace and comparing.\n\nbackup-service calls this after it stores an archive (passing back the bytes it read FROM the\nstore, so corruption at rest is caught too). This service is the only party that can unseal its\nown archive and knows its own schema, so verification lives here; the orchestrator only records\nthe verdict. The throwaway namespace is torn down before this returns \u2014 nothing is left behind,\nand live data is never touched.",
+        "operationId": "backup_verify_internal_backup_verify_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackupVerifyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Backup Verify Internal Backup Verify Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Backup Verify",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/health": {
+      "get": {
+        "operationId": "internal_health_internal_health_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Internal Health Internal Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Internal Health",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/manifest": {
+      "get": {
+        "operationId": "internal_manifest_internal_manifest_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Internal Manifest Internal Manifest Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Internal Manifest",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/privacy/erase": {
+      "post": {
+        "description": "Erase a data subject. Called by compliance-service during a DSAR fan-out.\n\nReturns the ack: what was erased, and what was RETAINED with its legal basis. Idempotent \u2014 a\nDSAR retries, so erasing an already-erased subject must not fail. Wire this service into the\nfan-out by adding it to PRIVACY_TARGETS in compliance-service's values file; the\nsafety:privacy-wiring gate fails if you implement this and forget.",
+        "operationId": "erase_subject_internal_privacy_erase_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EraseIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Erase Subject Internal Privacy Erase Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Erase Subject",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/metrics": {
+      "get": {
+        "operationId": "metrics_metrics_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Metrics",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/readyz": {
+      "get": {
+        "operationId": "readyz_readyz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Readyz",
+        "tags": [
+          "health"
+        ]
+      }
+    }
+  }
+}
