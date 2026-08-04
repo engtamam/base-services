@@ -115,19 +115,24 @@ Every clause is what makes a ticketing service un-reusable. This one is built th
 
 ## Tasks
 
-- [ ] **53.1** Scaffold `ticket-service` (create_service.py); capabilities `tickets.self` /
+- [x] **53.1** Scaffold `ticket-service` (create_service.py); capabilities `tickets.self` /
   `tickets.manage` / `platform.tickets`; zero-infra defaults; standard gates green.
-- [ ] **53.2** Type + workflow config in product.json (statuses/transitions/terminal/required/
+- [x] **53.2** Type + workflow config in product.json (statuses/transitions/terminal/required/
   per-transition caps/notify); boot guard + CI gate reject an incoherent type; feedback first.
-- [ ] **53.3** `TicketService` engine over an append-only event log; state machine ENFORCED
+- [x] **53.3** `TicketService` engine over an append-only event log; state machine ENFORCED
   (illegal transition 409, under-cap 403, required field 422); reopen + terminal handled.
-- [ ] **53.4** Multi-tenant scope + operator search/filter — filtered find + keyset pages (no scan);
+- [x] **53.4** Multi-tenant scope + operator search/filter — filtered find + keyset pages (no scan);
   optional search-service indexing driver with filter fallback.
-- [ ] **53.5** Durable notifier outbox → notification-service on created/replied/status_changed;
+- [x] **53.5** Durable notifier outbox → notification-service on created/replied/status_changed;
   templates from type config; the service never sends mail itself.
-- [ ] **53.6** `erase_subject` internal contract + manifest `erasure_category`; pseudonymise raiser,
+- [x] **53.6** `erase_subject` internal contract + manifest `erasure_category`; pseudonymise raiser,
   redact bodies, retain shape/history with a stated basis.
-- [ ] **53.7** `SuggestionProvider` port (null default) for assistant-service: triage / draft /
+- [x] **53.7** `SuggestionProvider` port (null default) for assistant-service: triage / draft /
   summarise / feedback-clustering; advisory only, logged as `ai_suggested`, redacted, human-confirmed.
-- [ ] **53.8** Admin + user actions catalogued (raise/reply/view own for the user; triage/assign/
+- [x] **53.8** Admin + user actions catalogued (raise/reply/view own for the user; triage/assign/
   transition/search/AI-suggest for the operator); auditable actions for every state change.
+
+
+---
+
+**Phase 53 complete.** A general ticket-service (the 23rd): a ticket is a typed thread over a state machine that is DATA — types, statuses, transitions, per-transition capabilities and notify are all config, so a new type is a setting, not a project. History is an append-only event log (status is a projection, ordered by a strict seq). Multi-tenant (customer sees own, operator the tenant; filtered finds, no scan). Never sends mail — a durable notifier outbox drains to notification-service. Erasable from day one (redact free text, keep the pseudonymous record). Advisory AI via assistant-service (triage + draft reply), logged as ai_suggested, off by default, never in the authority path. 358 tests; all gates + bandit + pip-audit clean. feedback is the first type.
