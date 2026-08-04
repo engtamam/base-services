@@ -166,3 +166,22 @@ async def backup_import(request: Request, body: BackupImportIn,
         # A bad archive is the caller's problem, not a 500: the checksum failed, the key did not
         # match, or a row had no identity. Say which, so an operator can act.
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+
+@router.post("/tickets/notifications/drain", dependencies=[Depends(require_internal_token)])
+async def drain_notifications(request: Request,
+                              settings: Settings = Depends(get_settings)) -> dict:
+    """Deliver every queued ticket notification to notification-service.
+
+    Driven by the platform's scheduler rather than a thread in here, so a restart cannot lose the
+    only thing that was retrying, and so an operator can see the schedule. A null transport records
+    but delivers nothing; pointing NOTIFY_DRIVER at http later delivers everything accumulated."""
+    import time
+    from app.core.notifier import NotifierOutbox
+    c = request.app.state.container
+    outbox = NotifierOutbox(
+        c.datastore, c.notification_sender,
+        cfg={"retry_base_seconds": settings.NOTIFY_RETRY_BASE_SECONDS,
+             "retry_max_seconds": settings.NOTIFY_RETRY_MAX_SECONDS},
+        clock=time.monotonic)
+    return await outbox.drain(limit=settings.NOTIFY_DRAIN_LIMIT)

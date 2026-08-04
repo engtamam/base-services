@@ -30,12 +30,17 @@ _MANAGE = require_any_capability("tickets.manage", "platform.tickets")
 
 
 def build_tickets(request: Request) -> TicketService:
+    from app.core.notifier import NotifierOutbox, TicketNotifier
     c = request.app.state.container
     s = get_settings()
+    outbox = NotifierOutbox(
+        c.datastore, c.notification_sender,
+        cfg={"retry_base_seconds": s.NOTIFY_RETRY_BASE_SECONDS,
+             "retry_max_seconds": s.NOTIFY_RETRY_MAX_SECONDS})
     return TicketService(
         tickets=TicketStore(c.datastore), events=EventStore(c.datastore),
         workflow=c.workflow, pii_salt=s.PII_SALT,
-        notifier=getattr(request.app.state, "notifier", None),
+        notifier=TicketNotifier(outbox),
         suggester=getattr(request.app.state, "suggester", None))
 
 

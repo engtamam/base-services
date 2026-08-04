@@ -134,6 +134,20 @@ class Settings(BaseSettings):
     PII_SALT: str = ""
     ERASURE_MAX_SCAN: int = 100_000   # a DSAR is rare, but must never be an unbounded read
 
+    # ── notifications (through notification-service, never sent here) ─────────
+    # The service NEVER sends mail. It records a durable notification-outbox row on notify-worthy
+    # ticket events and a scheduler drains it to notification-service. `null` records but delivers
+    # nothing (zero-infra default); `http` POSTs to NOTIFICATION_SERVICE_URL. A dropped bus event
+    # would lose a notification; the outbox is why "notify people" survives one.
+    NOTIFY_DRIVER: str = "null"              # null | http
+    NOTIFICATION_SERVICE_URL: str = ""       # e.g. http://notification-service:8000
+    NOTIFICATION_SERVICE_TOKEN: str = ""     # internal token; operator-managed, sealed
+    NOTIFICATION_SEND_PATH: str = "/internal/notifications/send"
+    NOTIFY_TIMEOUT_SECONDS: int = 5
+    NOTIFY_DRAIN_LIMIT: int = 100
+    NOTIFY_RETRY_BASE_SECONDS: int = 30
+    NOTIFY_RETRY_MAX_SECONDS: int = 3600
+
     # ── ticket types + workflows (the state machine, as DATA) ─────────────────
     # A ticket TYPE carries its own statuses, the allowed transitions between them, which capability
     # may make each move, which fields are required to open it, and what to notify. Adding a type is

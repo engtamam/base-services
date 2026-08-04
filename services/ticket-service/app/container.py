@@ -139,6 +139,7 @@ class Container:
     audit_sink: Any = None
     consent_gate: Any = None
     workflow: Any = None            # WorkflowRegistry — validated at boot; a bad type aborts startup
+    notification_sender: Any = None  # transport to notification-service (null default)
 
     def describe(self) -> list[dict[str, str]]:
         """[{port, driver}] for the service manifest."""
@@ -176,6 +177,19 @@ class Container:
                     pass
 
 
+def _build_notification_sender(settings: Settings) -> Any:
+    """The transport to notification-service. `null` records-only (zero-infra default); `http` posts
+    to a config-only host checked against the egress allowlist at construction."""
+    if settings.NOTIFY_DRIVER == "http":
+        from app.adapters.notification.http import HttpNotificationSender
+        return HttpNotificationSender(
+            settings.NOTIFICATION_SERVICE_URL, settings.NOTIFICATION_SERVICE_TOKEN,
+            allowed_hosts=settings.egress_allowed_hosts, timeout=settings.NOTIFY_TIMEOUT_SECONDS,
+            path=settings.NOTIFICATION_SEND_PATH)
+    from app.adapters.notification.null import NullNotificationSender
+    return NullNotificationSender()
+
+
 def _build_audit_sink(settings: Settings, event_bus) -> Any:
     """The eventbus sink must publish on the SAME bus instance the container hands out — a second
     instance would be a second in-memory broker, so events would vanish in tests and in any
@@ -207,4 +221,5 @@ def build_container(settings: Settings) -> Container:
         telemetry=_pick(_TELEMETRY, settings.TELEMETRY_DRIVER, "telemetry", settings),
         audit_sink=_build_audit_sink(settings, event_bus),
         consent_gate=_pick(_CONSENT_GATE, settings.CONSENT_GATE_DRIVER, "consent_gate", settings),
+        notification_sender=_build_notification_sender(settings),
     )

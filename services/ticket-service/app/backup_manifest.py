@@ -24,6 +24,7 @@ BACKUP: dict[str, Any] = {
     "collections": [
         {"name": "tickets", "tenant_scoped": True},
         {"name": "ticket_events", "tenant_scoped": True},
+        {"name": "notifications", "tenant_scoped": True},
     ],
     "excluded": [
     ],

@@ -1624,6 +1624,58 @@
         ]
       }
     },
+    "/internal/tickets/notifications/drain": {
+      "post": {
+        "description": "Deliver every queued ticket notification to notification-service.\n\nDriven by the platform's scheduler rather than a thread in here, so a restart cannot lose the\nonly thing that was retrying, and so an operator can see the schedule. A null transport records\nbut delivers nothing; pointing NOTIFY_DRIVER at http later delivers everything accumulated.",
+        "operationId": "drain_notifications_internal_tickets_notifications_drain_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Drain Notifications Internal Tickets Notifications Drain Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Drain Notifications",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/metrics": {
       "get": {
         "operationId": "metrics_metrics_get",
