@@ -140,6 +140,7 @@ class Container:
     consent_gate: Any = None
     workflow: Any = None            # WorkflowRegistry — validated at boot; a bad type aborts startup
     notification_sender: Any = None  # transport to notification-service (null default)
+    suggestion_provider: Any = None  # advisory AI via assistant-service (null default)
 
     def describe(self) -> list[dict[str, str]]:
         """[{port, driver}] for the service manifest."""
@@ -175,6 +176,19 @@ class Container:
                     await close()
                 except Exception:
                     pass
+
+
+def _build_suggestion_provider(settings: Settings) -> Any:
+    """The advisory AI seam. `null` = no AI (default); `http` = assistant-service, config-only host
+    checked against the egress allowlist at construction."""
+    if settings.SUGGEST_DRIVER == "http":
+        from app.adapters.suggestion.http import HttpSuggestionProvider
+        return HttpSuggestionProvider(
+            settings.ASSISTANT_SERVICE_URL, settings.ASSISTANT_SERVICE_TOKEN,
+            allowed_hosts=settings.egress_allowed_hosts, timeout=settings.SUGGEST_TIMEOUT_SECONDS,
+            triage_path=settings.ASSISTANT_TRIAGE_PATH, draft_path=settings.ASSISTANT_DRAFT_PATH)
+    from app.adapters.suggestion.null import NullSuggestionProvider
+    return NullSuggestionProvider()
 
 
 def _build_notification_sender(settings: Settings) -> Any:
@@ -222,4 +236,5 @@ def build_container(settings: Settings) -> Container:
         audit_sink=_build_audit_sink(settings, event_bus),
         consent_gate=_pick(_CONSENT_GATE, settings.CONSENT_GATE_DRIVER, "consent_gate", settings),
         notification_sender=_build_notification_sender(settings),
+        suggestion_provider=_build_suggestion_provider(settings),
     )

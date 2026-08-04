@@ -49,6 +49,10 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
      "path": "/api/v1/tickets/{ticket_id}/tags", "capability": "tickets.manage", "group": "Tickets",
      "params": [{"name": "ticket_id", "in": "path", "type": "string", "required": True},
                 {"name": "tags", "in": "body", "type": "array", "required": True}]},
+    {"id": "tickets.suggest_reply", "label": "Draft a reply with AI", "method": "POST",
+     "path": "/api/v1/tickets/{ticket_id}/suggest-reply", "capability": "tickets.manage",
+     "group": "Tickets",
+     "params": [{"name": "ticket_id", "in": "path", "type": "string", "required": True}]},
 
     # ── operator: credentials and runtime settings (the template's operator surface) ──
     {"id": "operator.list_secrets", "label": "Service credentials", "method": "GET",

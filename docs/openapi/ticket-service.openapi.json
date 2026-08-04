@@ -1170,6 +1170,51 @@
         ]
       }
     },
+    "/api/v1/tickets/{ticket_id}/suggest-reply": {
+      "post": {
+        "description": "An AI-drafted reply for the agent to edit and send. Advisory only \u2014 it never sends. Returns\n{\"supported\": False} when no AI is wired, so the UI hides the control rather than showing a lie.",
+        "operationId": "suggest_reply_api_v1_tickets__ticket_id__suggest_reply_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticket_id",
+            "required": true,
+            "schema": {
+              "title": "Ticket Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Suggest Reply Api V1 Tickets  Ticket Id  Suggest Reply Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Suggest Reply",
+        "tags": [
+          "tickets"
+        ]
+      }
+    },
     "/api/v1/tickets/{ticket_id}/tags": {
       "post": {
         "operationId": "tag_ticket_api_v1_tickets__ticket_id__tags_post",

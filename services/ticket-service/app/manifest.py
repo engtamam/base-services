@@ -89,6 +89,7 @@ def build_manifest(
             {"path": "/api/v1/tickets/{ticket_id}/status", "tier": "user", "method": "POST"},
             {"path": "/api/v1/tickets/{ticket_id}/assign", "tier": "user", "method": "POST"},
             {"path": "/api/v1/tickets/{ticket_id}/tags", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/tickets/{ticket_id}/suggest-reply", "tier": "user", "method": "POST"},
             # The operator surface: credentials and policy an operator changes after launch.
             # Declared like anything else — a route table built from manifests that omits the
             # place credentials are set is a route table that hides the highest-privilege

@@ -151,6 +151,21 @@ class TicketService:
         await self._tickets.save(t)
         return t
 
+    # ── AI advisory (operator, on demand) ──────────────────────────────────────
+    async def suggest_reply(self, tenant: str, ticket_id: str) -> dict[str, Any]:
+        """An assistant-drafted reply for an agent to edit and send. Advisory: it drafts, it never
+        sends, and it returns supported=False when no AI is wired rather than faking an answer."""
+        t = await self._fetch(tenant, ticket_id)
+        if self._suggester is None:
+            return {"supported": False}
+        hist, _ = await self._events.history(tenant=tenant, ticket_id=ticket_id, limit=100)
+        thread = [{"kind": e.get("kind"), "actor": e.get("actor_ref"), "body": e.get("body", "")}
+                  for e in hist if e.get("kind") in ("created", "replied")]
+        draft = await self._suggester.draft_reply(t, thread)
+        if draft is None:
+            return {"supported": False}
+        return {"supported": True, **draft.to_dict()}
+
     # ── reads ─────────────────────────────────────────────────────────────────
     async def get(self, tenant: str, ticket_id: str) -> Ticket:
         return await self._fetch(tenant, ticket_id)

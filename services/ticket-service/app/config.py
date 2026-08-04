@@ -148,6 +148,21 @@ class Settings(BaseSettings):
     NOTIFY_RETRY_BASE_SECONDS: int = 30
     NOTIFY_RETRY_MAX_SECONDS: int = 3600
 
+    # ── AI advisory layer (assistant-service) — OFF by default ───────────────
+    # A SuggestionProvider can auto-triage a new ticket (suggest type/priority/tags) and draft a
+    # reply an agent edits and sends. It is ADVISORY: it never transitions, closes or sends; every
+    # suggestion is logged as an `ai_suggested` event. Content sent to the model is tenant-scoped.
+    #   null  = no AI (default). http = ask assistant-service.
+    SUGGEST_DRIVER: str = "null"             # null | http
+    ASSISTANT_SERVICE_URL: str = ""          # e.g. http://assistant-service:8000
+    ASSISTANT_SERVICE_TOKEN: str = ""        # internal token; operator-managed, sealed
+    ASSISTANT_TRIAGE_PATH: str = "/internal/assistant/triage"
+    ASSISTANT_DRAFT_PATH: str = "/internal/assistant/draft"
+    SUGGEST_TIMEOUT_SECONDS: int = 8
+    # Auto-apply a suggested TAG only at/above this confidence (0..1); status is NEVER auto-changed.
+    # 1.0 (the default) means "never auto-apply" — record the suggestion and let a human decide.
+    SUGGEST_AUTOTAG_MIN_CONFIDENCE: float = 1.0
+
     # ── ticket types + workflows (the state machine, as DATA) ─────────────────
     # A ticket TYPE carries its own statuses, the allowed transitions between them, which capability
     # may make each move, which fields are required to open it, and what to notify. Adding a type is

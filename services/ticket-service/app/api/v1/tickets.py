@@ -31,17 +31,20 @@ _MANAGE = require_any_capability("tickets.manage", "platform.tickets")
 
 def build_tickets(request: Request) -> TicketService:
     from app.core.notifier import NotifierOutbox, TicketNotifier
+    from app.core.suggester import TicketSuggester
     c = request.app.state.container
     s = get_settings()
+    tickets, events = TicketStore(c.datastore), EventStore(c.datastore)
     outbox = NotifierOutbox(
         c.datastore, c.notification_sender,
         cfg={"retry_base_seconds": s.NOTIFY_RETRY_BASE_SECONDS,
              "retry_max_seconds": s.NOTIFY_RETRY_MAX_SECONDS})
+    suggester = TicketSuggester(
+        provider=c.suggestion_provider, events=events, tickets=tickets, workflow=c.workflow,
+        autotag_min_confidence=s.SUGGEST_AUTOTAG_MIN_CONFIDENCE)
     return TicketService(
-        tickets=TicketStore(c.datastore), events=EventStore(c.datastore),
-        workflow=c.workflow, pii_salt=s.PII_SALT,
-        notifier=TicketNotifier(outbox),
-        suggester=getattr(request.app.state, "suggester", None))
+        tickets=tickets, events=events, workflow=c.workflow, pii_salt=s.PII_SALT,
+        notifier=TicketNotifier(outbox), suggester=suggester)
 
 
 def _tenant(principal: Principal) -> str:
@@ -245,6 +248,18 @@ async def assign_ticket(request: Request, ticket_id: str, body: AssignIn,
     except TicketNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
     return t.public()
+
+
+@router.post("/tickets/{ticket_id}/suggest-reply", dependencies=[Depends(rate_limit)])
+async def suggest_reply(request: Request, ticket_id: str,
+                        principal: Principal = Depends(_MANAGE)) -> dict:
+    """An AI-drafted reply for the agent to edit and send. Advisory only — it never sends. Returns
+    {"supported": False} when no AI is wired, so the UI hides the control rather than showing a lie."""
+    tenant = _tenant(principal)
+    try:
+        return await build_tickets(request).suggest_reply(tenant, ticket_id)
+    except TicketNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
 
 
 @router.post("/tickets/{ticket_id}/tags", dependencies=[Depends(rate_limit)])
