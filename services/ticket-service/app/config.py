@@ -9,8 +9,9 @@
 # =============================================================================
 from __future__ import annotations
 
+import json
 from functools import lru_cache
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -68,6 +69,18 @@ class Settings(BaseSettings):
     CORS_MAX_AGE_SECONDS: int = 600           # how long a browser may cache the preflight
 
     @property
+    def ticket_types(self) -> list[dict[str, Any]]:
+        """The ticket-type config, parsed. A malformed JSON string is a boot-time failure — an
+        unparseable workflow must not degrade to 'no types', which would 500 every open."""
+        try:
+            parsed = json.loads(self.TICKET_TYPES_JSON)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise ValueError(f"TICKET_TYPES_JSON is not valid JSON: {exc}") from exc
+        if not isinstance(parsed, list):
+            raise ValueError("TICKET_TYPES_JSON must be a JSON array of type objects")
+        return parsed
+
+    @property
     def cors_origins(self) -> list[str]:
         return [o.strip() for o in self.CORS_ALLOWED_ORIGINS.split(",") if o.strip()]
 
@@ -120,6 +133,59 @@ class Settings(BaseSettings):
     # Salts the subject pseudonym on an erasure ack. FROZEN — config/product.identifiers.lock.json.
     PII_SALT: str = ""
     ERASURE_MAX_SCAN: int = 100_000   # a DSAR is rare, but must never be an unbounded read
+
+    # ── ticket types + workflows (the state machine, as DATA) ─────────────────
+    # A ticket TYPE carries its own statuses, the allowed transitions between them, which capability
+    # may make each move, which fields are required to open it, and what to notify. Adding a type is
+    # editing this JSON — no code, no redeploy of logic. An incoherent type (transition to an unknown
+    # status, no terminal, an unreachable status) is refused at boot by WorkflowRegistry.from_config.
+    #
+    # `feedback` is the first type (its required `ref` points at the template being reviewed).
+    # `support` shows a second, differently-shaped workflow so the engine is provably general. Add a
+    # `billing` (or any) type by appending an object with the same shape.
+    TICKET_TYPES_JSON: str = json.dumps([
+        {
+            "key": "feedback",
+            "label": {"en": "Feedback", "ar": "ملاحظات"},
+            "statuses": ["new", "triaged", "in_progress", "resolved", "closed"],
+            "start": "new",
+            "transitions": {
+                "new": ["triaged", "closed"],
+                "triaged": ["in_progress", "closed"],
+                "in_progress": ["resolved", "closed"],
+                "resolved": ["closed", "in_progress"],   # reopen allowed
+            },
+            "terminal": ["closed"],
+            "required_fields": ["ref"],                   # feedback must point at what it is about
+            "reply_capability": "tickets.self",
+            "transition_capabilities": {                  # who may move it INTO each status
+                "triaged": "tickets.manage",
+                "in_progress": "tickets.manage",
+                "resolved": "tickets.manage",
+            },
+            "notify": {"on": ["created", "replied", "status_changed"],
+                       "template_prefix": "ticket.feedback"},
+        },
+        {
+            "key": "support",
+            "label": {"en": "Support", "ar": "دعم"},
+            "statuses": ["new", "in_progress", "waiting_customer", "resolved", "closed"],
+            "start": "new",
+            "transitions": {
+                "new": ["in_progress", "closed"],
+                "in_progress": ["waiting_customer", "resolved", "closed"],
+                "waiting_customer": ["in_progress", "closed"],
+                "resolved": ["closed", "in_progress"],
+            },
+            "terminal": ["closed"],
+            "required_fields": [],
+            "reply_capability": "tickets.self",
+            "transition_capabilities": {"in_progress": "tickets.manage",
+                                        "resolved": "tickets.manage"},
+            "notify": {"on": ["created", "replied", "status_changed"],
+                       "template_prefix": "ticket.support"},
+        },
+    ])
 
     # ── audit trail (Phase 38) — where privileged actions are witnessed ───────
     # `null` records NOTHING and says so; the boot guard below refuses it in production, because a
