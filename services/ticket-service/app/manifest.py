@@ -58,7 +58,8 @@ def build_manifest(
         # adopter's client app reads as fact and renders nothing from. A blank app is the usual
         # symptom of a service that shipped this untouched. If a service genuinely grants none,
         # leaving it empty is correct; the point is that it must be a decision, not a leftover.
-        "capabilities": [],  # e.g. ["files.upload", "files.read"] — atomic capability keys
+        "capabilities": ["tickets.self", "tickets.manage", "platform.tickets",
+                         "platform.secrets", "platform.config"],
         "endpoints": [
             {"path": "/healthz", "tier": "public", "method": "GET"},
             {"path": "/readyz", "tier": "public", "method": "GET"},
@@ -74,8 +75,19 @@ def build_manifest(
              # and is therefore never MISSED — the request closes green on an erasure
              # that did not happen.
              "erasure_category": "subject"},
-            {"path": "/api/v1/admin/ping", "tier": "user", "method": "GET"},
-            {"path": "/api/v1/whoami", "tier": "user", "method": "GET"},
+            # ── tickets: customer self-service ──────────────────────────────────
+            {"path": "/api/v1/workflows", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/tickets", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/tickets", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/tickets/{ticket_id}", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/tickets/{ticket_id}/history", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/tickets/{ticket_id}/replies", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/tickets/{ticket_id}/rate", "tier": "user", "method": "POST"},
+            # ── tickets: operator ───────────────────────────────────────────────
+            {"path": "/api/v1/operator/tickets", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/tickets/{ticket_id}/status", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/tickets/{ticket_id}/assign", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/tickets/{ticket_id}/tags", "tier": "user", "method": "POST"},
             # The operator surface: credentials and policy an operator changes after launch.
             # Declared like anything else — a route table built from manifests that omits the
             # place credentials are set is a route table that hides the highest-privilege
@@ -91,7 +103,8 @@ def build_manifest(
         # FILL THIS too, or leave it empty deliberately. Same trap as capabilities: an empty
         # `emitted` reads as "this service publishes nothing", so a consumer wiring against it
         # subscribes to nothing and fails silently rather than at boot.
-        "events": {"emitted": [], "consumed": []},  # e.g. {"emitted": ["wallet.credited"], ...}
+        "events": {"emitted": ["ticket.created", "ticket.replied", "ticket.status_changed",
+                               "ticket.assigned"], "consumed": []},
         "admin_actions": _admin_actions(),
         "backup": _backup(),
         "user_actions": _user_actions(),

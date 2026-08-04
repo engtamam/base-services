@@ -51,7 +51,7 @@ def client(auth_env) -> TestClient:
 
 def _token(caps=None, secret=SECRET, **over) -> str:
     now = dt.datetime.now(dt.timezone.utc)
-    claims = {"sub": "u1", "iss": ISS, "aud": AUD,
+    claims = {"sub": "u1", "iss": ISS, "aud": AUD, "tenant": "acme",
               "exp": now + dt.timedelta(minutes=5), "iat": now}
     if caps is not None:
         claims["caps"] = caps
@@ -63,59 +63,64 @@ def _auth(tok: str) -> dict:
     return {"Authorization": f"Bearer {tok}"}
 
 
+# A user-tier route (needs tickets.self) and an operator-tier route (needs tickets.manage).
+USER_ROUTE = "/api/v1/workflows"
+OPERATOR_ROUTE = "/api/v1/operator/tickets"
+
+
 # ── Authentication ──────────────────────────────────────────────────────────
 def test_no_bearer_401(client):
-    assert client.get("/api/v1/whoami").status_code == 401
+    assert client.get(USER_ROUTE).status_code == 401
 
 
 def test_valid_token_200(client):
-    r = client.get("/api/v1/whoami", headers=_auth(_token(caps=["read"])))
+    r = client.get(USER_ROUTE, headers=_auth(_token(caps=["tickets.self"])))
     assert r.status_code == 200
-    assert r.json()["subject"] == "u1"
-    assert r.json()["caps"] == ["read"]
+    assert "types" in r.json()
 
 
 def test_invalid_token_401(client):
-    assert client.get("/api/v1/whoami", headers=_auth("garbage")).status_code == 401
+    assert client.get(USER_ROUTE, headers=_auth("garbage")).status_code == 401
 
 
 def test_expired_token_401(client):
-    tok = _token(exp=dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=1))
-    assert client.get("/api/v1/whoami", headers=_auth(tok)).status_code == 401
+    tok = _token(caps=["tickets.self"], exp=dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=1))
+    assert client.get(USER_ROUTE, headers=_auth(tok)).status_code == 401
 
 
 def test_wrong_secret_401(client):
-    assert client.get("/api/v1/whoami", headers=_auth(_token(secret="x" * 40))).status_code == 401
+    assert client.get(USER_ROUTE,
+                      headers=_auth(_token(caps=["tickets.self"], secret="x" * 40))).status_code == 401
 
 
 # ── Capability RBAC (deny-by-default) ───────────────────────────────────────
 def test_admin_denied_without_cap(client):
-    r = client.get("/api/v1/admin/ping", headers=_auth(_token(caps=["read"])))
+    r = client.get(OPERATOR_ROUTE, headers=_auth(_token(caps=["tickets.self"])))
     assert r.status_code == 403
 
 
 def test_admin_denied_without_any_caps(client):
     # No caps claim at all -> no capabilities -> 403 (deny-by-default).
-    r = client.get("/api/v1/admin/ping", headers=_auth(_token()))
+    r = client.get(OPERATOR_ROUTE, headers=_auth(_token()))
     assert r.status_code == 403
 
 
 def test_admin_allowed_with_cap(client):
-    r = client.get("/api/v1/admin/ping", headers=_auth(_token(caps=["admin"])))
+    r = client.get(OPERATOR_ROUTE, headers=_auth(_token(caps=["tickets.manage"])))
     assert r.status_code == 200
 
 
 def test_role_claim_alone_does_not_grant(client):
-    # A 'role: admin' claim without the 'admin' capability must NOT pass.
-    r = client.get("/api/v1/admin/ping", headers=_auth(_token(role="admin")))
+    # A 'role: admin' claim without the capability must NOT pass.
+    r = client.get(OPERATOR_ROUTE, headers=_auth(_token(role="tickets.manage")))
     assert r.status_code == 403
 
 
 # ── Rate limiting ───────────────────────────────────────────────────────────
 def test_rate_limit_429(auth_env):
     rl_client = _make_app(RATELIMIT_MAX="1")
-    tok = _auth(_token(caps=["read"]))
-    first = rl_client.get("/api/v1/whoami", headers=tok)
-    second = rl_client.get("/api/v1/whoami", headers=tok)
+    tok = _auth(_token(caps=["tickets.self"]))
+    first = rl_client.get(USER_ROUTE, headers=tok)
+    second = rl_client.get(USER_ROUTE, headers=tok)
     assert first.status_code == 200
     assert second.status_code == 429

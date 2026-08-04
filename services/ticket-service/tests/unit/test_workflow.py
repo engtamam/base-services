@@ -28,7 +28,7 @@ def test_the_default_config_builds_and_is_coherent():
     fb = reg.require("feedback")
     assert fb.start == "new"
     assert fb.can_transition("resolved", "in_progress")     # reopen
-    assert fb.is_terminal("closed")
+    assert not fb.transitions.get("closed")                 # terminal: no outgoing
     assert "ref" in fb.required_fields
 
 

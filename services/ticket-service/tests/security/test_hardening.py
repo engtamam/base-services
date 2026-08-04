@@ -49,7 +49,7 @@ def test_request_id_rejects_injection_attempt(secured_client):
 
 
 def test_user_tier_deny_by_default(secured_client):
-    assert secured_client.get("/api/v1/whoami").status_code == 401
+    assert secured_client.get("/api/v1/workflows").status_code == 401
 
 
 def test_unknown_path_generic_404(secured_client):

@@ -138,6 +138,7 @@ class Container:
     telemetry: Telemetry
     audit_sink: Any = None
     consent_gate: Any = None
+    workflow: Any = None            # WorkflowRegistry — validated at boot; a bad type aborts startup
 
     def describe(self) -> list[dict[str, str]]:
         """[{port, driver}] for the service manifest."""
@@ -187,8 +188,14 @@ def _build_audit_sink(settings: Settings, event_bus) -> Any:
 
 def build_container(settings: Settings) -> Container:
     """Resolve every port from config. Fail-fast on any unknown driver."""
+    from app.core.workflow import WorkflowRegistry
     event_bus = _pick(_EVENTBUS, settings.EVENTBUS_DRIVER, "event_bus", settings)
+    # THE WORKFLOW BOOT GUARD: build (and thereby validate) the ticket types now, so an incoherent
+    # type — a transition to nowhere, no terminal, an unreachable status — is a FAILED DEPLOY, not a
+    # ticket that can never be closed. Same discipline as the audit/pii/cors asserts above it.
+    workflow = WorkflowRegistry.from_config(settings.ticket_types)
     return Container(
+        workflow=workflow,
         datastore=_pick(_DATASTORE, settings.DATASTORE_DRIVER, "datastore", settings),
         cache=_pick(_CACHE, settings.CACHE_DRIVER, "cache", settings),
         event_bus=event_bus,

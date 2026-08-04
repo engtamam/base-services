@@ -39,10 +39,10 @@ class TicketType:
     notify: dict[str, Any] = field(default_factory=dict)                   # {on:[...], template_prefix}
 
     def can_transition(self, frm: str, to: str) -> bool:
+        # A terminal status has no outgoing transitions (enforced at build), so this already returns
+        # False for one — the state machine, not a separate is_terminal check, is the single source
+        # of truth for what may follow what.
         return to in self.transitions.get(frm, ())
-
-    def is_terminal(self, status: str) -> bool:
-        return status in self.terminal
 
     def capability_for(self, to_status: str, default: str) -> str:
         """The capability required to move a ticket INTO `to_status`. Defaults to the operator cap

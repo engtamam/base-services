@@ -22,9 +22,9 @@ from typing import Any
 BACKUP: dict[str, Any] = {
     "object_prefix": "",        # set if this service stores files in the object store
     "collections": [
-        # {"name": "widgets", "tenant_scoped": True},
+        {"name": "tickets", "tenant_scoped": True},
+        {"name": "ticket_events", "tenant_scoped": True},
     ],
     "excluded": [
-        # {"name": "idempo", "reason": "idempotency keys — regenerated, not data worth restoring"},
     ],
 }

@@ -13,7 +13,6 @@ from pydantic import BaseModel
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from app.config import Settings, get_settings
-from app.core.erasure import TemplateErasure
 from app.core import backup as _backup
 from app.backup_manifest import BACKUP
 from app.manifest import build_manifest
@@ -74,10 +73,15 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     fan-out by adding it to PRIVACY_TARGETS in compliance-service's values file; the
     safety:privacy-wiring gate fails if you implement this and forget.
     """
+    # Write-ahead: erasure is irreversible and critical — if it cannot be recorded it must not
+    # happen. Actor is empty: this is a service-to-service DSAR call, not a person.
+    await request.app.state.auditor.record(
+        "subject.erased", actor="", tenant=body.tenant, resource=f"subject:{body.subject}",
+        ip=request.client.host if request.client else "")
+    from app.core.ticket_erasure import TicketErasure
     c = request.app.state.container
     s = get_settings()
-    eraser = TemplateErasure(store=c.datastore, pii_salt=s.PII_SALT,
-                             max_scan=s.ERASURE_MAX_SCAN)
+    eraser = TicketErasure(store=c.datastore, pii_salt=s.PII_SALT, max_scan=s.ERASURE_MAX_SCAN)
     return await eraser.erase(body.tenant, body.subject)
 
 

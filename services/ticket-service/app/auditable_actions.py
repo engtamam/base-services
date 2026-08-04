@@ -72,12 +72,12 @@ THEN EMIT IT — the other half of the job
 Declaring an action does not record it. At the point the action happens:
 
     await request.app.state.auditor.record(
-        "permission.granted",
+        "ticket.status_changed",         # a DECLARED action name — see the list below
         actor=subject_ref,               # a PSEUDONYM — see below
-        resource=f"grant:{grant.id}",
+        resource=f"ticket:{ticket.id}",
         tenant=principal.tenant,
         ip=request.client.host,
-        metadata={"capability": cap},
+        metadata={"to": "resolved"},
     )
 
 For a `critical` action, let `AuditUnavailable` propagate — the API layer turns it into a 503. That
@@ -142,26 +142,42 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "started refusing — and that history is unavailable anywhere else. Not critical: "
                "refusing to change a retention period because the log is down protects nothing",
     },
-    # ── Delete these examples and declare your own ────────────────────────────
+    # ── ticket lifecycle ──────────────────────────────────────────────────────
     {
-        "action": "example.thing_created",
+        "action": "ticket.created",
         "source": "user",
         "critical": False,
-        "resource": "thing",
+        "resource": "ticket",
+        "why": "explains where a thread came from; routine, and refusing to open a ticket because "
+               "the audit log is down would punish the customer, not protect anything",
     },
     {
-        "action": "example.permission_granted",
+        "action": "ticket.replied",
+        "source": "user",
+        "critical": False,
+        "resource": "ticket",
+    },
+    {
+        "action": "ticket.status_changed",
         "source": "admin",
-        "critical": True,
-        "resource": "grant",
-        "why": "an unattributable permission grant is indistinguishable from an attacker's",
+        "critical": False,
+        "resource": "ticket",
+        "why": "who moved a ticket to resolved/closed and when is the audit trail of the workflow; "
+               "not critical because refusing a routine status move during an audit blip protects "
+               "nothing and takes support offline",
     },
     {
-        "action": "example.subject_erased",
+        "action": "ticket.assigned",
+        "source": "admin",
+        "critical": False,
+        "resource": "ticket",
+    },
+    {
+        "action": "subject.erased",
         "source": "internal",
         "critical": True,
         "resource": "subject",
         "why": "erasure is irreversible; without a record we cannot prove we honoured the DSAR, "
-               "and the data itself is gone so nothing else can show it",
+               "and the free text is gone so nothing else can show it",
     },
 ]

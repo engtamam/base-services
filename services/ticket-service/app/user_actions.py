@@ -31,4 +31,28 @@ from __future__ import annotations
 from typing import Any
 
 
-USER_ACTIONS: list[dict[str, Any]] = []
+USER_ACTIONS: list[dict[str, Any]] = [
+    {"id": "tickets.workflows", "label": "Ticket types", "method": "GET",
+     "path": "/api/v1/workflows", "capability": "tickets.self", "group": "Support"},
+    {"id": "tickets.open", "label": "Raise a ticket", "method": "POST",
+     "path": "/api/v1/tickets", "capability": "tickets.self", "group": "Support", "confirm": True,
+     "params": [{"name": "type", "in": "body", "type": "string", "required": True},
+                {"name": "subject", "in": "body", "type": "string", "required": True},
+                {"name": "body", "in": "body", "type": "string", "required": False}]},
+    {"id": "tickets.mine", "label": "My tickets", "method": "GET",
+     "path": "/api/v1/tickets", "capability": "tickets.self", "group": "Support"},
+    {"id": "tickets.view", "label": "View a ticket", "method": "GET",
+     "path": "/api/v1/tickets/{ticket_id}", "capability": "tickets.self", "group": "Support",
+     "params": [{"name": "ticket_id", "in": "path", "type": "string", "required": True}]},
+    {"id": "tickets.history", "label": "Ticket history", "method": "GET",
+     "path": "/api/v1/tickets/{ticket_id}/history", "capability": "tickets.self", "group": "Support",
+     "params": [{"name": "ticket_id", "in": "path", "type": "string", "required": True}]},
+    {"id": "tickets.reply", "label": "Reply to a ticket", "method": "POST",
+     "path": "/api/v1/tickets/{ticket_id}/replies", "capability": "tickets.self", "group": "Support",
+     "params": [{"name": "ticket_id", "in": "path", "type": "string", "required": True},
+                {"name": "body", "in": "body", "type": "string", "required": True}]},
+    {"id": "tickets.rate", "label": "Rate the resolution", "method": "POST",
+     "path": "/api/v1/tickets/{ticket_id}/rate", "capability": "tickets.self", "group": "Support",
+     "params": [{"name": "ticket_id", "in": "path", "type": "string", "required": True},
+                {"name": "score", "in": "body", "type": "integer", "required": True}]},
+]
