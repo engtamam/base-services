@@ -31,6 +31,9 @@ dependencies = [
     "pydantic-settings>=2.3,<3.0",
     "prometheus-client>=0.20,<1.0",
     "pyjwt[crypto]>=2.8,<3.0",
+    # Direct floor over the transitive pull from pyjwt[crypto]: 49.0.0 is
+    # PYSEC-2026-3552, fixed in 50.0.0. Pinned so the CVE cannot re-enter via resolution.
+    "cryptography>=50.0.0",
     # identity-service core:
     "argon2-cffi>=23.1,<24.0",   # MIT — password hashing (default)
     "pyotp>=2.9,<3.0",           # MIT — TOTP MFA
