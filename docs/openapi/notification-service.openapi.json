@@ -280,6 +280,48 @@
         ],
         "title": "ValidationError",
         "type": "object"
+      },
+      "WaTemplateIn": {
+        "properties": {
+          "body": {
+            "default": "",
+            "maxLength": 4000,
+            "title": "Body",
+            "type": "string"
+          },
+          "category": {
+            "maxLength": 32,
+            "minLength": 1,
+            "title": "Category",
+            "type": "string"
+          },
+          "language": {
+            "maxLength": 16,
+            "minLength": 2,
+            "title": "Language",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "variables": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Variables",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "language",
+          "category"
+        ],
+        "title": "WaTemplateIn",
+        "type": "object"
       }
     }
   },
@@ -794,6 +836,157 @@
         ]
       }
     },
+    "/api/v1/whatsapp/templates": {
+      "get": {
+        "operationId": "list_wa_templates_api_v1_whatsapp_templates_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Wa Templates Api V1 Whatsapp Templates Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Wa Templates",
+        "tags": [
+          "whatsapp-templates"
+        ]
+      },
+      "post": {
+        "description": "Register a WhatsApp template at RUNTIME (the admin panel adds one \u2014 no redeploy). Starts\npending; submit it to Meta for approval. Tenant comes from the token.",
+        "operationId": "register_wa_template_api_v1_whatsapp_templates_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaTemplateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Register Wa Template Api V1 Whatsapp Templates Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register Wa Template",
+        "tags": [
+          "whatsapp-templates"
+        ]
+      }
+    },
+    "/api/v1/whatsapp/templates/{name}/{language}/submit": {
+      "post": {
+        "description": "Submit a registered template to Meta for review.",
+        "operationId": "submit_wa_template_api_v1_whatsapp_templates__name___language__submit_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "language",
+            "required": true,
+            "schema": {
+              "title": "Language",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Submit Wa Template Api V1 Whatsapp Templates  Name   Language  Submit Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit Wa Template",
+        "tags": [
+          "whatsapp-templates"
+        ]
+      }
+    },
     "/healthz": {
       "get": {
         "operationId": "healthz_healthz_get",
@@ -1094,6 +1287,67 @@
           }
         },
         "summary": "Erase Subject",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/whatsapp/templates/sync": {
+      "post": {
+        "description": "Reconcile a tenant's pending WhatsApp templates against Meta's approval verdict.\n\nDriven by the platform scheduler (per tenant), not a thread here \u2014 a status change is a durable\nfact written down, so an operator sees approved/rejected without re-asking Meta.",
+        "operationId": "sync_whatsapp_templates_internal_whatsapp_templates_sync_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Sync Whatsapp Templates Internal Whatsapp Templates Sync Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sync Whatsapp Templates",
         "tags": [
           "internal"
         ]

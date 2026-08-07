@@ -114,3 +114,17 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     s = get_settings()
     eraser = NotificationErasure(store=c.datastore, pii_salt=s.PII_SALT)
     return await eraser.erase(body.tenant, body.subject)
+
+
+@router.post("/whatsapp/templates/sync", dependencies=[Depends(require_internal_token)])
+async def sync_whatsapp_templates(request: Request, tenant: str,
+                                  settings: Settings = Depends(get_settings)) -> dict:
+    """Reconcile a tenant's pending WhatsApp templates against Meta's approval verdict.
+
+    Driven by the platform scheduler (per tenant), not a thread here — a status change is a durable
+    fact written down, so an operator sees approved/rejected without re-asking Meta."""
+    from app.core.whatsapp_templates import WhatsAppTemplateRegistry, WhatsAppTemplateStore
+    c = request.app.state.container
+    reg = WhatsAppTemplateRegistry(WhatsAppTemplateStore(c.datastore))
+    return await reg.sync(tenant=tenant, manager=c.whatsapp_template_manager,
+                          limit=settings.WHATSAPP_TEMPLATE_SYNC_LIMIT)

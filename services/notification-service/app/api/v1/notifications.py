@@ -15,12 +15,70 @@ from app.config import get_settings
 from app.core.models import Preference, Template
 from app.core.notifier import NotificationService
 from app.core.retry import RetryPolicy
+from app.core.whatsapp_templates import (TemplateError, WhatsAppTemplateRegistry,
+                                         WhatsAppTemplateStore)
 from app.core.stores import (
     DeliveryStore, InAppStore, PreferenceStore, TemplateStore,
 )
 
 notifications_router = APIRouter(prefix="/api/v1/notifications", tags=["notifications"])
 templates_router = APIRouter(prefix="/api/v1/templates", tags=["templates"])
+wa_templates_router = APIRouter(prefix="/api/v1/whatsapp/templates", tags=["whatsapp-templates"])
+_WA_CAP = require_capability("notifications.templates")
+
+
+def _wa_registry(request: Request) -> WhatsAppTemplateRegistry:
+    return WhatsAppTemplateRegistry(WhatsAppTemplateStore(request.app.state.container.datastore))
+
+
+class WaTemplateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=512)
+    language: str = Field(min_length=2, max_length=16)
+    category: str = Field(min_length=1, max_length=32)
+    body: str = Field(default="", max_length=4_000)
+    variables: list[str] = Field(default_factory=list)
+
+
+@wa_templates_router.post("", status_code=201, dependencies=[Depends(_WA_CAP)])
+async def register_wa_template(request: Request, body: WaTemplateIn,
+                               principal: Principal = Depends(require_user)) -> dict:
+    """Register a WhatsApp template at RUNTIME (the admin panel adds one — no redeploy). Starts
+    pending; submit it to Meta for approval. Tenant comes from the token."""
+    await request.app.state.auditor.record(
+        "whatsapp_template.registered", actor=principal.subject, tenant=principal.tenant or "",
+        resource=f"wa_template:{body.name}", ip=request.client.host if request.client else "",
+        metadata={"category": body.category, "language": body.language})
+    try:
+        t = await _wa_registry(request).register(
+            tenant=principal.tenant or "", name=body.name, language=body.language,
+            category=body.category, body=body.body, variables=body.variables)
+    except TemplateError as exc:
+        raise HTTPException(422, str(exc))
+    return t.public()
+
+
+@wa_templates_router.post("/{name}/{language}/submit", dependencies=[Depends(_WA_CAP)])
+async def submit_wa_template(request: Request, name: str, language: str,
+                             principal: Principal = Depends(require_user)) -> dict:
+    """Submit a registered template to Meta for review."""
+    await request.app.state.auditor.record(
+        "whatsapp_template.submitted", actor=principal.subject, tenant=principal.tenant or "",
+        resource=f"wa_template:{name}", ip=request.client.host if request.client else "")
+    try:
+        t = await _wa_registry(request).submit(
+            tenant=principal.tenant or "", name=name, language=language,
+            manager=request.app.state.container.whatsapp_template_manager)
+    except TemplateError as exc:
+        raise HTTPException(404, str(exc))
+    return t.public()
+
+
+@wa_templates_router.get("", dependencies=[Depends(_WA_CAP)])
+async def list_wa_templates(request: Request, principal: Principal = Depends(require_user),
+                            status: str = "", limit: int = 100) -> dict:
+    rows, cursor = await _wa_registry(request).list(
+        principal.tenant or "", status=status, limit=max(1, min(200, limit)))
+    return {"templates": rows, "cursor": cursor}
 
 
 async def build_notifier(request: Request, tenant: str = "") -> NotificationService:
@@ -44,7 +102,8 @@ async def build_notifier(request: Request, tenant: str = "") -> NotificationServ
         templates=TemplateStore(store), prefs=PreferenceStore(store),
         deliveries=DeliveryStore(store),
         inapp=InAppStore(store, page_size=s.FEED_PAGE_SIZE, scan_limit=s.FEED_SCAN_LIMIT),
-        email=email, sms=sms, whatsapp=whatsapp, renderer=c.renderer,
+        email=email, sms=sms, whatsapp=whatsapp,
+        wa_templates=WhatsAppTemplateRegistry(WhatsAppTemplateStore(store)), renderer=c.renderer,
         email_from=s.EMAIL_FROM, default_locale=s.DEFAULT_LOCALE,
         dedupe_ttl_seconds=s.NOTIFY_DEDUPE_TTL_SECONDS,
         dedupe_states=s.notify_dedupe_states,

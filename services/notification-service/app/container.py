@@ -134,6 +134,8 @@ from app.adapters.sms.webhook import WebhookSms
 from app.adapters.whatsapp.console import ConsoleWhatsApp
 from app.adapters.whatsapp.meta import MetaWhatsApp
 from app.adapters.whatsapp.webhook import WebhookWhatsApp
+from app.adapters.whatsapp_templates.console import ConsoleTemplateManager
+from app.adapters.whatsapp_templates.meta import MetaTemplateManager
 
 _EMAIL_PROVIDERS: dict[str, Builder] = {
     "console": lambda s: ConsoleEmail(),
@@ -264,6 +266,7 @@ class Container:
     email: Any = None
     sms: Any = None
     whatsapp: Any = None
+    whatsapp_template_manager: Any = None
     renderer: Any = None
 
     def describe(self) -> list[dict[str, str]]:
@@ -337,5 +340,14 @@ def build_container(settings: Settings) -> Container:
         sms=FailoverSms(_build_chain(settings.sms_chain, _SMS_PROVIDERS, "sms", settings)),
         whatsapp=FailoverWhatsApp(
             _build_chain(settings.whatsapp_chain, _WHATSAPP_PROVIDERS, "whatsapp", settings)),
+        whatsapp_template_manager=_build_template_manager(settings),
         renderer=SafeRenderer(),
     )
+
+
+def _build_template_manager(settings):
+    """The WhatsApp template lifecycle manager. `console` auto-approves (dev); `meta` reviews."""
+    if settings.WHATSAPP_TEMPLATE_MANAGER == "meta":
+        return MetaTemplateManager(settings.WHATSAPP_ACCESS_TOKEN,
+                                   settings.WHATSAPP_BUSINESS_ACCOUNT_ID, settings.WHATSAPP_GRAPH_BASE)
+    return ConsoleTemplateManager()

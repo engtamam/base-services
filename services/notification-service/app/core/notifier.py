@@ -42,6 +42,7 @@ class NotificationService:
     def __init__(self, *, templates: TemplateStore, prefs: PreferenceStore,
                  deliveries: DeliveryStore, inapp: InAppStore,
                  email, sms, renderer, email_from: str, default_locale: str, whatsapp=None,
+                 wa_templates=None,
                  dedupe_ttl_seconds: int = 86_400,
                  dedupe_states: tuple[str, ...] = _DEFAULT_DEDUPE_STATES,
                  retry: RetryPolicy | None = None,
@@ -55,6 +56,7 @@ class NotificationService:
         self._email = email
         self._sms = sms
         self._whatsapp = whatsapp
+        self._wa_templates = wa_templates      # WhatsAppTemplateRegistry | None
         self._renderer = renderer
         self._email_from = email_from
         self._default_locale = default_locale
@@ -118,6 +120,16 @@ class NotificationService:
                     recipient, channel, template_key, "consent_denied",
                     error=f"{purpose}: {verdict.reason or verdict.status}"))
 
+        # 1c) WHATSAPP takes a DIFFERENT path: the "template" is a Meta-APPROVED template referenced
+        # by name, not one of our internal render templates. Resolve it, refuse if it is not
+        # approved, substitute the caller's variables in the template's declared ORDER, and deliver.
+        # An unapproved WhatsApp template cannot be delivered by Meta, so we refuse rather than
+        # pretend — a silent drop would hide a real block from the operator.
+        if channel == "whatsapp":
+            return await self._finish(idempotency_key, await self._deliver_whatsapp(
+                recipient=recipient, tenant=tenant or "", template_key=template_key,
+                language=locale or self._default_locale, variables=variables or {}))
+
         # 2) template (with locale fallback)
         tmpl = await self._templates.get(template_key, locale or self._default_locale, self._default_locale)
         if tmpl is None:
@@ -132,10 +144,7 @@ class NotificationService:
                                       error=f"render: {type(exc).__name__}")
 
         # 4) send via the channel
-        ok, provider, error = await self._deliver(
-            channel, recipient, subject, body, user_id,
-            template_key=template_key, language=locale or self._default_locale,
-            variables=variables or {})
+        ok, provider, error = await self._deliver(channel, recipient, subject, body, user_id)
 
         # 5) record — and if it failed, decide whether it is DEAD or merely DELAYED.
         if ok:
@@ -149,9 +158,42 @@ class NotificationService:
                      "locale": locale, "variables": variables or {}, "user_id": user_id,
                      "event": event}))
 
+    async def _deliver_whatsapp(self, *, recipient: str, tenant: str, template_key: str,
+                                language: str, variables: dict) -> dict:
+        """Resolve the APPROVED template, substitute variables in declared order, send, record."""
+        if self._whatsapp is None:
+            return await self._record(recipient, "whatsapp", template_key, "failed",
+                                      error="whatsapp channel not configured")
+        # No registry wired ⇒ dev/raw mode: forward the name + values as-is (order by key).
+        if self._wa_templates is None:
+            ordered = [str(v) for _, v in sorted(variables.items())]
+        else:
+            tmpl = await self._wa_templates.get(tenant, template_key, language)
+            if tmpl is None:
+                return await self._record(recipient, "whatsapp", template_key, "failed",
+                                          error="whatsapp template not found")
+            if tmpl.status != "approved":
+                return await self._record(recipient, "whatsapp", template_key, "failed",
+                                          error=f"whatsapp template not approved: {tmpl.status}")
+            missing = [v for v in tmpl.variables if v not in variables]
+            if missing:
+                return await self._record(recipient, "whatsapp", template_key, "failed",
+                                          error=f"missing variables: {','.join(missing)}")
+            ordered = [str(variables[v]) for v in tmpl.variables]
+        try:
+            ok, provider = await asyncio.to_thread(
+                self._whatsapp.send, recipient, template_key, language, ordered)
+        except Exception as exc:  # noqa: BLE001
+            return await self._record(recipient, "whatsapp", template_key, "failed",
+                                      error=f"{type(exc).__name__}: {exc}")
+        if ok:
+            return await self._record(recipient, "whatsapp", template_key, SENT, provider=provider,
+                                      attempts=1)
+        return await self._record(recipient, "whatsapp", template_key, "failed", provider=provider,
+                                  error="send failed")
+
     async def _deliver(self, channel: str, recipient: str, subject: str, body: str,
-                       user_id: str | None, *, template_key: str = "", language: str = "",
-                       variables: dict | None = None) -> tuple[bool, str, str]:
+                       user_id: str | None) -> tuple[bool, str, str]:
         """Hand the message to the provider.
 
         The provider clients are BLOCKING (`send()` is a plain def doing network I/O). Awaiting
@@ -166,16 +208,7 @@ class NotificationService:
                     self._email.send, recipient, subject, body, body, self._email_from)
             elif channel == "sms":
                 ok, provider = await asyncio.to_thread(self._sms.send, recipient, body)
-            elif channel == "whatsapp":
-                # WhatsApp is template-shaped: the Meta-approved template is named by template_key,
-                # its ordered variables come from the caller. 54.4 resolves the approved template
-                # and validates the variable count before this send; here we hand them to the chain.
-                if self._whatsapp is None:
-                    return False, "", "whatsapp channel not configured"
-                ordered = [str(v) for _, v in sorted((variables or {}).items())]
-                ok, provider = await asyncio.to_thread(
-                    self._whatsapp.send, recipient, template_key, language, ordered)
-            else:  # inapp — our own store, not a third party
+            else:  # inapp — our own store, not a third party (whatsapp handled in _deliver_whatsapp)
                 await self._inapp.add(InAppItem(id=new_id(), user=user_id or recipient,
                                                 title=subject, body=body))
                 ok, provider = True, "inapp"

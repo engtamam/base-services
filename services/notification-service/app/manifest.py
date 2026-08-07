@@ -66,6 +66,9 @@ def build_manifest(
             {"path": "/api/v1/notifications/preferences", "tier": "user", "method": "PUT"},
             {"path": "/api/v1/templates", "tier": "user", "method": "POST"},
             {"path": "/api/v1/templates", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/whatsapp/templates", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/whatsapp/templates", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/whatsapp/templates/{name}/{language}/submit", "tier": "user", "method": "POST"},
             {"path": "/api/v1/notifications/deliveries", "tier": "user", "method": "GET"},
             # The operator surface: credentials and policy an operator changes after launch.
             # A route table built from manifests that omits where credentials are set hides the
@@ -77,6 +80,7 @@ def build_manifest(
             {"path": "/api/v1/operator/config", "tier": "user", "method": "PUT"},
             {"path": "/api/v1/operator/config/{}", "tier": "user", "method": "DELETE"},
             {"path": "/internal/notifications/drain", "tier": "internal", "method": "POST"},
+            {"path": "/internal/whatsapp/templates/sync", "tier": "internal", "method": "POST"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         "events": {"emitted": [], "consumed": []},

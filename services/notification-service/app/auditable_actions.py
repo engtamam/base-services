@@ -37,6 +37,18 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "delivery outcomes and when is worth the trail. Not critical: it is a read",
     },
     {
+        "action": "whatsapp_template.registered",
+        "source": "admin",
+        "critical": False,
+        "resource": "wa_template",
+    },
+    {
+        "action": "whatsapp_template.submitted",
+        "source": "admin",
+        "critical": False,
+        "resource": "wa_template",
+    },
+    {
         "action": "preferences.updated",
         "source": "user",
         "critical": True,

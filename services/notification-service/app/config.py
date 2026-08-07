@@ -326,6 +326,11 @@ class Settings(BaseSettings):
     WHATSAPP_ACCESS_TOKEN: str = ""       # per-tenant credential, resolved via the secret store
     WHATSAPP_PHONE_NUMBER_ID: str = ""    # the sending phone number's id
     WHATSAPP_GRAPH_BASE: str = "https://graph.facebook.com/v19.0"
+    # Template-management (submit to Meta + poll approval). `console` auto-approves for dev; `meta`
+    # calls the Graph message_templates API on the WhatsApp Business Account.
+    WHATSAPP_TEMPLATE_MANAGER: str = "console"   # console | meta
+    WHATSAPP_BUSINESS_ACCOUNT_ID: str = ""       # WABA id — the template-management endpoint
+    WHATSAPP_TEMPLATE_SYNC_LIMIT: int = 200      # max pending templates reconciled per sweep
     # Generic webhook (whatsapp) — POST {to, template, language, variables} to any gateway/QR relay
     WHATSAPP_WEBHOOK_URL: str = ""    # host must be in EGRESS_ALLOWED_HOSTS (SSRF)
     WHATSAPP_WEBHOOK_BEARER: str = ""

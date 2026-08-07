@@ -83,16 +83,21 @@ manages its lifecycle and substitutes variables, nothing more.
 
 ## Tasks
 
-- [ ] **54.1** WhatsApp channel: `whatsapp_provider` port; meta/console/webhook adapters;
+- [x] **54.1** WhatsApp channel: `whatsapp_provider` port; meta/console/webhook adapters;
   `WHATSAPP_CHAIN` + `RUNTIME_POLICY`; `FailoverWhatsApp`; container + `provider_pool` wiring;
   `CHANNELS += whatsapp`; per-tenant Meta credentials.
-- [ ] **54.2** Template registry: `whatsapp_templates` store + `core/whatsapp_templates.py`
+- [x] **54.2** Template registry: `whatsapp_templates` store + `core/whatsapp_templates.py`
   (register/list/get), category + variables validated, tenant-scoped filtered reads.
-- [ ] **54.3** Submit + status: `WhatsAppTemplateManager` port + Meta adapter (+ console/webhook
+- [x] **54.3** Submit + status: `WhatsAppTemplateManager` port + Meta adapter (+ console/webhook
   stubs); `submit` / `sync_status`; `/internal/whatsapp/templates/sync` route.
-- [ ] **54.4** Send-time substitution: resolve approved template, refuse not-approved /
+- [x] **54.4** Send-time substitution: resolve approved template, refuse not-approved /
   count-mismatch, substitute variables into the provider send.
-- [ ] **54.5** Operator routes (register/submit/list/status) + send accepts whatsapp; admin +
+- [x] **54.5** Operator routes (register/submit/list/status) + send accepts whatsapp; admin +
   auditable actions; manifest capabilities/endpoints/events.
-- [ ] **54.6** Tests mirroring email/SMS (failover, per-tenant creds, runtime switch) + template
+- [x] **54.6** Tests mirroring email/SMS (failover, per-tenant creds, runtime switch) + template
   lifecycle tests; all gates + security green.
+
+
+---
+
+**Phase 54 complete.** WhatsApp is a first-class channel wired exactly like email/SMS (WHATSAPP_CHAIN runtime per-tenant, meta/console/webhook adapters, failover, provider_pool). The approved-template lifecycle: register (pending) -> submit to Meta -> sync status (approved/rejected+reason) -> auto-substitute variables in declared order at send. A send on an unapproved template, a missing variable, or an absent template is REFUSED with a reason, never silently dropped. Templates are managed at RUNTIME via admin actions (the panel adds one, no rebuild); the service holds no template content. 265 tests; all gates + bandit + secret-reads + scan-discipline green.

@@ -38,6 +38,36 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
             {"name": "version", "in": "body", "type": "integer", "required": False},
         ],
     },
+    # ── WhatsApp templates: added and submitted at RUNTIME from the panel, no redeploy ──
+    {
+        "id": "notifications.list_wa_templates", "label": "WhatsApp templates", "method": "GET",
+        "path": "/api/v1/whatsapp/templates", "capability": "notifications.templates",
+        "group": "WhatsApp",
+        "params": [{"name": "status", "in": "query", "type": "string", "required": False,
+                    "help": "pending | approved | rejected"}],
+    },
+    {
+        "id": "notifications.register_wa_template", "label": "Add a WhatsApp template",
+        "method": "POST", "path": "/api/v1/whatsapp/templates",
+        "capability": "notifications.templates", "group": "WhatsApp", "confirm": True,
+        "params": [
+            {"name": "name", "in": "body", "type": "string", "required": True},
+            {"name": "language", "in": "body", "type": "string", "required": True},
+            {"name": "category", "in": "body", "type": "string", "required": True,
+             "help": "UTILITY | MARKETING | AUTHENTICATION"},
+            {"name": "body", "in": "body", "type": "string", "required": False,
+             "help": "the template copy — you own it; the service stores it opaquely"},
+            {"name": "variables", "in": "body", "type": "array", "required": False},
+        ],
+    },
+    {
+        "id": "notifications.submit_wa_template", "label": "Submit a template to Meta",
+        "method": "POST", "path": "/api/v1/whatsapp/templates/{name}/{language}/submit",
+        "capability": "notifications.templates", "group": "WhatsApp", "confirm": True,
+        "params": [{"name": "name", "in": "path", "type": "string", "required": True},
+                   {"name": "language", "in": "path", "type": "string", "required": True}],
+    },
+
     # ── Operator controls: credentials and policy, changeable after launch ────
     # A panel that can only ACT is half a panel: the reads are declared too, so an operator can
     # see which credential is loaded before replacing it. No action here returns a value — the
