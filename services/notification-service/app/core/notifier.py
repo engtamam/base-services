@@ -22,7 +22,7 @@ from app.core.retry import (
 )
 from app.core.stores import DeliveryStore, InAppStore, PreferenceStore, TemplateStore
 
-CHANNELS = ("email", "sms", "inapp")
+CHANNELS = ("email", "sms", "whatsapp", "inapp")
 
 # How a send is attempted. The PLATFORM decides; we enforce.
 INLINE, QUEUED_MODE = "inline", "queued"
@@ -41,7 +41,7 @@ _DEFAULT_DEDUPE_STATES = ("sent", "suppressed", "queued")
 class NotificationService:
     def __init__(self, *, templates: TemplateStore, prefs: PreferenceStore,
                  deliveries: DeliveryStore, inapp: InAppStore,
-                 email, sms, renderer, email_from: str, default_locale: str,
+                 email, sms, renderer, email_from: str, default_locale: str, whatsapp=None,
                  dedupe_ttl_seconds: int = 86_400,
                  dedupe_states: tuple[str, ...] = _DEFAULT_DEDUPE_STATES,
                  retry: RetryPolicy | None = None,
@@ -54,6 +54,7 @@ class NotificationService:
         self._inapp = inapp
         self._email = email
         self._sms = sms
+        self._whatsapp = whatsapp
         self._renderer = renderer
         self._email_from = email_from
         self._default_locale = default_locale
@@ -131,7 +132,10 @@ class NotificationService:
                                       error=f"render: {type(exc).__name__}")
 
         # 4) send via the channel
-        ok, provider, error = await self._deliver(channel, recipient, subject, body, user_id)
+        ok, provider, error = await self._deliver(
+            channel, recipient, subject, body, user_id,
+            template_key=template_key, language=locale or self._default_locale,
+            variables=variables or {})
 
         # 5) record — and if it failed, decide whether it is DEAD or merely DELAYED.
         if ok:
@@ -146,7 +150,8 @@ class NotificationService:
                      "event": event}))
 
     async def _deliver(self, channel: str, recipient: str, subject: str, body: str,
-                       user_id: str | None) -> tuple[bool, str, str]:
+                       user_id: str | None, *, template_key: str = "", language: str = "",
+                       variables: dict | None = None) -> tuple[bool, str, str]:
         """Hand the message to the provider.
 
         The provider clients are BLOCKING (`send()` is a plain def doing network I/O). Awaiting
@@ -161,6 +166,15 @@ class NotificationService:
                     self._email.send, recipient, subject, body, body, self._email_from)
             elif channel == "sms":
                 ok, provider = await asyncio.to_thread(self._sms.send, recipient, body)
+            elif channel == "whatsapp":
+                # WhatsApp is template-shaped: the Meta-approved template is named by template_key,
+                # its ordered variables come from the caller. 54.4 resolves the approved template
+                # and validates the variable count before this send; here we hand them to the chain.
+                if self._whatsapp is None:
+                    return False, "", "whatsapp channel not configured"
+                ordered = [str(v) for _, v in sorted((variables or {}).items())]
+                ok, provider = await asyncio.to_thread(
+                    self._whatsapp.send, recipient, template_key, language, ordered)
             else:  # inapp — our own store, not a third party
                 await self._inapp.add(InAppItem(id=new_id(), user=user_id or recipient,
                                                 title=subject, body=body))

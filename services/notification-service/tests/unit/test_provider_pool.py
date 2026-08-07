@@ -28,6 +28,9 @@ class _Settings:
     TAQNYAT_TOKEN = "env-taqnyat"
     email_chain = ["resend"]
     sms_chain = ["taqnyat"]
+    whatsapp_chain = ["meta"]
+    WHATSAPP_ACCESS_TOKEN = "env-wa"
+    WHATSAPP_PHONE_NUMBER_ID = "env-pnid"
 
     def __getattr__(self, name):     # every other credential is unset in the environment
         return ""
@@ -47,6 +50,7 @@ def _pool(*, secrets=None, rc=None, ttl=30, clock=None):
         _Settings(), secrets, rc,
         build_email=lambda chain, creds: {"chain": list(chain), "key": creds["RESEND_API_KEY"]},
         build_sms=lambda chain, creds: {"chain": list(chain), "key": creds["TAQNYAT_TOKEN"]},
+        build_whatsapp=lambda chain, creds: {"chain": list(chain), "key": creds.get("WHATSAPP_ACCESS_TOKEN", "")},
         ttl_s=ttl, now=clock or _Clock())
 
 
@@ -57,13 +61,13 @@ def _store():
 # ── the fallback ──────────────────────────────────────────────────────────────
 def test_with_no_stored_credential_the_environment_is_used():
     """An existing deployment must behave exactly as it did. Nothing has to be migrated."""
-    email, sms = run(_pool(secrets=_store()).get(""))
+    email, sms, _wa = run(_pool(secrets=_store()).get(""))
     assert email["key"] == "env-resend"
     assert sms["key"] == "env-taqnyat"
 
 
 def test_without_a_secret_store_at_all_the_environment_is_used():
-    email, _ = run(_pool(secrets=None).get(""))
+    email, _, _ = run(_pool(secrets=None).get(""))
     assert email["key"] == "env-resend"
 
 
@@ -71,14 +75,14 @@ def test_without_a_secret_store_at_all_the_environment_is_used():
 def test_a_stored_credential_beats_the_environment():
     s = _store()
     run(s.set(tenant="", name="RESEND_API_KEY", value="stored-resend"))
-    email, _ = run(_pool(secrets=s).get(""))
+    email, _, _ = run(_pool(secrets=s).get(""))
     assert email["key"] == "stored-resend"
 
 
 def test_a_tenant_inherits_the_platform_credential():
     s = _store()
     run(s.set(tenant="", name="RESEND_API_KEY", value="platform-key"))
-    email, _ = run(_pool(secrets=s).get("acme"))
+    email, _, _ = run(_pool(secrets=s).get("acme"))
     assert email["key"] == "platform-key"
 
 
@@ -150,7 +154,7 @@ def test_an_undecryptable_credential_falls_back_instead_of_raising():
     run(SecretStore(store, KEK, now=lambda: 0.0).set(
         tenant="", name="RESEND_API_KEY", value="sealed-under-the-old-kek"))
     wrong = SecretStore(store, "a-different-kek", now=lambda: 0.0)
-    email, _ = run(_pool(secrets=wrong).get(""))
+    email, _, _ = run(_pool(secrets=wrong).get(""))
     assert email["key"] == "env-resend"
 
 
@@ -164,17 +168,17 @@ class _Rc:
 
 
 def test_the_provider_order_can_be_changed_at_runtime():
-    email, _ = run(_pool(secrets=_store(), rc=_Rc({"EMAIL_CHAIN": "postmark,resend"})).get(""))
+    email, _, _ = run(_pool(secrets=_store(), rc=_Rc({"EMAIL_CHAIN": "postmark,resend"})).get(""))
     assert email["chain"] == ["postmark", "resend"]
 
 
 def test_an_empty_override_falls_back_to_the_configured_order():
     # An operator clearing the field must not leave the service with no providers at all.
-    email, _ = run(_pool(secrets=_store(), rc=_Rc({"EMAIL_CHAIN": "  ,  "})).get(""))
+    email, _, _ = run(_pool(secrets=_store(), rc=_Rc({"EMAIL_CHAIN": "  ,  "})).get(""))
     assert email["chain"] == ["resend"]
 
 
 @pytest.mark.parametrize("chain", ["", None])
 def test_no_override_uses_the_configured_order(chain):
-    email, _ = run(_pool(secrets=_store(), rc=_Rc({})).get(""))
+    email, _, _ = run(_pool(secrets=_store(), rc=_Rc({})).get(""))
     assert email["chain"] == ["resend"]

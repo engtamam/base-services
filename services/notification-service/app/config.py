@@ -271,6 +271,8 @@ class Settings(BaseSettings):
     EMAIL_CHAIN: str = "console"        # e.g. "resend,console" (try resend, fall back)
     # sms providers: console | twilio | unifonic (KSA) | taqnyat (KSA)
     SMS_CHAIN: str = "console"          # e.g. "unifonic,console"
+    # whatsapp providers: console | webhook | meta (WhatsApp Cloud API)
+    WHATSAPP_CHAIN: str = "console"     # e.g. "meta,console"
     DEFAULT_LOCALE: str = "en"
     EMAIL_FROM: str = "no-reply@example.com"
 
@@ -320,6 +322,14 @@ class Settings(BaseSettings):
     SMS_WEBHOOK_URL: str = ""    # host must be in EGRESS_ALLOWED_HOSTS (SSRF)
     SMS_WEBHOOK_BEARER: str = ""
 
+    # WhatsApp (meta) — Meta WhatsApp Cloud API. Graph base is config, never a request.
+    WHATSAPP_ACCESS_TOKEN: str = ""       # per-tenant credential, resolved via the secret store
+    WHATSAPP_PHONE_NUMBER_ID: str = ""    # the sending phone number's id
+    WHATSAPP_GRAPH_BASE: str = "https://graph.facebook.com/v19.0"
+    # Generic webhook (whatsapp) — POST {to, template, language, variables} to any gateway/QR relay
+    WHATSAPP_WEBHOOK_URL: str = ""    # host must be in EGRESS_ALLOWED_HOSTS (SSRF)
+    WHATSAPP_WEBHOOK_BEARER: str = ""
+
     # Salts the subject pseudonym written into every IMMUTABLE record (audit chain, ledgers,
     # invoices). FROZEN — see config/product.identifiers.lock.json. Change it and every pseudonym
     # re-maps: the history orphans and an erasure can no longer prove it erased the right person.
@@ -343,6 +353,10 @@ class Settings(BaseSettings):
     @property
     def sms_chain(self) -> list[str]:
         return [c.strip() for c in self.SMS_CHAIN.split(",") if c.strip()]
+
+    @property
+    def whatsapp_chain(self) -> list[str]:
+        return [c.strip() for c in self.WHATSAPP_CHAIN.split(",") if c.strip()]
 
     @property
     def egress_allowed_hosts(self) -> frozenset[str]:

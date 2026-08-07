@@ -17,4 +17,5 @@ RUNTIME_POLICY = frozenset({
     # the chain, and that cannot wait for a deployment.
     "EMAIL_CHAIN",
     "SMS_CHAIN",
+    "WHATSAPP_CHAIN",
 })

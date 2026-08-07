@@ -35,16 +35,16 @@ async def build_notifier(request: Request, tenant: str = "") -> NotificationServ
     store = c.datastore
     pool = getattr(request.app.state, "provider_pool", None)
     if pool is not None:
-        email, sms = await pool.get(tenant)
+        email, sms, whatsapp = await pool.get(tenant)
     else:
         # No pool wired: the boot-built chains from the environment. Behaviour identical to before
         # operator-managed credentials existed.
-        email, sms = c.email, c.sms
+        email, sms, whatsapp = c.email, c.sms, c.whatsapp
     return NotificationService(
         templates=TemplateStore(store), prefs=PreferenceStore(store),
         deliveries=DeliveryStore(store),
         inapp=InAppStore(store, page_size=s.FEED_PAGE_SIZE, scan_limit=s.FEED_SCAN_LIMIT),
-        email=email, sms=sms, renderer=c.renderer,
+        email=email, sms=sms, whatsapp=whatsapp, renderer=c.renderer,
         email_from=s.EMAIL_FROM, default_locale=s.DEFAULT_LOCALE,
         dedupe_ttl_seconds=s.NOTIFY_DEDUPE_TTL_SECONDS,
         dedupe_states=s.notify_dedupe_states,

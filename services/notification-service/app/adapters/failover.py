@@ -38,3 +38,18 @@ class FailoverSms:
             except Exception:
                 _log.warning("sms_provider_error", extra={"provider": p.driver})
         return False, self.driver
+
+
+class FailoverWhatsApp:
+    def __init__(self, providers: list) -> None:
+        self._providers = providers
+        self.driver = ",".join(p.driver for p in providers)
+
+    def send(self, to: str, template_name: str, language: str, variables: list) -> tuple[bool, str]:
+        for p in self._providers:
+            try:
+                if p.send(to, template_name, language, variables):
+                    return True, p.driver
+            except Exception:
+                _log.warning("whatsapp_provider_error", extra={"provider": p.driver})
+        return False, self.driver

@@ -51,23 +51,28 @@ SMS_CREDENTIALS = {
     "mobily": ("MOBILY_PASSWORD",),
     "webhook": ("SMS_WEBHOOK_BEARER",),
 }
+WHATSAPP_CREDENTIALS = {
+    "meta": ("WHATSAPP_ACCESS_TOKEN", "WHATSAPP_PHONE_NUMBER_ID"),
+    "webhook": ("WHATSAPP_WEBHOOK_BEARER",),
+}
 # console has no credential, and must never be dropped for lacking one.
-CREDENTIALS = {**EMAIL_CREDENTIALS, **SMS_CREDENTIALS}
+CREDENTIALS = {**EMAIL_CREDENTIALS, **SMS_CREDENTIALS, **WHATSAPP_CREDENTIALS}
 
 
 class ProviderPool:
     """Resolves and caches per-tenant provider chains."""
 
     def __init__(self, settings, secret_store, runtime_config, *,
-                 build_email, build_sms, ttl_s: int = 30, now=time.monotonic) -> None:
+                 build_email, build_sms, build_whatsapp, ttl_s: int = 30, now=time.monotonic) -> None:
         self._s = settings
         self._secrets = secret_store          # None when no KEK is configured
         self._rc = runtime_config             # None when runtime policy is not wired
         self._build_email = build_email
         self._build_sms = build_sms
+        self._build_whatsapp = build_whatsapp
         self._ttl = ttl_s
         self._now = now
-        self._cache: dict[str, tuple[float, object, object]] = {}
+        self._cache: dict[str, tuple[float, object, object, object]] = {}
 
     async def _credential(self, tenant: str, name: str) -> str:
         """The stored credential, or the configured one. Never raises."""
@@ -96,20 +101,22 @@ class ProviderPool:
                 out[name] = await self._credential(tenant, name)
         return out
 
-    async def get(self, tenant: str = "") -> tuple[object, object]:
-        """The (email, sms) chains for this tenant, rebuilt at most once per TTL."""
+    async def get(self, tenant: str = "") -> tuple[object, object, object]:
+        """The (email, sms, whatsapp) chains for this tenant, rebuilt at most once per TTL."""
         hit = self._cache.get(tenant)
         now = self._now()
         if hit and now < hit[0]:
-            return hit[1], hit[2]
+            return hit[1], hit[2], hit[3]
 
         creds = await self._overrides(tenant)
         email = self._build_email(
             await self._chain_for(tenant, self._s.email_chain, "EMAIL_CHAIN"), creds)
         sms = self._build_sms(
             await self._chain_for(tenant, self._s.sms_chain, "SMS_CHAIN"), creds)
-        self._cache[tenant] = (now + self._ttl, email, sms)
-        return email, sms
+        whatsapp = self._build_whatsapp(
+            await self._chain_for(tenant, self._s.whatsapp_chain, "WHATSAPP_CHAIN"), creds)
+        self._cache[tenant] = (now + self._ttl, email, sms, whatsapp)
+        return email, sms, whatsapp
 
     def invalidate(self, tenant: str | None = None) -> None:
         """Drop the cache so the next send resolves fresh.

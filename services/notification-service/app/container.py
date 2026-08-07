@@ -121,7 +121,7 @@ from app.adapters.email.postmark import PostmarkEmail
 from app.adapters.email.resend import ResendEmail
 from app.adapters.email.sendgrid import SendgridEmail
 from app.adapters.email.smtp import SmtpEmail
-from app.adapters.failover import FailoverEmail, FailoverSms
+from app.adapters.failover import FailoverEmail, FailoverSms, FailoverWhatsApp
 from app.adapters.renderer.safe import SafeRenderer
 from app.adapters.sms.console import ConsoleSms
 from app.adapters.sms.mobily import MobilySms
@@ -131,6 +131,9 @@ from app.adapters.sms.twilio import TwilioSms
 from app.adapters.sms.unifonic import UnifonicSms
 from app.adapters.sms.vonage import VonageSms
 from app.adapters.sms.webhook import WebhookSms
+from app.adapters.whatsapp.console import ConsoleWhatsApp
+from app.adapters.whatsapp.meta import MetaWhatsApp
+from app.adapters.whatsapp.webhook import WebhookWhatsApp
 
 _EMAIL_PROVIDERS: dict[str, Builder] = {
     "console": lambda s: ConsoleEmail(),
@@ -150,6 +153,12 @@ _SMS_PROVIDERS: dict[str, Builder] = {
     "msegat": lambda s: MsegatSms(s.MSEGAT_USERNAME, s.MSEGAT_API_KEY, s.MSEGAT_SENDER),
     "mobily": lambda s: MobilySms(s.MOBILY_MOBILE, s.MOBILY_PASSWORD, s.MOBILY_SENDER),
     "webhook": lambda s: WebhookSms(s.SMS_WEBHOOK_URL, s.SMS_WEBHOOK_BEARER),
+}
+_WHATSAPP_PROVIDERS: dict[str, Builder] = {
+    "console": lambda s: ConsoleWhatsApp(),
+    "meta": lambda s: MetaWhatsApp(s.WHATSAPP_ACCESS_TOKEN, s.WHATSAPP_PHONE_NUMBER_ID,
+                                   s.WHATSAPP_GRAPH_BASE),
+    "webhook": lambda s: WebhookWhatsApp(s.WHATSAPP_WEBHOOK_URL, s.WHATSAPP_WEBHOOK_BEARER),
 }
 
 
@@ -223,6 +232,8 @@ def make_provider_pool(settings, secret_store, runtime_config):
             _tolerant_chain(chain, _EMAIL_PROVIDERS, "email", _Overlay(settings, creds))),
         build_sms=lambda chain, creds: FailoverSms(
             _tolerant_chain(chain, _SMS_PROVIDERS, "sms", _Overlay(settings, creds))),
+        build_whatsapp=lambda chain, creds: FailoverWhatsApp(
+            _tolerant_chain(chain, _WHATSAPP_PROVIDERS, "whatsapp", _Overlay(settings, creds))),
         ttl_s=settings.PROVIDER_REFRESH_SECONDS,
     )
 
@@ -252,6 +263,7 @@ class Container:
     consent_gate: Any = None
     email: Any = None
     sms: Any = None
+    whatsapp: Any = None
     renderer: Any = None
 
     def describe(self) -> list[dict[str, str]]:
@@ -323,5 +335,7 @@ def build_container(settings: Settings) -> Container:
         consent_gate=_pick(_CONSENT_GATE, settings.CONSENT_GATE_DRIVER, "consent_gate", settings),
         email=FailoverEmail(_build_chain(settings.email_chain, _EMAIL_PROVIDERS, "email", settings)),
         sms=FailoverSms(_build_chain(settings.sms_chain, _SMS_PROVIDERS, "sms", settings)),
+        whatsapp=FailoverWhatsApp(
+            _build_chain(settings.whatsapp_chain, _WHATSAPP_PROVIDERS, "whatsapp", settings)),
         renderer=SafeRenderer(),
     )
