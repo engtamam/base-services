@@ -23,7 +23,8 @@
 # Credentials come from a Secret you create (never baked into this file):
 #   kubectl -n base-services create secret generic objectstore-secrets \
 #     --from-file=s3.json=./s3.json
-# where s3.json grants one identity Read/Write (see docs/architecture-plan.md).
+# where s3.json grants one identity Read/Write — copy deploy/k3s/objectstore.s3.example.json,
+# set real keys, and give the SAME keys to the blob services as OBJECTSTORE_ACCESS_KEY / _SECRET_KEY.
 #
 # Single-instance, local-path storage: right for a single-node K3s reference. For
 # real durability, run a replicated object store (or a managed S3) and repoint

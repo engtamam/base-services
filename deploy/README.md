@@ -15,6 +15,22 @@ make status
 `make deploy` depends on `make verify`. We do not install a platform whose deny-by-default
 is decorative or whose autoscalers can never scale.
 
+## Egress and the object store
+
+Egress is **deny-by-default**; each allow is opt-in per service under `networkPolicy.egress`:
+`dns`, `datastore` (postgres/redis by label), `internet` (SSRF-guarded third-party callers),
+`objectStore` (an in-cluster S3 on its API port), and `extra` — a verbatim list for anything else a
+service must reach. A dependency no allow opens no longer hangs silently: `/readyz` bounds each probe
+and answers `{"<dep>": "timeout"}`.
+
+The blob services (`file`, `backup`, `stream`) default to a **local** object driver. For S3, set
+`OBJECTSTORE_DRIVER=s3` + `OBJECTSTORE_ENDPOINT_URL` / `_ACCESS_KEY` / `_SECRET_KEY` / `_BUCKET`
+(+ `OBJECTSTORE_FORCE_PATH_STYLE=true` for a path-style endpoint) — your own MinIO / on-prem / cloud
+S3. Or run the bundled reference with `OBJECTSTORE_ENABLED=1 deploy/k3s/bootstrap.sh`: **SeaweedFS**
+(Apache-2.0; *not* MinIO — MinIO's server is AGPLv3, outside our permissive-only licence policy). It
+carries the `base-services/role: objectstore` label the `objectStore` egress selects, and needs an
+`objectstore-secrets` Secret — see `deploy/k3s/objectstore.yaml` and `objectstore.s3.example.json`.
+
 ## The chart refuses to render mistakes
 
 Kubernetes accepts every mistake below and gives you a green rollout. You find out from wrong

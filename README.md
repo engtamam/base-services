@@ -23,7 +23,7 @@ everything else is implementation you should not need to touch.
 | `app/adapters/*/` | The drivers behind each port (`memory`, `postgres`, `redis`, `s3`, `http`, `null`…). Chosen by config, never by code. |
 | `app/admin_actions.py` | What an operator panel may show — and the capability each action needs. |
 | `app/user_actions.py` | The self-service catalog, plus `UNDECLARED_ROUTES` with a stated reason for anything deliberately absent. |
-| `app/auditable_actions.py` | What is recorded, and which actions **fail closed** when the audit log is unreachable. |
+| `app/auditable_actions.py` | What is recorded, and which actions **fail closed** when the audit log is unreachable. A gate enforces that every declared action is actually recorded — not merely the critical ones — so the contract cannot claim a control the code never writes. |
 | `app/service_contracts.py` | What this service CALLS in another — the other half of the seam. **Absent means it calls nothing**, which is most services. |
 | `deploy/services/<svc>.values.yaml` | Deployment shape. Images are digest-pinned at release; never a `:latest` tag. |
 | `docs/openapi/<svc>.openapi.json` | The HTTP surface, generated from the running app rather than written by hand. |
@@ -101,6 +101,19 @@ make deploy    # all 17 services
 `make deploy` depends on `make verify`. Bootstrap *installs*; preflight *proves* — it sends a
 packet that a default-deny NetworkPolicy must refuse, because checking that Calico is present
 proves it was installed, not that it blocks anything.
+
+**Egress is deny-by-default.** Each allow is opt-in per service: `dns`, `datastore` (postgres/redis
+by label), `internet` (third-party callers, SSRF-guarded), `objectStore` (an in-cluster S3 on the
+S3 port), and an `extra` list to declare anything else verbatim. A dependency a service cannot reach
+because no allow opens it fails loudly now — `/readyz` bounds each probe and reports
+`{"<dep>": "timeout"}` rather than hanging with the pod stuck `Running 0/1`.
+
+**Object store (optional, plug-and-play).** The blob services (`file`, `backup`, `stream`) default
+to a local driver. Point them at S3 with `OBJECTSTORE_DRIVER=s3` + `OBJECTSTORE_ENDPOINT_URL` /
+`_ACCESS_KEY` / `_SECRET_KEY` / `_BUCKET` — your own MinIO, on-prem, or cloud S3. Or run the bundled
+reference (`OBJECTSTORE_ENABLED=1 deploy/k3s/bootstrap.sh`): **SeaweedFS** (Apache-2.0 — *not* MinIO,
+whose server is AGPLv3 and outside this platform's permissive-only licence policy). The chart's
+`objectStore` egress opens to it automatically.
 
 See [`deploy/README.md`](deploy/README.md).
 
