@@ -1,0 +1,56 @@
+{{- if and .Values.networkPolicy.enabled .Values.networkPolicy.egress.calicoFqdn.enabled }}
+{{/*
+================================================================================
+OPT-IN, CNI-SPECIFIC: network-layer per-HOSTNAME egress via Calico.
+
+A stock Kubernetes NetworkPolicy can only match egress by IP/CIDR, never by DNS
+name, so `networkPolicy.egress.internet` is all-or-nothing. Calico's own policy
+API (projectcalico.org/v3) CAN match by domain — so this narrows egress to a named
+allow-list instead of "any public IP".
+
+TWO THINGS AN OPERATOR MUST KNOW, because this fails OPEN if either is missing:
+
+  1. It is CALICO-ONLY. Any other CNI ignores a projectcalico.org/v3 object, and a
+     policy nobody enforces is theatre. Our bootstrap installs Calico — but DNS
+     policy additionally needs Felix's DNSPolicyMode configured. Prove enforcement
+     in your cluster (a preflight-style denied-packet test) before relying on it.
+
+  2. Drop `internet: true`. Calico enforces the k8s NetworkPolicy AND this one, and
+     allows are a UNION — so a broad `internet: true` next to this would win and
+     this allow-list would narrow nothing.
+
+DNS egress is allowed here too: domain policy cannot resolve a name it may not look
+up. `hosts` may include exact names or Calico wildcards (e.g. "*.stripe.com").
+================================================================================
+*/}}
+apiVersion: projectcalico.org/v3
+kind: NetworkPolicy
+metadata:
+  name: {{ include "base-service.fullname" . }}-egress-fqdn
+  labels: {{- include "base-service.labels" . | nindent 4 }}
+spec:
+  # Calico's selector is a STRING expression, not matchLabels. Scope it to THIS service's pods.
+  selector: >-
+    app.kubernetes.io/name == '{{ include "base-service.name" . }}' &&
+    app.kubernetes.io/instance == '{{ .Release.Name }}'
+  types: [Egress]
+  egress:
+    # DNS first — a domain policy is useless if the pod may not resolve the name.
+    - action: Allow
+      protocol: UDP
+      destination:
+        ports: [53]
+    - action: Allow
+      protocol: TCP
+      destination:
+        ports: [53]
+    # The allow-list itself: egress permitted ONLY to these hostnames, on 80/443.
+    - action: Allow
+      protocol: TCP
+      destination:
+        ports: [80, 443]
+        domains:
+          {{- range .Values.networkPolicy.egress.calicoFqdn.hosts }}
+          - {{ . | quote }}
+          {{- end }}
+{{- end }}

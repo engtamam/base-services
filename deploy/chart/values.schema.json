@@ -148,7 +148,15 @@
               }
             },
             "internet": { "type": "boolean" },
-            "extra": { "type": "array", "items": { "type": "object" } }
+            "extra": { "type": "array", "items": { "type": "object" } },
+            "calicoFqdn": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "hosts": { "type": "array", "items": { "type": "string" } }
+              }
+            }
           }
         }
       }

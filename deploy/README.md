@@ -23,6 +23,18 @@ Egress is **deny-by-default**; each allow is opt-in per service under `networkPo
 service must reach. A dependency no allow opens no longer hangs silently: `/readyz` bounds each probe
 and answers `{"<dep>": "timeout"}`.
 
+`internet: true` is **all-or-nothing at the network layer** — it opens 80/443 to every public IP
+(RFC1918 / link-local / metadata excluded), because a stock Kubernetes NetworkPolicy can match egress
+only by IP/CIDR, never by hostname. Narrowing by **host** is done in the application: the SSRF guard
+plus `EGRESS_ALLOWED_HOSTS`. Do not read `internet: true` as a per-host allow-list.
+
+For real **network-layer per-hostname** egress, set `networkPolicy.egress.calicoFqdn.enabled: true` and
+list `calicoFqdn.hosts: [...]`. This renders a Calico `NetworkPolicy` (`projectcalico.org/v3`) that
+allows egress **only** to those domains (plus DNS) — so you drop `internet: true` and let it be the
+allow-list. It is **opt-in and CNI-specific**: it requires Calico with DNS policy enabled (our
+bootstrap installs Calico, but DNS policy needs Felix's `DNSPolicyMode` — validate enforcement in
+your cluster with `preflight.sh`-style checks before relying on it). Any other CNI ignores it.
+
 The blob services (`file`, `backup`, `stream`) default to a **local** object driver. For S3, set
 `OBJECTSTORE_DRIVER=s3` + `OBJECTSTORE_ENDPOINT_URL` / `_ACCESS_KEY` / `_SECRET_KEY` / `_BUCKET`
 (+ `OBJECTSTORE_FORCE_PATH_STYLE=true` for a path-style endpoint) — your own MinIO / on-prem / cloud

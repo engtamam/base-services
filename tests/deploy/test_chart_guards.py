@@ -464,6 +464,7 @@ MUTATIONS = [
     ("networkPolicy.egress.objectStore.enabled", [], "true"),
     ("networkPolicy.egress.objectStore.port", _OBJ, "9999"),
     ("networkPolicy.egress.objectStore.roleLabel", _OBJ, "minio"),
+    ("networkPolicy.egress.calicoFqdn.enabled", [], "true"),
     ("networkPolicy.egress.internet", [], "true"),
     ("metrics.serviceMonitor", [], "true"),
     ("metrics.interval", _SM, "60s"),

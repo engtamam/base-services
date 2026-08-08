@@ -120,6 +120,15 @@ networkPolicy:
     #     - to: [{ podSelector: { matchLabels: { app: clamav } } }]
     #       ports: [{ port: 3310, protocol: TCP }]
     extra: []
+    # OPT-IN, CNI-SPECIFIC: real network-layer per-HOSTNAME egress. Stock k8s NetworkPolicy cannot
+    # match egress by DNS name (only IP/CIDR), so `internet: true` above is all-or-nothing. When
+    # enabled, this renders a Calico NetworkPolicy (projectcalico.org/v3) that allows egress ONLY to
+    # `hosts` (plus DNS) — so drop `internet: true` and let this BE the allow-list. Requires Calico
+    # with DNS policy (Felix DNSPolicyMode); ANY OTHER CNI IGNORES IT. Validate enforcement in your
+    # cluster before relying on it — a policy the CNI does not enforce fails OPEN, silently.
+    calicoFqdn:
+      enabled: false
+      hosts: []            # e.g. ["api.stripe.com", "graph.facebook.com"]
 
 metrics:
   serviceMonitor: false    # scrapes /metrics cluster-internally (never via Ingress)
