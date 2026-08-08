@@ -13,7 +13,9 @@ matching guard asserting it maps liveness->/healthz and readiness->/readyz, neve
 """
 from __future__ import annotations
 
+import asyncio
 import os
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -118,3 +120,24 @@ def test_a_failing_probe_never_crashes_readyz(probe_app):
 
     health_mod.register_readiness_check("explode", explode)
     assert client.get("/readyz").status_code == 503     # 503, not 500
+
+
+def test_readyz_names_a_hanging_dependency_as_timeout_not_a_hang(probe_app, monkeypatch):
+    """A blackholed dependency (egress that DROPS, a wedged upstream) makes a probe HANG, not fail.
+    Unbounded, /readyz then never answers: the pod sits Running 0/1 with no body and nothing names
+    the cause. The probe must bound each check and report the stuck one distinctly."""
+    _, client, health_mod = probe_app
+    monkeypatch.setattr(health_mod, "_DEFAULT_READYZ_TIMEOUT", 0.2)
+
+    async def hangs() -> bool:
+        await asyncio.sleep(30)                 # never answers within the budget
+        return True
+
+    health_mod.register_readiness_check("stuck_dep", hangs)
+    start = time.monotonic()
+    r = client.get("/readyz")
+    elapsed = time.monotonic() - start
+
+    assert r.status_code == 503
+    assert r.json()["checks"]["stuck_dep"] == "timeout"   # named, not a generic "down"
+    assert elapsed < 5, "readyz hung on the check instead of bounding it"
