@@ -5,7 +5,7 @@ import asyncio
 
 from app.adapters.datastore.memory import MemoryDataStore
 from app.core.stores import EventStore, TicketStore
-from app.core.ticket_erasure import TicketErasure
+from app.core.erasure import TicketErasure
 from app.core.ticket_service import TicketService
 from app.core.workflow import WorkflowRegistry
 

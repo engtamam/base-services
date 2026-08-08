@@ -231,7 +231,11 @@ STATIC_ENV: dict[str, dict[str, str]] = {
                 "feature-flag-service", "search-service", "zatca-service", "wallet-service",
                 "stream-service", "webhook-service", "job-service", "connector-service",
                 "tenant-service", "api-gateway", "verification-service",
-                "onboarding-service", "assistant-service", "backup-service")),
+                "onboarding-service", "assistant-service", "backup-service",
+                # ticket free text (the subject line and message bodies a person wrote) is PII; its
+                # erase was implemented but the service was never registered here, so the DSAR
+                # fan-out never asked it — the request closed green with that text still present.
+                "ticket-service")),
         # Retention for the records compliance-service OWNS. Every other service declares its own
         # period in its RoPA row and enforces it itself — only the owner knows which timestamp is
         # its retention clock. Consent PROOF outlives everything else: it is the evidence that

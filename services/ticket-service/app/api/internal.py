@@ -78,7 +78,7 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     await request.app.state.auditor.record(
         "subject.erased", actor="", tenant=body.tenant, resource=f"subject:{body.subject}",
         ip=request.client.host if request.client else "")
-    from app.core.ticket_erasure import TicketErasure
+    from app.core.erasure import TicketErasure
     c = request.app.state.container
     s = get_settings()
     eraser = TicketErasure(store=c.datastore, pii_salt=s.PII_SALT, max_scan=s.ERASURE_MAX_SCAN)

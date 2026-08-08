@@ -46,8 +46,12 @@ class TicketErasure:
         if tickets:
             erased.append(f"ticket_subjects:{len(tickets)}")
             retained.append({
+                # record_of_decision: the resolved request is kept as a pseudonymous, provable record
+                # of what was asked and decided (an approved retention basis). "operational_record"
+                # was not one of the recognised bases — a DSAR ack that names a basis nobody agreed to
+                # is not a defensible answer to a regulator.
                 "what": "ticket_records",
-                "basis": "operational_record",
+                "basis": "record_of_decision",
                 "why": "the ticket's type, status and timeline are kept as a pseudonymous record so "
                        "a resolved request stays provable; they hold no free text after redaction"})
 
