@@ -35,6 +35,18 @@ def _user_actions() -> list[dict[str, Any]]:
     return list(USER_ACTIONS)
 
 
+def _backup() -> dict[str, Any]:
+    """This service's backup declaration (app/backup_manifest.py), or an empty one.
+
+    Published in the manifest so the backup fan-out discovers what to capture the same way the DSAR
+    fan-out discovers who holds a person — a holder nobody declares is one nobody backs up."""
+    try:
+        from app.backup_manifest import BACKUP
+    except Exception:
+        return {"object_prefix": "", "collections": [], "excluded": []}
+    return BACKUP
+
+
 def build_manifest(
     settings: Settings, ports: list[dict[str, str]] | None = None
 ) -> dict[str, Any]:
@@ -60,6 +72,12 @@ def build_manifest(
              # and is therefore never MISSED — the request closes green on an erasure
              # that did not happen.
              "erasure_category": "subject"},
+            # Backup fan-out (backup-service orchestrates): export + verify + import accounts,
+            # memberships, and durable secrets. Declared so the fan-out discovers this holder the
+            # same way the DSAR fan-out does — an undeclared holder is one nobody backs up.
+            {"path": "/internal/backup/export", "tier": "internal", "method": "POST"},
+            {"path": "/internal/backup/import", "tier": "internal", "method": "POST"},
+            {"path": "/internal/backup/verify", "tier": "internal", "method": "POST"},
             {"path": "/api/v1/auth/register", "tier": "user", "method": "POST"},
             {"path": "/api/v1/auth/login", "tier": "user", "method": "POST"},
             {"path": "/api/v1/auth/verify-email", "tier": "user", "method": "POST"},
@@ -103,4 +121,5 @@ def build_manifest(
         "events": {"emitted": ["tenant.owner_seeded"], "consumed": []},
         "admin_actions": _admin_actions(),
         "user_actions": _user_actions(),
+        "backup": _backup(),   # what backup-service must capture to restore this service
     }

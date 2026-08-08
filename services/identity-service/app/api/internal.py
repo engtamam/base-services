@@ -11,7 +11,9 @@ import hmac
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 
 from app.api.v1.tenancy import list_members_of
+from app.backup_manifest import BACKUP
 from app.config import Settings, get_settings
+from app.core import backup as _backup
 from app.core import facts
 from app.core.membership import MembershipStore
 from app.core.erasure import IdentityErasure
@@ -280,3 +282,117 @@ async def revoke_membership(request: Request, ref: str) -> dict:
             ip=request.client.host if request.client else "")
         await store.revoke(person_id, tenant)
     return {"revoked": existed, "tenant": tenant, "person_id": person_id}
+
+
+# ── Backup (backup-service orchestrates; this service produces sealed archives) ──────────────
+# What identity-service holds is declared in app/backup_manifest.py; how it is read lives in
+# core/backup.py. backup-service never opens this database — it calls export/verify/import over the
+# internal token and stores the sealed archive, never seeing the plaintext.
+def _now_iso() -> str:
+    import datetime as _dt
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _sealer(settings: Settings):
+    """The backup (seal, unseal) pair, or a 503 when no backup key is configured.
+
+    Refused rather than defaulted: sealing with an empty key would write a plaintext-equivalent
+    archive while every check reported it encrypted — the one outcome a backup must never have.
+    """
+    if not settings.BACKUP_KEK:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "BACKUP_KEK not configured — set this SHARED key (the SAME value backup-service holds) "
+            "on this service, or its archives cannot be opened")
+    return _backup.make_sealer(settings.BACKUP_KEK)
+
+
+class BackupExportIn(BaseModel):
+    # Empty tenant = the whole service; a value = just that customer's tenant-scoped rows.
+    tenant: str = ""
+
+
+class BackupVerifyIn(BaseModel):
+    archive: dict
+
+
+class BackupImportIn(BaseModel):
+    archive: dict
+    # Off by default: a restore must not bulldoze rows written after the backup unless the operator
+    # driving the restore says so.
+    overwrite: bool = False
+    # Empty = restore in place. A value REMAPS the restore into that tenant (restore-as-clone).
+    into_tenant: str = ""
+
+
+@router.post("/backup/export", dependencies=[Depends(require_internal_token)])
+async def backup_export(request: Request, body: BackupExportIn,
+                        settings: Settings = Depends(get_settings)) -> dict:
+    """Produce a sealed, checksummed archive of the accounts, memberships, and durable secrets."""
+    seal, _ = _sealer(settings)
+    return await _backup.export(
+        request.app.state.container.datastore, BACKUP,
+        service=settings.SERVICE_NAME, version=settings.SERVICE_VERSION,
+        taken_at=_now_iso(), seal=seal, tenant=body.tenant,
+        scan_cap=settings.BACKUP_MAX_ROWS_PER_COLLECTION)
+
+
+@router.post("/backup/verify", dependencies=[Depends(require_internal_token)])
+async def backup_verify(request: Request, body: BackupVerifyIn,
+                        settings: Settings = Depends(get_settings)) -> dict:
+    """Prove an archive restores, by test-restoring it into a throwaway namespace and comparing."""
+    import secrets
+    _, unseal = _sealer(settings)
+    try:
+        return await _backup.verify_restore(
+            request.app.state.container.datastore, body.archive,
+            unseal=unseal, token=secrets.token_hex(8))
+    except _backup.BackupError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+
+async def _reindex(container, scan_cap: int) -> dict[str, int]:
+    """Rebuild the two lookup indexes from their source collections — they are DERIVED, not archived.
+
+    users_by_username keys on tenant::normalized-username; the normalization is owned by the
+    configured login identifier (email vs username), so it is recomputed here exactly as create()
+    does. persons_by_identifier keys on the raw identifier. Both are idempotent and self-healing —
+    a re-run recomputes the same rows, and an index that drifted from its source is repaired.
+    """
+    datastore = container.datastore
+    users = persons = 0
+    for row in await datastore.scan_all("users", scan_cap):
+        uid, tenant, username = row.get("id"), row.get("tenant", ""), row.get("username")
+        if not uid or not username:
+            continue
+        await datastore.put("users_by_username",
+                            f"{tenant}::{container.login_identifier.normalize(username)}", {"id": uid})
+        users += 1
+    for row in await datastore.scan_all("persons", scan_cap):
+        pid, identifier = row.get("id"), row.get("identifier")
+        if not pid or not identifier:
+            continue
+        await datastore.put("persons_by_identifier", identifier, {"id": pid})
+        persons += 1
+    return {"users_by_username": users, "persons_by_identifier": persons}
+
+
+@router.post("/backup/import", dependencies=[Depends(require_internal_token)])
+async def backup_import(request: Request, body: BackupImportIn,
+                        settings: Settings = Depends(get_settings)) -> dict:
+    """Restore an archive this service produced. Idempotent; leaves newer rows alone by default.
+
+    After the accounts are restored, the username/identifier lookups are rebuilt from them — they
+    are derived, not archived, so a restore that did not rebuild them would leave every login
+    lookup answering "no such user" against accounts that plainly exist.
+    """
+    container = request.app.state.container
+    _, unseal = _sealer(settings)
+    try:
+        result = await _backup.import_archive(
+            container.datastore, body.archive,
+            unseal=unseal, overwrite=body.overwrite, into_tenant=body.into_tenant)
+    except _backup.BackupError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    result["reindexed"] = await _reindex(container, settings.BACKUP_MAX_ROWS_PER_COLLECTION)
+    return result
