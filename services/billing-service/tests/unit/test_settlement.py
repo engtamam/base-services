@@ -55,7 +55,7 @@ def _svc(store=None, **over):
                grandfather=True, dunning_base_hours=24, dunning_max_attempts=4, grace_days=7,
                list_limit=100, limits_cache_ttl=300, settlement_methods=METHODS,
                settlement_allow_partial=True, settlement_tolerance_minor=0,
-               settlement_max_backdate_days=90,
+               settlement_max_backdate_days=90, document_mode="tax_invoice",
                # Phase 42: required by EntitlementResolver.
                billable_statuses=("active", "trialing", "past_due"),
                max_subscriptions=200, merge_strategies={}, rank_orders={})

@@ -18,5 +18,10 @@ from __future__ import annotations
 # BILLING_CLAWBACK_ENABLED — whether a refund/chargeback reverses the wallet grant. READ per tenant
 # in build_billing and applied in _claw_back. The other clawback knobs (allow-negative, on-partial,
 # skip-expired) are deploy-time config, not per-tenant runtime — only the master switch is here.
+# BILLING_DOCUMENT_MODE — which money document a paid invoice produces (receipt | tax_invoice |
+# both). READ per tenant in build_billing and applied in _mark_paid (the ZATCA e-invoice is finalized
+# only for tax_invoice/both) and the document routes. Default `receipt`: a fresh platform issues our
+# own receipt with no VAT/ZATCA until it opts into tax.
 RUNTIME_POLICY: frozenset[str] = frozenset({
-    "PAYMENT_GATEWAY_DRIVER", "BILLING_AUTO_REACTIVATE", "BILLING_CLAWBACK_ENABLED"})
+    "PAYMENT_GATEWAY_DRIVER", "BILLING_AUTO_REACTIVATE", "BILLING_CLAWBACK_ENABLED",
+    "BILLING_DOCUMENT_MODE"})

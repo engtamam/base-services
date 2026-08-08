@@ -196,6 +196,16 @@ class Settings(BaseSettings):
     PAYMENT_EXTRA_ID: str = ""               # HyperPay entityId / PayTabs profile_id / APS merchant_identifier
     PAYMENT_EXTRA_SECRET: str = ""           # Geidea api-password / APS SHA request phrase
     PAYMENT_WEBHOOK_SECRET: str = ""         # webhook signature secret (APS: SHA response phrase)
+    # Which money document a paid invoice produces — an OPERATOR CHOICE, per tenant, at runtime.
+    #   receipt      (DEFAULT) our own internal receipt (سند قبض): no VAT, no ZATCA, no seller VAT
+    #                number — it just confirms money received and carries the gateway's transaction
+    #                reference. Every platform can issue it; a fresh one needs nothing configured.
+    #   tax_invoice  the ZATCA tax invoice (e-invoiced + VAT + QR). Requires the einvoicer/PDF drivers.
+    #   both         issue both.
+    # Read at the point of use (_mark_paid + the document routes); the ZATCA e-invoice is finalized
+    # ONLY for tax_invoice/both, so a receipt-only platform never touches e-invoicing.
+    BILLING_DOCUMENT_MODE: str = "receipt"   # receipt | tax_invoice | both
+
     TAX_CALCULATOR_DRIVER: str = "vat"       # vat | null
     VAT_RATE: str = "0.15"                    # KSA standard rate
     REVERSE_CHARGE_B2B: bool = False          # B2B w/ buyer VAT → 0-rate (cross-border reverse charge)
@@ -543,6 +553,14 @@ class Settings(BaseSettings):
         lowered = v.strip().lower()
         if lowered.startswith("placeholder") or lowered in {"changeme", "change_me"}:
             raise ValueError("INTERNAL_SERVICE_TOKEN is a placeholder — set a real secret")
+        return v
+
+    @field_validator("BILLING_DOCUMENT_MODE")
+    @classmethod
+    def _valid_document_mode(cls, v: str) -> str:
+        allowed = {"receipt", "tax_invoice", "both"}
+        if v not in allowed:
+            raise ValueError(f"BILLING_DOCUMENT_MODE must be one of {sorted(allowed)}, got {v!r}")
         return v
 
 

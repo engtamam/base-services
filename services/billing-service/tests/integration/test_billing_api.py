@@ -49,7 +49,8 @@ def _make_app():
     from app.config import get_settings
 
     os.environ.update(ENV="test", INTERNAL_SERVICE_TOKEN=ITOKEN, TOKEN_VERIFIER_DRIVER="hs256",
-                      TOKEN_HS256_SECRET=SECRET, RATELIMIT_MAX="1000", PAYMENT_WEBHOOK_SECRET=ITOKEN)
+                      TOKEN_HS256_SECRET=SECRET, RATELIMIT_MAX="1000", PAYMENT_WEBHOOK_SECRET=ITOKEN,
+                      BILLING_DOCUMENT_MODE="tax_invoice")
     get_settings.cache_clear()
     from app.main import create_app
 

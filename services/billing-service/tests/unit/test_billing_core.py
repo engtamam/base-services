@@ -14,7 +14,7 @@ from app.core.stores import (CouponStore, InvoiceStore, PaymentStore, PlanStore,
 from app.ports.payment_gateway import Charge, GatewayUnavailable, WebhookEvent
 
 CFG = {"cycle_sweep_limit": 1000, "platform_max_pages": 50, "cycle_lead_seconds": 0, "grant_fund": "credits", "plan_credit_limit_key": "credits",
-       "plan_credit_grant_mode": "accumulate",
+       "plan_credit_grant_mode": "accumulate", "document_mode": "tax_invoice",
        "currency": "SAR", "trial_days": 0, "vat_rate": "0.15", "dunning_base_hours": 24,
        "dunning_max_attempts": 3, "grace_days": 7, "list_limit": 100, "reverse_charge": False,
        "settlement_methods": {"bank_transfer": True, "cheque": True}, "settlement_allow_partial": True,

@@ -100,6 +100,15 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
                                 if isinstance(v, str) else bool(v))
         except Exception:  # noqa: BLE001 — a config read must never break a refund
             clawback_enabled = bool(s.BILLING_CLAWBACK_ENABLED)
+    # Which money document a paid invoice produces — per tenant, runtime-editable, read at use.
+    document_mode = s.BILLING_DOCUMENT_MODE
+    if rc is not None:
+        try:
+            v = await rc.get(tenant=tenant, key="BILLING_DOCUMENT_MODE", default=document_mode)
+            v = str(v).strip().lower()
+            document_mode = v if v in ("receipt", "tax_invoice", "both") else s.BILLING_DOCUMENT_MODE
+        except Exception:  # noqa: BLE001 — a config read must never break a charge
+            document_mode = s.BILLING_DOCUMENT_MODE
     return BillingService(
         plans=PlanStore(c.datastore, c.cache), coupons=CouponStore(c.datastore),
         subs=SubscriptionStore(c.datastore, c.cache),
@@ -124,6 +133,7 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
                 "plan_credit_grant_mode": s.PLAN_CREDIT_GRANT_MODE,
                 # Refund/chargeback grant clawback — a set of operator choices, all read at use.
                 "clawback_enabled": clawback_enabled,
+                "document_mode": document_mode,
                 "clawback_allow_negative": s.BILLING_CLAWBACK_ALLOW_NEGATIVE,
                 "clawback_on_partial": s.BILLING_CLAWBACK_ON_PARTIAL,
                 "clawback_skip_expired": s.BILLING_CLAWBACK_SKIP_EXPIRED,

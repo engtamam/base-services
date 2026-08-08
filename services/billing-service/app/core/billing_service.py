@@ -632,8 +632,13 @@ class BillingService:
         inv.paid_at = paid_at or iso()
         if not inv.settled_minor:
             inv.settled_minor = inv.total_minor
-        buyer = await self._buyer_for(inv)
-        inv.einvoice = self._einv.finalize(tenant=inv.tenant, invoice=self._einvoice_payload(inv, buyer))
+        # The ZATCA e-invoice is finalized ONLY when the operator's document mode issues a tax
+        # invoice. A receipt-only platform never touches e-invoicing — no VAT clearance, no QR — it
+        # just confirms the money (see render_receipt). tax_invoice/both keep the full ZATCA path.
+        if self._cfg.get("document_mode", "receipt") in ("tax_invoice", "both"):
+            buyer = await self._buyer_for(inv)
+            inv.einvoice = self._einv.finalize(tenant=inv.tenant,
+                                               invoice=self._einvoice_payload(inv, buyer))
         await self._invoices.save(inv)
         await self._ledger.record(tenant=inv.tenant, kind="charge", amount_minor=inv.total_minor,
                                   currency=inv.currency, invoice_id=inv.id,
