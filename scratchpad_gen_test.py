@@ -110,7 +110,7 @@ def gen(spec: dict) -> None:
     for k, v in (spec.get("extra_env") or {}).items():
         extra_env += f', {k}="{v}"'
     seed_lines = "\n".join(
-        f'        await st.put({c!r}, {k!r}, {json.dumps(row)})' for c, k, row in spec["seed"])
+        f'        await st.put({c!r}, {k!r}, {row!r})' for c, k, row in spec["seed"])
     colls = sorted({c for c, _, _ in spec["seed"]})
     count_asserts = "\n".join(f'    assert archive["row_counts"][{c!r}] >= 1' for c in colls)
     ck_coll, ck_key, ck_field, ck_val = spec["check"]

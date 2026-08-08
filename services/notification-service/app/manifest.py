@@ -35,6 +35,18 @@ def _user_actions() -> list[dict[str, Any]]:
     return list(USER_ACTIONS)
 
 
+def _backup() -> dict:
+    """This service's backup declaration (app/backup_manifest.py), or an empty one.
+
+    Published in the manifest so the backup fan-out discovers what to capture the same way the DSAR
+    fan-out discovers who holds a person — a holder nobody declares is one nobody backs up."""
+    try:
+        from app.backup_manifest import BACKUP
+    except Exception:
+        return {"object_prefix": "", "collections": [], "excluded": []}
+    return BACKUP
+
+
 def build_manifest(
     settings: Settings, ports: list[dict[str, str]] | None = None
 ) -> dict[str, Any]:
@@ -80,10 +92,17 @@ def build_manifest(
             {"path": "/api/v1/operator/config", "tier": "user", "method": "PUT"},
             {"path": "/api/v1/operator/config/{}", "tier": "user", "method": "DELETE"},
             {"path": "/internal/notifications/drain", "tier": "internal", "method": "POST"},
-            {"path": "/internal/whatsapp/templates/sync", "tier": "internal", "method": "POST"},
+            {"path": "/internal/whatsapp/templates/sync", "tier": "internal", "method": "POST"},            # Backup fan-out (backup-service orchestrates): export + verify + import this
+            # service's data. Declared so the fan-out discovers this holder — an undeclared holder
+            # is one nobody backs up.
+            {"path": "/internal/backup/export", "tier": "internal", "method": "POST"},
+            {"path": "/internal/backup/import", "tier": "internal", "method": "POST"},
+            {"path": "/internal/backup/verify", "tier": "internal", "method": "POST"},
+
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         "events": {"emitted": [], "consumed": []},
         "admin_actions": _admin_actions(),
+        "backup": _backup(),   # what backup-service must capture to restore this service
         "user_actions": _user_actions(),
     }
