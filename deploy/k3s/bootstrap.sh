@@ -74,7 +74,11 @@ install_platform() {
   kubectl label namespace "$NAMESPACE" "kubernetes.io/metadata.name=$NAMESPACE" --overwrite >/dev/null
 
   info "applying platform manifests"
-  kubectl apply -f "$(dirname "$0")/platform/"
+  # -n "$NAMESPACE": the platform manifests are namespace-agnostic (no metadata.namespace), so
+  # without this the datastores land in `default` while every charted service looks for
+  # postgres.$NAMESPACE.svc — a green bootstrap with nothing reachable. Pin them to the namespace
+  # we created and labelled above.
+  kubectl apply -n "$NAMESPACE" -f "$(dirname "$0")/platform/"
   ok "platform applied"
 }
 

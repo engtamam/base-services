@@ -37,8 +37,36 @@ can_connect() {
     | grep -q REACHABLE
 }
 
+# Retry can_connect for up to ~60s. `wait --for=condition=Ready pod/server` means the container is
+# RUNNING — not that `nc -l` is listening yet, nor that the Service endpoint is programmed in the
+# dataplane. A single probe races that window and reports a false "networking is broken"; the CNI
+# was enforcing correctly the whole time. So we poll, and only a persistent failure is real.
+wait_reachable() {
+  local tries=0
+  until can_connect; do
+    tries=$((tries + 1))
+    [ "$tries" -ge 12 ] && return 1
+    sleep 5
+  done
+  return 0
+}
+
+# Blocking delete so a re-run does not race its own previous cleanup. The EXIT trap deletes with
+# --wait=false (fast exit); if that namespace is still Terminating when the next run starts,
+# `kubectl create namespace` dies with AlreadyExists ("object is being deleted") and every re-run
+# then fails for a different reason than the first. Wait for it to be fully gone before recreating.
+ensure_ns_absent() {
+  kubectl delete namespace "$NS" --ignore-not-found --wait=true --timeout="$TIMEOUT" >/dev/null 2>&1 || true
+  local tries=0
+  while kubectl get namespace "$NS" >/dev/null 2>&1; do
+    tries=$((tries + 1))
+    [ "$tries" -ge 24 ] && die "namespace $NS is stuck Terminating; delete it by hand and retry"
+    sleep 5
+  done
+}
+
 setup() {
-  cleanup
+  ensure_ns_absent
   kubectl create namespace "$NS" >/dev/null
   kubectl label namespace "$NS" "kubernetes.io/metadata.name=$NS" --overwrite >/dev/null
   info "starting a server pod in $NS"
@@ -70,9 +98,10 @@ check_network_policy() {
   info "network policy: proving the control path BEFORE trusting the deny"
   setup
 
-  can_connect \
-    || die "baseline connectivity FAILED: the client cannot reach the server even with no policy.
-       The cluster's networking is broken — a later 'blocked' result would prove nothing."
+  wait_reachable \
+    || die "baseline connectivity FAILED after ~60s of retries: the client cannot reach the server
+       even with no policy. The cluster's networking is broken — a later 'blocked' result would
+       prove nothing."
   ok "baseline: client reaches server (networking works)"
 
   info "applying default-deny and re-testing"
@@ -86,8 +115,7 @@ check_network_policy() {
   ok "deny-by-default is ENFORCED (connection refused)"
 
   kubectl -n "$NS" delete networkpolicy preflight-default-deny >/dev/null
-  sleep 5
-  can_connect || die "policy removed but the client still cannot connect — the cluster is
+  wait_reachable || die "policy removed but the client still cannot connect — the cluster is
        in a bad state; the 'enforced' result above may be a networking failure in disguise."
   ok "restore: connectivity returns once the policy is removed"
 

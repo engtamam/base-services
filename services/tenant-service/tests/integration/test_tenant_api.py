@@ -126,3 +126,48 @@ def test_duplicate_slug_conflict(client):
     client.post("/api/v1/tenants", json={"slug": "dup", "name": "A"}, headers=_platform())
     r = client.post("/api/v1/tenants", json={"slug": "dup", "name": "B"}, headers=_platform())
     assert r.status_code == 409
+
+
+def test_declared_actions_reach_the_audit_sink_with_a_bound_actor(client):
+    """auditable_actions.py declares tenant.created / config_updated / branding_updated. A contract
+    file that names a control the code never records is worse than one that never claimed it — a
+    compliance map built from it reads 'witnessed' over an empty chain. These routes used to emit to
+    the event bus only (a peer reacting is not a witness an investigator can search) and authorised
+    with dependencies=[Depends(...)], leaving no actor. Prove both: the action reaches the auditor,
+    and the principal is bound so the log can answer WHO."""
+    real = client.app.state.auditor
+    calls: list[tuple[str, dict]] = []
+
+    class _Spy:
+        async def record(self, action, **kw):
+            calls.append((action, kw))
+            return await real.record(action, **kw)
+
+        def is_critical(self, action):
+            return real.is_critical(action)
+
+    client.app.state.auditor = _Spy()
+    try:
+        tid = client.post("/api/v1/tenants", json={"slug": "audited", "name": "A"},
+                          headers=_platform()).json()["id"]
+        assert client.put(f"/api/v1/tenants/{tid}/config", json={"config": {"k": "v"}},
+                          headers=_platform()).status_code == 200
+        assert client.put(f"/api/v1/tenants/{tid}/branding", json={"branding": {"logo": "x"}},
+                          headers=_platform()).status_code == 200
+        # And the same actions from the tenant-self routes, witnessed under the tenant's own admin.
+        own = {"Authorization": "Bearer " + _tok("owner", ["tenant.manage"], tenant=tid)}
+        assert client.put("/api/v1/tenant/config", json={"config": {"k2": "v2"}},
+                          headers=own).status_code == 200
+        assert client.put("/api/v1/tenant/branding", json={"branding": {"logo": "y"}},
+                          headers=own).status_code == 200
+    finally:
+        client.app.state.auditor = real
+
+    by_action = {action: kw for action, kw in calls}
+    assert {"tenant.created", "tenant.config_updated", "tenant.branding_updated"} <= set(by_action)
+    # the actor is BOUND, not anonymous — the platform admin on the create path
+    assert by_action["tenant.created"]["actor"] == "admin"
+    assert by_action["tenant.created"]["resource"].startswith("tenant:")
+    # the tenant-self path witnesses under the owner, not the platform admin
+    self_calls = [kw for a, kw in calls if a == "tenant.config_updated"]
+    assert any(kw["actor"] == "owner" for kw in self_calls)

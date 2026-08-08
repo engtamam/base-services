@@ -60,8 +60,9 @@ async def _load(request: Request, tenant_id: str):
 
 
 # ── Platform admin (cross-tenant) ────────────────────────────────────────────
-@admin_router.post("", status_code=201, dependencies=[Depends(_PLATFORM), Depends(rate_limit)])
-async def provision(request: Request, body: ProvisionIn) -> dict:
+@admin_router.post("", status_code=201, dependencies=[Depends(rate_limit)])
+async def provision(request: Request, body: ProvisionIn,
+                    principal: Principal = Depends(_PLATFORM)) -> dict:
     svc = build_service(request)
     try:
         t = await svc.provision(body.slug, body.name, domains=body.domains,
@@ -72,6 +73,14 @@ async def provision(request: Request, body: ProvisionIn) -> dict:
         raise HTTPException(status.HTTP_409_CONFLICT, "SLUG_TAKEN")
     except DomainTaken:
         raise HTTPException(status.HTTP_409_CONFLICT, "DOMAIN_TAKEN")
+    # tenant.created is a DECLARED auditable action, so it must reach the audit sink and not only
+    # the event bus — a peer reacting to an event is not a witness an investigator can search. It
+    # is non-critical (fails open), so it is recorded AFTER the create succeeds; recording a
+    # provision that did not happen would be worse than missing one that did. The principal is
+    # BOUND, not just depended on, so the log can answer who provisioned the tenant.
+    await request.app.state.auditor.record(
+        "tenant.created", actor=principal.subject, tenant=principal.tenant,
+        resource=f"tenant:{t.id}", ip=request.client.host if request.client else "")
     return t.public()
 
 
@@ -87,16 +96,26 @@ async def get_tenant(request: Request, tenant_id: str) -> dict:
     return tenant.public()
 
 
-@admin_router.put("/{tenant_id}/config", dependencies=[Depends(_PLATFORM)])
-async def update_config(request: Request, tenant_id: str, body: ConfigIn) -> dict:
+@admin_router.put("/{tenant_id}/config")
+async def update_config(request: Request, tenant_id: str, body: ConfigIn,
+                        principal: Principal = Depends(_PLATFORM)) -> dict:
     svc, tenant = await _load(request, tenant_id)
-    return (await svc.update_config(tenant, body.config)).public()
+    updated = await svc.update_config(tenant, body.config)
+    await request.app.state.auditor.record(
+        "tenant.config_updated", actor=principal.subject, tenant=principal.tenant,
+        resource=f"tenant:{tenant_id}", ip=request.client.host if request.client else "")
+    return updated.public()
 
 
-@admin_router.put("/{tenant_id}/branding", dependencies=[Depends(_PLATFORM)])
-async def set_branding(request: Request, tenant_id: str, body: BrandingIn) -> dict:
+@admin_router.put("/{tenant_id}/branding")
+async def set_branding(request: Request, tenant_id: str, body: BrandingIn,
+                       principal: Principal = Depends(_PLATFORM)) -> dict:
     svc, tenant = await _load(request, tenant_id)
-    return (await svc.set_branding(tenant, body.branding)).public()
+    updated = await svc.set_branding(tenant, body.branding)
+    await request.app.state.auditor.record(
+        "tenant.branding_updated", actor=principal.subject, tenant=principal.tenant,
+        resource=f"tenant:{tenant_id}", ip=request.client.host if request.client else "")
+    return updated.public()
 
 
 @admin_router.post("/{tenant_id}/suspend")
@@ -174,14 +193,24 @@ async def my_tenant(request: Request, principal: Principal = Depends(require_use
 async def my_config(request: Request, body: ConfigIn,
                     principal: Principal = Depends(require_user)) -> dict:
     svc, tenant = await _own(request, principal)
-    return (await svc.update_config(tenant, body.config)).public()
+    updated = await svc.update_config(tenant, body.config)
+    # The same declared action, witnessed whoever makes the change — a tenant editing its own config
+    # is as auditable as the platform doing it, and the actor is what tells the two apart.
+    await request.app.state.auditor.record(
+        "tenant.config_updated", actor=principal.subject, tenant=principal.tenant,
+        resource=f"tenant:{principal.tenant}", ip=request.client.host if request.client else "")
+    return updated.public()
 
 
 @self_router.put("/branding", dependencies=[Depends(_TENANT_ADMIN)])
 async def my_branding(request: Request, body: BrandingIn,
                       principal: Principal = Depends(require_user)) -> dict:
     svc, tenant = await _own(request, principal)
-    return (await svc.set_branding(tenant, body.branding)).public()
+    updated = await svc.set_branding(tenant, body.branding)
+    await request.app.state.auditor.record(
+        "tenant.branding_updated", actor=principal.subject, tenant=principal.tenant,
+        resource=f"tenant:{principal.tenant}", ip=request.client.host if request.client else "")
+    return updated.public()
 
 
 @self_router.post("/close", dependencies=[Depends(_TENANT_ADMIN), Depends(rate_limit)])
