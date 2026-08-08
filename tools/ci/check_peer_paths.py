@@ -38,13 +38,13 @@ _PARAM = re.compile(r"\{[^}]*\}")
 # Config-path fields that legitimately name something NO base-service serves (an external system, a
 # customer's own API) OR a KNOWN, reviewed gap. Keyed "<svc>:<FIELD>" -> reason.
 EXCLUDED: dict[str, str] = {
-    # KNOWN GAP (found by this gate): assistant-service does not yet serve triage/draft — it serves
-    # only /internal/assistant/retention. ticket's assistant integration is opt-in (ASSISTANT_DRIVER
-    # =http, off by default), so this is latent, not live. Tracked as a follow-up to either build the
-    # two endpoints on assistant-service or drop the integration. Excluded (not silently passed) so
-    # the gap is a reviewed decision with a reason, exactly what this escape hatch is for.
-    "ticket-service:ASSISTANT_TRIAGE_PATH": "assistant-service does not yet serve /internal/assistant/triage (opt-in integration; tracked)",
-    "ticket-service:ASSISTANT_DRAFT_PATH": "assistant-service does not yet serve /internal/assistant/draft (opt-in integration; tracked)",
+    # BRING-YOUR-OWN (reviewed): ticket's AI suggestion layer (SUGGEST_DRIVER=http, off by default,
+    # advisory — a 404 is a graceful shrug) POSTs a {triage,draft} contract. base-services' own
+    # assistant-service serves KB Q&A (/api/v1/assistant/ask), NOT ticket triage/draft — that is a
+    # different capability, not a missing endpoint — so an operator points these at a service that
+    # implements the contract. Excluded (not silently passed): the target is external by design.
+    "ticket-service:ASSISTANT_TRIAGE_PATH": "bring-your-own triage service; base-services assistant is KB Q&A, not ticket triage (SUGGEST_DRIVER=null by default)",
+    "ticket-service:ASSISTANT_DRAFT_PATH": "bring-your-own draft service; base-services assistant is KB Q&A, not reply drafting (SUGGEST_DRIVER=null by default)",
 }
 for _e in (os.environ.get("PEER_PATHS_GATE_EXCLUDE", "") or "").split(","):
     if _e.strip():
