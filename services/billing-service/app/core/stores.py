@@ -352,6 +352,18 @@ class PaymentStore(_Repo):
         rows, _ = await self._store.find(self.collection, {"provider_id": provider_id}, limit=1)
         return Payment.from_dict(rows[0]) if rows else None
 
+    async def for_invoice(self, invoice_id: str) -> Payment | None:
+        """The SUCCEEDED payment that settled this invoice — the gateway reference a receipt prints.
+
+        Filtered by (invoice_id, status=succeeded), never a scan. None when the invoice was paid
+        off-gateway (a settlement) — the caller shows the settlement's method/reference instead.
+        """
+        if not invoice_id:
+            return None
+        rows, _ = await self._store.find(
+            self.collection, {"invoice_id": invoice_id, "status": "succeeded"}, limit=1)
+        return Payment.from_dict(rows[0]) if rows else None
+
     async def due(self, now: float, limit: int = 100) -> list[Payment]:
         """Failed payments ready for another attempt. The dunning sweeper's queue.
 

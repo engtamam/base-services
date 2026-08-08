@@ -9,3 +9,7 @@ class NullPdf:
 
     def render(self, invoice: dict[str, Any]) -> tuple[str, bytes] | None:
         return None
+
+    def render_receipt(self, invoice: dict[str, Any], payment: dict[str, Any]
+                       ) -> tuple[str, bytes] | None:
+        return None

@@ -1465,8 +1465,50 @@
         ]
       }
     },
+    "/api/v1/billing/invoices/{invoice_id}/document": {
+      "get": {
+        "description": "Whatever THIS tenant's document mode issues \u2014 so a client asks for 'the document' and gets the\nright one: the tax invoice (tax_invoice/both), otherwise the receipt.",
+        "operationId": "invoice_document_api_v1_billing_invoices__invoice_id__document_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invoice_id",
+            "required": true,
+            "schema": {
+              "title": "Invoice Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Invoice Document",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
     "/api/v1/billing/invoices/{invoice_id}/pdf": {
       "get": {
+        "description": "The TAX invoice. Refused when the tenant's document mode does not issue one (receipt-only).",
         "operationId": "invoice_pdf_api_v1_billing_invoices__invoice_id__pdf_get",
         "parameters": [
           {
@@ -1500,6 +1542,47 @@
           }
         },
         "summary": "Invoice Pdf",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/invoices/{invoice_id}/receipt": {
+      "get": {
+        "description": "Our internal payment RECEIPT (non-tax), carrying the gateway reference. Refused when the mode\ndoes not issue one, or the invoice is not paid.",
+        "operationId": "invoice_receipt_api_v1_billing_invoices__invoice_id__receipt_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invoice_id",
+            "required": true,
+            "schema": {
+              "title": "Invoice Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Invoice Receipt",
         "tags": [
           "billing"
         ]

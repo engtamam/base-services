@@ -1126,6 +1126,11 @@ class BillingService:
         # renderer fall back to printing the raw tenant id as if it were a name. A B2C invoice with
         # no named buyer carries the tenant only as an ACCOUNT reference — honest, and ZATCA does not
         # require a buyer name on a simplified invoice.
+        data = await self._document_data(inv)
+        return self._pdf.render(data)
+
+    async def _document_data(self, inv: Invoice) -> dict[str, Any]:
+        """The invoice dict a document renders from, with a real BILL-TO party resolved."""
         data = inv.to_dict()
         buyer = await self._buyer_for(inv)
         name = (buyer.get("name") or "").strip()
@@ -1134,4 +1139,25 @@ class BillingService:
                              if k in ("name", "vat_number", "cr_number", "address") and v}
         else:
             data["buyer"] = {"account": inv.tenant}
-        return self._pdf.render(data)
+        return data
+
+    async def render_receipt(self, inv: Invoice) -> tuple[str, bytes] | None:
+        """The non-tax payment RECEIPT for a PAID invoice — carries the gateway's transaction
+        reference (or, for an off-gateway settlement, its method + bank reference). Returns None if
+        the invoice is not paid or no receipt renderer is wired."""
+        if inv.status != "paid":
+            return None
+        fn = getattr(self._pdf, "render_receipt", None)
+        if fn is None:
+            return None
+        data = await self._document_data(inv)
+        pay = await self._payments.for_invoice(inv.id)
+        if pay is not None:
+            ref = {"provider": pay.provider, "provider_id": pay.provider_id, "paid_at": inv.paid_at}
+        else:
+            # Paid off-gateway: show the settlement's method + reference, never a blank.
+            stls = await self._settlements.for_invoice(inv.id, 1)
+            stl = stls[0] if stls else {}
+            ref = {"method": stl.get("method", ""), "reference": stl.get("reference", ""),
+                   "paid_at": inv.paid_at}
+        return fn(data, ref)

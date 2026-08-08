@@ -421,3 +421,100 @@ class ReportLabPdf:
             _log.error("invoice_pdf_render_failed",
                        extra={"invoice": invoice.get("number", ""), "error": type(exc).__name__})
             return None
+
+    # ── the internal receipt (non-tax) ──────────────────────────────────────────
+    def render_receipt(self, invoice: dict[str, Any], payment: dict[str, Any]
+                       ) -> tuple[str, bytes] | None:
+        """A payment RECEIPT (سند قبض) — confirms money received, carries the gateway's transaction
+        reference, and is NOT a tax document: no VAT lines, no seller VAT number, no ZATCA QR. It is
+        the default document a platform issues before it opts into tax invoicing, and it works for
+        every gateway because it needs nothing from the gateway but the reference we already stored."""
+        try:
+            colors = load("reportlab.lib.colors", "pdf")
+            st = self._styles()
+            buf = io.BytesIO()
+            doc = self._rl.SimpleDocTemplate(
+                buf, pagesize=(595, 842), leftMargin=48, rightMargin=48, topMargin=46, bottomMargin=52,
+                title=f"Receipt {invoice.get('number', '')}", author=self._brand.get("name", ""))
+            seller = invoice.get("seller") or self._brand.get("seller") or {}
+            buyer = invoice.get("buyer") or {"account": invoice.get("tenant", "")}
+            cur = invoice.get("currency", "")
+            P = self._rl.Paragraph
+            story: list = [self._brand_band(st, colors, seller, "PAYMENT RECEIPT", "سند قبض"),
+                           self._rl.Spacer(1, 16)]
+
+            paid_at = payment.get("paid_at") or invoice.get("paid_at", "") or invoice.get("created", "")
+            head = self._rl.Table([[
+                [P("RECEIPT No. · " + _ar("رقم الإيصال", self._arabic), st["label"]),
+                 P(_safe(invoice.get("number", "")), st["value"])],
+                [P("PAID · " + _ar("تاريخ الدفع", self._arabic), st["label_r"]),
+                 P(_safe(issued(paid_at)), st["value_r"])],
+            ]], colWidths=[300, 199])
+            head.setStyle(self._rl.TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "TOP"), ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
+            story += [head, self._rl.Spacer(1, 18)]
+
+            parties = self._rl.Table(
+                [[self._party_block(st, "FROM", "من", seller),
+                  self._party_block(st, "PAID BY", "المدفوع من", buyer)]], colWidths=[250, 249])
+            parties.setStyle(self._rl.TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0)]))
+            story += [parties, self._rl.Spacer(1, 18)]
+
+            # What it was for — a plain description, never a taxed line table.
+            desc = _safe(invoice.get("description")
+                         or (invoice.get("lines") or [{}])[0].get("description", "")
+                         or f"Invoice {invoice.get('number', '')}")
+            story += [P(f"FOR · {_ar('مقابل', self._arabic)}", st["label"]),
+                      P(desc, st["value"]), self._rl.Spacer(1, 12)]
+
+            # The AMOUNT PAID panel (the one number that matters) + the PAYMENT REFERENCE beside it.
+            amount = self._rl.Table(
+                [[P(f"AMOUNT PAID · {_ar('المبلغ المدفوع', self._arabic)}", st["due_label"]),
+                  P(money(invoice.get("total_minor", 0), cur), st["due"])]],
+                colWidths=[190, 128], hAlign="RIGHT")
+            amount.setStyle(self._rl.TableStyle([
+                ("FONTNAME", (0, 0), (-1, -1), self._font),
+                ("BACKGROUND", (0, 0), (-1, -1), colors.Color(*self._accent)),
+                ("TOPPADDING", (0, 0), (-1, -1), 10), ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+                ("LEFTPADDING", (0, 0), (0, 0), 12), ("RIGHTPADDING", (-1, 0), (-1, 0), 12),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
+            story += [self._rl.Table([[self._payment_ref(st, payment), amount]], colWidths=[160, 339],
+                                     style=self._rl.TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
+                                                                ("LEFTPADDING", (0, 0), (-1, -1), 0)])),
+                      self._rl.Spacer(1, 22),
+                      P(_ar("هذا إيصال دفع وليس فاتورة ضريبية.", self._arabic)
+                        + "  This is a payment receipt, not a tax invoice.", st["foot"])]
+
+            def _chrome(canvas, document):
+                canvas.saveState()
+                canvas.setFont(self._font, 7.5)
+                canvas.setFillColorRGB(*_MUTED)
+                canvas.drawString(48, 34, f"{invoice.get('number', '')} · {seller.get('name', '')}"[:90])
+                canvas.setStrokeColorRGB(*_HAIRLINE)
+                canvas.setLineWidth(0.4)
+                canvas.line(48, 48, 547, 48)
+                canvas.restoreState()
+
+            doc.build(story, onFirstPage=_chrome, onLaterPages=_chrome)
+            return "application/pdf", buf.getvalue()
+        except Exception as exc:  # noqa: BLE001 — a document must never stop the money being recorded
+            _log.error("receipt_pdf_render_failed",
+                       extra={"invoice": invoice.get("number", ""), "error": type(exc).__name__})
+            return None
+
+    def _payment_ref(self, st, payment: dict[str, Any]) -> list:
+        """The gateway (or settlement) reference — the traceable link to how the money arrived."""
+        rows = [[self._rl.Paragraph(
+            f"PAYMENT REF · {_ar('مرجع الدفع', self._arabic)}", st["label"])]]
+        provider = _safe(payment.get("provider", ""))
+        pid = _safe(payment.get("provider_id", ""))
+        method = _safe(payment.get("method", ""))
+        reference = _safe(payment.get("reference", ""))
+        if provider or pid:
+            rows.append([self._rl.Paragraph(f"{provider} · {pid}".strip(" ·"), st["sub"])])
+        elif method or reference:
+            # An off-gateway settlement (wire/cheque): show its method + bank reference instead.
+            rows.append([self._rl.Paragraph(f"{method} · {reference}".strip(" ·"), st["sub"])])
+        return rows

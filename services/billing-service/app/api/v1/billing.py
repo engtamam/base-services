@@ -613,19 +613,54 @@ async def list_invoices_platform(request: Request,
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
 
-@router.get("/invoices/{invoice_id}/pdf")
-async def invoice_pdf(request: Request, invoice_id: str, principal: Principal = Depends(_SELF)):
-    svc = (await build_billing(request))
-    inv = await svc._invoices.fetch(invoice_id)
-    if inv is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
-    _guard(principal, inv.tenant)
-    rendered = await svc.render_pdf(inv)
+def _pdf_response(rendered, filename: str) -> Response:
     if rendered is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "PDF_UNAVAILABLE")
     ct, data = rendered
     return Response(content=data, media_type=ct,
-                    headers={"Content-Disposition": f'attachment; filename="{inv.number}.pdf"'})
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+async def _fetch_own(request: Request, invoice_id: str, principal: Principal):
+    svc = await build_billing(request)
+    inv = await svc._invoices.fetch(invoice_id)
+    if inv is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    _guard(principal, inv.tenant)
+    return svc, inv
+
+
+@router.get("/invoices/{invoice_id}/pdf")
+async def invoice_pdf(request: Request, invoice_id: str, principal: Principal = Depends(_SELF)):
+    """The TAX invoice. Refused when the tenant's document mode does not issue one (receipt-only)."""
+    svc, inv = await _fetch_own(request, invoice_id, principal)
+    if svc._cfg.get("document_mode", "receipt") not in ("tax_invoice", "both"):
+        raise HTTPException(status.HTTP_409_CONFLICT, "TAX_INVOICE_NOT_ISSUED")
+    return _pdf_response(await svc.render_pdf(inv), f"{inv.number}.pdf")
+
+
+@router.get("/invoices/{invoice_id}/receipt")
+async def invoice_receipt(request: Request, invoice_id: str, principal: Principal = Depends(_SELF)):
+    """Our internal payment RECEIPT (non-tax), carrying the gateway reference. Refused when the mode
+    does not issue one, or the invoice is not paid."""
+    svc, inv = await _fetch_own(request, invoice_id, principal)
+    if svc._cfg.get("document_mode", "receipt") not in ("receipt", "both"):
+        raise HTTPException(status.HTTP_409_CONFLICT, "RECEIPT_NOT_ISSUED")
+    if inv.status != "paid":
+        raise HTTPException(status.HTTP_409_CONFLICT, "NOT_PAID")
+    return _pdf_response(await svc.render_receipt(inv), f"{inv.number}-receipt.pdf")
+
+
+@router.get("/invoices/{invoice_id}/document")
+async def invoice_document(request: Request, invoice_id: str, principal: Principal = Depends(_SELF)):
+    """Whatever THIS tenant's document mode issues — so a client asks for 'the document' and gets the
+    right one: the tax invoice (tax_invoice/both), otherwise the receipt."""
+    svc, inv = await _fetch_own(request, invoice_id, principal)
+    if svc._cfg.get("document_mode", "receipt") in ("tax_invoice", "both"):
+        return _pdf_response(await svc.render_pdf(inv), f"{inv.number}.pdf")
+    if inv.status != "paid":
+        raise HTTPException(status.HTTP_409_CONFLICT, "NOT_PAID")
+    return _pdf_response(await svc.render_receipt(inv), f"{inv.number}-receipt.pdf")
 
 
 @router.post("/payments/{payment_id}/refund")
