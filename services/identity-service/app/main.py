@@ -181,6 +181,11 @@ def create_app() -> FastAPI:
     if settings.IDENTITY_MULTI_TENANT:
         app.include_router(tenancy_router)
         app.include_router(members_router)
+    # Machine identity (OAuth2 client-credentials) is opt-in. Included only when enabled, so a
+    # deployment that has not turned it on has no token-exchange endpoint at all.
+    if settings.SERVICE_ACCOUNTS_ENABLED:
+        from app.api.v1.service_accounts import router as service_accounts_router
+        app.include_router(service_accounts_router)
 
     return app
 

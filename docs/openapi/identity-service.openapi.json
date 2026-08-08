@@ -42,6 +42,55 @@
         "title": "AddMemberIn",
         "type": "object"
       },
+      "BackupExportIn": {
+        "properties": {
+          "tenant": {
+            "default": "",
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "title": "BackupExportIn",
+        "type": "object"
+      },
+      "BackupImportIn": {
+        "properties": {
+          "archive": {
+            "additionalProperties": true,
+            "title": "Archive",
+            "type": "object"
+          },
+          "into_tenant": {
+            "default": "",
+            "title": "Into Tenant",
+            "type": "string"
+          },
+          "overwrite": {
+            "default": false,
+            "title": "Overwrite",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "archive"
+        ],
+        "title": "BackupImportIn",
+        "type": "object"
+      },
+      "BackupVerifyIn": {
+        "properties": {
+          "archive": {
+            "additionalProperties": true,
+            "title": "Archive",
+            "type": "object"
+          }
+        },
+        "required": [
+          "archive"
+        ],
+        "title": "BackupVerifyIn",
+        "type": "object"
+      },
       "ChangePwIn": {
         "properties": {
           "new_password": {
@@ -152,6 +201,29 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "IssueIn": {
+        "properties": {
+          "caps": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Caps",
+            "type": "array"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "IssueIn",
         "type": "object"
       },
       "LoginIn": {
@@ -439,6 +511,29 @@
           "tenant"
         ],
         "title": "TenantIn",
+        "type": "object"
+      },
+      "TokenIn": {
+        "properties": {
+          "client_id": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Client Id",
+            "type": "string"
+          },
+          "client_secret": {
+            "default": "",
+            "maxLength": 512,
+            "title": "Client Secret",
+            "type": "string"
+          },
+          "grant_type": {
+            "default": "client_credentials",
+            "title": "Grant Type",
+            "type": "string"
+          }
+        },
+        "title": "TokenIn",
         "type": "object"
       },
       "UnblockIn": {
@@ -836,7 +931,7 @@
           "tenancy"
         ]
       },
-      "x-available-when": "IDENTITY_MULTI_TENANT=true"
+      "x-available-when": "IDENTITY_MULTI_TENANT=true, SERVICE_ACCOUNTS_ENABLED=true"
     },
     "/api/v1/auth/person/login": {
       "post": {
@@ -881,7 +976,7 @@
           "tenancy"
         ]
       },
-      "x-available-when": "IDENTITY_MULTI_TENANT=true"
+      "x-available-when": "IDENTITY_MULTI_TENANT=true, SERVICE_ACCOUNTS_ENABLED=true"
     },
     "/api/v1/auth/refresh": {
       "post": {
@@ -1056,7 +1151,7 @@
           "tenancy"
         ]
       },
-      "x-available-when": "IDENTITY_MULTI_TENANT=true"
+      "x-available-when": "IDENTITY_MULTI_TENANT=true, SERVICE_ACCOUNTS_ENABLED=true"
     },
     "/api/v1/auth/verify-email": {
       "post": {
@@ -1101,6 +1196,51 @@
           "auth"
         ]
       }
+    },
+    "/api/v1/oauth/token": {
+      "post": {
+        "description": "Exchange a client_id + client_secret for an access token (client-credentials grant).\n\nThe token is an ordinary access JWT signed by the SAME issuer that signs human tokens, so every\ndownstream service verifies it on the path it already has. Its subject is the \"svc_\u2026\" client_id \u2014\nvisibly a machine in the audit trail \u2014 and it carries the account's tenant and capabilities.",
+        "operationId": "token_api_v1_oauth_token_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Token Api V1 Oauth Token Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Token",
+        "tags": [
+          "service-accounts"
+        ]
+      },
+      "x-available-when": "IDENTITY_MULTI_TENANT=true, SERVICE_ACCOUNTS_ENABLED=true"
     },
     "/api/v1/operator/config": {
       "get": {
@@ -1388,6 +1528,194 @@
         ]
       }
     },
+    "/api/v1/service-accounts": {
+      "get": {
+        "description": "List THIS tenant's service accounts. Never a secret \u2014 only client_id, name, caps, status.",
+        "operationId": "list_service_accounts_api_v1_service_accounts_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Service Accounts Api V1 Service Accounts Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Service Accounts",
+        "tags": [
+          "service-accounts"
+        ]
+      },
+      "post": {
+        "description": "Mint a machine identity for THIS tenant. Returns the client_id and the client_secret ONCE.\n\nThe secret is not stored in the clear and appears in no other response \u2014 copy it now. Its caps\ncan never exceed the issuer's own (least privilege), and the tenant is the issuer's, off the\ntoken.",
+        "operationId": "issue_api_v1_service_accounts_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IssueIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Issue Api V1 Service Accounts Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Issue",
+        "tags": [
+          "service-accounts"
+        ]
+      },
+      "x-available-when": "IDENTITY_MULTI_TENANT=true, SERVICE_ACCOUNTS_ENABLED=true"
+    },
+    "/api/v1/service-accounts/{client_id}": {
+      "delete": {
+        "description": "Revoke a service account \u2014 independently of any human account. No secret authenticates and no\ntoken mints afterwards; the row is kept so the audit trail still resolves the client_id.",
+        "operationId": "revoke_api_v1_service_accounts__client_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "client_id",
+            "required": true,
+            "schema": {
+              "title": "Client Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Revoke Api V1 Service Accounts  Client Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke",
+        "tags": [
+          "service-accounts"
+        ]
+      },
+      "x-available-when": "IDENTITY_MULTI_TENANT=true, SERVICE_ACCOUNTS_ENABLED=true"
+    },
+    "/api/v1/service-accounts/{client_id}/rotate": {
+      "post": {
+        "description": "Rotate a service account's secret. The client_id is unchanged; only the secret the caller\nholds must be updated. Returns the new secret ONCE.",
+        "operationId": "rotate_api_v1_service_accounts__client_id__rotate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "client_id",
+            "required": true,
+            "schema": {
+              "title": "Client Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Rotate Api V1 Service Accounts  Client Id  Rotate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rotate",
+        "tags": [
+          "service-accounts"
+        ]
+      },
+      "x-available-when": "IDENTITY_MULTI_TENANT=true, SERVICE_ACCOUNTS_ENABLED=true"
+    },
     "/api/v1/tenancy/members": {
       "get": {
         "description": "Who works HERE. Admin-gated, one tenant, paginated.\n\nTHE TENANT IS NOT A PARAMETER. It is read off the caller's token \u2014 the same membership row the\nmint verified. A `?tenant=` on a directory read is T1 wearing a different hat: it would let any\nadmin enumerate the staff of any company on the platform, and it would look like a feature.\n\nA caller with no tenant claim is REJECTED, never widened to \"all tenants\" (T8).",
@@ -1498,7 +1826,7 @@
           "tenancy"
         ]
       },
-      "x-available-when": "IDENTITY_MULTI_TENANT=true"
+      "x-available-when": "IDENTITY_MULTI_TENANT=true, SERVICE_ACCOUNTS_ENABLED=true"
     },
     "/api/v1/tenancy/members/{person_id}": {
       "delete": {
@@ -1597,7 +1925,7 @@
           "tenancy"
         ]
       },
-      "x-available-when": "IDENTITY_MULTI_TENANT=true"
+      "x-available-when": "IDENTITY_MULTI_TENANT=true, SERVICE_ACCOUNTS_ENABLED=true"
     },
     "/api/v1/tenancy/members/{person_id}/status": {
       "post": {
@@ -1653,7 +1981,7 @@
           "tenancy"
         ]
       },
-      "x-available-when": "IDENTITY_MULTI_TENANT=true"
+      "x-available-when": "IDENTITY_MULTI_TENANT=true, SERVICE_ACCOUNTS_ENABLED=true"
     },
     "/healthz": {
       "get": {
@@ -1677,6 +2005,192 @@
         "summary": "Healthz",
         "tags": [
           "health"
+        ]
+      }
+    },
+    "/internal/backup/export": {
+      "post": {
+        "description": "Produce a sealed, checksummed archive of the accounts, memberships, and durable secrets.",
+        "operationId": "backup_export_internal_backup_export_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackupExportIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Backup Export Internal Backup Export Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Backup Export",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/backup/import": {
+      "post": {
+        "description": "Restore an archive this service produced. Idempotent; leaves newer rows alone by default.\n\nAfter the accounts are restored, the username/identifier lookups are rebuilt from them \u2014 they\nare derived, not archived, so a restore that did not rebuild them would leave every login\nlookup answering \"no such user\" against accounts that plainly exist.",
+        "operationId": "backup_import_internal_backup_import_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackupImportIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Backup Import Internal Backup Import Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Backup Import",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/backup/verify": {
+      "post": {
+        "description": "Prove an archive restores, by test-restoring it into a throwaway namespace and comparing.",
+        "operationId": "backup_verify_internal_backup_verify_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackupVerifyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Backup Verify Internal Backup Verify Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Backup Verify",
+        "tags": [
+          "internal"
         ]
       }
     },

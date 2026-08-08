@@ -130,4 +130,35 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         "group": "Settings", "confirm": True,
         "params": [{"name": "key", "in": "path", "type": "string", "required": True}],
     },
+    # ── Machine identity (service accounts / client-credentials) ──────────────
+    {
+        "id": "identity.list_service_accounts", "label": "List service accounts", "method": "GET",
+        "path": "/api/v1/service-accounts", "capability": "service_accounts:read",
+        "group": "Service accounts",
+    },
+    {
+        "id": "identity.issue_service_account", "label": "Issue a service account", "method": "POST",
+        "path": "/api/v1/service-accounts", "capability": "service_accounts:write",
+        "group": "Service accounts", "confirm": True,
+        "params": [
+            {"name": "name", "in": "body", "type": "string", "required": True,
+             "help": "a human label for the integration, e.g. 'Odoo integration' — shown in the audit trail"},
+            {"name": "caps", "in": "body", "type": "array", "required": False,
+             "help": "the capabilities the integration may use — each must be one you hold; the client secret is shown once"},
+        ],
+    },
+    {
+        "id": "identity.rotate_service_account", "label": "Rotate a service account's secret",
+        "method": "POST", "path": "/api/v1/service-accounts/{client_id}/rotate",
+        "capability": "service_accounts:write", "group": "Service accounts",
+        "confirm": True, "danger": True,
+        "params": [{"name": "client_id", "in": "path", "type": "string", "required": True}],
+    },
+    {
+        "id": "identity.revoke_service_account", "label": "Revoke a service account",
+        "method": "DELETE", "path": "/api/v1/service-accounts/{client_id}",
+        "capability": "service_accounts:write", "group": "Service accounts",
+        "confirm": True, "danger": True,
+        "params": [{"name": "client_id", "in": "path", "type": "string", "required": True}],
+    },
 ]

@@ -33,6 +33,7 @@ BACKUP: dict[str, Any] = {
         {"name": "invites", "tenant_scoped": True},          # single-use invites, token stored hashed; id = digest
         {"name": "operator_secrets", "tenant_scoped": True},  # sealed per-tenant operator secrets; id = "tenant|name"
         {"name": "runtime_config", "tenant_scoped": True},   # durable operator runtime overrides; id = "tenant|key"
+        {"name": "service_accounts", "tenant_scoped": True},  # machine identities (client_id + hashed secret + caps)
     ],
     "excluded": [
         {"name": "users_by_username",

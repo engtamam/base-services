@@ -56,4 +56,8 @@ UNDECLARED_ROUTES: list[dict[str, str]] = [
      "why": "session plumbing the client driver handles automatically, not a button"},
     {"method": "POST", "path": "/api/v1/auth/logout",
      "why": "session plumbing owned by the app shell's own sign-out, not a per-service control"},
+    {"method": "POST", "path": "/api/v1/oauth/token",
+     "why": "the OAuth2 client-credentials token exchange — a machine endpoint called by a partner's "
+            "own code with a client_id/secret, not a human panel control. Managing the service "
+            "accounts that use it IS a control (see admin_actions: issue/rotate/revoke)"},
 ]

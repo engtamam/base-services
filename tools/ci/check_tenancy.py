@@ -60,7 +60,11 @@ def _list(name: str, default: str) -> list[str]:
 SVCS = _list("TENANCY_SERVICES", "identity-service")
 MINT_GUARD = os.environ.get("TENANCY_MINT_GUARD", "claims_for")
 AUTHORIZER = os.environ.get("TENANCY_AUTHORIZER", "authorize_tenant")
-MEMBERSHIP_VARS = _list("TENANCY_MEMBERSHIP_VARS", "membership,m")
+# `membership`/`m` are the human path; `account` is the MACHINE path — a ServiceAccount fetched from
+# the store by client_id and authenticated by its secret. Its `.tenant` was fixed at issue from the
+# issuer's VERIFIED token (T1) and is server-authoritative, never read off the token-exchange request,
+# so it is a verified row in exactly the sense this gate protects.
+MEMBERSHIP_VARS = _list("TENANCY_MEMBERSHIP_VARS", "membership,m,account")
 PERSON_MODEL = os.environ.get("TENANCY_PERSON_MODEL", "Person")
 NO_AUTHORITY = _list("TENANCY_NO_AUTHORITY", "caps,roles,scopes,permissions")
 CRED_FIELDS = _list("TENANCY_CRED_FIELDS", "password_hash,mfa_secret,identifier")

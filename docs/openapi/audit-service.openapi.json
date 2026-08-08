@@ -52,6 +52,55 @@
         "title": "AuditIn",
         "type": "object"
       },
+      "BackupExportIn": {
+        "properties": {
+          "tenant": {
+            "default": "",
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "title": "BackupExportIn",
+        "type": "object"
+      },
+      "BackupImportIn": {
+        "properties": {
+          "archive": {
+            "additionalProperties": true,
+            "title": "Archive",
+            "type": "object"
+          },
+          "into_tenant": {
+            "default": "",
+            "title": "Into Tenant",
+            "type": "string"
+          },
+          "overwrite": {
+            "default": false,
+            "title": "Overwrite",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "archive"
+        ],
+        "title": "BackupImportIn",
+        "type": "object"
+      },
+      "BackupVerifyIn": {
+        "properties": {
+          "archive": {
+            "additionalProperties": true,
+            "title": "Archive",
+            "type": "object"
+          }
+        },
+        "required": [
+          "archive"
+        ],
+        "title": "BackupVerifyIn",
+        "type": "object"
+      },
       "EraseIn": {
         "properties": {
           "subject": {
@@ -761,6 +810,192 @@
           }
         },
         "summary": "Verify All",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/backup/export": {
+      "post": {
+        "description": "Produce a sealed, checksummed archive of the audit chain and its per-partition head.",
+        "operationId": "backup_export_internal_backup_export_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackupExportIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Backup Export Internal Backup Export Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Backup Export",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/backup/import": {
+      "post": {
+        "description": "Restore an archive this service produced. Idempotent; leaves newer rows alone by default.\n\nThe declaration is passed so audit_meta restores under its partition key \u2014 the chain head must\nland under the same key `append()` reads, or the next event links to the wrong hash.",
+        "operationId": "backup_import_internal_backup_import_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackupImportIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Backup Import Internal Backup Import Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Backup Import",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/backup/verify": {
+      "post": {
+        "description": "Prove an archive restores, by test-restoring it into a throwaway namespace and comparing.\n\nThe declaration is passed so audit_meta's \"{partition}\" key is reconstructed for the verify.",
+        "operationId": "backup_verify_internal_backup_verify_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackupVerifyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Backup Verify Internal Backup Verify Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Backup Verify",
         "tags": [
           "internal"
         ]

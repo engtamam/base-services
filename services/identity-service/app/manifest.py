@@ -59,6 +59,9 @@ def build_manifest(
         # these and are overridable via IDENTITY_MEMBERS_READ_CAP / _WRITE_CAP.
         "capabilities": ["identity.register", "identity.login", "identity.refresh",
                          "identity.self", "members:read", "members:write",
+                         # Machine identity (client-credentials) — managing service accounts is its
+                         # OWN capability, overridable via SERVICE_ACCOUNTS_READ_CAP / _WRITE_CAP.
+                         "service_accounts:read", "service_accounts:write",
                          "platform.secrets", "platform.config"],
         "endpoints": [
             {"path": "/healthz", "tier": "public", "method": "GET"},
@@ -95,6 +98,13 @@ def build_manifest(
             {"path": "/api/v1/tenancy/members/{person_id}", "tier": "user", "method": "PUT"},
             {"path": "/api/v1/tenancy/members/{person_id}/status", "tier": "user", "method": "POST"},
             {"path": "/api/v1/tenancy/members/{person_id}", "tier": "user", "method": "DELETE"},
+            # Machine identity (OAuth2 client-credentials) — mounted when SERVICE_ACCOUNTS_ENABLED.
+            # The token exchange is the client-credentials grant (RFC 6749 §4.4).
+            {"path": "/api/v1/service-accounts", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/service-accounts", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/service-accounts/{client_id}/rotate", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/service-accounts/{client_id}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/oauth/token", "tier": "user", "method": "POST"},
             {"path": "/internal/identity/facts/{fact}", "tier": "internal", "method": "GET",
              # onboarding declares identity as the OWNER of these facts; it must be able to ask.
              "caller": "service"},

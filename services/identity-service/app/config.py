@@ -306,6 +306,24 @@ class Settings(BaseSettings):
     IDENTITY_MEMBERS_PAGE_SIZE: int = 50         # default page
     IDENTITY_MEMBERS_MAX_PAGE_SIZE: int = 200    # a caller may not ask for the whole company at once
 
+    # ── Machine identity (OAuth2 client-credentials, RFC 6749 §4.4) ───────────────────────────
+    # A tenant-scoped service account for a partner's own code — a POS, an ERP — that calls our API
+    # with no browser and no person behind it. Opt-in: OFF by default, because it is a new class of
+    # credential and an operator should turn it on deliberately. When off, the routes 404.
+    SERVICE_ACCOUNTS_ENABLED: bool = False
+    # The token a client-credentials exchange returns. Short by design — a machine re-requests
+    # cheaply, and a shorter life bounds the blast radius of a leaked token (NIST SP 800-63B).
+    SERVICE_ACCOUNT_TOKEN_TTL_SECONDS: int = 3600      # 1h machine access token
+    # Managing service accounts is its OWN capability, distinct from staffing humans: minting a
+    # credential that can act on the API is not the same authority as inviting a colleague. The
+    # capability STRING is the platform's to choose (config), this only enforces it.
+    SERVICE_ACCOUNTS_READ_CAP: str = "service_accounts:read"
+    SERVICE_ACCOUNTS_WRITE_CAP: str = "service_accounts:write"
+    # A ceiling per tenant, so "issue a service account" cannot become an unbounded write. A real
+    # limit an operator sets to the number of integrations a tenant actually runs (ISO 27001 A.8.2).
+    SERVICE_ACCOUNTS_MAX_PER_TENANT: int = 100
+    SERVICE_ACCOUNTS_PAGE_SIZE: int = 50
+
     # How a person who does not exist yet gets a password. The PLATFORM decides; we enforce.
     #
     #   invite    (default, secure) the admin creates the account and CANNOT log into it. A

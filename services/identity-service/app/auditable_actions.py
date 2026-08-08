@@ -195,4 +195,52 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "invite stopped working — and that history is unavailable anywhere else. Not "
                "critical: refusing to change a TTL because the log is down protects nothing",
     },
+    # ── machine identity (service accounts / OAuth2 client-credentials) ────────
+    # Issuing, rotating, and revoking a service account are changes to WHO CAN GET IN — a machine
+    # credential that can act on the API — so they follow the same line as member.* and operator.*:
+    # critical and write-ahead. The token exchange itself is the machine's login: on the volume
+    # path, recorded but never blocking, exactly like a human login.
+    {
+        "action": "service_account.issued",
+        "source": "admin",
+        "critical": True,
+        "resource": "service_account",
+        "why": "minting a machine credential grants standing power to act on the API without a "
+               "person behind it; an unrecorded issue is an unattributable actor in every log it "
+               "then appears in, and there is no other place that fact is captured",
+    },
+    {
+        "action": "service_account.rotated",
+        "source": "admin",
+        "critical": True,
+        "resource": "service_account",
+        "why": "rotation overwrites the old secret the moment it happens, so an unrecorded rotation "
+               "cannot be reconstructed — the same reasoning as an operator secret set",
+    },
+    {
+        "action": "service_account.revoked",
+        "source": "admin",
+        "critical": True,
+        "resource": "service_account",
+        "why": "revocation is how an integration is cut off; whether and when it happened is exactly "
+               "what an incident review asks, and it must be provable",
+    },
+    {
+        "action": "service_account.token_issued",
+        "source": "user",
+        "critical": False,
+        "resource": "service_account",
+        "why": "a client-credentials exchange is the machine's login — the volume path. Recorded so "
+               "an integration's activity is attributable, but never blocking: refusing to mint a "
+               "token because the log is down would be an outage that protects nobody",
+    },
+    {
+        "action": "service_account.auth_failed",
+        "source": "user",
+        "critical": False,
+        "resource": "service_account",
+        "why": "a burst of failed client-credentials exchanges is the brute-force signal for machine "
+               "identities, exactly as failed logins are for humans (ISO 27001 A.8.15, NIST AU-2, "
+               "PCI-DSS 10.2); declared, but not critical for the same denial-of-service reason",
+    },
 ]

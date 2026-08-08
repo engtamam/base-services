@@ -64,7 +64,7 @@ ENV = {
 # `x-available-when` naming the setting that turns it on. One honest document, rather than one
 # document per deployment or a document that silently picks a deployment.
 FEATURE_FLAGS: dict[str, dict[str, str]] = {
-    "identity-service": {"IDENTITY_MULTI_TENANT": "true"},
+    "identity-service": {"IDENTITY_MULTI_TENANT": "true", "SERVICE_ACCOUNTS_ENABLED": "true"},
 }
 
 # Any `if settings.X:` guarding an include_router. Used to FAIL when a service grows a conditional
