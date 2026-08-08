@@ -22,7 +22,7 @@ KUBECTL ?= kubectl
 
 SERVICES := $(notdir $(basename $(basename $(wildcard $(VALUES)/*.values.yaml))))
 
-.PHONY: help up verify deploy setup roll render test down status $(addprefix deploy-,$(SERVICES))
+.PHONY: help up verify deploy setup roll reset render test down status $(addprefix deploy-,$(SERVICES))
 
 help:
 	@grep -E '^#   make' $(MAKEFILE_LIST) | sed 's/^#   /  /'
@@ -62,6 +62,9 @@ setup:
 
 # Safe rollout: render-first, per-service auto-rollback, --only, node-image prune. Prefer this over
 # `deploy` on a live box. Pass flags through:  make roll ARGS="--only tenant --dry-run"
+reset:
+	@sudo NAMESPACE=$(NAMESPACE) bash server/reset-platform.sh $(ARGS)
+
 roll:
 	@sudo NAMESPACE=$(NAMESPACE) bash server/update.sh $(ARGS)
 

@@ -17,6 +17,8 @@ variables (or drops in optional hooks) and reuses these unchanged.
 | `boot-heal.sh` | systemd boot unit + 5-min watchdog: clear NodeLost pods after an ungraceful reboot | ✅ |
 | `pull-images.sh` | Auto-detects PUBLIC images (no-op) or, for private ones, credential + `imagePullSecret` + node-pull verify + prewarm | ✅ |
 | `gen-secrets.py` | Mint the platform secrets once (shared token/salt/KEKs + per-role DSNs) from a schema **auto-derived** off each config.py; preserves existing values on re-run | ✅ |
+| `reset-platform.sh` | Idempotent datastore reset + verify — wipes the PVC **and** its k3s host dir (the stale-data trap), asserts the shared DB exists, re-rolls, verifies | ✅ |
+| `install-autoscaling.sh` (VPA) | Optional add-on — the chart already ships **HPA**; VPA needs a vendored manifest bundle, so it is a focused follow-up | ◻ optional |
 
 `make setup` and `make roll` (from `deploy/`) wrap the first two.
 
