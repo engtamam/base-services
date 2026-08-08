@@ -8,7 +8,8 @@ NetworkPolicy, HPA, PDB and CronJob by hand.
 cd deploy
 make up        # bootstrap K3s: Calico + metrics-server + postgres/redis
 make verify    # PROVE the guarantees hold on this cluster (see below)
-make deploy    # install/upgrade all 16 services
+make deploy    # install/upgrade all 16 services (bare loop)
+make roll      # health-gated rollout: render-first, per-service AUTO-ROLLBACK, --only, prune
 make status
 ```
 

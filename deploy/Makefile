@@ -4,6 +4,7 @@
 #   make up       bootstrap K3s (Calico + metrics-server + data stores)
 #   make verify   PROVE the guarantees hold on this cluster
 #   make deploy   install/upgrade all 16 services
+#   make roll     health-gated rollout with per-service auto-rollback (server/update.sh)
 #   make render   render everything locally (no cluster needed)
 #   make test     the chart guards (no cluster needed)
 #   make down     tear the namespace down
@@ -20,7 +21,7 @@ KUBECTL ?= kubectl
 
 SERVICES := $(notdir $(basename $(basename $(wildcard $(VALUES)/*.values.yaml))))
 
-.PHONY: help up verify deploy render test down status $(addprefix deploy-,$(SERVICES))
+.PHONY: help up verify deploy roll render test down status $(addprefix deploy-,$(SERVICES))
 
 help:
 	@grep -E '^#   make' $(MAKEFILE_LIST) | sed 's/^#   /  /'
@@ -53,6 +54,11 @@ deploy: verify
 deploy-%:
 	$(HELM) upgrade --install $* $(CHART) -f $(VALUES)/$*.values.yaml \
 		--namespace $(NAMESPACE) --create-namespace --wait --timeout 5m
+
+# Safe rollout: render-first, per-service auto-rollback, --only, node-image prune. Prefer this over
+# `deploy` on a live box. Pass flags through:  make roll ARGS="--only tenant --dry-run"
+roll:
+	@sudo NAMESPACE=$(NAMESPACE) bash server/update.sh $(ARGS)
 
 status:
 	@$(KUBECTL) -n $(NAMESPACE) get deploy,hpa,pdb,netpol,cronjob
