@@ -12,7 +12,9 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field, model_validator
 
 from app.api.v1.audit import build_audit
+from app.backup_manifest import BACKUP
 from app.config import Settings, get_settings
+from app.core import backup as _backup
 from app.core.erasure import AuditErasure
 from app.core.pii import subject_ref
 from app.manifest import build_manifest
@@ -165,3 +167,87 @@ async def erase_subject(request: Request, body: EraseIn,
         "subject.erased", actor="", tenant=body.tenant, resource=f"subject:{ref}",
         ip=request.client.host if request.client else "")
     return await AuditErasure(audit=build_audit(request)).erase(body.tenant, ref)
+
+
+# ── Backup (backup-service orchestrates; this service produces sealed archives) ──────────────
+# What audit-service holds is declared in app/backup_manifest.py; how it is read lives in
+# core/backup.py. This is the tamper-evident witness log — the events and their chain head travel
+# together so a restored chain still verifies. backup-service never opens this database.
+def _now_iso() -> str:
+    import datetime as _dt
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _sealer(settings: Settings):
+    """The backup (seal, unseal) pair, or a 503 when no backup key is configured.
+
+    Refused rather than defaulted: sealing with an empty key would write a plaintext-equivalent
+    archive while every check reported it encrypted — the one outcome a backup must never have.
+    """
+    if not settings.BACKUP_KEK:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "BACKUP_KEK not configured — set this SHARED key (the SAME value backup-service holds) "
+            "on this service, or its archives cannot be opened")
+    return _backup.make_sealer(settings.BACKUP_KEK)
+
+
+class BackupExportIn(BaseModel):
+    tenant: str = ""
+
+
+class BackupVerifyIn(BaseModel):
+    archive: dict
+
+
+class BackupImportIn(BaseModel):
+    archive: dict
+    overwrite: bool = False
+    into_tenant: str = ""
+
+
+@router.post("/backup/export", dependencies=[Depends(require_internal_token)])
+async def backup_export(request: Request, body: BackupExportIn,
+                        settings: Settings = Depends(get_settings)) -> dict:
+    """Produce a sealed, checksummed archive of the audit chain and its per-partition head."""
+    seal, _ = _sealer(settings)
+    return await _backup.export(
+        request.app.state.container.datastore, BACKUP,
+        service=settings.SERVICE_NAME, version=settings.SERVICE_VERSION,
+        taken_at=_now_iso(), seal=seal, tenant=body.tenant,
+        scan_cap=settings.BACKUP_MAX_ROWS_PER_COLLECTION)
+
+
+@router.post("/backup/verify", dependencies=[Depends(require_internal_token)])
+async def backup_verify(request: Request, body: BackupVerifyIn,
+                        settings: Settings = Depends(get_settings)) -> dict:
+    """Prove an archive restores, by test-restoring it into a throwaway namespace and comparing.
+
+    The declaration is passed so audit_meta's "{partition}" key is reconstructed for the verify.
+    """
+    import secrets
+    _, unseal = _sealer(settings)
+    try:
+        return await _backup.verify_restore(
+            request.app.state.container.datastore, body.archive,
+            unseal=unseal, token=secrets.token_hex(8), declaration=BACKUP)
+    except _backup.BackupError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+
+@router.post("/backup/import", dependencies=[Depends(require_internal_token)])
+async def backup_import(request: Request, body: BackupImportIn,
+                        settings: Settings = Depends(get_settings)) -> dict:
+    """Restore an archive this service produced. Idempotent; leaves newer rows alone by default.
+
+    The declaration is passed so audit_meta restores under its partition key — the chain head must
+    land under the same key `append()` reads, or the next event links to the wrong hash.
+    """
+    _, unseal = _sealer(settings)
+    try:
+        return await _backup.import_archive(
+            request.app.state.container.datastore, body.archive,
+            unseal=unseal, overwrite=body.overwrite, into_tenant=body.into_tenant,
+            declaration=BACKUP)
+    except _backup.BackupError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc

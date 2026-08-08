@@ -35,6 +35,18 @@ def _user_actions() -> list[dict[str, Any]]:
     return list(USER_ACTIONS)
 
 
+def _backup() -> dict[str, Any]:
+    """This service's backup declaration (app/backup_manifest.py), or an empty one.
+
+    Published in the manifest so the backup fan-out discovers what to capture the same way the DSAR
+    fan-out discovers who holds a person — a holder nobody declares is one nobody backs up."""
+    try:
+        from app.backup_manifest import BACKUP
+    except Exception:
+        return {"object_prefix": "", "collections": [], "excluded": []}
+    return BACKUP
+
+
 def build_manifest(
     settings: Settings, ports: list[dict[str, str]] | None = None
 ) -> dict[str, Any]:
@@ -64,9 +76,17 @@ def build_manifest(
             # Scheduled chain verification. The user-tier verify is unreachable by an internal-token
             # cron, so continuous verification lives here — 409 on a break so the Job fails loudly.
             {"path": "/internal/audit/verify", "tier": "internal", "method": "POST"},
+            # Backup fan-out (backup-service orchestrates): export + verify + import the tamper-
+            # evident chain and its head. Declared so the fan-out discovers this holder — an
+            # undeclared holder is one nobody backs up. Distinct from the user-tier
+            # /api/v1/audit/export (a human-readable dump); this is the sealed archive seam.
+            {"path": "/internal/backup/export", "tier": "internal", "method": "POST"},
+            {"path": "/internal/backup/import", "tier": "internal", "method": "POST"},
+            {"path": "/internal/backup/verify", "tier": "internal", "method": "POST"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         "events": {"emitted": [], "consumed": []},
         "admin_actions": _admin_actions(),
         "user_actions": _user_actions(),
+        "backup": _backup(),   # what backup-service must capture to restore this service
     }

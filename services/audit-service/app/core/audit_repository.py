@@ -82,7 +82,11 @@ class AuditRepository:
         await self._store.delete(_EVENTS, event_id)
 
     async def set_head(self, partition: str, seq: int, head_hash: str) -> None:
-        await self._store.put(_META, partition, {"seq": seq, "head_hash": head_hash})
+        # Carry `partition` in the row, exactly as append() does — the row shape is
+        # {partition, seq, head_hash} everywhere, so partitions() and a backup key template can
+        # rely on it rather than on which write path last touched the row.
+        await self._store.put(_META, partition,
+                              {"partition": partition, "seq": seq, "head_hash": head_hash})
 
     # Equality filters the datastore can push down. `since`/`until` are ranges, so they stay a
     # post-filter — but they run over PAGES, never over the whole table.
