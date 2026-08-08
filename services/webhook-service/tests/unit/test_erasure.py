@@ -11,6 +11,7 @@ import pytest
 
 from app.core.blob import MAX_DEPTH, redact
 from app.core.erasure import WebhookErasure
+from app.ports.errors import ConfigError
 
 _SALT = "s" * 32
 _SUB = "alice@example.com"
@@ -84,12 +85,23 @@ class _Store:
         self.puts = []
 
     async def find(self, collection, filt, limit=100, after=None, sort=None):
+        # Model the REAL datastore: find() refuses an empty `where`. The old fake accepted find({}),
+        # so the unscoped-inbound erasure bug (find on an empty filter) passed HERE while 500ing in
+        # production. A faithful fake is what turns this test into one that catches the bug.
+        if not filt:
+            raise ConfigError("find() requires a non-empty `where` — use scan_all() to read all")
         rows = [r for r in self.data.get(collection, [])
                 if all(r.get(k) == v for k, v in filt.items())]
         start = int(after or 0)
         page = rows[start:start + limit]
         nxt = start + len(page)
         return page, (str(nxt) if nxt < len(rows) else None)
+
+    async def scan_all(self, collection, limit):
+        # The unscoped read path — every row of a collection, bounded by limit. Fresh copies, as the
+        # real adapter returns (it deserializes each row), so a redaction mutates the copy, not the
+        # store, until put() writes it back.
+        return [dict(r) for r in self.data.get(collection, [])[:max(0, int(limit))]]
 
     async def put(self, collection, key, value):
         self.puts.append((collection, key))

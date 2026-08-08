@@ -72,32 +72,50 @@ class WebhookErasure:
     async def _redact_collection(self, collection: str, fields: tuple[str, ...], tenant: str,
                                  subject: str, ref: str, scoped: bool) -> tuple[int, bool]:
         # Inbound events are not tenant-keyed (they arrive before we know whose they are), so that
-        # collection is walked unscoped. Everything else is filtered to the tenant — one customer's
+        # collection is walked UNSCOPED. Everything else is filtered to the tenant — one customer's
         # DSAR must never rewrite another customer's rows.
-        filt = {"tenant": tenant} if scoped else {}
-        hits = scanned = 0
-        cursor = None
-        while scanned < self._max:
-            rows, cursor = await self._store.find(collection, filt, limit=_PAGE, after=cursor,
-                                                  sort=("created", "asc"))
-            if not rows:
-                break
-            for row in rows:
-                scanned += 1
-                row_hits = 0
-                for field in fields:
-                    if field not in row:
-                        continue
-                    # The field NAME is the key for text matching: response_body is a top-level
-                    # column, not a nested one, so without this it would never match its own
-                    # ERASURE_TEXT_KEYS entry and the person would survive in the response text.
-                    new, n = redact(row[field], subject, ref, self._text_keys, _key=field)
-                    if n:
-                        row[field] = new
-                        row_hits += n
-                if row_hits:
-                    await self._store.put(collection, row["id"], row)
-                    hits += row_hits
-            if not cursor:
-                break
-        return hits, scanned >= self._max
+        #
+        # These are two DIFFERENT read paths, not one with an empty filter. find() REFUSES an empty
+        # `where` on purpose (an accidental cross-tenant scan is a correctness bug), so passing {}
+        # for the unscoped collection raised ConfigError and 500'd every DSAR — including the no-data
+        # "already absent" case that should be the cheapest success. The unscoped read is exactly
+        # what that error points at: scan_all(), bounded by max_scan.
+        hits = 0
+        if scoped:
+            scanned = 0
+            cursor = None
+            while scanned < self._max:
+                rows, cursor = await self._store.find(collection, {"tenant": tenant}, limit=_PAGE,
+                                                      after=cursor, sort=("created", "asc"))
+                if not rows:
+                    break
+                for row in rows:
+                    scanned += 1
+                    hits += await self._redact_row(collection, row, fields, subject, ref)
+                if not cursor:
+                    break
+            return hits, scanned >= self._max
+        # Unscoped: scan_all takes (collection, limit) and returns up to `limit` rows (no cursor), so
+        # the whole collection is read in one bounded pass. truncated is true only if we hit the cap.
+        rows = await self._store.scan_all(collection, self._max)
+        for row in rows:
+            hits += await self._redact_row(collection, row, fields, subject, ref)
+        return hits, len(rows) >= self._max
+
+    async def _redact_row(self, collection: str, row: dict[str, Any], fields: tuple[str, ...],
+                          subject: str, ref: str) -> int:
+        """Redact the subject out of `fields` on one row; persist and return the hit count if any."""
+        row_hits = 0
+        for field in fields:
+            if field not in row:
+                continue
+            # The field NAME is the key for text matching: response_body is a top-level column, not a
+            # nested one, so without this it would never match its own ERASURE_TEXT_KEYS entry and
+            # the person would survive in the response text.
+            new, n = redact(row[field], subject, ref, self._text_keys, _key=field)
+            if n:
+                row[field] = new
+                row_hits += n
+        if row_hits:
+            await self._store.put(collection, row["id"], row)
+        return row_hits
