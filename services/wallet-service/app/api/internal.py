@@ -15,7 +15,9 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from app.api.v1.wallet import build_wallet
+from app.backup_manifest import BACKUP
 from app.config import Settings, get_settings
+from app.core import backup as _backup
 from app.core import funds as _funds
 from app.core.erasure import WalletErasure
 from app.core.money import MoneyError
@@ -243,3 +245,90 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     s = get_settings()
     eraser = WalletErasure(store=request.app.state.container.datastore, pii_salt=s.PII_SALT)
     return await eraser.erase(body.tenant, body.subject)
+
+
+# ── Backup (backup-service orchestrates; this service produces sealed archives) ──────────────
+# What wallet-service holds is declared in app/backup_manifest.py; how it is read lives in
+# core/backup.py. backup-service never opens this database — it calls export/verify/import over the
+# internal token and stores the sealed archive, never seeing the plaintext. This is money: the
+# ledger and its per-tenant sequence counter travel together so a restore reconciles.
+def _now_iso() -> str:
+    import datetime as _dt
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _sealer(settings: Settings):
+    """The backup (seal, unseal) pair, or a 503 when no backup key is configured.
+
+    Refused rather than defaulted: sealing with an empty key would write a plaintext-equivalent
+    archive while every check reported it encrypted — the one outcome a backup must never have.
+    """
+    if not settings.BACKUP_KEK:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "BACKUP_KEK not configured — set this SHARED key (the SAME value backup-service holds) "
+            "on this service, or its archives cannot be opened")
+    return _backup.make_sealer(settings.BACKUP_KEK)
+
+
+class BackupExportIn(BaseModel):
+    tenant: str = ""
+
+
+class BackupVerifyIn(BaseModel):
+    archive: dict
+
+
+class BackupImportIn(BaseModel):
+    archive: dict
+    overwrite: bool = False
+    into_tenant: str = ""
+
+
+@router.post("/backup/export", dependencies=[Depends(require_internal_token)])
+async def backup_export(request: Request, body: BackupExportIn,
+                        settings: Settings = Depends(get_settings)) -> dict:
+    """Produce a sealed, checksummed archive of the wallets, ledger, holds, and grants."""
+    seal, _ = _sealer(settings)
+    return await _backup.export(
+        request.app.state.container.datastore, BACKUP,
+        service=settings.SERVICE_NAME, version=settings.SERVICE_VERSION,
+        taken_at=_now_iso(), seal=seal, tenant=body.tenant,
+        scan_cap=settings.BACKUP_MAX_ROWS_PER_COLLECTION)
+
+
+@router.post("/backup/verify", dependencies=[Depends(require_internal_token)])
+async def backup_verify(request: Request, body: BackupVerifyIn,
+                        settings: Settings = Depends(get_settings)) -> dict:
+    """Prove an archive restores, by test-restoring it into a throwaway namespace and comparing.
+
+    The declaration is passed so the ledger's composite key ("{tenant}:{seq:012d}") and the wallet's
+    tenant key are reconstructed for the verify, exactly as a real restore would.
+    """
+    import secrets
+    _, unseal = _sealer(settings)
+    try:
+        return await _backup.verify_restore(
+            request.app.state.container.datastore, body.archive,
+            unseal=unseal, token=secrets.token_hex(8), declaration=BACKUP)
+    except _backup.BackupError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+
+@router.post("/backup/import", dependencies=[Depends(require_internal_token)])
+async def backup_import(request: Request, body: BackupImportIn,
+                        settings: Settings = Depends(get_settings)) -> dict:
+    """Restore an archive this service produced. Idempotent; leaves newer rows alone by default.
+
+    The declaration is passed so the ledger and wallet restore under their real composite/tenant
+    keys — a ledger entry restored under its led_ id would silently drop out of the seq-ordered
+    history reconcile() walks.
+    """
+    _, unseal = _sealer(settings)
+    try:
+        return await _backup.import_archive(
+            request.app.state.container.datastore, body.archive,
+            unseal=unseal, overwrite=body.overwrite, into_tenant=body.into_tenant,
+            declaration=BACKUP)
+    except _backup.BackupError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc

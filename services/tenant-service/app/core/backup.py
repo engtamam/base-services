@@ -41,6 +41,43 @@ def _checksum(sealed: str) -> str:
     return "sha256:" + hashlib.sha256(sealed.encode("utf-8")).hexdigest()
 
 
+# The datastore key a row is restored under. DEFAULT is the row's own `id` — true for most
+# collections. A collection whose datastore key is NOT its row id (a composite like a ledger's
+# "<tenant>:<seq>", or a singleton keyed by tenant) declares a `key` TEMPLATE in its backup_manifest
+# entry — e.g. "{tenant}:{seq:012d}" — and the key is reconstructed from the row's own fields. This
+# is what lets a money ledger or a per-tenant singleton round-trip: export stores the rows, and the
+# key is rebuilt deterministically on restore instead of being lost with the datastore key.
+_DEFAULT_KEY = "{id}"
+
+
+def _row_key(template: str, name: str, row: dict[str, Any]) -> str:
+    """The datastore key for `row` under `template`, formatted from the row's own fields.
+
+    A missing field or a malformed template is refused, not guessed: restoring a row under the wrong
+    key is silent corruption, so an unresolvable key fails the whole restore instead.
+    """
+    try:
+        key = template.format_map(row)
+    except (KeyError, IndexError, ValueError) as exc:
+        raise BackupError(
+            f"{name}: cannot build the restore key {template!r} from a row (missing/!bad field "
+            f"{exc}); the archive cannot be restored without a stable per-row key") from exc
+    if not key:
+        raise BackupError(f"{name}: a row produced an empty restore key from {template!r}; "
+                          f"cannot restore without a row identity")
+    return key
+
+
+def _key_templates(declaration: dict[str, Any] | None) -> dict[str, str]:
+    """collection name -> its key template (default "{id}"), from a backup_manifest declaration."""
+    out: dict[str, str] = {}
+    for entry in (declaration or {}).get("collections", []):
+        name = entry.get("name")
+        if name:
+            out[name] = entry.get("key") or _DEFAULT_KEY
+    return out
+
+
 async def _read_collection(datastore, name: str, tenant_scoped: bool, tenant: str,
                            scan_cap: int) -> list[dict[str, Any]]:
     """Every row of one collection — one tenant's if scoped and a tenant is given, else all."""
@@ -109,19 +146,25 @@ def verify(archive: dict[str, Any]) -> None:
 
 async def import_archive(datastore, archive: dict[str, Any], *,
                          unseal: Callable[[str], str], overwrite: bool = False,
-                         into_tenant: str = "") -> dict[str, Any]:
+                         into_tenant: str = "", declaration: dict[str, Any] | None = None) -> dict[str, Any]:
     """Restore an archive, idempotently and without clobbering newer rows.
 
     `unseal` reverses `seal`; if the backup key does not match the one the archive was sealed with,
     it raises, and this surfaces that as a clear refusal rather than writing garbage.
 
+    `declaration` is this service's backup_manifest — its per-collection `key` templates say how to
+    rebuild the datastore key from a row (default "{id}"). Passing it is how a composite-keyed
+    collection (a ledger, a per-tenant singleton) restores under the RIGHT key instead of its row id.
+
     `into_tenant` REMAPS the restore into a different tenant — restore-as-clone, for standing a
     customer's data up under a new tenant (a migration, a sandbox, a support repro). Only rows that
     CARRY a tenant are reassigned; a global dataset (a shared catalogue) has no tenant field and is
-    left as-is, because it is not one tenant's to move. Row ids are preserved, so no-clobber still
-    protects whatever already exists under the destination tenant. Empty means restore in place.
+    left as-is, because it is not one tenant's to move. The key is rebuilt from the REMAPPED row, so
+    a tenant-keyed collection lands under the destination tenant's key, and no-clobber still protects
+    whatever already exists there. Empty means restore in place.
     """
     verify(archive)
+    templates = _key_templates(declaration)
     try:
         body = json.loads(unseal(archive["sealed"]))
     except BackupError:
@@ -133,16 +176,16 @@ async def import_archive(datastore, archive: dict[str, Any], *,
 
     inserted = skipped = overwritten = remapped = 0
     for name, rows in (body.get("collections") or {}).items():
+        template = templates.get(name, _DEFAULT_KEY)
         for row in rows:
-            key = row.get("id")
-            if not key:
-                # A row with no identity cannot be restored idempotently — restoring it twice would
-                # duplicate it. Refuse the archive rather than quietly double-write.
-                raise BackupError(f"{name}: a row has no id; cannot restore without a row identity")
             if into_tenant and "tenant" in row:
-                # Reassign only rows that were tenant-partitioned; leave the id and everything else.
+                # Reassign only rows that were tenant-partitioned; the key is rebuilt from the
+                # remapped row below, so a tenant-keyed collection lands under the new tenant.
                 row = {**row, "tenant": into_tenant}
                 remapped += 1
+            # The datastore key: the row's id by default, or rebuilt from a composite template. A
+            # row that cannot produce a stable key is refused rather than restored under a guess.
+            key = _row_key(template, name, row)
             existing = await datastore.get(name, key)
             if existing is None:
                 await datastore.put(name, key, row)
@@ -171,7 +214,7 @@ _VERIFY_NS = "__bkpverify__"
 
 
 async def verify_restore(datastore, archive: dict[str, Any], *, unseal: Callable[[str], str],
-                         token: str) -> dict[str, Any]:
+                         token: str, declaration: dict[str, Any] | None = None) -> dict[str, Any]:
     """Prove an archive actually restores, by test-restoring it into a throwaway namespace.
 
     A checksum proves the bytes are intact; it does not prove they RESTORE. This does: every row is
@@ -199,19 +242,22 @@ async def verify_restore(datastore, archive: dict[str, Any], *, unseal: Callable
             "one it was sealed with; this backup is NOT restorable under the current key") from exc
 
     collections = body.get("collections") or {}
+    templates = _key_templates(declaration)
     expected = sum(len(rows) for rows in collections.values())
-    written: list[tuple[str, str]] = []   # (throwaway collection, id) — the teardown list
+    written: list[tuple[str, str]] = []   # (throwaway collection, key) — the teardown list
     checked = 0
     mismatches: list[str] = []
     per_collection: dict[str, int] = {}
     try:
         for name, rows in collections.items():
             ns = f"{_VERIFY_NS}{token}__{name}"
+            template = templates.get(name, _DEFAULT_KEY)
             ok = 0
             for row in rows:
-                key = row.get("id")
-                if not key:
-                    mismatches.append(f"{name}: a row has no id — cannot be restored idempotently")
+                try:
+                    key = _row_key(template, name, row)
+                except BackupError as exc:
+                    mismatches.append(str(exc))
                     continue
                 await datastore.put(ns, key, row)
                 written.append((ns, key))

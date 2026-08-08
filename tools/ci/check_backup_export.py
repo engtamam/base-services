@@ -40,7 +40,7 @@ EXEMPT: dict[str, str] = {
         "compliance-service", "connector-service", "feature-flag-service", "file-service",
         "job-service", "notification-service", "onboarding-service",
         "search-service", "stream-service", "verification-service",
-        "wallet-service", "webhook-service", "zatca-service")},
+        "webhook-service", "zatca-service")},
 }
 for _e in (os.environ.get("BACKUP_EXPORT_GATE_EXCLUDE", "") or "").split(","):
     if _e.strip():

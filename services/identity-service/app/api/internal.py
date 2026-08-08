@@ -346,7 +346,7 @@ async def backup_verify(request: Request, body: BackupVerifyIn,
     try:
         return await _backup.verify_restore(
             request.app.state.container.datastore, body.archive,
-            unseal=unseal, token=secrets.token_hex(8))
+            unseal=unseal, token=secrets.token_hex(8), declaration=BACKUP)
     except _backup.BackupError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
@@ -391,7 +391,8 @@ async def backup_import(request: Request, body: BackupImportIn,
     try:
         result = await _backup.import_archive(
             container.datastore, body.archive,
-            unseal=unseal, overwrite=body.overwrite, into_tenant=body.into_tenant)
+            unseal=unseal, overwrite=body.overwrite, into_tenant=body.into_tenant,
+            declaration=BACKUP)
     except _backup.BackupError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     result["reindexed"] = await _reindex(container, settings.BACKUP_MAX_ROWS_PER_COLLECTION)
