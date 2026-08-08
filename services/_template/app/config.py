@@ -105,6 +105,9 @@ class Settings(BaseSettings):
     # Seals backup archives at rest. SEPARATE from SECRETS_KEK by design: restoring must not
     # require the key a running service uses for its own live secrets. Empty means this service
     # cannot produce a backup, and its export endpoint refuses rather than writing one in the clear.
+    # SHARED: it must be the SAME value backup-service holds (in the class of PII_SALT /
+    # INTERNAL_SERVICE_TOKEN); gen-secrets.py mints it consistently. Two different values and
+    # the archives backup-service collects from this service cannot be opened.
     BACKUP_KEK: str = ""
     # The most rows a single collection may hold before a backup FAILS rather than reads on
     # unbounded. Not a limit anyone "chose" at a million — a real ceiling an operator sets to the

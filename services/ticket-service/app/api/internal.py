@@ -107,7 +107,9 @@ def _sealer(settings: Settings):
     archive while every check reported it encrypted — the one outcome a backup must never have.
     """
     if not settings.BACKUP_KEK:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "BACKUP_UNAVAILABLE")
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "BACKUP_KEK not configured — set this SHARED key (the SAME value backup-service holds) on this service, or its archives cannot be opened")
     return _backup.make_sealer(settings.BACKUP_KEK)
 
 

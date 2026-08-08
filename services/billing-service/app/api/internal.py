@@ -241,7 +241,9 @@ def _sealer(settings: Settings):
     """The backup (seal, unseal) pair, or 503 when no backup key is configured — refusing rather
     than sealing a payment archive in the clear."""
     if not settings.BACKUP_KEK:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "BACKUP_UNAVAILABLE")
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "BACKUP_KEK not configured — set this SHARED key (the SAME value backup-service holds) on this service, or its archives cannot be opened")
     return _backup.make_sealer(settings.BACKUP_KEK)
 
 

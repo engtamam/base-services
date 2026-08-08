@@ -42,6 +42,20 @@ editing the orchestrator:
 
 Optional phases that have no script simply print `skip` and the run continues.
 
+## Shared secrets (minted ONCE, byte-identical everywhere)
+
+Some secret keys must hold the **same value across services** or the platform misbehaves subtly.
+`gen-secrets.py` mints each once and writes it into every secret that declares it — do not set them
+per-service by hand:
+
+- `INTERNAL_SERVICE_TOKEN` — the token every `/internal` tier checks; a mismatch is a 401 wall.
+- `PII_SALT` — the pseudonym salt; two values pseudonymise the same person two different ways.
+- `TOKEN_HS256_SECRET` — the session-token secret (all issuers/verifiers must agree).
+- `BACKUP_KEK` — seals backup archives at rest. It must be the **same value backup-service holds**
+  on **every export-capable target**, or the archives it collects cannot be opened. A target with
+  it unset refuses its export with `503 "BACKUP_KEK not configured …"` (never a clear-text archive).
+- `POSTGRES_PASSWORD` — the DSN password and the StatefulSet's own password are the one shared value.
+
 ## Safety properties (kept deliberately)
 
 - **preflight is FATAL** — a cluster that cannot enforce NetworkPolicy is a tenant-isolation hole,
