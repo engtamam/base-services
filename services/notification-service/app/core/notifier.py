@@ -48,7 +48,7 @@ class NotificationService:
                  retry: RetryPolicy | None = None,
                  consent_gate=None, consent_purposes: dict[str, str] | None = None,
                  consent_unknown: str = FAIL_CLOSED,
-                 delivery_mode: str = INLINE, clock=time.time) -> None:
+                 delivery_mode: str = INLINE, clock=time.time, auditor=None) -> None:
         self._templates = templates
         self._prefs = prefs
         self._deliveries = deliveries
@@ -75,6 +75,9 @@ class NotificationService:
         self._consent = consent_gate or NullConsentGate()
         self._consent_purposes = dict(consent_purposes or {})
         self._consent_unknown = consent_unknown
+        # Recorded in _record(), the single funnel, so an inline send and a drained retry are
+        # witnessed the same way. Optional so tests build the service without one.
+        self._auditor = auditor
 
     async def notify(self, *, recipient: str, channel: str, template_key: str,
                      tenant: str | None = None,
@@ -261,6 +264,12 @@ class NotificationService:
                      attempts=attempts, next_attempt_ts=next_attempt_ts,
                      payload=dict(payload or {}))
         await self._deliveries.record(d)
+        if status == SENT and self._auditor is not None:
+            # Non-critical; a provider that delivered must not be un-sent because the log blinked.
+            # The delivery_id links to the row that holds the recipient — kept off the audit event.
+            await self._auditor.record(
+                "notification.sent", actor="system", resource=f"delivery:{d.id}",
+                metadata={"channel": channel, "template": template_key, "provider": provider})
         out = {"delivery_id": d.id, "status": status, "provider": provider}
         if status == QUEUED:
             # Tell the caller the truth: not sent yet, and WHEN we will try again. A 'queued' that

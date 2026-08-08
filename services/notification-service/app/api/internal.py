@@ -77,7 +77,12 @@ async def drain_queue(request: Request) -> dict:
     a tick that arrives early simply skips it.
     """
     s = get_settings()
-    return await (await build_notifier(request)).drain(limit=s.NOTIFY_DRAIN_LIMIT)
+    result = await (await build_notifier(request)).drain(limit=s.NOTIFY_DRAIN_LIMIT)
+    await request.app.state.auditor.record(
+        "notification.drained", actor="system", resource="notifications",
+        ip=request.client.host if request.client else "",
+        metadata={k: str(v) for k, v in result.items() if isinstance(v, (int, str))})
+    return result
 
 
 @router.get("/manifest", dependencies=[Depends(require_internal_token)])

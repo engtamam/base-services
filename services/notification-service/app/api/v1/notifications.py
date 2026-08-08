@@ -115,6 +115,7 @@ async def build_notifier(request: Request, tenant: str = "") -> NotificationServ
             base_ms=s.NOTIFY_BACKOFF_BASE_MS, max_ms=s.NOTIFY_BACKOFF_MAX_MS,
             retryable=s.notify_retryable, permanent=s.notify_permanent,
             unknown_is_retryable=s.NOTIFY_UNKNOWN_ERROR_RETRYABLE),
+        auditor=getattr(request.app.state, "auditor", None),
     )
 
 
@@ -150,6 +151,9 @@ async def mark_read(request: Request, item_id: str,
     ok = await (await build_notifier(request, principal.tenant)).mark_read(principal.subject, item_id)
     if not ok:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    await request.app.state.auditor.record(
+        "notification.read", actor=principal.subject, tenant=principal.tenant or "",
+        resource=f"notification:{item_id}", ip=request.client.host if request.client else "")
     return {"status": "ok"}
 
 
