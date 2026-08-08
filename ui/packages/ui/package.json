@@ -1,0 +1,27 @@
+{
+  "name": "@base-ui/source",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "base-services shared UI infrastructure — a premium, fully-themeable, RTL/Arabic-ready React + Tailwind design system, plus a paper/block document editor and generic auth/footer pages. Consumed AS SOURCE via the `@base-ui` Vite/tsconfig alias (not installed as an npm package). React, react-dom, react-router-dom, lucide-react, clsx, tailwind-merge and class-variance-authority are PEERS supplied by each consuming app. Nothing is hard-coded: every colour is a token resolved to a CSS variable emitted from theme.config.ts, every string comes through an i18n seam, and every data/callback is a prop.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./theme": "./src/theme/index.ts",
+    "./lib/cn": "./src/lib/cn.ts",
+    "./design-system": "./src/design-system/index.ts",
+    "./components": "./src/components/index.ts",
+    "./site": "./src/site/index.ts",
+    "./auth": "./src/auth/index.ts",
+    "./tailwind-preset.cjs": "./tailwind-preset.cjs"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-router-dom": "^7.1.5",
+    "lucide-react": "^0.475.0",
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^3.0.1",
+    "class-variance-authority": "^0.7.1"
+  },
+  "license": "LicenseRef-Proprietary"
+}

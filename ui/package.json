@@ -1,0 +1,6 @@
+{
+  "name": "base-ui-workspace",
+  "private": true,
+  "workspaces": ["packages/*", "apps/*"],
+  "description": "base-services front-end infrastructure. The shared library lives in packages/ui (@base-ui/source), consumed AS SOURCE by any app via a Vite/tsconfig alias."
+}
