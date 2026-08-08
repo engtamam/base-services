@@ -35,6 +35,18 @@ def _user_actions() -> list[dict[str, Any]]:
     return list(USER_ACTIONS)
 
 
+def _backup() -> dict:
+    """This service's backup declaration (app/backup_manifest.py), or an empty one.
+
+    Published in the manifest so the backup fan-out discovers what to capture the same way the DSAR
+    fan-out discovers who holds a person — a holder nobody declares is one nobody backs up."""
+    try:
+        from app.backup_manifest import BACKUP
+    except Exception:
+        return {"object_prefix": "", "collections": [], "excluded": []}
+    return BACKUP
+
+
 def build_manifest(
     settings: Settings, ports: list[dict[str, str]] | None = None
 ) -> dict[str, Any]:
@@ -87,7 +99,13 @@ def build_manifest(
             # Customer-service AI (advisory, opt-in via a real MODEL_DRIVER): triage a new ticket and
             # draft a reply. ticket-service's SUGGEST_DRIVER=http points here.
             {"path": "/internal/assistant/triage", "tier": "internal", "method": "POST"},
-            {"path": "/internal/assistant/draft", "tier": "internal", "method": "POST"},
+            {"path": "/internal/assistant/draft", "tier": "internal", "method": "POST"},            # Backup fan-out (backup-service orchestrates): export + verify + import this
+            # service's data. Declared so the fan-out discovers this holder — an undeclared holder
+            # is one nobody backs up.
+            {"path": "/internal/backup/export", "tier": "internal", "method": "POST"},
+            {"path": "/internal/backup/import", "tier": "internal", "method": "POST"},
+            {"path": "/internal/backup/verify", "tier": "internal", "method": "POST"},
+
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         # FILL THIS too, or leave it empty deliberately. Same trap as capabilities: an empty
@@ -95,5 +113,6 @@ def build_manifest(
         # subscribes to nothing and fails silently rather than at boot.
         "events": {"emitted": [], "consumed": []},  # e.g. {"emitted": ["wallet.credited"], ...}
         "admin_actions": _admin_actions(),
+        "backup": _backup(),   # what backup-service must capture to restore this service
         "user_actions": _user_actions(),
     }
