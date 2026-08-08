@@ -159,6 +159,12 @@ jobs:
           python tools/ci/selftest_schedule_coverage.py
           python tools/ci/check_schedule_coverage.py
 
+      # gates: safety:peer-paths
+      - name: "safety:peer-paths — every configured peer path is served by a real endpoint"
+        run: |
+          python tools/ci/selftest_peer_paths.py
+          python tools/ci/check_peer_paths.py
+
       # gates: safety:tenancy
       - name: "safety:tenancy — a token carries exactly ONE tenant, and only one it is entitled to"
         run: python tools/ci/check_tenancy.py

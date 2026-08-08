@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+gate_name="safety:peer-paths"
+gate_desc="every *_PATH config default names a route some service actually serves"
+gate_protects="The seam defect — two components each correct alone, disagreeing where
+they meet — has a config-shaped variant safety:contract-callers does not reach: a
+*_PATH DEFAULT in a service's config naming a route no service serves.
+ticket-service shipped NOTIFICATION_SEND_PATH=/internal/notifications/send;
+notification-service serves /internal/notify. NOTIFY_DRIVER=http then sent every
+ticket notification to a silent 404 — a failed notification is not a failed
+ticket, so nothing looked wrong until a customer said 'you never replied' days
+later. (The same sweep also found ticket's assistant triage/draft paths served by
+nobody.)
+
+This reads the other side of that seam: every '<NAME>_PATH: str = \"/...\"' default
+across every config.py must match a path some manifest declares (placeholders
+normalised). A path nobody serves is a typo or drift, caught in CI. LIMIT: static
+defaults only — a fully dynamic peer target (a CSV assembled at runtime) needs the
+boot-time /internal/manifest check instead. External paths go in EXCLUDED w/ reason."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_peer_paths.py"
+gate_units=1
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_peer_paths.py; }
+
+# A gate that cannot fail is decoration. Mutation-tested: a served path passes, an unserved one
+# fails, a reasoned exclusion passes.
+gate_selftest() { "$PY" tools/ci/selftest_peer_paths.py >/dev/null 2>&1; }
