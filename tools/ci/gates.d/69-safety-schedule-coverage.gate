@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+gate_name="safety:schedule-coverage"
+gate_desc="every scheduler-driven internal endpoint has a CronJob in its values (and no cron is an orphan)"
+gate_protects="A scheduled endpoint and its schedule live in two files — the handler
+(app/api/internal.py, declared in manifest.py) and the CronJob
+(deploy/services/<svc>.values.yaml). Ship the endpoint without the schedule and
+it has NO caller: queued becomes a prettier word for lost, a retention policy is
+stored and never runs, closed tenants are never erased — and every other check
+passes because the endpoint works when POSTed by hand. This shipped THREE+ times
+(audit retention, job scheduler-tick, notification drain), and a sweep of the
+manifests found four more with no cron at all.
+
+So this gate ties them together: every internal POST endpoint whose last path
+segment looks like a scheduler verb (sweep/drain/tick/prune/reclaim/drill/
+retention/scan/cycle-due) must have a CronJob targeting it, or be EXCLUDED with a
+reason; and every CronJob path must be a real endpoint, so a typo does not fire a
+schedule at a 404 for ever. A heuristic net, not a proof — widen the verbs or
+declare an exclusion as real cases appear."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_schedule_coverage.py"
+gate_units=1
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_schedule_coverage.py; }
+
+# A gate that cannot fail is decoration. Mutation-tested: a covered endpoint passes, then an
+# uncovered one, an orphan cron, and a reasoned exclusion each get the verdict they should.
+gate_selftest() { "$PY" tools/ci/selftest_schedule_coverage.py >/dev/null 2>&1; }

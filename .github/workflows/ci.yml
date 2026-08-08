@@ -153,6 +153,12 @@ jobs:
           python tools/ci/selftest_audit_wiring.py
           python tools/ci/check_audit_wiring.py
 
+      # gates: safety:schedule-coverage
+      - name: "safety:schedule-coverage — every scheduled endpoint has a CronJob (no cron is an orphan)"
+        run: |
+          python tools/ci/selftest_schedule_coverage.py
+          python tools/ci/check_schedule_coverage.py
+
       # gates: safety:tenancy
       - name: "safety:tenancy — a token carries exactly ONE tenant, and only one it is entitled to"
         run: python tools/ci/check_tenancy.py

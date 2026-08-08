@@ -54,3 +54,9 @@ env:
 # No ingress: reached service-to-service on the internal tier only.
 ingress:
   enabled: false
+
+# These internal endpoints have NO caller without this block.
+cronJobs:
+  - name: close-sweep
+    schedule: "37 3 * * *"
+    path: /internal/tenants/close-sweep

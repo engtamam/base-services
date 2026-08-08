@@ -63,3 +63,6 @@ cronJobs:
   - name: cycle-due
     schedule: "17 3 * * *"
     path: /internal/billing/cycle-due
+  - name: grants-drain
+    schedule: "*/5 * * * *"
+    path: /internal/billing/grants/drain

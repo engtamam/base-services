@@ -65,3 +65,6 @@ cronJobs:
   - name: retention-purge
     schedule: "17 3 * * *"
     path: /internal/compliance/retention/run
+  - name: consent-sweep-lapses
+    schedule: "43 3 * * *"
+    path: /internal/compliance/consent/sweep-lapses

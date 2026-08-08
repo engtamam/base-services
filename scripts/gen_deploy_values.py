@@ -75,7 +75,10 @@ CRONS: dict[str, list[tuple[str, str, str]]] = {
                         # The renewal engine — invoice subscriptions whose period has ended. Daily,
                         # offset from dunning so the two sweeps do not contend. Without it, year-two
                         # revenue is never invoiced.
-                        ("cycle-due", "17 3 * * *", "/internal/billing/cycle-due")],
+                        ("cycle-due", "17 3 * * *", "/internal/billing/cycle-due"),
+                        # Deliver due credit grants. Its handler is explicitly "driven by the
+                        # platform's scheduler"; without this the grant never lands.
+                        ("grants-drain", "*/5 * * * *", "/internal/billing/grants/drain")],
     "job-service": [
         ("scheduler-tick", "* * * * *", "/internal/scheduler/tick"),
         ("reclaim", "*/5 * * * *", "/internal/jobs/reclaim"),
@@ -107,6 +110,10 @@ CRONS: dict[str, list[tuple[str, str, str]]] = {
     "compliance-service": [
         ("dsar-sweep", "*/5 * * * *", "/internal/compliance/dsar/run"),
         ("retention-purge", "17 3 * * *", "/internal/compliance/retention/run"),
+        # Lapse consents past their validity so a withdrawn/expired basis stops permitting
+        # processing. Its handler expects a nightly cron; without it a lapsed consent still reads
+        # as granted.
+        ("consent-sweep-lapses", "43 3 * * *", "/internal/compliance/consent/sweep-lapses"),
     ],
     # A conversation retention policy that is stored and never executed is the most common
     # compliance defect there is: every review passes because the setting exists, and the data is
@@ -118,6 +125,13 @@ CRONS: dict[str, list[tuple[str, str, str]]] = {
         ("sweep-holds", "*/2 * * * *", "/internal/wallet/sweep-holds"),
         ("sweep-grants", "41 3 * * *", "/internal/wallet/sweep-grants"),
     ],
+    # Erase tenants whose owner-close grace window has elapsed. Its handler is "driven by the
+    # platform scheduler"; without this a closed tenant is suspended forever but NEVER erased — the
+    # close promise (and its retention obligation) silently never completes. Daily: grace is in days.
+    "tenant-service": [("close-sweep", "37 3 * * *", "/internal/tenants/close-sweep")],
+    # Deliver queued ticket notifications. Scheduler-driven so a restart cannot lose the retry;
+    # without it a queued ticket notification is never sent.
+    "ticket-service": [("notifications-drain", "*/2 * * * *", "/internal/tickets/notifications/drain")],
 }
 
 TEMPLATE = """# {name} — deployment values.
