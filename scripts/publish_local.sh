@@ -95,12 +95,38 @@ publish_one() {
 export -f publish_one
 export REG VERSION PREV SHA OWNER ROOT CHANGED FAIL_MARK MSYS_NO_PATHCONV
 
-# Bounded parallelism. Docker itself parallelizes layers WITHIN a build, so building all services at
-# once would just thrash a small builder (CPU/RAM/disk) and finish no sooner — often later. Default
-# to 4; override with PL_JOBS. Each build's own log is /tmp/pl_<svc>.log.
+# TWO budgets, because a build and a re-tag cost wildly different things.
+#
+# A BUILD is CPU/RAM/disk-bound. Docker already parallelizes layers WITHIN a build, so running many
+# at once just thrashes a small builder and finishes no sooner — often later. Bounded, default 4,
+# override with PL_JOBS.
+#
+# A RE-TAG is a registry manifest copy (`imagetools create`): no image data moves, no CPU, just a
+# small API call. Throttling those to the build budget was pure waste — on a release that changed one
+# service, twenty-two near-instant re-tags queued four-at-a-time behind nothing. They get their own,
+# much higher budget (PL_RETAG_JOBS, default 24 ≈ all-at-once) and run CONCURRENTLY with the builds,
+# so total time is ~the build time and the re-tags are effectively free.
 JOBS="${PL_JOBS:-4}"
-echo "==> building/retagging with up to $JOBS in parallel"
-echo "$SVCS" | xargs -P "$JOBS" -I{} bash -c 'publish_one "$@"' _ {}
+RETAG_JOBS="${PL_RETAG_JOBS:-24}"
+CHANGED_SVCS=""; UNCHANGED_SVCS=""
+for s in $SVCS; do
+  if echo "$CHANGED" | grep -qx "$s"; then CHANGED_SVCS="$CHANGED_SVCS $s"
+  else UNCHANGED_SVCS="$UNCHANGED_SVCS $s"; fi
+done
+n_changed="$(set -- $CHANGED_SVCS; echo $#)"; n_unchanged="$(set -- $UNCHANGED_SVCS; echo $#)"
+echo "==> building $n_changed changed (<= $JOBS parallel) + re-tagging $n_unchanged unchanged (<= $RETAG_JOBS parallel), concurrently"
+# Kick the cheap re-tags off at high parallelism in the BACKGROUND, build the changed ones at the
+# CPU-bound budget in the foreground, then wait for the re-tags. `|| true` on each: FAIL_MARK and the
+# digest verify below are the single source of truth for success, so we always reach the summary.
+retag_pid=""
+if [ -n "${UNCHANGED_SVCS// }" ]; then
+  printf '%s\n' $UNCHANGED_SVCS | xargs -P "$RETAG_JOBS" -I{} bash -c 'publish_one "$@"' _ {} &
+  retag_pid=$!
+fi
+if [ -n "${CHANGED_SVCS// }" ]; then
+  printf '%s\n' $CHANGED_SVCS | xargs -P "$JOBS" -I{} bash -c 'publish_one "$@"' _ {} || true
+fi
+[ -n "$retag_pid" ] && { wait "$retag_pid" || true; }
 fail=0; [ -f "$FAIL_MARK" ] && fail=1; rm -f "$FAIL_MARK"
 
 echo "==> verifying every service has a $VERSION digest"
