@@ -105,6 +105,51 @@
         "title": "ProvisionIn",
         "type": "object"
       },
+      "ProvisionTenantIn": {
+        "properties": {
+          "config": {
+            "additionalProperties": true,
+            "title": "Config",
+            "type": "object"
+          },
+          "domains": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Domains",
+            "type": "array"
+          },
+          "isolation_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Isolation Mode"
+          },
+          "name": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "slug": {
+            "maxLength": 64,
+            "minLength": 2,
+            "title": "Slug",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "name"
+        ],
+        "title": "ProvisionTenantIn",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -867,6 +912,68 @@
         ]
       }
     },
+    "/internal/tenants": {
+      "post": {
+        "description": "Service-to-service tenant creation, for the onboarding/provisioning saga.\n\nProvisioning is service-to-service by nature, so it is guarded by the shared internal token like\nthe rest of this tier \u2014 NOT by the user-tier POST /api/v1/tenants, which requires a Bearer JWT\ncarrying platform.tenants. Minting such a platform-capable token inside onboarding just to call a\nuser route would put a very powerful credential in a service that otherwise needs none. Returns\n`id` (the provisioner's undo reference); a repeat slug is 409 (the caller treats it as already-ours).",
+        "operationId": "internal_create_internal_tenants_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProvisionTenantIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Internal Create Internal Tenants Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Internal Create",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/tenants/close-sweep": {
       "post": {
         "description": "Erase tenants whose owner-close grace window has elapsed. Driven by the platform scheduler,\nnot a thread in here, so a restart cannot lose the only thing tracking a due closure.",
@@ -982,6 +1089,65 @@
       }
     },
     "/internal/tenants/{tenant_id}": {
+      "delete": {
+        "description": "The provisioner's UNDO: compensate a created tenant. 404 when already gone (the saga treats\nthat as success on a resumed rollback). Audited write-ahead \u2014 a delete the log cannot take must\nnot happen \u2014 matching the user-tier delete.",
+        "operationId": "internal_delete_internal_tenants__tenant_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "tenant_id",
+            "required": true,
+            "schema": {
+              "title": "Tenant Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Internal Delete Internal Tenants  Tenant Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Internal Delete",
+        "tags": [
+          "internal"
+        ]
+      },
       "get": {
         "description": "Tenant config + scope for peers (data scoping).\n\nA DELETED tenant answers 200 with `status: \"deleted\"` and `deleted_at` \u2014 it does NOT 404.\n\nThat is the whole point of the tombstone. `tenant.deleted` is published at most once, so a peer\nthat was restarting when it fired never heard it. If this 404'd, that peer would fail OPEN (an\nunknown tenant is usually an onboarding gap, not a punishment) and keep accepting writes to a\ncompany that no longer exists \u2014 for ever, because nothing would ever tell it again. Answering\nwith the tombstone makes the deletion something a peer LEARNS BY LOOKING. A read is\nself-healing; a missed event is wrong for ever.\n\nPeers: treat `status == \"deleted\"` as a hard stop. It is not an onboarding gap.\n\n`branding` is included so a render path (a PDF carrying the customer's logo) can read it with\nthe internal token alone, instead of minting a token with a cross-tenant admin capability just\nto fetch a logo. Least privilege: the smaller capability must be enough for the smaller job.",
         "operationId": "internal_get_internal_tenants__tenant_id__get",

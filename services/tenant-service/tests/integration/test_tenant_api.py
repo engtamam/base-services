@@ -128,6 +128,30 @@ def test_duplicate_slug_conflict(client):
     assert r.status_code == 409
 
 
+def test_internal_provision_and_undo(client):
+    """onboarding's provisioning saga creates a tenant over the INTERNAL tier (shared token), not the
+    user-tier POST /api/v1/tenants (which needs a platform-capable JWT no provisioner should hold).
+    Create returns an `id` (the undo reference); a repeat slug is 409 (already-ours); undo deletes it,
+    and a missing tenant is 404 (already-gone on a resumed rollback)."""
+    # The provisioning envelope onboarding sends — extra fields (tenant/subject/idempotency_key) must
+    # be tolerated, and slug/name carried in attributes.
+    body = {"tenant": "", "subject": "u1", "idempotency_key": "k1", "slug": "prov", "name": "Prov Co"}
+    r = client.post("/internal/tenants", json=body, headers=_internal())
+    assert r.status_code == 201
+    tid = r.json()["id"]
+    assert tid
+
+    # Repeat slug -> 409 (the provisioner treats it as already provisioned for this key).
+    assert client.post("/internal/tenants", json=body, headers=_internal()).status_code == 409
+
+    # No user JWT anywhere: the internal token alone provisions. And a user token cannot reach it.
+    assert client.post("/internal/tenants", json=body, headers=_platform()).status_code == 401
+
+    # Undo (compensation): deletes it; a missing one is 404 (already-gone).
+    assert client.delete(f"/internal/tenants/{tid}", headers=_internal()).status_code < 300
+    assert client.delete("/internal/tenants/does-not-exist", headers=_internal()).status_code == 404
+
+
 def test_declared_actions_reach_the_audit_sink_with_a_bound_actor(client):
     """auditable_actions.py declares tenant.created / config_updated / branding_updated. A contract
     file that names a control the code never records is worse than one that never claimed it — a

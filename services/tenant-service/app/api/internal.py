@@ -8,13 +8,17 @@ from __future__ import annotations
 
 import hmac
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+
+from typing import Any
 
 from app.api.v1.tenants import build_service
 from app.config import Settings, get_settings
 from app.core.erasure import TenantErasure
+from app.core.tenant_repository import DomainTaken, SlugTaken
+from app.core.tenant_service import InvalidSlug
 from app.manifest import build_manifest
 
 router = APIRouter(prefix="/internal", tags=["internal"])
@@ -128,3 +132,55 @@ async def close_sweep(request: Request) -> dict:
     import datetime as _dt
     now_iso = _dt.datetime.now(_dt.timezone.utc).isoformat()
     return await build_service(request).close_sweep(now_iso=now_iso)
+
+
+class ProvisionTenantIn(BaseModel):
+    slug: str = Field(min_length=2, max_length=64)
+    name: str = Field(min_length=1, max_length=256)
+    domains: list[str] = Field(default_factory=list)
+    isolation_mode: str | None = None
+    config: dict[str, Any] = Field(default_factory=dict)
+    # The provisioning envelope onboarding sends (tenant/subject/idempotency_key) is ignored here —
+    # pydantic drops the extras; slug uniqueness IS the idempotency (a repeat provision -> 409).
+
+
+@router.post("/tenants", status_code=201, dependencies=[Depends(require_internal_token)])
+async def internal_create(request: Request, body: ProvisionTenantIn) -> dict:
+    """Service-to-service tenant creation, for the onboarding/provisioning saga.
+
+    Provisioning is service-to-service by nature, so it is guarded by the shared internal token like
+    the rest of this tier — NOT by the user-tier POST /api/v1/tenants, which requires a Bearer JWT
+    carrying platform.tenants. Minting such a platform-capable token inside onboarding just to call a
+    user route would put a very powerful credential in a service that otherwise needs none. Returns
+    `id` (the provisioner's undo reference); a repeat slug is 409 (the caller treats it as already-ours)."""
+    svc = build_service(request)
+    try:
+        t = await svc.provision(body.slug, body.name, domains=body.domains,
+                                isolation_mode=body.isolation_mode, config_overrides=body.config)
+    except InvalidSlug:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "INVALID_SLUG")
+    except SlugTaken:
+        raise HTTPException(status.HTTP_409_CONFLICT, "SLUG_TAKEN")
+    except DomainTaken:
+        raise HTTPException(status.HTTP_409_CONFLICT, "DOMAIN_TAKEN")
+    # tenant.created is a DECLARED auditable action. Internal seam: no user principal, so actor is
+    # empty and the source IP names the peer.
+    await request.app.state.auditor.record(
+        "tenant.created", actor="", tenant=t.id, resource=f"tenant:{t.id}",
+        ip=request.client.host if request.client else "")
+    return t.public()
+
+
+@router.delete("/tenants/{tenant_id}", dependencies=[Depends(require_internal_token)])
+async def internal_delete(request: Request, tenant_id: str) -> dict:
+    """The provisioner's UNDO: compensate a created tenant. 404 when already gone (the saga treats
+    that as success on a resumed rollback). Audited write-ahead — a delete the log cannot take must
+    not happen — matching the user-tier delete."""
+    svc = build_service(request)
+    tenant = await svc.get(tenant_id)
+    if tenant is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    await request.app.state.auditor.record(
+        "tenant.deleted", actor="", tenant=tenant_id, resource=f"tenant:{tenant_id}",
+        ip=request.client.host if request.client else "")
+    return await svc.delete(tenant)

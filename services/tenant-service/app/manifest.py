@@ -58,6 +58,11 @@ def build_manifest(
             {"path": "/internal/tenants/close-sweep", "tier": "internal", "method": "POST"},
             {"path": "/internal/tenants/resolve", "tier": "internal", "method": "GET"},
             {"path": "/internal/tenants/{id}", "tier": "internal", "method": "GET"},
+            # Service-to-service tenant provisioning (onboarding saga): create + its undo. Guarded by
+            # the shared internal token — creation over the user tier needs a platform-capable JWT no
+            # provisioner should hold.
+            {"path": "/internal/tenants", "tier": "internal", "method": "POST"},
+            {"path": "/internal/tenants/{id}", "tier": "internal", "method": "DELETE"},
             {"path": "/api/v1/tenants", "tier": "user", "method": "POST"},
             {"path": "/api/v1/tenants", "tier": "user", "method": "GET"},
             {"path": "/api/v1/tenants/{id}", "tier": "user", "method": "GET"},
