@@ -33,11 +33,15 @@ SERVICES = ROOT / "services"
 # the intent is to onboard these; the line goes away when the endpoint lands).
 EXEMPT: dict[str, str] = {
     "api-gateway": "stateless edge proxy — holds no data of its own to back up",
-    # backfill-pending — SHOULD serve /internal/backup/export; tracked for onboarding. The
-    # data-critical ones (tenant/identity/authz/wallet/compliance/audit) go first.
+    "search-service":
+        "derived search index — its documents are projections of OTHER services' data (pushed in "
+        "via /index), and its inverted-index postings are a rebuildable derivative the code itself "
+        "calls 'a derived index [that] may keep nothing'. The postings row is a bare {doc_id: tf} "
+        "map that carries no key and cannot round-trip; the durable source lives in the services "
+        "whose data is backed up, so search is restored by re-indexing, not by an archive of its own",
+    # backfill-pending — SHOULD serve /internal/backup/export; tracked for onboarding.
     **{s: "backfill-pending — backup export not yet onboarded (tracked)" for s in (
         "analytics-service",
-        "search-service",
         "zatca-service")},
 }
 for _e in (os.environ.get("BACKUP_EXPORT_GATE_EXCLUDE", "") or "").split(","):
