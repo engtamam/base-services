@@ -80,6 +80,21 @@ install_platform() {
   # we created and labelled above.
   kubectl apply -n "$NAMESPACE" -f "$(dirname "$0")/platform/"
   ok "platform applied"
+
+  # OPTIONAL in-cluster object store (SeaweedFS, Apache-2.0), for OBJECTSTORE_DRIVER=s3. Off by
+  # default — most deployments bring their own S3. It needs the `objectstore-secrets` Secret
+  # (s3.json); see deploy/k3s/objectstore.yaml. Bring-your-own S3? Leave this off.
+  if [ -n "${OBJECTSTORE_ENABLED:-}" ]; then
+    if kubectl -n "$NAMESPACE" get secret objectstore-secrets >/dev/null 2>&1; then
+      info "applying optional object store (SeaweedFS)"
+      kubectl apply -n "$NAMESPACE" -f "$(dirname "$0")/objectstore.yaml"
+      ok "object store applied"
+    else
+      die "OBJECTSTORE_ENABLED is set but the 'objectstore-secrets' Secret (s3.json) is missing —
+       create it first (see deploy/k3s/objectstore.yaml), or unset OBJECTSTORE_ENABLED to bring
+       your own S3."
+    fi
+  fi
 }
 
 main() {

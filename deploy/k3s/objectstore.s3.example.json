@@ -1,0 +1,18 @@
+{
+  "//": "SeaweedFS S3 identities for the OPTIONAL in-cluster object store (deploy/k3s/objectstore.yaml).",
+  "//access": "Copy this, set real keys, and load it as a Secret the manifest mounts:",
+  "//cmd": "kubectl -n base-services create secret generic objectstore-secrets --from-file=s3.json=./s3.json",
+  "//keys": "The SAME accessKey/secretKey go to the blob services as OBJECTSTORE_ACCESS_KEY / OBJECTSTORE_SECRET_KEY, with OBJECTSTORE_DRIVER=s3, OBJECTSTORE_ENDPOINT_URL=http://objectstore:9000, OBJECTSTORE_FORCE_PATH_STYLE=true, OBJECTSTORE_BUCKET=base-services.",
+  "identities": [
+    {
+      "name": "base-services",
+      "credentials": [
+        {
+          "accessKey": "CHANGE_ME_ACCESS_KEY",
+          "secretKey": "CHANGE_ME_SECRET_KEY"
+        }
+      ],
+      "actions": ["Read", "Write", "List", "Tagging", "Admin"]
+    }
+  ]
+}

@@ -36,6 +36,7 @@
     "drivers": {
       "type": "object",
       "additionalProperties": false,
+      "comment": "Only the five STATEFUL drivers the scale-out guard reasons about live here. The object store is NOT one of them: it is selected by env (OBJECTSTORE_DRIVER=s3, OBJECTSTORE_ENDPOINT_URL, ...) like any other adapter, so `drivers.objectstore` is refused on purpose — set it in env instead.",
       "required": ["datastore", "cache", "eventbus", "queue", "ratelimiter"],
       "properties": {
         "datastore": { "enum": ["memory", "postgres"] },

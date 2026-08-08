@@ -1,0 +1,121 @@
+# =============================================================================
+# OPTIONAL in-cluster object store — an S3-compatible endpoint for the services
+# that read/write blobs (file / backup / stream) when OBJECTSTORE_DRIVER=s3.
+#
+# WHY SeaweedFS, NOT MinIO. MinIO is the name everyone reaches for, and it is the
+# one the earlier docs named — but MinIO's server is licensed AGPLv3, and this
+# platform's licence policy is permissive-only (MIT/BSD/Apache/ISC; never
+# GPL/AGPL/SSPL). SeaweedFS is Apache-2.0 and speaks the same S3 API, so it is the
+# reference impl we can actually ship. You are free to point OBJECTSTORE_ENDPOINT_URL
+# at your OWN MinIO / on-prem / cloud S3 instead — nothing here assumes SeaweedFS.
+#
+# PLUG-AND-PLAY. This is OPTIONAL and applied only when you ask for it:
+#   OBJECTSTORE_ENABLED=1 deploy/k3s/bootstrap.sh
+# Bring-your-own S3? Leave it off and set the file/backup/stream services'
+# OBJECTSTORE_ENDPOINT_URL / _ACCESS_KEY / _SECRET_KEY / _BUCKET (and, for a
+# path-style endpoint, OBJECTSTORE_FORCE_PATH_STYLE=true).
+#
+# The label `base-services/role: objectstore` is LOAD-BEARING: the chart's egress
+# NetworkPolicy (networkPolicy.egress.objectStore) allows the blob services to
+# reach a pod carrying it, on the S3 API port, and nothing else. Change the port
+# here and set networkPolicy.egress.objectStore.port to match.
+#
+# Credentials come from a Secret you create (never baked into this file):
+#   kubectl -n base-services create secret generic objectstore-secrets \
+#     --from-file=s3.json=./s3.json
+# where s3.json grants one identity Read/Write (see docs/architecture-plan.md).
+#
+# Single-instance, local-path storage: right for a single-node K3s reference. For
+# real durability, run a replicated object store (or a managed S3) and repoint
+# OBJECTSTORE_ENDPOINT_URL — nothing in the chart changes, because it is config.
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: objectstore
+  labels:
+    base-services/role: objectstore
+spec:
+  selector:
+    app: objectstore
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: 9000
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: objectstore-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: objectstore
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: objectstore
+  template:
+    metadata:
+      labels:
+        app: objectstore
+        base-services/role: objectstore     # the chart's egress policy selects THIS
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: seaweedfs
+          image: chrislusf/seaweedfs:3.73          # Apache-2.0
+          # All-in-one (master+volume+filer+s3) is right for a single node. The S3 gateway listens
+          # on 9000 and validates callers against the identities in the mounted s3.json.
+          args:
+            - server
+            - -dir=/data
+            - -s3
+            - -s3.port=9000
+            - -s3.config=/etc/seaweedfs/s3.json
+            - -ip.bind=0.0.0.0
+          ports:
+            - containerPort: 9000
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          readinessProbe:
+            httpGet: { path: /status, port: 9000 }
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet: { path: /status, port: 9000 }
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 1Gi }
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: s3-config
+              mountPath: /etc/seaweedfs
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: objectstore-data
+        - name: s3-config
+          secret:
+            secretName: objectstore-secrets
+            items:
+              - key: s3.json
+                path: s3.json

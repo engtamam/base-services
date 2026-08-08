@@ -103,7 +103,9 @@ deploy/
   k3s/
     bootstrap.sh              # k3s + policy-capable CNI + metrics-server + cert-manager
     preflight.sh              # PROVES NetworkPolicy is enforced; fails loud
-    platform/                 # postgres, redis, minio, traefik, sealed-secrets
+    platform/                 # postgres, redis (the always-on data stores)
+    objectstore.yaml          # OPTIONAL S3 store (SeaweedFS, Apache-2.0); OBJECTSTORE_ENABLED=1
+                              #   — most deploys bring their own S3 and leave this off
   Makefile                    # make up / make deploy / make verify / make down
 tests/deploy/                 # renders + guards (pytest, no cluster needed)
 ```
