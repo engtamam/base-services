@@ -87,14 +87,19 @@ class ReportIn(BaseModel):
 @router.post("/query", dependencies=[Depends(rate_limit)])
 async def run_query(body: QueryIn, request: Request, p: Principal = Depends(_READ)) -> dict:
     """Reads ROLLUPS ONLY — never the raw event table. Cached by tenant generation."""
+    tenant = _tenant(p, body.tenant)
     try:
-        return await build_query(request).query(
-            tenant=_tenant(p, body.tenant), metric=body.metric, agg=body.agg,
+        result = await build_query(request).query(
+            tenant=tenant, metric=body.metric, agg=body.agg,
             granularity=body.granularity, start_ts=body.start_ts, end_ts=body.end_ts,
             dimensions=body.dimensions, filters=body.filters, percentile=body.percentile,
             tz_offset_minutes=body.tz_offset_minutes)
     except QueryError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    await request.app.state.auditor.record(
+        "analytics.queried", actor=p.subject, tenant=tenant, resource="query",
+        ip=request.client.host if request.client else "", metadata={"metric": body.metric})
+    return result
 
 
 @router.post("/funnel", dependencies=[Depends(rate_limit)])
@@ -121,6 +126,9 @@ async def create_report(body: ReportIn, request: Request, p: Principal = Depends
     r = ReportDef(id=new_id("rep_"), tenant=tenant, name=body.name,
                   query=body.query.model_dump(exclude_none=True), created=c.clock.now())
     await ReportStore(c.datastore).save(r)
+    await request.app.state.auditor.record(
+        "analytics.report_created", actor=p.subject, tenant=tenant,
+        resource=f"report:{r.id}", ip=request.client.host if request.client else "")
     return r.to_dict()
 
 
@@ -172,6 +180,9 @@ async def update_report(report_id: str, body: ReportIn, request: Request,
 async def delete_report(report_id: str, request: Request, p: Principal = Depends(_MANAGE)) -> Response:
     r = await _owned_report(request, report_id, p)
     await ReportStore(request.app.state.container.datastore).delete(r.id)
+    await request.app.state.auditor.record(
+        "analytics.report_deleted", actor=p.subject, tenant=r.tenant,
+        resource=f"report:{r.id}", ip=request.client.host if request.client else "")
     return Response(status_code=204)
 
 

@@ -68,6 +68,9 @@ async def create_schedule(request: Request, body: ScheduleIn, principal: Princip
             type=body.type, payload=body.payload, priority=body.priority, singleton=body.singleton)
     except CronError as e:
         raise HTTPException(422, f"BAD_CRON: {e}")
+    await request.app.state.auditor.record(
+        "schedule.created", actor=principal.subject, tenant=_tenant(principal, body.tenant),
+        resource=f"schedule:{s.id}", ip=request.client.host if request.client else "")
     return s.to_dict()
 
 
@@ -76,9 +79,13 @@ async def list_schedules(request: Request) -> dict:
     return {"schedules": await build_scheduler(request).list(get_settings().JOB_LIST_LIMIT)}
 
 
-@router.delete("/schedules/{schedule_id}", dependencies=[Depends(_ADMIN)])
-async def delete_schedule(request: Request, schedule_id: str) -> dict:
+@router.delete("/schedules/{schedule_id}")
+async def delete_schedule(request: Request, schedule_id: str,
+                          principal: Principal = Depends(_ADMIN)) -> dict:
     await build_scheduler(request).delete(schedule_id)
+    await request.app.state.auditor.record(
+        "schedule.deleted", actor=principal.subject, tenant=principal.tenant or "",
+        resource=f"schedule:{schedule_id}", ip=request.client.host if request.client else "")
     return {"deleted": True, "id": schedule_id}
 
 

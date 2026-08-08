@@ -81,6 +81,13 @@ async def internal_health(settings: Settings = Depends(get_settings)) -> dict[st
 async def enqueue(request: Request, body: EnqueueIn) -> dict:
     """Any service enqueues background work. Idempotent on idempotency_key / unique_key."""
     job, created = await build_jobs(request).enqueue(**body.model_dump())
+    if created:
+        # Enqueued over the internal token by a peer service — actor "system". Idempotent re-enqueues
+        # (created is False) are not re-recorded: the work was already witnessed.
+        await request.app.state.auditor.record(
+            "job.enqueued", actor="system", tenant=getattr(job, "tenant", "") or "",
+            resource=f"job:{job.id}", ip=request.client.host if request.client else "",
+            metadata={"type": getattr(job, "type", "")})
     return {"job_id": job.id, "status": job.status, "created": created}
 
 

@@ -106,6 +106,9 @@ async def upsert_flag(request: Request, body: FlagIn, principal: Principal = Dep
         flag = await build_flags(request).upsert(actor=principal.subject, **body.model_dump())
     except ValueError as e:
         raise HTTPException(422, str(e))            # e.g. variant weights don't sum to 100
+    await request.app.state.auditor.record(
+        "flag.created", actor=principal.subject, tenant=principal.tenant or "",
+        resource=f"flag:{flag.key}", ip=request.client.host if request.client else "")
     return flag.to_dict()
 
 
@@ -135,10 +138,15 @@ async def archive_flag(request: Request, key: str, principal: Principal = Depend
 
 
 # ── segments (reusable audiences) ──────────────────────────────────────────────
-@router.post("/segments", status_code=201, dependencies=[Depends(_ADMIN)])
-async def upsert_segment(request: Request, body: SegmentIn) -> dict:
+@router.post("/segments", status_code=201)
+async def upsert_segment(request: Request, body: SegmentIn,
+                         principal: Principal = Depends(_ADMIN)) -> dict:
     seg = Segment(key=body.key, description=body.description, rules=body.rules, created=iso())
-    return (await build_segments(request).save(seg)).to_dict()
+    saved = (await build_segments(request).save(seg)).to_dict()
+    await request.app.state.auditor.record(
+        "segment.created", actor=principal.subject, tenant=principal.tenant or "",
+        resource=f"segment:{body.key}", ip=request.client.host if request.client else "")
+    return saved
 
 
 @router.get("/segments", dependencies=[Depends(_READ)])
@@ -146,9 +154,13 @@ async def list_segments(request: Request) -> dict:
     return {"segments": await build_segments(request).list(get_settings().FLAG_LIST_LIMIT)}
 
 
-@router.delete("/segments/{key}", dependencies=[Depends(_ADMIN)])
-async def delete_segment(request: Request, key: str) -> dict:
+@router.delete("/segments/{key}")
+async def delete_segment(request: Request, key: str,
+                         principal: Principal = Depends(_ADMIN)) -> dict:
     await build_segments(request).delete(key)
+    await request.app.state.auditor.record(
+        "segment.deleted", actor=principal.subject, tenant=principal.tenant or "",
+        resource=f"segment:{key}", ip=request.client.host if request.client else "")
     return {"deleted": True, "key": key}
 
 

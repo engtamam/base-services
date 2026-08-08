@@ -128,7 +128,11 @@ async def create_spec(request: Request, body: SpecIn, principal: Principal = Dep
                         client_secret_sealed=_seal.seal(body.client_secret, s.seal_key),
                         endpoints=body.endpoints, field_map=body.field_map,
                         created=request.app.state.container.clock.now())
-    return (await SpecStore(request.app.state.container.datastore).save(spec)).public()
+    saved = (await SpecStore(request.app.state.container.datastore).save(spec)).public()
+    await request.app.state.auditor.record(
+        "connector.spec_registered", actor=principal.subject, tenant=_tenant(principal),
+        resource=f"spec:{spec.id}", ip=request.client.host if request.client else "")
+    return saved
 
 
 @router.get("/specs", dependencies=[Depends(_READ)])
@@ -215,6 +219,10 @@ async def sync(request: Request, body: SyncIn, principal: Principal = Depends(_A
     spec = await _spec_for(request, conn)
     engine = build_sync(request)
     field_map = spec.get("field_map") or {}
+    await request.app.state.auditor.record(
+        "connector.sync_started", actor=principal.subject, tenant=principal.tenant or "",
+        resource=f"connection:{conn.id}", ip=request.client.host if request.client else "",
+        metadata={"direction": body.direction, "resource": body.resource})
     if body.direction == "pull":
         return await engine.pull(connection_id=conn.id, resource=body.resource, spec=spec,
                                  field_map=field_map)

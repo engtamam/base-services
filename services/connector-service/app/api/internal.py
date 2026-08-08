@@ -60,10 +60,17 @@ async def internal_sync(request: Request, body: SyncIn) -> dict:
     engine = build_sync(request)
     field_map = spec.get("field_map") or {}
     if body.direction == "pull":
-        return await engine.pull(connection_id=conn.id, resource=body.resource, spec=spec,
-                                 field_map=field_map)
-    return await engine.push(connection_id=conn.id, resource=body.resource,
-                             records=body.records, spec=spec, field_map=field_map)
+        result = await engine.pull(connection_id=conn.id, resource=body.resource, spec=spec,
+                                   field_map=field_map)
+    else:
+        result = await engine.push(connection_id=conn.id, resource=body.resource,
+                                   records=body.records, spec=spec, field_map=field_map)
+    # The durable, scheduler-driven run (job-service retries this) — actor "system".
+    await request.app.state.auditor.record(
+        "connector.sync_run", actor="system", tenant=getattr(conn, "tenant", "") or "",
+        resource=f"connection:{conn.id}", ip=request.client.host if request.client else "",
+        metadata={"direction": body.direction, "resource": body.resource})
+    return result
 
 
 @router.get("/manifest", dependencies=[Depends(require_internal_token)])

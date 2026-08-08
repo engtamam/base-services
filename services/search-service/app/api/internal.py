@@ -66,14 +66,22 @@ async def internal_health(settings: Settings = Depends(get_settings)) -> dict[st
 @router.post("/search/index", status_code=201, dependencies=[Depends(require_internal_token)])
 async def index_doc(request: Request, body: IndexIn) -> dict:
     """Any service indexes an entity it owns. Tenant is explicit here (service-to-service)."""
-    return await build_search(request).index(
+    result = await build_search(request).index(
         index=body.index, doc_id=body.id, tenant=body.tenant, fields=body.fields,
         owner=body.owner, boosts=body.boosts, created=body.created)
+    await request.app.state.auditor.record(
+        "search.indexed", actor="system", tenant=body.tenant,
+        resource=f"{body.index}:{body.id}", ip=request.client.host if request.client else "")
+    return result
 
 
 @router.post("/search/bulk", dependencies=[Depends(require_internal_token)])
 async def bulk(request: Request, body: BulkIn) -> dict:
-    return await build_search(request).bulk(body.tenant, body.docs)
+    result = await build_search(request).bulk(body.tenant, body.docs)
+    await request.app.state.auditor.record(
+        "search.bulk_indexed", actor="system", tenant=body.tenant, resource=body.tenant,
+        ip=request.client.host if request.client else "", metadata={"count": str(len(body.docs))})
+    return result
 
 
 @router.post("/search/delete", dependencies=[Depends(require_internal_token)])
