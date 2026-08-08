@@ -11,6 +11,7 @@
     "./design-system": "./src/design-system/index.ts",
     "./components": "./src/components/index.ts",
     "./site": "./src/site/index.ts",
+    "./shell": "./src/shell/index.ts",
     "./auth": "./src/auth/index.ts",
     "./tailwind-preset.cjs": "./tailwind-preset.cjs"
   },
