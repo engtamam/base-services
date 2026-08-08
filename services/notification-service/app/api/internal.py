@@ -16,14 +16,22 @@ from app.backup_manifest import BACKUP
 from app.core import backup as _backup
 from app.config import Settings, get_settings
 from app.core.erasure import NotificationErasure
+from app.core.notifier import CHANNELS
 from app.manifest import build_manifest
+
+# The channels /internal/notify accepts, DERIVED from the notifier's authoritative tuple rather than
+# restated. This endpoint is the only send path in the service; when its pattern and core/notifier's
+# CHANNELS drifted, `whatsapp` was rejected at the door (422) while the engine behind it fully
+# supported the channel — silently disabling the one channel this platform is built around. Deriving
+# the pattern is what stops the two lists from ever falling out of step again.
+_CHANNEL_PATTERN = "^(" + "|".join(CHANNELS) + ")$"
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 
 
 class NotifyIn(BaseModel):
     recipient: str = Field(min_length=1, max_length=256)
-    channel: str = Field(pattern="^(email|sms|inapp)$")
+    channel: str = Field(pattern=_CHANNEL_PATTERN)   # derived from core/notifier.CHANNELS
     template_key: str = Field(min_length=1, max_length=128)
     # The tenant a consent-gated send is checked against. Consent is keyed by (tenant, subject,
     # purpose): without this field pydantic silently DROPS a caller's tenant, every gated check asks

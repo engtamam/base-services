@@ -89,6 +89,31 @@ def test_internal_notify_sends_and_records(client):
     assert r.json()["provider"] == "console"
 
 
+def test_every_engine_channel_passes_validation(client):
+    """The one send path must accept EXACTLY the channels the engine supports — the failure class
+    here is a validator that restated core/notifier.CHANNELS and fell behind it, silently rejecting
+    `whatsapp` (the channel this platform is built around) at the door while the engine supported it.
+    """
+    from app.core.notifier import CHANNELS
+    _seed_template(client)
+    for ch in CHANNELS:
+        r = client.post("/internal/notify",
+                        json={"recipient": "a@b.com", "channel": ch, "template_key": "welcome"},
+                        headers=_internal())
+        # Never a 422: every declared channel reaches the notifier. It may then report `failed` when
+        # no provider is configured in this test env — that is a delivery outcome, not a rejection.
+        assert r.status_code == 200, f"channel {ch!r} was rejected before the engine: {r.status_code} {r.text}"
+
+
+def test_an_unsupported_channel_is_still_rejected(client):
+    """The pattern is derived, not open: a channel the engine does NOT know is still a 422."""
+    r = client.post("/internal/notify",
+                    json={"recipient": "a@b.com", "channel": "carrier-pigeon",
+                          "template_key": "welcome"},
+                    headers=_internal())
+    assert r.status_code == 422
+
+
 def test_consent_gated_send_reaches_the_gate_with_the_body_tenant():
     """The blocking bug: NotifyIn declared no `tenant`, so pydantic silently DROPPED the caller's
     tenant. Consent is keyed by (tenant, subject, purpose), so every gated send asked about an empty
