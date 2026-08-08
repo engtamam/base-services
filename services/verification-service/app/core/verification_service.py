@@ -202,11 +202,27 @@ class VerificationService:
                 # the anti-abuse key is missing, so the grant side refuses rather than assuming.
                 pass
 
-        if self._auditor is not None and record.verdict == VERIFIED:
-            await self._auditor.record(
-                "identity.verified", actor=record.subject, tenant=record.tenant,
-                resource=f"{record.claim_type}:{record.id}",
-                metadata={"provider": outcome.provider, "reference": outcome.reference})
+        if self._auditor is not None:
+            # A refusal and a provider error are recorded too, NON-critically: an identity check
+            # that failed or was refused is exactly the signal fraud monitoring turns on (PCI-DSS
+            # 10.2 / NIST AU-2), but — unlike the VERIFIED grant above — a down audit log must not
+            # block a refusal, since refusing to refuse someone helps nobody.
+            if record.verdict == VERIFIED:
+                await self._auditor.record(
+                    "identity.verified", actor=record.subject, tenant=record.tenant,
+                    resource=f"{record.claim_type}:{record.id}",
+                    metadata={"provider": outcome.provider, "reference": outcome.reference})
+            elif record.verdict == REFUSED:
+                await self._auditor.record(
+                    "identity.refused", actor=record.subject, tenant=record.tenant,
+                    resource=f"{record.claim_type}:{record.id}",
+                    metadata={"provider": outcome.provider, "reference": outcome.reference})
+            elif record.verdict == ERROR:
+                await self._auditor.record(
+                    "identity.check_failed", actor=record.subject, tenant=record.tenant,
+                    resource=f"{record.claim_type}:{record.id}",
+                    metadata={"provider": outcome.provider,
+                              "detail": str(record.evidence.get("detail", ""))})
         if self._bus is not None:
             try:
                 await self._bus.publish("verification.settled", {
