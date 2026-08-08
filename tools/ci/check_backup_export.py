@@ -37,7 +37,6 @@ EXEMPT: dict[str, str] = {
     # data-critical ones (tenant/identity/authz/wallet/compliance/audit) go first.
     **{s: "backfill-pending — backup export not yet onboarded (tracked)" for s in (
         "analytics-service",
-        "file-service",
         "search-service",
         "zatca-service")},
 }

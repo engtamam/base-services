@@ -13,6 +13,8 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, s
 from pydantic import BaseModel, Field
 
 from app.core.file_service import NotFound
+from app.backup_manifest import BACKUP
+from app.core import backup as _backup
 from app.config import Settings, get_settings
 from app.core.erasure import FileErasure
 from app.core.scan_worker import ScanWorker
@@ -200,3 +202,106 @@ async def link_subjects(request: Request, file_id: str, body: LinkSubjectsIn) ->
     links = SubjectLinks(store=c.datastore, pii_salt=s.PII_SALT)
     linked = await links.attach(tenant=body.tenant, file_id=file_id, subjects=body.subjects)
     return {"file_id": file_id, "linked": linked}
+
+
+# ── Backup (backup-service orchestrates; this service produces sealed archives) ──────────────
+# What this service holds is declared in app/backup_manifest.py; how it is read lives in
+# core/backup.py. backup-service never opens this database — it calls export/verify/import over the
+# internal token and stores the sealed archive, never seeing the plaintext.
+def _now_iso() -> str:
+    import datetime as _dt
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _sealer(settings: Settings):
+    """The backup (seal, unseal) pair, or a 503 when no backup key is configured.
+
+    Refused rather than defaulted: sealing with an empty key would write a plaintext-equivalent
+    archive while every check reported it encrypted — the one outcome a backup must never have.
+    """
+    if not settings.BACKUP_KEK:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "BACKUP_KEK not configured — set this SHARED key (the SAME value backup-service holds) "
+            "on this service, or its archives cannot be opened")
+    return _backup.make_sealer(settings.BACKUP_KEK)
+
+
+class BackupExportIn(BaseModel):
+    tenant: str = ""
+
+
+class BackupVerifyIn(BaseModel):
+    archive: dict
+
+
+class BackupImportIn(BaseModel):
+    archive: dict
+    overwrite: bool = False
+    into_tenant: str = ""
+
+
+@router.post("/backup/export", dependencies=[Depends(require_internal_token)])
+async def backup_export(request: Request, body: BackupExportIn,
+                        settings: Settings = Depends(get_settings)) -> dict:
+    """Produce a sealed, checksummed archive of this service's declared data."""
+    seal, _ = _sealer(settings)
+    return await _backup.export(
+        request.app.state.container.datastore, BACKUP,
+        service=settings.SERVICE_NAME, version=settings.SERVICE_VERSION,
+        taken_at=_now_iso(), seal=seal, tenant=body.tenant,
+        scan_cap=settings.BACKUP_MAX_ROWS_PER_COLLECTION)
+
+
+@router.post("/backup/verify", dependencies=[Depends(require_internal_token)])
+async def backup_verify(request: Request, body: BackupVerifyIn,
+                        settings: Settings = Depends(get_settings)) -> dict:
+    """Prove an archive restores, by test-restoring it into a throwaway namespace and comparing."""
+    import secrets
+    _, unseal = _sealer(settings)
+    try:
+        return await _backup.verify_restore(
+            request.app.state.container.datastore, body.archive,
+            unseal=unseal, token=secrets.token_hex(8), declaration=BACKUP)
+    except _backup.BackupError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+
+async def _rebuild_blob_refs(datastore, scan_cap: int) -> int:
+    """Rebuild the per-blob reference count from the restored files — it is DERIVED, not archived.
+
+    A blob's ref-count is exactly the number of files that point at its sha256 (incr_ref runs once
+    per file, decr_ref once per delete). Recomputing it from `files` keeps a restored blob from
+    carrying a zero count that a later delete would read as "unreferenced" and wrongly GC. Idempotent
+    — it recomputes the same counts — and it writes the same {"count": n} row the incr adapter uses.
+    """
+    counts: dict[str, int] = {}
+    for row in await datastore.scan_all("files", scan_cap):
+        sha = row.get("sha256") or row.get("storage_key")
+        if sha:
+            counts[sha] = counts.get(sha, 0) + 1
+    for sha, n in counts.items():
+        await datastore.put("blob_refs", sha, {"count": n})
+    return len(counts)
+
+
+@router.post("/backup/import", dependencies=[Depends(require_internal_token)])
+async def backup_import(request: Request, body: BackupImportIn,
+                        settings: Settings = Depends(get_settings)) -> dict:
+    """Restore an archive this service produced. Idempotent; leaves newer rows alone by default.
+
+    After the file records are restored, the per-blob reference counts are rebuilt from them — they
+    are derived, not archived, so a restore that skipped them would leave every blob at count 0.
+    """
+    datastore = request.app.state.container.datastore
+    _, unseal = _sealer(settings)
+    try:
+        result = await _backup.import_archive(
+            datastore, body.archive,
+            unseal=unseal, overwrite=body.overwrite, into_tenant=body.into_tenant,
+            declaration=BACKUP)
+    except _backup.BackupError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    result["blob_refs_rebuilt"] = await _rebuild_blob_refs(
+        datastore, settings.BACKUP_MAX_ROWS_PER_COLLECTION)
+    return result
