@@ -1,6 +1,7 @@
 # =============================================================================
 # base-services — one-command platform.
 #
+#   make setup    THE ONE COMMAND: provision -> bootstrap -> preflight -> rollout -> boot-heal
 #   make up       bootstrap K3s (Calico + metrics-server + data stores)
 #   make verify   PROVE the guarantees hold on this cluster
 #   make deploy   install/upgrade all 16 services
@@ -21,7 +22,7 @@ KUBECTL ?= kubectl
 
 SERVICES := $(notdir $(basename $(basename $(wildcard $(VALUES)/*.values.yaml))))
 
-.PHONY: help up verify deploy roll render test down status $(addprefix deploy-,$(SERVICES))
+.PHONY: help up verify deploy setup roll render test down status $(addprefix deploy-,$(SERVICES))
 
 help:
 	@grep -E '^#   make' $(MAKEFILE_LIST) | sed 's/^#   /  /'
@@ -54,6 +55,10 @@ deploy: verify
 deploy-%:
 	$(HELM) upgrade --install $* $(CHART) -f $(VALUES)/$*.values.yaml \
 		--namespace $(NAMESPACE) --create-namespace --wait --timeout 5m
+
+# THE ONE COMMAND: provision -> bootstrap -> preflight -> (hooks) -> health-gated rollout -> boot-heal.
+setup:
+	@sudo NAMESPACE=$(NAMESPACE) bash server/setup.sh
 
 # Safe rollout: render-first, per-service auto-rollback, --only, node-image prune. Prefer this over
 # `deploy` on a live box. Pass flags through:  make roll ARGS="--only tenant --dry-run"
