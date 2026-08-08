@@ -75,12 +75,9 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "critical": False,
         "resource": "person",
     },
-    {
-        "action": "tenant.created",
-        "source": "user",
-        "critical": False,
-        "resource": "tenant",
-    },
+    # NOTE: `tenant.created` is NOT declared here — this service does not create tenants
+    # (tenant-service does, and records it). A service must not declare a control it never performs;
+    # doing so makes a compliance map read "witnessed" over an action this service never takes.
 
     # ── credentials: account takeover looks exactly like this ────────────────
     {

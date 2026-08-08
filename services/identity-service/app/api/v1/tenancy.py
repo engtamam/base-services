@@ -210,6 +210,9 @@ async def claim_invite(request: Request, body: ClaimIn) -> dict:
     if person is None:
         # Unknown, expired, already used, or for a person who has since claimed: one answer.
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "INVALID_INVITE")
+    await request.app.state.auditor.record(
+        "person.claimed", actor=person.id, resource=f"person:{person.id}",
+        ip=request.client.host if request.client else "")
     return {"person": person.public()}
 
 
@@ -297,6 +300,9 @@ async def person_login(request: Request, body: PersonLoginIn) -> dict:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "MFA_REQUIRED")
 
     memberships = await svc.memberships.memberships(person.id)
+    await request.app.state.auditor.record(
+        "person.login_succeeded", actor=person.id, resource=f"person:{person.id}",
+        ip=_source(request))
     return {
         "person": person.public(),
         # Only the doors THIS person holds, and only the fields they may see about their own

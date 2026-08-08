@@ -146,6 +146,9 @@ async def register(request: Request, body: RegisterIn) -> dict:
                 "verification_mail_not_sent",
                 extra={"tenant": user.tenant, "detail": "account created but no mail accepted; "
                                                         "the user must use resend-verification"})
+    await request.app.state.auditor.record(
+        "auth.registered", actor=user.id, tenant=user.tenant,
+        resource=f"user:{user.id}", ip=request.client.host if request.client else "")
     return user.public()
 
 
@@ -212,22 +215,54 @@ async def resend_verification(request: Request, body: ResendIn) -> dict:
 @router.post("/login", dependencies=[Depends(rate_limit)])
 async def login(request: Request, body: LoginIn) -> dict:
     svc = _svc(request)
+    ip = request.client.host if request.client else ""
+
+    async def _failed(reason: str) -> None:
+        # A FAILED login is recorded in full: it is the primary signal of brute-force and
+        # credential-stuffing, and ISO 27001 (A.8.15), NIST SP 800-53 (AU-2) and PCI-DSS (10.2)
+        # all require it. No principal exists, so — per the same standards' partial-identifier
+        # rule — the ATTEMPTED identifier and the source IP ARE the actor.
+        await request.app.state.auditor.record(
+            "auth.login_failed", actor=body.username, tenant=body.tenant,
+            resource=f"auth:login:{body.tenant}", ip=ip, metadata={"reason": reason})
+
     user = await svc.authenticate(body.tenant, body.username, body.password)
     if user is None:
+        await _failed("invalid_credentials")
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "INVALID_CREDENTIALS")
     # MFA gate: if the user has enrolled TOTP and MFA is active, require a code.
     c = request.app.state.container
     if c.mfa.enabled and user.mfa_secret:
         if not body.code or not c.mfa.verify(user.mfa_secret, body.code):
+            await _failed("mfa_required")
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "MFA_REQUIRED")
+        await request.app.state.auditor.record(
+            "auth.mfa_verified", actor=user.id, tenant=user.tenant,
+            resource=f"user:{user.id}", ip=ip)
     try:
-        return await svc.issue_tokens(user)
+        tokens = await svc.issue_tokens(user)
     except AuthService.EmailNotVerified:
         # 403, NOT 401. The credentials were correct — telling this user their password is wrong
         # sends them into a reset loop that cannot fix anything. It does reveal that the account
         # exists and is unverified, but only to someone who ALREADY proved they know the
         # password, so it is not a free enumeration oracle.
+        await _failed("email_not_verified")
         raise HTTPException(status.HTTP_403_FORBIDDEN, "EMAIL_NOT_VERIFIED")
+    await request.app.state.auditor.record(
+        "auth.login_succeeded", actor=user.id, tenant=user.tenant,
+        resource=f"user:{user.id}", ip=ip)
+    return tokens
+
+
+def _session_of(request: Request, token: str) -> tuple[str, str]:
+    """Best-available actor for a token-only route: the (subject, jti) the refresh token still
+    decodes to. The token is validated for signature and expiry — enough to attribute a renewal or
+    a logout without a bound principal. Returns ("","") if it cannot be read."""
+    try:
+        claims = request.app.state.container.token_verifier.verify(token)
+        return str(claims.get("sub", "")), str(claims.get("jti", ""))
+    except Exception:  # noqa: BLE001 — attribution is best-effort; the action still records
+        return "", ""
 
 
 @router.post("/refresh")
@@ -241,12 +276,20 @@ async def refresh(request: Request, body: RefreshIn) -> dict:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "CAPS_UNAVAILABLE")
     if tokens is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "INVALID_REFRESH")
+    sub, jti = _session_of(request, body.refresh_token)
+    await request.app.state.auditor.record(
+        "auth.token_refreshed", actor=sub, resource=f"session:{jti}" if jti else "session",
+        ip=request.client.host if request.client else "")
     return tokens
 
 
 @router.post("/logout")
 async def logout(request: Request, body: RefreshIn) -> dict:
+    sub, jti = _session_of(request, body.refresh_token)
     await _svc(request).logout(body.refresh_token)
+    await request.app.state.auditor.record(
+        "auth.logged_out", actor=sub, resource=f"session:{jti}" if jti else "session",
+        ip=request.client.host if request.client else "")
     return {"status": "ok"}
 
 
