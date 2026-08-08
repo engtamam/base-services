@@ -36,16 +36,9 @@ _PATH_DEFAULT = re.compile(r'^\s+([A-Z][A-Z0-9_]*_PATH)\s*:\s*str\s*=\s*"(/[^"]*
 _PARAM = re.compile(r"\{[^}]*\}")
 
 # Config-path fields that legitimately name something NO base-service serves (an external system, a
-# customer's own API) OR a KNOWN, reviewed gap. Keyed "<svc>:<FIELD>" -> reason.
-EXCLUDED: dict[str, str] = {
-    # BRING-YOUR-OWN (reviewed): ticket's AI suggestion layer (SUGGEST_DRIVER=http, off by default,
-    # advisory — a 404 is a graceful shrug) POSTs a {triage,draft} contract. base-services' own
-    # assistant-service serves KB Q&A (/api/v1/assistant/ask), NOT ticket triage/draft — that is a
-    # different capability, not a missing endpoint — so an operator points these at a service that
-    # implements the contract. Excluded (not silently passed): the target is external by design.
-    "ticket-service:ASSISTANT_TRIAGE_PATH": "bring-your-own triage service; base-services assistant is KB Q&A, not ticket triage (SUGGEST_DRIVER=null by default)",
-    "ticket-service:ASSISTANT_DRAFT_PATH": "bring-your-own draft service; base-services assistant is KB Q&A, not reply drafting (SUGGEST_DRIVER=null by default)",
-}
+# customer's own API) OR a KNOWN, reviewed gap. Keyed "<svc>:<FIELD>" -> reason. Empty today —
+# ticket's ASSISTANT_TRIAGE/DRAFT paths are now served by assistant-service (internal tier).
+EXCLUDED: dict[str, str] = {}
 for _e in (os.environ.get("PEER_PATHS_GATE_EXCLUDE", "") or "").split(","):
     if _e.strip():
         EXCLUDED[_e.strip()] = "excluded via env (selftest)"

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hmac
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
@@ -75,6 +75,41 @@ async def enforce_retention(request: Request) -> dict:
     cutoff = (_dt.datetime.now(_dt.timezone.utc)
               - _dt.timedelta(days=s.CONVERSATION_RETENTION_DAYS)).isoformat()
     return await store.enforce_retention(cutoff_iso=cutoff)
+
+
+class TriageIn(BaseModel):
+    tenant: str = ""
+    current_type: str = ""
+    subject: str = ""
+    body: str = ""
+    candidate_types: list[str] = Field(default_factory=list)
+
+
+class DraftIn(BaseModel):
+    tenant: str = ""
+    subject: str = ""
+    thread: list[dict] = Field(default_factory=list)
+
+
+@router.post("/assistant/triage", dependencies=[Depends(require_internal_token)])
+async def internal_triage(request: Request, body: TriageIn) -> dict:
+    """Customer-service AI: suggest a type/priority/tags/summary for a new ticket. ADVISORY — an
+    empty object means 'no suggestion' (no generative model wired, or nothing usable back), which the
+    caller (ticket-service) treats as a shrug. Enabled only when MODEL_DRIVER is a real LLM."""
+    from app.core import support
+    return await support.triage(
+        request.app.state.container.model, current_type=body.current_type, subject=body.subject,
+        body=body.body, candidate_types=tuple(body.candidate_types),
+        lang=get_settings().DEFAULT_LANGUAGE)
+
+
+@router.post("/assistant/draft", dependencies=[Depends(require_internal_token)])
+async def internal_draft(request: Request, body: DraftIn) -> dict:
+    """Customer-service AI: draft a reply an agent reviews before sending. ADVISORY (see triage)."""
+    from app.core import support
+    return await support.draft(
+        request.app.state.container.model, subject=body.subject, thread=body.thread,
+        lang=get_settings().DEFAULT_LANGUAGE)
 
 
 @router.post("/privacy/erase", dependencies=[Depends(require_internal_token)])

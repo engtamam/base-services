@@ -84,6 +84,10 @@ def build_manifest(
             {"path": "/api/v1/operator/config", "tier": "admin", "method": "PUT"},
             {"path": "/api/v1/operator/config/{key}", "tier": "admin", "method": "DELETE"},
             {"path": "/internal/assistant/retention", "tier": "internal", "method": "POST"},
+            # Customer-service AI (advisory, opt-in via a real MODEL_DRIVER): triage a new ticket and
+            # draft a reply. ticket-service's SUGGEST_DRIVER=http points here.
+            {"path": "/internal/assistant/triage", "tier": "internal", "method": "POST"},
+            {"path": "/internal/assistant/draft", "tier": "internal", "method": "POST"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         # FILL THIS too, or leave it empty deliberately. Same trap as capabilities: an empty

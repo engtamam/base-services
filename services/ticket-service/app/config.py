@@ -158,10 +158,10 @@ class Settings(BaseSettings):
     # A SuggestionProvider can auto-triage a new ticket (suggest type/priority/tags) and draft a
     # reply an agent edits and sends. It is ADVISORY: it never transitions, closes or sends; every
     # suggestion is logged as an `ai_suggested` event. Content sent to the model is tenant-scoped.
-    #   null = no AI (default). http = POST the triage/draft contract to a suggestion service.
-    # BRING-YOUR-OWN: base-services' own assistant-service serves KB Q&A (/api/v1/assistant/ask),
-    # NOT ticket triage/draft — no base-service serves the two paths below out of the box. So point
-    # this at a service that implements the {triage, draft} contract, or leave SUGGEST_DRIVER=null.
+    #   null = no AI (default). http = POST triage/draft to assistant-service (/internal/assistant/
+    # {triage,draft}). assistant-service serves that contract; it returns a suggestion only when a
+    # real generative model is wired there (MODEL_DRIVER=http), and an empty/absent one otherwise —
+    # advisory, so a shrug just means "no suggestion, proceed".
     SUGGEST_DRIVER: str = "null"             # null | http
     ASSISTANT_SERVICE_URL: str = ""          # e.g. http://assistant-service:8000
     ASSISTANT_SERVICE_TOKEN: str = ""        # internal token; operator-managed, sealed

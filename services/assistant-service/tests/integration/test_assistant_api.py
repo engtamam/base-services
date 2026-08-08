@@ -41,6 +41,47 @@ def kb_file(tmp_path_factory):
     return str(p)
 
 
+def test_customer_service_triage_and_draft(client):
+    """The opt-in customer-service AI: ticket-service POSTs the ticket, assistant triages + drafts
+    it via its configured model. Advisory — the default (extractive) model returns nothing, so a
+    suggestion appears only when a generative model is wired; a fake one here proves the path."""
+    from app.ports.model import ModelAnswer
+    internal = {"X-Internal-Token": "t" * 40}
+
+    # Default model is extractive (quotes, does not write) -> no suggestion, caller shrugs.
+    r = client.post("/internal/assistant/triage",
+                    json={"subject": "Refund not received", "body": "I paid twice", "current_type": "billing",
+                          "candidate_types": ["billing", "technical"]}, headers=internal)
+    assert r.status_code == 200 and r.json() == {}
+
+    # Wire a fake generative model; now triage/draft produce structured output.
+    class _Gen:
+        driver = "http"
+        async def answer(self, *, question, passages, lang, persona="", max_tokens=0):
+            if "JSON" in question:   # triage asks for JSON
+                return ModelAnswer(text='{"type":"billing","priority":"high","tags":["refund","double-charge"],'
+                                        '"confidence":0.9,"summary":"Customer double-charged, wants a refund."}')
+            return ModelAnswer(text="Hi — we're sorry for the double charge and are issuing a refund now.")
+    orig_model = client.app.state.container.model
+    client.app.state.container.model = _Gen()
+    try:
+        t = client.post("/internal/assistant/triage",
+                        json={"subject": "Refund", "body": "paid twice", "current_type": "billing",
+                              "candidate_types": ["billing", "technical"]}, headers=internal).json()
+        assert t["type"] == "billing" and t["priority"] == "high" and "refund" in t["tags"]
+        assert t["confidence"] == 0.9 and t["summary"]
+
+        d = client.post("/internal/assistant/draft",
+                        json={"subject": "Refund", "thread": [{"author": "customer", "body": "paid twice"}]},
+                        headers=internal).json()
+        assert "refund" in d["text"].lower() and 0 < d["confidence"] <= 1
+    finally:
+        client.app.state.container.model = orig_model   # module-scoped client — restore for other tests
+
+    # Internal token is required.
+    assert client.post("/internal/assistant/triage", json={"subject": "x", "body": "y"}).status_code == 401
+
+
 @pytest.fixture(scope="module")
 def client(kb_file):
     from app.config import get_settings

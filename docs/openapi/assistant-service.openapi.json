@@ -67,6 +67,30 @@
         "title": "ConfigIn",
         "type": "object"
       },
+      "DraftIn": {
+        "properties": {
+          "subject": {
+            "default": "",
+            "title": "Subject",
+            "type": "string"
+          },
+          "tenant": {
+            "default": "",
+            "title": "Tenant",
+            "type": "string"
+          },
+          "thread": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Thread",
+            "type": "array"
+          }
+        },
+        "title": "DraftIn",
+        "type": "object"
+      },
       "EraseIn": {
         "properties": {
           "subject": {
@@ -124,6 +148,39 @@
           "value"
         ],
         "title": "SecretIn",
+        "type": "object"
+      },
+      "TriageIn": {
+        "properties": {
+          "body": {
+            "default": "",
+            "title": "Body",
+            "type": "string"
+          },
+          "candidate_types": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Candidate Types",
+            "type": "array"
+          },
+          "current_type": {
+            "default": "",
+            "title": "Current Type",
+            "type": "string"
+          },
+          "subject": {
+            "default": "",
+            "title": "Subject",
+            "type": "string"
+          },
+          "tenant": {
+            "default": "",
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "title": "TriageIn",
         "type": "object"
       },
       "ValidationError": {
@@ -879,6 +936,68 @@
         ]
       }
     },
+    "/internal/assistant/draft": {
+      "post": {
+        "description": "Customer-service AI: draft a reply an agent reviews before sending. ADVISORY (see triage).",
+        "operationId": "internal_draft_internal_assistant_draft_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DraftIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Internal Draft Internal Assistant Draft Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Internal Draft",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/assistant/retention": {
       "post": {
         "description": "Apply CONVERSATION_RETENTION_DAYS (a scheduler calls this). 0 = keep until erased.\n\nShipped with a cron caller in the chart, because a sweeper nobody calls is the same defect as\nno sweeper at all \u2014 and harder to spot, since the code review passes.",
@@ -926,6 +1045,68 @@
           }
         },
         "summary": "Enforce Retention",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/assistant/triage": {
+      "post": {
+        "description": "Customer-service AI: suggest a type/priority/tags/summary for a new ticket. ADVISORY \u2014 an\nempty object means 'no suggestion' (no generative model wired, or nothing usable back), which the\ncaller (ticket-service) treats as a shrug. Enabled only when MODEL_DRIVER is a real LLM.",
+        "operationId": "internal_triage_internal_assistant_triage_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TriageIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Internal Triage Internal Assistant Triage Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Internal Triage",
         "tags": [
           "internal"
         ]
