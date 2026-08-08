@@ -184,12 +184,15 @@ def test_the_zatca_qr_is_embedded_when_the_einvoicer_returned_one():
     assert _image_count(without) == 0, "an image appeared with no QR to draw"
 
 
-# ── premium bilingual presentation ────────────────────────────────────────────
-def test_the_masthead_band_names_the_seller_and_the_amount_due_is_labelled():
+# ── premium Arabic-only presentation ──────────────────────────────────────────
+def test_the_masthead_band_names_the_seller_and_the_document_is_arabic_only():
     text = _text(ReportLabPdf().render(_invoice())[1])
     assert "Nadeem Technologies" in text, "the seller name is missing from the masthead band"
-    assert "TOTAL DUE" in text, "the amount-due panel is not labelled"
-    assert "TAX INVOICE" in text
+    # Arabic-only: none of the old English chrome survives; the money still reads.
+    for english in ("TOTAL DUE", "TAX INVOICE", "SIMPLIFIED", "INVOICE No", "BILL TO", "FROM",
+                    "Subtotal", "Discount"):
+        assert english not in text
+    assert "1,265.00" in text and "SAR" in text
 
 
 def test_a_brand_accent_hex_is_parsed_and_a_bad_one_falls_back():
@@ -215,7 +218,7 @@ def test_an_unnamed_buyer_shows_the_tenant_as_an_account_reference_not_a_name():
     reference, never masquerading as a legal name in the BILL TO block."""
     uid = "3477400ca907440297631def92b27a07"
     text = _text(ReportLabPdf().render(_invoice(tenant=uid, buyer={"account": uid}))[1])
-    assert "Account" in text and uid in text
+    assert uid in text                                       # shown as a reference, not a legal name
 
 
 def test_an_invoice_with_no_qr_still_renders():
@@ -239,8 +242,8 @@ def test_line_count_is_capped_and_the_document_says_so():
     lines = [{"description": f"Item {i}", "quantity": 1, "unit_minor": 100,
               "amount_minor": 100} for i in range(40)]
     text = _text(ReportLabPdf(max_lines=10).render(_invoice(lines=lines))[1])
-    assert "Item 9" in text and "Item 39" not in text
-    assert "first 10 lines" in text
+    assert "Item 9" in text and "Item 39" not in text        # capped at 10 of the 40 lines
+    assert "10" in text and "40" in text                     # the truncation note states both counts
 
 
 def test_a_render_failure_returns_none_rather_than_raising():

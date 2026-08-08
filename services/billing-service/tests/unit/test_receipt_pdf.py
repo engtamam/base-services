@@ -41,15 +41,16 @@ def test_receipt_carries_the_gateway_reference():
         _invoice(), {"provider": "moyasar", "provider_id": "pay_123"})[1])
     assert "moyasar" in text and "pay_123" in text          # the gateway transaction reference
     assert "1,150.00" in text                                # amount paid, major units
-    assert "PAYMENT RECEIPT" in text
 
 
-def test_receipt_says_it_is_not_a_tax_invoice_and_has_no_vat_line():
+def test_receipt_is_arabic_only_with_no_english_chrome_or_vat_line():
+    # Arabic-only document: none of the old English labels survive, and a receipt has no VAT line.
     text = _text(ReportLabPdf().render_receipt(
         _invoice(), {"provider": "stripe", "provider_id": "ch_1"})[1])
-    assert "not a tax invoice" in text
-    assert "VAT" not in text                                  # no tax line at all
-    assert "TOTAL DUE" not in text                            # a receipt shows AMOUNT PAID, not due
+    for english in ("PAYMENT RECEIPT", "AMOUNT PAID", "not a tax invoice", "VAT", "TOTAL DUE",
+                    "RECEIPT No", "PAID BY", "FROM"):
+        assert english not in text
+    assert "1,150.00" in text and "ch_1" in text             # the money and reference still read
 
 
 def test_a_settlement_receipt_shows_method_and_reference():
