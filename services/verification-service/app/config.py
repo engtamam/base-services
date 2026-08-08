@@ -99,6 +99,18 @@ class Settings(BaseSettings):
     # ── Internal service-to-service auth (REQUIRED) ─────────────────────────
     # Shared token for /internal/* endpoints. Must be strong (>= 32 chars).
     INTERNAL_SERVICE_TOKEN: str = Field(min_length=32)
+    # ── Backup (backup-service orchestrates; this service produces sealed archives) ──────────
+    # Seals backup archives at rest. SEPARATE from any live-secrets key by design: restoring must
+    # not require the key a running service uses for its own live secrets. Empty means this service
+    # cannot produce a backup, and its export endpoint refuses rather than writing one in the clear.
+    # SHARED: it must be the SAME value backup-service holds (in the class of PII_SALT /
+    # INTERNAL_SERVICE_TOKEN); gen-secrets.py mints it consistently. Two different values and the
+    # archives backup-service collects from this service cannot be opened.
+    BACKUP_KEK: str = ""
+    # The most rows a single collection may hold before a backup FAILS rather than reads on
+    # unbounded — a real ceiling an operator sets to the size the data actually reaches.
+    BACKUP_MAX_ROWS_PER_COLLECTION: int = 5_000_000
+
     # Salts the subject pseudonym on an erasure ack. FROZEN — config/product.identifiers.lock.json.
     PII_SALT: str = ""
     ERASURE_MAX_SCAN: int = 100_000   # a DSAR is rare, but must never be an unbounded read
