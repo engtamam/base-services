@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.invoice_format import apportion_vat, exponent, issued, money, percent
+from app.core.invoice_format import apportion_vat, exponent, money, percent
 
 
 # ── the defect this replaced ──────────────────────────────────────────────────
@@ -101,21 +101,4 @@ def test_a_zero_taxable_total_does_not_divide_by_zero():
     assert apportion_vat([{"amount_minor": 0}], tax_minor=100, taxable_minor=0) == [100]
 
 
-# ── dates ─────────────────────────────────────────────────────────────────────
-def test_an_iso_timestamp_reads_as_a_date_and_time():
-    """ZATCA requires the issue date AND time, so the time is kept rather than trimmed."""
-    assert issued("2026-07-22T09:14:00Z") == "22 July 2026 · 09:14 UTC"
-
-
-def test_a_date_without_a_time_is_fine():
-    assert issued("2026-07-22") == "22 July 2026"
-
-
-def test_an_unparseable_date_is_returned_untouched():
-    # Better on the page than a blank where a legally required field should be.
-    assert issued("not a date") == "not a date"
-    assert issued("2026-13-99T00:00:00Z") == "2026-13-99T00:00:00Z"
-
-
-def test_an_empty_date_is_empty():
-    assert issued("") == "" and issued(None) == ""
+# Date formatting moved to the ReportLab renderer's Arabic `_issued` — see test_invoice_pdf.py.

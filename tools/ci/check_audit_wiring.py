@@ -72,6 +72,32 @@ def declarations(service: pathlib.Path) -> list[dict] | None:
     return None
 
 
+def unrecorded_actions(service: pathlib.Path) -> dict[str, str]:
+    """The service's UNRECORDED_ACTIONS escape hatch — {action: why} for actions it DELIBERATELY
+    does not record here (one another service records, or a not-yet-built path). Same literal-only
+    read as declarations(). An entry without a non-empty `why` is ignored, so the reason is
+    mandatory: an omission must be a decision someone wrote down, not an oversight with extra steps.
+    """
+    decl = service / "app" / "auditable_actions.py"
+    if not decl.exists():
+        return {}
+    try:
+        tree = ast.parse(decl.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return {}
+    for node in tree.body:
+        target = getattr(node, "target", None) or (getattr(node, "targets", [None]) or [None])[0]
+        if getattr(target, "id", "") == "UNRECORDED_ACTIONS":
+            try:
+                rows = ast.literal_eval(node.value)
+            except (ValueError, SyntaxError):
+                return {}
+            return {r["action"]: r["why"] for r in rows
+                    if isinstance(r, dict) and isinstance(r.get("action"), str)
+                    and str(r.get("why", "")).strip()}
+    return {}
+
+
 _ANON_ACTOR = re.compile(r"""record\(\s*["']([a-z0-9_.]+)["'][^)]*?actor\s*=\s*["']["']""", re.S)
 
 
@@ -236,22 +262,39 @@ def main() -> int:
             wired += 1
             problems.extend(f"  {name}: {p}" for p in malformed(actions))
 
-            # R3. Declaring is a promise; emitting is what keeps it. Enforced on CRITICAL actions
-            # only, and that limit is deliberate: a critical action that is never emitted is a
-            # security control that exists solely on paper, while a routine one missing an emit
-            # costs visibility rather than evidence. Widening this to every action would be
-            # stricter and would also make the gate reject work in progress on its first commit.
+            # R3. Declaring is a promise; emitting is what keeps it — enforced on EVERY declared
+            # action, not just the critical ones. That limit used to be here, and it is exactly the
+            # hole 68 non-critical actions fell through: they were declared, the sink was wired, the
+            # config was right, and nothing recorded them — the compliance map read "witnessed" over
+            # an empty chain and every check passed. The escape hatch below turns "this service
+            # deliberately does not record X" from an oversight into a decision with a stated reason,
+            # which is what keeps this strict without blocking legitimate work.
             emitted = emitted_actions(service)
+            excused = unrecorded_actions(service)
             missing = sorted(a["action"] for a in actions
-                             if a.get("critical") and a.get("action") not in emitted)
+                             if a.get("action") not in emitted and a.get("action") not in excused)
             if missing:
+                crit = {a["action"] for a in actions if a.get("critical")}
                 problems.append(
-                    f"  {name}: declares {len(missing)} CRITICAL action(s) that nothing ever\n"
-                    f"      emits: {', '.join(missing)}\n"
-                    f"      The declaration, the sink and the config are all in place, so every\n"
-                    f"      check passes while the chain stays empty — the same defect one level\n"
-                    f"      deeper. Fix: call `await request.app.state.auditor.record(\"<action>\",\n"
-                    f"      ...)` at the point the action happens.")
+                    f"  {name}: declares {len(missing)} action(s) that nothing ever records: "
+                    f"{', '.join(missing)}\n"
+                    f"      {'(' + ', '.join(sorted(set(missing) & crit)) + ' are CRITICAL) ' if set(missing) & crit else ''}"
+                    f"The declaration, the sink and the config are all in place, so every check\n"
+                    f"      passes while the chain stays empty. Fix: call `await\n"
+                    f"      request.app.state.auditor.record(\"<action>\", ...)` at the point the\n"
+                    f"      action happens — or, if this service genuinely does not record it, add\n"
+                    f"      {{\"action\": ..., \"why\": ...}} to UNRECORDED_ACTIONS in\n"
+                    f"      app/auditable_actions.py.")
+            # A stale or bogus exclusion must not rot silently: it excuses a real gap by accident.
+            stale = sorted(a for a in excused if a in emitted)
+            if stale:
+                problems.append(f"  {name}: UNRECORDED_ACTIONS excuses {', '.join(stale)}, which "
+                                f"IS recorded — remove the stale exclusion.")
+            undeclared_excuse = sorted(a for a in excused
+                                       if a not in {x.get("action") for x in actions})
+            if undeclared_excuse:
+                problems.append(f"  {name}: UNRECORDED_ACTIONS lists {', '.join(undeclared_excuse)}, "
+                                f"not declared in AUDITABLE_ACTIONS.")
 
             # R5. The other direction, which this gate never checked at all: an emit for an
             # action nothing declares. Adopted from a team building on this repo, who added it to

@@ -39,19 +39,24 @@ _GOOD = [
 ]
 
 
-def _repo(tmp: pathlib.Path, *, actions, driver: str | None, emit: bool = True) -> pathlib.Path:
+def _repo(tmp: pathlib.Path, *, actions, driver: str | None, emit: bool = True,
+          unrecorded: list | None = None) -> pathlib.Path:
     """A minimal repo the checker can walk: one service, its declaration, its values file."""
     svc = tmp / "services" / "x-service" / "app"
     svc.mkdir(parents=True)
     (tmp / "services" / "_template" / "app").mkdir(parents=True)
     if actions is not None:
-        (svc / "auditable_actions.py").write_text(_DECL.format(actions=actions), encoding="utf-8")
+        decl = _DECL.format(actions=actions)
+        if unrecorded is not None:
+            decl += f"\nUNRECORDED_ACTIONS = {unrecorded}\n"
+        (svc / "auditable_actions.py").write_text(decl, encoding="utf-8")
 
-    # A route file that emits every critical action, unless the case is testing the absence of it.
+    # A route file that emits EVERY declared action (R3 now enforces all of them, not just the
+    # critical ones), unless the case is testing the absence of an emit.
     if actions and emit:
         calls = "\n".join(
             '    await request.app.state.auditor.record("%s")' % a["action"]
-            for a in actions if isinstance(a, dict) and a.get("critical"))
+            for a in actions if isinstance(a, dict) and a.get("action"))
         (svc / "routes.py").write_text(
             "async def handler(request):\n" + (calls or "    pass") + "\n", encoding="utf-8")
 
@@ -82,6 +87,11 @@ CASES = [
     ("R2 emits but declares nothing", None, "http", True, "declares NO auditable actions"),
     ("no audit trail at all", None, None, True, "no audit trail at all"),
     ("R3 critical action nothing emits", _GOOD, "http", True, "nothing ever"),
+    # The widening: a NON-critical declared action that nothing records must fail too. This is the
+    # exact class — 68 of them — that slipped through when R3 checked critical actions only.
+    ("R3 non-critical action nothing emits",
+     [{"action": "thing.created", "source": "user", "critical": False, "resource": "thing"}],
+     "http", True, "nothing ever records"),
     # A dotted name with THREE segments must be recognised as emitted, not reported missing.
     ("multi-part action name is seen", _MULTIPART, "http", False, "declare auditable action"),
     ("R4 flat action name", [{"action": "created", "source": "user", "critical": False}],
@@ -111,6 +121,25 @@ def main() -> int:
         elif fragment not in out:
             failures.append(f"  {name}: right verdict, wrong reason — {fragment!r} not in:\n{out}")
 
+    # The escape hatch: a non-critical action nothing records PASSES when it is excused in
+    # UNRECORDED_ACTIONS with a reason — the decision is written down, not forgotten.
+    with tempfile.TemporaryDirectory() as td:
+        one = [{"action": "thing.created", "source": "user", "critical": False, "resource": "thing"}]
+        check = _repo(pathlib.Path(td), actions=one, driver="http", emit=False,
+                      unrecorded=[{"action": "thing.created",
+                                   "why": "recorded by y-service, not here"}])
+        rc, out = _run(check)
+        if rc != 0:
+            failures.append(f"  UNRECORDED_ACTIONS escape hatch should PASS a reasoned exclusion:\n{out}")
+    # But an exclusion with no `why` is ignored, so the gap still fails — the reason is mandatory.
+    with tempfile.TemporaryDirectory() as td:
+        one = [{"action": "thing.created", "source": "user", "critical": False, "resource": "thing"}]
+        check = _repo(pathlib.Path(td), actions=one, driver="http", emit=False,
+                      unrecorded=[{"action": "thing.created"}])          # no why
+        rc, out = _run(check)
+        if rc == 0 or "nothing ever records" not in out:
+            failures.append(f"  a reasonless UNRECORDED_ACTIONS exclusion must NOT excuse the gap:\n{out}")
+
     # A literal the gate cannot parse must be reported, never silently skipped: an unparseable
     # declaration that counted as "no problems" would be the perfect place to hide an empty one.
     with tempfile.TemporaryDirectory() as td:
@@ -134,7 +163,7 @@ def main() -> int:
         return 1
     # Not "every one rejected": some cases assert the gate PASSES a correctly-wired repo. A gate
     # that only ever rejects is as broken as one that only ever accepts.
-    print(f"      audit-wiring selftest OK — {len(CASES) + 1} cases, each accepted or rejected "
+    print(f"      audit-wiring selftest OK — {len(CASES) + 3} cases, each accepted or rejected "
           f"as intended")
     return 0
 

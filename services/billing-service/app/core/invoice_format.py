@@ -116,32 +116,6 @@ def apportion_vat(lines: list[dict], *, tax_minor: int, taxable_minor: int) -> l
     return shares
 
 
-_MONTHS = ("January", "February", "March", "April", "May", "June",
-           "July", "August", "September", "October", "November", "December")
-
-
-def issued(value: str) -> str:
-    """An ISO timestamp as a person reads it: "22 July 2026 · 09:14 UTC".
-
-    ZATCA requires the issue date AND time on a tax invoice, so the time is kept rather than
-    trimmed to a date. The raw ISO string was previously printed as-is; it is machine-correct and
-    nobody reads `2026-07-22T09:14:00Z` off a document without pausing.
-
-    Anything unparseable is returned untouched — a date this cannot read is still better on the
-    page than a blank where a legally required field should be.
-    """
-    raw = (value or "").strip()
-    if not raw:
-        return ""
-    try:
-        date_part, _, time_part = raw.partition("T")
-        y, m, d = (int(x) for x in date_part.split("-"))
-        if not 1 <= m <= 12:
-            return raw
-        out = f"{d} {_MONTHS[m - 1]} {y}"
-        hhmm = time_part[:5]
-        if len(hhmm) == 5 and hhmm[2] == ":":
-            out += f" · {hhmm} UTC" if raw.endswith("Z") else f" · {hhmm}"
-        return out
-    except (ValueError, IndexError):
-        return raw
+# NOTE: date formatting for the PDF now lives in the ReportLab renderer's `_issued` (Arabic
+# Gregorian months, since the document is Arabic-only). The old English `issued()` helper that lived
+# here was removed when nothing on the invoice used it any longer.
