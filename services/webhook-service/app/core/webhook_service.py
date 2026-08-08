@@ -42,7 +42,7 @@ def classify(status: int, transport_ok: bool) -> str:
 
 class WebhookService:
     def __init__(self, *, endpoints: EndpointStore, events: EventStore, deliveries: DeliveryStore,
-                 transport, signer, config: dict[str, Any], event_bus=None) -> None:
+                 transport, signer, config: dict[str, Any], event_bus=None, auditor=None) -> None:
         self._endpoints = endpoints
         self._events = events
         self._deliveries = deliveries
@@ -50,6 +50,10 @@ class WebhookService:
         self._signer = signer
         self._cfg = config
         self._bus = event_bus
+        # Optional so tests can build the service without one; delivery is recorded here, in the
+        # single funnel, so a delivery driven by the sweep loop is witnessed the same as one driven
+        # by the internal deliver route — there is no second place to forget.
+        self._auditor = auditor
 
     # ── endpoints ─────────────────────────────────────────────────────────────
     async def register(self, *, tenant: str, url: str, event_types: list[str],
@@ -200,6 +204,12 @@ class WebhookService:
         if error:
             d.error = error
         await self._deliveries.save(d)
+        if status == DELIVERED and self._auditor is not None:
+            # Non-critical: a busy fan-out must not stall because the audit log is briefly down.
+            await self._auditor.record(
+                "webhook.delivered", actor="system", tenant=d.tenant,
+                resource=f"delivery:{d.id}",
+                metadata={"endpoint": d.endpoint_id, "event": d.event_id, "attempt": str(d.attempt)})
         if status == DEAD:
             await self._emit("webhook.dead_lettered", {"delivery_id": d.id, "event_id": d.event_id,
                                                        "endpoint_id": d.endpoint_id, "error": d.error})

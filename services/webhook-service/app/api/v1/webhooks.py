@@ -41,7 +41,8 @@ def build_webhooks(request: Request) -> WebhookService:
     return WebhookService(
         endpoints=EndpointStore(c.datastore, c.cache, s.SUBSCRIPTION_CACHE_TTL_SECONDS),
         events=EventStore(c.datastore), deliveries=DeliveryStore(c.datastore),
-        transport=c.webhook_transport, signer=c.signer, config=_config(), event_bus=c.event_bus)
+        transport=c.webhook_transport, signer=c.signer, config=_config(), event_bus=c.event_bus,
+        auditor=getattr(request.app.state, "auditor", None))
 
 
 async def build_inbound(request: Request) -> InboundService:
@@ -127,6 +128,9 @@ async def update_endpoint(request: Request, endpoint_id: str, body: EndpointPatc
         ep = await svc.update(endpoint_id, **body.model_dump())
     except SsrfBlocked as e:
         raise HTTPException(400, f"URL_REJECTED: {e}")
+    await request.app.state.auditor.record(
+        "webhook.endpoint_updated", actor=principal.subject, tenant=principal.tenant,
+        resource=f"endpoint:{endpoint_id}", ip=request.client.host if request.client else "")
     return ep.public()
 
 
@@ -216,23 +220,42 @@ async def replay_delivery(request: Request, delivery_id: str, principal: Princip
     d = await svc._deliveries.get(delivery_id)
     if d is None or ("platform.webhooks" not in principal.caps and d.tenant != (principal.tenant or "__none__")):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
-    return await svc.replay(delivery_id)
+    result = await svc.replay(delivery_id)
+    await request.app.state.auditor.record(
+        "webhook.replayed", actor=principal.subject, tenant=d.tenant,
+        resource=f"delivery:{delivery_id}", ip=request.client.host if request.client else "")
+    return result
 
 
 @router.post("/events/{event_id}/replay", dependencies=[Depends(_ADMIN)])
-async def replay_event(request: Request, event_id: str) -> dict:
-    return await build_webhooks(request).replay_event(event_id)
+async def replay_event(request: Request, event_id: str,
+                       principal: Principal = Depends(_ADMIN)) -> dict:
+    result = await build_webhooks(request).replay_event(event_id)
+    await request.app.state.auditor.record(
+        "webhook.replayed", actor=principal.subject, tenant=principal.tenant or "",
+        resource=f"event:{event_id}", ip=request.client.host if request.client else "")
+    return result
 
 
 @router.post("/dispatch", status_code=202, dependencies=[Depends(_ADMIN)])
 async def dispatch(request: Request, body: DispatchIn, principal: Principal = Depends(_ADMIN)) -> dict:
+    tenant = _tenant(principal, body.tenant)
     try:
-        return await build_webhooks(request).dispatch(
-            tenant=_tenant(principal, body.tenant), event_type=body.type, payload=body.payload)
+        result = await build_webhooks(request).dispatch(
+            tenant=tenant, event_type=body.type, payload=body.payload)
     except ValueError as e:
         raise HTTPException(413, str(e))
+    await request.app.state.auditor.record(
+        "webhook.dispatched", actor=principal.subject, tenant=tenant,
+        resource="dispatch", ip=request.client.host if request.client else "",
+        metadata={"type": body.type})
+    return result
 
 
 @router.post("/sweep", dependencies=[Depends(_ADMIN)])
-async def sweep(request: Request) -> dict:
-    return await build_webhooks(request).sweep()
+async def sweep(request: Request, principal: Principal = Depends(_ADMIN)) -> dict:
+    result = await build_webhooks(request).sweep()
+    await request.app.state.auditor.record(
+        "webhook.swept", actor=principal.subject, tenant=principal.tenant or "",
+        resource="webhook", ip=request.client.host if request.client else "")
+    return result

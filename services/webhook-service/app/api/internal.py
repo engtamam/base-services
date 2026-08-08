@@ -52,10 +52,15 @@ async def internal_health(settings: Settings = Depends(get_settings)) -> dict[st
 async def dispatch(request: Request, body: DispatchIn) -> dict:
     """Any service fans an event out to that tenant's subscribers. HOT PATH (cached lookup)."""
     try:
-        return await build_webhooks(request).dispatch(tenant=body.tenant, event_type=body.type,
-                                                      payload=body.payload)
+        result = await build_webhooks(request).dispatch(tenant=body.tenant, event_type=body.type,
+                                                        payload=body.payload)
     except ValueError as e:
         raise HTTPException(413, str(e))
+    # Service-to-service fan-out — the caller holds the internal token, so actor is "system".
+    await request.app.state.auditor.record(
+        "webhook.dispatched", actor="system", tenant=body.tenant, resource="dispatch",
+        ip=request.client.host if request.client else "", metadata={"type": body.type})
+    return result
 
 
 @router.post("/webhooks/deliver/{delivery_id}", dependencies=[Depends(require_internal_token)])
@@ -66,7 +71,11 @@ async def deliver(request: Request, delivery_id: str) -> dict:
 @router.post("/webhooks/sweep", dependencies=[Depends(require_internal_token)])
 async def sweep(request: Request) -> dict:
     """Worker tick: deliver everything whose jittered backoff has elapsed."""
-    return await build_webhooks(request).sweep()
+    result = await build_webhooks(request).sweep()
+    await request.app.state.auditor.record(
+        "webhook.swept", actor="system", resource="webhook",
+        ip=request.client.host if request.client else "")
+    return result
 
 
 @router.get("/manifest", dependencies=[Depends(require_internal_token)])
