@@ -65,12 +65,14 @@ CHANGED="$(changed)"
 echo "==> publishing $VERSION to $REG   (prev=${PREV:-<all>}, HEAD=$(git rev-parse --short HEAD))"
 echo "==> changed since ${PREV:-<all>}: ${CHANGED:-<none>}"
 
-is_changed() { echo "$CHANGED" | grep -qx "$1"; }
-fail=0
-
-for s in $SVCS; do
+# Build/retag one service, then move its :latest. Independent per service, so the loop below runs
+# these in parallel. A failure drops a marker file rather than a shared variable, because each
+# invocation is its own subshell and a `fail=1` there would not survive back to the parent.
+FAIL_MARK="$(mktemp)"; rm -f "$FAIL_MARK"
+publish_one() {
+  s="$1"
   img="$REG/$s:$VERSION"
-  if is_changed "$s"; then
+  if echo "$CHANGED" | grep -qx "$s"; then
     echo "==> build+push $s"
     if ! docker buildx build --platform linux/amd64 \
           --label "org.opencontainers.image.source=https://github.com/$OWNER/$(basename "$ROOT")" \
@@ -78,18 +80,28 @@ for s in $SVCS; do
           --label "org.opencontainers.image.version=$VERSION" \
           --label "org.opencontainers.image.licenses=Proprietary" \
           -t "$img" --push "services/$s" >/tmp/pl_$s.log 2>&1; then
-      echo "   FAIL build $s (see /tmp/pl_$s.log)"; fail=1; continue
+      echo "   FAIL build $s (see /tmp/pl_$s.log)"; : > "$FAIL_MARK"; return 1
     fi
   else
     # unchanged: copy the previous release's manifest to the new tag — no rebuild
     if ! docker buildx imagetools create --tag "$img" "$REG/$s:$PREV" >/tmp/pl_$s.log 2>&1; then
-      echo "   FAIL retag $s (see /tmp/pl_$s.log)"; fail=1; continue
+      echo "   FAIL retag $s (see /tmp/pl_$s.log)"; : > "$FAIL_MARK"; return 1
     fi
   fi
   # move :latest onto the new version
   docker buildx imagetools create --tag "$REG/$s:latest" "$img" >/dev/null 2>&1 \
     || { echo "   WARN could not move :latest for $s"; }
-done
+}
+export -f publish_one
+export REG VERSION PREV SHA OWNER ROOT CHANGED FAIL_MARK MSYS_NO_PATHCONV
+
+# Bounded parallelism. Docker itself parallelizes layers WITHIN a build, so building all services at
+# once would just thrash a small builder (CPU/RAM/disk) and finish no sooner — often later. Default
+# to 4; override with PL_JOBS. Each build's own log is /tmp/pl_<svc>.log.
+JOBS="${PL_JOBS:-4}"
+echo "==> building/retagging with up to $JOBS in parallel"
+echo "$SVCS" | xargs -P "$JOBS" -I{} bash -c 'publish_one "$@"' _ {}
+fail=0; [ -f "$FAIL_MARK" ] && fail=1; rm -f "$FAIL_MARK"
 
 echo "==> verifying every service has a $VERSION digest"
 missing=0
@@ -99,6 +111,7 @@ for s in $SVCS; do
   [ -n "$d" ] || missing=1
 done
 
+N="$(echo "$SVCS" | wc -w | tr -d ' ')"
 [ "$fail" = 0 ] && [ "$missing" = 0 ] \
-  && echo "==> $VERSION published: 22/22 on $REG, :latest moved. Now cut the tag when ready." \
+  && echo "==> $VERSION published: $N/$N on $REG, :latest moved. Now cut the tag when ready." \
   || { echo "==> INCOMPLETE — some services failed or are missing above"; exit 1; }
