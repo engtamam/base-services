@@ -75,7 +75,12 @@ async def get_settings_route(request: Request, principal: Principal = Depends(_A
 @router.put("/settings")
 async def put_settings(request: Request, body: SettingsIn, principal: Principal = Depends(_ADMIN)) -> dict:
     svc = (await build_zatca(request))
-    return await svc._set.put(op_tenant(principal, body.tenant), body.model_dump(exclude={"tenant"}))
+    tenant = op_tenant(principal, body.tenant)
+    result = await svc._set.put(tenant, body.model_dump(exclude={"tenant"}))
+    await request.app.state.auditor.record(
+        "zatca.settings_updated", actor=principal.subject, tenant=tenant,
+        resource="settings", ip=request.client.host if request.client else "")
+    return result
 
 
 @router.post("/onboard/compliance")
@@ -156,6 +161,9 @@ async def resubmit(request: Request, invoice_id: str, principal: Principal = Dep
     res = await svc.resubmit(invoice_id)
     if not res.get("ok"):
         raise HTTPException(422, res.get("reason", "UNPROCESSABLE"))
+    await request.app.state.auditor.record(
+        "zatca.invoice_resubmitted", actor=principal.subject, tenant=inv.tenant,
+        resource=f"invoice:{invoice_id}", ip=request.client.host if request.client else "")
     return res
 
 
@@ -185,4 +193,8 @@ async def chain_verify(request: Request, principal: Principal = Depends(_ADMIN))
 
 @router.post("/sweep")
 async def sweep(request: Request, principal: Principal = Depends(_ADMIN)) -> dict:
-    return await (await build_zatca(request)).sweep()
+    result = await (await build_zatca(request)).sweep()
+    await request.app.state.auditor.record(
+        "zatca.swept", actor=principal.subject, tenant=principal.tenant or "",
+        resource="zatca", ip=request.client.host if request.client else "")
+    return result

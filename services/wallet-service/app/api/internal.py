@@ -111,38 +111,58 @@ async def credit(body: CreditIn, request: Request) -> dict:
 async def spend(body: SpendIn, request: Request) -> dict:
     """Direct debit. Refuses rather than overdraw, and a refusal mutates nothing."""
     try:
-        return await build_wallet(request).spend(tenant=body.tenant, net=body.net,
-                                                 source=body.source, reason=body.reason)
+        result = await build_wallet(request).spend(tenant=body.tenant, net=body.net,
+                                                   source=body.source, reason=body.reason)
     except Exception as exc:  # noqa: BLE001
         raise _handle(exc) from exc
+    # Non-critical, so recorded after the debit succeeds. Internal seam: the caller holds the
+    # service token, so there is no user principal — actor is empty, the source IP identifies the peer.
+    await request.app.state.auditor.record(
+        "wallet.spent", actor="", tenant=body.tenant, resource="wallet",
+        ip=request.client.host if request.client else "", metadata={"source": body.source})
+    return result
 
 
 @router.post("/wallet/reserve", dependencies=[Depends(require_internal_token)])
 async def reserve(body: SpendIn, request: Request) -> dict:
     """Hold funds for an in-flight action. The hold EXPIRES; it cannot strand the money."""
     try:
-        return await build_wallet(request).reserve(tenant=body.tenant, net=body.net,
-                                                   source=body.source, reason=body.reason)
+        result = await build_wallet(request).reserve(tenant=body.tenant, net=body.net,
+                                                     source=body.source, reason=body.reason)
     except Exception as exc:  # noqa: BLE001
         raise _handle(exc) from exc
+    await request.app.state.auditor.record(
+        "wallet.reserved", actor="", tenant=body.tenant, resource="wallet",
+        ip=request.client.host if request.client else "", metadata={"source": body.source})
+    return result
 
 
 @router.post("/wallet/confirm", dependencies=[Depends(require_internal_token)])
 async def confirm(body: HoldIn, request: Request) -> dict:
     """The action succeeded: consume the hold. Replaying this must not charge twice."""
     try:
-        return await build_wallet(request).confirm(hold_id=body.hold_id)
+        result = await build_wallet(request).confirm(hold_id=body.hold_id)
     except Exception as exc:  # noqa: BLE001
         raise _handle(exc) from exc
+    await request.app.state.auditor.record(
+        "wallet.confirmed", actor="",
+        tenant=str(result.get("tenant", "")) if isinstance(result, dict) else "",
+        resource=f"hold:{body.hold_id}", ip=request.client.host if request.client else "")
+    return result
 
 
 @router.post("/wallet/release", dependencies=[Depends(require_internal_token)])
 async def release(body: HoldIn, request: Request) -> dict:
     """The action failed: free the hold. Nothing was debited, so nothing is refunded."""
     try:
-        return await build_wallet(request).release(hold_id=body.hold_id)
+        result = await build_wallet(request).release(hold_id=body.hold_id)
     except Exception as exc:  # noqa: BLE001
         raise _handle(exc) from exc
+    await request.app.state.auditor.record(
+        "wallet.released", actor="",
+        tenant=str(result.get("tenant", "")) if isinstance(result, dict) else "",
+        resource=f"hold:{body.hold_id}", ip=request.client.host if request.client else "")
+    return result
 
 
 @router.post("/wallet/refund", dependencies=[Depends(require_internal_token)])
@@ -164,13 +184,24 @@ async def refund(body: RefundIn, request: Request) -> dict:
 @router.post("/wallet/sweep-holds", dependencies=[Depends(require_internal_token)])
 async def sweep_holds(request: Request) -> dict:
     """Release abandoned holds. Without this a dead client locks its credits forever."""
-    return await build_wallet(request).sweep_holds()
+    result = await build_wallet(request).sweep_holds()
+    # A scheduled sweep has no principal — the platform scheduler is the actor, recorded as "system".
+    await request.app.state.auditor.record(
+        "wallet.holds_swept", actor="system", resource="wallet",
+        ip=request.client.host if request.client else "",
+        metadata={k: str(v) for k, v in result.items()} if isinstance(result, dict) else None)
+    return result
 
 
 @router.post("/wallet/sweep-grants", dependencies=[Depends(require_internal_token)])
 async def sweep_grants(request: Request) -> dict:
     """Claw back the unused remainder of expired grants. The customer keeps what they spent."""
-    return await build_wallet(request).sweep_grants()
+    result = await build_wallet(request).sweep_grants()
+    await request.app.state.auditor.record(
+        "wallet.grants_swept", actor="system", resource="wallet",
+        ip=request.client.host if request.client else "",
+        metadata={k: str(v) for k, v in result.items()} if isinstance(result, dict) else None)
+    return result
 
 
 @router.get("/health", dependencies=[Depends(require_internal_token)])

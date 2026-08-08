@@ -53,12 +53,23 @@ async def finalize(request: Request, body: FinalizeIn) -> dict:
     caller — a transient error leaves the invoice retryable ('pending')."""
     if not body.invoice.get("number"):
         raise HTTPException(422, "MISSING_NUMBER")
-    return await (await build_zatca(request)).finalize(body.invoice, body.tenant)
+    result = await (await build_zatca(request)).finalize(body.invoice, body.tenant)
+    # Called service-to-service after a settle, so no user principal — actor is empty, the source IP
+    # names the peer. The invoice number is the resource an auditor reconciles against ZATCA.
+    await request.app.state.auditor.record(
+        "zatca.invoice_finalized", actor="", tenant=body.tenant,
+        resource=f"invoice:{body.invoice.get('number', '')}",
+        ip=request.client.host if request.client else "")
+    return result
 
 
 @router.post("/zatca/sweep", dependencies=[Depends(require_internal_token)])
 async def internal_sweep(request: Request) -> dict:
-    return await (await build_zatca(request)).sweep()
+    result = await (await build_zatca(request)).sweep()
+    await request.app.state.auditor.record(
+        "zatca.swept", actor="system", resource="zatca",
+        ip=request.client.host if request.client else "")
+    return result
 
 
 @router.get("/manifest", dependencies=[Depends(require_internal_token)])
