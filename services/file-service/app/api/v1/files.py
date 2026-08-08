@@ -110,6 +110,9 @@ async def upload(request: Request, principal: Principal = Depends(require_user),
         raise HTTPException(415, "UNSUPPORTED_MEDIA_TYPE")
     except Rejected:
         raise HTTPException(422, "REJECTED")
+    await request.app.state.auditor.record(
+        "file.uploaded", actor=principal.subject, tenant=principal.tenant or "",
+        resource=f"file:{f.id}", ip=request.client.host if request.client else "")
     return f.to_dict()
 
 
@@ -138,6 +141,10 @@ async def initiate_large_upload(request: Request, body: InitiateIn,
     if result.deduped_file is not None:
         return {"deduplicated": True, "file": result.deduped_file.to_dict()}
     plan = result.plan
+    await request.app.state.auditor.record(
+        "file.upload_started", actor=principal.subject, tenant=principal.tenant or "",
+        resource=f"upload:{result.session.id}", ip=request.client.host if request.client else "",
+        metadata={"filename": _safe_filename(body.filename)})
     return {
         "deduplicated": False,
         "session": result.session.public_dict(),
@@ -159,6 +166,9 @@ async def complete_large_upload(request: Request, session_id: str, body: Complet
                                                owner=principal.subject, parts=parts)
     except NotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    await request.app.state.auditor.record(
+        "file.upload_completed", actor=principal.subject, tenant=principal.tenant or "",
+        resource=f"upload:{session_id}", ip=request.client.host if request.client else "")
     return sess.public_dict()
 
 
@@ -184,6 +194,9 @@ async def abort_upload(request: Request, session_id: str,
                                        owner=principal.subject)
     except NotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    await request.app.state.auditor.record(
+        "file.upload_aborted", actor=principal.subject, tenant=principal.tenant or "",
+        resource=f"upload:{session_id}", ip=request.client.host if request.client else "")
     return sess.public_dict()
 
 

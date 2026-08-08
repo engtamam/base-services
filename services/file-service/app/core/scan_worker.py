@@ -22,7 +22,7 @@ from app.ports.scanner import Rejected
 class ScanWorker:
     def __init__(self, *, files: FileService, sessions: UploadSessionStore, object_store, scanner,
                  queue: Any, scan_queue: str = "file-scan", scan_policy: str = "async",
-                 chunk_size: int = 1_048_576, lease_seconds: int) -> None:
+                 chunk_size: int = 1_048_576, lease_seconds: int, auditor=None) -> None:
         self._files = files
         self._sessions = sessions
         self._store = object_store
@@ -31,6 +31,9 @@ class ScanWorker:
         self._scan_queue = scan_queue
         self._policy = scan_policy
         self._chunk = chunk_size
+        # Optional. A scan VERDICT — clean or rejected — is exactly what a safety audit turns on, so
+        # it is recorded here, per file, where the verdict is known.
+        self._auditor = auditor
         # How long a scan may run before another worker may take the job. Config only:
         # a number chosen here would be a guess about how long scanning someone else's
         # file takes, and guessing short means reclaiming work that is still running.
@@ -65,6 +68,13 @@ class ScanWorker:
         computed = hasher.hexdigest() if clean else ""
         await self._files.finalize_large_upload(session_id, computed_sha=computed,
                                                  clean=clean, reason=reason)
+        if self._auditor is not None:
+            # Non-critical (a scanner outage must not wedge the queue), actor "system" — a CronJob
+            # drives this. A rejected verdict is the one a security review reads first.
+            await self._auditor.record(
+                "file.scanned", actor="system", tenant=getattr(sess, "tenant", ""),
+                resource=f"upload:{session_id}",
+                metadata={"clean": str(clean), "reason": reason})
 
     async def run_once(self) -> int:
         """Drain the scan queue once (invoked by a CronJob / a loop). Returns how many it processed.

@@ -113,7 +113,8 @@ async def drain_scan_queue(request: Request) -> dict:
     worker = ScanWorker(files=files, sessions=UploadSessionStore(c.datastore),
                         object_store=c.object_store, scanner=c.scanner, queue=c.queue,
                         scan_queue=s.FILE_SCAN_QUEUE, scan_policy=s.LARGE_UPLOAD_SCAN,
-                        lease_seconds=s.FILE_SCAN_LEASE_SECONDS)
+                        lease_seconds=s.FILE_SCAN_LEASE_SECONDS,
+                        auditor=getattr(request.app.state, "auditor", None))
     processed = await worker.run_once()
     return {"processed": processed}
 
