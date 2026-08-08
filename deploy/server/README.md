@@ -13,8 +13,8 @@ variables (or drops in optional hooks) and reuses these unchanged.
 | --- | --- | --- |
 | `setup.sh` | THE ONE COMMAND: provision → bootstrap → preflight (fatal) → hooks → rollout → boot-heal | ✅ |
 | `update.sh` | Health-gated rollout: render-first, per-service **auto-rollback**, `--only`, node-image prune | ✅ |
-| `provision-server.sh` | Blank Ubuntu → hardened single-node k3s (packages, UFW, fail2ban, SSH) | ◻ planned |
-| `boot-heal.sh` | systemd unit: clear NodeLost pods after an ungraceful reboot | ◻ planned |
+| `provision-server.sh` | Blank Ubuntu → hardened single-node k3s (packages, UFW, fail2ban, SSH, swap, sysctl, Docker, Helm, k3s w/ Calico flags) — idempotent + resumable | ✅ |
+| `boot-heal.sh` | systemd boot unit + 5-min watchdog: clear NodeLost pods after an ungraceful reboot | ✅ |
 | `pull-images.sh` | Private-registry credential + `imagePullSecret` + prewarm (base images are public) | ◻ planned |
 | `gen-secrets.py` | Mint shared secrets once + per-role DSNs, from a schema derived off the chart | ◻ planned |
 
