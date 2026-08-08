@@ -36,7 +36,7 @@ EXEMPT: dict[str, str] = {
     # backfill-pending — SHOULD serve /internal/backup/export; tracked for onboarding. The
     # data-critical ones (tenant/identity/authz/wallet/compliance/audit) go first.
     **{s: "backfill-pending — backup export not yet onboarded (tracked)" for s in (
-        "analytics-service", "assistant-service", "audit-service", "authz-service",
+        "analytics-service", "assistant-service", "audit-service",
         "compliance-service", "connector-service", "feature-flag-service", "file-service",
         "job-service", "notification-service", "onboarding-service",
         "search-service", "stream-service", "verification-service",

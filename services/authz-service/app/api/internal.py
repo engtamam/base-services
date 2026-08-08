@@ -12,8 +12,10 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, s
 from pydantic import BaseModel, Field
 
 from app.api.v1.authz import build_authz
+from app.backup_manifest import BACKUP
 from app.core.authz_service import UnknownRole
 from app.config import Settings, get_settings
+from app.core import backup as _backup
 from app.core.erasure import AuthzErasure
 from app.manifest import build_manifest
 
@@ -121,3 +123,79 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     s = get_settings()
     eraser = AuthzErasure(store=c.datastore, pii_salt=s.PII_SALT)
     return await eraser.erase(body.tenant, body.subject)
+
+
+# ── Backup (backup-service orchestrates; this service produces sealed archives) ──────────────
+# What authz-service holds is declared in app/backup_manifest.py; how it is read lives in
+# core/backup.py. backup-service never opens this database — it calls export/verify/import over the
+# internal token and stores the sealed archive, never seeing the plaintext.
+def _now_iso() -> str:
+    import datetime as _dt
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _sealer(settings: Settings):
+    """The backup (seal, unseal) pair, or a 503 when no backup key is configured.
+
+    Refused rather than defaulted: sealing with an empty key would write a plaintext-equivalent
+    archive while every check reported it encrypted — the one outcome a backup must never have.
+    """
+    if not settings.BACKUP_KEK:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "BACKUP_KEK not configured — set this SHARED key (the SAME value backup-service holds) "
+            "on this service, or its archives cannot be opened")
+    return _backup.make_sealer(settings.BACKUP_KEK)
+
+
+class BackupExportIn(BaseModel):
+    tenant: str = ""
+
+
+class BackupVerifyIn(BaseModel):
+    archive: dict
+
+
+class BackupImportIn(BaseModel):
+    archive: dict
+    overwrite: bool = False
+    into_tenant: str = ""
+
+
+@router.post("/backup/export", dependencies=[Depends(require_internal_token)])
+async def backup_export(request: Request, body: BackupExportIn,
+                        settings: Settings = Depends(get_settings)) -> dict:
+    """Produce a sealed, checksummed archive of the roles, policies, and assignments."""
+    seal, _ = _sealer(settings)
+    return await _backup.export(
+        request.app.state.container.datastore, BACKUP,
+        service=settings.SERVICE_NAME, version=settings.SERVICE_VERSION,
+        taken_at=_now_iso(), seal=seal, tenant=body.tenant,
+        scan_cap=settings.BACKUP_MAX_ROWS_PER_COLLECTION)
+
+
+@router.post("/backup/verify", dependencies=[Depends(require_internal_token)])
+async def backup_verify(request: Request, body: BackupVerifyIn,
+                        settings: Settings = Depends(get_settings)) -> dict:
+    """Prove an archive restores, by test-restoring it into a throwaway namespace and comparing."""
+    import secrets
+    _, unseal = _sealer(settings)
+    try:
+        return await _backup.verify_restore(
+            request.app.state.container.datastore, body.archive,
+            unseal=unseal, token=secrets.token_hex(8))
+    except _backup.BackupError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+
+@router.post("/backup/import", dependencies=[Depends(require_internal_token)])
+async def backup_import(request: Request, body: BackupImportIn,
+                        settings: Settings = Depends(get_settings)) -> dict:
+    """Restore an archive this service produced. Idempotent; leaves newer rows alone by default."""
+    _, unseal = _sealer(settings)
+    try:
+        return await _backup.import_archive(
+            request.app.state.container.datastore, body.archive,
+            unseal=unseal, overwrite=body.overwrite, into_tenant=body.into_tenant)
+    except _backup.BackupError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc

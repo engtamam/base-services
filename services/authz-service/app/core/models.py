@@ -60,8 +60,15 @@ class Assignment:
     roles: list[str] = field(default_factory=list)
     capabilities: list[str] = field(default_factory=list)   # direct grants
 
+    @property
+    def id(self) -> str:
+        # (tenant, subject) already identifies one assignment — the SAME composite the store keys on
+        # (AssignmentStore._key). Carried in to_dict as `id` so the backup core, which keys a restore
+        # on row["id"], writes each assignment back under exactly its datastore key.
+        return f"{self.tenant}::{self.subject}"
+
     def to_dict(self) -> dict[str, Any]:
-        return {"subject": self.subject, "tenant": self.tenant,
+        return {"id": self.id, "subject": self.subject, "tenant": self.tenant,
                 "roles": self.roles, "capabilities": self.capabilities}
 
     @classmethod
