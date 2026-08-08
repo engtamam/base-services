@@ -93,6 +93,9 @@ async def register_source(request: Request, body: SourceIn,
             default_profile=body.default_profile)
     except SsrfBlocked:
         raise HTTPException(400, "SOURCE_URL_BLOCKED")
+    await request.app.state.auditor.record(
+        "source.created", actor=p.subject, tenant=p.tenant or "",
+        resource=f"source:{src.id}", ip=request.client.host if request.client else "")
     return src.public_dict()
 
 
@@ -124,6 +127,9 @@ async def probe_source(request: Request, source_id: str,
         raise HTTPException(404, "NOT_FOUND")
     except SsrfBlocked:
         raise HTTPException(400, "SOURCE_URL_BLOCKED")
+    await request.app.state.auditor.record(
+        "source.probed", actor=p.subject, tenant=p.tenant or "",
+        resource=f"source:{source_id}", ip=request.client.host if request.client else "")
     return {"codec": probe.codec, "width": probe.width, "height": probe.height, "fps": probe.fps,
             "has_audio": probe.has_audio, "ptz_capable": probe.ptz_capable, "ok": probe.ok}
 
@@ -156,6 +162,9 @@ async def set_triggers(request: Request, source_id: str, body: list[TriggerIn],
         raise HTTPException(404, "NOT_FOUND")
     triggers = [t.model_dump() for t in body]
     await TriggerStore(request.app.state.container.datastore).put(source_id, p.tenant or "", triggers)
+    await request.app.state.auditor.record(
+        "triggers.updated", actor=p.subject, tenant=p.tenant or "",
+        resource=f"source:{source_id}", ip=request.client.host if request.client else "")
     return {"triggers": triggers}
 
 
@@ -175,6 +184,9 @@ async def delete_source(request: Request, source_id: str, p: Principal = Depends
     for s in live_here:
         await svc.stop_session(s.id, tenant=p.tenant or "", reason="user")
     await svc._sources.delete(source_id)
+    await request.app.state.auditor.record(
+        "source.deleted", actor=p.subject, tenant=p.tenant or "",
+        resource=f"source:{source_id}", ip=request.client.host if request.client else "")
     return {"deleted": True}
 
 
@@ -194,6 +206,10 @@ async def start_session(request: Request, body: SessionIn,
         raise HTTPException(429, detail={"error": "quota", "dimension": exc.dimension})
     except SsrfBlocked:
         raise HTTPException(400, "SOURCE_URL_BLOCKED")
+    await request.app.state.auditor.record(
+        "session.started", actor=p.subject, tenant=p.tenant or "",
+        resource=f"session:{sess.id}", ip=request.client.host if request.client else "",
+        metadata={"source": body.source_id})
     return {"session": sess.public_dict(), "playback": playback}
 
 
@@ -225,6 +241,9 @@ async def stop_session(request: Request, session_id: str,
         sess = await build_stream_service(request).stop_session(session_id, tenant=p.tenant or "")
     except SourceNotFound:
         raise HTTPException(404, "NOT_FOUND")
+    await request.app.state.auditor.record(
+        "session.stopped", actor=p.subject, tenant=p.tenant or "",
+        resource=f"session:{session_id}", ip=request.client.host if request.client else "")
     return sess.public_dict()
 
 
@@ -275,6 +294,10 @@ async def ptz_move(request: Request, source_id: str, body: PtzMove,
                                                    zoom=body.zoom, mode=body.mode)
     except NotImplementedError:
         raise HTTPException(409, "PTZ_UNSUPPORTED")
+    await request.app.state.auditor.record(
+        "ptz.moved", actor=p.subject, tenant=p.tenant or "",
+        resource=f"source:{source_id}", ip=request.client.host if request.client else "",
+        metadata={"mode": body.mode})
     return {"moving": True}
 
 
@@ -309,6 +332,10 @@ async def ptz_goto(request: Request, source_id: str, preset_token: str,
 @router.post("/discovery", dependencies=[Depends(_MANAGE), Depends(rate_limit)])
 async def discover(request: Request, p: Principal = Depends(require_user)) -> dict:
     cams = await request.app.state.container.discovery.discover()
+    await request.app.state.auditor.record(
+        "discovery.run", actor=p.subject, tenant=p.tenant or "",
+        resource="discovery", ip=request.client.host if request.client else "",
+        metadata={"found": str(len(cams))})
     return {"cameras": [{"name": c.name, "url": c.url, "kind": c.kind, "onvif_host": c.onvif_host}
                         for c in cams]}
 
