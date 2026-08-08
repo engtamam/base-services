@@ -124,6 +124,18 @@
             "title": "Template Key",
             "type": "string"
           },
+          "tenant": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant"
+          },
           "user_id": {
             "anyOf": [
               {

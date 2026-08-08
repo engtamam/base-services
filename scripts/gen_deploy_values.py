@@ -81,6 +81,11 @@ CRONS: dict[str, list[tuple[str, str, str]]] = {
         ("reclaim", "*/5 * * * *", "/internal/jobs/reclaim"),
     ],
     "webhook-service": [("sweep", "*/5 * * * *", "/internal/webhooks/sweep")],
+    # Re-attempt queued deliveries. With NOTIFY_DELIVERY_MODE=queued a provider hiccup queues a
+    # message, and without this tick `queued` is just a prettier word for `lost` — the delivery log
+    # fills with queued while the service looks healthy. Drain in inline mode is a cheap no-op, so
+    # this is safe to ship on always.
+    "notification-service": [("drain", "*/1 * * * *", "/internal/notifications/drain")],
     # Without the sweep, a session past its guards (max_duration/idle/lease) or a zombie engine would
     # run forever; without retention, recordings would grow without bound.
     "stream-service": [
@@ -260,7 +265,11 @@ def render(name: str, cfg: dict) -> str:
     internet = name in INTERNET_EGRESS
     note = ""
     if internet:
-        note = "        # calls third parties; in-app SSRF guard is the first layer"
+        # Be precise about which layer narrows by HOST: the app's EGRESS_ALLOWED_HOSTS does; this
+        # NetworkPolicy does not. It opens 80/443 to every public IP (RFC1918/link-local/metadata
+        # still excluded). Do not read `internet: true` as a per-host allow-list.
+        note = ("        # third-party caller: host allow-listing is APPLICATION-layer "
+                "(EGRESS_ALLOWED_HOSTS); this policy opens 80/443 to any public IP")
 
     # In-cluster object-store egress for the blob-users. Harmless when the driver is local/memory;
     # required the moment OBJECTSTORE_DRIVER=s3 points at an in-cluster endpoint.

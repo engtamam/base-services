@@ -113,8 +113,17 @@ class NotificationService:
         # break the platform while protecting nobody.
         purpose = self._consent_purposes.get(event or "") or self._consent_purposes.get(template_key)
         if purpose and user_id:
+            if not tenant:
+                # A gated template with NO tenant is a misconfiguration, not a refusal: consent is
+                # keyed by (tenant, subject, purpose), so an empty tenant can only ever deny. Logging
+                # it as consent_denied is indistinguishable from a real refusal — name it distinctly
+                # so a caller that dropped the tenant sees the cause instead of a plausible-looking
+                # deny.
+                return await self._finish(idempotency_key, await self._record(
+                    recipient, channel, template_key, "consent_no_tenant",
+                    error=f"{purpose}: a consent-gated send requires a tenant"))
             verdict = await self._consent.check(
-                tenant=tenant or "", subject=user_id, purpose=purpose)
+                tenant=tenant, subject=user_id, purpose=purpose)
             if not verdict.permits(self._consent_unknown):
                 # A distinct status from "suppressed". A preference opt-out and a missing lawful
                 # basis look identical in a delivery log otherwise, and they are answered very

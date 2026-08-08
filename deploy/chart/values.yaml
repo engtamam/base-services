@@ -107,7 +107,10 @@ networkPolicy:
       port: 9000
       roleLabel: objectstore   # matches `base-services/role` on the object-store pod
     # Outbound to the public internet. TRUE only for services that must call third parties
-    # (webhook, connector, notification, billing, zatca). Their SSRF guards still apply.
+    # (webhook, connector, notification, billing, zatca). This is ALL-OR-NOTHING at the network
+    # layer: it opens 80/443 to every public IP (RFC1918/link-local/metadata excluded). Narrowing
+    # by HOST is application-layer only — the app's SSRF guard + EGRESS_ALLOWED_HOSTS — so do not
+    # read `internet: true` as a per-host allow-list.
     internet: false
     # Escape hatch: additional egress rules declared VERBATIM by a values file, for anything the
     # toggles above do not cover (a second datastore, a sidecar, a licence server). Each item is a

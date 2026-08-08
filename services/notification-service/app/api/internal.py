@@ -23,6 +23,12 @@ class NotifyIn(BaseModel):
     recipient: str = Field(min_length=1, max_length=256)
     channel: str = Field(pattern="^(email|sms|inapp)$")
     template_key: str = Field(min_length=1, max_length=128)
+    # The tenant a consent-gated send is checked against. Consent is keyed by (tenant, subject,
+    # purpose): without this field pydantic silently DROPS a caller's tenant, every gated check asks
+    # about an empty tenant, finds no record, and returns consent_denied — a permanent, silent deny
+    # for every marketing/consent-gated notification. Ungated (contract-basis) templates are
+    # unaffected. Optional because contract-basis sends need no tenant.
+    tenant: str | None = Field(default=None, max_length=128)
     locale: str | None = None
     variables: dict = Field(default_factory=dict)
     user_id: str | None = None
@@ -54,10 +60,14 @@ async def internal_health(settings: Settings = Depends(get_settings)) -> dict[st
 @router.post("/notify", dependencies=[Depends(require_internal_token)])
 async def internal_notify(request: Request, body: NotifyIn) -> dict:
     """Service-to-service send. Returns the delivery id + status."""
-    return await (await build_notifier(request, getattr(body, 'tenant', '') or '')).notify(
+    # body.tenant, not getattr(body, 'tenant', ''): the defensive access is what turned a missing
+    # field from a loud AttributeError on the first request into a silent wrong answer. And the
+    # tenant must reach .notify() too — build_notifier's tenant only scopes the provider pool, while
+    # the consent gate reads notify()'s own tenant argument.
+    return await (await build_notifier(request, body.tenant or "")).notify(
         recipient=body.recipient, channel=body.channel, template_key=body.template_key,
-        locale=body.locale, variables=body.variables, user_id=body.user_id, event=body.event,
-        idempotency_key=body.idempotency_key,
+        tenant=body.tenant, locale=body.locale, variables=body.variables,
+        user_id=body.user_id, event=body.event, idempotency_key=body.idempotency_key,
     )
 
 

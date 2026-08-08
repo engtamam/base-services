@@ -89,6 +89,55 @@ def test_internal_notify_sends_and_records(client):
     assert r.json()["provider"] == "console"
 
 
+def test_consent_gated_send_reaches_the_gate_with_the_body_tenant():
+    """The blocking bug: NotifyIn declared no `tenant`, so pydantic silently DROPPED the caller's
+    tenant. Consent is keyed by (tenant, subject, purpose), so every gated send asked about an empty
+    tenant, found no record, and was denied forever — a permanent silent deny for all marketing.
+    Prove the body tenant now reaches the gate and a GRANTED purpose sends."""
+    from app.ports.consent_gate import ALLOWED, ConsentVerdict
+
+    saved = dict(os.environ)
+    try:
+        c = _make_app(NOTIFY_CONSENT_PURPOSES='{"winback": "marketing"}')
+        _seed_template(c, key="winback")
+
+        class _Gate:
+            driver = "fake"
+
+            def __init__(self):
+                self.asked: list[tuple[str, str, str]] = []
+
+            async def check(self, *, tenant, subject, purpose):
+                self.asked.append((tenant, subject, purpose))
+                return ConsentVerdict(status=ALLOWED, reason="granted")
+
+        gate = _Gate()
+        c.app.state.container.consent_gate = gate
+
+        r = c.post("/internal/notify",
+                   json={"recipient": "a@b.com", "channel": "email", "template_key": "winback",
+                         "tenant": "alpha", "user_id": "u_9", "variables": {"name": "S"}},
+                   headers=_internal())
+        assert r.status_code == 200
+        assert r.json()["status"] == "sent"                    # granted -> SENT, not consent_denied
+        assert gate.asked == [("alpha", "u_9", "marketing")]   # the BODY tenant reached the gate
+
+        # A gated send with NO tenant is a misconfiguration, named distinctly — never a plausible
+        # consent_denied, and the gate is not even asked with an empty tenant.
+        gate.asked.clear()
+        r2 = c.post("/internal/notify",
+                    json={"recipient": "a@b.com", "channel": "email", "template_key": "winback",
+                          "user_id": "u_9", "variables": {"name": "S"}},
+                    headers=_internal())
+        assert r2.json()["status"] == "consent_no_tenant"
+        assert gate.asked == []
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+        from app.config import get_settings
+        get_settings.cache_clear()
+
+
 def test_operator_delivery_log_masks_recipients_and_needs_the_cap(client):
     _seed_template(client)
     client.post("/internal/notify",

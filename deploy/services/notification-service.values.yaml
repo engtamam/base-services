@@ -39,7 +39,7 @@ networkPolicy:
   egress:
     dns: true
     datastore: true
-    internet: true        # calls third parties; in-app SSRF guard is the first layer
+    internet: true        # third-party caller: host allow-listing is APPLICATION-layer (EGRESS_ALLOWED_HOSTS); this policy opens 80/443 to any public IP
 
 metrics:
   serviceMonitor: true
@@ -54,3 +54,9 @@ env:
 # No ingress: reached service-to-service on the internal tier only.
 ingress:
   enabled: false
+
+# These internal endpoints have NO caller without this block.
+cronJobs:
+  - name: drain
+    schedule: "*/1 * * * *"
+    path: /internal/notifications/drain
