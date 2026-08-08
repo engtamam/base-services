@@ -196,6 +196,12 @@ def _build_notification_sender(settings: Settings) -> Any:
     to a config-only host checked against the egress allowlist at construction."""
     if settings.NOTIFY_DRIVER == "http":
         from app.adapters.notification.http import HttpNotificationSender
+        # Log the resolved target ONCE at construction: a wrong host/path (a 404 at the peer) is
+        # otherwise invisible — a failed notification is not a failed ticket — until a customer says
+        # "you never replied" days later. One line at boot makes a mis-set path fail loudly here.
+        import logging
+        logging.getLogger("app").info(
+            "notification_sender_http", extra={"target": f"{settings.NOTIFICATION_SERVICE_URL}{settings.NOTIFICATION_SEND_PATH}"})
         return HttpNotificationSender(
             settings.NOTIFICATION_SERVICE_URL, settings.NOTIFICATION_SERVICE_TOKEN,
             allowed_hosts=settings.egress_allowed_hosts, timeout=settings.NOTIFY_TIMEOUT_SECONDS,

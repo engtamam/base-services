@@ -60,11 +60,12 @@ deploy-%:
 setup:
 	@sudo NAMESPACE=$(NAMESPACE) bash server/setup.sh
 
-# Safe rollout: render-first, per-service auto-rollback, --only, node-image prune. Prefer this over
-# `deploy` on a live box. Pass flags through:  make roll ARGS="--only tenant --dry-run"
+# Idempotent datastore reset + verify (wipes PVC AND host dir). make reset ARGS="--no-wipe"
 reset:
 	@sudo NAMESPACE=$(NAMESPACE) bash server/reset-platform.sh $(ARGS)
 
+# Safe rollout: render-first, per-service auto-rollback, --only, node-image prune. Prefer this over
+# `deploy` on a live box. Pass flags through:  make roll ARGS="--only tenant --dry-run"
 roll:
 	@sudo NAMESPACE=$(NAMESPACE) bash server/update.sh $(ARGS)
 

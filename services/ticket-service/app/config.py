@@ -142,7 +142,10 @@ class Settings(BaseSettings):
     NOTIFY_DRIVER: str = "null"              # null | http
     NOTIFICATION_SERVICE_URL: str = ""       # e.g. http://notification-service:8000
     NOTIFICATION_SERVICE_TOKEN: str = ""     # internal token; operator-managed, sealed
-    NOTIFICATION_SEND_PATH: str = "/internal/notifications/send"
+    # The path notification-service actually serves for a service-to-service send. It is /internal/notify
+    # (NOT /internal/notifications/send, which never existed on the receiver — a wrong default there
+    # sent every ticket notification to a silent 404: a failed notification is not a failed ticket).
+    NOTIFICATION_SEND_PATH: str = "/internal/notify"
     NOTIFY_TIMEOUT_SECONDS: int = 5
     NOTIFY_DRAIN_LIMIT: int = 100
     NOTIFY_RETRY_BASE_SECONDS: int = 30
