@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+gate_name="safety:backup-export"
+gate_desc="every service serves /internal/backup/export, or is exempt with a reason"
+gate_protects="backup-service collects archives by calling each target's
+/internal/backup/export. A service that does not serve it answers 404 and is
+SILENTLY un-backed-up — the data a customer would actually lose (establishments,
+accounts, roles, balances, consent, the audit log) is simply not captured, and
+nobody sees it until a restore is needed. safety:backup-coverage checks
+completeness WITHIN a service that already backs up; this checks the prior
+question — whether it backs up AT ALL.
+
+Every non-template service must DECLARE /internal/backup/export, or appear in
+EXEMPT with a reason (stateless, or a tracked backfill-pending backlog item). A
+new service generated from _template inherits the endpoint, so this can only
+regress by deliberate removal, and a legacy gap stays loud and listed instead of
+silent."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_backup_export.py"
+gate_units=1
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_backup_export.py; }
+gate_selftest() { "$PY" tools/ci/selftest_backup_export.py >/dev/null 2>&1; }

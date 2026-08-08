@@ -165,6 +165,12 @@ jobs:
           python tools/ci/selftest_peer_paths.py
           python tools/ci/check_peer_paths.py
 
+      # gates: safety:backup-export
+      - name: "safety:backup-export — every service serves /internal/backup/export, or is exempt"
+        run: |
+          python tools/ci/selftest_backup_export.py
+          python tools/ci/check_backup_export.py
+
       # gates: safety:tenancy
       - name: "safety:tenancy — a token carries exactly ONE tenant, and only one it is entitled to"
         run: python tools/ci/check_tenancy.py
