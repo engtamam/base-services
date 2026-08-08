@@ -48,8 +48,15 @@ async def readyz() -> JSONResponse:
     all_ok = True
     for name, check in _readiness_checks.items():
         try:
-            ok = await asyncio.wait_for(check(), timeout)
-            state = "ok" if ok else "down"
+            res = await asyncio.wait_for(check(), timeout)
+            # A check may return a bool (ok/down) or a REASON string ("ok", "pool exhausted …",
+            # "down"). A string is reported verbatim so readiness can name WHY, not just that it is
+            # not ready — a full datastore must not read as an unreachable one.
+            if isinstance(res, str):
+                state, ok = res, (res == "ok")
+            else:
+                ok = bool(res)
+                state = "ok" if ok else "down"
         except asyncio.TimeoutError:
             # DISTINCT from "down": the check did not answer within the budget — almost always a
             # dependency that is unreachable in a way that hangs rather than refuses.

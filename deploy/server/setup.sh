@@ -86,6 +86,16 @@ else
        k3s-uninstall.sh && sudo bash $HERE/provision-server.sh"
 fi
 
+# ── 3b · db-pool preflight — will the fleet's connection pools fit inside postgres? ────────────────
+# FATAL only when the guaranteed floor exceeds the ceiling (a certain deadlock, later, on an ordinary
+# request). It warns (non-fatal) when only the peak does. A no-op if the script is absent.
+phase "3b · db-pool preflight — do the connection pools fit in postgres?"
+if [ "$DRY_RUN" = "1" ]; then
+  echo -e "${C_D}  [dry-run] bash $HERE/preflight-db-pool.sh${C_N}"
+else
+  run_optional "db-pool preflight" "$HERE/preflight-db-pool.sh"
+fi
+
 # ── 4 · registry credential (private images only) ────────────────────────────────────────────────
 phase "4 · image pull-secret for private images"
 run_optional "pull-secret" "$HERE/pull-images.sh" --no-prewarm

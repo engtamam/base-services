@@ -37,15 +37,49 @@ _INDEXES = (
 
 
 
+# The health probe waits at most this long for a slot. It is deliberately SHORT — shorter than the
+# readyz per-check budget — so an exhausted pool is reported as "pool exhausted" here rather
+# than being cancelled by the outer readyz timeout and mislabelled "timeout". Real queries
+# still wait the full pool timeout; only the diagnosis is impatient.
+_PROBE_ACQUIRE_SECONDS = 2.0
+
+
+def _is_capacity_error(exc: BaseException) -> bool:
+    """True when postgres is UP but FULL — NOT down. Two shapes: the SERVER's max_connections
+    ceiling (asyncpg's TooManyConnectionsError, SQLSTATE 53300, "too many clients"), and this pool's
+    own slots all busy (the acquire timed out). A full database is a capacity problem, and it reads
+    completely differently to whoever is paged than an unreachable one."""
+    import asyncio as _asyncio
+    if isinstance(exc, (_asyncio.TimeoutError, TimeoutError)):
+        return True
+    if type(exc).__name__ in ("TooManyConnectionsError", "PoolTimeoutError"):
+        return True
+    if str(getattr(exc, "sqlstate", "") or "") == "53300":   # too_many_connections
+        return True
+    m = str(exc).lower()
+    return "too many clients" in m or "too many connections" in m
+
+
 class PostgresDataStore:
     driver = "postgres"
 
-    def __init__(self, dsn: str) -> None:
+    def __init__(self, dsn: str, *, pool_min: int = 1, pool_max: int = 5,
+                 pool_timeout: float = 10.0, pool_max_inactive_lifetime: float = 300.0) -> None:
         if not dsn:
             raise ConfigError("DATASTORE_DSN is required for the postgres driver")
         self._asyncpg = load("asyncpg", "postgres")
         self._dsn = dsn
         self._pool: Any = None
+        # Pool sizing (see config). min is LAZY and small (1): asyncpg's default is min_size=10, an
+        # EAGER floor a pool climbs to on first use and then HOLDS for the process lifetime — so 24
+        # services silently consume 240 backend connections against a single postgres whose stock
+        # ceiling is 100, and the fleet deadlocks on an ordinary request once enough distinct
+        # services have been touched. min=1 means a pod needs ONE slot to be Ready, not ten, and an
+        # idle service costs one connection, not ten.
+        self._pool_min = max(0, int(pool_min))
+        self._pool_max = max(self._pool_min, int(pool_max), 1)
+        self._pool_timeout = float(pool_timeout)
+        self._pool_max_inactive = float(pool_max_inactive_lifetime)
         self._loop: Any = None
 
     async def _ensure(self) -> Any:
@@ -58,7 +92,13 @@ class PostgresDataStore:
             self._pool.terminate()          # synchronous; safe to call from another loop
             self._pool = None
         if self._pool is None:
-            self._pool = await self._asyncpg.create_pool(self._dsn)
+            self._pool = await self._asyncpg.create_pool(
+                self._dsn,
+                min_size=self._pool_min,
+                max_size=self._pool_max,
+                timeout=self._pool_timeout,                        # wait this long for a slot, then fail cleanly
+                max_inactive_connection_lifetime=self._pool_max_inactive,  # return idle connections to the server
+            )
             self._loop = loop
             async with self._pool.acquire() as con:
                 await con.execute(
@@ -260,14 +300,26 @@ class PostgresDataStore:
             )
         return res.endswith("1")
 
-    async def health(self) -> bool:
+    async def health_state(self) -> str:
+        """Readiness with a REASON: 'ok', 'pool exhausted (max_connections reached)', or 'down'.
+
+        The exhausted case is the one that read as 'down' and sent an operator to a database that
+        was UP and healthy — it was FULL. Postgres answers `too many clients` (SQLSTATE 53300) at
+        the server ceiling; a pool whose own slots are all busy times the acquire out. Both mean
+        full, not unreachable, and naming it is a one-line diagnosis instead of an hour spent on the
+        wrong thing. The acquire is bounded by the pool timeout so a full pool cannot hang the probe.
+        """
         try:
             pool = await self._ensure()
-            async with pool.acquire() as con:
+            async with pool.acquire(timeout=min(self._pool_timeout, _PROBE_ACQUIRE_SECONDS)) as con:
                 await con.execute("SELECT 1")
-            return True
-        except Exception:
-            return False
+            return "ok"
+        except Exception as exc:  # noqa: BLE001 — a probe CLASSIFIES failures, it does not raise
+            return "pool exhausted (max_connections reached)" if _is_capacity_error(exc) else "down"
+
+    async def health(self) -> bool:
+        # Kept for any caller that wants a plain boolean; readiness uses health_state for the reason.
+        return await self.health_state() == "ok"
 
     async def close(self) -> None:
         if self._pool is None:

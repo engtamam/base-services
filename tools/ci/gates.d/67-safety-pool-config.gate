@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+gate_name="safety:pool-config"
+gate_desc="every postgres adapter sizes its pool from settings, never asyncpg's eager default"
+gate_protects="asyncpg's create_pool(dsn) with no args takes min_size=10 — an EAGER
+floor a pool fills to on first query and HOLDS for the process lifetime. 24 services
+then pin 240 backend connections against a single postgres whose stock ceiling is 100,
+and the fleet deadlocks on an ordinary request once enough services are touched (with
+maxUnavailable:0, a rollout deadlocks outright). It is a default nobody chose, invisible
+until production, correlated with success. This gate keeps every adapter sizing its pool
+from config (min lazy and small) so the eager default cannot creep back in a copy-paste."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_pool_config.py"
+gate_units=1
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_pool_config.py; }
+gate_selftest() { "$PY" tools/ci/selftest_pool_config.py >/dev/null 2>&1; }

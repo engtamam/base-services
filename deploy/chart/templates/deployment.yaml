@@ -15,8 +15,23 @@ spec:
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 0        # never drop below the current capacity mid-rollout
+      {{- $replicas := int (include "base-service.effectiveReplicas" .) }}
+      {{- if le $replicas 1 }}
+      # SINGLE REPLICA: REPLACE, do not double. A surge pod opens a SECOND postgres connection pool
+      # while the old pod still holds its own — and on a fleet sharing one postgres, that transient
+      # doubling is a classic rollout trigger for connection exhaustion (the old pod cannot free its
+      # connections until it is retired, and with maxSurge it is not retired until the new pod is
+      # Ready — a deadlock). maxSurge:0 retires the old pod FIRST, freeing its slots, then starts the
+      # new one. The service is briefly unavailable — but a single-replica service is briefly
+      # unavailable on ANY restart, so this trades nothing real for a rollout that cannot deadlock.
+      maxUnavailable: 1
+      maxSurge: 0
+      {{- else }}
+      # MULTI REPLICA: keep capacity. Other replicas keep serving, so never drop below the current
+      # count (maxUnavailable:0) and surge one at a time.
+      maxUnavailable: 0
       maxSurge: 1
+      {{- end }}
   template:
     metadata:
       labels:

@@ -53,7 +53,13 @@ Builder = Callable[[Settings], Any]
 # ── Registries (the allowlist) — driver name -> builder ─────────────────────
 _DATASTORE: dict[str, Builder] = {
     "memory": lambda s: MemoryDataStore(),
-    "postgres": lambda s: PostgresDataStore(s.DATASTORE_DSN),
+    "postgres": lambda s: PostgresDataStore(
+        s.DATASTORE_DSN,
+        pool_min=s.DATASTORE_POOL_MIN,
+        pool_max=s.DATASTORE_POOL_MAX,
+        pool_timeout=s.DATASTORE_POOL_TIMEOUT_SECONDS,
+        pool_max_inactive_lifetime=s.DATASTORE_POOL_MAX_INACTIVE_LIFETIME_SECONDS,
+    ),
 }
 _CACHE: dict[str, Builder] = {
     "memory": lambda s: MemoryCache(),
@@ -168,8 +174,12 @@ class Container:
         probes: dict[str, Any] = {}
         for name in ("datastore", "cache", "event_bus", "queue", "object_store", "rate_limiter"):
             adapter = getattr(self, name)
-            if hasattr(adapter, "health"):
-                probes[name] = adapter.health
+            # Prefer health_state (a reason string: "ok" / "pool exhausted …" / "down") when the
+            # adapter offers it, so readiness can name a FULL datastore distinctly from a DOWN one;
+            # fall back to the boolean health() every adapter has.
+            probe = getattr(adapter, "health_state", None) or getattr(adapter, "health", None)
+            if probe is not None:
+                probes[name] = probe
         return probes
 
     async def close(self) -> None:

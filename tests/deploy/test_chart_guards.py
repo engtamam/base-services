@@ -266,13 +266,31 @@ def test_readonly_rootfs_has_a_writable_tmp():
     assert any(m["mountPath"] == "/tmp" for m in mounts)
 
 
-def test_rollout_never_drops_below_capacity_and_drains_connections():
-    dep = find(render(), "Deployment")
-    assert dep["spec"]["strategy"]["rollingUpdate"]["maxUnavailable"] == 0
+def test_single_replica_rollout_replaces_rather_than_doubles():
+    """A single-replica service REPLACES on rollout (maxSurge:0), it does not surge a second pod.
+
+    A surge pod opens a SECOND postgres connection pool while the old pod still holds its own; on a
+    fleet sharing one postgres that transient doubling is a rollout trigger for connection
+    exhaustion (and with maxSurge the old pod is not retired until the new one is Ready — a
+    deadlock). maxSurge:0 retires the old pod first, freeing its connections. The service is briefly
+    unavailable, which a single-replica service is on any restart anyway."""
+    dep = find(render(), "Deployment")            # default is one replica
+    ru = dep["spec"]["strategy"]["rollingUpdate"]
+    assert ru["maxSurge"] == 0 and ru["maxUnavailable"] == 1
     spec = dep["spec"]["template"]["spec"]
     assert spec["terminationGracePeriodSeconds"] >= 1
     # preStop pause: endpoint removal is async, so without it every deploy serves 502s.
     assert "preStop" in spec["containers"][0]["lifecycle"]
+
+
+def test_multi_replica_rollout_keeps_capacity():
+    """With >1 replica, other replicas keep serving, so the rollout never drops below the current
+    count (maxUnavailable:0) and surges one at a time (maxSurge:1) — the classic zero-downtime shape,
+    which is safe here because the connection doubling is bounded to one extra pod, not a whole
+    second copy of a lone service."""
+    dep = find(render("--set", "replicas=3", *SHARED), "Deployment")
+    ru = dep["spec"]["strategy"]["rollingUpdate"]
+    assert ru["maxUnavailable"] == 0 and ru["maxSurge"] == 1
 
 
 def test_config_change_rolls_the_pods():

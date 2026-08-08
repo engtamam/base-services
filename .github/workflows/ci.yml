@@ -171,6 +171,12 @@ jobs:
           python tools/ci/selftest_backup_export.py
           python tools/ci/check_backup_export.py
 
+      # gates: safety:pool-config
+      - name: "safety:pool-config — every postgres adapter sizes its pool from settings (no eager default)"
+        run: |
+          python tools/ci/selftest_pool_config.py
+          python tools/ci/check_pool_config.py
+
       # gates: safety:tenancy
       - name: "safety:tenancy — a token carries exactly ONE tenant, and only one it is entitled to"
         run: python tools/ci/check_tenancy.py

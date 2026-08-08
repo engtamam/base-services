@@ -187,6 +187,18 @@ class Settings(BaseSettings):
     # Every default reaches NO external system; point at real infra by config.
     DATASTORE_DRIVER: str = "memory"
     DATASTORE_DSN: str = ""  # e.g. postgresql://user:pass@host/db  (postgres driver)
+    # ── Postgres connection pool ──────────────────────────────────────────────────────────────
+    # asyncpg's default pool is min_size=10, max_size=10, and min is a LAZY-but-STICKY floor: the
+    # pool fills to it on first use and holds there for the process lifetime. Left at the default,
+    # 24 services each pin 10 backend connections — 240 against a single postgres whose stock ceiling
+    # is 100 — and the fleet deadlocks on an ordinary request once enough services have been touched
+    # (with maxUnavailable:0, a rollout deadlocks outright: a new pod needs its 10 slots to go Ready
+    # while the old pod still holds its 10). So the floor is 1: a pod is Ready on one connection, an
+    # idle service costs one, and horizontal scale spends the ceiling deliberately, not by default.
+    DATASTORE_POOL_MIN: int = 1
+    DATASTORE_POOL_MAX: int = 5
+    DATASTORE_POOL_TIMEOUT_SECONDS: float = 10.0            # wait for a free slot, then fail cleanly
+    DATASTORE_POOL_MAX_INACTIVE_LIFETIME_SECONDS: float = 300.0  # return idle connections to postgres
 
     CACHE_DRIVER: str = "memory"
     CACHE_URL: str = ""  # e.g. redis://host:6379/0  (redis driver)
