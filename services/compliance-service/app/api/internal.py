@@ -13,7 +13,9 @@ from pydantic import BaseModel, Field
 
 from app.api.v1.compliance import (build_compliance, build_consent, build_consent_sweeper,
                                    build_dsar, build_retention, build_sweeper)
+from app.backup_manifest import BACKUP
 from app.config import Settings, get_settings
+from app.core import backup as _backup
 from app.core.erasure import ComplianceErasure
 from app.manifest import build_manifest
 
@@ -244,3 +246,108 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     s = get_settings()
     eraser = ComplianceErasure(store=c.datastore, pii_salt=s.PII_SALT)
     return await eraser.erase(body.tenant, body.subject)
+
+
+# ── Backup (backup-service orchestrates; this service produces sealed archives) ──────────────
+# What compliance-service holds is declared in app/backup_manifest.py; how it is read lives in
+# core/backup.py. These are legal records — backup-service never opens this database, it calls
+# export/verify/import over the internal token and stores the sealed archive, never the plaintext.
+def _now_iso() -> str:
+    import datetime as _dt
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _sealer(settings: Settings):
+    """The backup (seal, unseal) pair, or a 503 when no backup key is configured.
+
+    Refused rather than defaulted: sealing with an empty key would write a plaintext-equivalent
+    archive while every check reported it encrypted — the one outcome a backup must never have.
+    """
+    if not settings.BACKUP_KEK:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "BACKUP_KEK not configured — set this SHARED key (the SAME value backup-service holds) "
+            "on this service, or its archives cannot be opened")
+    return _backup.make_sealer(settings.BACKUP_KEK)
+
+
+class BackupExportIn(BaseModel):
+    tenant: str = ""
+
+
+class BackupVerifyIn(BaseModel):
+    archive: dict
+
+
+class BackupImportIn(BaseModel):
+    archive: dict
+    overwrite: bool = False
+    into_tenant: str = ""
+
+
+@router.post("/backup/export", dependencies=[Depends(require_internal_token)])
+async def backup_export(request: Request, body: BackupExportIn,
+                        settings: Settings = Depends(get_settings)) -> dict:
+    """Produce a sealed, checksummed archive of the consent, DSAR, RoPA, breach, and data-map records."""
+    seal, _ = _sealer(settings)
+    return await _backup.export(
+        request.app.state.container.datastore, BACKUP,
+        service=settings.SERVICE_NAME, version=settings.SERVICE_VERSION,
+        taken_at=_now_iso(), seal=seal, tenant=body.tenant,
+        scan_cap=settings.BACKUP_MAX_ROWS_PER_COLLECTION)
+
+
+@router.post("/backup/verify", dependencies=[Depends(require_internal_token)])
+async def backup_verify(request: Request, body: BackupVerifyIn,
+                        settings: Settings = Depends(get_settings)) -> dict:
+    """Prove an archive restores, by test-restoring it into a throwaway namespace and comparing."""
+    import secrets
+    _, unseal = _sealer(settings)
+    try:
+        return await _backup.verify_restore(
+            request.app.state.container.datastore, body.archive,
+            unseal=unseal, token=secrets.token_hex(8), declaration=BACKUP)
+    except _backup.BackupError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+
+async def _rebuild_proof_seq(datastore, scan_cap: int) -> int:
+    """Rebuild the consent-proof sequence counter from the proofs — it is DERIVED, not archived.
+
+    Each proof's id begins with its zero-padded per-subject sequence ("<seq>::<uuid>"), so the next
+    number for a (tenant, subject) is max(seq) over that subject's proofs. Idempotent and self-
+    healing; without it the next appended proof would restart at 1 and collide with a restored proof.
+    """
+    highest: dict[str, int] = {}
+    for row in await datastore.scan_all("consent_proof", scan_cap):
+        pid, tenant, subject = row.get("id", ""), row.get("tenant", ""), row.get("subject", "")
+        head = pid.split("::", 1)[0]
+        if not head.isdigit():
+            continue
+        k = f"{tenant}::{subject}"
+        highest[k] = max(highest.get(k, 0), int(head))
+    for seq_key, n in highest.items():
+        await datastore.put("consent_proof_seq", seq_key, {"n": n})
+    return len(highest)
+
+
+@router.post("/backup/import", dependencies=[Depends(require_internal_token)])
+async def backup_import(request: Request, body: BackupImportIn,
+                        settings: Settings = Depends(get_settings)) -> dict:
+    """Restore an archive this service produced. Idempotent; leaves newer rows alone by default.
+
+    After the proofs are restored, the per-subject proof-sequence counter is rebuilt from them — it
+    is derived, not archived, so a restore that skipped it would let the next proof re-use a number.
+    """
+    datastore = request.app.state.container.datastore
+    _, unseal = _sealer(settings)
+    try:
+        result = await _backup.import_archive(
+            datastore, body.archive,
+            unseal=unseal, overwrite=body.overwrite, into_tenant=body.into_tenant,
+            declaration=BACKUP)
+    except _backup.BackupError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    result["proof_seq_rebuilt"] = await _rebuild_proof_seq(
+        datastore, settings.BACKUP_MAX_ROWS_PER_COLLECTION)
+    return result

@@ -82,7 +82,13 @@ class ConsentStore:
         """
         key = self._key(c.tenant, c.subject, c.purpose)
         legacy = self._legacy_key(c.tenant, c.subject, c.purpose)
-        await self._store.put(_CONSENT, key, c.to_dict())
+        row = c.to_dict()
+        # Stamp the CANONICAL key as the row id. The consent key normalises the purpose (casefold),
+        # so it is not a plain template of the row's raw fields — carrying it as `id` is what lets
+        # the backup core restore each consent under exactly the key it was stored under. Ignored by
+        # from_dict (it reads only dataclass fields), invisible to every reader.
+        row["id"] = key
+        await self._store.put(_CONSENT, key, row)
         if legacy != key:
             await self._store.delete(_CONSENT, legacy)
         return c
@@ -123,12 +129,14 @@ class ConsentStore:
             existing = await self._store.get(_CONSENT, key)
             if existing is not None:
                 winner = self._resolve(existing, row)
+                winner["id"] = key          # carry the canonical key (see put) after a merge
                 conflicts.append({"tenant": tenant, "subject": subject, "purpose": purpose,
                                   "kept": "withdrawn" if not winner.get("granted", True)
                                           else "most_recent"})
                 await self._store.put(_CONSENT, key, winner)
             else:
                 row["purpose"] = self.normalise(purpose)
+                row["id"] = key             # carry the canonical key (see put)
                 await self._store.put(_CONSENT, key, row)
             await self._store.delete(_CONSENT, legacy)
             migrated += 1
