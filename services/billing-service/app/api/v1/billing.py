@@ -258,9 +258,13 @@ class UsageIn(BaseModel):
 
 
 # ── catalog (admin) ────────────────────────────────────────────────────────────
-@router.post("/plans", status_code=201, dependencies=[Depends(_ADMIN)])
-async def create_plan(request: Request, body: PlanIn) -> dict:
+@router.post("/plans", status_code=201)
+async def create_plan(request: Request, body: PlanIn,
+                      principal: Principal = Depends(_ADMIN)) -> dict:
     p = await (await build_billing(request)).create_plan(**body.model_dump())
+    await request.app.state.auditor.record(
+        "plan.created", actor=principal.subject, tenant=principal.tenant,
+        resource=f"plan:{p.id}", ip=request.client.host if request.client else "")
     return p.to_dict()
 
 
@@ -409,6 +413,10 @@ async def subscribe(request: Request, body: SubscribeIn, principal: Principal = 
             buyer_name=body.buyer_name, buyer_vat=body.buyer_vat, buyer_cr=body.buyer_cr)
     except ValueError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
+    await request.app.state.auditor.record(
+        "subscription.created", actor=principal.subject, tenant=sub.tenant,
+        resource=f"subscription:{sub.id}", ip=request.client.host if request.client else "",
+        metadata={"plan": body.plan_id})
     return sub.to_dict()
 
 
@@ -450,10 +458,15 @@ async def change_plan(request: Request, sub_id: str, body: ChangeIn,
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
     _guard(principal, sub.tenant)
     try:
-        return await svc.change_plan(sub_id, new_plan_id=body.new_plan_id,
-                                     interval=body.interval, quantity=body.quantity)
+        result = await svc.change_plan(sub_id, new_plan_id=body.new_plan_id,
+                                       interval=body.interval, quantity=body.quantity)
     except ValueError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
+    await request.app.state.auditor.record(
+        "subscription.changed", actor=principal.subject, tenant=sub.tenant,
+        resource=f"subscription:{sub_id}", ip=request.client.host if request.client else "",
+        metadata={"new_plan": body.new_plan_id or ""})
+    return result
 
 
 @router.post("/subscriptions/{sub_id}/pause")
@@ -493,7 +506,12 @@ async def cancel(request: Request, sub_id: str, at_period_end: bool = True,
     if sub is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
     _guard(principal, sub.tenant)
-    return (await svc.cancel(sub_id, at_period_end=at_period_end)).to_dict()
+    result = (await svc.cancel(sub_id, at_period_end=at_period_end)).to_dict()
+    await request.app.state.auditor.record(
+        "subscription.cancelled", actor=principal.subject, tenant=sub.tenant,
+        resource=f"subscription:{sub_id}", ip=request.client.host if request.client else "",
+        metadata={"at_period_end": str(at_period_end)})
+    return result
 
 
 @router.post("/subscriptions/{sub_id}/run", dependencies=[Depends(_ADMIN)])
@@ -546,9 +564,16 @@ async def list_subs(request: Request, status_: str | None = Query(default=None, 
 
 @router.post("/usage", status_code=201)
 async def record_usage(request: Request, body: UsageIn, principal: Principal = Depends(_SELF)) -> dict:
-    return await (await build_billing(request)).record_usage(
-        tenant=_tenant(principal), subscription_id=body.subscription_id,
+    tenant = _tenant(principal)
+    result = await (await build_billing(request)).record_usage(
+        tenant=tenant, subscription_id=body.subscription_id,
         metric=body.metric, quantity=body.quantity)
+    await request.app.state.auditor.record(
+        "usage.recorded", actor=principal.subject, tenant=tenant,
+        resource=f"subscription:{body.subscription_id}",
+        ip=request.client.host if request.client else "",
+        metadata={"metric": body.metric, "quantity": str(body.quantity)})
+    return result
 
 
 # ── invoices ───────────────────────────────────────────────────────────────────
@@ -679,18 +704,27 @@ async def refund(request: Request, payment_id: str, amount_minor: int | None = N
     return res
 
 
-@router.post("/dunning/run", dependencies=[Depends(_ADMIN)])
-async def dunning(request: Request) -> dict:
-    return await (await build_billing(request)).dunning_sweep()
+@router.post("/dunning/run")
+async def dunning(request: Request, principal: Principal = Depends(_ADMIN)) -> dict:
+    result = await (await build_billing(request)).dunning_sweep()
+    await request.app.state.auditor.record(
+        "dunning.run", actor=principal.subject, tenant=principal.tenant,
+        resource="dunning", ip=request.client.host if request.client else "")
+    return result
 
 
-@router.post("/subscriptions/{sub_id}/migrate", dependencies=[Depends(_ADMIN)])
-async def migrate_terms(request: Request, sub_id: str) -> dict:
+@router.post("/subscriptions/{sub_id}/migrate")
+async def migrate_terms(request: Request, sub_id: str,
+                        principal: Principal = Depends(_ADMIN)) -> dict:
     """Explicitly move a grandfathered subscription onto the CURRENT plan terms."""
     try:
-        return await (await build_billing(request)).migrate_terms(sub_id)
+        result = await (await build_billing(request)).migrate_terms(sub_id)
     except ValueError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
+    await request.app.state.auditor.record(
+        "subscription.migrated", actor=principal.subject, tenant=principal.tenant,
+        resource=f"subscription:{sub_id}", ip=request.client.host if request.client else "")
+    return result
 
 
 @router.post("/subscriptions/{sub_id}/overage", dependencies=[Depends(_ADMIN)])
@@ -770,9 +804,13 @@ async def settle_invoice(request: Request, invoice_id: str, body: SettleIn,
     svc = (await build_billing(request))
     tenant = None if "platform.billing" in principal.caps else (principal.tenant or "__none__")
     try:
-        return await svc.settle(invoice_id=invoice_id, tenant=tenant, **body.model_dump())
+        result = await svc.settle(invoice_id=invoice_id, tenant=tenant, **body.model_dump())
     except _stl.SettlementError as e:
         raise _settlement_error(e) from e
+    await request.app.state.auditor.record(
+        "invoice.settled", actor=principal.subject, tenant=principal.tenant or "",
+        resource=f"invoice:{invoice_id}", ip=request.client.host if request.client else "")
+    return result
 
 
 @router.get("/invoices/{invoice_id}/settlements", dependencies=[Depends(_SELF)])
