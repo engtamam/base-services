@@ -39,9 +39,6 @@ EXEMPT: dict[str, str] = {
         "calls 'a derived index [that] may keep nothing'. The postings row is a bare {doc_id: tf} "
         "map that carries no key and cannot round-trip; the durable source lives in the services "
         "whose data is backed up, so search is restored by re-indexing, not by an archive of its own",
-    # backfill-pending — SHOULD serve /internal/backup/export; tracked for onboarding.
-    **{s: "backfill-pending — backup export not yet onboarded (tracked)" for s in (
-        "zatca-service",)},
 }
 for _e in (os.environ.get("BACKUP_EXPORT_GATE_EXCLUDE", "") or "").split(","):
     if _e.strip():

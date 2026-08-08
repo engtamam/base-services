@@ -14,6 +14,8 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from app.api.v1.zatca import build_zatca
+from app.backup_manifest import BACKUP
+from app.core import backup as _backup
 from app.config import Settings, get_settings
 from app.core.erasure import ZatcaErasure
 from app.manifest import build_manifest
@@ -110,3 +112,119 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     eraser = ZatcaErasure(store=c.datastore, pii_salt=s.PII_SALT,
                           retention_years=s.TAX_RETENTION_YEARS, max_scan=s.ERASURE_MAX_SCAN)
     return await eraser.erase(body.tenant, body.subject)
+
+
+# ── Backup (backup-service orchestrates; this service produces sealed archives) ──────────────
+# What this service holds is declared in app/backup_manifest.py; how it is read lives in
+# core/backup.py. backup-service never opens this database — it calls export/verify/import over the
+# internal token and stores the sealed archive, never seeing the plaintext.
+def _now_iso() -> str:
+    import datetime as _dt
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _sealer(settings: Settings):
+    """The backup (seal, unseal) pair, or a 503 when no backup key is configured.
+
+    Refused rather than defaulted: sealing with an empty key would write a plaintext-equivalent
+    archive while every check reported it encrypted — the one outcome a backup must never have.
+    """
+    if not settings.BACKUP_KEK:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "BACKUP_KEK not configured — set this SHARED key (the SAME value backup-service holds) "
+            "on this service, or its archives cannot be opened")
+    return _backup.make_sealer(settings.BACKUP_KEK)
+
+
+class BackupExportIn(BaseModel):
+    tenant: str = ""
+
+
+class BackupVerifyIn(BaseModel):
+    archive: dict
+
+
+class BackupImportIn(BaseModel):
+    archive: dict
+    overwrite: bool = False
+    into_tenant: str = ""
+
+
+@router.post("/backup/export", dependencies=[Depends(require_internal_token)])
+async def backup_export(request: Request, body: BackupExportIn,
+                        settings: Settings = Depends(get_settings)) -> dict:
+    """Produce a sealed, checksummed archive of this service's declared data."""
+    seal, _ = _sealer(settings)
+    return await _backup.export(
+        request.app.state.container.datastore, BACKUP,
+        service=settings.SERVICE_NAME, version=settings.SERVICE_VERSION,
+        taken_at=_now_iso(), seal=seal, tenant=body.tenant,
+        scan_cap=settings.BACKUP_MAX_ROWS_PER_COLLECTION)
+
+
+@router.post("/backup/verify", dependencies=[Depends(require_internal_token)])
+async def backup_verify(request: Request, body: BackupVerifyIn,
+                        settings: Settings = Depends(get_settings)) -> dict:
+    """Prove an archive restores, by test-restoring it into a throwaway namespace and comparing."""
+    import secrets
+    _, unseal = _sealer(settings)
+    try:
+        return await _backup.verify_restore(
+            request.app.state.container.datastore, body.archive,
+            unseal=unseal, token=secrets.token_hex(8), declaration=BACKUP)
+    except _backup.BackupError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+
+async def _rebuild_index(datastore, scan_cap: int) -> dict[str, int]:
+    """Rebuild zatca_index from the restored invoices — it is DERIVED, not archived.
+
+    Per tenant: the number lookup (num::<tenant>::<number> -> {id}) for every invoice, and the chain
+    head (head::<tenant> -> {reserved_icv, last_hash}). reserved_icv is the max ICV — allocate_slot
+    persists an invoice for every ICV it reserves, so no reserved slot is missed and the next
+    allocation cannot re-issue a number. last_hash follows the highest SIGNED invoice (the one whose
+    hash the chain extends from), exactly as record_hash maintains it. Idempotent and self-healing.
+    """
+    heads: dict[str, dict[str, Any]] = {}   # tenant -> {reserved_icv, last_hash, _top_signed_icv}
+    nums = 0
+    for row in await datastore.scan_all("zatca_invoices", scan_cap):
+        tenant, number, iid = row.get("tenant"), row.get("number"), row.get("id")
+        icv, ihash = int(row.get("icv", 0) or 0), row.get("hash") or ""
+        if not tenant or not iid:
+            continue
+        if number is not None:
+            await datastore.put("zatca_index", f"num::{tenant}::{number}", {"id": iid})
+            nums += 1
+        h = heads.setdefault(tenant, {"reserved_icv": 0, "last_hash": "", "_top_signed_icv": -1})
+        h["reserved_icv"] = max(int(h["reserved_icv"]), icv)
+        if ihash and icv > h["_top_signed_icv"]:     # the highest SIGNED invoice sets the head hash
+            h["_top_signed_icv"] = icv
+            h["last_hash"] = ihash
+    for tenant, h in heads.items():
+        await datastore.put("zatca_index", f"head::{tenant}",
+                            {"reserved_icv": h["reserved_icv"], "last_hash": h["last_hash"]})
+    return {"num_entries": nums, "heads": len(heads)}
+
+
+@router.post("/backup/import", dependencies=[Depends(require_internal_token)])
+async def backup_import(request: Request, body: BackupImportIn,
+                        settings: Settings = Depends(get_settings)) -> dict:
+    """Restore an archive this service produced. Idempotent; leaves newer rows alone by default.
+
+    After the invoices are restored, the ICV chain head and number index are rebuilt from them — a
+    restore that skipped them would let the next invoice re-issue an ICV that already exists, which
+    is a ZATCA compliance defect, not a glitch.
+    """
+    datastore = request.app.state.container.datastore
+    _, unseal = _sealer(settings)
+    try:
+        result = await _backup.import_archive(
+            datastore, body.archive,
+            unseal=unseal, overwrite=body.overwrite, into_tenant=body.into_tenant,
+            declaration=BACKUP)
+    except _backup.BackupError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    result["index_rebuilt"] = await _rebuild_index(
+        datastore, settings.BACKUP_MAX_ROWS_PER_COLLECTION)
+    return result

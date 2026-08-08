@@ -166,6 +166,7 @@ class SettingsStore:
                   "onboarding_status"):
             if k in patch and patch[k] is not None:
                 r[k] = patch[k]
+        r["id"] = tenant        # carry the key as the row id so a backup restores under it
         await self._store.put(_SETTINGS, tenant, r)
         return await self.view(tenant)
 
@@ -180,6 +181,7 @@ class SettingsStore:
         if request_id is not None:
             r["compliance_request_id"] = request_id
         r["onboarding_status"] = onboarding_status
+        r["id"] = tenant        # carry the key as the row id so a backup restores under it
         await self._store.put(_SETTINGS, tenant, r)
 
     async def request_id(self, tenant: str) -> str:
