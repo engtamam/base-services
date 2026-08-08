@@ -39,6 +39,10 @@ networkPolicy:
   egress:
     dns: true
     datastore: true
+    objectStore:
+      enabled: true          # reads/writes blobs; opens egress to the S3 API port
+      port: 9000
+      roleLabel: objectstore
     internet: false
 
 metrics:

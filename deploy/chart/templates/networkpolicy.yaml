@@ -92,6 +92,19 @@ spec:
         - port: 6379
           protocol: TCP
     {{- end }}
+    {{- with .Values.networkPolicy.egress.objectStore }}
+    {{- if .enabled }}
+    # In-cluster object store (MinIO / on-prem S3), by role label. Only the S3 API port — a
+    # service that reads blobs has no business reaching anything else on that pod.
+    - to:
+        - podSelector:
+            matchLabels:
+              base-services/role: {{ .roleLabel | default "objectstore" }}
+      ports:
+        - port: {{ .port | default 9000 }}
+          protocol: TCP
+    {{- end }}
+    {{- end }}
     # Peer services (service-to-service calls on the internal tier).
     - to:
         - podSelector: {}
@@ -120,5 +133,11 @@ spec:
           protocol: TCP
         - port: 80
           protocol: TCP
+    {{- end }}
+    {{- with .Values.networkPolicy.egress.extra }}
+    # Operator-declared egress (values: networkPolicy.egress.extra) — for anything the toggles
+    # above do not cover. Rendered verbatim, so a values file can open exactly what a service needs
+    # and nothing more.
+    {{- toYaml . | nindent 4 }}
     {{- end }}
 {{- end }}

@@ -34,6 +34,18 @@ INTERNET_EGRESS = {
     "zatca-service",        # ZATCA Fatoora endpoints
 }
 
+# Services that read/write blobs and so may be configured with OBJECTSTORE_DRIVER=s3 against an
+# IN-CLUSTER object store (MinIO / on-prem S3). Egress is deny-by-default, so without this a
+# service configured for s3 is blackholed — the pod comes up, /readyz hangs, nothing names the
+# cause. Opening egress to the object-store role on the S3 port here is harmless when the driver is
+# local/memory (the rule permits traffic that never happens) and correct the moment it is s3. A
+# CLOUD/out-of-cluster S3 endpoint needs `internet: true` instead — a different seam.
+OBJECTSTORE_EGRESS = {
+    "file-service",         # user uploads (small inline + large multipart)
+    "backup-service",       # backup archives
+    "stream-service",       # recordings / playback segments
+}
+
 # Only the gateway is public. Every other service is reachable service-to-service.
 PUBLIC_INGRESS = {"api-gateway"}
 
@@ -143,7 +155,7 @@ networkPolicy:
   ingressFromNamespace: {ingress_ns}
   egress:
     dns: true
-    datastore: true
+    datastore: true{objectstore_block}
     internet: {internet}{internet_note}
 
 metrics:
@@ -249,6 +261,16 @@ def render(name: str, cfg: dict) -> str:
     note = ""
     if internet:
         note = "        # calls third parties; in-app SSRF guard is the first layer"
+
+    # In-cluster object-store egress for the blob-users. Harmless when the driver is local/memory;
+    # required the moment OBJECTSTORE_DRIVER=s3 points at an in-cluster endpoint.
+    objectstore_block = ""
+    if name in OBJECTSTORE_EGRESS:
+        objectstore_block = (
+            "\n    objectStore:"
+            "\n      enabled: true          # reads/writes blobs; opens egress to the S3 API port"
+            "\n      port: 9000"
+            "\n      roleLabel: objectstore")
     ingress_block = INGRESS_BLOCK if name in PUBLIC_INGRESS else NO_INGRESS_BLOCK
 
     cron_block = ""
@@ -265,6 +287,7 @@ def render(name: str, cfg: dict) -> str:
         env_block=_env_block(name, cfg),
         ingress_ns="ingress" if name in PUBLIC_INGRESS else '""',
         internet=str(internet).lower(), internet_note=note,
+        objectstore_block=objectstore_block,
         ingress_block=ingress_block, cron_block=cron_block,
     )
 

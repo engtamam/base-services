@@ -418,6 +418,7 @@ def test_the_maintenance_endpoints_we_shipped_have_a_scheduled_caller():
 _HPA = SHARED + ["--set", "autoscaling.enabled=true"]
 _ING = ["--set", "ingress.enabled=true", "--set", "ingress.host=x.io"]
 _SM = ["--set", "metrics.serviceMonitor=true"]
+_OBJ = ["--set", "networkPolicy.egress.objectStore.enabled=true"]  # port/roleLabel only render when on
 _MULTI = SHARED + ["--set", "replicas=3"]
 _CRON = ["--set", "existingSecret=s", "--set", "cronJobs[0].name=p",
          "--set", "cronJobs[0].schedule=* * * * *", "--set", "cronJobs[0].path=/internal/x"]
@@ -460,6 +461,9 @@ MUTATIONS = [
     ("networkPolicy.ingressFromNamespace", [], "ingress"),
     ("networkPolicy.egress.dns", [], "false"),
     ("networkPolicy.egress.datastore", [], "false"),
+    ("networkPolicy.egress.objectStore.enabled", [], "true"),
+    ("networkPolicy.egress.objectStore.port", _OBJ, "9999"),
+    ("networkPolicy.egress.objectStore.roleLabel", _OBJ, "minio"),
     ("networkPolicy.egress.internet", [], "true"),
     ("metrics.serviceMonitor", [], "true"),
     ("metrics.interval", _SM, "60s"),

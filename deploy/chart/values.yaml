@@ -96,9 +96,27 @@ networkPolicy:
   egress:
     dns: true              # kube-dns; needed by almost everything
     datastore: true        # postgres/redis in this namespace
+    # In-cluster object store (MinIO / on-prem S3), for services that read/write blobs
+    # (file/backup/stream). Opens egress to pods labelled base-services/role=<roleLabel> on the
+    # S3 API port — nothing else. This exists because egress is deny-by-default: a service
+    # configured with OBJECTSTORE_DRIVER=s3 against an in-cluster endpoint is BLACKHOLED without
+    # it (the pod comes up, /readyz hangs, no log names the cause). For an OUT-of-cluster / cloud
+    # S3 endpoint, use `internet: true` instead — the app SSRF guard still applies.
+    objectStore:
+      enabled: false
+      port: 9000
+      roleLabel: objectstore   # matches `base-services/role` on the object-store pod
     # Outbound to the public internet. TRUE only for services that must call third parties
     # (webhook, connector, notification, billing, zatca). Their SSRF guards still apply.
     internet: false
+    # Escape hatch: additional egress rules declared VERBATIM by a values file, for anything the
+    # toggles above do not cover (a second datastore, a sidecar, a licence server). Each item is a
+    # standard NetworkPolicy egress peer — `{to: [...], ports: [...]}`. Empty by default: a service
+    # reaches only what it declares. Example:
+    #   extra:
+    #     - to: [{ podSelector: { matchLabels: { app: clamav } } }]
+    #       ports: [{ port: 3310, protocol: TCP }]
+    extra: []
 
 metrics:
   serviceMonitor: false    # scrapes /metrics cluster-internally (never via Ingress)

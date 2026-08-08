@@ -137,7 +137,17 @@
           "properties": {
             "dns": { "type": "boolean" },
             "datastore": { "type": "boolean" },
-            "internet": { "type": "boolean" }
+            "objectStore": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "port": { "type": "integer" },
+                "roleLabel": { "type": "string" }
+              }
+            },
+            "internet": { "type": "boolean" },
+            "extra": { "type": "array", "items": { "type": "object" } }
           }
         }
       }
