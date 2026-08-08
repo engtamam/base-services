@@ -19,7 +19,7 @@
 #
 #  Env:  PRODUCT_NAME (banner, default base-services) · NS (default base-services) ·
 #        CHART (default <repo>/deploy/chart) · VALUES_DIR (default <repo>/deploy/pinned, else
-#        deploy/services) · HEALTH_TIMEOUT (default 360)
+#        deploy/services) · HEALTH_TIMEOUT (default 360) · PULL_GRACE (default 300)
 # ==================================================================================================
 set -Eeuo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -34,6 +34,11 @@ if [[ -z "${VALUES_DIR:-}" ]]; then
   else VALUES_DIR="$ROOT/deploy/services"; fi
 fi
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-360}"           # helm --wait: a first install pulls an image first
+# AFTER a helm --wait timeout, an extra budget for a node still PULLING a freshly published image.
+# helm --wait cannot tell "will never be ready" from "still downloading the image", so a slow
+# registry reads as a failure — and, with rollback working, would trigger a spurious rollback of a
+# healthy service. If the rollout converges within this grace, it was slow, not broken.
+PULL_GRACE="${PULL_GRACE:-300}"
 ROLLBACK=1
 DRY_RUN=0
 
@@ -103,21 +108,48 @@ for svc in "${targets[@]}"; do
 
   # The revision to return to, read BEFORE the upgrade. `helm rollback <n>` to a known revision beats
   # a bare `rollback`, which trusts helm's idea of "previous" after a failed release.
-  prev="$(helm -n "$NS" status "$svc" -o json 2>/dev/null | sed -n 's/.*"revision":[ ]*\([0-9]*\).*/\1/p' | head -1)"
+  #
+  # The revision lives under the "version" key of `helm status -o json`. It is NOT "revision" — that
+  # key does not exist, so parsing it yielded EMPTY for every release, the rollback branch was
+  # unreachable, and every failed upgrade was silently left up while the operator was told, falsely,
+  # that there was "nothing to roll back to". `existed` separates the two cases the old code collapsed:
+  # a genuine first install (no prior revision — reassuring) from a release we could not read (a parse
+  # failure — alarming, and the operator must roll back by hand).
+  existed=0; prev=""
+  if helm -n "$NS" status "$svc" >/dev/null 2>&1; then
+    existed=1
+    prev="$(helm -n "$NS" status "$svc" -o json 2>/dev/null \
+            | sed -n 's/.*"version":[ ]*\([0-9]*\).*/\1/p' | head -1)"
+  fi
 
   if helm upgrade --install "$svc" "$CHART" -f "$values" \
        --namespace "$NS" --create-namespace --wait --timeout "${HEALTH_TIMEOUT}s" >/dev/null 2>&1; then
     echo -e "${C_G}ok${C_N}"; updated=$((updated+1))
+  elif kubectl -n "$NS" rollout status "deploy/$svc" --timeout="${PULL_GRACE}s" >/dev/null 2>&1; then
+    # helm --wait ran out, but the rollout CONVERGED within the pull grace: the node was still
+    # PULLING the freshly published image, not failing. Report success, and name which budget was
+    # short so the operator raises the right one — not a rollback of a healthy service.
+    echo -e "${C_G}ok${C_N}"; updated=$((updated+1))
+    warn "$svc: became healthy only after helm --wait's ${HEALTH_TIMEOUT}s elapsed — the image was"\
+         "still pulling; it converged within the ${PULL_GRACE}s PULL_GRACE. Raise HEALTH_TIMEOUT if"\
+         "your registry is consistently this slow."
   else
+    # Neither the health wait NOR the pull grace converged — a genuine readiness failure (a crash,
+    # a bad config, an unpullable image), not a slow download.
     echo -e "${C_R}failed${C_N}"; failed=$((failed+1))
     kubectl -n "$NS" logs "deploy/$svc" --tail=5 2>/dev/null | sed "s/^/      /" || true
-    if [[ $ROLLBACK -eq 1 && -n "${prev:-}" && "${prev:-0}" -gt 0 ]]; then
-      warn "$svc did not become healthy — rolling back to revision $prev"
-      helm -n "$NS" rollback "$svc" "$prev" --wait --timeout "${HEALTH_TIMEOUT}s" >/dev/null 2>&1 \
-        && ok "$svc rolled back" \
-        || warn "$svc rollback also had issues — inspect: helm -n $NS history $svc"
-    elif [[ $ROLLBACK -eq 0 ]]; then
+    if [[ $ROLLBACK -eq 0 ]]; then
       warn "$svc left in its failed state (--no-rollback)"
+    elif [[ "$prev" =~ ^[0-9]+$ && "$prev" -gt 0 ]]; then
+      warn "$svc did not become healthy (readiness, not a slow pull) — rolling back to revision $prev"
+      helm -n "$NS" rollback "$svc" "$prev" --wait --timeout "${HEALTH_TIMEOUT}s" >/dev/null 2>&1 \
+        && ok "$svc rolled back to revision $prev" \
+        || warn "$svc rollback ALSO failed — inspect and roll back by hand: helm -n $NS history $svc"
+    elif [[ $existed -eq 1 ]]; then
+      # The release EXISTS but its prior revision could not be read. This is NOT "nothing to roll
+      # back to" — do not reassure. The operator can still roll back manually, and should.
+      warn "$svc did NOT roll back — could not determine its prior revision, though the release HAS"\
+           "history. Roll back BY HAND: helm -n $NS history $svc  then  helm -n $NS rollback $svc <REVISION>"
     else
       warn "$svc has no previous revision (first install) — nothing to roll back to"
     fi
