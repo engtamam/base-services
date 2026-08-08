@@ -103,6 +103,19 @@ class Settings(BaseSettings):
     PII_SALT: str = ""
     ERASURE_MAX_SCAN: int = 100_000
 
+    # ── Backup (backup-service orchestrates; this service produces sealed archives) ──────────
+    # Seals backup archives at rest. SEPARATE from any live-secrets key by design: restoring must
+    # not require the key a running service uses for its own live secrets. Empty means this service
+    # cannot produce a backup, and its export endpoint refuses rather than writing one in the clear.
+    # SHARED: it must be the SAME value backup-service holds (in the class of PII_SALT /
+    # INTERNAL_SERVICE_TOKEN); gen-secrets.py mints it consistently. Two different values and the
+    # archives backup-service collects from this service cannot be opened.
+    BACKUP_KEK: str = ""
+    # The most rows a single collection may hold before a backup FAILS rather than reads on
+    # unbounded — a real ceiling an operator sets to the size the data actually reaches, so a
+    # runaway collection is a failed backup, not an OOM.
+    BACKUP_MAX_ROWS_PER_COLLECTION: int = 5_000_000
+
     # ── owner self-close (Phase 52) ──────────────────────────────────────────
     # When an owner closes their own tenant, it is SUSPENDED immediately (access stops) and erased
     # only after a grace window, so an accidental or regretted close is recoverable by reactivating

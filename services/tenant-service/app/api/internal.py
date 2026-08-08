@@ -15,7 +15,9 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, s
 from typing import Any
 
 from app.api.v1.tenants import build_service
+from app.backup_manifest import BACKUP
 from app.config import Settings, get_settings
+from app.core import backup as _backup
 from app.core.erasure import TenantErasure
 from app.core.tenant_repository import DomainTaken, SlugTaken
 from app.core.tenant_service import InvalidSlug
@@ -184,3 +186,115 @@ async def internal_delete(request: Request, tenant_id: str) -> dict:
         "tenant.deleted", actor="", tenant=tenant_id, resource=f"tenant:{tenant_id}",
         ip=request.client.host if request.client else "")
     return await svc.delete(tenant)
+
+
+# ── Backup (backup-service orchestrates; this service produces sealed archives) ──────────────
+# What tenant-service holds is declared in app/backup_manifest.py; how it is read lives in
+# core/backup.py. backup-service never opens this database — it calls export/verify/import over the
+# internal token and stores the sealed archive, never seeing the plaintext.
+def _now_iso() -> str:
+    import datetime as _dt
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _sealer(settings: Settings):
+    """The backup (seal, unseal) pair, or a 503 when no backup key is configured.
+
+    Refused rather than defaulted: sealing with an empty key would write a plaintext-equivalent
+    archive while every check reported it encrypted — the one outcome a backup must never have.
+    """
+    if not settings.BACKUP_KEK:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "BACKUP_KEK not configured — set this SHARED key (the SAME value backup-service holds) "
+            "on this service, or its archives cannot be opened")
+    return _backup.make_sealer(settings.BACKUP_KEK)
+
+
+class BackupExportIn(BaseModel):
+    # Empty tenant = the whole service; a value = just that customer's tenant-scoped rows. The
+    # tenant registry is global, so a per-tenant export of tenant-service returns the whole registry.
+    tenant: str = ""
+
+
+class BackupVerifyIn(BaseModel):
+    archive: dict
+
+
+class BackupImportIn(BaseModel):
+    archive: dict
+    # Off by default: a restore must not bulldoze rows written after the backup unless the operator
+    # driving the restore says so.
+    overwrite: bool = False
+    # Empty = restore in place. A value REMAPS the restore into that tenant (restore-as-clone).
+    into_tenant: str = ""
+
+
+@router.post("/backup/export", dependencies=[Depends(require_internal_token)])
+async def backup_export(request: Request, body: BackupExportIn,
+                        settings: Settings = Depends(get_settings)) -> dict:
+    """Produce a sealed, checksummed archive of the tenant registry and its indexes."""
+    seal, _ = _sealer(settings)
+    return await _backup.export(
+        request.app.state.container.datastore, BACKUP,
+        service=settings.SERVICE_NAME, version=settings.SERVICE_VERSION,
+        taken_at=_now_iso(), seal=seal, tenant=body.tenant,
+        scan_cap=settings.BACKUP_MAX_ROWS_PER_COLLECTION)
+
+
+@router.post("/backup/verify", dependencies=[Depends(require_internal_token)])
+async def backup_verify(request: Request, body: BackupVerifyIn,
+                        settings: Settings = Depends(get_settings)) -> dict:
+    """Prove an archive restores, by test-restoring it into a throwaway namespace and comparing."""
+    import secrets
+    _, unseal = _sealer(settings)
+    try:
+        return await _backup.verify_restore(
+            request.app.state.container.datastore, body.archive,
+            unseal=unseal, token=secrets.token_hex(8))
+    except _backup.BackupError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+
+async def _reindex_tenants(datastore, scan_cap: int) -> int:
+    """Rebuild the slug/domain lookups from the restored registry — they are DERIVED, not archived.
+
+    The archive holds only `tenants` (see backup_manifest). Both indexes are a pure function of it,
+    so after a restore we reconstruct them from the source of truth. Idempotent — a re-run recomputes
+    the same rows — and it also self-heals an index that drifted from the registry. A tombstoned or
+    erased tenant drops its slug (slug=""), so it holds no index row, exactly as the live delete path
+    leaves it.
+    """
+    from app.adapters.resolver.resolvers import normalize_host
+    rebuilt = 0
+    for row in await datastore.scan_all("tenants", scan_cap):
+        slug, tid = row.get("slug"), row.get("id")
+        if not slug or not tid:
+            continue  # a tombstone/erased tenant has no slug and holds no lookup
+        await datastore.put("tenant_slugs", slug, {"id": tid})
+        for host in (row.get("domains") or []):
+            await datastore.put("tenant_domains", normalize_host(host), {"slug": slug})
+        rebuilt += 1
+    return rebuilt
+
+
+@router.post("/backup/import", dependencies=[Depends(require_internal_token)])
+async def backup_import(request: Request, body: BackupImportIn,
+                        settings: Settings = Depends(get_settings)) -> dict:
+    """Restore an archive this service produced. Idempotent; leaves newer rows alone by default.
+
+    After the registry is restored, the slug/domain indexes are rebuilt from it — they are derived,
+    not archived, so a restore that did not rebuild them would leave every slug and custom-host
+    lookup answering 404 against tenants that plainly exist.
+    """
+    datastore = request.app.state.container.datastore
+    _, unseal = _sealer(settings)
+    try:
+        result = await _backup.import_archive(
+            datastore, body.archive,
+            unseal=unseal, overwrite=body.overwrite, into_tenant=body.into_tenant)
+    except _backup.BackupError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    result["reindexed"] = await _reindex_tenants(
+        datastore, settings.BACKUP_MAX_ROWS_PER_COLLECTION)
+    return result
