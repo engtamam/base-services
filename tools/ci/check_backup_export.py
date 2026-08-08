@@ -38,7 +38,7 @@ EXEMPT: dict[str, str] = {
     **{s: "backfill-pending — backup export not yet onboarded (tracked)" for s in (
         "analytics-service",
         "feature-flag-service", "file-service",
-        "notification-service", "onboarding-service",
+        "notification-service",
         "search-service",
         "webhook-service", "zatca-service")},
 }
