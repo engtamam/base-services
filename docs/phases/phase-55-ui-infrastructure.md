@@ -88,12 +88,17 @@ Shared pages every app needs, presentational and prop-driven (the host wires the
 
 ## Tasks
 
-- [ ] **55.1** Scaffold `ui/packages/ui` (`@base-ui/source`, peers, tsconfig, tailwind-preset) + copy
+- [x] **55.1** Scaffold `ui/packages/ui` (`@base-ui/source`, peers, tsconfig, tailwind-preset) + copy
   the `theme/` engine + `lib/cn`; prove it mounts + themes.
-- [ ] **55.2** Copy the design system (~23 cva primitives), token-only, barrel export.
-- [ ] **55.3** Copy the paper/block editor (`BlockRenderer`, `DocBlockRenderer`, `inlineMarks`,
+- [x] **55.2** Copy the design system (~23 cva primitives), token-only, barrel export.
+- [x] **55.3** Copy the paper/block editor (`BlockRenderer`, `DocBlockRenderer`, `inlineMarks`,
   `blockdoc`); vocabulary + i18n as seams; on-page editing.
-- [ ] **55.4** Generic shared pages: `AuthLayout`, `LoginForm`, `SignupForm`, `SiteFooter`(+wired),
+- [x] **55.4** Generic shared pages: `AuthLayout`, `LoginForm`, `SignupForm`, `SiteFooter`(+wired),
   `AppShell` — prop-driven, no backend import.
-- [ ] **55.5** i18n seam + en/ar catalog + RTL + light/dark toggle + white-label brand override demo.
-- [ ] **55.6** Demo app (Vite) + component tests (Vitest/RTL) mounting primitives, paper editor, auth.
+- [x] **55.5** i18n seam + en/ar catalog + RTL + light/dark toggle + white-label brand override demo.
+- [x] **55.6** Demo app (Vite) + component tests (Vitest/RTL) mounting primitives, paper editor, auth.
+
+
+---
+
+**Phase 55 complete.** A premium, fully-themeable, RTL/Arabic-ready React+Tailwind UI infrastructure under `ui/` (adopted+generalised from Kobo): the theming engine (one theme.config -> CSS vars, white-label brand override, light/dark), 23 cva design-system primitives, the on-page Word-like paper/block editor (edit sections on the same paper, live {{token}} fill — the replacement for the free editor that split the page), generic auth (login/signup) + config-driven footer + app shell, and an en/ar i18n seam with RTL. Nothing is hard-coded: every colour is a token, every string an i18n key, every data/callback a prop. Consumed AS SOURCE via the @base-ui alias. A demo app mounts the whole kit; `tsc --noEmit` typechecks clean and a vitest test passes — the entire library is verified to compile.
