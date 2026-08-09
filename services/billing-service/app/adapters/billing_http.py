@@ -17,7 +17,7 @@ _UA = "base-services-billing/1.0"
 _TIMEOUT = 30
 
 
-def _send(url: str, data: bytes, headers: dict[str, str], method: str = "POST",
+def _send(url: str, data: bytes | None, headers: dict[str, str], method: str = "POST",
           timeout: int | None = None) -> tuple[int, dict]:
     req = urllib.request.Request(url, data=data, method=method,
                                  headers={"User-Agent": _UA, **headers})
@@ -35,6 +35,13 @@ def post_json(url: str, payload: dict, headers: dict[str, str] | None = None,
     return _send(url, _json.dumps(payload).encode(),
                  {"Content-Type": "application/json", "Accept": "application/json", **(headers or {})},
                  timeout=timeout)
+
+
+def get_json(url: str, headers: dict[str, str] | None = None,
+             timeout: int | None = None) -> tuple[int, dict]:
+    """GET a JSON resource — used to pull a payment's current status for reconciliation."""
+    return _send(url, None, {"Accept": "application/json", **(headers or {})},
+                 method="GET", timeout=timeout)
 
 
 def post_form(url: str, fields: dict, headers: dict[str, str] | None = None) -> tuple[int, dict]:

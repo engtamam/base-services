@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from app.adapters.billing_http import bearer, post_form
+from app.adapters.billing_http import bearer, get_json, post_form
 from app.adapters.payment._common import constant_eq, hmac_sha256_hex
 from app.ports.payment_gateway import Charge, GatewayUnavailable, WebhookEvent
 
@@ -50,6 +50,19 @@ class StripeGateway:
         ok = str(resp.get("status", "")) in ("succeeded", "pending")
         return Charge(ok=ok, status="refunded" if ok else "failed", provider="stripe",
                       provider_id=str(resp.get("id", "")))
+
+    def fetch_status(self, *, provider_id, currency=""):
+        """GET /v1/payment_intents/{id} — reconcile a missed webhook. A refund is a separate object
+        on Stripe, so this reports succeeded | failed | pending only."""
+        code, resp = get_json(f"{self._base}/v1/payment_intents/{provider_id}", self._h)
+        if code == 0:
+            raise GatewayUnavailable("Stripe unreachable")
+        raw = str(resp.get("status", ""))
+        status = ("succeeded" if raw in _OK else "failed" if raw == "canceled" else "pending")
+        return Charge(ok=status == "succeeded", status=status, provider="stripe",
+                      provider_id=str(resp.get("id", provider_id)),
+                      amount_minor=int(resp.get("amount", 0) or 0),
+                      currency=str(resp.get("currency", currency)))
 
     def verify_webhook(self, *, headers, body, secret):
         h = {str(k).lower(): v for k, v in (headers or {}).items()}

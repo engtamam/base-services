@@ -286,3 +286,45 @@ def test_paypal_webhook_without_a_webhook_id_is_unverified_not_a_pass():
     gw = PP.PayPalGateway("client", extra_id="secret", webhook_secret="")
     assert gw.verify_webhook(headers=_PP_HEADERS, body=json.dumps(_PP_EVENT).encode(),
                              secret="").verified is False
+
+
+# ── fetch_status (reconcile): GET the current status, map it, never invent one ────
+def test_moyasar_fetch_status_maps_paid_to_succeeded():
+    M.get_json = lambda u, h=None: (u.endswith("/v1/payments/pay_1") and
+                                    (200, {"id": "pay_1", "status": "paid", "amount": 5000,
+                                           "currency": "SAR"})) or (404, {})
+    r = M.MoyasarGateway("sk").fetch_status(provider_id="pay_1")
+    assert r.status == "succeeded" and r.provider_id == "pay_1"
+
+
+def test_moyasar_fetch_status_maps_initiated_to_pending():
+    M.get_json = lambda u, h=None: (200, {"id": "p", "status": "initiated"})
+    assert M.MoyasarGateway("sk").fetch_status(provider_id="p").status == "pending"
+
+
+def test_stripe_fetch_status_reads_the_payment_intent():
+    S.get_json = lambda u, h=None: (200, {"id": "pi_1", "status": "succeeded", "amount": 5000,
+                                          "currency": "sar"})
+    assert S.StripeGateway("sk").fetch_status(provider_id="pi_1").status == "succeeded"
+    S.get_json = lambda u, h=None: (200, {"id": "pi_1", "status": "processing"})
+    assert S.StripeGateway("sk").fetch_status(provider_id="pi_1").status == "pending"
+
+
+def test_tap_fetch_status_maps_captured():
+    T.get_json = lambda u, h=None: (200, {"id": "chg_1", "status": "CAPTURED", "currency": "SAR"})
+    assert T.TapGateway("sk").fetch_status(provider_id="chg_1").status == "succeeded"
+
+
+def test_checkout_fetch_status_maps_captured_and_refunded():
+    CK.get_json = lambda u, h=None: (200, {"id": "pay_1", "status": "Captured"})
+    assert CK.CheckoutGateway("sk").fetch_status(provider_id="pay_1").status == "succeeded"
+    CK.get_json = lambda u, h=None: (200, {"id": "pay_1", "status": "Refunded"})
+    assert CK.CheckoutGateway("sk").fetch_status(provider_id="pay_1").status == "refunded"
+
+
+def test_fetch_status_raises_gateway_unavailable_on_a_transport_error():
+    import pytest
+    from app.ports.payment_gateway import GatewayUnavailable
+    M.get_json = lambda u, h=None: (0, {})                       # unreachable
+    with pytest.raises(GatewayUnavailable):
+        M.MoyasarGateway("sk").fetch_status(provider_id="p")

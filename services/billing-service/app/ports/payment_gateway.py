@@ -83,3 +83,11 @@ class PaymentGateway(Protocol):
         # OPTIONAL: only providers with a server-side checkout/session implement this. The route
         # checks for it and returns 'unsupported' otherwise — a provider that cannot must not fake it.
         ...
+
+    def fetch_status(self, *, provider_id: str, currency: str = "") -> Charge:
+        # OPTIONAL: pull the CURRENT status of a charge/payment straight from the provider, for
+        # RECONCILIATION when a webhook was missed or failed verification. Returns a Charge whose
+        # `status` is succeeded | failed | refunded | pending. Only providers with a status GET
+        # implement it; the reconcile path reports 'unsupported' otherwise — it never fakes a status,
+        # because inventing "paid" is the one answer a billing reconcile must never give.
+        ...

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import uuid
 
-from app.adapters.billing_http import basic_auth, post_form
+from app.adapters.billing_http import basic_auth, get_json, post_form
 from app.adapters.payment._common import constant_eq
 from app.ports.payment_gateway import Charge, GatewayUnavailable, WebhookEvent
 
@@ -62,6 +62,18 @@ class MoyasarGateway:
         ok = str(resp.get("status", "")) in ("refunded", "paid")
         return Charge(ok=ok, status="refunded" if ok else "failed", provider="moyasar",
                       provider_id=str(resp.get("id", provider_id)))
+
+    def fetch_status(self, *, provider_id, currency=""):
+        """GET /v1/payments/{id} — the current status, for reconciling a missed webhook."""
+        code, resp = get_json(f"{self._base}/v1/payments/{provider_id}", self._h)
+        if code == 0:
+            raise GatewayUnavailable("Moyasar unreachable")
+        raw = str(resp.get("status", "")).lower()
+        status = ("refunded" if raw == "refunded" else "succeeded" if raw in _OK or raw == "captured"
+                  else "failed" if raw in ("failed", "voided") else "pending")
+        return Charge(ok=status == "succeeded", status=status, provider="moyasar",
+                      provider_id=str(resp.get("id", provider_id)),
+                      amount_minor=int(resp.get("amount", 0) or 0), currency=str(resp.get("currency", currency)))
 
     def verify_webhook(self, *, headers, body, secret):
         import json

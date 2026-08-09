@@ -192,6 +192,14 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         "group": "Payments", "danger": True, "confirm": True,
         "params": [{"name": "payment_id", "in": "path", "type": "string", "required": True}],
     },
+    {
+        # Recovery for a webhook that never arrived or failed verification: pull the CURRENT status
+        # from the gateway and apply it. Idempotent — safe to run even if the webhook later shows up.
+        "id": "billing.reconcile_payment", "label": "Reconcile a payment with the gateway",
+        "method": "POST", "path": "/api/v1/billing/payments/{payment_id}/reconcile",
+        "capability": "platform.billing", "group": "Payments", "confirm": True,
+        "params": [{"name": "payment_id", "in": "path", "type": "string", "required": True}],
+    },
     # ── Operations ───────────────────────────────────────────────────────────
     {
         "id": "billing.run_dunning", "label": "Run dunning sweep", "method": "POST",

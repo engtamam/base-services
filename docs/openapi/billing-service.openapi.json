@@ -1734,6 +1734,51 @@
         ]
       }
     },
+    "/api/v1/billing/payments/{payment_id}/reconcile": {
+      "post": {
+        "description": "Pull a payment's CURRENT status from the gateway and apply it \u2014 the recovery path when a\nwebhook was missed or failed verification, leaving an invoice unpaid though the money moved.\nIdempotent (same seam as the webhook); never invents a status.",
+        "operationId": "reconcile_payment_api_v1_billing_payments__payment_id__reconcile_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "payment_id",
+            "required": true,
+            "schema": {
+              "title": "Payment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Reconcile Payment Api V1 Billing Payments  Payment Id  Reconcile Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reconcile Payment",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
     "/api/v1/billing/payments/{payment_id}/refund": {
       "post": {
         "operationId": "refund_api_v1_billing_payments__payment_id__refund_post",
