@@ -58,7 +58,7 @@ def _svc(store=None, **over):
                settlement_max_backdate_days=90, document_mode="tax_invoice",
                # Phase 42: required by EntitlementResolver.
                billable_statuses=("active", "trialing", "past_due"),
-               max_subscriptions=200, merge_strategies={}, rank_orders={})
+               max_subscriptions=200, merge_strategies={}, rank_orders={}, period_tolerance_seconds=86400)
     cfg.update(over)
     einv = _Einvoicer()
     svc = BillingService(plans=PlanStore(st), coupons=CouponStore(st), subs=SubscriptionStore(st),

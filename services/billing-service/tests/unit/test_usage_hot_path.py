@@ -58,14 +58,17 @@ def _env():
         plans=plans, coupons=CouponStore(st), subs=subs, invoices=InvoiceStore(st),
         payments=PaymentStore(st), usage=UsageStore(st), ledger=LedgerStore(st),
         idempo=IdempotencyStore(st), gateway=None, tax=None, einvoicer=None, pdf=None,
-        cache=cache, config={"grandfather": True, "limits_cache_ttl": 300, "grace_days": 7, "billable_statuses": ("active", "trialing", "past_due"), "grandfather": True, "max_subscriptions": 200, "merge_strategies": {}, "rank_orders": {}})
+        cache=cache, config={"grandfather": True, "limits_cache_ttl": 300, "grace_days": 7, "billable_statuses": ("active", "trialing", "past_due"), "grandfather": True, "max_subscriptions": 200, "merge_strategies": {}, "rank_orders": {}, "period_tolerance_seconds": 86400})
 
     limits = {"api_calls": {"kind": "counter", "limit": 1_000_000, "period": "month"},
               "seats": 25, "sso": True}
     run(plans.create(Plan(id="plan_1", name="Pro", prices=[], limits=limits)))
+    # period_end far in the future: this file drives the resolver with the real wall clock, and the
+    # resolver now fails closed on a lapsed period, so a fixed past BASE+30d would (correctly) drop
+    # the subscription. These tests are about caching cost, not the period boundary — keep it current.
     run(subs.save(Subscription(id="sub_1", tenant="t1", plan_id="plan_1", status="active",
                                limits_snapshot=limits, current_period_start=BASE,
-                               current_period_end=BASE + 30 * 86400)))
+                               current_period_end=9_999_999_999.0)))
     usage = UsageService(store=st, limits_resolver=billing.limits_resolver,
                          config={"default_period": "month"})
     return billing, usage, st

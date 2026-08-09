@@ -37,7 +37,7 @@ def _svc(store, *, mode, pdf=None):
     cfg = {"currency": "SAR", "trial_days": 0, "vat_rate": "0.15", "reverse_charge": False,
            "grandfather": True, "dunning_base_hours": 24, "dunning_max_attempts": 4, "grace_days": 7,
            "list_limit": 100, "limits_cache_ttl": 300, "billable_statuses": ("active",),
-           "max_subscriptions": 200, "merge_strategies": {}, "rank_orders": {},
+           "max_subscriptions": 200, "merge_strategies": {}, "rank_orders": {}, "period_tolerance_seconds": 86400,
            "grant_fund": "credits", "plan_credit_grant_mode": "accumulate", "document_mode": mode}
     return BillingService(
         plans=PlanStore(store), coupons=CouponStore(store), subs=SubscriptionStore(store),

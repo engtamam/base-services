@@ -25,7 +25,7 @@ def _svc(gateway):
                 "grandfather": True, "dunning_base_hours": 24, "dunning_max_attempts": 4,
                 "grace_days": 7, "list_limit": 100, "limits_cache_ttl": 300,
                 "billable_statuses": ("active",), "max_subscriptions": 200,
-                "merge_strategies": {}, "rank_orders": {}})
+                "merge_strategies": {}, "rank_orders": {}, "period_tolerance_seconds": 86400})
 
 
 class _Gateway:

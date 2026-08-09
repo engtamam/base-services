@@ -32,7 +32,7 @@ def _svc(**over):
                limits_cache_ttl=300, settlement_methods={"bank_transfer": True},
                settlement_allow_partial=True, settlement_tolerance_minor=0,
                settlement_max_backdate_days=90, billable_statuses=("active", "trialing", "past_due"),
-               max_subscriptions=200, merge_strategies={}, rank_orders={})
+               max_subscriptions=200, merge_strategies={}, rank_orders={}, period_tolerance_seconds=86400)
     cfg.update(over)
     svc = BillingService(plans=PlanStore(st), coupons=CouponStore(st), subs=SubscriptionStore(st),
                          invoices=InvoiceStore(st), payments=PaymentStore(st), usage=UsageStore(st),

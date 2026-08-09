@@ -64,33 +64,90 @@ def classify_one(text: str) -> str:
     return UNKNOWN
 
 
-def _candidates(dist: metadata.Distribution) -> list[str]:
-    out: list[str] = []
+# Ordered most-permissive → least. A DISJUNCTION (choose one) takes the most permissive it can;
+# a CONJUNCTION (all obligations apply) is bound by its most restrictive term. UNKNOWN sits below
+# WARN in a conjunction because an unvetted licence is a reason to stop, but above nothing.
+_BY_PERMISSIVENESS = (ALLOW, WARN, UNKNOWN, FORBID)
+
+
+def _most_permissive(verdicts) -> str:
+    s = set(verdicts)
+    for v in _BY_PERMISSIVENESS:                 # ALLOW wins, then WARN, then UNKNOWN, then FORBID
+        if v in s:
+            return v
+    return UNKNOWN
+
+
+def _most_restrictive(verdicts) -> str:
+    s = set(verdicts)
+    for v in reversed(_BY_PERMISSIVENESS):       # FORBID wins, then UNKNOWN, then WARN, then ALLOW
+        if v in s:
+            return v
+    return UNKNOWN
+
+
+_OR = re.compile(r"\bOR\b", re.I)
+_AND = re.compile(r"\bAND\b", re.I)
+
+
+def classify_expression(expr: str) -> str:
+    """An SPDX License-Expression, where OR / AND are EXPLICIT and remove the ambiguity a bare
+    classifier list has. `A OR B` is a choice — take the most permissive operand; `A AND B` binds
+    both — take the most restrictive. Parens/WITH are flattened (best-effort): that only widens the
+    operand set, and where OR and AND are mixed we fall to the restrictive reading so a forbidden
+    term can never be hidden behind an OR."""
+    cleaned = expr.replace("(", " ").replace(")", " ")
+    has_or, has_and = bool(_OR.search(cleaned)), bool(_AND.search(cleaned))
+    if has_or and not has_and:
+        return _most_permissive(classify_one(p) for p in _OR.split(cleaned) if p.strip())
+    if has_and and not has_or:
+        return _most_restrictive(classify_one(p) for p in _AND.split(cleaned) if p.strip())
+    if has_or and has_and:                       # mixed: fail safe toward conjunctive
+        parts = re.split(r"\bOR\b|\bAND\b", cleaned, flags=re.I)
+        return _most_restrictive(classify_one(p) for p in parts if p.strip())
+    return classify_one(expr)
+
+
+def _license_sources(dist: metadata.Distribution) -> tuple[list[str], str, str]:
+    """(classifier lines, License-Expression, short License name) — kept SEPARATE because they carry
+    different logic: a classifier list is disjunctive, an expression states its own OR/AND."""
     md = dist.metadata
-    for c in md.get_all("Classifier", []):
-        if "License" in c:
-            out.append(c)
-    expr = md.get("License-Expression")
-    if expr:
-        out.append(expr)
+    classifiers = [c for c in md.get_all("Classifier", []) if "License" in c]
+    expr = (md.get("License-Expression") or "").strip()
     lic = md.get("License")
     # A short License field is a name; a long one is full text (misleading) — skip long.
-    if lic and len(lic) < 60:
-        out.append(lic)
-    return out
+    name = lic.strip() if (lic and len(lic) < 60) else ""
+    return classifiers, expr, name
 
 
 def classify_distribution(name: str, candidates: list[str]) -> tuple[str, str]:
+    """Classify a DISJUNCTIVE set of licence declarations — PyPI classifier lists are alternatives
+    the recipient chooses among (a package offered as `Public Domain` or `BSD` or `GPL` may be taken
+    under Public Domain), so the MOST PERMISSIVE verdict is the one it can be used under. Selecting
+    the GPL on the user's behalf and then forbidding the package for being GPL is exactly backwards,
+    and it fails in the direction that makes people bypass the gate. For an explicit AND, see
+    classify_expression — classifier lists have no AND."""
     if name.lower() in OVERRIDES:
         return OVERRIDES[name.lower()], "override"
-    verdicts = [classify_one(c) for c in candidates]
     detail = "; ".join(candidates)[:80] if candidates else "(no license metadata)"
-    if FORBID in verdicts:
-        return FORBID, detail
-    if ALLOW in verdicts:
-        return ALLOW, detail
-    if WARN in verdicts:
-        return WARN, detail
+    return _most_permissive(classify_one(c) for c in candidates), detail
+
+
+def verdict_for(name: str, dist: metadata.Distribution) -> tuple[str, str]:
+    """The verdict for an installed distribution, reading each licence source with its own logic:
+    an explicit License-Expression is authoritative (it states OR/AND); otherwise a classifier list
+    is disjunctive; otherwise the single License name."""
+    classifiers, expr, lic_name = _license_sources(dist)
+    parts = classifiers + ([expr] if expr else []) + ([lic_name] if lic_name else [])
+    detail = "; ".join(parts)[:80] if parts else "(no license metadata)"
+    if name.lower() in OVERRIDES:
+        return OVERRIDES[name.lower()], "override"
+    if expr:
+        return classify_expression(expr), detail
+    if classifiers:
+        return classify_distribution(name, classifiers)[0], detail
+    if lic_name:
+        return classify_one(lic_name), detail
     return UNKNOWN, detail
 
 
@@ -203,7 +260,7 @@ def scan() -> list[tuple[str, str, str, str]]:
         if closure and cn not in closure:
             continue
         seen.add(cn)
-        verdict, detail = classify_distribution(name, _candidates(dist))
+        verdict, detail = verdict_for(name, dist)
         results.append((name, dist.version, verdict, detail))
     return sorted(results, key=lambda r: r[0].lower())
 

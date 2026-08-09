@@ -144,6 +144,7 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
                 "max_subscriptions": s.MAX_BILLABLE_SUBSCRIPTIONS,
                 "merge_strategies": s.entitlement_merge_strategies,
                 "rank_orders": s.entitlement_rank_orders,
+                "period_tolerance_seconds": s.ENTITLEMENT_PERIOD_TOLERANCE_SECONDS,
                 "limits_cache_ttl": s.LIMITS_CACHE_TTL_SECONDS,
                 "settlement_methods": s.settlement_methods,
                 "settlement_allow_partial": s.SETTLEMENT_ALLOW_PARTIAL,

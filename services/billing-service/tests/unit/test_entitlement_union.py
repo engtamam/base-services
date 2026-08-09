@@ -29,7 +29,8 @@ NOW = 1_700_000_000.0
 DAY = 86400.0
 
 _CFG = {"billable_statuses": ("active", "trialing", "past_due"), "grace_days": 7,
-        "grandfather": True, "max_subscriptions": 200, "merge_strategies": {}, "rank_orders": {}}
+        "grandfather": True, "max_subscriptions": 200, "merge_strategies": {}, "rank_orders": {},
+        "period_tolerance_seconds": 86400}
 
 
 def run(c):
@@ -410,3 +411,67 @@ def test_an_EXPIRED_contract_stops_contributing_once_it_is_cancelled():
     _sub(store, "sub_plan", limits={"seats": 10}, created="2024-01-01")
     _sub(store, "sub_contract", limits={"seats": 500}, created="2024-01-02", status="canceled")
     assert run(r.resolve("acme", NOW))["limits"]["seats"] == 10
+
+
+# ── fail closed on a lapsed period (a stalled sweep must not read as free service) ──────
+def test_an_active_subscription_PAST_its_period_stops_contributing():
+    # The defect: status alone granted entitlements, so an active sub whose period ended kept its
+    # limits for ever — a paused renewal sweep silently became free service. It must fail CLOSED.
+    store, r = _world()                                   # tolerance = 1 day
+    _sub(store, "sub_a", limits={"seats": 10}, status="active", period_end=NOW - 2 * DAY)
+    out = run(r.resolve("acme", NOW))
+    assert out["limits"] == {}                            # dropped, not granted
+    assert out["lapsed"] == ["sub_a"]                     # and made visible, not silent
+
+
+def test_an_active_subscription_WITHIN_the_tolerance_still_counts():
+    # A sweep running a little late must not cut anyone off — CYCLE_LEAD_SECONDS renews ahead of the
+    # boundary, and the tolerance covers the small gap.
+    store, r = _world()                                   # tolerance = 1 day
+    _sub(store, "sub_a", limits={"seats": 10}, status="active", period_end=NOW - 3600)
+    out = run(r.resolve("acme", NOW))
+    assert out["limits"] == {"seats": 10} and out["lapsed"] == []
+
+
+def test_a_non_renewing_pack_with_NO_period_end_never_lapses():
+    # A prepaid pack / open-ended contract has no period to end. `period_end` absent ⇒ it keeps
+    # counting, so the fail-closed rule does not break the shapes the union was built for.
+    store, r = _world()
+    _sub(store, "sub_a", limits={"seats": 10}, status="active", period_end=0)
+    out = run(r.resolve("acme", NOW))
+    assert out["limits"] == {"seats": 10} and out["lapsed"] == []
+
+
+def test_the_tolerance_is_configurable():
+    # Zero tolerance = cut off at the boundary; a longer one keeps a sub alive further past it.
+    store, r = _world(period_tolerance_seconds=0)
+    _sub(store, "sub_a", limits={"seats": 10}, status="active", period_end=NOW - 1)
+    assert run(r.resolve("acme", NOW))["limits"] == {}          # 1s past, no tolerance ⇒ dropped
+    store2, r2 = _world(period_tolerance_seconds=int(5 * DAY))
+    _sub(store2, "sub_a", limits={"seats": 10}, status="active", period_end=NOW - 2 * DAY)
+    assert run(r2.resolve("acme", NOW))["limits"] == {"seats": 10}   # inside 5-day tolerance
+
+
+def test_a_lapsed_active_subscription_is_logged_loudly(caplog):
+    # "A missed sweep should look like an outage." A spike in this WARNING is the alertable signal
+    # that renewals have stopped — not an invoice discovered missing at month end.
+    import logging
+    store, r = _world()
+    _sub(store, "sub_a", limits={"seats": 10}, status="active", period_end=NOW - 2 * DAY)
+    with caplog.at_level(logging.WARNING, logger="app.entitlements"):
+        run(r.resolve("acme", NOW))
+    assert any(rec.msg == "entitlement_period_lapsed" for rec in caplog.records)
+
+
+def test_a_past_due_lapse_is_ordinary_dunning_not_the_alarm(caplog):
+    # A past_due sub falling out of grace is the expected end of dunning, not a stalled sweep, so it
+    # is INFO, not the WARNING that signals renewals have stopped. It is still reported as lapsed.
+    import logging
+    store, r = _world(grace_days=7)
+    _sub(store, "sub_a", limits={"seats": 10}, status="past_due", period_end=NOW - 30 * DAY)
+    with caplog.at_level(logging.INFO, logger="app.entitlements"):
+        out = run(r.resolve("acme", NOW))
+    assert out["lapsed"] == ["sub_a"]
+    msgs = {(rec.levelno, rec.msg) for rec in caplog.records}
+    assert (logging.INFO, "entitlement_dunning_lapsed") in msgs
+    assert not any(rec.msg == "entitlement_period_lapsed" for rec in caplog.records)

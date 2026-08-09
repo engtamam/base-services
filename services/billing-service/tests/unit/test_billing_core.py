@@ -22,7 +22,7 @@ CFG = {"cycle_sweep_limit": 1000, "platform_max_pages": 50, "cycle_lead_seconds"
        # Entitlement resolution (Phase 42). Required by EntitlementResolver — a service
        # built without these would resolve entitlements against nothing.
        "billable_statuses": ("active", "trialing", "past_due"), "grandfather": True,
-       "max_subscriptions": 200, "merge_strategies": {}, "rank_orders": {},
+       "max_subscriptions": 200, "merge_strategies": {}, "rank_orders": {}, "period_tolerance_seconds": 86400,
        }
 
 

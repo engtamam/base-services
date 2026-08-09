@@ -23,6 +23,18 @@ platform's tolerance for unpaid usage is theirs to set and not ours to assume.
 `canceled` contributes nothing, ever. That one is not configurable: a cancelled subscription that
 still granted access would make cancellation a suggestion.
 
+AND IT FAILS CLOSED ON A LAPSED PERIOD. Status is not enough: an `active` subscription whose paid
+period has ended keeps contributing until something changes its status, and the only thing that does
+is the renewal sweep. So if the sweep is paused, throws, or a deployment gap swallows a day, every
+affected tenant silently keeps full access — nothing red, no probe failing, the only evidence an
+invoice never raised that nobody reads until month end. A missed sweep must look like an outage, not
+generosity. So a subscription whose `current_period_end` has passed (beyond a small, stated
+tolerance — CYCLE_LEAD_SECONDS already renews AHEAD of the boundary) stops contributing, and the
+drop is surfaced (`lapsed`, and a log a spike in is alertable). A row with no period end is a
+non-renewing pack or open-ended contract and has no period to lapse. This is also what makes manual
+(non-auto) renewal work at all: a lapsed subscription stops on its own, with no cancel-sweeper to
+write.
+
 GRANDFATHERING IS PER SUBSCRIPTION, BEFORE THE MERGE. Each row's signup terms win for that row.
 Merging first and grandfathering after would apply one subscription's historic protection to
 another bought yesterday — the customer would get terms they never agreed to, in whichever
@@ -33,6 +45,9 @@ from __future__ import annotations
 from typing import Any
 
 from app.core import entitlement_merge as _merge
+from app.observability.logging import get_logger
+
+_log = get_logger("app.entitlements")
 
 ACTIVE, TRIALING, PAST_DUE, CANCELED = "active", "trialing", "past_due", "canceled"
 
@@ -47,7 +62,7 @@ class EntitlementResolver:
     # is a KeyError at construction, which is a deploy that fails rather than a tenant resolved
     # against a number nobody chose.
     REQUIRED_CFG = ("billable_statuses", "grace_days", "grandfather", "max_subscriptions",
-                    "merge_strategies", "rank_orders")
+                    "merge_strategies", "rank_orders", "period_tolerance_seconds")
 
     def __init__(self, *, subs, plans, cfg) -> None:
         missing = [k for k in self.REQUIRED_CFG if k not in cfg]
@@ -61,37 +76,51 @@ class EntitlementResolver:
     def _statuses(self) -> tuple[str, ...]:
         return tuple(self._cfg["billable_statuses"])
 
-    def _in_grace(self, sub: dict, now: float) -> bool:
-        """A past_due subscription still inside the grace window.
+    def _period_current(self, sub: dict, status: str, now: float) -> bool:
+        """Whether this subscription's PAID PERIOD still covers `now` — the check that makes the
+        resolver fail CLOSED.
 
-        Measured from the end of the period it failed to pay for, not from `now` minus a guess:
-        the question is how long this customer has been overdue, and only the period end says that.
-        A missing period end is treated as OUT of grace — an unmeasurable overdue is not a short
-        one, and defaulting the other way would grant unlimited free usage to any row with a
-        missing field.
+        The renewal sweep, not the resolver, moves a period forward (CYCLE_LEAD_SECONDS invoices
+        before the boundary so a healthy sweep renews ahead of it). So if the resolver ignores the
+        period end, a paused or erroring sweep silently keeps granting full access — the same class
+        as a terminal state read as a self-resolving one. Reading the field the row already carries
+        makes a missed sweep look like a lapse instead.
+
+          past_due — the credit-decision window: entitled only while measurably, boundedly overdue,
+            inside GRACE_DAYS. A missing period end, or a zero/negative grace, is OUT — an
+            unmeasurable overdue is not a short one, and the other default grants unlimited free
+            usage to any row with a missing field.
+          active / trialing (and any other billable status) — the period must not have ended beyond
+            a small tolerance (a sweep running a little late must not cut anyone off). A row with NO
+            period end is a non-renewing pack or an open-ended contract: no period to lapse, so it
+            keeps counting.
         """
-        grace_days = float(self._cfg["grace_days"])
-        if grace_days <= 0:
-            return False
         period_end = float(sub.get("current_period_end") or 0)
+        if status == PAST_DUE:
+            grace_days = float(self._cfg["grace_days"])
+            if grace_days <= 0 or not period_end:
+                return False
+            return now < period_end + grace_days * 86400
         if not period_end:
-            return False
-        return now < period_end + grace_days * 86400
+            return True
+        tolerance = max(0.0, float(self._cfg["period_tolerance_seconds"]))
+        return now <= period_end + tolerance
+
+    def _keep_reason(self, sub: dict, now: float) -> tuple[bool, str]:
+        """(kept, reason). The reason is why a row was dropped — so a lapse is distinguishable from a
+        wrong status, and can be surfaced instead of silently vanishing."""
+        status = sub.get("status", "")
+        if status == CANCELED:
+            return False, "canceled"          # never, and deliberately not configurable
+        if status not in self._statuses():
+            return False, "status_not_billable"
+        if not self._period_current(sub, status, now):
+            return False, "period_lapsed"
+        return True, status
 
     def contributing(self, rows: list[dict], now: float) -> list[dict]:
-        """The subscriptions whose limits count right now, with the reason each was kept."""
-        keep = []
-        allowed = self._statuses()
-        for sub in rows:
-            status = sub.get("status", "")
-            if status == CANCELED:
-                continue                      # never, and deliberately not configurable
-            if status not in allowed:
-                continue
-            if status == PAST_DUE and not self._in_grace(sub, now):
-                continue
-            keep.append(sub)
-        return keep
+        """The subscriptions whose limits count right now."""
+        return [sub for sub in rows if self._keep_reason(sub, now)[0]]
 
     # ── limits of each subscription ───────────────────────────────────────────
     async def _limits_for_all(self, live: list[dict]) -> list[tuple[str, dict[str, Any]]]:
@@ -133,6 +162,26 @@ class EntitlementResolver:
         rows = await self._subs.billable_for(tenant, self._statuses(),
                                              limit=self._cfg["max_subscriptions"])
         live = self.contributing(rows, now)
+        # Dropped specifically because the paid period ended — as opposed to a wrong status. Kept
+        # separate from `live` so the lapse can be surfaced instead of vanishing silently. A second
+        # pass over a bounded list (max_subscriptions) — clarity over a micro-optimisation.
+        lapsed = [s for s in rows if self._keep_reason(s, now)[1] == "period_lapsed"]
+
+        # A lapse means the renewal sweep did not move this period forward. In a healthy system
+        # CYCLE_LEAD_SECONDS invoices ahead of the boundary, so an active/trialing lapse should never
+        # happen — several at once is the sweep being paused or erroring, and that must be visible NOW
+        # (a spike in this log is alertable) rather than surfacing at month-end reconciliation as an
+        # invoice that was never raised. A past_due lapse is the ordinary end of dunning, not an
+        # anomaly, so it is logged at info.
+        for sub in lapsed:
+            period_end = float(sub.get("current_period_end") or 0)
+            fields = {"tenant": tenant, "subscription": sub.get("id", ""),
+                      "status": sub.get("status", ""), "current_period_end": period_end,
+                      "overdue_seconds": round(now - period_end, 3) if period_end else None}
+            if sub.get("status") == PAST_DUE:
+                _log.info("entitlement_dunning_lapsed", extra=fields)
+            else:
+                _log.warning("entitlement_period_lapsed", extra=fields)
 
         # A `replace` plan supersedes everything before it. Applied by TRUNCATING the list rather
         # than by merging and then overwriting, so a superseded subscription cannot leak a key the
@@ -177,4 +226,8 @@ class EntitlementResolver:
             # oldest is the anchor — but `detail` is the honest answer and this is compatibility.
             "subscription_id": live[0].get("id", "") if live else "",
             "subscriptions": [s.get("id", "") for s in live],
+            # Subscriptions dropped because their paid period ended — the honest, visible answer to
+            # "why did access stop / why is nobody being invoiced?": the renewal did not run. Empty
+            # in a healthy system.
+            "lapsed": [s.get("id", "") for s in lapsed],
         }

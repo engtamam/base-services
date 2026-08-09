@@ -306,6 +306,16 @@ class Settings(BaseSettings):
     # order — an invented order silently promotes or demotes a customer's support tier.
     #   {"support_tier": ["bronze", "silver", "gold"]}
     ENTITLEMENT_RANK_ORDERS: str = ""
+    # Entitlements FAIL CLOSED on a lapsed period. An active/trialing subscription whose
+    # current_period_end has passed stops contributing — because the renewal sweep, not the resolver,
+    # is what moves a paid period forward, and if the sweep is paused or errors, an entitlement that
+    # ignored the period end would keep granting full access with nothing red anywhere. A missed
+    # sweep must look like an outage, not generosity. This tolerance is how long PAST the period end a
+    # subscription still counts, so a sweep running a little late (CYCLE_LEAD_SECONDS already invoices
+    # BEFORE the boundary) never cuts anyone off. A STATED tolerance is defensible; the unbounded one
+    # that existed because the field was not read is not. Default one day. past_due uses GRACE_DAYS
+    # instead — a late payment is a longer, credit-decision window.
+    ENTITLEMENT_PERIOD_TOLERANCE_SECONDS: int = 86_400
 
     @property
     def billable_statuses(self) -> tuple[str, ...]:

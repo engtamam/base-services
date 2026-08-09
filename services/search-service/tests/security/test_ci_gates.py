@@ -30,9 +30,25 @@ def test_classify_one(text, expected):
     assert lic.classify_one(text) == expected
 
 
-def test_forbid_beats_allow_when_mixed():
+def test_a_classifier_list_is_disjunctive_most_permissive_wins():
+    # PyPI classifier lists are ALTERNATIVES the recipient chooses among (docutils ships as
+    # Public Domain OR BSD OR GPL). Selecting the GPL on the user's behalf and then forbidding the
+    # package for being GPL is backwards — a permissive alternative exists, so the package is ALLOW.
     v, _ = lic.classify_distribution("x", ["MIT License", "GPLv3"])
-    assert v == lic.FORBID
+    assert v == lic.ALLOW
+    v2, _ = lic.classify_distribution("docutils",
+                                      ["License :: Public Domain",
+                                       "License :: OSI Approved :: BSD License",
+                                       "License :: OSI Approved :: GNU General Public License (GPL)"])
+    assert v2 == lic.ALLOW
+
+
+def test_a_license_expression_reads_OR_and_AND_explicitly():
+    # An explicit SPDX expression removes the ambiguity: OR is a choice, AND binds both.
+    assert lic.classify_expression("MIT OR GPL-3.0-only") == lic.ALLOW          # choose MIT
+    assert lic.classify_expression("MIT AND GPL-3.0-only") == lic.FORBID        # both apply
+    assert lic.classify_expression("Apache-2.0 OR AGPL-3.0") == lic.ALLOW       # choose Apache
+    assert lic.classify_expression("MIT") == lic.ALLOW                          # no operator
 
 
 def test_override_wins():

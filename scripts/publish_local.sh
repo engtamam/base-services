@@ -53,11 +53,19 @@ SHA="$(git rev-parse HEAD)"
 # the 22 services: every Dockerfile dir except the _template seed
 SVCS="$(find services -maxdepth 2 -name Dockerfile -printf '%h\n' | sed 's#services/##' | grep -v '^_template$' | sort)"
 
-# which changed since PREV (path-scoped to each service dir)
+# which changed since PREV — scoped to the paths that ACTUALLY go into the image, not the whole
+# service dir. Every Dockerfile copies exactly app/, pyproject.toml and README.md (plus the
+# Dockerfile itself governs the build), so a change under ci/ or tests/ produces a byte-identical
+# image: rebuilding it is a cache-hit that wastes the build lane where a re-tag would do. Scoping
+# here lets a fleet-wide ci/ change (a gate fix touching all 24) re-tag the unchanged 22 instead of
+# rebuilding them. A missed rebuild is worse than a redundant one, so this list must stay a
+# SUPERSET of what the Dockerfile reads — widen it the day a Dockerfile copies something new.
+IMAGE_PATHS="app pyproject.toml README.md Dockerfile"
 changed() {
   [ "$REBUILD_ALL" = 1 ] && { echo "$SVCS"; return; }
   for s in $SVCS; do
-    if [ -n "$(git diff --name-only "$PREV..HEAD" -- "services/$s" 2>/dev/null)" ]; then echo "$s"; fi
+    paths=""; for p in $IMAGE_PATHS; do paths="$paths services/$s/$p"; done
+    if [ -n "$(git diff --name-only "$PREV..HEAD" -- $paths 2>/dev/null)" ]; then echo "$s"; fi
   done
 }
 CHANGED="$(changed)"

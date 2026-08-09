@@ -37,7 +37,7 @@ def _svc(st, *, clawback_enabled=True, on_partial=False, grants=None, gw=None):
            "grandfather": True, "dunning_base_hours": 24, "dunning_max_attempts": 4,
            "grace_days": 7, "list_limit": 100, "limits_cache_ttl": 300,
            "billable_statuses": ("active",), "max_subscriptions": 200, "merge_strategies": {},
-           "rank_orders": {}, "grant_fund": "credits", "plan_credit_grant_mode": "accumulate",
+           "rank_orders": {}, "period_tolerance_seconds": 86400, "grant_fund": "credits", "plan_credit_grant_mode": "accumulate",
            "clawback_enabled": clawback_enabled, "clawback_allow_negative": True,
            "clawback_on_partial": on_partial, "clawback_skip_expired": True}
     return BillingService(
