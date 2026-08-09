@@ -277,8 +277,11 @@ class SubscriptionStore(_Repo):
             rows, cursor = await self._store.find(
                 self.collection, {"status": ["active", "trialing"]},
                 limit=_SWEEP_PAGE, after=cursor, sort=("created", "asc"))
+            # interval "once" is a one-time purchase — it never renews, and it carries a zero period
+            # end (so the entitlement resolver never lapses it). Without this guard a zero end reads
+            # as `0 <= now` and the sweep would re-invoice a one-time pack every cycle.
             out.extend(Subscription.from_dict(r) for r in rows
-                       if float(r.get("current_period_end", 0)) <= now)
+                       if r.get("interval") != "once" and float(r.get("current_period_end", 0)) <= now)
             if not cursor:
                 break
         return out[:limit]

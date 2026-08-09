@@ -261,3 +261,42 @@ def test_settling_a_past_due_invoice_reactivates_the_subscription():
     assert res["invoice_status"] in ("paid", "settled")
     assert run(SubscriptionStore(st).fetch(sub.id)).status == "active", \
         "a bank transfer paid the invoice but the entitlement stayed off"
+
+
+# ── trial + one-time period boundaries (escalation) ─────────────────────────────
+def test_a_trial_ends_at_trial_end_not_a_full_interval():
+    # trial_end used to be written and never read: current_period_end got a full interval, so a
+    # 14-day trial silently granted 30 days. The period end must BE the trial end (Stripe/Paddle:
+    # the first charge is raised then and the cycle moves the period forward a full interval).
+    st = MemoryDataStore()
+    b = _svc(st, MockGW(ok=True))
+    plan = run(b.create_plan(name="Pro", trial_days=14,
+                             prices=[{"interval": "month", "amount_minor": 10000,
+                                      "currency": "SAR", "type": "flat"}]))
+    sub = run(b.subscribe(tenant="t1", plan_id=plan.id, payment_token="pm_1"))
+    assert sub.status == "trialing"
+    assert sub.current_period_end == sub.trial_end          # ends when it says, not a month later
+    assert sub.trial_end > 0
+
+
+def test_a_one_time_purchase_has_no_period_end_and_never_lapses():
+    # interval "once" used to get current_period_end = now + 0 = now, which the fail-closed resolver
+    # then dropped the next day. A one-time pack has NO renewing period → zero end, never lapses.
+    st = MemoryDataStore()
+    b = _svc(st, MockGW(ok=True))
+    plan = run(b.create_plan(name="Pack", prices=[{"interval": "once", "amount_minor": 5000,
+                                                   "currency": "SAR", "type": "flat"}]))
+    sub = run(b.subscribe(tenant="t1", plan_id=plan.id, interval="once", payment_token="pm_1"))
+    assert sub.current_period_end == 0.0 and sub.status == "active"
+
+
+def test_the_renewal_sweep_skips_a_one_time_purchase():
+    # A zero period end reads as `0 <= now`, so without the interval guard the sweep would
+    # re-invoice a one-time pack every cycle. It must never be due.
+    st = MemoryDataStore()
+    b = _svc(st, MockGW(ok=True))
+    plan = run(b.create_plan(name="Pack", prices=[{"interval": "once", "amount_minor": 5000,
+                                                   "currency": "SAR", "type": "flat"}]))
+    once = run(b.subscribe(tenant="t1", plan_id=plan.id, interval="once", payment_token="pm_1"))
+    due = run(SubscriptionStore(st).due(now=9_999_999_999.0))
+    assert once.id not in [s.id for s in due]

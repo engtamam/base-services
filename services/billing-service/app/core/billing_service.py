@@ -355,13 +355,28 @@ class BillingService:
             trial_days += int(coupon.value)
         trial_end = now + trial_days * 86400 if trial_days else 0.0
         price_snap, limits_snap = self._snapshot(plan, interval)   # lock the signup terms
+        # The period boundary decides when the entitlement lapses and when the sweep next charges.
+        #   once     — a one-time purchase does NOT renew and has no period to lapse. It gets a ZERO
+        #              period end so the resolver's "no period end ⇒ never lapses" rule applies (a
+        #              non-zero `now` would expire the pack the next day), and due() skips it so the
+        #              sweep never re-charges it.
+        #   trialing — the period end IS the trial end (Stripe/Paddle semantics): the FIRST charge is
+        #              raised when the trial ends and the cycle moves the period forward a full
+        #              interval then. Setting a full interval here gave a 14-day trial 30 free days,
+        #              because trial_end was written and never read.
+        #   else     — a full interval from now.
+        if interval == "once":
+            period_end, status = 0.0, "active"
+        elif trial_days:
+            period_end, status = trial_end, "trialing"
+        else:
+            period_end, status = now + _INTERVAL.get(interval, _INTERVAL["month"]), "active"
         sub = Subscription(
             id=new_id("sub_"), tenant=tenant, plan_id=plan_id, interval=interval, quantity=quantity,
             coupon_code=coupon_code, payment_token=payment_token, buyer_name=buyer_name,
             buyer_vat=buyer_vat, buyer_cr=buyer_cr,
             price_snapshot=price_snap, limits_snapshot=limits_snap, terms_version=iso(),
-            status="trialing" if trial_days else "active",
-            current_period_start=now, current_period_end=now + _INTERVAL.get(interval, _INTERVAL["month"]),
+            status=status, current_period_start=now, current_period_end=period_end,
             trial_end=trial_end, created=iso())
         return await self._subs.save(sub)
 
