@@ -42,7 +42,11 @@ class CheckoutGateway:
                       provider_id=str(resp.get("action_id", provider_id)))
 
     def verify_webhook(self, *, headers, body, secret):
-        verified = constant_eq(headers.get("cko-signature", ""), hmac_sha256_hex(secret or self._whsec, body))
+        # Checkout.com HMAC-SHA256s the RAW body (hex) with the webhook signature key, in the
+        # Cko-Signature header. Verify against the raw bytes — re-serialising the JSON would change
+        # the precision of some values and the signature would no longer match.
+        h = {str(k).lower(): v for k, v in (headers or {}).items()}
+        verified = constant_eq(h.get("cko-signature", ""), hmac_sha256_hex(secret or self._whsec, body))
         import json
         try:
             evt = json.loads(body.decode())

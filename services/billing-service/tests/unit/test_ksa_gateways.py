@@ -36,13 +36,42 @@ def test_geidea_requires_both_secrets():
         G.GeideaGateway("pubkey")            # no api password
 
 
-def test_geidea_webhook_signature():
-    gw = G.GeideaGateway("k", extra_secret="p", webhook_secret="whsec")
-    body = json.dumps({"order": {"orderId": "o1", "status": "Success"}}).encode()
+def _geidea_signed(pubkey, apipass, order, timestamp):
+    """Build a Geidea-shaped callback with a signature over the documented field digest:
+    HMAC-SHA256 (base64) keyed by the API password over
+    {pubkey}{amount:.2f}{currency}{orderId}{status}{merchantReferenceId}{timestamp}."""
     import base64, hmac
-    sig = base64.b64encode(hmac.new(b"whsec", body, hashlib.sha256).digest()).decode()
-    assert gw.verify_webhook(headers={"signature": sig}, body=body, secret="whsec").verified
-    assert not gw.verify_webhook(headers={"signature": "wrong"}, body=body, secret="whsec").verified
+    digest = (f"{pubkey}{float(order['amount']):.2f}{order['currency']}{order['orderId']}"
+              f"{order['status']}{order['merchantReferenceId']}{timestamp}")
+    sig = base64.b64encode(hmac.new(apipass.encode(), digest.encode(), hashlib.sha256).digest()).decode()
+    return json.dumps({"order": order, "timestamp": timestamp, "signature": sig}).encode()
+
+
+def test_geidea_webhook_verifies_the_field_digest_not_the_raw_body():
+    gw = G.GeideaGateway("pubk", extra_secret="apipass")
+    order = {"orderId": "o1", "amount": 50.0, "currency": "SAR", "status": "Success",
+             "merchantReferenceId": "ref1"}
+    body = _geidea_signed("pubk", "apipass", order, "2026-01-01T00:00:00")
+    ev = gw.verify_webhook(headers={}, body=body, secret="")
+    assert ev.verified is True and ev.type == "payment.succeeded" and ev.provider_id == "o1"
+
+
+def test_geidea_webhook_rejects_a_tampered_amount():
+    gw = G.GeideaGateway("pubk", extra_secret="apipass")
+    order = {"orderId": "o1", "amount": 50.0, "currency": "SAR", "status": "Success",
+             "merchantReferenceId": "ref1"}
+    body = _geidea_signed("pubk", "apipass", order, "2026-01-01T00:00:00")
+    import json as _j
+    evt = _j.loads(body); evt["order"]["amount"] = 5000.0        # attacker inflates the amount
+    assert gw.verify_webhook(headers={}, body=_j.dumps(evt).encode(), secret="").verified is False
+
+
+def test_geidea_webhook_rejects_a_wrong_api_password():
+    gw = G.GeideaGateway("pubk", extra_secret="apipass")
+    order = {"orderId": "o1", "amount": 50.0, "currency": "SAR", "status": "Success",
+             "merchantReferenceId": "ref1"}
+    body = _geidea_signed("pubk", "WRONGPASS", order, "2026-01-01T00:00:00")   # forged with wrong key
+    assert gw.verify_webhook(headers={}, body=body, secret="").verified is False
 
 
 # ── APS / PayFort ─────────────────────────────────────────────────────────────

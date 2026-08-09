@@ -25,6 +25,8 @@ class GeideaGateway:
         # api_key = merchant public key, extra_secret = API password
         if not (api_key and extra_secret):
             raise GatewayUnavailable("PAYMENT_API_KEY (public key) + PAYMENT_EXTRA_SECRET (api password) required")
+        self._pubkey = api_key
+        self._apipass = extra_secret
         self._h = {"Authorization": basic_auth(api_key, extra_secret)}
         self._base = (base or "https://api.merchant.geidea.net").rstrip("/")
         self._whsec = webhook_secret
@@ -76,16 +78,36 @@ class GeideaGateway:
                                expires_at=str(session.get("expiryDate", "")))
 
     def verify_webhook(self, *, headers, body, secret):
-        sig = headers.get("x-geidea-signature", "") or headers.get("signature", "")
-        expected = base64.b64encode(
-            hmac.new((secret or self._whsec).encode(), body, hashlib.sha256).digest()).decode()
-        verified = constant_eq(sig, expected)
         import json
         try:
             evt = json.loads(body.decode())
-        except Exception:
+        except Exception:  # noqa: BLE001 — a non-JSON body is not a verified event
             evt = {}
         order = evt.get("order") or {}
+        # Geidea does NOT sign the raw body. The callback carries a `signature` FIELD that is
+        # HMAC-SHA256 (base64) keyed by the API PASSWORD over the concatenation
+        #   {merchantPublicKey}{amount:.2f}{currency}{orderId}{status}{merchantReferenceId}{timestamp}
+        # (verified against docs.geidea.net). Reconstruct it from the payload's own fields; the old
+        # raw-body HMAC never matched Geidea's scheme, so no real callback ever verified.
+        amount = order.get("amount", order.get("totalAmount", evt.get("amount", 0)))
+        try:
+            amount_str = f"{float(amount):.2f}"
+        except (TypeError, ValueError):
+            amount_str = str(amount)
+        digest = "".join([
+            self._pubkey, amount_str,
+            str(order.get("currency", evt.get("currency", ""))),
+            str(order.get("orderId", "")),
+            str(order.get("status", "")),
+            str(order.get("merchantReferenceId", "")),
+            str(evt.get("timestamp", order.get("timestamp", ""))),
+        ])
+        expected = base64.b64encode(
+            hmac.new(self._apipass.encode(), digest.encode(), hashlib.sha256).digest()).decode()
+        # The signature is a body field; a header spelling is accepted as a fallback.
+        h = {str(k).lower(): v for k, v in (headers or {}).items()}
+        provided = str(evt.get("signature", "")) or h.get("x-geidea-signature", "") or h.get("signature", "")
+        verified = constant_eq(provided, expected)
         status = str(order.get("status", evt.get("responseCode", ""))).lower()
         kind = "payment.succeeded" if status in ("success", "paid", _OK) else \
             "refund" if "refund" in status else "payment.failed"

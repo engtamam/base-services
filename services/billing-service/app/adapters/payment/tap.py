@@ -1,9 +1,17 @@
-"""Tap (KSA/GCC) — verified: POST /v2/charges, Bearer sk, JSON, amount in MAJOR
-units (decimal), source {id: token}. Refund POST /v2/refunds."""
+"""Tap (KSA/GCC) — verified against developers.tap.company.
+
+  charge   POST /v2/charges, Bearer sk, JSON, amount in MAJOR units (decimal), source {id: token}.
+  refund   POST /v2/refunds, charge_id + amount (major).
+  webhook  the `hashstring` header is HMAC-SHA256 (hex) over a FIXED FIELD DIGEST, NOT the raw body:
+             x_id{id}x_amount{amount}x_currency{currency}x_gateway_reference{reference.gateway}
+             x_payment_reference{reference.payment}x_status{status}x_created{transaction.created}
+           amount is formatted to the currency's decimals ("1.00"); signed with the secret API key.
+"""
 from __future__ import annotations
 
 from app.adapters.billing_http import bearer, post_json
 from app.adapters.payment._common import constant_eq, hmac_sha256_hex, major
+from app.core.currency import decimals as _decimals
 from app.ports.payment_gateway import Charge, GatewayUnavailable, WebhookEvent
 
 _OK = {"CAPTURED", "AUTHORIZED"}
@@ -44,13 +52,27 @@ class TapGateway:
                       provider_id=str(resp.get("id", provider_id)))
 
     def verify_webhook(self, *, headers, body, secret):
-        # Tap posts a 'hashstring' header = HMAC-SHA256 of a field digest; verify best-effort.
-        verified = constant_eq(headers.get("hashstring", ""), hmac_sha256_hex(secret or self._whsec, body))
         import json
         try:
             evt = json.loads(body.decode())
-        except Exception:
+        except Exception:  # noqa: BLE001 — a non-JSON body is not a verified event
             evt = {}
+        # Reconstruct Tap's field digest from the SAME payload fields and HMAC it — verifying the raw
+        # body (the old behaviour) never matched Tap's header, so every webhook read as unverified.
+        ref = evt.get("reference") or {}
+        txn = evt.get("transaction") or {}
+        currency = str(evt.get("currency", "") or "")
+        try:
+            amount = f"{float(evt.get('amount', 0)):.{_decimals(currency)}f}"
+        except (TypeError, ValueError):
+            amount = str(evt.get("amount", ""))
+        digest = (f"x_id{evt.get('id','')}x_amount{amount}x_currency{currency}"
+                  f"x_gateway_reference{ref.get('gateway','')}"
+                  f"x_payment_reference{ref.get('payment','')}"
+                  f"x_status{evt.get('status','')}x_created{txn.get('created','')}")
+        h = {str(k).lower(): v for k, v in (headers or {}).items()}
+        expected = hmac_sha256_hex(secret or self._whsec, digest.encode())
+        verified = constant_eq(h.get("hashstring", ""), expected)
         status = str(evt.get("status", "")).upper()
         kind = "payment.succeeded" if status in _OK else "refund" if status == "REFUNDED" \
             else "payment.failed"
