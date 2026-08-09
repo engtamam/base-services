@@ -28,6 +28,7 @@
 #   10  Docker CE         official repo + compose plugin
 #   10.5 Helm             deploy goes through the base-services Helm chart
 #   11  k3s               single-node Kubernetes (flannel policy OFF for Calico; Traefik OFF — own edge)
+#   11a secrets-at-rest   encryption ON at install (before any Secret); byte-verified from the datastore
 #
 #  Environment (all optional; never hardcode a secret here):
 #    PRODUCT_NAME    banner + slug for names        (default: base-services)
@@ -37,6 +38,12 @@
 #    TIMEZONE        IANA tz                        (default: Asia/Riyadh)
 #    K3S_VERSION     pin the k3s channel/version    (default: stable)
 #    SKIP_SSH_HARDEN =1 to keep password SSH (useful on a console-only VM)
+#    SECRETS_AT_REST how Kubernetes Secrets are encrypted at rest (default: aes)
+#                      aes           native k3s AES-CBC; key on the node — the zero-dependency floor
+#                      kms:aws|gcp|azure|vault  envelope encryption via the OPERATOR's KMS (key off-node)
+#                      off           explicit opt-out (warns; the byte-check is skipped)
+#    SECRETS_KMS_ENDPOINT   the KMS plugin's unix socket, required for kms:* (e.g. unix:///run/kms.sock)
+#    SECRETS_ENCRYPTION_KEY optional base64 32-byte AES fallback key for the kms path (else generated)
 # ==================================================================================================
 set -Eeuo pipefail
 
@@ -52,6 +59,23 @@ SSH_PORT="${SSH_PORT:-22}"
 TIMEZONE="${TIMEZONE:-Asia/Riyadh}"
 K3S_VERSION="${K3S_VERSION:-stable}"
 SKIP_SSH_HARDEN="${SKIP_SSH_HARDEN:-0}"
+# ── secrets at rest ───────────────────────────────────────────────────────────────────────────────
+# k3s stores Kubernetes Secrets in its datastore. UNENCRYPTED, that is base64 — readable by anyone
+# who reads the disk, and behind those Secrets is everything: the database password, the internal
+# service token, the token-signing key, the backup KEK, and PII_SALT (frozen, un-rotatable — its
+# only defence is never having been readable). So encryption is ON by default, enabled AT INSTALL,
+# BEFORE any Secret is written, so nothing is ever stored in the clear.
+#   aes         — native k3s AES-CBC. The key is on the node. The floor: zero external dependencies.
+#   kms:<prov>  — envelope encryption via a KMS the OPERATOR owns (aws|gcp|azure|vault). The key lives
+#                 OUTSIDE the node, so the datastore bytes are useless without it. Needs
+#                 SECRETS_KMS_ENDPOINT (the KMS plugin's unix socket the operator runs).
+#   off         — explicit opt-out (refused silently by nobody: it warns and the posture check skips).
+# Start on `aes` and migrate to `kms:*` when the KMS is ready — a re-encrypt covers every existing
+# Secret with no plaintext ever exposed.
+SECRETS_AT_REST="${SECRETS_AT_REST:-aes}"
+SECRETS_ENCRYPTION_KEY="${SECRETS_ENCRYPTION_KEY:-}"   # optional base64 32-byte AES key (else generated)
+SECRETS_KMS_ENDPOINT="${SECRETS_KMS_ENDPOINT:-}"       # e.g. unix:///var/run/kms/socket.sock (operator's plugin)
+K3S_ENC_CONFIG="/var/lib/$SLUG/encryption-config.yaml" # custom EncryptionConfiguration (kms path)
 SWAP_MIN_RAM_GB="${SWAP_MIN_RAM_GB:-4}"
 SWAP_SIZE_GB="${SWAP_SIZE_GB:-4}"
 DRY_RUN=0
@@ -126,8 +150,8 @@ install_base() {
   run env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 install -y -qq \
     ca-certificates curl gnupg jq git python3 python3-jwt openssl \
     ufw fail2ban unattended-upgrades chrony \
-    apt-transport-https
-  ok "base packages present (curl, jq, ufw, fail2ban, chrony, ...)"
+    apt-transport-https sqlite3
+  ok "base packages present (curl, jq, ufw, fail2ban, chrony, sqlite3, ...)"
 }
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════════
@@ -338,9 +362,115 @@ install_helm() {
 #  These flags are install-time only: they cannot be added to a running k3s afterwards without
 #  reinstalling it. Getting them wrong here is not a config fix later.
 # ══════════════════════════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+# 11.a — secrets at rest: the encryption must be on BEFORE the first Secret is written
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+write_kms_encryption_config() {
+  # A KMS v2 EncryptionConfiguration: the operator's KMS wraps the data keys, so the node never holds
+  # the KEK. aescbc is kept as a fallback DECRYPTOR (reads Secrets written on the AES floor before the
+  # migration), and identity last so a pre-existing plaintext Secret can still be read and then
+  # rewritten encrypted. WRITES always use the first provider — kms — so nothing new is written in the
+  # clear.
+  local provider="${SECRETS_AT_REST#kms:}"
+  local key="${SECRETS_ENCRYPTION_KEY:-$(head -c 32 /dev/urandom | base64 -w0)}"
+  install -d -m 700 "$(dirname "$K3S_ENC_CONFIG")"
+  cat > "$K3S_ENC_CONFIG" <<EOF
+apiVersion: apiserver.config.k8s.io/v1
+kind: EncryptionConfiguration
+resources:
+  - resources:
+      - secrets
+    providers:
+      - kms:
+          apiVersion: v2
+          name: ${provider}-kms
+          endpoint: ${SECRETS_KMS_ENDPOINT}
+          timeout: 3s
+      - aescbc:
+          keys:
+            - name: fallback
+              secret: ${key}
+      - identity: {}
+EOF
+  chmod 600 "$K3S_ENC_CONFIG"
+}
+
+secrets_encryption_k3s_args() {
+  # Extra k3s install args for the chosen backend (writes the kms config first when needed). Echoed
+  # so install_k3s can append them to the install-time flags — the one moment these can be set.
+  case "$SECRETS_AT_REST" in
+    off)
+      warn "SECRETS_AT_REST=off — Kubernetes Secrets will be stored UNENCRYPTED. The database"
+      warn "password, INTERNAL_SERVICE_TOKEN, TOKEN_PRIVATE_KEY, BACKUP_KEK and PII_SALT are then"
+      warn "readable to anyone who reads the disk. This is an explicit choice, not a default." ;;
+    aes)
+      echo "--secrets-encryption" ;;
+    kms:aws|kms:gcp|kms:azure|kms:vault)
+      [[ -n "$SECRETS_KMS_ENDPOINT" ]] || die "SECRETS_AT_REST=$SECRETS_AT_REST needs SECRETS_KMS_ENDPOINT (the KMS plugin's socket, e.g. unix:///var/run/kms/socket.sock)"
+      (( DRY_RUN )) || write_kms_encryption_config
+      echo "--kube-apiserver-arg=encryption-provider-config=$K3S_ENC_CONFIG" ;;
+    *)
+      die "SECRETS_AT_REST must be aes | kms:aws|gcp|azure|vault | off — got '$SECRETS_AT_REST'" ;;
+  esac
+}
+
+# The canary secret's stored value, if encrypted, begins with the bytes "k8s:enc:" == this hex.
+_ENC_PREFIX_HEX="6B38733A656E633A"
+
+_canary_prefix_hex() {  # echoes the hex of the first 8 stored bytes of a throwaway Secret, or ""
+  local ns="kube-system" name="enc-canary-$$" db="$1"
+  kubectl -n "$ns" create secret generic "$name" --from-literal=probe=canary \
+    --dry-run=client -o yaml | kubectl apply -f - >/dev/null 2>&1 || { echo ""; return; }
+  sleep 1
+  local pfx; pfx="$(sqlite3 "$db" \
+    "SELECT upper(hex(substr(value,1,8))) FROM kine WHERE name LIKE '/registry/secrets/$ns/$name%' ORDER BY id DESC LIMIT 1;" 2>/dev/null || true)"
+  kubectl -n "$ns" delete secret "$name" >/dev/null 2>&1 || true
+  echo "$pfx"
+}
+
+secrets_encryption() {
+  # Runs EVERY re-run (force), so a box provisioned by the old script — whose k3s step is already
+  # stamped, so install_k3s is skipped — still gets covered. Detect from the BYTES, enforce, verify.
+  header "secrets at rest — encryption + byte-level verification"
+  if [[ "$SECRETS_AT_REST" == "off" ]]; then
+    warn "SECRETS_AT_REST=off — Secrets stored unencrypted by explicit choice; skipping"; return 0
+  fi
+  if (( DRY_RUN )); then
+    echo -e "${DIM}  [dry-run] write a canary Secret; assert its stored bytes are k8s:enc:*; enable+reencrypt if plaintext (aes)${NC}"; return 0
+  fi
+  export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+  local db="/var/lib/rancher/k3s/server/db/state.db"
+  [[ -f "$db" ]] || { warn "kine datastore not at $db (external datastore?) — cannot byte-verify"; return 0; }
+
+  local pfx; pfx="$(_canary_prefix_hex "$db")"
+  if [[ "$pfx" != "$_ENC_PREFIX_HEX" && "$SECRETS_AT_REST" == "aes" ]]; then
+    # Existing cluster, secrets in the clear. `enable` alone covers only future writes and the status
+    # line reads Enabled either way — a control that looks applied and is not. REENCRYPT rewrites every
+    # existing Secret. Idempotent (re-encrypting an encrypted row is a no-op).
+    warn "existing Secrets are NOT encrypted — enabling AES and re-encrypting all Secrets"
+    run k3s secrets-encrypt enable || true
+    sleep 3
+    run k3s secrets-encrypt reencrypt --force || warn "reencrypt did not complete — re-run; the check below is the source of truth"
+    sleep 3
+    pfx="$(_canary_prefix_hex "$db")"
+  elif [[ "$pfx" != "$_ENC_PREFIX_HEX" && "$SECRETS_AT_REST" == kms:* ]]; then
+    warn "switching an EXISTING cluster to KMS needs the apiserver restarted with"
+    warn "encryption-provider-config=$K3S_ENC_CONFIG, then every Secret rewritten"
+    warn "(kubectl get secrets -A -o json | kubectl replace -f -). Operator action on a live node."
+  fi
+
+  if [[ "$pfx" == "$_ENC_PREFIX_HEX" ]]; then
+    ok "Secrets are ENCRYPTED at rest ($SECRETS_AT_REST) — verified from the datastore bytes, not the status line"
+    record "secrets-at-rest encryption verified ($SECRETS_AT_REST)"
+  else
+    die "Secrets are stored IN THE CLEAR (canary prefix ${pfx:-<empty>} != k8s:enc:). Do not trust 'secrets-encrypt status' — the bytes disagree. Fix encryption before deploying."
+  fi
+}
+
 install_k3s() {
   header "k3s (single-node Kubernetes)"
-  local k3s_args="--flannel-backend=none --disable-network-policy --disable traefik --write-kubeconfig-mode 644"
+  local enc_args; enc_args="$(secrets_encryption_k3s_args)"
+  local k3s_args="--flannel-backend=none --disable-network-policy --disable traefik --write-kubeconfig-mode 644 $enc_args"
   if have kubectl && systemctl is-active --quiet k3s 2>/dev/null; then
     ok "k3s already running"
     # Assert the CNI assumption rather than trust it: a k3s installed by hand still runs, still
@@ -358,7 +488,7 @@ install_k3s() {
         INSTALL_K3S_CHANNEL="$K3S_VERSION" \
         sh -s - $k3s_args
     fi
-    record "installed k3s (flannel policy off for Calico, traefik disabled)"
+    record "installed k3s (flannel policy off for Calico, traefik disabled, secrets-at-rest=$SECRETS_AT_REST)"
   fi
   # Make kubectl usable for root AND the deploy user (k3s writes /etc/rancher/k3s/k3s.yaml).
   if (( ! DRY_RUN )); then
@@ -400,6 +530,9 @@ main() {
   step docker          install_docker
   step helm            install_helm
   step k3s             install_k3s
+  # `force`: encryption must be RE-ASSERTED every run so a box provisioned by an earlier version —
+  # whose k3s step is already stamped, so install_k3s is skipped — is still covered and byte-verified.
+  step secrets_encrypt secrets_encryption   force
 
   header "Done"
   if (( ${#CHANGES[@]} )); then echo -e "${GR}Changes:${NC}"; printf '  • %s\n' "${CHANGES[@]}"; else echo "No changes (already provisioned)."; fi
