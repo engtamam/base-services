@@ -1037,25 +1037,76 @@ class BillingService:
         pay = await self._payments.by_provider_id(event.provider_id) if event.provider_id else None
         if pay is None:
             return {"ok": True, "reconciled": False, "type": event.type}
+        outcome = await self._apply_outcome(pay, event.type)
+        return {"ok": True, "reconciled": True, "type": event.type,
+                "payment_status": outcome["payment_status"]}
+
+    async def _apply_outcome(self, pay: Payment, kind: str) -> dict[str, Any]:
+        """Move a payment (and its invoice) to the outcome a gateway reports — the ONE seam a
+        pushed webhook (handle_webhook) and a pulled reconcile (reconcile_payment) both funnel
+        through, so the money transition is written in exactly one place.
+
+        IDEMPOTENT by construction: each branch is guarded on the payment not already being in the
+        target state, so a webhook and a later reconcile of the same event apply once between them —
+        never a double mark-paid, a double dunning, or a double clawback. `kind` is the normalised
+        WebhookEvent type: payment.succeeded | payment.failed | refund.
+        """
         inv = await self._invoices.fetch(pay.invoice_id)
-        if event.type == "payment.succeeded" and pay.status != "succeeded":
+        changed = False
+        if kind == "payment.succeeded" and pay.status != "succeeded":
             pay.status = "succeeded"
             pay.next_retry_at = None
             await self._payments.save(pay)
             if inv and inv.status != "paid":
                 await self._mark_paid(inv)
-        elif event.type == "payment.failed" and pay.status != "failed":
+            changed = True
+        elif kind == "payment.failed" and pay.status != "failed":
             pay.status = "failed"
             await self._dunning(pay)
             await self._payments.save(pay)
-        elif event.type == "refund" and pay.status != "refunded":
+            changed = True
+        elif kind == "refund" and pay.status != "refunded":
             pay.status = "refunded"
             await self._payments.save(pay)
             if inv:
                 inv.status = "void"
                 await self._invoices.save(inv)
                 await self._claw_back(inv)      # same reversal as a manual refund / a settlement recall
-        return {"ok": True, "reconciled": True, "type": event.type, "payment_status": pay.status}
+            changed = True
+        return {"changed": changed, "payment_status": pay.status}
+
+    async def reconcile_payment(self, payment_id: str) -> dict[str, Any]:
+        """PULL a payment's current status from the gateway and apply it — the recovery path for a
+        webhook that never arrived or failed signature verification (an invoice left unpaid while the
+        customer's money already moved). It drives the SAME idempotent `_apply_outcome` seam as the
+        webhook, so a reconcile after a delayed webhook, or a webhook after a reconcile, is safe.
+
+        Never invents a status: a provider without a status endpoint is reported `unsupported`, and a
+        gateway that is unreachable is reported as such — the reconcile does nothing rather than
+        guessing, because guessing "paid" here would mark an unpaid invoice settled.
+        """
+        pay = await self._payments.fetch(payment_id)
+        if pay is None:
+            return {"ok": False, "reason": "NOT_FOUND"}
+        fetch = getattr(self._gw, "fetch_status", None)
+        if fetch is None:
+            return {"ok": False, "reason": "UNSUPPORTED",
+                    "provider": getattr(self._gw, "driver", "")}
+        if not pay.provider_id:
+            return {"ok": False, "reason": "NO_PROVIDER_ID", "payment_status": pay.status}
+        try:
+            charge = fetch(provider_id=pay.provider_id, currency=pay.currency)
+        except GatewayUnavailable as exc:
+            return {"ok": False, "reason": "GATEWAY_UNAVAILABLE", "detail": str(exc)}
+        kind = {"succeeded": "payment.succeeded", "failed": "payment.failed",
+                "refunded": "refund"}.get(charge.status, "")
+        if not kind:
+            # The provider still shows it pending/unknown — nothing definitive to apply.
+            return {"ok": True, "reconciled": False, "provider_status": charge.status,
+                    "payment_status": pay.status}
+        outcome = await self._apply_outcome(pay, kind)
+        return {"ok": True, "reconciled": outcome["changed"], "provider_status": charge.status,
+                "payment_status": outcome["payment_status"]}
 
     async def _claw_back(self, inv: Invoice, *, partial: bool = False) -> None:
         """Reverse the wallet grant an invoice made, when that invoice is refunded or charged back.

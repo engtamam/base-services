@@ -2,7 +2,7 @@
 source {type: token, token}. Webhook Cko-Signature = HMAC-SHA256 hex of the body."""
 from __future__ import annotations
 
-from app.adapters.billing_http import bearer, post_json
+from app.adapters.billing_http import bearer, get_json, post_json
 from app.adapters.payment._common import constant_eq, hmac_sha256_hex
 from app.ports.payment_gateway import Charge, GatewayUnavailable, WebhookEvent
 
@@ -40,6 +40,17 @@ class CheckoutGateway:
         ok = 200 <= code < 300
         return Charge(ok=ok, status="refunded" if ok else "failed", provider="checkout",
                       provider_id=str(resp.get("action_id", provider_id)))
+
+    def fetch_status(self, *, provider_id, currency=""):
+        """GET /payments/{id} — reconcile a missed webhook."""
+        code, resp = get_json(f"{self._base}/payments/{provider_id}", self._h)
+        if code == 0:
+            raise GatewayUnavailable("Checkout.com unreachable")
+        raw = str(resp.get("status", ""))
+        status = ("succeeded" if raw in _OK else "refunded" if raw == "Refunded"
+                  else "pending" if raw == "Pending" else "failed")
+        return Charge(ok=status == "succeeded", status=status, provider="checkout",
+                      provider_id=str(resp.get("id", provider_id)), currency=str(resp.get("currency", currency)))
 
     def verify_webhook(self, *, headers, body, secret):
         # Checkout.com HMAC-SHA256s the RAW body (hex) with the webhook signature key, in the

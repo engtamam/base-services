@@ -116,6 +116,7 @@ def build_manifest(
             {"path": "/api/v1/billing/invoices/{id}/receipt", "tier": "user", "method": "GET"},
             {"path": "/api/v1/billing/invoices/{id}/document", "tier": "user", "method": "GET"},
             {"path": "/api/v1/billing/payments/{id}/refund", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/billing/payments/{id}/reconcile", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/dunning/run", "tier": "user", "method": "POST"},
             # The operator surface: payment credentials and policy, changeable after launch.
             {"path": "/api/v1/operator/secrets", "tier": "user", "method": "GET"},

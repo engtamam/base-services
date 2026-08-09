@@ -300,3 +300,61 @@ def test_the_renewal_sweep_skips_a_one_time_purchase():
     once = run(b.subscribe(tenant="t1", plan_id=plan.id, interval="once", payment_token="pm_1"))
     due = run(SubscriptionStore(st).due(now=9_999_999_999.0))
     assert once.id not in [s.id for s in due]
+
+
+# ── reconcile: recover a missed/unverified webhook by pulling the gateway status ──
+class MockGWWithStatus(MockGW):
+    """A gateway whose charge fails (a missed/declined webhook) but whose status GET reports a
+    later outcome — the reconcile scenario."""
+    def __init__(self, charge_ok=False, status="succeeded"):
+        super().__init__(ok=charge_ok)
+        self._status = status
+
+    def fetch_status(self, *, provider_id, currency=""):
+        return Charge(ok=self._status == "succeeded", status=self._status, provider="mock",
+                      provider_id=provider_id)
+
+
+def test_reconcile_applies_a_missed_success_through_the_same_seam_and_is_idempotent():
+    st = MemoryDataStore()
+    b = _svc(st, MockGWWithStatus(charge_ok=False, status="succeeded"))
+    _, sub = _plan_sub(b)
+    inv = run(b.run_cycle(sub.id))
+    assert inv.status != "paid"                                  # the charge failed -> unpaid
+    pay = run(b._payments.by_provider_id("ch_" + inv.id[:6]))
+    assert pay is not None and pay.status == "failed"
+    # the gateway now reports it succeeded (the webhook never arrived): reconcile applies it
+    res = run(b.reconcile_payment(pay.id))
+    assert res["ok"] and res["reconciled"] and res["payment_status"] == "succeeded"
+    assert run(b._invoices.fetch(inv.id)).status == "paid"
+    # idempotent — a second reconcile (or a late webhook) changes nothing
+    again = run(b.reconcile_payment(pay.id))
+    assert again["reconciled"] is False and again["payment_status"] == "succeeded"
+    assert run(b._invoices.fetch(inv.id)).status == "paid"
+
+
+def test_reconcile_is_a_no_op_while_the_gateway_still_shows_pending():
+    st = MemoryDataStore()
+    b = _svc(st, MockGWWithStatus(charge_ok=False, status="pending"))
+    _, sub = _plan_sub(b)
+    inv = run(b.run_cycle(sub.id))
+    pay = run(b._payments.by_provider_id("ch_" + inv.id[:6]))
+    res = run(b.reconcile_payment(pay.id))
+    assert res["ok"] and res["reconciled"] is False and res["provider_status"] == "pending"
+    assert run(b._invoices.fetch(inv.id)).status != "paid"      # nothing invented
+
+
+def test_reconcile_reports_unsupported_when_the_gateway_has_no_status_endpoint():
+    st = MemoryDataStore()
+    b = _svc(st, MockGW(ok=False))                              # plain MockGW: no fetch_status
+    _, sub = _plan_sub(b)
+    inv = run(b.run_cycle(sub.id))
+    pay = run(b._payments.by_provider_id("ch_" + inv.id[:6]))
+    res = run(b.reconcile_payment(pay.id))
+    assert res["ok"] is False and res["reason"] == "UNSUPPORTED"
+
+
+def test_reconcile_of_an_unknown_payment_is_not_found():
+    st = MemoryDataStore()
+    b = _svc(st, MockGWWithStatus())
+    assert run(b.reconcile_payment("pay_missing"))["reason"] == "NOT_FOUND"

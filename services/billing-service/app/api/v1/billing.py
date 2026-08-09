@@ -705,6 +705,21 @@ async def refund(request: Request, payment_id: str, amount_minor: int | None = N
     return res
 
 
+@router.post("/payments/{payment_id}/reconcile")
+async def reconcile_payment(request: Request, payment_id: str,
+                            principal: Principal = Depends(_ADMIN)) -> dict:
+    """Pull a payment's CURRENT status from the gateway and apply it — the recovery path when a
+    webhook was missed or failed verification, leaving an invoice unpaid though the money moved.
+    Idempotent (same seam as the webhook); never invents a status."""
+    await request.app.state.auditor.record(
+        "payment.reconciled", actor=principal.subject, tenant=principal.tenant,
+        resource=f"payment:{payment_id}", ip=request.client.host if request.client else "")
+    res = await (await build_billing(request)).reconcile_payment(payment_id)
+    if not res.get("ok") and res.get("reason") == "NOT_FOUND":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    return res
+
+
 @router.post("/dunning/run")
 async def dunning(request: Request, principal: Principal = Depends(_ADMIN)) -> dict:
     result = await (await build_billing(request)).dunning_sweep()

@@ -9,7 +9,7 @@
 """
 from __future__ import annotations
 
-from app.adapters.billing_http import bearer, post_json
+from app.adapters.billing_http import bearer, get_json, post_json
 from app.adapters.payment._common import constant_eq, hmac_sha256_hex, major
 from app.core.currency import decimals as _decimals
 from app.ports.payment_gateway import Charge, GatewayUnavailable, WebhookEvent
@@ -50,6 +50,17 @@ class TapGateway:
         ok = str(resp.get("status", "")).upper() in ("REFUNDED", "PENDING")
         return Charge(ok=ok, status="refunded" if ok else "failed", provider="tap",
                       provider_id=str(resp.get("id", provider_id)))
+
+    def fetch_status(self, *, provider_id, currency=""):
+        """GET /v2/charges/{id} — reconcile a missed webhook."""
+        code, resp = get_json(f"{self._base}/v2/charges/{provider_id}", self._h)
+        if code == 0:
+            raise GatewayUnavailable("Tap unreachable")
+        raw = str(resp.get("status", "")).upper()
+        status = ("succeeded" if raw in _OK else "refunded" if raw == "REFUNDED"
+                  else "pending" if raw in ("INITIATED", "IN_PROGRESS") else "failed")
+        return Charge(ok=status == "succeeded", status=status, provider="tap",
+                      provider_id=str(resp.get("id", provider_id)), currency=str(resp.get("currency", currency)))
 
     def verify_webhook(self, *, headers, body, secret):
         import json
