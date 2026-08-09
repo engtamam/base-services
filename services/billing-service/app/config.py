@@ -214,6 +214,9 @@ class Settings(BaseSettings):
     PAYMENT_EXTRA_ID: str = ""               # HyperPay entityId / PayTabs profile_id / APS merchant_identifier
     PAYMENT_EXTRA_SECRET: str = ""           # Geidea api-password / APS SHA request phrase
     PAYMENT_WEBHOOK_SECRET: str = ""         # webhook signature secret (APS: SHA response phrase)
+    # Where the payer is returned after a redirect/3DS step. Moyasar REQUIRES a callback_url for a
+    # token/card source; redirect-flow providers use it as the return target. Empty ⇒ not sent.
+    PAYMENT_RETURN_URL: str = ""
     # Which money document a paid invoice produces — an OPERATOR CHOICE, per tenant, at runtime.
     #   receipt      (DEFAULT) our own internal receipt (سند قبض): no VAT, no ZATCA, no seller VAT
     #                number — it just confirms money received and carries the gateway's transaction
