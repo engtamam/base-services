@@ -72,6 +72,8 @@ def build_manifest(
             {"path": "/internal/wallet/{tenant}/reconcile", "tier": "internal", "method": "GET"},
             {"path": "/internal/wallet/credit", "tier": "internal", "method": "POST"},
             {"path": "/internal/wallet/spend", "tier": "internal", "method": "POST"},
+            {"path": "/internal/wallet/withdraw", "tier": "internal", "method": "POST"},
+            {"path": "/internal/wallet/withdrawals/settle", "tier": "internal", "method": "POST"},
             {"path": "/internal/wallet/reserve", "tier": "internal", "method": "POST"},
             {"path": "/internal/wallet/confirm", "tier": "internal", "method": "POST"},
             {"path": "/internal/wallet/release", "tier": "internal", "method": "POST"},

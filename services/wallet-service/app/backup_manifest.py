@@ -36,6 +36,10 @@ BACKUP: dict[str, Any] = {
         {"name": "ledger", "tenant_scoped": True, "key": "{tenant}:{seq:012d}"},
         {"name": "holds", "tenant_scoped": True},    # reserved-but-not-spent; id-keyed
         {"name": "grants", "tenant_scoped": True},   # expiring credits; id-keyed
+        # Payouts. MONEY leaving the platform: a pending one is a debit awaiting an external transfer,
+        # and losing it on restore would either strand the customer's debited funds or re-pay a
+        # settled withdrawal. id-keyed.
+        {"name": "withdrawals", "tenant_scoped": True},
     ],
     "excluded": [
         {"name": "wallet_idempo",

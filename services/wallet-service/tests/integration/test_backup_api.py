@@ -19,8 +19,11 @@ KEK = "backup-key-for-tests"
 
 def _make_app(backup_kek: str = KEK) -> TestClient:
     from app.config import get_settings
+    # A backup archive is naturally larger than the tiny 2 KB body cap the global conftest sets to
+    # exercise the limit elsewhere — a sealed export of even a few rows exceeds it. Give the backup
+    # round-trip a realistic ceiling so the test measures the restore, not the conftest's cap.
     os.environ.update(ENV="test", INTERNAL_SERVICE_TOKEN=ITOKEN, RATELIMIT_MAX="1000",
-                      BACKUP_KEK=backup_kek)
+                      BACKUP_KEK=backup_kek, BODY_LIMIT_BYTES="1048576")
     get_settings.cache_clear()
     from app.main import create_app
     return TestClient(create_app(), raise_server_exceptions=False)

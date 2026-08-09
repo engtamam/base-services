@@ -10,6 +10,16 @@ CREDIT = "credit"
 SPEND = "spend"
 REFUND = "refund"
 CLAWBACK = "clawback"
+# A payout leaving the platform (a debit), and its reversal when the transfer fails (a credit back).
+WITHDRAW = "withdraw"
+WITHDRAW_REVERSAL = "withdraw_reversal"
+# Ledger types that ADD to the balance (everything else is a debit). reconcile() and any balance
+# derivation must read this, or a reversal would be counted the wrong way.
+CREDIT_TYPES = (CREDIT, REFUND, WITHDRAW_REVERSAL)
+
+WITHDRAW_PENDING = "pending"        # debited, awaiting the external transfer
+WITHDRAW_PAID = "paid"              # the transfer settled
+WITHDRAW_FAILED = "failed"          # the transfer failed; the debit was reversed
 
 HOLD_ACTIVE = "active"
 HOLD_CONFIRMED = "confirmed"
@@ -129,4 +139,33 @@ class Grant:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Grant":
+        return cls(**{k: d.get(k, getattr(cls, k, None)) for k in cls.__dataclass_fields__})
+
+
+@dataclass
+class Withdrawal:
+    """A payout: money leaving the platform to an external account. The debit lands the instant the
+    request is accepted (the funds are earmarked out of the spendable balance); the external transfer
+    is executed by a payout sidecar and its result is recorded by settle(). A failed transfer credits
+    the debit back — the customer never loses money to a transfer that did not happen."""
+    id: str
+    tenant: str
+    amount: int = 0
+    applied: dict = None                                   # fund name -> minor units debited
+    destination: str = ""                                  # opaque payout target (a masked ref)
+    state: str = "pending"                                 # pending | paid | failed
+    source: str = ""                                       # idempotency source of the request
+    reason: str = ""
+    created: float = 0.0
+    settled_at: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.applied is None:
+            self.applied = {}
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Withdrawal":
         return cls(**{k: d.get(k, getattr(cls, k, None)) for k in cls.__dataclass_fields__})

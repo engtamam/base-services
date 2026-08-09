@@ -59,6 +59,20 @@ class SpendIn(BaseModel):
     reason: str = Field(default="", max_length=200)
 
 
+class WithdrawIn(BaseModel):
+    tenant: str = Field(min_length=1, max_length=200)
+    amount: int = Field(ge=1)                          # MINOR units; a payout is never zero/negative
+    destination: str = Field(default="", max_length=256)   # opaque payout target reference
+    source: str = Field(default="", max_length=200)    # idempotency key
+    reason: str = Field(default="", max_length=200)
+
+
+class SettleWithdrawalIn(BaseModel):
+    withdrawal_id: str = Field(min_length=1, max_length=100)
+    paid: bool                                          # True = transfer settled; False = reverse it
+    source: str = Field(default="", max_length=200)
+
+
 class HoldIn(BaseModel):
     hold_id: str = Field(min_length=1, max_length=100)
 
@@ -122,6 +136,41 @@ async def spend(body: SpendIn, request: Request) -> dict:
     await request.app.state.auditor.record(
         "wallet.spent", actor="", tenant=body.tenant, resource="wallet",
         ip=request.client.host if request.client else "", metadata={"source": body.source})
+    return result
+
+
+@router.post("/wallet/withdraw", dependencies=[Depends(require_internal_token)])
+async def withdraw(body: WithdrawIn, request: Request) -> dict:
+    """Pay money OUT to an external account. Internal, like credit/spend: the CALLER (a payout
+    orchestrator) is the one that verified the account may withdraw (the KYC / wallet.payout gate);
+    this debits only withdrawable funds and records a pending Withdrawal. Idempotent by `source`."""
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this runs BEFORE
+    # the debit — money leaving the platform is exactly the action a review turns on.
+    await request.app.state.auditor.record(
+        "wallet.withdrawn", actor="", tenant=body.tenant, resource="wallet",
+        ip=request.client.host if request.client else "",
+        metadata={"amount": str(body.amount), "source": body.source})
+    try:
+        return await build_wallet(request).withdraw(
+            tenant=body.tenant, amount=body.amount, destination=body.destination,
+            source=body.source, reason=body.reason)
+    except Exception as exc:  # noqa: BLE001
+        raise _handle(exc) from exc
+
+
+@router.post("/wallet/withdrawals/settle", dependencies=[Depends(require_internal_token)])
+async def settle_withdrawal(body: SettleWithdrawalIn, request: Request) -> dict:
+    """The payout sidecar reports the transfer's result. paid=False REVERSES the debit — a transfer
+    that did not happen must never cost the customer money. Idempotent on the withdrawal's state."""
+    try:
+        result = await build_wallet(request).settle_withdrawal(
+            withdrawal_id=body.withdrawal_id, paid=body.paid, source=body.source)
+    except Exception as exc:  # noqa: BLE001
+        raise _handle(exc) from exc
+    await request.app.state.auditor.record(
+        "wallet.withdrawal_settled", actor="", tenant="", resource=f"withdrawal:{body.withdrawal_id}",
+        ip=request.client.host if request.client else "",
+        metadata={"paid": str(body.paid), "state": str(result.get("state", ""))})
     return result
 
 

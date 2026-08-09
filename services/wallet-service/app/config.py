@@ -237,6 +237,9 @@ class Settings(BaseSettings):
     HOLD_SWEEP_LIMIT: int = 500               # bound one sweep run
     GRANT_SWEEP_LIMIT: int = 500
     WALLET_IDEMPOTENCY_TTL_SECONDS: int = 86_400
+    # The smallest payout allowed, in MINOR units. A payout costs a bank fee, so a floor keeps a
+    # 3-riyal withdrawal from costing more to send than it is worth. 0 = no minimum.
+    WALLET_WITHDRAW_MIN_MINOR: int = 0
     # ── Low balance: warn BEFORE the funds run out ───────────────────────────
     # The only "you are low" without this is a 402 at spend time, which is not a warning — it is
     # an outage for whoever was mid-task.

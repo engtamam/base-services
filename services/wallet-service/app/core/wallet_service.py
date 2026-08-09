@@ -32,15 +32,17 @@ from typing import Any
 from app.core import events as _events
 from app.core import funds as _funds
 from app.core.events import Emitter
-from app.core.models import (CLAWBACK, CREDIT, HOLD_ACTIVE, HOLD_CONFIRMED, HOLD_EXPIRED,
-                             HOLD_RELEASED, REFUND, SPEND, Grant, Hold, LedgerEntry, Wallet,
-                             new_id)
+from app.core.models import (CLAWBACK, CREDIT, CREDIT_TYPES, HOLD_ACTIVE, HOLD_CONFIRMED,
+                             HOLD_EXPIRED, HOLD_RELEASED, REFUND, SPEND, WITHDRAW, WITHDRAW_FAILED,
+                             WITHDRAW_PAID, WITHDRAW_PENDING, WITHDRAW_REVERSAL, Grant, Hold,
+                             LedgerEntry, Wallet, Withdrawal, new_id)
 from app.core.money import MoneyError, require_non_negative
 
 _WALLETS = "wallets"
 _LEDGER = "ledger"
 _HOLDS = "holds"
 _GRANTS = "grants"
+_WITHDRAWALS = "withdrawals"
 _IDEMPO = "wallet_idempo"
 _ALERTS = "wallet_alerts"    # the low-balance armed/triggered state, ONE keyed row per tenant
 _SWEEP_PAGE = 500        # the sweepers page; they never read a collection whole
@@ -199,7 +201,7 @@ class WalletService:
             row = await self._store.get(_LEDGER, _ledger_key(tenant, seq))
             if not row:
                 return {"tenant": tenant, "consistent": False, "missing_seq": seq}
-            sign = 1 if row["type"] in (CREDIT, REFUND) else -1
+            sign = 1 if row["type"] in CREDIT_TYPES else -1
             for name, amount in (row.get("applied") or {}).items():
                 derived[name] = derived.get(name, 0) + sign * int(amount)
         stored = {k: int(v) for k, v in w.funds.items() if int(v)}
@@ -274,6 +276,88 @@ class WalletService:
                           "currency": self._currency, "source": source})
         await self._check_low_balance(tenant, out["funds"], debit=True)
         return result
+
+    # ── withdraw / payout ─────────────────────────────────────────────────────────
+    def _withdrawable(self) -> tuple[str, ...]:
+        return _funds.withdrawable_names(self._funds)
+
+    async def withdraw(self, *, tenant: str, amount: int, destination: str = "",
+                       source: str = "", reason: str = "") -> dict[str, Any]:
+        """Move money OUT of the platform (a payout). Debits ONLY withdrawable funds — never a
+        customer's promo/locked credit — and records a PENDING Withdrawal a payout sidecar executes.
+
+        The ABILITY to withdraw is a capability gated at the route (issued after KYC): who may take
+        money out is an account decision. THIS layer enforces WHICH funds may leave and that the
+        AVAILABLE balance (minus holds) covers it, and it never overdraws. Idempotent by `source`, so
+        a retried request never pays out twice.
+        """
+        amount = int(amount)
+        if amount <= 0:
+            raise WalletError("WITHDRAW_AMOUNT_MUST_BE_POSITIVE")
+        withdrawable = self._withdrawable()
+        if not withdrawable:
+            raise WalletError("NO_WITHDRAWABLE_FUND")   # nothing on this platform may be paid out
+        minimum = int(self._cfg.get("withdraw_min", 0) or 0)
+        if amount < minimum:
+            raise WalletError(f"WITHDRAW_BELOW_MINIMUM:{minimum}")
+        prior = await self._replay(tenant, WITHDRAW, source)
+        if prior:
+            return prior
+        w = await self._wallet(tenant)
+        avail = _funds.available(w.funds, w.held)
+        pool = sum(int(avail.get(n, 0)) for n in withdrawable)
+        if pool < amount:
+            raise _funds.InsufficientFunds(needed=amount, available=pool)
+        # Draw from withdrawable funds in spend-priority order; never touch a locked fund.
+        applied: dict[str, int] = {}
+        remaining = amount
+        for f in self._funds:
+            if not f.withdrawable or remaining <= 0:
+                continue
+            take = min(int(avail.get(f.name, 0)), remaining)
+            if take > 0:
+                applied[f.name] = take
+                remaining -= take
+        wd = Withdrawal(id=new_id("wd_"), tenant=tenant, amount=amount, applied=dict(applied),
+                        destination=destination, state=WITHDRAW_PENDING, source=source,
+                        reason=reason, created=self._clock.now())
+        await self._store.put(_WITHDRAWALS, wd.id, wd.to_dict())
+        entry = self._entry(tenant, WITHDRAW, applied, -1, source=source, reason=reason, ref=wd.id)
+        try:
+            out = await self._mutate(tenant, funds_delta={k: -v for k, v in applied.items()},
+                                     entry=entry)
+        except Exception:
+            await self._store.delete(_WITHDRAWALS, wd.id)     # the debit never landed
+            raise
+        result = {"withdrawal_id": wd.id, "amount": amount, "applied": dict(applied),
+                  "state": WITHDRAW_PENDING, **out}
+        await self._remember(tenant, WITHDRAW, source, result)
+        return result
+
+    async def settle_withdrawal(self, *, withdrawal_id: str, paid: bool,
+                                source: str = "") -> dict[str, Any]:
+        """Record the payout sidecar's result. `paid=True` marks it paid; `paid=False` REVERSES the
+        debit — a transfer that did not happen must never cost the customer money. Idempotent on the
+        withdrawal's state: settling an already-settled withdrawal moves nothing (the transition out
+        of `pending` is the guard, so a redelivered callback cannot double-pay or double-reverse)."""
+        row = await self._store.get(_WITHDRAWALS, withdrawal_id)
+        if not row:
+            raise WalletError("WITHDRAWAL_NOT_FOUND")
+        wd = Withdrawal.from_dict(row)
+        if wd.state != WITHDRAW_PENDING:
+            return {"withdrawal_id": wd.id, "state": wd.state, "idempotent": True}
+        if paid:
+            wd.state = WITHDRAW_PAID
+        else:
+            entry = self._entry(wd.tenant, WITHDRAW_REVERSAL, wd.applied, +1,
+                                source=source or f"reverse:{wd.id}", reason="payout failed",
+                                ref=wd.id)
+            await self._mutate(wd.tenant, funds_delta={k: int(v) for k, v in wd.applied.items()},
+                               entry=entry)
+            wd.state = WITHDRAW_FAILED
+        wd.settled_at = self._clock.now()
+        await self._store.put(_WITHDRAWALS, wd.id, wd.to_dict())
+        return {"withdrawal_id": wd.id, "state": wd.state}
 
     # ── holds ───────────────────────────────────────────────────────────────────
     async def reserve(self, *, tenant: str, net: int, source: str = "",

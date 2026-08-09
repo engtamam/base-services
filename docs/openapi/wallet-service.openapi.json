@@ -180,6 +180,32 @@
         "title": "RefundIn",
         "type": "object"
       },
+      "SettleWithdrawalIn": {
+        "properties": {
+          "paid": {
+            "title": "Paid",
+            "type": "boolean"
+          },
+          "source": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Source",
+            "type": "string"
+          },
+          "withdrawal_id": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Withdrawal Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "withdrawal_id",
+          "paid"
+        ],
+        "title": "SettleWithdrawalIn",
+        "type": "object"
+      },
       "SpendIn": {
         "properties": {
           "net": {
@@ -251,6 +277,45 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "WithdrawIn": {
+        "properties": {
+          "amount": {
+            "minimum": 1.0,
+            "title": "Amount",
+            "type": "integer"
+          },
+          "destination": {
+            "default": "",
+            "maxLength": 256,
+            "title": "Destination",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Reason",
+            "type": "string"
+          },
+          "source": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Source",
+            "type": "string"
+          },
+          "tenant": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant",
+          "amount"
+        ],
+        "title": "WithdrawIn",
         "type": "object"
       }
     }
@@ -1367,6 +1432,130 @@
           }
         },
         "summary": "Sweep Holds",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/wallet/withdraw": {
+      "post": {
+        "description": "Pay money OUT to an external account. Internal, like credit/spend: the CALLER (a payout\norchestrator) is the one that verified the account may withdraw (the KYC / wallet.payout gate);\nthis debits only withdrawable funds and records a pending Withdrawal. Idempotent by `source`.",
+        "operationId": "withdraw_internal_wallet_withdraw_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WithdrawIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Withdraw Internal Wallet Withdraw Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Withdraw",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/wallet/withdrawals/settle": {
+      "post": {
+        "description": "The payout sidecar reports the transfer's result. paid=False REVERSES the debit \u2014 a transfer\nthat did not happen must never cost the customer money. Idempotent on the withdrawal's state.",
+        "operationId": "settle_withdrawal_internal_wallet_withdrawals_settle_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettleWithdrawalIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Settle Withdrawal Internal Wallet Withdrawals Settle Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Settle Withdrawal",
         "tags": [
           "internal"
         ]
