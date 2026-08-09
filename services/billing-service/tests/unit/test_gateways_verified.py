@@ -207,3 +207,35 @@ def test_stripe_charge_sends_minor_amount_and_idempotency_key():
     assert r.ok and r.provider_id == "pi_9"
     assert seen["f"]["amount"] == 5000 and seen["f"]["currency"] == "sar"   # MINOR units, lower-case
     assert seen["h"]["Idempotency-Key"] == "k1"
+
+
+# ── Checkout.com (raw-body HMAC-SHA256 hex in Cko-Signature — verified correct) ──
+import app.adapters.payment.checkout as CK  # noqa: E402
+
+
+def test_checkout_webhook_verifies_raw_body_hmac_hex():
+    gw = CK.CheckoutGateway("sk", webhook_secret="whsig")
+    body = json.dumps({"type": "payment_captured", "data": {"id": "pay_1"}}).encode()
+    sig = hmac_sha256_hex("whsig", body)
+    # header accepted case-insensitively
+    ev = gw.verify_webhook(headers={"Cko-Signature": sig}, body=body, secret="whsig")
+    assert ev.verified is True and ev.type == "payment.succeeded" and ev.provider_id == "pay_1"
+
+
+def test_checkout_webhook_rejects_a_tampered_body():
+    gw = CK.CheckoutGateway("sk", webhook_secret="whsig")
+    body = json.dumps({"type": "payment_captured", "data": {"id": "pay_1"}}).encode()
+    sig = hmac_sha256_hex("whsig", body)
+    tampered = json.dumps({"type": "payment_captured", "data": {"id": "pay_2"}}).encode()
+    assert gw.verify_webhook(headers={"cko-signature": sig}, body=tampered, secret="whsig").verified is False
+
+
+def test_checkout_charge_sends_minor_amount_and_token_source():
+    seen = {}
+    CK.post_json = lambda u, b, h=None: (seen.update(u=u, b=b) or
+                                         (200, {"id": "pay_9", "status": "Authorized"}))
+    r = CK.CheckoutGateway("sk").charge(amount_minor=5000, currency="SAR", token="tok_1",
+                                        idempotency_key="ref1")
+    assert r.ok and r.provider_id == "pay_9"
+    assert seen["b"]["amount"] == 5000 and seen["b"]["source"]["token"] == "tok_1"   # MINOR units
+    assert seen["u"].endswith("/payments")
