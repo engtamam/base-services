@@ -48,7 +48,12 @@ class PayTabsGateway:
                       provider_id=str(resp.get("tran_ref", provider_id)))
 
     def verify_webhook(self, *, headers, body, secret):
-        verified = constant_eq(headers.get("signature", ""), hmac_sha256_hex(secret or self._whsec, body))
+        # PayTabs' IPN/webhook signs the ENTIRE raw JSON body with the profile Server Key (the
+        # form-field digest is a DIFFERENT scheme, used only for the browser return URL). Accept the
+        # header under either spelling, case-insensitively.
+        h = {str(k).lower(): v for k, v in (headers or {}).items()}
+        sig = h.get("signature", "") or h.get("x-paytabs-signature", "")
+        verified = constant_eq(sig, hmac_sha256_hex(secret or self._whsec, body))
         import json
         try:
             evt = json.loads(body.decode())

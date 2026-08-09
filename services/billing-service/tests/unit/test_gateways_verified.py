@@ -126,3 +126,39 @@ def test_tap_charge_sends_major_amount_and_token_source():
     assert r.ok and r.provider_id == "chg_1"
     assert seen["b"]["amount"] == 50.0 and seen["b"]["source"]["id"] == "tok"   # MAJOR units
     assert seen["u"].endswith("/v2/charges")
+
+
+# ── PayTabs (IPN/webhook = HMAC of the whole raw body with the server key) ───────
+import app.adapters.payment.paytabs as PT  # noqa: E402
+
+
+def test_paytabs_webhook_verifies_raw_body_hmac_with_the_server_key():
+    gw = PT.PayTabsGateway("SERVERKEY", extra_id="profile1", webhook_secret="SERVERKEY")
+    body = json.dumps({"tran_ref": "TST1", "payment_result": {"response_status": "A"}}).encode()
+    sig = hmac_sha256_hex("SERVERKEY", body)
+    # header accepted under either spelling / any case
+    assert gw.verify_webhook(headers={"signature": sig}, body=body, secret="SERVERKEY").verified
+    assert gw.verify_webhook(headers={"X-Paytabs-Signature": sig}, body=body, secret="SERVERKEY").verified
+    ev = gw.verify_webhook(headers={"signature": sig}, body=body, secret="SERVERKEY")
+    assert ev.type == "payment.succeeded" and ev.provider_id == "TST1"
+
+
+def test_paytabs_webhook_rejects_a_tampered_body():
+    gw = PT.PayTabsGateway("SERVERKEY", extra_id="p", webhook_secret="SERVERKEY")
+    body = json.dumps({"tran_ref": "TST1", "payment_result": {"response_status": "A"}}).encode()
+    sig = hmac_sha256_hex("SERVERKEY", body)
+    tampered = json.dumps({"tran_ref": "TST1", "payment_result": {"response_status": "A"},
+                           "x": 1}).encode()
+    assert gw.verify_webhook(headers={"signature": sig}, body=tampered, secret="SERVERKEY").verified is False
+
+
+def test_paytabs_charge_sends_major_amount_and_profile():
+    seen = {}
+    PT.post_json = lambda u, b, h=None: (seen.update(u=u, b=b) or
+                                         (200, {"tran_ref": "TST9",
+                                                "payment_result": {"response_status": "A"}}))
+    r = PT.PayTabsGateway("SK", extra_id="profile1").charge(
+        amount_minor=5000, currency="SAR", token="tok", idempotency_key="cart1")
+    assert r.ok and r.provider_id == "TST9"
+    assert seen["b"]["cart_amount"] == 50.0 and seen["b"]["profile_id"] == "profile1"   # MAJOR units
+    assert seen["b"]["tran_type"] == "sale"
