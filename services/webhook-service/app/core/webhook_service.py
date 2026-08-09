@@ -74,15 +74,40 @@ class WebhookService:
                 setattr(ep, k, v)
         return await self._endpoints.save(ep)
 
-    async def rotate_secret(self, endpoint_id: str) -> tuple[Endpoint, str] | None:
-        """New primary; keep the previous one so in-flight verifications still pass."""
+    async def rotate_secret(self, endpoint_id: str,
+                            overlap_seconds: float | None = None) -> tuple[Endpoint, str] | None:
+        """Mint a new primary secret and keep the PREVIOUS one alive across a self-expiring overlap.
+
+        A signing secret is embedded in the receiver's config, and the receiver updates on its own
+        schedule. So during the overlap every delivery is dual-signed with both secrets (see
+        `deliver`), letting a receiver that has not yet swapped its copy still verify — then the
+        previous secret lapses BY TIMESTAMP, no manual step, so it cannot outlive its window.
+        overlap_seconds=0 is an immediate cutover, the right response to a leaked secret; a second
+        rotation inside a window drops the oldest, so only one previous is ever live.
+        """
         ep = await self._endpoints.get(endpoint_id)
         if ep is None:
             return None
+        overlap = self._cfg["secret_rotation_overlap_seconds"] if overlap_seconds is None \
+            else float(overlap_seconds)
+        current = ep.secrets[:1]
         fresh = new_id("whsec_")
-        ep.secrets = [fresh] + ep.secrets[:1]
+        if overlap > 0 and current:
+            ep.secrets = [fresh] + current          # keep exactly one previous; drops any older
+            ep.prev_secret_expires = now_ts() + overlap
+        else:
+            ep.secrets = [fresh]                     # cutover: no previous survives
+            ep.prev_secret_expires = 0.0
         await self._endpoints.save(ep)
         return ep, fresh
+
+    @staticmethod
+    def _active_previous_secret(ep: Endpoint, now: float) -> str:
+        """The previous signing secret while its overlap window is open, else "" — an expired
+        previous is never signed with, so it lapses on its own without a manual step."""
+        if len(ep.secrets) > 1 and ep.prev_secret_expires and now < ep.prev_secret_expires:
+            return ep.secrets[1]
+        return ""
 
     async def delete(self, endpoint_id: str) -> bool:
         ep = await self._endpoints.get(endpoint_id)
@@ -158,7 +183,17 @@ class WebhookService:
             "X-Webhook-Attempt": str(d.attempt),
             "Idempotency-Key": event.id,            # consumers dedupe on this
         }
+        # Sign with the current secret, and — only while a rotation overlap is still open — ALSO with
+        # the previous one, in the same header (t=..,v1=<fresh>,v1=<prev>). A receiver that has not yet
+        # swapped its copy verifies against either; the moment the window lapses we stop including the
+        # previous, so an old secret cannot outlive its timestamp. `verify` accepts any of the sigs.
         signature = self._signer.sign(body=body, secret=(ep.secrets or [""])[0], timestamp=ts)
+        prev = self._active_previous_secret(ep, now)
+        if signature and prev:
+            prev_sig = self._signer.sign(body=body, secret=prev, timestamp=ts)
+            _, _, v1 = prev_sig.partition(",")       # "t=ts,v1=<hex>" -> "v1=<hex>"
+            if v1:
+                signature = f"{signature},{v1}"
         if signature:
             headers["X-Webhook-Signature"] = signature
 

@@ -32,7 +32,8 @@ def _config() -> dict[str, Any]:
             "circuit_threshold": s.CIRCUIT_FAILURE_THRESHOLD,
             "circuit_reset_seconds": s.CIRCUIT_RESET_SECONDS,
             "max_payload_bytes": s.MAX_PAYLOAD_BYTES, "max_response_bytes": s.MAX_RESPONSE_BYTES,
-            "endpoint_concurrency": s.ENDPOINT_CONCURRENCY, "list_limit": s.WEBHOOK_LIST_LIMIT}
+            "endpoint_concurrency": s.ENDPOINT_CONCURRENCY, "list_limit": s.WEBHOOK_LIST_LIMIT,
+            "secret_rotation_overlap_seconds": s.WEBHOOK_SECRET_ROTATION_OVERLAP_SECONDS}
 
 
 def build_webhooks(request: Request) -> WebhookService:
@@ -86,6 +87,12 @@ class EndpointPatch(BaseModel):
     description: str | None = None
 
 
+class RotateIn(BaseModel):
+    # Seconds the previous secret keeps verifying deliveries after this rotation. Omit to use the
+    # configured default; 0 is an immediate cutover for a leaked secret.
+    overlap_seconds: int | None = Field(default=None, ge=0)
+
+
 class DispatchIn(BaseModel):
     tenant: str = Field(min_length=1)
     type: str = Field(min_length=1, max_length=128)
@@ -135,17 +142,21 @@ async def update_endpoint(request: Request, endpoint_id: str, body: EndpointPatc
 
 
 @router.post("/endpoints/{endpoint_id}/rotate-secret")
-async def rotate(request: Request, endpoint_id: str, principal: Principal = Depends(_ADMIN)) -> dict:
+async def rotate(request: Request, endpoint_id: str, body: RotateIn = RotateIn(),
+                 principal: Principal = Depends(_ADMIN)) -> dict:
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
+    overlap = body.overlap_seconds
     await request.app.state.auditor.record(
         "webhook.secret_rotated", actor=principal.subject, tenant=principal.tenant, resource=f"endpoint:{endpoint_id}",
         ip=request.client.host if request.client else "")
     svc = build_webhooks(request)
     await _owned(svc, endpoint_id, principal)
-    ep, fresh = await svc.rotate_secret(endpoint_id)
-    return {"endpoint_id": ep.id, "secret": fresh, "previous_still_accepted": len(ep.secrets) > 1}
+    ep, fresh = await svc.rotate_secret(endpoint_id, overlap_seconds=overlap)
+    return {"endpoint_id": ep.id, "secret": fresh,
+            "previous_still_accepted": len(ep.secrets) > 1 and ep.prev_secret_expires > 0,
+            "previous_secret_expires_at": ep.prev_secret_expires}
 
 
 @router.delete("/endpoints/{endpoint_id}")

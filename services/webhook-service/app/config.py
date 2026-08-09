@@ -245,6 +245,13 @@ class Settings(BaseSettings):
     CIRCUIT_FAILURE_THRESHOLD: int = 5
     CIRCUIT_RESET_SECONDS: int = 300
 
+    # Secret rotation overlap. When an endpoint's signing secret is rotated we keep the PREVIOUS one
+    # and dual-sign every delivery (t=..,v1=<fresh>,v1=<prev>) so a receiver that has not yet updated
+    # its copy still verifies — then STOP including it once this many seconds have passed. Expiry is by
+    # timestamp, never a manual step, so the old secret cannot outlive its window. 0 = immediate
+    # cutover, the right response to a leaked secret. Default 7 days.
+    WEBHOOK_SECRET_ROTATION_OVERLAP_SECONDS: int = 604_800
+
     # inbound (replay protection)
     INBOUND_TIMESTAMP_TOLERANCE_SECONDS: int = 300
     INBOUND_DEDUPE_TTL_SECONDS: int = 86_400

@@ -242,6 +242,24 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "RotateIn": {
+        "properties": {
+          "overlap_seconds": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overlap Seconds"
+          }
+        },
+        "title": "RotateIn",
+        "type": "object"
+      },
       "SecretIn": {
         "properties": {
           "name": {
@@ -1066,6 +1084,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RotateIn",
+                "default": {}
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "content": {

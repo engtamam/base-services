@@ -29,6 +29,10 @@ class Endpoint:
     url: str
     event_types: list[str] = field(default_factory=list)   # ["*"] = all
     secrets: list[str] = field(default_factory=list)       # [primary, previous] during rotation
+    # When the PREVIOUS secret (secrets[1]) stops being accepted, as a unix timestamp. Deliveries
+    # dual-sign with the previous secret only while now < this; then it lapses on its own — an
+    # overlap that ends by timestamp, never a manual step. 0.0 = no live previous.
+    prev_secret_expires: float = 0.0
     enabled: bool = True
     description: str = ""
     # circuit breaker state (stored, not in-process — replicas share it)

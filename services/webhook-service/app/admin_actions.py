@@ -34,7 +34,11 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
      "path": "/api/v1/webhooks/endpoints/{id}/rotate-secret", "capability": "platform.webhooks",
      "group": "Endpoints", "danger": True, "confirm": True,
      "params": [{"name": "id", "in": "path", "type": "string", "required": True,
-                 "help": "invalidates the old secret — receivers must be updated to the new one"}]},
+                 "help": "the previous secret keeps verifying deliveries during an overlap, then "
+                         "lapses on its own — update the receiver before it expires"},
+                {"name": "overlap_seconds", "in": "body", "type": "integer", "required": False,
+                 "help": "seconds the old secret stays valid (default from config); 0 = cut it over "
+                         "at once, for a leaked secret"}]},
     {"id": "webhooks.delete_endpoint", "label": "Delete an endpoint", "method": "DELETE",
      "path": "/api/v1/webhooks/endpoints/{id}", "capability": "platform.webhooks", "group": "Endpoints",
      "danger": True, "confirm": True,

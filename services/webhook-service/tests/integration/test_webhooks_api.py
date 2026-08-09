@@ -107,10 +107,19 @@ def test_endpoint_health(client):
     assert h["circuit_state"] == "closed" and h["success_count"] >= 1
 
 
-def test_rotate_secret_keeps_previous(client):
+def test_rotate_secret_keeps_previous_until_a_timestamp_expiry(client):
     ep = _register(client, url="http://127.0.0.1:9103/hook")
     out = client.post(f"/api/v1/webhooks/endpoints/{ep['id']}/rotate-secret", headers=_adm()).json()
     assert out["secret"] != ep["secret"] and out["previous_still_accepted"] is True
+    assert out["previous_secret_expires_at"] > 0        # the overlap ends on its own
+
+
+def test_rotate_secret_with_zero_overlap_is_an_immediate_cutover(client):
+    ep = _register(client, url="http://127.0.0.1:9105/hook")
+    out = client.post(f"/api/v1/webhooks/endpoints/{ep['id']}/rotate-secret",
+                      headers=_adm(), json={"overlap_seconds": 0}).json()
+    assert out["secret"] != ep["secret"]
+    assert out["previous_still_accepted"] is False and out["previous_secret_expires_at"] == 0
 
 
 def test_dead_letter_and_replay(client):

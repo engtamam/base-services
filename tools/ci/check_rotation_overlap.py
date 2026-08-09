@@ -38,14 +38,7 @@ _EXPIRES = ("_expires", "_until", "overlap_seconds", "rotation_window", "_window
 
 # Rotation methods that legitimately cannot carry a timestamp-expiring overlap yet — each with a
 # reason a person can read and challenge. Env-augmentable for the self-test.
-EXCLUDED: dict[str, str] = {
-    "webhook-service:rotate_secret":
-        "keeps the previous signing secret (ep.secrets = [fresh, prev]) so in-flight deliveries still "
-        "verify — an overlap EXISTS — but drops it on the NEXT rotation rather than by a timestamp, so "
-        "an unrotated old secret can outlive its usefulness. Adding per-secret expiry is a tracked "
-        "follow-up; the keep-2 overlap already prevents the hard-cutover outage this gate's worst case "
-        "describes",
-}
+EXCLUDED: dict[str, str] = {}
 for _e in (os.environ.get("ROTATION_GATE_EXCLUDE", "") or "").split(","):
     if _e.strip():
         EXCLUDED[_e.strip()] = "excluded via env (selftest)"

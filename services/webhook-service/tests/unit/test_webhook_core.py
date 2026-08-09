@@ -19,7 +19,8 @@ CFG = dict(require_https=False, allow_private_ips=True, allowed_hosts=frozenset(
            denied_hosts=frozenset(), timeout_seconds=5, retry_base_seconds=30,
            retry_max_seconds=3600, retry_max_attempts=3, retry_jitter=True,
            circuit_threshold=2, circuit_reset_seconds=300, max_payload_bytes=1024,
-           max_response_bytes=1024, endpoint_concurrency=4, list_limit=100)
+           max_response_bytes=1024, endpoint_concurrency=4, list_limit=100,
+           secret_rotation_overlap_seconds=604_800)
 
 
 def run(c):
@@ -81,13 +82,64 @@ def test_public_view_never_exposes_secrets():
     assert "secrets" not in ep.public() and ep.public()["has_secret"] is True
 
 
-def test_secret_rotation_keeps_previous():
+def test_secret_rotation_keeps_previous_with_a_timestamp_expiry():
     st = MemoryDataStore()
     w = _svc(st, Transport())
     ep = _ep(w)
     old = ep.secrets[0]
     updated, fresh = run(w.rotate_secret(ep.id))
+    # The previous secret is kept AND stamped with an expiry — an overlap that ends on its own.
     assert updated.secrets == [fresh, old] and fresh != old
+    assert updated.prev_secret_expires > 0
+
+
+def test_secret_rotation_with_zero_overlap_is_an_immediate_cutover():
+    st = MemoryDataStore()
+    w = _svc(st, Transport())
+    ep = _ep(w)
+    updated, fresh = run(w.rotate_secret(ep.id, overlap_seconds=0))
+    # A leaked secret: no previous survives, nothing to expire.
+    assert updated.secrets == [fresh] and updated.prev_secret_expires == 0.0
+
+
+def test_a_second_rotation_inside_a_window_drops_the_oldest():
+    st = MemoryDataStore()
+    w = _svc(st, Transport())
+    ep = _ep(w)
+    _, s2 = run(w.rotate_secret(ep.id))
+    updated, s3 = run(w.rotate_secret(ep.id))
+    # Only one previous is ever live — the original is gone, s2 is the single kept previous.
+    assert updated.secrets == [s3, s2]
+
+
+def test_delivery_dual_signs_within_the_overlap_then_stops_after_it_expires():
+    st = MemoryDataStore()
+    tr = Transport()
+    w = _svc(st, tr)
+    ep = _ep(w)
+    old = ep.secrets[0]
+    _, fresh = run(w.rotate_secret(ep.id, overlap_seconds=3600))
+
+    # Inside the window: a receiver still on the OLD secret verifies, and so does one on the new.
+    r = run(w.dispatch(tenant="t1", event_type="user.created", payload={"a": 1}))
+    run(w.deliver(r["deliveries"][0]))
+    sent = tr.sent[-1]
+    ts = int(sent["headers"]["X-Webhook-Timestamp"])
+    sig = sent["headers"]["X-Webhook-Signature"]
+    assert signing.verify(sent["body"], sig, [old], now=ts)      # old still accepted
+    assert signing.verify(sent["body"], sig, [fresh], now=ts)    # new accepted
+
+    # Past the window: the previous secret lapses by timestamp — deliveries no longer carry it.
+    updated = run(w._endpoints.get(ep.id))
+    updated.prev_secret_expires = ts - 10          # force the window closed
+    run(w._endpoints.save(updated))
+    r2 = run(w.dispatch(tenant="t1", event_type="user.created", payload={"a": 2}))
+    run(w.deliver(r2["deliveries"][0]))
+    sent2 = tr.sent[-1]
+    ts2 = int(sent2["headers"]["X-Webhook-Timestamp"])
+    sig2 = sent2["headers"]["X-Webhook-Signature"]
+    assert not signing.verify(sent2["body"], sig2, [old], now=ts2)   # old no longer signed with
+    assert signing.verify(sent2["body"], sig2, [fresh], now=ts2)
 
 
 # ── dispatch ──────────────────────────────────────────────────────────────────
