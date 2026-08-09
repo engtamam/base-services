@@ -167,14 +167,54 @@ def test_revoke_stops_the_token_exchange(client):
     assert r.status_code == 401           # a revoked account authenticates nothing
 
 
-def test_rotate_invalidates_the_old_secret(client):
+def test_rotate_with_overlap_keeps_the_old_secret_working_until_it_expires(client):
+    # The fleet-migration case: a POS build on hundreds of tills cannot all update at the instant
+    # rotate is pressed. The OLD secret must keep working during the overlap window, then stop ON ITS
+    # OWN. This is the reporter's exact assertion: rotate; old still authenticates; advance past the
+    # window; old no longer does — with no manual step in between.
+    cid, old = _issue(client)
+    r = client.post(f"/api/v1/service-accounts/{cid}/rotate",
+                    headers=_admin(WRITE), json={"overlap_seconds": 3600})
+    new = r.json()["client_secret"]
+    assert new != old and r.json()["previous_secret_expires_at"] > 0
+    body = {"grant_type": "client_credentials", "client_id": cid}
+    # BOTH secrets authenticate inside the window.
+    assert client.post("/api/v1/oauth/token", json={**body, "client_secret": old}).status_code == 200
+    assert client.post("/api/v1/oauth/token", json={**body, "client_secret": new}).status_code == 200
+
+    # Advance past the window (move the module clock forward) — the OLD secret lapses by timestamp.
+    from app.core import service_accounts as sa
+    real_now = sa._now
+    try:
+        sa._now = lambda: real_now() + 3601
+        assert client.post("/api/v1/oauth/token", json={**body, "client_secret": old}).status_code == 401
+        assert client.post("/api/v1/oauth/token", json={**body, "client_secret": new}).status_code == 200
+    finally:
+        sa._now = real_now
+
+
+def test_rotate_with_zero_overlap_is_an_immediate_cutover_for_a_leak(client):
     cid, old = _issue(client)
     new = client.post(f"/api/v1/service-accounts/{cid}/rotate",
-                      headers=_admin(WRITE)).json()["client_secret"]
-    assert new != old
+                      headers=_admin(WRITE), json={"overlap_seconds": 0}).json()["client_secret"]
     body = {"grant_type": "client_credentials", "client_id": cid}
+    # No window: the old secret dies at once — the right response to a leak.
     assert client.post("/api/v1/oauth/token", json={**body, "client_secret": old}).status_code == 401
     assert client.post("/api/v1/oauth/token", json={**body, "client_secret": new}).status_code == 200
+
+
+def test_a_second_rotation_inside_a_window_drops_the_oldest_secret(client):
+    # Two live overlaps is a credential nobody can reason about. After a second rotation, only the
+    # single most-recent previous survives; the original is gone even though its window had not lapsed.
+    cid, s1 = _issue(client)
+    s2 = client.post(f"/api/v1/service-accounts/{cid}/rotate",
+                     headers=_admin(WRITE), json={"overlap_seconds": 3600}).json()["client_secret"]
+    s3 = client.post(f"/api/v1/service-accounts/{cid}/rotate",
+                     headers=_admin(WRITE), json={"overlap_seconds": 3600}).json()["client_secret"]
+    body = {"grant_type": "client_credentials", "client_id": cid}
+    assert client.post("/api/v1/oauth/token", json={**body, "client_secret": s3}).status_code == 200  # current
+    assert client.post("/api/v1/oauth/token", json={**body, "client_secret": s2}).status_code == 200  # the one prev
+    assert client.post("/api/v1/oauth/token", json={**body, "client_secret": s1}).status_code == 401  # dropped
 
 
 def test_one_tenant_cannot_touch_anothers_service_account(client):

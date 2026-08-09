@@ -144,23 +144,40 @@ async def list_service_accounts(request: Request,
     return {"service_accounts": [ServiceAccount.from_dict(r).public() for r in rows]}
 
 
+class RotateIn(BaseModel):
+    # How long the PREVIOUS secret keeps working, so a fleet embedding the credential migrates
+    # without a flag-day outage. Omitted → the platform default. 0 → an immediate cutover, which is
+    # the right choice for a leaked secret (shrink the exposure, do not extend it).
+    overlap_seconds: int | None = Field(default=None, ge=0)
+
+
 @router.post("/service-accounts/{client_id}/rotate",
              dependencies=[Depends(_enabled), Depends(rate_limit)])
-async def rotate(request: Request, client_id: str) -> dict:
+async def rotate(request: Request, client_id: str, body: RotateIn | None = None) -> dict:
     """Rotate a service account's secret. The client_id is unchanged; only the secret the caller
-    holds must be updated. Returns the new secret ONCE."""
+    holds must be updated. Returns the new secret ONCE.
+
+    By default the PREVIOUS secret keeps authenticating for an overlap window and then expires ON ITS
+    OWN, so a fleet of callers migrates without every one failing the instant rotate is pressed. Pass
+    `overlap_seconds: 0` for an immediate cutover — the right response to a leak. The response's
+    `previous_secret_expires_at` says when the old secret stops working.
+    """
+    s = get_settings()
     principal, tenant = await _caller_tenant(request, _manage_dep())
     account = await _store(request).get(client_id)
     if account is None or account.tenant != tenant:
         # A 404 whether it is absent or another tenant's — one tenant may not probe another's
         # machine identities.
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    overlap = (s.SERVICE_ACCOUNT_ROTATION_OVERLAP_SECONDS
+               if body is None or body.overlap_seconds is None else body.overlap_seconds)
     # Write-ahead: rotation OVERWRITES the old secret; an unrecorded rotation is unreconstructable.
     await request.app.state.auditor.record(
         "service_account.rotated", actor=_actor(principal), tenant=tenant,
         resource=f"service_account:{client_id}",
-        ip=request.client.host if request.client else "")
-    secret = await _svc(request).rotate(account)
+        ip=request.client.host if request.client else "",
+        metadata={"overlap_seconds": overlap})
+    secret = await _svc(request).rotate(account, overlap_seconds=overlap)
     return {**account.public(), "client_secret": secret}
 
 

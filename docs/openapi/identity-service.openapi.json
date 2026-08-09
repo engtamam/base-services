@@ -382,6 +382,24 @@
         "title": "ResendIn",
         "type": "object"
       },
+      "RotateIn": {
+        "properties": {
+          "overlap_seconds": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overlap Seconds"
+          }
+        },
+        "title": "RotateIn",
+        "type": "object"
+      },
       "SecretIn": {
         "properties": {
           "name": {
@@ -1672,7 +1690,7 @@
     },
     "/api/v1/service-accounts/{client_id}/rotate": {
       "post": {
-        "description": "Rotate a service account's secret. The client_id is unchanged; only the secret the caller\nholds must be updated. Returns the new secret ONCE.",
+        "description": "Rotate a service account's secret. The client_id is unchanged; only the secret the caller\nholds must be updated. Returns the new secret ONCE.\n\nBy default the PREVIOUS secret keeps authenticating for an overlap window and then expires ON ITS\nOWN, so a fleet of callers migrates without every one failing the instant rotate is pressed. Pass\n`overlap_seconds: 0` for an immediate cutover \u2014 the right response to a leak. The response's\n`previous_secret_expires_at` says when the old secret stops working.",
         "operationId": "rotate_api_v1_service_accounts__client_id__rotate_post",
         "parameters": [
           {
@@ -1685,6 +1703,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RotateIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "content": {

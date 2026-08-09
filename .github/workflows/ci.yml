@@ -177,6 +177,12 @@ jobs:
           python tools/ci/selftest_pool_config.py
           python tools/ci/check_pool_config.py
 
+      # gates: safety:rotation-overlap
+      - name: "safety:rotation-overlap — every credential rotation keeps the previous secret across a self-expiring overlap"
+        run: |
+          python tools/ci/selftest_rotation_overlap.py
+          python tools/ci/check_rotation_overlap.py
+
       # gates: safety:tenancy
       - name: "safety:tenancy — a token carries exactly ONE tenant, and only one it is entitled to"
         run: python tools/ci/check_tenancy.py

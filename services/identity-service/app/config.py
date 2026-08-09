@@ -341,6 +341,13 @@ class Settings(BaseSettings):
     # limit an operator sets to the number of integrations a tenant actually runs (ISO 27001 A.8.2).
     SERVICE_ACCOUNTS_MAX_PER_TENANT: int = 100
     SERVICE_ACCOUNTS_PAGE_SIZE: int = 50
+    # Default overlap on a secret ROTATION: the previous secret keeps working for this long so a
+    # fleet embedding the credential (a POS build on hundreds of tills that each update on their own
+    # schedule) migrates without a flag-day outage. It expires ON ITS OWN — an overlap an operator
+    # must end by hand is one nobody ends. A rotate may override it (0 = immediate cutover, the right
+    # choice for a leak). Default 7 days: long enough for a slow-updating fleet, bounded so a rotated
+    # secret does not live indefinitely.
+    SERVICE_ACCOUNT_ROTATION_OVERLAP_SECONDS: int = 604_800
 
     # How a person who does not exist yet gets a password. The PLATFORM decides; we enforce.
     #

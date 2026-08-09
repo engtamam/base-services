@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+gate_name="safety:rotation-overlap"
+gate_desc="every credential-rotation path keeps the previous secret across a self-expiring overlap"
+gate_protects="Rotating a machine credential is not like changing a human's password. The
+credential is EMBEDDED — a POS build on hundreds of tills, a partner's server config —
+and each holder updates on its own schedule. A rotation that kills the old secret the
+instant it runs takes the whole fleet offline until every holder happens to update, and
+they fail silently believing they still sync. An overlap only a human can end is one
+nobody ends. So a rotation must keep the PREVIOUS secret across an overlap that EXPIRES
+BY TIMESTAMP. This gate catches the hard cutover in this codebase and in the next
+rotation someone adds to another service without remembering it."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_rotation_overlap.py"
+gate_units=1
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_rotation_overlap.py; }
+gate_selftest() { "$PY" tools/ci/selftest_rotation_overlap.py >/dev/null 2>&1; }

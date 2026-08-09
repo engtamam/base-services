@@ -115,6 +115,13 @@ class ServiceAccount:
     created: float = 0.0
     created_by: str = ""          # the pseudonymised human who issued it — for the audit trail
     last_used_at: float = 0.0     # 0 = never exchanged for a token
+    # Rotation OVERLAP: the previous secret keeps authenticating until prev_secret_expires, so a
+    # fleet embedding this credential (hundreds of tills that each update on their own schedule)
+    # migrates across a window instead of failing the instant rotate is pressed. The window is a
+    # TIMESTAMP that expires on its own — an overlap an operator must end manually is an overlap
+    # nobody ends. Exactly ONE previous is ever kept; empty/0 means no overlap (an immediate cutover).
+    prev_secret_hash: str = ""
+    prev_secret_expires: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -129,6 +136,9 @@ class ServiceAccount:
             "client_id": self.id, "tenant": self.tenant, "name": self.name,
             "caps": list(self.caps), "status": self.status, "created": self.created,
             "last_used_at": self.last_used_at,
+            # So an operator can SEE a rotation in progress: a non-zero value in the future means the
+            # previous secret still authenticates until then. Never the hash — only when it lapses.
+            "previous_secret_expires_at": self.prev_secret_expires,
         }
 
 
@@ -195,12 +205,20 @@ class ServiceAccounts:
 
     async def authenticate(self, client_id: str, client_secret: str) -> ServiceAccount | None:
         """The client-credentials check. Timing-safe; a wrong secret, an unknown client, and a
-        revoked account are indistinguishable (all None → one 401)."""
+        revoked account are indistinguishable (all None → one 401).
+
+        During a rotation OVERLAP the PREVIOUS secret is accepted too, but ONLY while its window is
+        open — the comparison is the same constant-time verify, and an expired previous is never
+        consulted, so it stops working on its own with no manual step."""
         account = await self._store.get(client_id) if client_id else None
         # ONE verify on every path — against the real hash or the dummy — so the presence of a
         # client_id is not observable through timing (CWE-204/CWE-208).
         ok = self._hasher.verify(client_secret or "",
                                  account.secret_hash if account is not None else self._dummy_hash)
+        if account is not None and not ok and account.prev_secret_hash \
+                and account.prev_secret_expires > _now():
+            # The previous secret, accepted only inside the overlap window (constant-time).
+            ok = self._hasher.verify(client_secret or "", account.prev_secret_hash)
         if account is None or not ok or account.status != ACTIVE:
             return None
         return account
@@ -219,10 +237,27 @@ class ServiceAccounts:
             "svc_name": account.name,           # a human label for the audit trail
         }
 
-    async def rotate(self, account: ServiceAccount) -> str:
-        """Replace the secret, return the new one once. The client_id is unchanged, so a rotation
-        does not require reconfiguring every caller — only the secret they hold."""
+    async def rotate(self, account: ServiceAccount, *, overlap_seconds: float = 0.0) -> str:
+        """Replace the secret, return the new one once. The client_id is unchanged.
+
+        OVERLAP: with overlap_seconds > 0 the PREVIOUS secret keeps authenticating until it expires
+        ON ITS OWN — so a fleet embedding this credential migrates across the window instead of every
+        caller failing the instant rotate is pressed (a POS build on hundreds of tills each updates
+        only when its shop next takes an update; a hard cutover is a fortnight of outage). An overlap
+        an operator has to end by hand is an overlap nobody ends, so it is a timestamp, not a task.
+
+        overlap_seconds <= 0 is an IMMEDIATE cutover — the right choice for a leak. And a second
+        rotation inside a window keeps only ONE previous (the just-rotated secret), dropping the
+        older: two live overlaps is a credential nobody can reason about, and a second rotation is
+        usually somebody reacting to a leak, who wants the exposure to shrink, not chain.
+        """
         secret = new_client_secret()
+        if overlap_seconds and overlap_seconds > 0:
+            account.prev_secret_hash = account.secret_hash          # the secret being rotated out
+            account.prev_secret_expires = _now() + float(overlap_seconds)
+        else:
+            account.prev_secret_hash = ""                           # immediate cutover / leak response
+            account.prev_secret_expires = 0.0
         account.secret_hash = self._hasher.hash(secret)
         await self._store.save(account)
         return secret
