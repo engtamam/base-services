@@ -117,6 +117,19 @@ class PostgresDataStore:
                 collection, key, json.dumps(value),
             )
 
+    async def put_if_absent(self, collection: str, key: str, value: dict[str, Any]) -> bool:
+        # ON CONFLICT DO NOTHING is the atomic insert-if-absent: the primary key (collection, key)
+        # lets exactly one concurrent inserter win. `execute` returns "INSERT 0 1" when a row was
+        # created and "INSERT 0 0" when the key already existed — that is the reservation verdict.
+        pool = await self._ensure()
+        async with pool.acquire() as con:
+            res = await con.execute(
+                f"INSERT INTO {_TABLE} (collection, key, value) VALUES ($1,$2,$3) "  # nosec B608 - _TABLE is a trusted constant; all values are parameterized
+                "ON CONFLICT (collection, key) DO NOTHING",
+                collection, key, json.dumps(value),
+            )
+        return res.strip().endswith("1")
+
     async def delete(self, collection: str, key: str) -> bool:
         pool = await self._ensure()
         async with pool.acquire() as con:

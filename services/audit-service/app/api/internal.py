@@ -15,6 +15,7 @@ from app.api.v1.audit import build_audit
 from app.backup_manifest import BACKUP
 from app.config import Settings, get_settings
 from app.core import backup as _backup
+from app.core.audit_service import IngestInProgress
 from app.core.erasure import AuditErasure
 from app.core.pii import subject_ref
 from app.manifest import build_manifest
@@ -30,6 +31,11 @@ class AuditIn(BaseModel):
     tenant: str = Field(default="", max_length=128)
     ip: str = Field(default="", max_length=64)
     metadata: dict = Field(default_factory=dict)
+    # A client-generated key, stable across a caller's own retries of ONE action. With it the sink
+    # can retry a transient timeout safely: a repeat carries the same key, the log returns the
+    # original receipt instead of appending a duplicate to the tamper-evident chain. Empty = the
+    # legacy one-shot behaviour (a caller that sends no key gets exactly what it did before).
+    idempotency_key: str = Field(default="", max_length=128)
 
 _HEADER = "X-Internal-Token"
 
@@ -64,7 +70,12 @@ async def enforce_retention(request: Request, settings: Settings = Depends(get_s
     # purging blind. `hold_protected` in the response says which of those two happened.
     gate = request.app.state.container.hold_refs
     holds = gate.for_tenant if gate is not None and gate.driver != "null" else None
-    return await build_audit(request).enforce_retention(settings.RETENTION_DAYS, holds=holds)
+    audit = build_audit(request)
+    result = await audit.enforce_retention(settings.RETENTION_DAYS, holds=holds)
+    # Housekeeping: drop idempotency keys past the retry window (their receipts live in the chain).
+    result["idempotency_keys_pruned"] = await audit.prune_idempotency(
+        settings.AUDIT_IDEMPOTENCY_TTL_SECONDS)
+    return result
 
 
 @router.post("/audit/verify", dependencies=[Depends(require_internal_token)])
@@ -106,13 +117,26 @@ async def internal_health(settings: Settings = Depends(get_settings)) -> dict[st
 
 
 @router.post("/audit", dependencies=[Depends(require_internal_token)])
-async def internal_audit(request: Request, body: AuditIn) -> dict:
-    """Primary ingest — a service records an audit event here (service-to-service)."""
-    evt = await build_audit(request).record(
-        service=body.service, action=body.action, actor=body.actor,
-        resource=body.resource, tenant=body.tenant, ip=body.ip, metadata=body.metadata,
-    )
-    return {"id": evt.id, "seq": evt.seq, "hash": evt.hash}
+async def internal_audit(request: Request, body: AuditIn,
+                         settings: Settings = Depends(get_settings)) -> dict:
+    """Primary ingest — a service records an audit event here (service-to-service).
+
+    Idempotent when the caller supplies `idempotency_key`: a retried append (after a transient
+    timeout) returns the ORIGINAL receipt with `duplicate: true` and adds nothing to the chain.
+    """
+    try:
+        receipt, duplicate = await build_audit(request).record_idempotent(
+            idempotency_key=body.idempotency_key,
+            stale_seconds=settings.AUDIT_INGEST_STALE_SECONDS,
+            service=body.service, action=body.action, actor=body.actor,
+            resource=body.resource, tenant=body.tenant, ip=body.ip, metadata=body.metadata,
+        )
+    except IngestInProgress:
+        # Another attempt with this key is mid-append. A 503 tells the caller to retry (the sink
+        # does, with the same key, backing off); a later attempt returns the committed receipt, so
+        # exactly one event is ever appended even when a slow first append overlaps its own retry.
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "AUDIT_INGEST_IN_PROGRESS")
+    return {**receipt, "duplicate": duplicate}
 
 
 @router.get("/manifest", dependencies=[Depends(require_internal_token)])

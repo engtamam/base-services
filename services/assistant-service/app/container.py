@@ -114,7 +114,9 @@ _RATELIMITER: dict[str, Builder] = {
 _AUDIT_SINK: dict[str, Builder] = {
     "null": lambda s: NullAuditSink(),
     "http": lambda s: HttpAuditSink(s.audit_ingest_url, s.INTERNAL_SERVICE_TOKEN,
-                                    timeout=s.AUDIT_TIMEOUT_SECONDS),
+                                    timeout=s.AUDIT_TIMEOUT_SECONDS,
+                                    max_attempts=s.AUDIT_MAX_ATTEMPTS,
+                                    backoff=s.AUDIT_RETRY_BACKOFF_SECONDS),
 }
 # Ask before processing personal data. `null` answers UNKNOWN and says so; the boot guard refuses
 # it in production for any service that declares consent-gated processing, because a gate that is

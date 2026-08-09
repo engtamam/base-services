@@ -123,6 +123,12 @@ class Settings(BaseSettings):
     AUDIT_TOPIC: str = "audit.events"        # eventbus sink
     # Short on purpose: this sits on the request path, and a slow audit must not become a slow API.
     AUDIT_TIMEOUT_SECONDS: int = 5
+    # Retrying a transient audit failure is safe because every emit carries an idempotency key (a
+    # repeat is deduped by the log, never appended twice). Small by design: this sits on the request
+    # path, so 2 attempts with a short backoff turns one slow call into a second chance without
+    # spending the whole budget the timeout protects.
+    AUDIT_MAX_ATTEMPTS: int = 2
+    AUDIT_RETRY_BACKOFF_SECONDS: float = 0.2
     # How long a client should wait before retrying an action we REFUSED because the audit log
     # was unreachable. It is a 503 + Retry-After, never a 500: the action did not happen, nothing
     # committed, and trying again later is the correct response. A 500 would tell the caller we

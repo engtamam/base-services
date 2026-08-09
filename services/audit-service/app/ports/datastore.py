@@ -15,6 +15,14 @@ class DataStore(Protocol):
 
     async def put(self, collection: str, key: str, value: dict[str, Any]) -> None: ...
 
+    async def put_if_absent(self, collection: str, key: str, value: dict[str, Any]) -> bool:
+        """Insert ONLY if the key does not already exist; return True if this call inserted it.
+
+        The atomic reservation the audit idempotency guard needs: two ingest attempts carrying the
+        same idempotency key race to reserve it, and exactly one may win, so a retry can never append
+        a second event to the tamper-evident chain."""
+        ...
+
     async def delete(self, collection: str, key: str) -> bool: ...
 
     async def find(

@@ -7,10 +7,17 @@ API (append-only); retention purge is the only removal and re-anchors the chain.
 from __future__ import annotations
 
 import datetime as _dt
+import time
 from typing import Any
 
 from app.core.audit_repository import AuditRepository
 from app.core.models import AuditEvent, new_id, now
+
+
+class IngestInProgress(RuntimeError):
+    """A concurrent attempt carrying the SAME idempotency key is mid-append. The caller (the sink)
+    retries with the same key, and a later attempt returns the committed receipt — so exactly one
+    event is ever appended to the chain, even when a slow first append overlaps its own retry."""
 
 
 class AuditService:
@@ -49,6 +56,49 @@ class AuditService:
         evt.hash = self._integrity.seal(head, evt.to_dict())
         await self._repo.append(evt.to_dict(), partition)
         return evt
+
+    async def record_idempotent(self, *, idempotency_key: str = "", stale_seconds: float = 30.0,
+                                **fields: Any) -> tuple[dict[str, Any], bool]:
+        """record(), made idempotent under a client-supplied key. Returns (receipt, duplicate).
+
+        THE POINT: it lets the HTTP sink RETRY a transient timeout safely. A retry carries the same
+        key — if the first attempt landed, the log returns the ORIGINAL {id, seq, hash} and appends
+        nothing; if it did not, this appends exactly once. That dissolves the objection the no-retry
+        note raised: a retry becomes distinguishable from a second action, so a slow log call no
+        longer fails the real user action it was witnessing.
+
+        Race-safe by RESERVING the key (an atomic insert-if-absent) BEFORE appending, so even a slow
+        first append that overlaps its own retry cannot produce two events. A reserver that crashed
+        mid-append leaves a stale `pending` entry, which a later attempt reclaims after `stale_seconds`.
+        """
+        if not idempotency_key:
+            evt = await self.record(**fields)
+            return {"id": evt.id, "seq": evt.seq, "hash": evt.hash}, False
+
+        prior = await self._repo.idempo_get(idempotency_key)
+        if prior and prior.get("state") == "done":
+            return {"id": prior["id"], "seq": prior["seq"], "hash": prior["hash"]}, True
+
+        ts = time.time()
+        if not await self._repo.idempo_reserve(idempotency_key, ts):
+            cur = await self._repo.idempo_get(idempotency_key) or {}
+            if cur.get("state") == "done":
+                return {"id": cur["id"], "seq": cur["seq"], "hash": cur["hash"]}, True
+            # A live reserver is mid-append — unless its entry is stale (the process crashed before
+            # committing), in which case we reclaim it and append. Otherwise tell the caller to retry.
+            if ts - float(cur.get("ts", 0)) < stale_seconds:
+                raise IngestInProgress()
+            await self._repo.idempo_take_over(idempotency_key, ts)
+
+        evt = await self.record(**fields)
+        receipt = {"id": evt.id, "seq": evt.seq, "hash": evt.hash}
+        await self._repo.idempo_commit(idempotency_key, receipt, ts)
+        return receipt, False
+
+    async def prune_idempotency(self, ttl_seconds: float, limit: int = 100_000) -> int:
+        """Housekeeping: drop idempotency keys older than the retry window (the receipt lives in the
+        chain regardless). Called from the retention sweep."""
+        return await self._repo.idempo_prune(time.time() - float(ttl_seconds), limit)
 
     async def query(self, filters: dict[str, Any], limit: int | None = None) -> list[dict]:
         """Query is scoped to a PARTITION, because that is what the datastore can index on.

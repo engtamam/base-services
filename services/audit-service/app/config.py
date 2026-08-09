@@ -127,6 +127,12 @@ class Settings(BaseSettings):
     AUDIT_TOPIC: str = "audit.events"        # eventbus sink
     # Short on purpose: this sits on the request path, and a slow audit must not become a slow API.
     AUDIT_TIMEOUT_SECONDS: int = 5
+    # Retrying a transient audit failure is safe because every emit carries an idempotency key (a
+    # repeat is deduped by the log, never appended twice). Small by design: this sits on the request
+    # path, so 2 attempts with a short backoff turns one slow call into a second chance without
+    # spending the whole budget the timeout protects.
+    AUDIT_MAX_ATTEMPTS: int = 2
+    AUDIT_RETRY_BACKOFF_SECONDS: float = 0.2
     # How long a client should wait before retrying an action we REFUSED because the audit log
     # was unreachable. It is a 503 + Retry-After, never a 500: the action did not happen, nothing
     # committed, and trying again later is the correct response. A 500 would tell the caller we
@@ -237,6 +243,17 @@ class Settings(BaseSettings):
     RETENTION_DAYS: int = 0                  # 0 = keep forever
     AUDIT_SUBSCRIBE_TOPICS: str = ""         # comma list; needs a shared EventBus (redis)
     AUDIT_QUERY_LIMIT: int = 100
+    # ── ingest idempotency ────────────────────────────────────────────────────────────────────
+    # A repeated ingest carrying the same idempotency_key is recognised (returns the original
+    # receipt) instead of appending a duplicate — this is what lets the sink retry a transient
+    # timeout safely. How long a key is remembered: the retries it guards happen in seconds, so a
+    # day is generous, and the receipt lives in the chain regardless. Keys older than this are
+    # pruned by the retention sweep.
+    AUDIT_IDEMPOTENCY_TTL_SECONDS: int = 86_400
+    # How long a `pending` reservation may sit before a later attempt treats it as stale (its
+    # reserver crashed mid-append) and reclaims it. A few multiples of the ingest timeout — long
+    # enough that a merely-slow append is never stolen from, short enough that a crash is recovered.
+    AUDIT_INGEST_STALE_SECONDS: float = 30.0
 
     @property
     def audit_subscribe_topics(self) -> list[str]:

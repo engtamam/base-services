@@ -15,6 +15,12 @@
             "title": "Actor",
             "type": "string"
           },
+          "idempotency_key": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
           "ip": {
             "default": "",
             "maxLength": 64,
@@ -651,7 +657,7 @@
     },
     "/internal/audit": {
       "post": {
-        "description": "Primary ingest \u2014 a service records an audit event here (service-to-service).",
+        "description": "Primary ingest \u2014 a service records an audit event here (service-to-service).\n\nIdempotent when the caller supplies `idempotency_key`: a retried append (after a transient\ntimeout) returns the ORIGINAL receipt with `duplicate: true` and adds nothing to the chain.",
         "operationId": "internal_audit_internal_audit_post",
         "parameters": [
           {

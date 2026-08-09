@@ -31,5 +31,11 @@ BACKUP: dict[str, Any] = {
         # The chain head per partition (seq + head_hash). Keyed by partition, carried in the row.
         {"name": "audit_meta", "tenant_scoped": False, "key": "{partition}"},
     ],
-    "excluded": [],
+    "excluded": [
+        {"name": "audit_idempo",
+         "reason": "ingest idempotency keys (idempotency_key -> {seq, hash, ts}) — transient dedup "
+                   "state for the sink's retry window (seconds), pruned by retention. The receipt it "
+                   "guards lives in audit_events; restoring stale keys would only, at worst, dedup a "
+                   "post-restore retry against an event that is already present"},
+    ],
 }

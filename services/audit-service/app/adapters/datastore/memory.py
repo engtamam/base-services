@@ -22,6 +22,15 @@ class MemoryDataStore:
     async def put(self, collection: str, key: str, value: dict[str, Any]) -> None:
         self._data.setdefault(collection, {})[key] = copy.deepcopy(value)
 
+    async def put_if_absent(self, collection: str, key: str, value: dict[str, Any]) -> bool:
+        # No await between the check and the set, so this is atomic within the single-threaded event
+        # loop — no lock needed. Returns True iff this call created the row.
+        bucket = self._data.setdefault(collection, {})
+        if key in bucket:
+            return False
+        bucket[key] = copy.deepcopy(value)
+        return True
+
     async def delete(self, collection: str, key: str) -> bool:
         return self._data.get(collection, {}).pop(key, None) is not None
 

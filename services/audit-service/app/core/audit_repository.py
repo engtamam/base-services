@@ -7,6 +7,9 @@ from app.ports.datastore import DataStore
 
 _EVENTS = "audit_events"   # id -> event dict (with internal _partition, _seq_key)
 _META = "audit_meta"       # partition -> {partition, seq, head_hash}
+# idempotency_key -> {state: pending|done, id, seq, hash, ts}. Lets the ingest recognise a retried
+# append (returning the original receipt) instead of duplicating it in the tamper-evident chain.
+_IDEMPO = "audit_idempo"
 
 # How many events a single find() page pulls while walking the chain. The chain is walked to
 # EXHAUSTION — this bounds memory, never the walk.
@@ -87,6 +90,33 @@ class AuditRepository:
         # rely on it rather than on which write path last touched the row.
         await self._store.put(_META, partition,
                               {"partition": partition, "seq": seq, "head_hash": head_hash})
+
+    # ── idempotency ────────────────────────────────────────────────────────────────────────────
+    # The row carries its own `key` so idempo_prune (which reads VALUES via scan_all) can delete it.
+    async def idempo_get(self, key: str) -> dict[str, Any] | None:
+        return await self._store.get(_IDEMPO, key)
+
+    async def idempo_reserve(self, key: str, ts: float) -> bool:
+        """Atomically claim an idempotency key for an in-flight append. True iff we won the claim."""
+        return await self._store.put_if_absent(_IDEMPO, key, {"key": key, "state": "pending", "ts": ts})
+
+    async def idempo_take_over(self, key: str, ts: float) -> None:
+        """Re-claim a STALE pending key whose reserver never committed (crashed mid-append). Safe as
+        a plain put: staleness means there is no live competitor to race."""
+        await self._store.put(_IDEMPO, key, {"key": key, "state": "pending", "ts": ts})
+
+    async def idempo_commit(self, key: str, receipt: dict[str, Any], ts: float) -> None:
+        await self._store.put(_IDEMPO, key, {"key": key, "state": "done", "ts": ts, **receipt})
+
+    async def idempo_prune(self, before_ts: float, limit: int) -> int:
+        """Delete idempotency keys older than `before_ts`. The retries these guard happen in seconds,
+        so an entry past the window is only housekeeping — the receipt lives in the chain itself."""
+        removed = 0
+        for row in await self._store.scan_all(_IDEMPO, limit):
+            if float(row.get("ts", 0)) < before_ts and row.get("key"):
+                if await self._store.delete(_IDEMPO, row["key"]):
+                    removed += 1
+        return removed
 
     # Equality filters the datastore can push down. `since`/`until` are ranges, so they stay a
     # post-filter — but they run over PAGES, never over the whole table.
