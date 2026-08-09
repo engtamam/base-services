@@ -32,10 +32,23 @@ class Fund:
     name: str
     priority: int
     taxable: bool
+    withdrawable: bool = False       # can this fund's balance leave the platform (a payout)?
 
 
-def parse(spec: tuple[tuple[str, int, bool], ...]) -> tuple[Fund, ...]:
-    return tuple(Fund(n, p, t) for n, p, t in spec)
+def parse(spec: tuple[tuple, ...]) -> tuple[Fund, ...]:
+    # Accept 3- or 4-tuples: the 4th (withdrawable) is optional and defaults False, so older specs
+    # and tests that pass (name, priority, taxable) keep working and stay locked by default.
+    out: list[Fund] = []
+    for row in spec:
+        name, priority, taxable = row[0], row[1], row[2]
+        withdrawable = bool(row[3]) if len(row) > 3 else False
+        out.append(Fund(name, priority, taxable, withdrawable))
+    return tuple(out)
+
+
+def withdrawable_names(funds: tuple[Fund, ...]) -> tuple[str, ...]:
+    """The funds a payout may draw from, in spend priority order."""
+    return tuple(f.name for f in funds if f.withdrawable)
 
 
 @dataclass(frozen=True)
