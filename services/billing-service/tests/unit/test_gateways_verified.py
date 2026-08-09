@@ -239,3 +239,50 @@ def test_checkout_charge_sends_minor_amount_and_token_source():
     assert r.ok and r.provider_id == "pay_9"
     assert seen["b"]["amount"] == 5000 and seen["b"]["source"]["token"] == "tok_1"   # MINOR units
     assert seen["u"].endswith("/payments")
+
+
+# ── PayPal (webhook verified via PayPal's verify-webhook-signature API) ──────────
+import app.adapters.payment.paypal as PP  # noqa: E402
+
+_PP_HEADERS = {"PayPal-Transmission-Id": "tx1", "PayPal-Transmission-Time": "2026-01-01T00:00:00Z",
+               "PayPal-Cert-Url": "https://api.paypal.com/cert", "PayPal-Auth-Algo": "SHA256withRSA",
+               "PayPal-Transmission-Sig": "sig=="}
+_PP_EVENT = {"event_type": "PAYMENT.CAPTURE.COMPLETED", "resource": {"id": "cap_1"}}
+
+
+def _pp_gw(verify_status):
+    """A PayPal gateway whose token + verify API are stubbed to a given verification_status."""
+    gw = PP.PayPalGateway("client", extra_id="secret", webhook_secret="WH_ID")
+    gw._token = lambda: "access_tok"
+    PP.post_json = lambda u, b, h=None: ((200, {"verification_status": verify_status})
+                                         if u.endswith("/verify-webhook-signature") else (200, {}))
+    return gw
+
+
+def test_paypal_webhook_is_verified_when_the_api_says_success():
+    gw = _pp_gw("SUCCESS")
+    ev = gw.verify_webhook(headers=_PP_HEADERS, body=json.dumps(_PP_EVENT).encode(), secret="WH_ID")
+    assert ev.verified is True and ev.type == "payment.succeeded" and ev.provider_id == "cap_1"
+
+
+def test_paypal_webhook_is_not_verified_when_the_api_says_failure():
+    gw = _pp_gw("FAILURE")
+    ev = gw.verify_webhook(headers=_PP_HEADERS, body=json.dumps(_PP_EVENT).encode(), secret="WH_ID")
+    assert ev.verified is False
+
+
+def test_paypal_webhook_posts_the_transmission_headers_and_webhook_id():
+    gw = PP.PayPalGateway("client", extra_id="secret", webhook_secret="WH_ID")
+    gw._token = lambda: "access_tok"
+    seen = {}
+    PP.post_json = lambda u, b, h=None: (seen.update(u=u, b=b) or (200, {"verification_status": "SUCCESS"}))
+    gw.verify_webhook(headers=_PP_HEADERS, body=json.dumps(_PP_EVENT).encode(), secret="WH_ID")
+    assert seen["u"].endswith("/v1/notifications/verify-webhook-signature")
+    assert seen["b"]["webhook_id"] == "WH_ID" and seen["b"]["transmission_id"] == "tx1"
+    assert seen["b"]["transmission_sig"] == "sig==" and seen["b"]["webhook_event"] == _PP_EVENT
+
+
+def test_paypal_webhook_without_a_webhook_id_is_unverified_not_a_pass():
+    gw = PP.PayPalGateway("client", extra_id="secret", webhook_secret="")
+    assert gw.verify_webhook(headers=_PP_HEADERS, body=json.dumps(_PP_EVENT).encode(),
+                             secret="").verified is False

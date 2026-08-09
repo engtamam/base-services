@@ -51,14 +51,37 @@ class PayPalGateway:
                       provider_id=str(resp.get("id", provider_id)))
 
     def verify_webhook(self, *, headers, body, secret):
-        # PayPal verifies via an API call (transmission id/sig/cert) — deployment-specific.
+        # PayPal signs the transmission with a PayPal CERTIFICATE (SHA256withRSA), not a shared
+        # secret, so verification is a server-to-server call to /v1/notifications/verify-webhook-
+        # signature — the transmission headers + the event, checked against the configured webhook_id
+        # (PAYMENT_WEBHOOK_SECRET). It used to always return verified=False (a real webhook could
+        # never be trusted); now it verifies for real. Any transport failure stays unverified — never
+        # a silent pass, which is the one outcome a payment webhook must not have.
         import json
         try:
             evt = json.loads(body.decode())
-        except Exception:
+        except Exception:  # noqa: BLE001 — a non-JSON body is not a verified event
             evt = {}
+        webhook_id = secret or self._whsec
+        h = {str(k).lower(): v for k, v in (headers or {}).items()}
+        verified = False
+        if webhook_id and evt:
+            payload = {"transmission_id": h.get("paypal-transmission-id", ""),
+                       "transmission_time": h.get("paypal-transmission-time", ""),
+                       "cert_url": h.get("paypal-cert-url", ""),
+                       "auth_algo": h.get("paypal-auth-algo", ""),
+                       "transmission_sig": h.get("paypal-transmission-sig", ""),
+                       "webhook_id": webhook_id,
+                       # Posted back exactly as received (parsed) — PayPal re-serialises to compare.
+                       "webhook_event": evt}
+            try:
+                code, resp = post_json(f"{self._base}/v1/notifications/verify-webhook-signature",
+                                       payload, {"Authorization": bearer(self._token())})
+                verified = code != 0 and str(resp.get("verification_status", "")).upper() == "SUCCESS"
+            except GatewayUnavailable:
+                verified = False                       # token or verify unreachable ⇒ unverified
         t = str(evt.get("event_type", ""))
         kind = "payment.succeeded" if "COMPLETED" in t or "CAPTURE.COMPLETED" in t else \
             "refund" if "REFUND" in t else "payment.failed" if "DENIED" in t or "DECLINED" in t else "unknown"
-        return WebhookEvent(verified=False, type=kind,
+        return WebhookEvent(verified=verified, type=kind,
                             provider_id=str(((evt.get("resource") or {})).get("id", "")))
