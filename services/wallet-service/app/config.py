@@ -269,28 +269,40 @@ class Settings(BaseSettings):
     CAS_BACKOFF_MS: int = 12                  # base for the full-jitter backoff; 0 = no sleep
 
     @property
-    def wallet_funds(self) -> tuple[tuple[str, int, bool], ...]:
-        """[(name, priority, taxable)] ordered by spend priority. Fail-fast on nonsense."""
+    def wallet_funds(self) -> tuple[tuple[str, int, bool, bool], ...]:
+        """[(name, priority, taxable, withdrawable)] ordered by spend priority. Fail-fast on nonsense.
+
+        The 4th field is OPTIONAL and defaults to `locked`: a fund is spend-only unless the operator
+        declares it `withdrawable`. That default is the safe one — a customer's promo credits must
+        never become cash payable to a bank account by omission; only a fund an operator deliberately
+        marks (an affiliate's `commission`, say) can leave the platform. So
+        `promo:1:untaxed` stays locked, and `commission:2:taxed:withdrawable` can be paid out.
+        """
         from app.ports.errors import ConfigError  # noqa: PLC0415 — avoid an import cycle
 
-        out: list[tuple[str, int, bool]] = []
+        out: list[tuple[str, int, bool, bool]] = []
         for chunk in self.WALLET_FUNDS.split(","):
             chunk = chunk.strip()
             if not chunk:
                 continue
-            parts = chunk.split(":")
-            if len(parts) != 3:
-                raise ConfigError(f"WALLET_FUNDS entry must be name:priority:taxability — got {chunk!r}")
-            name, priority, taxability = (p.strip() for p in parts)
+            parts = [p.strip() for p in chunk.split(":")]
+            if len(parts) not in (3, 4):
+                raise ConfigError(
+                    f"WALLET_FUNDS entry must be name:priority:taxability[:withdrawability] — got {chunk!r}")
+            name, priority, taxability = parts[0], parts[1], parts[2]
+            withdrawability = parts[3] if len(parts) == 4 else "locked"
             if not name:
                 raise ConfigError("WALLET_FUNDS: empty fund name")
             if taxability not in ("taxed", "untaxed"):
                 raise ConfigError(f"WALLET_FUNDS: taxability must be taxed|untaxed — got {taxability!r}")
+            if withdrawability not in ("withdrawable", "locked"):
+                raise ConfigError(
+                    f"WALLET_FUNDS: withdrawability must be withdrawable|locked — got {withdrawability!r}")
             try:
                 pri = int(priority)
             except ValueError as exc:
                 raise ConfigError(f"WALLET_FUNDS: priority must be an integer — got {priority!r}") from exc
-            out.append((name, pri, taxability == "taxed"))
+            out.append((name, pri, taxability == "taxed", withdrawability == "withdrawable"))
         if not out:
             raise ConfigError("WALLET_FUNDS must define at least one fund")
         names = [f[0] for f in out]

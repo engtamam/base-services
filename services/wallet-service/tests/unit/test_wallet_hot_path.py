@@ -231,4 +231,4 @@ def test_a_single_fund_wallet_is_valid_config():
     from app.config import Settings
 
     s = Settings(INTERNAL_SERVICE_TOKEN="t" * 40, WALLET_FUNDS="credits:1:untaxed")
-    assert s.wallet_funds == (("credits", 1, False),)
+    assert s.wallet_funds == (("credits", 1, False, False),)   # withdrawable defaults locked
