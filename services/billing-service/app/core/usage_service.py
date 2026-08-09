@@ -51,6 +51,19 @@ class UsageService:
     def counter_key(tenant: str, key: str, period_key: str) -> str:
         return f"{tenant}|{key}|{period_key}"
 
+    @staticmethod
+    def _idempo_key(tenant: str, idempotency_key: str) -> str:
+        """Scope the consume-idempotency record to the TENANT.
+
+        The counter row is already tenant-scoped (counter_key); the dedupe record was NOT — it was
+        keyed on the caller's idempotency_key alone. Two tenants presenting the same key (an order
+        number, an invoice id) collided: the second was told allowed=true with the FIRST tenant's
+        counters while NOTHING was metered for it, so its cap never bound and its metered usage —
+        real money, e.g. a WhatsApp send bought from Meta — went unbilled. The key is CALLER-SUPPLIED,
+        so the tenant is length-prefixed: a key containing the '|' delimiter cannot be crafted to
+        land in another tenant's slot (len('a')+'a|b|c' ≠ len('a|b')+'a|b|c')."""
+        return f"{len(tenant)}:{tenant}|{idempotency_key}"
+
     async def _spec_for(self, tenant: str, key: str) -> tuple[dict, str, dict]:
         resolved = await self._limits(tenant)
         default = self._cfg.get("unknown_key_default", 0)      # deny-by-default
@@ -103,8 +116,9 @@ class UsageService:
         # At-least-once delivery: a redelivered consume must charge exactly once. The window
         # is bounded — an unbounded dedupe table grows forever and never forgets a key.
         now = self._now()
-        if idempotency_key:
-            prior = await self._store.get(_IDEMPO, idempotency_key)
+        idem_key = self._idempo_key(tenant, idempotency_key) if idempotency_key else ""
+        if idem_key:
+            prior = await self._store.get(_IDEMPO, idem_key)
             if prior and float(prior.get("expires_at", 0)) > now:
                 return {**prior["result"], "idempotent": True}
 
@@ -141,10 +155,10 @@ class UsageService:
 
         # Record only a SUCCESSFUL consume: a denied attempt must be retryable once the
         # tenant upgrades or the period rolls over.
-        if idempotency_key and result.get("allowed"):
+        if idem_key and result.get("allowed"):
             ttl = int(self._cfg.get("idempotency_ttl", 86_400))
-            await self._store.put(_IDEMPO, idempotency_key,
-                                  {"key": idempotency_key, "result": result,
+            await self._store.put(_IDEMPO, idem_key,
+                                  {"key": idempotency_key, "tenant": tenant, "result": result,
                                    "expires_at": now + ttl})
         return result
 

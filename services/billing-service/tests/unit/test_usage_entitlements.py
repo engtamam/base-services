@@ -218,6 +218,34 @@ def test_a_denied_consume_is_not_memoised():
     assert retry["allowed"] is True and not retry.get("idempotent")
 
 
+def test_consume_idempotency_is_scoped_to_the_tenant():
+    # THE escalation: the dedupe record was keyed on idempotency_key ALONE, so two tenants sharing a
+    # key (an order number, an invoice id) collided — the second was told allowed=true with the
+    # FIRST tenant's counters while NOTHING was metered for it, and its cap never bound. Each tenant
+    # must consume independently under the same key.
+    store = MemoryDataStore()
+    svc = _svc(store=store)
+    a = run(svc.consume(tenant="shopA", key="emails", idempotency_key="rem_1"))
+    b = run(svc.consume(tenant="shopB", key="emails", idempotency_key="rem_1"))   # SAME key
+    assert a["current"] == 1 and not a.get("idempotent")
+    assert b["current"] == 1 and not b.get("idempotent"), "shopB was deduped against shopA"
+    assert run(svc.current("shopA", "emails")) == 1
+    assert run(svc.current("shopB", "emails")) == 1           # shopB's meter actually moved
+    # a genuine retry WITHIN a tenant is still deduped (charges exactly once)
+    again = run(svc.consume(tenant="shopB", key="emails", idempotency_key="rem_1"))
+    assert again["idempotent"] is True and run(svc.current("shopB", "emails")) == 1
+
+
+def test_an_idempotency_key_cannot_be_crafted_to_hit_another_tenants_slot():
+    # The key is caller-supplied, so the tenant is length-prefixed: tenant 'a' + key 'b|rem'
+    # ("1:a|b|rem") must not collide with tenant 'a|b' + key 'rem' ("3:a|b|rem").
+    store = MemoryDataStore()
+    svc = _svc(store=store)
+    run(svc.consume(tenant="a", key="emails", idempotency_key="b|rem"))
+    other = run(svc.consume(tenant="a|b", key="emails", idempotency_key="rem"))
+    assert not other.get("idempotent") and run(svc.current("a|b", "emails")) == 1
+
+
 def test_release_returns_a_counter_unit_after_a_failed_action():
     svc = _svc()
     run(svc.consume(tenant="t", key="api_calls"))
