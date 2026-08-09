@@ -15,7 +15,35 @@ import logging
 
 from app.adapters.notify_http import bearer, ok, post_json
 from app.ports.errors import ConfigError
-from app.ports.whatsapp_template_manager import StatusResult, SubmitResult
+from app.ports.whatsapp_template_manager import MessagingLimit, StatusResult, SubmitResult
+
+# The Graph field that returns a business phone number's current messaging limit. Meta DEPRECATED
+# `messaging_limit_tier` in favour of this one — reading the old field would be a silently-wrong or
+# empty answer, exactly the "one revision behind" trap. Requested alongside the quality rating and
+# the number's display fields in a single GET.
+_LIMIT_FIELDS = ("whatsapp_business_manager_messaging_limit,quality_rating,"
+                 "display_phone_number,verified_name,name_status")
+
+
+def _tier_to_int(tier: str) -> int:
+    """Meta's tier code → an integer ceiling of unique customers / 24h. -1 unlimited, 0 unknown.
+
+    Parsed generically (TIER_<n>[K] / TIER_UNLIMITED) rather than from a fixed table, so a tier Meta
+    adds later still yields a number instead of a zero — the raw `tier` is preserved regardless."""
+    t = (tier or "").strip().upper()
+    if t.startswith("TIER_"):
+        t = t[len("TIER_"):]
+    if t in ("UNLIMITED", "UNLTD", "INF"):
+        return -1
+    mult = 1
+    if t.endswith("K"):
+        t, mult = t[:-1], 1000
+    elif t.endswith("M"):
+        t, mult = t[:-1], 1_000_000
+    try:
+        return int(float(t) * mult)
+    except (TypeError, ValueError):
+        return 0
 
 _log = logging.getLogger("app.whatsapp_templates.meta")
 
@@ -102,6 +130,27 @@ class MetaTemplateManager:
                 return StatusResult(status=_META_TO_STATUS.get(meta_status, "pending"),
                                     reason=str(row.get("rejected_reason", "") or ""))
         return StatusResult(status="pending")
+
+    def messaging_limit(self, *, phone_number_id) -> MessagingLimit:
+        """GET /{phone_number_id}?fields=whatsapp_business_manager_messaging_limit,quality_rating,…
+
+        The limit and quality live on the PHONE NUMBER (the WABA holds the templates). Read live —
+        Meta can move the tier within about six hours of the conditions being met, so a value cached
+        indefinitely would plan a campaign against a ceiling that no longer exists."""
+        if not phone_number_id:
+            return MessagingLimit(ok=False, error="no phone_number_id for this tenant")
+        status, raw = post_json(f"{self._base}/{phone_number_id}?fields={_LIMIT_FIELDS}", {},
+                                {**self._headers, "X-HTTP-Method-Override": "GET"})
+        if not ok(status):
+            return MessagingLimit(ok=False, error=_reason(raw) or f"HTTP {status}")
+        data = _parse(raw)
+        tier = str(data.get("whatsapp_business_manager_messaging_limit", "") or "")
+        return MessagingLimit(
+            ok=True, tier=tier, limit=_tier_to_int(tier),
+            quality_rating=str(data.get("quality_rating", "") or ""),
+            display_phone_number=str(data.get("display_phone_number", "") or ""),
+            verified_name=str(data.get("verified_name", "") or ""),
+            name_status=str(data.get("name_status", "") or ""))
 
 
 def _parse(raw: str) -> dict:

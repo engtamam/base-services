@@ -1546,6 +1546,68 @@
         ]
       }
     },
+    "/internal/whatsapp/messaging-limit": {
+      "get": {
+        "description": "This tenant's WhatsApp messaging limit (unique customers / 24h) + quality rating, read live\nfrom Meta and briefly cached. The one number a sending service needs BEFORE the send to reserve\nthe day's capacity, tell the owner where he stands, and size a campaign \u2014 instead of learning the\nceiling from Meta's rejection after it is already spent.",
+        "operationId": "whatsapp_messaging_limit_internal_internal_whatsapp_messaging_limit_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Whatsapp Messaging Limit Internal Internal Whatsapp Messaging Limit Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Whatsapp Messaging Limit Internal",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/whatsapp/templates": {
       "get": {
         "description": "Which templates are approved (or pending/paused/\u2026) for this tenant \u2014 for a PEER SERVICE.\n\nA sending service that picks a template by TYPE needs to prefer an APPROVED one before it spends\na send and a slot in the daily cap on a template notify() will refuse. The user-tier list needs a\nJWT (whose signing key must stay in identity-service) and caching the statuses is a second copy\nof another service's state that drifts on the first sync \u2014 so this is the internal, token-authed\ncounterpart to GET /api/v1/whatsapp/templates: same handler, tenant as a parameter.",

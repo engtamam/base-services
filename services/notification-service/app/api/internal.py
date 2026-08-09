@@ -157,6 +157,18 @@ async def sync_whatsapp_templates(request: Request, tenant: str,
                           limit=settings.WHATSAPP_TEMPLATE_SYNC_LIMIT)
 
 
+@router.get("/whatsapp/messaging-limit", dependencies=[Depends(require_internal_token)])
+async def whatsapp_messaging_limit_internal(request: Request, tenant: str = "") -> dict:
+    """This tenant's WhatsApp messaging limit (unique customers / 24h) + quality rating, read live
+    from Meta and briefly cached. The one number a sending service needs BEFORE the send to reserve
+    the day's capacity, tell the owner where he stands, and size a campaign — instead of learning the
+    ceiling from Meta's rejection after it is already spent."""
+    if not tenant:
+        raise HTTPException(400, "tenant is required")
+    from app.api.v1.notifications import whatsapp_messaging_limit
+    return await whatsapp_messaging_limit(request, tenant)
+
+
 @router.get("/whatsapp/templates", dependencies=[Depends(require_internal_token)])
 async def list_whatsapp_templates_internal(request: Request, tenant: str = "", status: str = "",
                                            limit: int = 100) -> dict:

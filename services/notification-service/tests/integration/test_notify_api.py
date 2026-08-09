@@ -235,3 +235,17 @@ def test_preferences_get_put(client):
 
 def test_feed_requires_auth(client):
     assert client.get("/api/v1/notifications").status_code == 401
+
+
+def test_internal_whatsapp_messaging_limit_is_token_authed_and_tenant_scoped(client):
+    # A sending service needs the ceiling BEFORE the send — to reserve the day's capacity and size a
+    # campaign — not from Meta's rejection after it is spent. Internal, token-authed, per tenant.
+    assert client.get("/internal/whatsapp/messaging-limit?tenant=acme").status_code == 401  # no token
+    assert client.get("/internal/whatsapp/messaging-limit",
+                      headers=_internal()).status_code == 400                                # no tenant
+    r = client.get("/internal/whatsapp/messaging-limit?tenant=acme", headers=_internal())
+    assert r.status_code == 200
+    body = r.json()
+    # test default driver is console → reports unlimited/green (dev has no Meta portfolio)
+    assert body["ok"] and body["tier"] == "TIER_UNLIMITED" and body["limit"] == -1
+    assert body["quality_rating"] == "GREEN"

@@ -42,6 +42,34 @@ class StatusResult:
     reason: str = ""
 
 
+@dataclass(frozen=True)
+class MessagingLimit:
+    """A phone number's business-initiated messaging ceiling, read from Meta.
+
+    Meta caps business-initiated conversations at a number of UNIQUE customers per rolling 24 hours,
+    at the PORTFOLIO level (shared across a WABA's numbers), and moves the tier automatically as the
+    account's volume and quality change. `limit` is that ceiling as an integer (-1 = unlimited,
+    0 = unknown); `tier` is Meta's raw code (e.g. "TIER_250") kept verbatim so a new tier we have
+    not mapped is never silently lost. `quality_rating` (GREEN/YELLOW/RED) predicts a drop before it
+    happens. A caller reserves capacity and plans a campaign against `limit`; without it, both are a
+    guess about Meta's system."""
+    ok: bool
+    limit: int = 0                   # unique customers / 24h; -1 unlimited, 0 unknown
+    tier: str = ""                   # Meta's raw tier code, e.g. "TIER_250"
+    quality_rating: str = ""         # GREEN | YELLOW | RED | NA | UNKNOWN
+    display_phone_number: str = ""
+    verified_name: str = ""
+    name_status: str = ""
+    error: str = ""
+
+    def to_dict(self) -> dict:
+        return {"ok": self.ok, "limit": self.limit, "tier": self.tier,
+                "quality_rating": self.quality_rating,
+                "display_phone_number": self.display_phone_number,
+                "verified_name": self.verified_name, "name_status": self.name_status,
+                "error": self.error}
+
+
 @runtime_checkable
 class WhatsAppTemplateManager(Protocol):
     driver: str
@@ -50,3 +78,9 @@ class WhatsAppTemplateManager(Protocol):
                variables: list[str], examples: list[str]) -> SubmitResult: ...
 
     def status(self, *, provider_template_id: str, name: str, language: str) -> StatusResult: ...
+
+    def messaging_limit(self, *, phone_number_id: str) -> MessagingLimit:
+        # OPTIONAL: read the phone number's current messaging limit + quality rating from Meta. Only
+        # a driver that can talk to Meta implements it; the route reports 'unsupported' otherwise —
+        # it never fabricates a ceiling, because a made-up limit is worse than a known-unknown here.
+        ...

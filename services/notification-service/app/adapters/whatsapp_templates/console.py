@@ -6,7 +6,7 @@ driver is the real, human-gated review.
 from __future__ import annotations
 
 from app.observability.logging import get_logger
-from app.ports.whatsapp_template_manager import StatusResult, SubmitResult
+from app.ports.whatsapp_template_manager import MessagingLimit, StatusResult, SubmitResult
 
 _log = get_logger("app.whatsapp_templates.console")
 
@@ -21,3 +21,8 @@ class ConsoleTemplateManager:
 
     def status(self, *, provider_template_id, name, language) -> StatusResult:
         return StatusResult(status="approved")
+
+    def messaging_limit(self, *, phone_number_id) -> MessagingLimit:
+        # Dev has no Meta portfolio and no real ceiling — report unlimited/green so a limit-aware
+        # caller (reserve, day plan) runs end to end without infra, exactly like submit auto-approves.
+        return MessagingLimit(ok=True, tier="TIER_UNLIMITED", limit=-1, quality_rating="GREEN")

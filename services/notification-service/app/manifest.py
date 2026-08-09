@@ -94,6 +94,7 @@ def build_manifest(
             {"path": "/internal/notifications/drain", "tier": "internal", "method": "POST"},
             {"path": "/internal/whatsapp/templates/sync", "tier": "internal", "method": "POST"},
             {"path": "/internal/whatsapp/templates", "tier": "internal", "method": "GET"},
+            {"path": "/internal/whatsapp/messaging-limit", "tier": "internal", "method": "GET"},
             # Backup fan-out (backup-service orchestrates): export + verify + import this
             # service's data. Declared so the fan-out discovers this holder — an undeclared holder
             # is one nobody backs up.

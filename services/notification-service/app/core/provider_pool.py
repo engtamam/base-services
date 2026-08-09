@@ -137,6 +137,13 @@ class ProviderPool:
         waba = await self._credential(tenant, "WHATSAPP_BUSINESS_ACCOUNT_ID")
         return self._build_template_manager(token, waba)
 
+    async def whatsapp_phone_number_id(self, tenant: str = "") -> str:
+        """The tenant's WhatsApp phone-number id, resolved from the same store the send creds use
+        (config fallback for the single-brand case). The messaging limit lives on the PHONE NUMBER,
+        so a per-tenant limit needs the per-tenant number. Reading it here keeps the credential read
+        in core — a route may not read stored credentials."""
+        return await self._credential(tenant, "WHATSAPP_PHONE_NUMBER_ID")
+
     def invalidate(self, tenant: str | None = None) -> None:
         """Drop the cache so the next send resolves fresh.
 

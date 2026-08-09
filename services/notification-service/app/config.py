@@ -361,6 +361,11 @@ class Settings(BaseSettings):
     WHATSAPP_TEMPLATE_MANAGER: str = "console"   # console | meta
     WHATSAPP_BUSINESS_ACCOUNT_ID: str = ""       # WABA id — the template-management endpoint
     WHATSAPP_TEMPLATE_SYNC_LIMIT: int = 200      # max pending templates reconciled per sweep
+    # How long a phone number's messaging limit / quality rating is cached before Meta is read again.
+    # SHORT on purpose: Meta can move the tier within ~6 hours of the conditions being met, and a
+    # caller reserves the day's capacity against this number — a stale ceiling plans a campaign that
+    # cannot send. Short enough to be current, long enough not to hit Meta on every planning read.
+    WHATSAPP_LIMIT_CACHE_TTL_SECONDS: int = 300
     # Generic webhook (whatsapp) — POST {to, template, language, variables} to any gateway/QR relay
     WHATSAPP_WEBHOOK_URL: str = ""    # host must be in EGRESS_ALLOWED_HOSTS (SSRF)
     WHATSAPP_WEBHOOK_BEARER: str = ""

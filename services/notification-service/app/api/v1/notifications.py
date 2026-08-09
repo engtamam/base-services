@@ -50,6 +50,43 @@ async def build_template_manager(request: Request, tenant: str = ""):
     return c.whatsapp_template_manager
 
 
+async def whatsapp_messaging_limit(request: Request, tenant: str = "") -> dict:
+    """This tenant's WhatsApp messaging limit + quality rating, read live from Meta with a short
+    cache. The phone-number id is resolved in the pool (core), so the credential read never happens
+    in a route; the manager already carries the tenant's token. Reported unsupported for a driver
+    that cannot reach Meta (console in prod-less dev returns unlimited itself), and never fabricated.
+    """
+    import asyncio
+    import json as _json
+
+    c = request.app.state.container
+    s = get_settings()
+    key = f"wa_limit:{tenant or '_'}"
+    cache = getattr(c, "cache", None)
+    if cache is not None:
+        hit = await cache.get(key)
+        if hit:
+            try:
+                return {**_json.loads(hit), "cached": True}
+            except (ValueError, TypeError):
+                pass
+
+    pool = getattr(request.app.state, "provider_pool", None)
+    phone_id = (await pool.whatsapp_phone_number_id(tenant)) if pool is not None \
+        else s.WHATSAPP_PHONE_NUMBER_ID
+    mgr = await build_template_manager(request, tenant)
+    fetch = getattr(mgr, "messaging_limit", None)
+    if fetch is None:
+        return {"ok": False, "error": "unsupported",
+                "driver": getattr(mgr, "driver", "")}
+    # Off the event loop: this is a blocking Graph GET, and a planning read must not stall the loop.
+    res = await asyncio.to_thread(fetch, phone_number_id=phone_id)
+    out = res.to_dict()
+    if res.ok and cache is not None:
+        await cache.set(key, _json.dumps(out), s.WHATSAPP_LIMIT_CACHE_TTL_SECONDS)
+    return {**out, "cached": False}
+
+
 class WaTemplateIn(BaseModel):
     name: str = Field(min_length=1, max_length=512)
     language: str = Field(min_length=2, max_length=16)
