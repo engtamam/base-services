@@ -162,3 +162,48 @@ def test_paytabs_charge_sends_major_amount_and_profile():
     assert r.ok and r.provider_id == "TST9"
     assert seen["b"]["cart_amount"] == 50.0 and seen["b"]["profile_id"] == "profile1"   # MAJOR units
     assert seen["b"]["tran_type"] == "sale"
+
+
+# ── Stripe (PaymentIntents; webhook = t=..,v1=HMAC with replay window) ───────────
+import time as _time  # noqa: E402
+import app.adapters.payment.stripe as S  # noqa: E402
+
+
+def _stripe_sig(secret, body, t):
+    return f"t={t},v1={hmac_sha256_hex(secret, f'{t}.'.encode() + body)}"
+
+
+def test_stripe_webhook_verifies_a_fresh_signed_event():
+    gw = S.StripeGateway("sk_test", webhook_secret="whsec")
+    body = json.dumps({"type": "payment_intent.succeeded",
+                       "data": {"object": {"id": "pi_1"}}}).encode()
+    t = int(_time.time())
+    ev = gw.verify_webhook(headers={"Stripe-Signature": _stripe_sig("whsec", body, t)},
+                           body=body, secret="whsec")
+    assert ev.verified is True and ev.type == "payment.succeeded" and ev.provider_id == "pi_1"
+
+
+def test_stripe_webhook_rejects_a_replayed_old_event_even_with_a_valid_signature():
+    gw = S.StripeGateway("sk_test", webhook_secret="whsec", webhook_tolerance=300)
+    body = json.dumps({"type": "payment_intent.succeeded"}).encode()
+    old = int(_time.time()) - 3600                       # a validly-signed event, one hour old
+    assert gw.verify_webhook(headers={"Stripe-Signature": _stripe_sig("whsec", body, old)},
+                             body=body, secret="whsec").verified is False
+
+
+def test_stripe_webhook_rejects_a_bad_signature():
+    gw = S.StripeGateway("sk_test", webhook_secret="whsec")
+    t = int(_time.time())
+    assert gw.verify_webhook(headers={"Stripe-Signature": f"t={t},v1=deadbeef"},
+                             body=b"{}", secret="whsec").verified is False
+
+
+def test_stripe_charge_sends_minor_amount_and_idempotency_key():
+    seen = {}
+    S.post_form = lambda u, f, h=None: (seen.update(u=u, f=f, h=h) or
+                                        (200, {"id": "pi_9", "status": "succeeded"}))
+    r = S.StripeGateway("sk").charge(amount_minor=5000, currency="SAR", token="pm_1",
+                                     idempotency_key="k1")
+    assert r.ok and r.provider_id == "pi_9"
+    assert seen["f"]["amount"] == 5000 and seen["f"]["currency"] == "sar"   # MINOR units, lower-case
+    assert seen["h"]["Idempotency-Key"] == "k1"

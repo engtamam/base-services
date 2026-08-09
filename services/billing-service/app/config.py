@@ -217,6 +217,10 @@ class Settings(BaseSettings):
     # Where the payer is returned after a redirect/3DS step. Moyasar REQUIRES a callback_url for a
     # token/card source; redirect-flow providers use it as the return target. Empty ⇒ not sent.
     PAYMENT_RETURN_URL: str = ""
+    # Max age of a signed webhook whose scheme carries a timestamp (Stripe's t=…): an event older
+    # than this is rejected as a replay even if the signature is valid. Stripe's own default is 300s.
+    # 0 disables the freshness check (signature only).
+    PAYMENT_WEBHOOK_TOLERANCE_SECONDS: int = 300
     # Which money document a paid invoice produces — an OPERATOR CHOICE, per tenant, at runtime.
     #   receipt      (DEFAULT) our own internal receipt (سند قبض): no VAT, no ZATCA, no seller VAT
     #                number — it just confirms money received and carries the gateway's transaction

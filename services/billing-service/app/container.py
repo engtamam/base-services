@@ -202,7 +202,8 @@ def rebuild_gateway(settings, resolved: dict, current, *, driver: str = ""):
 def _pay(cls):
     return lambda s: cls(api_key=s.PAYMENT_API_KEY, base=s.PAYMENT_API_BASE,
                          extra_id=s.PAYMENT_EXTRA_ID, extra_secret=s.PAYMENT_EXTRA_SECRET,
-                         webhook_secret=s.PAYMENT_WEBHOOK_SECRET, return_url=s.PAYMENT_RETURN_URL)
+                         webhook_secret=s.PAYMENT_WEBHOOK_SECRET, return_url=s.PAYMENT_RETURN_URL,
+                         webhook_tolerance=s.PAYMENT_WEBHOOK_TOLERANCE_SECONDS)
 
 
 def build_wallet(settings, token_provider):
