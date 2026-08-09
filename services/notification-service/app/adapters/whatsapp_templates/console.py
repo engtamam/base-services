@@ -14,7 +14,7 @@ _log = get_logger("app.whatsapp_templates.console")
 class ConsoleTemplateManager:
     driver = "console"
 
-    def submit(self, *, name, language, category, body, variables) -> SubmitResult:
+    def submit(self, *, name, language, category, body, variables, examples=None) -> SubmitResult:
         _log.info("whatsapp_template_submitted", extra={"provider": "console", "name": name})
         return SubmitResult(ok=True, provider_template_id=f"console:{name}:{language}",
                             status="approved")

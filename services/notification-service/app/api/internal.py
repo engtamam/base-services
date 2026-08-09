@@ -144,15 +144,37 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
 @router.post("/whatsapp/templates/sync", dependencies=[Depends(require_internal_token)])
 async def sync_whatsapp_templates(request: Request, tenant: str,
                                   settings: Settings = Depends(get_settings)) -> dict:
-    """Reconcile a tenant's pending WhatsApp templates against Meta's approval verdict.
+    """Reconcile a tenant's live WhatsApp templates against Meta's approval verdict.
 
     Driven by the platform scheduler (per tenant), not a thread here — a status change is a durable
-    fact written down, so an operator sees approved/rejected without re-asking Meta."""
+    fact written down, so an operator sees approved/rejected/paused/disabled without re-asking Meta.
+    The manager is resolved per tenant so the verdict comes from the tenant's own WABA."""
+    from app.api.v1.notifications import build_template_manager
     from app.core.whatsapp_templates import WhatsAppTemplateRegistry, WhatsAppTemplateStore
     c = request.app.state.container
     reg = WhatsAppTemplateRegistry(WhatsAppTemplateStore(c.datastore))
-    return await reg.sync(tenant=tenant, manager=c.whatsapp_template_manager,
+    return await reg.sync(tenant=tenant, manager=await build_template_manager(request, tenant),
                           limit=settings.WHATSAPP_TEMPLATE_SYNC_LIMIT)
+
+
+@router.get("/whatsapp/templates", dependencies=[Depends(require_internal_token)])
+async def list_whatsapp_templates_internal(request: Request, tenant: str = "", status: str = "",
+                                           limit: int = 100) -> dict:
+    """Which templates are approved (or pending/paused/…) for this tenant — for a PEER SERVICE.
+
+    A sending service that picks a template by TYPE needs to prefer an APPROVED one before it spends
+    a send and a slot in the daily cap on a template notify() will refuse. The user-tier list needs a
+    JWT (whose signing key must stay in identity-service) and caching the statuses is a second copy
+    of another service's state that drifts on the first sync — so this is the internal, token-authed
+    counterpart to GET /api/v1/whatsapp/templates: same handler, tenant as a parameter."""
+    if not tenant:
+        # 400 as a literal, not status.HTTP_400_*: the `status` QUERY PARAM below shadows the
+        # imported status module inside this function.
+        raise HTTPException(400, "tenant is required")
+    from app.core.whatsapp_templates import WhatsAppTemplateRegistry, WhatsAppTemplateStore
+    reg = WhatsAppTemplateRegistry(WhatsAppTemplateStore(request.app.state.container.datastore))
+    rows, cursor = await reg.list(tenant, status=status, limit=max(1, min(200, limit)))
+    return {"templates": rows, "cursor": cursor}
 
 
 # ── Backup (backup-service orchestrates; this service produces sealed archives) ──────────────

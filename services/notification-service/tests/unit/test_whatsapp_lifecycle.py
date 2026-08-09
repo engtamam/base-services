@@ -60,6 +60,35 @@ def test_sync_records_a_rejection_reason():
     assert t.status == REJECTED and t.rejection_reason == "policy violation"
 
 
+def test_sync_catches_an_approved_template_being_paused():
+    # The case that matters most: Meta pauses a LIVE, approved template for negative feedback. If
+    # sync only re-checked pending templates, the product would keep sending into a muted template.
+    reg = _reg()
+    run(reg.register(tenant="acme", name="promo", language="en", category="MARKETING"))
+    t = run(reg.get("acme", "promo", "en")); t.status = APPROVED; run(reg._store.save(t))
+    run(reg.sync(tenant="acme", manager=_Manager(status="paused", reason="low read-rate")))
+    t = run(reg.get("acme", "promo", "en"))
+    assert t.status == "paused" and t.rejection_reason == "low read-rate"   # distinct from pending
+
+
+def test_sync_records_disabled_distinctly_from_rejected():
+    reg = _reg()
+    run(reg.register(tenant="acme", name="promo", language="en", category="MARKETING"))
+    t = run(reg.get("acme", "promo", "en")); t.status = APPROVED; run(reg._store.save(t))
+    run(reg.sync(tenant="acme", manager=_Manager(status="disabled")))
+    assert run(reg.get("acme", "promo", "en")).status == "disabled"   # not pending, not rejected
+
+
+def test_sync_leaves_a_rejected_template_alone():
+    # rejected is terminal — its name cannot be resubmitted — so sync must not waste a Meta call on
+    # it, and _LIVE excludes it. A manager that would "approve" it is never consulted.
+    reg = _reg()
+    run(reg.register(tenant="acme", name="promo", language="en", category="MARKETING"))
+    t = run(reg.get("acme", "promo", "en")); t.status = REJECTED; run(reg._store.save(t))
+    out = run(reg.sync(tenant="acme", manager=_Manager(status="approved")))
+    assert out["scanned"] == 0 and run(reg.get("acme", "promo", "en")).status == REJECTED
+
+
 # ── send-time substitution ────────────────────────────────────────────────────
 class _WA:
     driver = "fake"

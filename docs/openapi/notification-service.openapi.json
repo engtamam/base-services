@@ -356,6 +356,13 @@
             "title": "Category",
             "type": "string"
           },
+          "examples": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Examples",
+            "type": "array"
+          },
           "language": {
             "maxLength": 16,
             "minLength": 2,
@@ -1539,9 +1546,91 @@
         ]
       }
     },
+    "/internal/whatsapp/templates": {
+      "get": {
+        "description": "Which templates are approved (or pending/paused/\u2026) for this tenant \u2014 for a PEER SERVICE.\n\nA sending service that picks a template by TYPE needs to prefer an APPROVED one before it spends\na send and a slot in the daily cap on a template notify() will refuse. The user-tier list needs a\nJWT (whose signing key must stay in identity-service) and caching the statuses is a second copy\nof another service's state that drifts on the first sync \u2014 so this is the internal, token-authed\ncounterpart to GET /api/v1/whatsapp/templates: same handler, tenant as a parameter.",
+        "operationId": "list_whatsapp_templates_internal_internal_whatsapp_templates_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Whatsapp Templates Internal Internal Whatsapp Templates Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Whatsapp Templates Internal",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/whatsapp/templates/sync": {
       "post": {
-        "description": "Reconcile a tenant's pending WhatsApp templates against Meta's approval verdict.\n\nDriven by the platform scheduler (per tenant), not a thread here \u2014 a status change is a durable\nfact written down, so an operator sees approved/rejected without re-asking Meta.",
+        "description": "Reconcile a tenant's live WhatsApp templates against Meta's approval verdict.\n\nDriven by the platform scheduler (per tenant), not a thread here \u2014 a status change is a durable\nfact written down, so an operator sees approved/rejected/paused/disabled without re-asking Meta.\nThe manager is resolved per tenant so the verdict comes from the tenant's own WABA.",
         "operationId": "sync_whatsapp_templates_internal_whatsapp_templates_sync_post",
         "parameters": [
           {

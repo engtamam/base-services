@@ -244,8 +244,22 @@ def make_provider_pool(settings, secret_store, runtime_config):
             _tolerant_chain(chain, _SMS_PROVIDERS, "sms", _Overlay(settings, creds))),
         build_whatsapp=lambda chain, creds: FailoverWhatsApp(
             _tolerant_chain(chain, _WHATSAPP_PROVIDERS, "whatsapp", _Overlay(settings, creds))),
+        build_template_manager=lambda token, waba: _tenant_template_manager(settings, token, waba),
         ttl_s=settings.PROVIDER_REFRESH_SECONDS,
     )
+
+
+def _tenant_template_manager(settings, token: str, waba: str):
+    """A per-tenant Meta template manager, or None to fall back to the boot-built one.
+
+    None when: the driver is console (no per-tenant identity), a credential is missing, or the
+    resolved values ARE the configured ones (so a single-brand deployment reuses the boot manager
+    unchanged, with nothing to migrate)."""
+    if settings.WHATSAPP_TEMPLATE_MANAGER != "meta" or not token or not waba:
+        return None
+    if token == settings.WHATSAPP_ACCESS_TOKEN and waba == settings.WHATSAPP_BUSINESS_ACCOUNT_ID:
+        return None
+    return MetaTemplateManager(token, waba, settings.WHATSAPP_GRAPH_BASE)
 
 
 def _pick(registry: dict[str, Builder], driver: str, port_name: str, settings: Settings) -> Any:

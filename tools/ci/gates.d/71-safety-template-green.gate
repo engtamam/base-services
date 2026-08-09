@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+gate_name="safety:template-green"
+gate_desc="services/_template ships green so create_service.py can self-verify"
+gate_protects="create_service.py copies _template and only commits a new service on green (pytest +
+security gate). If the seed is red, every generation rolls back and the only way to make a service
+is --no-verify — a copier, not a self-verifying generator. Nothing else runs the seed's suite: the
+suites and coverage gates enumerate all_services(), which excludes _template. So it can rot red
+unseen, as it did when a fleet-wide adapter changed its contract and the seed's copied tests were
+not updated. This gate is the one place that runs it."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_template_green.py"
+gate_units=1
+gate_slow=1
+
+gate_main() { "$PY" tools/ci/check_template_green.py; }

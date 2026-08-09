@@ -120,16 +120,89 @@ def _own_package_name() -> str:
 _OWN = os.environ.get("OWN_PACKAGE", "") or _own_package_name()
 
 
+def _canon(name: str) -> str:
+    """PEP 503 canonical form so 'PyJWT', 'pyjwt' and 'py_jwt' compare equal."""
+    return re.sub(r"[-_.]+", "-", (name or "").strip()).lower()
+
+
+def _req_name(req: str) -> str:
+    """The distribution name out of a requirement/Requires-Dist string.
+
+    'uvicorn[standard]>=0.30,<1.0' -> 'uvicorn'; 'anyio (>=3.4); extra == "x"' -> 'anyio'."""
+    head = re.split(r"[\s<>=!~;(\[]", (req or "").strip(), maxsplit=1)[0]
+    return _canon(head)
+
+
+def _declared() -> set[str]:
+    """Every top-level requirement this service DECLARES — runtime deps and every extra/dev/ci
+    group in its pyproject. This is the service's own supply chain; the license rule covers dev
+    tooling too, so the groups are included, but nothing that is merely present in the interpreter."""
+    pp = pathlib.Path(__file__).resolve().parents[1] / "pyproject.toml"
+    if not pp.is_file():
+        return set()
+    try:
+        import tomllib
+        data = tomllib.loads(pp.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — an unparseable pyproject falls back to scanning all
+        return set()
+    proj = data.get("project", {}) or {}
+    reqs = list(proj.get("dependencies", []) or [])
+    for group in (proj.get("optional-dependencies", {}) or {}).values():
+        reqs.extend(group or [])
+    for group in (data.get("dependency-groups", {}) or {}).values():   # PEP 735, if used
+        reqs.extend(x for x in (group or []) if isinstance(x, str))
+    return {n for n in (_req_name(r) for r in reqs) if n}
+
+
+def _closure() -> set[str]:
+    """Declared deps plus their transitive Requires-Dist, canonicalised.
+
+    The gate must judge what this service SHIPS, not whatever else lives in the developer's
+    interpreter. In the CI container the two coincide; on a working machine they do not, and a gate
+    that fails on unrelated locally-installed packages (another project's AGPL dep, say) is one
+    people learn to bypass with --no-verify. Resolving the closure from pyproject makes the verdict
+    the same everywhere. An empty closure (no or unparseable pyproject) signals 'scan everything',
+    so the gate never silently checks nothing."""
+    roots = _declared()
+    if not roots:
+        return set()
+    seen: set[str] = set()
+    queue = list(roots)
+    while queue:
+        name = queue.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        try:
+            dist = metadata.distribution(name)
+        except metadata.PackageNotFoundError:
+            continue                     # a declared-but-not-installed extra: nothing to descend
+        for req in (dist.requires or []):
+            dep = _req_name(req)
+            if dep and dep not in seen:
+                queue.append(dep)
+    return seen
+
+
 def scan() -> list[tuple[str, str, str, str]]:
+    closure = _closure()
     results: list[tuple[str, str, str, str]] = []
     seen: set[str] = set()
     for dist in metadata.distributions():
         name = dist.metadata["Name"]
-        if not name or name.lower() in seen:
+        if not name:
             continue
-        if _OWN and name.lower() == _OWN:
+        cn = _canon(name)
+        if cn in seen:
+            continue
+        if _OWN and cn == _canon(_OWN):
             continue                     # the product, not a dependency
-        seen.add(name.lower())
+        # With a declared closure, judge ONLY it — a foreign package in the interpreter is not this
+        # service's supplier. With no closure (no pyproject) fall back to scanning all, so the gate
+        # never under-scans in a container.
+        if closure and cn not in closure:
+            continue
+        seen.add(cn)
         verdict, detail = classify_distribution(name, _candidates(dist))
         results.append((name, dist.version, verdict, detail))
     return sorted(results, key=lambda r: r[0].lower())

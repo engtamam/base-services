@@ -183,6 +183,10 @@ jobs:
           python tools/ci/selftest_rotation_overlap.py
           python tools/ci/check_rotation_overlap.py
 
+      # gates: safety:template-green
+      - name: "safety:template-green — services/_template ships green so create_service.py can self-verify"
+        run: python tools/ci/check_template_green.py
+
       # gates: safety:tenancy
       - name: "safety:tenancy — a token carries exactly ONE tenant, and only one it is entitled to"
         run: python tools/ci/check_tenancy.py

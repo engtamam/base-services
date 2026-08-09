@@ -182,3 +182,38 @@ def test_an_empty_override_falls_back_to_the_configured_order():
 def test_no_override_uses_the_configured_order(chain):
     email, _, _ = run(_pool(secrets=_store(), rc=_Rc({})).get(""))
     assert email["chain"] == ["resend"]
+
+
+# ── per-tenant WhatsApp template manager ───────────────────────────────────────
+def _mgr_pool(secrets):
+    """A pool whose template-manager builder echoes the resolved (token, waba) — or None when a
+    credential is missing, mirroring the container's real builder."""
+    def build_mgr(token, waba):
+        return {"token": token, "waba": waba} if token and waba else None
+    return ProviderPool(
+        _Settings(), secrets, None,
+        build_email=lambda chain, creds: None, build_sms=lambda chain, creds: None,
+        build_whatsapp=lambda chain, creds: None, build_template_manager=build_mgr, now=_Clock())
+
+
+def test_template_manager_resolves_a_tenants_own_waba():
+    # A template belongs to one WABA; a tenant messaging under its own name has its own token + WABA.
+    s = _store()
+    run(s.set(tenant="acme", name="WHATSAPP_ACCESS_TOKEN", value="acme-tok"))
+    run(s.set(tenant="acme", name="WHATSAPP_BUSINESS_ACCOUNT_ID", value="acme-waba"))
+    mgr = run(_mgr_pool(s).template_manager("acme"))
+    assert mgr == {"token": "acme-tok", "waba": "acme-waba"}
+
+
+def test_template_manager_is_none_when_a_tenant_has_no_waba():
+    # No WABA of its own ⇒ None ⇒ the caller falls back to the boot-built manager (single-brand
+    # behaviour, unchanged). _Settings has no WHATSAPP_BUSINESS_ACCOUNT_ID, so the id resolves empty.
+    assert run(_mgr_pool(_store()).template_manager("globex")) is None
+
+
+def test_template_manager_is_none_when_no_builder_is_wired():
+    pool = ProviderPool(
+        _Settings(), _store(), None,
+        build_email=lambda c, cr: None, build_sms=lambda c, cr: None,
+        build_whatsapp=lambda c, cr: None, now=_Clock())      # build_template_manager omitted
+    assert run(pool.template_manager("acme")) is None

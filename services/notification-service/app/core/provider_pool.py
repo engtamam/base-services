@@ -63,13 +63,18 @@ class ProviderPool:
     """Resolves and caches per-tenant provider chains."""
 
     def __init__(self, settings, secret_store, runtime_config, *,
-                 build_email, build_sms, build_whatsapp, ttl_s: int = 30, now=time.monotonic) -> None:
+                 build_email, build_sms, build_whatsapp, build_template_manager=None,
+                 ttl_s: int = 30, now=time.monotonic) -> None:
         self._s = settings
         self._secrets = secret_store          # None when no KEK is configured
         self._rc = runtime_config             # None when runtime policy is not wired
         self._build_email = build_email
         self._build_sms = build_sms
         self._build_whatsapp = build_whatsapp
+        # Resolves the WhatsApp TEMPLATE manager per tenant. Reading the token/WABA is a secret read,
+        # so it belongs here in core, not in a route (the API layer may not read credential
+        # plaintext). Returns None to mean "no per-tenant identity — use the boot-built manager".
+        self._build_template_manager = build_template_manager
         self._ttl = ttl_s
         self._now = now
         self._cache: dict[str, tuple[float, object, object, object]] = {}
@@ -117,6 +122,20 @@ class ProviderPool:
             await self._chain_for(tenant, self._s.whatsapp_chain, "WHATSAPP_CHAIN"), creds)
         self._cache[tenant] = (now + self._ttl, email, sms, whatsapp)
         return email, sms, whatsapp
+
+    async def template_manager(self, tenant: str = ""):
+        """The WhatsApp template manager scoped to this tenant's WABA, or None to use the boot one.
+
+        A template belongs to exactly one WABA, so a multi-tenant adopter has one per tenant and
+        approval is per tenant too. The token and WABA id resolve from the same credential store the
+        send chains use — a read that must live in core, never a route. `None` means the tenant has
+        no WABA of its own, so the caller falls back to the configured, boot-built manager, and the
+        single-brand deployment behaves exactly as before."""
+        if self._build_template_manager is None:
+            return None
+        token = await self._credential(tenant, "WHATSAPP_ACCESS_TOKEN")
+        waba = await self._credential(tenant, "WHATSAPP_BUSINESS_ACCOUNT_ID")
+        return self._build_template_manager(token, waba)
 
     def invalidate(self, tenant: str | None = None) -> None:
         """Drop the cache so the next send resolves fresh.

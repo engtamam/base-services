@@ -53,6 +53,35 @@ def test_re_registering_updates_in_place_not_duplicates():
     assert len(rows) == 1 and rows[0]["category"] == "AUTHENTICATION"
 
 
+def test_re_registering_identical_content_keeps_an_approved_template_approved():
+    # "make sure this tenant has the library" is run over the whole set whenever ONE template is
+    # added. If that moved every unchanged, already-approved template back to pending, every
+    # business-initiated message would stop until each was re-reviewed. So a no-op re-register must
+    # preserve the status (and the Meta id).
+    st = WhatsAppTemplateStore(MemoryDataStore())
+    reg = WhatsAppTemplateRegistry(st)
+    run(reg.register(tenant="acme", name="otp", language="en", category="UTILITY",
+                     body="Your code is {{1}}", variables=["code"], examples=["123456"]))
+    t = run(reg.get("acme", "otp", "en")); t.status = APPROVED
+    t.provider_template_id = "meta:9"; run(st.save(t))
+    # Byte-identical re-register.
+    again = run(reg.register(tenant="acme", name="otp", language="en", category="UTILITY",
+                             body="Your code is {{1}}", variables=["code"], examples=["123456"]))
+    assert again.status == APPROVED and again.provider_template_id == "meta:9"
+
+
+def test_re_registering_changed_content_resets_to_pending():
+    # An edit does need re-approval — Meta re-opens review on an edit, not only a rename.
+    st = WhatsAppTemplateStore(MemoryDataStore())
+    reg = WhatsAppTemplateRegistry(st)
+    run(reg.register(tenant="acme", name="otp", language="en", category="UTILITY",
+                     body="Your code is {{1}}", variables=["code"]))
+    t = run(reg.get("acme", "otp", "en")); t.status = APPROVED; run(st.save(t))
+    again = run(reg.register(tenant="acme", name="otp", language="en", category="UTILITY",
+                             body="Your NEW code is {{1}}", variables=["code"]))   # body changed
+    assert again.status == PENDING
+
+
 def test_get_resolves_by_identity():
     reg = _reg()
     run(reg.register(tenant="acme", name="otp", language="ar", category="UTILITY"))

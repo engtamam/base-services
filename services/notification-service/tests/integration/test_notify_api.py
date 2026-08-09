@@ -40,16 +40,18 @@ def client():
     get_settings.cache_clear()
 
 
-def _token(sub="u1", caps=None) -> str:
+def _token(sub="u1", caps=None, tenant=None) -> str:
     now = dt.datetime.now(dt.timezone.utc)
     claims = {"sub": sub, "exp": now + dt.timedelta(minutes=5), "iat": now}
     if caps is not None:
         claims["caps"] = caps
+    if tenant is not None:
+        claims["tenant"] = tenant
     return jwt.encode(claims, SECRET, algorithm="HS256")
 
 
-def _user(sub="u1", caps=None):
-    return {"Authorization": f"Bearer {_token(sub, caps)}"}
+def _user(sub="u1", caps=None, tenant=None):
+    return {"Authorization": f"Bearer {_token(sub, caps, tenant)}"}
 
 
 def _internal():
@@ -87,6 +89,30 @@ def test_internal_notify_sends_and_records(client):
     assert r.status_code == 200
     assert r.json()["status"] == "sent"
     assert r.json()["provider"] == "console"
+
+
+def test_internal_whatsapp_template_list_is_token_authed_and_tenant_scoped(client):
+    # A peer service that picks a template by TYPE needs to prefer an APPROVED one before it spends
+    # a send and a daily-cap slot. This is the internal counterpart to the user-tier list: a service
+    # token, tenant as a parameter — no user JWT (whose signing key stays in identity-service).
+    admin = _user("op", caps=["notifications.templates"], tenant="acme")
+    reg = client.post("/api/v1/whatsapp/templates", headers=admin,
+                      json={"name": "order_ready", "language": "en", "category": "UTILITY",
+                            "body": "Order {{1}} ready", "variables": ["order"],
+                            "examples": ["A-100"]})
+    assert reg.status_code == 201, reg.text
+
+    # No token -> refused; no tenant -> 400 (an empty scope is every customer).
+    assert client.get("/internal/whatsapp/templates?tenant=acme").status_code == 401
+    assert client.get("/internal/whatsapp/templates", headers=_internal()).status_code == 400
+
+    # Token + tenant -> the tenant's templates, and only theirs.
+    got = client.get("/internal/whatsapp/templates?tenant=acme", headers=_internal())
+    assert got.status_code == 200
+    names = [t["name"] for t in got.json()["templates"]]
+    assert "order_ready" in names
+    other = client.get("/internal/whatsapp/templates?tenant=globex", headers=_internal())
+    assert other.json()["templates"] == []      # another tenant sees nothing of acme's
 
 
 def test_every_engine_channel_passes_validation(client):

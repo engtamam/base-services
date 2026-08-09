@@ -88,10 +88,14 @@ def test_http_accepted_carries_the_chain_position(monkeypatch):
 
 def test_http_sends_exactly_the_ingest_contract(monkeypatch):
     # A field name drifting from audit-service's AuditIn would 422 every event in production while
-    # every unit test here still passed.
+    # every unit test here still passed. The idempotency_key is part of that contract now — it is
+    # what lets a retried timeout be recognised by the log instead of appended a second time.
     seen = _urlopen(monkeypatch, _Resp(200, json.dumps(_RECEIPT).encode()))
     run(HttpAuditSink(_URL, _TOKEN).emit(_EVENT))
-    assert json.loads(seen["req"].data) == {
+    sent = json.loads(seen["req"].data)
+    key = sent.pop("idempotency_key", None)
+    assert isinstance(key, str) and key                # present, non-empty
+    assert sent == {
         "service": "identity-service", "action": "user.suspended", "actor": "sub_abc123",
         "resource": "user:u_7", "tenant": "acme", "ip": "10.0.0.1",
         "metadata": {"reason": "abuse"}}
@@ -127,19 +131,22 @@ def test_http_failures_are_reported_never_raised(monkeypatch, boom):
     assert receipt.status == FAILED and receipt.detail
 
 
-def test_http_does_not_retry(monkeypatch):
-    """The chain has no idempotency key, so a retry after a timeout is indistinguishable from a
-    second action — it would append a DUPLICATE to a tamper-evident log. A log that invents actions
-    is no more trustworthy than one that loses them, and it is harder to notice."""
-    calls = []
+def test_http_retries_a_transient_failure_reusing_one_idempotency_key(monkeypatch):
+    """A timeout MAY have already landed the append, so the sink retries — but every attempt carries
+    the SAME idempotency_key, so audit-service recognises the repeat and appends nothing. Retrying is
+    safe BECAUSE the key is stable; a retry that changed the key would be the very duplicate an audit
+    log must never invent. This is the invariant that replaced the old 'never retry' rule."""
+    bodies = []
 
     def fake(req, timeout=None):
-        calls.append(req)
+        bodies.append(json.loads(req.data))
         raise OSError("timed out")
 
     monkeypatch.setattr("app.adapters.audit_sink.http.urllib.request.urlopen", fake)
-    run(HttpAuditSink(_URL, _TOKEN).emit(_EVENT))
-    assert len(calls) == 1
+    receipt = run(HttpAuditSink(_URL, _TOKEN, max_attempts=2).emit(_EVENT))
+    assert receipt.status == FAILED                    # every attempt failed — reported, never raised
+    assert len(bodies) == 2                            # it DID retry the transient failure
+    assert len({b["idempotency_key"] for b in bodies}) == 1   # ONE key across retries — no duplicate
 
 
 # ── eventbus ──────────────────────────────────────────────────────────────────

@@ -20,6 +20,12 @@ from typing import Any
 CATEGORIES = ("UTILITY", "MARKETING", "AUTHENTICATION")
 
 PENDING, APPROVED, REJECTED = "pending", "approved", "rejected"
+# Distinct from rejected: Meta pauses a template for recurring negative feedback / low read-rates
+# (it can return) and disables one that never does. An operator's next action differs, so the
+# registry keeps them apart rather than folding either into pending or rejected.
+PAUSED, DISABLED = "paused", "disabled"
+# The statuses that carry a reason worth keeping (why it is not sendable).
+_REASONED = (REJECTED, PAUSED, DISABLED)
 
 
 class TemplateError(ValueError):
@@ -43,7 +49,8 @@ class WhatsAppTemplate:
     language: str
     category: str
     body: str = ""                       # opaque to this service; the adopter owns it
-    variables: list[str] = field(default_factory=list)   # ordered placeholders the body references
+    variables: list[str] = field(default_factory=list)   # ordered parameter NAMES (send-time keys)
+    examples: list[str] = field(default_factory=list)    # ordered example VALUES Meta needs at review
     status: str = PENDING
     provider_template_id: str = ""       # Meta's id, set on submit
     rejection_reason: str = ""
@@ -53,6 +60,7 @@ class WhatsAppTemplate:
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "tenant": self.tenant, "name": self.name, "language": self.language,
                 "category": self.category, "body": self.body, "variables": self.variables,
+                "examples": self.examples,
                 "status": self.status, "provider_template_id": self.provider_template_id,
                 "rejection_reason": self.rejection_reason, "created": self.created,
                 "updated": self.updated}
@@ -62,6 +70,7 @@ class WhatsAppTemplate:
         return cls(id=d["id"], tenant=d.get("tenant", ""), name=d.get("name", ""),
                    language=d.get("language", ""), category=d.get("category", ""),
                    body=d.get("body", ""), variables=list(d.get("variables") or []),
+                   examples=list(d.get("examples") or []),
                    status=d.get("status", PENDING),
                    provider_template_id=d.get("provider_template_id", ""),
                    rejection_reason=d.get("rejection_reason", ""),
@@ -103,18 +112,32 @@ class WhatsAppTemplateRegistry:
         self._store = store
 
     async def register(self, *, tenant: str, name: str, language: str, category: str,
-                       body: str = "", variables: list[str] | None = None) -> WhatsAppTemplate:
+                       body: str = "", variables: list[str] | None = None,
+                       examples: list[str] | None = None) -> WhatsAppTemplate:
         if not tenant or not name or not language:
             raise TemplateError("tenant, name and language are required")
         cat = (category or "").strip().upper()
         if cat not in CATEGORIES:
             raise TemplateError(f"category must be one of {CATEGORIES}, got {category!r}")
         vs = [str(v) for v in (variables or [])]
+        exs = [str(e) for e in (examples or [])]
         existing = await self._store.get(tenant, name, language)
+        # register() is an upsert, and it is the natural home of "make sure this tenant has the
+        # library" — run over the whole set whenever one template is added. So it must NOT move an
+        # unchanged template back to pending: that would un-approve every other template in the
+        # account and stop every business-initiated message until each was re-reviewed. Reset to
+        # pending ONLY when the reviewable content actually changed; Meta re-opens review on an edit,
+        # not on a no-op re-register.
+        unchanged = (existing is not None and existing.body == body and existing.variables == vs
+                     and existing.examples == exs and existing.category == cat)
+        status = existing.status if unchanged else PENDING
         t = WhatsAppTemplate(
             id=existing.id if existing else uuid.uuid4().hex,
             tenant=tenant, name=name, language=language, category=cat, body=body, variables=vs,
-            status=PENDING, created=existing.created if existing else _now())
+            examples=exs, status=status,
+            provider_template_id=existing.provider_template_id if existing else "",
+            rejection_reason=existing.rejection_reason if (unchanged and existing) else "",
+            created=existing.created if existing else _now())
         t.updated = _now()
         return await self._store.save(t)
 
@@ -132,29 +155,37 @@ class WhatsAppTemplateRegistry:
         if t is None:
             raise TemplateError("no such template to submit")
         res = manager.submit(name=t.name, language=t.language, category=t.category, body=t.body,
-                             variables=t.variables)
+                             variables=t.variables, examples=t.examples)
         if res.provider_template_id:
             t.provider_template_id = res.provider_template_id
         t.status = res.status or PENDING
-        t.rejection_reason = res.reason if res.status == REJECTED else ""
+        t.rejection_reason = res.reason if res.status in _REASONED else ""
         t.updated = _now()
         return await self._store.save(t)
 
+    # The statuses worth re-checking against Meta. rejected and disabled are terminal (a rejected
+    # name cannot be resubmitted; a disabled template does not return), so re-querying them is wasted
+    # calls. Everything else is LIVE: pending awaits a verdict, paused can recover to approved, and —
+    # the case that matters most — an APPROVED template can be paused or disabled by Meta for negative
+    # feedback, which must be caught or the product keeps sending into a template Meta has muted.
+    _LIVE = (PENDING, APPROVED, PAUSED)
+
     async def sync(self, *, tenant: str, manager, limit: int = 200) -> dict[str, int]:
-        """Reconcile every still-pending template for this tenant against Meta's verdict.
+        """Reconcile this tenant's live templates against Meta's verdict.
 
         Tenant-scoped filtered read (no scan). A status CHANGE is a durable fact written down, never
-        a bus hint — the operator sees approved/rejected without asking Meta again."""
-        rows, _ = await self._store.find(tenant=tenant, status=PENDING, limit=limit)
+        a bus hint — the operator sees approved/rejected/paused/disabled without asking Meta again."""
+        rows, _ = await self._store.find(tenant=tenant, limit=limit)
+        live = [r for r in rows if r.get("status", PENDING) in self._LIVE]
         updated = 0
-        for row in rows:
+        for row in live:
             t = WhatsAppTemplate.from_dict(row)
             res = manager.status(provider_template_id=t.provider_template_id, name=t.name,
                                  language=t.language)
             if res.status and res.status != t.status:
                 t.status = res.status
-                t.rejection_reason = res.reason if res.status == REJECTED else ""
+                t.rejection_reason = res.reason if res.status in _REASONED else ""
                 t.updated = _now()
                 await self._store.save(t)
                 updated += 1
-        return {"scanned": len(rows), "updated": updated}
+        return {"scanned": len(live), "updated": updated}

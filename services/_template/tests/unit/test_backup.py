@@ -154,7 +154,7 @@ def test_a_row_with_no_identity_is_refused():
     body = json.dumps({"service": "s", "tenant": "", "collections": {"widgets": [{"tenant": "acme"}]}})
     archive = {"format": B.ARCHIVE_FORMAT, "service": "s", "sealed": seal(body)}
     archive["checksum"] = B._checksum(archive["sealed"])
-    with pytest.raises(B.BackupError, match="no id"):
+    with pytest.raises(B.BackupError, match="stable per-row key"):
         run(B.import_archive(MemoryDataStore(), archive, unseal=unseal))
 
 

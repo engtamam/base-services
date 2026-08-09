@@ -31,12 +31,32 @@ def _wa_registry(request: Request) -> WhatsAppTemplateRegistry:
     return WhatsAppTemplateRegistry(WhatsAppTemplateStore(request.app.state.container.datastore))
 
 
+async def build_template_manager(request: Request, tenant: str = ""):
+    """The template manager scoped to THIS tenant's WhatsApp Business Account.
+
+    A template belongs to exactly one WABA, so a multi-tenant adopter whose customers message under
+    their own name has one WABA per tenant, and approval is per tenant too. The per-tenant resolution
+    — which reads the tenant's token and WABA id — lives in the provider pool (core), because reading
+    credential plaintext is not something a route may do. The pool returns None when the tenant has
+    no WABA of its own, and we fall back to the boot-built manager, so the single-brand case is
+    unchanged.
+    """
+    c = request.app.state.container
+    pool = getattr(request.app.state, "provider_pool", None)
+    if pool is not None:
+        mgr = await pool.template_manager(tenant)
+        if mgr is not None:
+            return mgr
+    return c.whatsapp_template_manager
+
+
 class WaTemplateIn(BaseModel):
     name: str = Field(min_length=1, max_length=512)
     language: str = Field(min_length=2, max_length=16)
     category: str = Field(min_length=1, max_length=32)
     body: str = Field(default="", max_length=4_000)
-    variables: list[str] = Field(default_factory=list)
+    variables: list[str] = Field(default_factory=list)   # ordered parameter names (send-time keys)
+    examples: list[str] = Field(default_factory=list)    # ordered example values Meta needs at review
 
 
 @wa_templates_router.post("", status_code=201, dependencies=[Depends(_WA_CAP)])
@@ -51,7 +71,8 @@ async def register_wa_template(request: Request, body: WaTemplateIn,
     try:
         t = await _wa_registry(request).register(
             tenant=principal.tenant or "", name=body.name, language=body.language,
-            category=body.category, body=body.body, variables=body.variables)
+            category=body.category, body=body.body, variables=body.variables,
+            examples=body.examples)
     except TemplateError as exc:
         raise HTTPException(422, str(exc))
     return t.public()
@@ -67,7 +88,7 @@ async def submit_wa_template(request: Request, name: str, language: str,
     try:
         t = await _wa_registry(request).submit(
             tenant=principal.tenant or "", name=name, language=language,
-            manager=request.app.state.container.whatsapp_template_manager)
+            manager=await build_template_manager(request, principal.tenant or ""))
     except TemplateError as exc:
         raise HTTPException(404, str(exc))
     return t.public()
