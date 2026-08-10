@@ -57,6 +57,25 @@ spec:
       containers:
         - name: postgres
           image: postgres:16.4-alpine
+          # TLS in transit. Every service->DB hop is otherwise cleartext on the pod network, and the
+          # one service holding real PII (operations) sends phone numbers over it on every search —
+          # which defeats the pseudonymisation posture the moment anything gets a foothold on the
+          # network. ssl=on with a self-signed cert closes PASSIVE interception (sslmode=require):
+          # it encrypts without proving identity. verify-full (a trust chain) is a larger, deferred
+          # conversation for a single-node cluster, so the cert stays self-signed — no CA needed.
+          #
+          # ORDER IS LOAD-BEARING: this server half MUST ship before gen-secrets.py appends
+          # sslmode=require to any DSN. A DSN that demands TLS from a server that does not offer it
+          # makes every service refuse its connection and fail at boot — the whole platform down from
+          # one word. So the server offers TLS first (encrypt-if-asked); the client half comes later.
+          args:
+            - postgres
+            - -c
+            - ssl=on
+            - -c
+            - ssl_cert_file=/etc/postgres-tls/tls.crt
+            - -c
+            - ssl_key_file=/etc/postgres-tls/tls.key
           ports:
             - containerPort: 5432
           env:
@@ -86,10 +105,20 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
+            - name: tls
+              mountPath: /etc/postgres-tls
+              readOnly: true
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: postgres-data
+        - name: tls
+          secret:
+            secretName: postgres-tls
+            # Postgres REFUSES a key readable by group/world UNLESS it is owned by root — and a
+            # Secret volume's files are owned by root:fsGroup. 0640 is the one mode that both lets
+            # postgres (uid 999, in fsGroup 999) read the key AND passes its permission check.
+            defaultMode: 0640
 ---
 apiVersion: v1
 kind: Service

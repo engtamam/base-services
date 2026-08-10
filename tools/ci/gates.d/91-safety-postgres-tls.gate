@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+gate_name="safety:postgres-tls"
+gate_desc="postgres serves TLS on the wire, and DSNs stay plain until the client half lands"
+gate_protects="Every service->database hop is cleartext on the pod network unless postgres is
+told ssl=on and given a cert — and dropping either fails INVISIBLY: postgres starts
+fine, unencrypted, green rollout, and the one service holding real PII (operations)
+streams phone numbers over the network in the clear while no control notices. This
+gate pins the server half (ssl=on + mounted postgres-tls cert + the host step that
+mints it) so a future edit trips CI, not production. It also guards the ordering
+landmine: gen-secrets.py must not append sslmode=require to a DSN before the server
+is verified to serve TLS, or every service refuses its connection and fails at boot."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_postgres_tls.py"
+gate_units=1
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_postgres_tls.py; }

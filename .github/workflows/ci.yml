@@ -183,6 +183,10 @@ jobs:
           python tools/ci/selftest_rotation_overlap.py
           python tools/ci/check_rotation_overlap.py
 
+      # gates: safety:postgres-tls
+      - name: "safety:postgres-tls — postgres serves TLS on the wire; DSNs stay plain until the client half lands"
+        run: python tools/ci/check_postgres_tls.py
+
       # gates: safety:template-green
       - name: "safety:template-green — services/_template ships green so create_service.py can self-verify"
         run: python tools/ci/check_template_green.py

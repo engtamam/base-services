@@ -66,12 +66,46 @@ install_metrics_server() {
   ok "metrics-server ready"
 }
 
+# ── Postgres TLS cert: generated HERE, on the host, at provision time ───────
+# WHY on the host and not in an initContainer: the postgres pod runs under a default-deny egress
+# NetworkPolicy, so an initContainer that `apk add openssl` would hang forever reaching the Alpine
+# CDN. openssl is already installed by provision-server.sh, so we mint the cert here and ship it as
+# a Secret the StatefulSet mounts. Self-signed is sufficient for sslmode=require (encrypt, don't
+# verify identity) — the realistic pod-network threat is passive interception.
+#
+# IDEMPOTENT and STICKY: if the Secret already exists we leave it untouched, so a re-run neither
+# rotates the cert (which would bounce postgres for no reason) nor depends on openssl being present
+# on a later run. Delete the Secret to force a fresh cert.
+ensure_postgres_tls() {
+  if kubectl -n "$NAMESPACE" get secret postgres-tls >/dev/null 2>&1; then
+    ok "postgres TLS cert present (kept)"
+    return
+  fi
+  command -v openssl >/dev/null 2>&1 || die "openssl not found — needed to mint the postgres TLS cert (provision-server.sh installs it)"
+  info "minting self-signed postgres TLS cert"
+  local dir; dir="$(mktemp -d)"
+  # SANs cover the in-cluster names, so this same cert works unchanged if a future deployment
+  # tightens to verify-full — no re-mint, no CA needed today.
+  openssl req -new -x509 -nodes -days 3650 \
+    -subj "/CN=postgres" \
+    -addext "subjectAltName=DNS:postgres,DNS:postgres.${NAMESPACE}.svc,DNS:postgres.${NAMESPACE}.svc.cluster.local" \
+    -keyout "$dir/tls.key" -out "$dir/tls.crt" >/dev/null 2>&1 \
+    || die "openssl failed to generate the postgres TLS cert"
+  kubectl -n "$NAMESPACE" create secret tls postgres-tls \
+    --cert="$dir/tls.crt" --key="$dir/tls.key" >/dev/null \
+    || die "failed to create the postgres-tls Secret"
+  rm -rf "$dir"
+  ok "postgres TLS cert minted"
+}
+
 # ── 4. Platform: ingress, certs, sealed secrets, data stores ────────────────
 install_platform() {
   kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
   # The chart's NetworkPolicy selects Prometheus/ingress by namespace LABEL, and
   # kubernetes.io/metadata.name is only auto-set on 1.21+. Assert rather than assume.
   kubectl label namespace "$NAMESPACE" "kubernetes.io/metadata.name=$NAMESPACE" --overwrite >/dev/null
+
+  ensure_postgres_tls
 
   info "applying platform manifests"
   # -n "$NAMESPACE": the platform manifests are namespace-agnostic (no metadata.namespace), so
