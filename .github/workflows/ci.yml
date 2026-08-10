@@ -356,10 +356,16 @@ jobs:
           if [ ! -f tests/contracts/test_datastore_contract.py ]; then
             echo "no datastore contract in this service"; exit 0
           fi
-          out=$(python -m pytest tests/contracts/ -q -p no:cacheprovider 2>&1 | tail -3)
-          echo "$out"
-          if echo "$out" | grep -qi "skipped"; then
-            echo "::error::a contract param was SKIPPED — the real-infra DSN/endpoint never reached the tests"
+          # -rs prints the REASON for each skip. Fail ONLY when a REAL-INFRA param was skipped because
+          # the DSN/endpoint never reached the test — those skips name DATASTORE_TEST_DSN /
+          # OBJECTSTORE_TEST_ENDPOINT. Do NOT fail on BY-DESIGN skips: a memory/local object store
+          # cannot presign (it has no bucket), and its presign contract test correctly skips — that is
+          # the adapter behaving as specified, not real infra going missing. The old crude
+          # grep "skipped" failed on those, so file-service could never pass this gate.
+          out=$(python -m pytest tests/contracts/ -q -rs -p no:cacheprovider 2>&1)
+          echo "$out" | tail -25
+          if echo "$out" | grep -E "SKIPPED.*(DATASTORE_TEST_DSN|OBJECTSTORE_TEST_ENDPOINT)"; then
+            echo "::error::a REAL-INFRA contract param was SKIPPED — the DSN/endpoint never reached the tests"
             exit 1
           fi
 
