@@ -62,4 +62,13 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "why": "erasure is irreversible and the data is gone — nothing but this record can "
                "show we honoured the DSAR, or prove we erased the right person",
     },
+    {
+        "action": "authz.tenant_bootstrapped",
+        "source": "internal",
+        "critical": True,
+        "why": "this is the ONE act that mints a tenant's first admin (authz.manage) and grants it "
+               "to the owner — the seed of every privilege in that company. Who created which roles "
+               "and made whom an admin, and when, is the record a security review starts from, and "
+               "it is unavailable anywhere else once the saga has run",
+    },
 ]

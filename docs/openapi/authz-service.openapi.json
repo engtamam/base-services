@@ -70,6 +70,63 @@
         "title": "BackupVerifyIn",
         "type": "object"
       },
+      "BootstrapIn": {
+        "description": "Everything needed to make a brand-new tenant usable: the role definitions to create, the first\nsubject (the owner), and which of those roles to grant them.",
+        "properties": {
+          "assign": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Assign",
+            "type": "array"
+          },
+          "roles": {
+            "items": {
+              "$ref": "#/components/schemas/BootstrapRoleIn"
+            },
+            "title": "Roles",
+            "type": "array"
+          },
+          "subject": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Subject",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject"
+        ],
+        "title": "BootstrapIn",
+        "type": "object"
+      },
+      "BootstrapRoleIn": {
+        "properties": {
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Capabilities",
+            "type": "array"
+          },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "BootstrapRoleIn",
+        "type": "object"
+      },
       "CheckIn": {
         "properties": {
           "action": {
@@ -970,6 +1027,77 @@
           }
         },
         "summary": "Internal Effective",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/authz/tenants/{tenant}/bootstrap": {
+      "post": {
+        "description": "Give a new tenant its first roles and make its owner an admin \u2014 the counterpart to\nPOST /internal/tenants, run in the same provisioning saga, at the same internal trust boundary.\n\nTHE CLOSED CYCLE THIS BREAKS: a role granting `authz.manage` can only be created by a holder of\n`authz.manage`, and a fresh tenant has none \u2014 so self-service signup mints a token with `caps:[]`\nand the owner can do nothing. This route is the ONE way in, and it is deliberately INTERNAL-tier\n(X-Internal-Token, never a user JWT): the escalation guard on the user-tier routes stays exactly\nas strict as before.\n\nSTILL FAIL-CLOSED ON PLATFORM POWER: it may grant tenant-scoped admin (`authz.manage`) but NEVER\na `platform.*` capability \u2014 a product provisioning a shop must not be able to mint a platform-god\nrole. That half of the guard is kept.\n\nIDEMPOTENT: re-running is a no-op that corrects drift. A role is matched by name (created once,\nupdated in place after), and the assignment is a SET \u2014 so the whole saga can retry safely.\n`_subject_caps` resolves an assignment's roles BY ID, so the owner is assigned the role IDs, and\nthe caps flow into the very next token identity mints from GET /internal/authz/effective.",
+        "operationId": "bootstrap_tenant_internal_authz_tenants__tenant__bootstrap_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BootstrapIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Bootstrap Tenant Internal Authz Tenants  Tenant  Bootstrap Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Bootstrap Tenant",
         "tags": [
           "internal"
         ]

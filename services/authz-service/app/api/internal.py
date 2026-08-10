@@ -16,6 +16,7 @@ from app.backup_manifest import BACKUP
 from app.core.authz_service import UnknownRole
 from app.config import Settings, get_settings
 from app.core import backup as _backup
+from app.core.cap_policy import forbidden_caps
 from app.core.erasure import AuthzErasure
 from app.manifest import build_manifest
 
@@ -87,6 +88,82 @@ async def internal_effective(request: Request, subject: str = Query(...),
         # this 400, so the operator sees a refusal instead of a user who mysteriously cannot work.
         raise HTTPException(get_settings().AUTHZ_UNKNOWN_ROLE_STATUS, f"UNKNOWN_ROLE: {exc}")
     return {"subject": subject, "tenant": tenant, "capabilities": sorted(caps)}
+
+
+class BootstrapRoleIn(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    capabilities: list[str] = Field(default_factory=list)
+    description: str = ""
+
+
+class BootstrapIn(BaseModel):
+    """Everything needed to make a brand-new tenant usable: the role definitions to create, the first
+    subject (the owner), and which of those roles to grant them."""
+    roles: list[BootstrapRoleIn] = Field(default_factory=list)
+    subject: str = Field(min_length=1, max_length=256)
+    assign: list[str] = Field(default_factory=list)   # role NAMES (subset of roles) to grant `subject`
+
+
+@router.post("/authz/tenants/{tenant}/bootstrap", dependencies=[Depends(require_internal_token)])
+async def bootstrap_tenant(request: Request, tenant: str, body: BootstrapIn) -> dict:
+    """Give a new tenant its first roles and make its owner an admin — the counterpart to
+    POST /internal/tenants, run in the same provisioning saga, at the same internal trust boundary.
+
+    THE CLOSED CYCLE THIS BREAKS: a role granting `authz.manage` can only be created by a holder of
+    `authz.manage`, and a fresh tenant has none — so self-service signup mints a token with `caps:[]`
+    and the owner can do nothing. This route is the ONE way in, and it is deliberately INTERNAL-tier
+    (X-Internal-Token, never a user JWT): the escalation guard on the user-tier routes stays exactly
+    as strict as before.
+
+    STILL FAIL-CLOSED ON PLATFORM POWER: it may grant tenant-scoped admin (`authz.manage`) but NEVER
+    a `platform.*` capability — a product provisioning a shop must not be able to mint a platform-god
+    role. That half of the guard is kept.
+
+    IDEMPOTENT: re-running is a no-op that corrects drift. A role is matched by name (created once,
+    updated in place after), and the assignment is a SET — so the whole saga can retry safely.
+    `_subject_caps` resolves an assignment's roles BY ID, so the owner is assigned the role IDs, and
+    the caps flow into the very next token identity mints from GET /internal/authz/effective.
+    """
+    s = get_settings()
+    # Keep the platform.* denylist (the escalation guard); allow authz.manage — that is the whole
+    # point, and only reachable here, at the internal tier.
+    for r in body.roles:
+        bad = forbidden_caps(r.capabilities, is_operator=False,
+                             denied_prefixes=s.authz_tenant_denied_cap_prefixes,
+                             denied_caps=frozenset(), allowlist=frozenset())
+        if bad:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                f"bootstrap may not grant platform-scoped capabilities: {', '.join(bad)}")
+
+    await request.app.state.auditor.record(
+        "authz.tenant_bootstrapped", actor="", tenant=tenant, resource=f"tenant:{tenant}",
+        ip=request.client.host if request.client else "")
+
+    svc = build_authz(request)
+    existing = {r["name"]: r for r in await svc.list_roles(tenant)}
+    made: list[dict] = []
+    name_to_id: dict[str, str] = {}
+    for rdef in body.roles:
+        if rdef.name in existing:                     # idempotent: update in place, keep the id
+            role = await svc.get_role(existing[rdef.name]["id"])
+            role = await svc.update_role(role, capabilities=rdef.capabilities,
+                                         description=rdef.description or role.description)
+            made.append({"id": role.id, "name": role.name, "created": False})
+        else:
+            role = await svc.create_role(tenant, rdef.name, rdef.capabilities, rdef.description)
+            made.append({"id": role.id, "name": role.name, "created": True})
+        name_to_id[rdef.name] = role.id
+
+    assign_ids: list[str] = []
+    for name in body.assign:
+        if name not in name_to_id:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                f"assign references a role not defined in this request: {name!r}")
+        assign_ids.append(name_to_id[name])
+    if assign_ids:
+        await svc.set_subject_roles(body.subject, tenant, roles=assign_ids)
+
+    return {"tenant": tenant, "subject": body.subject, "roles": made, "assigned": body.assign}
 
 
 @router.get("/manifest", dependencies=[Depends(require_internal_token)])
