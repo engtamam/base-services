@@ -19,7 +19,8 @@ def run(c):
     return asyncio.run(c)
 
 
-_CONTENT = {"en": {"title": "Terms", "sections": [{"heading": "", "body": "Be nice."}]}}
+_CONTENT = {"title": {"en": "Terms", "ar": "الشروط"},
+            "blocks": [{"section": {"text": {"en": "Be nice.", "ar": "كن لطيفًا."}}}], "values": {}}
 
 
 def _harness():

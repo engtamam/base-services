@@ -571,9 +571,12 @@ async def instantiate_legal_template(request: Request, template_id: str, body: I
     tenant = _tenant(principal)
     doc_id = rendered["slug"]
     legal = build_legal(request)
+    # The rich blocks + the tenant's values, stored as-is. The renderer fills the tokens and picks
+    # the language at read time — nothing is flattened, so the document keeps its tables and structure.
+    content = {"title": rendered["title"], "blocks": rendered["blocks"], "values": rendered["values"]}
     try:
         await legal.draft(tenant=tenant, doc_id=doc_id, version=body.version,
-                          content=rendered["content"], requires_acceptance=body.requires_acceptance,
+                          content=content, requires_acceptance=body.requires_acceptance,
                           default_locale=body.default_locale)
     except LegalError as exc:
         raise HTTPException(409, str(exc)) from exc

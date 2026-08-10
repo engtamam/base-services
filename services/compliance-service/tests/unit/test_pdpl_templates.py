@@ -1,5 +1,7 @@
-"""PDPL template pack — fill-in-the-blank, bilingual, and it becomes a real publishable legal page.
-The one thing that must never happen: a policy published with a literal {{PLACEHOLDER}} in it."""
+"""PDPL template pack — the well-known documents, bilingual rich blocks, and it becomes a real
+publishable legal page. The backend hands over the blocks + the tenant's values UNCHANGED (the UI's
+block renderer fills the {{TOKEN}}s and picks the language); its job is to refuse a document whose
+placeholders are not all supplied, so a page with a live {{HOLE}} can never be published."""
 from __future__ import annotations
 
 import asyncio
@@ -24,8 +26,8 @@ def _all(tid):
 
 def test_the_pack_is_the_well_known_declared_documents():
     """The pack holds the recognised data-protection documents any site declares — Privacy, Cookies,
-    Data Subject Rights, RoPA, DPIA, and the DPA pair — and NOT the internal-only policies
-    (governance, security-of-processing…) or the operational logs/forms."""
+    Data Subject Rights, RoPA, DPIA, and the DPA pair — and NOT the internal-only policies or the
+    operational logs/forms."""
     ids = {t["id"] for t in pdpl_templates.list_templates()}
     assert ids == {"doc01_privacy_policy", "doc03_data_subject_rights", "doc04_ropa", "doc10_dpia",
                    "doc12_cookies", "doc13_processing_agreement", "doc14_processor_dpa"}
@@ -33,35 +35,30 @@ def test_the_pack_is_the_well_known_declared_documents():
                        "reg16_dsar_log", "form08_dpo_appointment"})
 
 
-def test_every_declared_placeholder_is_scanned_from_the_text_so_none_are_missed():
-    """The source header under-declares slots; we scan the text. Filling the scanned set must leave
-    no {{HOLE}} in any language of any template."""
-    import re as _re
+def test_render_returns_bilingual_title_rich_blocks_and_the_values():
+    r = render("doc01_privacy_policy", _all("doc01_privacy_policy"))
+    assert r["title"]["en"] == "Privacy Policy"
+    assert r["title"]["ar"] == "سياسة الخصوصية"                # genuinely translated
+    assert r["blocks"]                                          # rich blocks passed through, not flattened
+    assert r["slug"] == "privacy-policy"
+    # every placeholder the document uses is carried in values, so the renderer can fill every slot
+    assert set(r["values"]) >= set(_all("doc01_privacy_policy"))
+
+
+def test_placeholders_are_scanned_from_text_so_none_are_missed():
+    """The source header under-declares slots; we scan the text. With the scanned set supplied there
+    are NO missing placeholders — nothing the renderer would leave as a live {{HOLE}}."""
     for t in pdpl_templates.list_templates():
         r = render(t["id"], {p: "X" for p in t["placeholders"]}, strict=True)
-        text = "\n".join(s["body"] + s["heading"] for loc in r["content"]
-                         for s in r["content"][loc]["sections"])
-        assert not _re.search(r"\{\{[A-Z0-9_]+\}\}", text), t["id"]
-
-
-def test_render_is_bilingual_and_substitutes_every_placeholder():
-    r = render("doc01_privacy_policy", _all("doc01_privacy_policy"))
-    assert set(r["content"]) == {"en", "ar"}
-    en = "\n".join(s["body"] for s in r["content"]["en"]["sections"])
-    ar = "\n".join(s["body"] for s in r["content"]["ar"]["sections"])
-    assert "{{" not in en and "{{" not in ar            # no unfilled holes
-    assert "«COMPANY_NAME»" in en and "«COMPANY_NAME»" in ar   # the value landed in both languages
-    assert r["content"]["en"]["title"] == "Privacy Policy"
-    assert r["content"]["ar"]["title"] == "سياسة الخصوصية"    # genuinely translated
+        assert r["missing"] == []
 
 
 def test_a_missing_placeholder_is_refused_not_guessed():
     vals = _all("doc12_cookies")
-    vals.pop(next(iter(vals)))                           # drop one required value
+    vals.pop(next(iter(vals)))                                  # drop one required value
     with pytest.raises(TemplateError):
         render("doc12_cookies", vals, strict=True)
-    # non-strict reports it instead of raising
-    out = render("doc12_cookies", vals, strict=False)
+    out = render("doc12_cookies", vals, strict=False)          # non-strict reports instead of raising
     assert out["missing"]
 
 
@@ -70,13 +67,14 @@ def test_an_unknown_template_is_refused():
         render("doc99_not_real", {})
 
 
-def test_render_then_publish_produces_a_filled_legal_page():
+def test_render_then_publish_produces_a_versioned_gated_page_with_blocks():
     ds = MemoryDataStore()
     legal = LegalPageService(store=LegalPageStore(ds), clock=ManualClock(1_000.0))
     r = render("doc13_processing_agreement", _all("doc13_processing_agreement"))
-    run(legal.draft(tenant="t", doc_id=r["slug"], version="1.0", content=r["content"],
+    content = {"title": r["title"], "blocks": r["blocks"], "values": r["values"]}
+    run(legal.draft(tenant="t", doc_id=r["slug"], version="1.0", content=content,
                     requires_acceptance=True, default_locale="ar"))
     run(legal.publish(tenant="t", doc_id=r["slug"], version="1.0"))
     view = run(legal.current_view(tenant="t", doc_id=r["slug"], locale="ar"))
     assert view["version"] == "1.0" and view["requires_acceptance"] is True
-    assert "{{" not in "\n".join(s["body"] for s in view["sections"])
+    assert view["blocks"] and view["values"]                   # the page carries its rich blocks + values
