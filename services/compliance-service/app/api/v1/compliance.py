@@ -20,13 +20,18 @@ from app.core.models import DSAR_TYPES
 from app.core.privacy_dispatcher import PrivacyDispatcher
 from app.core.privacy_sweeper import PrivacySweeper
 from app.core.retention import RetentionEnforcer
-from app.core.stores import (BreachStore, ConsentStore, DsarStore, HoldStore, RopaStore,
-                             TargetStore)
+from app.core.legal_pages import LegalError, LegalPageService
+from app.core.stores import (BreachStore, ConsentStore, DsarStore, HoldStore, LegalPageStore,
+                             RopaStore, TargetStore)
 
 router = APIRouter(prefix="/api/v1/compliance", tags=["compliance"])
 
 _ADMIN = require_any_capability("platform.compliance", "compliance.manage")
 _READ = require_any_capability("platform.compliance", "compliance.manage", "compliance.read")
+# Reading a legal page is the lightest privilege here: any authenticated user must be able to see
+# the terms they are being asked to accept. Authoring stays under _ADMIN.
+_VIEW = require_any_capability("compliance.self", "compliance.read", "compliance.manage",
+                              "platform.compliance")
 # The data subject acting FOR THEMSELVES. Never resolves a subject from a body — it is always the
 # caller's own token — so a self-service DSAR cannot be opened against anyone else.
 _SELF = require_any_capability("compliance.self", "compliance.manage", "platform.compliance")
@@ -463,3 +468,71 @@ async def notify_breach(request: Request, breach_id: str,
 @router.get("/breaches", dependencies=[Depends(_READ)])
 async def list_breaches(request: Request, principal: Principal = Depends(_READ)) -> dict:
     return {"breaches": await build_compliance(request).list_breaches(_tenant(principal))}
+
+
+# ── Legal / content pages ──────────────────────────────────────────────────────
+def build_legal(request: Request) -> LegalPageService:
+    c = request.app.state.container
+    return LegalPageService(store=LegalPageStore(c.datastore), clock=c.clock, event_bus=c.event_bus)
+
+
+class LegalDraftIn(BaseModel):
+    # locale -> {"title": str, "sections": [{"heading","body"}, ...]}
+    content: dict[str, Any] = Field(default_factory=dict)
+    requires_acceptance: bool = False
+    default_locale: str = Field(default="en", max_length=16)
+    effective_at: float = 0.0
+
+
+@router.put("/legal/{doc_id}/versions/{version}")
+async def draft_legal(request: Request, doc_id: str, version: str, body: LegalDraftIn,
+                      principal: Principal = Depends(_ADMIN)) -> dict:
+    """Create or replace a DRAFT version. A published version is immutable — this refuses to edit one."""
+    try:
+        doc = await build_legal(request).draft(
+            tenant=_tenant(principal), doc_id=doc_id, version=version, content=body.content,
+            requires_acceptance=body.requires_acceptance, default_locale=body.default_locale,
+            effective_at=body.effective_at)
+    except LegalError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"doc_id": doc.doc_id, "version": doc.version, "status": doc.status}
+
+
+@router.post("/legal/{doc_id}/versions/{version}/publish")
+async def publish_legal(request: Request, doc_id: str, version: str,
+                        principal: Principal = Depends(_ADMIN)) -> dict:
+    """Publish a version and point 'current' at it — the event a fresh publish turns into re-acceptance."""
+    await request.app.state.auditor.record(
+        "legal.published", actor=principal.subject, tenant=_tenant(principal),
+        resource=f"legal:{doc_id}:{version}",
+        ip=request.client.host if request.client else "")
+    try:
+        doc = await build_legal(request).publish(tenant=_tenant(principal), doc_id=doc_id, version=version)
+    except LegalError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {"doc_id": doc.doc_id, "version": doc.version, "status": doc.status,
+            "published_at": doc.published_at}
+
+
+@router.get("/legal", dependencies=[Depends(_VIEW)])
+async def list_legal(request: Request, principal: Principal = Depends(_VIEW)) -> dict:
+    """Each document's current version + whether it needs acceptance — what a panel or gate lists."""
+    return {"documents": await build_legal(request).list_documents(tenant=_tenant(principal))}
+
+
+@router.get("/legal/{doc_id}", dependencies=[Depends(_VIEW)])
+async def view_legal(request: Request, doc_id: str, locale: str = "", version: str = "",
+                     principal: Principal = Depends(_VIEW)) -> dict:
+    """The structured viewer payload: the current published version, or a specific one via ?version=."""
+    svc = build_legal(request)
+    tenant = _tenant(principal)
+    view = (await svc.get_view(tenant=tenant, doc_id=doc_id, version=version, locale=locale)
+            if version else await svc.current_view(tenant=tenant, doc_id=doc_id, locale=locale))
+    if view is None:
+        raise HTTPException(404, "NOT_FOUND")
+    return view
+
+
+@router.get("/legal/{doc_id}/history", dependencies=[Depends(_READ)])
+async def legal_history(request: Request, doc_id: str, principal: Principal = Depends(_READ)) -> dict:
+    return {"versions": await build_legal(request).history(tenant=_tenant(principal), doc_id=doc_id)}
