@@ -92,6 +92,7 @@ def build_manifest(
             {"path": "/api/v1/operator/config", "tier": "user", "method": "GET"},
             {"path": "/api/v1/operator/config", "tier": "user", "method": "PUT"},
             {"path": "/api/v1/operator/config/{}", "tier": "user", "method": "DELETE"},
+            {"path": "/internal/whatsapp/embedded-signup", "tier": "internal", "method": "POST"},
             {"path": "/internal/notifications/drain", "tier": "internal", "method": "POST"},
             {"path": "/internal/whatsapp/templates/sync", "tier": "internal", "method": "POST"},
             {"path": "/internal/whatsapp/templates", "tier": "internal", "method": "GET"},

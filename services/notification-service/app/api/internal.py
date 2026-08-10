@@ -81,6 +81,50 @@ async def internal_notify(request: Request, body: NotifyIn) -> dict:
     )
 
 
+class EmbeddedSignupInternalIn(BaseModel):
+    """Same shape as the operator route, but the TENANT rides in the body — the internal caller is a
+    product service acting FOR a shop, not a human whose token carries a tenant."""
+    tenant: str = Field(default="", max_length=128)
+    code: str = Field(..., min_length=1, max_length=4096)
+    waba_id: str = Field(..., min_length=1, max_length=128)
+    phone_number_id: str = Field(..., min_length=1, max_length=128)
+
+
+@router.post("/whatsapp/embedded-signup", dependencies=[Depends(require_internal_token)])
+async def internal_embedded_signup(request: Request, body: EmbeddedSignupInternalIn) -> dict:
+    """The internal twin of POST /api/v1/operator/whatsapp/embedded-signup.
+
+    WHY IT EXISTS: the exchange needs platform.secrets, which a SHOP OWNER must never hold — it reads
+    and writes every establishment's credentials. But only the owner's browser ever sees the ~30s
+    authorization code. So a product service the owner IS authenticated to receives the code and
+    forwards it here with X-Internal-Token + the tenant, and the exchange runs under the internal
+    credential instead of a human capability. No new logic — the SAME WhatsAppOnboarding.exchange:
+    the token never leaves core, the audit row names the WABA, the pool is invalidated. Adopting it
+    is one values flip on the product side (WHATSAPP_ONBOARDING_DRIVER: http)."""
+    from app.api.v1.operator import _invalidate, _secret_store
+    from app.core.whatsapp_onboarding import OnboardingError, WhatsAppOnboarding
+    from app.ports.errors import ConfigError
+
+    s = get_settings()
+    await request.app.state.auditor.record(
+        "operator.whatsapp_onboarded", actor="", tenant=body.tenant or "",
+        resource=f"waba:{body.waba_id}",          # the WABA id, never the code or the token
+        ip=request.client.host if request.client else "")
+    onboarding = WhatsAppOnboarding(
+        _secret_store(request),
+        app_id=s.META_APP_ID, app_secret=s.META_APP_SECRET,
+        graph_base=s.WHATSAPP_ONBOARDING_GRAPH_BASE,
+        on_stored=lambda t: _invalidate(request, t))
+    try:
+        return await onboarding.exchange(
+            tenant=body.tenant, code=body.code, waba_id=body.waba_id,
+            phone_number_id=body.phone_number_id)
+    except ConfigError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+    except OnboardingError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+
 @router.post("/notifications/drain", dependencies=[Depends(require_internal_token)])
 async def drain_queue(request: Request) -> dict:
     """Re-attempt every queued delivery whose backoff has expired.
