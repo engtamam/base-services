@@ -189,7 +189,13 @@ jobs:
 
       # gates: safety:template-green
       - name: "safety:template-green — services/_template ships green so create_service.py can self-verify"
-        run: python tools/ci/check_template_green.py
+        run: |
+          # check_template_green runs _template's OWN pytest, which imports fastapi. This job installs
+          # only pyyaml, and _template has no per-service venv here, so the gate's interpreter is THIS
+          # job's — which lacks fastapi. Install the seed's deps first, or the gate dies on a bare
+          # "No module named 'fastapi'" that reads like a template regression but is a missing dep.
+          pip install -e "services/_template[dev,ci,s3]" -q
+          python tools/ci/check_template_green.py
 
       # gates: safety:tenancy
       - name: "safety:tenancy — a token carries exactly ONE tenant, and only one it is entitled to"
