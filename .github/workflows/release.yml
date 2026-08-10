@@ -317,25 +317,28 @@ jobs:
   # the tag is only a human label.
   # ───────────────────────────────────────────────────────────────────────────
   images:
-    name: build changed + re-tag the rest
+    name: image ${{ matrix.service }}
     needs: discover
-    # EXPLICIT (see discover): a skip is not a failure, and GitHub evaluates success() across the
-    # whole ancestor chain. verify-ci-green must have succeeded; gates/gates-matrix may be skipped.
+    # EXPLICIT, for the same reason `discover` is — and this is where the lesson had to be learned
+    # TWICE. A job with no `if:` defaults to `success()`, and GitHub evaluates that across the whole
+    # ANCESTOR CHAIN, not just its direct `needs`. `gates` is an ancestor of `images` through
+    # `discover`; when the mode skipped it, `images` skipped too — even though `discover` succeeded
+    # and printed all 17 services.
+    #
+    # A skip is not a failure, so nothing went red until `a release must actually publish` did. That
+    # guard is the only reason this was caught instead of shipping an empty release for the second
+    # time. Every job downstream of an optional one now states its condition OUT LOUD.
     if: >-
       always() &&
       needs.discover.result == 'success' &&
       needs.discover.outputs.services != '[]'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.discover.outputs.services) }}
     steps:
-      # ONE source of truth for build-vs-retag: scripts/publish_local.sh. It builds only the services
-      # whose image inputs changed since the previous tag and RE-TAGS the rest from it (same digest,
-      # no rebuild) — so a one-service release is one build + 22 instant manifest copies, not 23
-      # builds. Reimplementing that split as a matrix here would be a second copy of the rule to drift
-      # from the script operators run by hand.
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0        # publish_local diffs vs the previous tag — needs full history + tags
-          fetch-tags: true
 
       - name: Resolve version
         id: v
@@ -353,55 +356,67 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build changed + re-tag unchanged, push to GHCR
-        run: bash scripts/publish_local.sh "${{ steps.v.outputs.version }}"
+      - name: Build and push (by digest)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: services/${{ matrix.service }}
+          push: true
+          provenance: true
+          sbom: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.v.outputs.owner }}/${{ matrix.service }}:${{ steps.v.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.v.outputs.version }}
+            org.opencontainers.image.licenses=Proprietary
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      # Scan EVERY published image (built AND re-tagged), not just the changed ones. A re-tagged image
-      # keeps the digest it was built with; a HIGH/CRITICAL disclosed since that build must still block
-      # THIS release. Trivy via the curl installer (the flaky trivy-action broke v0.1.1's cousin). NOT
-      # best-effort — a vulnerable image is never released.
-      - name: Scan every published image (CVE gate)
+      # Signed, verifiable proof that THIS digest was built from THIS commit by
+      # this workflow. Without it a digest is just a number someone typed.
+      #
+      # BEST-EFFORT ON A PRIVATE REPO. GitHub's attestation API refuses user-owned PRIVATE
+      # repositories ("Feature not available ... make this repository public"). Our standing
+      # rule is that this repo stays private — a public image ships your source in its layers,
+      # and a public repo hands over the source outright. So the private rule wins: attestation
+      # is attempted and, if the platform refuses, the release proceeds without it. The instant
+      # the repo (or an org migration) makes this available, it starts working with no change
+      # here. The CVE scan below is NOT best-effort — a vulnerable image is never released.
+      - name: Attest build provenance
+        continue-on-error: true
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ steps.v.outputs.owner }}/${{ matrix.service }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      # Scan the PUBLISHED image with a trivy WE install, not aquasecurity/trivy-action.
+      # That action failed here at its own binary install ("found version 0.65.0" -> exit 1),
+      # before scanning anything -- a flaky external action, the same class of problem as the
+      # nonexistent action ref that killed v0.1.1. The curl installer below is the one the gates
+      # job already uses successfully. A real HIGH/CRITICAL still blocks the release
+      # (a vulnerable image is not published); a scanner that cannot run is not a finding.
+      - name: Scan the published image (CVE gate)
         env:
-          REG: ${{ env.REGISTRY }}/${{ steps.v.outputs.owner }}
-          VERSION: ${{ steps.v.outputs.version }}
+          IMAGE: ${{ env.REGISTRY }}/${{ steps.v.outputs.owner }}/${{ matrix.service }}@${{ steps.build.outputs.digest }}
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
             | sh -s -- -b /usr/local/bin
-          for f in deploy/services/*.values.yaml; do
-            s="$(basename "$f" .values.yaml)"
-            echo "::group::scan $s"
-            trivy image --quiet --scanners vuln --severity HIGH,CRITICAL \
-              --ignore-unfixed --exit-code 1 "$REG/$s:$VERSION"
-            echo "::endgroup::"
-          done
+          # docker/login-action already authenticated to GHCR, so trivy reads ~/.docker/config.json.
+          trivy image --quiet --scanners vuln --severity HIGH,CRITICAL \
+            --ignore-unfixed --exit-code 1 "$IMAGE"
 
-      # The digest map the pin job consumes. Read each :VERSION manifest from the registry — this is
-      # the SAME digest whether the image was freshly built or re-tagged (a re-tag is a manifest copy).
-      # A missing digest is FATAL here, and pin_digests --verify is the second backstop: a release
-      # cannot ship an incompletely-pinned set.
-      - name: Emit the digest map for pinning
-        env:
-          REG: ${{ env.REGISTRY }}/${{ steps.v.outputs.owner }}
-          VERSION: ${{ steps.v.outputs.version }}
+      - name: Record the digest
         run: |
-          : > digests.json.tmp
-          for f in deploy/services/*.values.yaml; do
-            s="$(basename "$f" .values.yaml)"
-            d="$(docker buildx imagetools inspect "$REG/$s:$VERSION" | awk '/^Digest:/{print $2; exit}')"
-            [ -n "$d" ] || { echo "::error::no digest for $s at $VERSION"; exit 1; }
-            printf '%s\t%s\n' "$s" "$d" >> digests.json.tmp
-          done
-          python - <<'PY'
-          import json, pathlib
-          rows = [l.split('\t') for l in pathlib.Path("digests.json.tmp").read_text().splitlines() if l.strip()]
-          pathlib.Path("digests.json").write_text(json.dumps({s: d for s, d in rows}, indent=2))
-          print(pathlib.Path("digests.json").read_text())
-          PY
+          mkdir -p digests
+          printf '%s' '${{ steps.build.outputs.digest }}' > "digests/${{ matrix.service }}"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: digests
-          path: digests.json
+          name: digest-${{ matrix.service }}
+          path: digests/${{ matrix.service }}
           retention-days: 1
 
   # ───────────────────────────────────────────────────────────────────────────
@@ -430,13 +445,19 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: digests            # the single digests.json the images job assembled (built + re-tagged)
+          pattern: digest-*
+          path: digests
+          merge-multiple: true
 
-      - name: Owner + show the digest map
+      - name: Assemble the digest map
         id: map
         run: |
-          test -s digests.json || { echo "::error::digests.json missing or empty"; exit 1; }
-          cat digests.json
+          python - <<'PY'
+          import json, pathlib
+          out = {p.name: p.read_text().strip() for p in pathlib.Path("digests").iterdir() if p.is_file()}
+          pathlib.Path("digests.json").write_text(json.dumps(out, indent=2))
+          print(json.dumps(out, indent=2))
+          PY
           echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Pin the digests into deploy values
