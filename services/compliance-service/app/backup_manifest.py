@@ -35,6 +35,12 @@ BACKUP: dict[str, Any] = {
         {"name": "processing_activities", "tenant_scoped": True},  # the RoPA
         {"name": "breaches", "tenant_scoped": True},              # breach register
         {"name": "data_targets", "tenant_scoped": True},          # the data map (who holds a subject)
+        # The published legal pages a user accepted, and the pointer at each doc's current version.
+        # These are legal records too: an acceptance proof points at a version, so losing the version
+        # loses the meaning of the proof. id = the canonical key ("tenant::doc_id::version" and
+        # "tenant::doc_id"), stamped in LegalPageStore, so both round-trip.
+        {"name": "legal_documents", "tenant_scoped": True},
+        {"name": "legal_current", "tenant_scoped": True},
     ],
     "excluded": [
         {"name": "consent_proof_seq",
