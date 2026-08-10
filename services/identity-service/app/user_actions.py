@@ -52,6 +52,11 @@ UNDECLARED_ROUTES: list[dict[str, str]] = [
     {"method": "POST", "path": "/api/v1/auth/resend-verification",
      "why": "pre-auth: the caller is precisely the person who cannot log in yet, so it belongs to "
             "the signup screen rather than to a catalog rendered for an authenticated user"},
+    {"method": "POST", "path": "/api/v1/otp/request",
+     "why": "pre-auth: proving control of a phone/email is done by someone establishing an identity, "
+            "before any session exists — it belongs to the signup/login screen, not a catalog fetched with a token"},
+    {"method": "POST", "path": "/api/v1/otp/verify",
+     "why": "pre-auth: the other half of the same code challenge, submitted before a session exists"},
     {"method": "POST", "path": "/api/v1/auth/refresh",
      "why": "session plumbing the client driver handles automatically, not a button"},
     {"method": "POST", "path": "/api/v1/auth/logout",
