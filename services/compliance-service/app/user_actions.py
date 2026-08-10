@@ -27,3 +27,14 @@ USER_ACTIONS: list[dict[str, Any]] = [
         "group": "Privacy",
     },
 ]
+
+# Routes deliberately NOT rendered as app controls. Machine-checked by safety:action-coverage: every
+# user-tier route must be declared above, in admin_actions, or excluded here WITH a reason.
+UNDECLARED_ROUTES: list[dict[str, str]] = [
+    {"method": "GET", "path": "/api/v1/compliance/legal",
+     "why": "content the app RENDERS (the list of legal documents it must show/gate on), not a "
+            "button a user clicks — the shell reads it to know what to display, like a page fetch"},
+    {"method": "GET", "path": "/api/v1/compliance/legal/{doc_id}",
+     "why": "the structured legal-page viewer payload — the terms are shown inline for reading and "
+            "acceptance, so this is a content fetch, not a catalog action"},
+]

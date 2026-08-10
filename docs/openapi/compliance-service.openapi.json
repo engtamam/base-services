@@ -297,6 +297,33 @@
         "title": "HoldIn",
         "type": "object"
       },
+      "LegalDraftIn": {
+        "properties": {
+          "content": {
+            "additionalProperties": true,
+            "title": "Content",
+            "type": "object"
+          },
+          "default_locale": {
+            "default": "en",
+            "maxLength": 16,
+            "title": "Default Locale",
+            "type": "string"
+          },
+          "effective_at": {
+            "default": 0.0,
+            "title": "Effective At",
+            "type": "number"
+          },
+          "requires_acceptance": {
+            "default": false,
+            "title": "Requires Acceptance",
+            "type": "boolean"
+          }
+        },
+        "title": "LegalDraftIn",
+        "type": "object"
+      },
       "MeDsarIn": {
         "description": "A self-service DSAR. Carries only the KIND of request \u2014 never a subject id: the subject is\nthe caller's own token, so this shape makes opening a request against someone else impossible,\nnot merely forbidden (CWE-639).",
         "properties": {
@@ -1010,6 +1037,30 @@
         ]
       }
     },
+    "/api/v1/compliance/legal": {
+      "get": {
+        "description": "Each document's current version + whether it needs acceptance \u2014 what a panel or gate lists.",
+        "operationId": "list_legal_api_v1_compliance_legal_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Legal Api V1 Compliance Legal Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Legal",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
     "/api/v1/compliance/legal-holds": {
       "get": {
         "operationId": "list_holds_api_v1_compliance_legal_holds_get",
@@ -1113,6 +1164,233 @@
           }
         },
         "summary": "Release Hold",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/legal/{doc_id}": {
+      "get": {
+        "description": "The structured viewer payload: the current published version, or a specific one via ?version=.",
+        "operationId": "view_legal_api_v1_compliance_legal__doc_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "doc_id",
+            "required": true,
+            "schema": {
+              "title": "Doc Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "locale",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Locale",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Version",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response View Legal Api V1 Compliance Legal  Doc Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "View Legal",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/legal/{doc_id}/history": {
+      "get": {
+        "operationId": "legal_history_api_v1_compliance_legal__doc_id__history_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "doc_id",
+            "required": true,
+            "schema": {
+              "title": "Doc Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Legal History Api V1 Compliance Legal  Doc Id  History Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Legal History",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/legal/{doc_id}/versions/{version}": {
+      "put": {
+        "description": "Create or replace a DRAFT version. A published version is immutable \u2014 this refuses to edit one.",
+        "operationId": "draft_legal_api_v1_compliance_legal__doc_id__versions__version__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "doc_id",
+            "required": true,
+            "schema": {
+              "title": "Doc Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LegalDraftIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Draft Legal Api V1 Compliance Legal  Doc Id  Versions  Version  Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Draft Legal",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/legal/{doc_id}/versions/{version}/publish": {
+      "post": {
+        "description": "Publish a version and point 'current' at it \u2014 the event a fresh publish turns into re-acceptance.",
+        "operationId": "publish_legal_api_v1_compliance_legal__doc_id__versions__version__publish_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "doc_id",
+            "required": true,
+            "schema": {
+              "title": "Doc Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Publish Legal Api V1 Compliance Legal  Doc Id  Versions  Version  Publish Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Publish Legal",
         "tags": [
           "compliance"
         ]

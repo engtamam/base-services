@@ -105,6 +105,12 @@ def build_manifest(
             {"path": "/api/v1/compliance/breaches", "tier": "user", "method": "POST"},
             {"path": "/api/v1/compliance/breaches", "tier": "user", "method": "GET"},
             {"path": "/api/v1/compliance/breaches/{id}/notify", "tier": "user", "method": "POST"},
+            # Legal / content pages: author (draft/publish) + the structured viewer + version history.
+            {"path": "/api/v1/compliance/legal/{doc_id}/versions/{version}", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/compliance/legal/{doc_id}/versions/{version}/publish", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/compliance/legal", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/compliance/legal/{doc_id}", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/compliance/legal/{doc_id}/history", "tier": "user", "method": "GET"},
             {"path": "/internal/compliance/dsar/run", "tier": "internal", "method": "POST"},
             {"path": "/internal/compliance/retention/run", "tier": "internal", "method": "POST"},
             # The operator surface: credentials and policy an operator changes after launch.

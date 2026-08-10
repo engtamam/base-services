@@ -166,4 +166,13 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "deadline moved — and that history is unavailable anywhere else. Not critical: "
                "refusing to change a retention period because the log is down protects nothing",
     },
+    {
+        "action": "legal.published",
+        "source": "admin",
+        "critical": True,
+        "resource": "legal",
+        "why": "publishing a legal page changes what every user is bound to and can force a "
+               "re-acceptance; which version went live and who published it is the record that "
+               "proves what terms were in force on any given day, and it is unavailable elsewhere",
+    },
 ]
