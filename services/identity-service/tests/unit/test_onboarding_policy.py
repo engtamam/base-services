@@ -47,3 +47,9 @@ def test_the_public_endpoint_lists_enabled_methods():
     c = TestClient(create_app())
     body = c.get("/api/v1/auth/onboarding-methods").json()
     assert "methods" in body and "open" in body["methods"]       # default: open + invite_token
+
+
+def test_is_explicit_distinguishes_legacy_from_opted_in():
+    # The add-member gate only enforces when explicit; legacy must not add a new restriction.
+    assert _p("invite_token").is_explicit is True
+    assert _p("").is_explicit is False

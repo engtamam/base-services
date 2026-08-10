@@ -45,6 +45,13 @@ class OnboardingPolicy:
                 f"known methods are {sorted(KNOWN_METHODS)}")
         self._registration_enabled = registration_enabled
 
+    @property
+    def is_explicit(self) -> bool:
+        """True when a deployment gave an explicit ONBOARDING_METHODS list — then that list is the
+        whole authority. False = legacy mode, where the older per-path knobs (REGISTRATION_ENABLED,
+        IDENTITY_MEMBER_ADD_MODE) still decide and this gate must NOT add a new restriction."""
+        return bool(self._explicit)
+
     def enabled(self, method: str) -> bool:
         if method not in KNOWN_METHODS:
             raise ValueError(f"unknown onboarding method {method!r}")

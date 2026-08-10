@@ -91,11 +91,16 @@ async def add_member(request: Request, body: AddMemberIn) -> dict:
     # method its add-mode implies is refused here rather than quietly minting a credential path.
     from app.core.onboarding import (INVITE_TOKEN, TEMP_PASSWORD, OnboardingMethodDisabled,
                                      build_onboarding_policy)
-    _method = INVITE_TOKEN if s.IDENTITY_MEMBER_ADD_MODE == "invite" else TEMP_PASSWORD
-    try:
-        build_onboarding_policy(s).require(_method)
-    except OnboardingMethodDisabled:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "ONBOARDING_METHOD_DISABLED")
+    _policy = build_onboarding_policy(s)
+    # Only enforce when a deployment opted into an explicit list. In legacy mode
+    # IDENTITY_MEMBER_ADD_MODE remains the authority, so adding a gate here would newly refuse a
+    # password-mode add that used to work.
+    if _policy.is_explicit:
+        _method = INVITE_TOKEN if s.IDENTITY_MEMBER_ADD_MODE == "invite" else TEMP_PASSWORD
+        try:
+            _policy.require(_method)
+        except OnboardingMethodDisabled:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "ONBOARDING_METHOD_DISABLED")
     svc = _svc(request)
     try:
         m, invite = await svc.add_member(
