@@ -12,13 +12,20 @@ health probe down each branch. What this pins:
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import sys
 import types
 
 import pytest
 
-# Stand-in so `load("asyncpg", ...)` in the adapter succeeds without the real driver installed.
-sys.modules.setdefault("asyncpg", types.ModuleType("asyncpg"))
+# Stand-in so `load("asyncpg", ...)` in the adapter succeeds WITHOUT the real driver installed — but
+# ONLY then. A bare module-level `setdefault` poisoned the whole pytest SESSION: this unit module is
+# imported during collection, before anything imports asyncpg, so the stub (which has no
+# `create_pool`) became sys.modules['asyncpg'] for every later test — and the postgres CONTRACT test,
+# which needs the REAL create_pool, then ERRORed. That was the "flaky" postgres-contract failure. So
+# stub only when asyncpg is genuinely absent; in CI, where it is installed for the contract, leave it.
+if importlib.util.find_spec("asyncpg") is None:
+    sys.modules.setdefault("asyncpg", types.ModuleType("asyncpg"))
 
 from app.adapters.datastore import postgres as pg  # noqa: E402
 
