@@ -86,6 +86,16 @@ async def add_member(request: Request, body: AddMemberIn) -> dict:
     await request.app.state.auditor.record(
         "member.added", actor=principal.subject, tenant=tenant, resource="member",
         ip=request.client.host if request.client else "")
+    # The onboarding policy is the authority over HOW a member is added. Invite mode is the
+    # invite_token method; password mode is temp_password. A deployment that has not enabled the
+    # method its add-mode implies is refused here rather than quietly minting a credential path.
+    from app.core.onboarding import (INVITE_TOKEN, TEMP_PASSWORD, OnboardingMethodDisabled,
+                                     build_onboarding_policy)
+    _method = INVITE_TOKEN if s.IDENTITY_MEMBER_ADD_MODE == "invite" else TEMP_PASSWORD
+    try:
+        build_onboarding_policy(s).require(_method)
+    except OnboardingMethodDisabled:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "ONBOARDING_METHOD_DISABLED")
     svc = _svc(request)
     try:
         m, invite = await svc.add_member(
