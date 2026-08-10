@@ -1,0 +1,423 @@
+id: doc04
+slug: ropa
+kind: register
+block_schema_version: 1
+title:
+  en: Records of Processing Activities (ROPA)
+  ar: سجل أنشطة معالجة البيانات الشخصية
+satisfies:
+- req-pl9c5a
+source_controls:
+- pdpl-17
+placeholders:
+- COMPANY_NAME
+- DPO_NAME
+- EFFECTIVE_DATE
+- VERSION
+blocks:
+- cover:
+    title:
+      en: Records of Processing Activities
+      ar: سجل أنشطة معالجة البيانات الشخصية
+    subtitle:
+      en: ROPA — Personal Data Protection Law (PDPL), Kingdom of Saudi Arabia
+      ar: سجل المعالجة — نظام حماية البيانات الشخصية، المملكة العربية السعودية
+- snapshot:
+    rows:
+    - - en: Controller
+        ar: جهة التحكم
+      - '{{COMPANY_NAME}}'
+    - - en: Data Protection Officer
+        ar: مسؤول حماية البيانات
+      - '{{DPO_EMAIL}}'
+    - - en: Legal basis for this document
+        ar: الأساس النظامي لهذه الوثيقة
+      - en: Law Art. 31 · SDAIA ROPA Guideline
+        ar: النظام م.31 · دليل سدايا للسجل
+    - - en: Retention of records
+        ar: الاحتفاظ بالسجل
+      - en: 5 years after a processing activity ceases
+        ar: 5 سنوات بعد توقف نشاط المعالجة
+    - - en: Version / Effective date
+        ar: الإصدار / تاريخ النفاذ
+      - '{{VERSION}}  ·  {{EFFECTIVE_DATE}}'
+- lead:
+    text:
+      en: Without prejudice to Article 18 of the Law, {{COMPANY_NAME}} maintains records of its Personal
+        Data processing activities, based on the nature of the activity it carries out, and makes them
+        available whenever the Competent Authority requests them. This document sets out those obligations,
+        the minimum contents the Law and the Regulation require of each record, and the record template
+        completed for every processing activity. (Law Art. 31 · Reg. Art. 33)
+      ar: دون الإخلال بالمادة (18) من النظام، تحتفظ {{COMPANY_NAME}} بسجلات لأنشطة معالجتها للبيانات الشخصية،
+        بحسب طبيعة النشاط الذي تمارسه، وتُتيحها للجهة المختصة متى طلبتها. وتحدّد هذه الوثيقة تلك الالتزامات،
+        والحد الأدنى لمحتويات كل سجل كما يوجبه النظام واللائحة، ونموذج السجل الذي يُستكمل لكل نشاط معالجة.
+        (النظام م.31 · اللائحة م.33)
+- helper:
+    text:
+      en: 'How to use this template: replace each [SQUARE BRACKET] with your own value. Everything shown
+        in RED (in parentheses) is guidance — delete it before you publish. The rest is the ready legal
+        text; keep it.'
+      ar: 'طريقة استخدام النموذج: استبدل كل [قوس مربّع] بقيمتك الخاصة. وكل ما هو باللون الأحمر (بين قوسين)
+        هو إرشاد — احذفه قبل الاعتماد. أما البقية فهي النص النظامي الجاهز؛ احتفظ به.'
+- section:
+    level: 1
+    text:
+      en: Record-Keeping Obligations
+      ar: التزامات حفظ السجل
+- bullets:
+    items:
+    - - ''
+      - en: We maintain a record of processing activities for as long as we process Personal Data, and
+          we keep each record for five years after the processing activity it describes has ceased.
+        ar: نحتفظ بسجل لأنشطة معالجة البيانات الشخصية طوال مدة معالجتنا لها، ونحتفظ بكل سجل مدة خمس سنوات
+          بعد توقف نشاط المعالجة الذي يصفه.
+    - - ''
+      - en: We keep the records accurate and up to date, and we update a record when the activity it describes
+          changes rather than at a fixed interval.
+        ar: ونُبقي السجلات دقيقة ومحدّثة، ونُحدّث السجل عند تغيّر النشاط الذي يصفه، لا على فترات ثابتة.
+    - - ''
+      - en: The records are written, kept in a form that lets us produce them immediately, and made available
+          to the Competent Authority (SDAIA) whenever it requests them.
+        ar: وتكون السجلات مكتوبة، ومحفوظة بصيغة تتيح إبرازها فوراً، ومُتاحة للجهة المختصة (سدايا) متى
+          طلبتها.
+- section:
+    level: 2
+    text:
+      en: Minimum Contents of Each Record
+      ar: الحد الأدنى لمحتويات كل سجل
+- lead:
+    text:
+      en: Each processing-activity record contains, as a minimum, the eight elements the Regulation requires.
+        The Law separately requires the record to state whether the Personal Data has been or will be
+        transferred outside the Kingdom or disclosed to an entity outside it, which row 7 records. (Law
+        Art. 31 · Reg. Art. 33-5)
+      ar: يتضمن كل سجل نشاط معالجة، كحد أدنى، العناصر الثمانية التي توجبها اللائحة. ويوجب النظام كذلك
+        أن يبيّن السجل ما إذا كانت البيانات الشخصية قد نُقلت أو ستُنقل خارج المملكة أو أُفصح عنها لجهة
+        خارجها، وهو ما يسجّله البند (7). (النظام م.31 · اللائحة م.33-5)
+- table:
+    headers:
+    - '#'
+    - en: Required element
+      ar: العنصر المطلوب
+    rows:
+    - - '1'
+      - en: Controller's name and contact details.
+        ar: اسم جهة التحكم وبيانات التواصل معها.
+    - - '2'
+      - en: DPO information (where a DPO is required).
+        ar: معلومات مسؤول حماية البيانات (متى لزم تعيينه).
+    - - '3'
+      - en: Purposes of the processing.
+        ar: أغراض المعالجة.
+    - - '4'
+      - en: Categories of personal data and of data subjects.
+        ar: فئات البيانات الشخصية وفئات أصحابها.
+    - - '5'
+      - en: Retention period (per data category where possible).
+        ar: مدة الاحتفاظ (لكل فئة بيانات عند الإمكان).
+    - - '6'
+      - en: Categories of recipient entities.
+        ar: فئات الجهات المستقبِلة.
+    - - '7'
+      - en: Cross-border transfers — legal basis and recipients.
+        ar: عمليات النقل خارج المملكة — الأساس النظامي والمستقبِلون.
+    - - '8'
+      - en: Security measures in place (where possible).
+        ar: التدابير الأمنية المطبّقة (عند الإمكان).
+    widths:
+    - 565600
+    - 6504400
+    centers:
+    - 0
+- page_break
+- section:
+    level: 3
+    text:
+      en: Common Processing Activities — Checklist
+      ar: أنشطة المعالجة الشائعة — قائمة تحقق
+- helper:
+    text:
+      en: A "processing activity" is any purpose for which you use personal data. Most organizations have
+        10–20. Tick the ones that apply, add your own, then complete one record (Section 5) for each ticked
+        item.
+      ar: '"نشاط المعالجة" هو أي غرض تستخدم فيه البيانات الشخصية. لدى معظم المنشآت من 10 إلى 20 نشاطاً.
+        حدّد ما ينطبق عليك، وأضف أنشطتك الخاصة، ثم استكمل سجلاً (البند 5) لكل نشاط محدّد.'
+- table:
+    headers:
+    - ✓
+    - en: Activity
+      ar: النشاط
+    - ✓
+    - en: Activity
+      ar: النشاط
+    rows:
+    - - ☐
+      - en: Employee HR & personnel admin
+        ar: إدارة الموارد البشرية وشؤون الموظفين
+      - ☐
+      - en: Payroll & benefits
+        ar: الرواتب والمزايا
+    - - ☐
+      - en: Recruitment & applications
+        ar: التوظيف وطلبات المرشحين
+      - ☐
+      - en: Training & performance mgmt
+        ar: التدريب وإدارة الأداء
+    - - ☐
+      - en: Customer account management
+        ar: تسجيل حسابات العملاء وإدارتها
+      - ☐
+      - en: Billing, payments & invoicing
+        ar: الفوترة والمدفوعات
+    - - ☐
+      - en: Customer support & ticketing
+        ar: دعم العملاء والتذاكر
+      - ☐
+      - en: Marketing & communications
+        ar: التسويق والنشرات والتواصل
+    - - ☐
+      - en: Website / product analytics
+        ar: تحليلات الموقع / المنتج
+      - ☐
+      - en: Cookies & online tracking
+        ar: ملفات تعريف الارتباط والتتبع
+    - - ☐
+      - en: Mobile app usage data
+        ar: بيانات استخدام تطبيق الجوال
+      - ☐
+      - en: Customer feedback & surveys
+        ar: آراء العملاء والاستبيانات
+    - - ☐
+      - en: Loyalty / rewards programs
+        ar: برامج الولاء والمكافآت
+      - ☐
+      - en: Shipping, delivery & logistics
+        ar: الشحن والتوصيل واللوجستيات
+    - - ☐
+      - en: Vendor / supplier management
+        ar: إدارة الموردين
+      - ☐
+      - en: Contracts, legal & compliance
+        ar: العقود والسجلات القانونية والامتثال
+    - - ☐
+      - en: Fraud prevention & KYC/AML
+        ar: منع الاحتيال والتحقق (KYC/AML)
+      - ☐
+      - en: Security logging & monitoring
+        ar: تسجيل ومراقبة الأمن
+    - - ☐
+      - en: Access control & identity mgmt
+        ar: ضبط الوصول وإدارة الهوية
+      - ☐
+      - en: CCTV / physical access
+        ar: المراقبة / الدخول المادي
+    - - ☐
+      - en: Health & safety records
+        ar: سجلات الصحة والسلامة
+      - ☐
+      - en: Rights-requests handling
+        ar: معالجة طلبات أصحاب البيانات
+    - - ☐
+      - en: '[ADD YOUR OWN ACTIVITY]'
+        ar: '[أضف نشاطك الخاص]'
+      - ☐
+      - en: '[ADD YOUR OWN ACTIVITY]'
+        ar: '[أضف نشاطك الخاص]'
+    widths:
+    - 494900
+    - 3040100
+    - 494900
+    - 3040100
+    centers:
+    - 0
+    - 2
+- callout:
+    title:
+      en: How many do I need?
+      ar: كم عدد السجلات المطلوبة؟
+    items:
+    - en: One record per ticked activity. If you ticked 12 activities, you complete 12 records.
+      ar: سجل واحد لكل نشاط محدّد. إذا حددت 12 نشاطاً، فتستكمل 12 سجلاً.
+    kind: help
+- section:
+    level: 4
+    text:
+      en: Worked Example — One Completed Record
+      ar: مثال مُستكمل — سجل واحد مكتمل
+- helper:
+    text:
+      en: Illustration only — shows how one activity ("Payroll") is recorded. Delete this whole section;
+        replace with your own.
+      ar: للتوضيح فقط — يبيّن كيفية تسجيل نشاط واحد ("الرواتب"). احذف هذا القسم بالكامل واستبدله بنشاطك.
+- fields:
+    rows:
+    - - en: Activity name / reference
+        ar: اسم النشاط / المرجع
+      - en: Payroll — PR-01
+        ar: الرواتب — PR-01
+    - - en: Owner / business unit
+        ar: المالك / الوحدة
+      - en: Finance / HR
+        ar: المالية / الموارد البشرية
+    - - en: Purpose(s) of processing
+        ar: أغراض المعالجة
+      - en: Pay employees and remit statutory deductions
+        ar: صرف رواتب الموظفين وتوريد الاستقطاعات النظامية
+    - - en: Legal basis (Art. 5/6)
+        ar: الأساس النظامي (م.5/6)
+      - en: Contract & legal obligation
+        ar: التعاقد والالتزام النظامي
+    - - en: Personal-data categories
+        ar: فئات البيانات الشخصية
+      - en: Name, ID, IBAN, salary, deductions
+        ar: الاسم، الهوية، الآيبان، الراتب، الاستقطاعات
+    - - en: Data-subject categories
+        ar: فئات أصحاب البيانات
+      - en: Employees
+        ar: الموظفون
+    - - en: Recipients (categories)
+        ar: المستقبِلون (الفئات)
+      - en: Bank, GOSI, tax authority
+        ar: البنك، التأمينات، هيئة الزكاة والضريبة
+    - - en: Cross-border transfer?
+        ar: نقل خارج المملكة؟
+      - en: None
+        ar: لا يوجد
+    - - en: Retention period
+        ar: مدة الاحتفاظ
+      - en: 7 years after employment ends
+        ar: 7 سنوات بعد انتهاء العلاقة الوظيفية
+    - - en: Security measures
+        ar: التدابير الأمنية
+      - en: Encryption, role-based access, audit logs
+        ar: التشفير، صلاحيات حسب الدور، سجلات التدقيق
+    - - en: Date created / last reviewed
+        ar: تاريخ الإنشاء / آخر مراجعة
+      - en: 2025-01-01 / 2025-06-01
+        ar: ٢٠٢٥-٠١-٠١ / ٢٠٢٥-٠٦-٠١
+    sample: true
+- section:
+    level: 5
+    text:
+      en: Processing Activity Record — Blank Template
+      ar: سجل نشاط المعالجة — نموذج فارغ
+- helper:
+    text:
+      en: Complete one record for every ticked activity. Duplicate this block as needed. Replace each
+        [SQUARE BRACKET] with your value; delete the red (guidance) notes.
+      ar: استكمل سجلاً واحداً لكل نشاط محدّد. كرّر هذا القالب حسب الحاجة. استبدل كل [قوس مربّع] بقيمتك؛
+        واحذف الملاحظات الحمراء (الإرشادية).
+- fields:
+    rows:
+    - - en: Activity name / reference
+        ar: اسم النشاط / المرجع
+      - '[ACTIVITY]'
+      - en: e.g. "Recruitment — REC-01"; give each a short code
+        ar: مثل "التوظيف — REC-01"؛ امنح كل نشاط رمزاً مختصراً
+    - - en: Owner / business unit
+        ar: المالك / الوحدة
+      - '[OWNER]'
+      - en: the team accountable, e.g. "HR"
+        ar: الفريق المسؤول، مثل "الموارد البشرية"
+    - - en: Purpose(s) of processing
+        ar: أغراض المعالجة
+      - '[PURPOSE]'
+      - en: the why, not the system, e.g. "Shortlist job applicants"
+        ar: الغرض لا النظام، مثل "فرز المتقدمين للوظائف"
+    - - en: Legal basis (Art. 5/6)
+        ar: الأساس النظامي (م.5/6)
+      - '[LEGAL_BASIS]'
+      - en: 'pick one: Consent / Contract / Legal obligation / Legitimate interest'
+        ar: 'اختر واحداً: الموافقة / التعاقد / التزام نظامي / مصلحة مشروعة'
+    - - en: Personal-data categories
+        ar: فئات البيانات الشخصية
+      - '[DATA_CATEGORIES]'
+      - en: e.g. name, ID, CV, contact; flag any sensitive data
+        ar: مثل الاسم، الهوية، السيرة، التواصل؛ وأشر لأي بيانات حساسة
+    - - en: Data-subject categories
+        ar: فئات أصحاب البيانات
+      - '[SUBJECT_CATEGORIES]'
+      - en: e.g. employees / customers / applicants
+        ar: مثل الموظفون / العملاء / المتقدمون
+    - - en: Recipients (categories)
+        ar: المستقبِلون (الفئات)
+      - '[RECIPIENTS]'
+      - en: who receives it, e.g. "payroll processor, bank"
+        ar: من يستلمها، مثل "معالج الرواتب، البنك"
+    - - en: Cross-border transfer? basis + recipients
+        ar: نقل خارج المملكة؟ الأساس + المستقبِلون
+      - '[TRANSFER]'
+      - en: '"None", or "AWS eu-west-1 — adequacy decision"'
+        ar: '"لا يوجد"، أو "AWS eu-west-1 — قرار كفاية"'
+    - - en: Retention period
+        ar: مدة الاحتفاظ
+      - '[RETENTION_PERIOD]'
+      - en: trigger + duration, e.g. "7 yrs after employment ends"
+        ar: المحفّز + المدة، مثل "7 سنوات بعد انتهاء التوظيف"
+    - - en: Security measures
+        ar: التدابير الأمنية
+      - '[SECURITY_MEASURES]'
+      - en: outcomes not products, e.g. "encryption, access control, logging"
+        ar: النتائج لا المنتجات، مثل "التشفير، ضبط الوصول، التسجيل"
+    - - en: Date created / last reviewed
+        ar: تاريخ الإنشاء / آخر مراجعة
+      - '[DATE]'
+      - en: format YYYY-MM-DD
+        ar: الصيغة سنة-شهر-يوم
+    sample: false
+- callout:
+    title:
+      en: Keep it current
+      ar: أبقِه محدّثاً
+    items:
+    - en: Review each record periodically and whenever the activity changes.
+      ar: راجع كل سجل دورياً وكلما تغيّر النشاط.
+    - en: Retain a ceased activity's record for five years before disposal.
+      ar: احتفظ بسجل النشاط المتوقف لمدة خمس سنوات قبل التخلص منه.
+    kind: info
+- section:
+    level: 6
+    text:
+      en: PDPL Control Mapping
+      ar: مطابقة ضوابط النظام
+- table:
+    headers:
+    - en: PDPL Control
+      ar: الضابط
+    - en: Article
+      ar: المادة
+    - en: Evidenced in
+      ar: الدليل في
+    rows:
+    - - en: Records of processing activities (ROPA)
+        ar: سجل أنشطة المعالجة
+      - en: Art. 31 · Reg.
+        ar: م.31 · اللائحة
+      - en: Sections 1–3
+        ar: البنود 1–3
+    widths:
+    - 3252200
+    - 1696800
+    - 2121000
+    centers: []
+- signoff:
+    roles:
+    - en: Approved by
+      ar: اعتمدها
+    - en: Data Protection Officer
+      ar: مسؤول حماية البيانات
+- references:
+    title:
+      en: Official Sources
+      ar: المصادر الرسمية
+    items:
+    - - en: PDPL (Royal Decree M/19), Article 31
+        ar: نظام حماية البيانات الشخصية (م/19)، المادة 31
+      - sdaia.gov.sa
+    - - en: SDAIA — Processing Activities Records Guideline
+        ar: سدايا — دليل سجل أنشطة معالجة البيانات الشخصية
+      - sdaia.gov.sa
+- footer_band:
+    text:
+      en: Template — replace [PLACEHOLDERS] and review with legal counsel before use.
+      ar: نموذج — استبدل [PLACEHOLDERS] وراجعه مع المستشار النظامي قبل الاستخدام.

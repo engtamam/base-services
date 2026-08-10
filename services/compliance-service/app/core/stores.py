@@ -4,10 +4,12 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.models import (OPEN_DSAR_STATUSES, Breach, Consent, ConsentProof, Dsar,
-                             DataTarget, LegalHold, ProcessingActivity)
+                             DataTarget, LegalDocument, LegalHold, ProcessingActivity)
 from app.ports.datastore import DataStore
 
 _CONSENT = "consent"          # "<tenant>::<subject>::<purpose>"
+_LEGAL = "legal_documents"    # "<tenant>::<doc_id>::<version>"
+_LEGAL_CURRENT = "legal_current"   # "<tenant>::<doc_id>" -> pointer at the current published version
 _PROOF = "consent_proof"      # append-only
 _DSAR = "dsar"
 _HOLDS = "legal_holds"
@@ -319,6 +321,63 @@ class RopaStore:
     async def list(self, tenant: str, limit: int = 100, after: str | None = None) -> list[dict]:
         rows, _ = await self._store.find(_ROPA, {"tenant": tenant}, limit=limit, after=after,
                                          sort=("name", "asc"))
+        return rows
+
+
+class LegalPageStore:
+    """Versioned legal/content pages, plus an O(1) pointer at each doc's current published version.
+
+    The pointer is a separate row, not a scan for `status==published` ordered by version: the
+    post-auth gate reads "what is current" on every login, and a version string like "1.10" does
+    not sort after "1.9" as text — so 'the latest' must be a fact we WRITE at publish time, not one
+    we try to derive by sorting."""
+    def __init__(self, store: DataStore) -> None:
+        self._store = store
+
+    @staticmethod
+    def _vkey(tenant: str, doc_id: str, version: str) -> str:
+        return f"{tenant}::{doc_id}::{version}"
+
+    @staticmethod
+    def _ckey(tenant: str, doc_id: str) -> str:
+        return f"{tenant}::{doc_id}"
+
+    async def put_version(self, doc: LegalDocument) -> LegalDocument:
+        key = self._vkey(doc.tenant, doc.doc_id, doc.version)
+        row = doc.to_dict()
+        row["id"] = key            # id==key so the backup fan-out restores it under its exact key
+        await self._store.put(_LEGAL, key, row)
+        return doc
+
+    async def get_version(self, tenant: str, doc_id: str, version: str) -> LegalDocument | None:
+        row = await self._store.get(_LEGAL, self._vkey(tenant, doc_id, version))
+        return LegalDocument.from_dict(row) if row else None
+
+    async def set_current(self, tenant: str, doc_id: str, version: str,
+                          requires_acceptance: bool) -> None:
+        key = self._ckey(tenant, doc_id)
+        await self._store.put(_LEGAL_CURRENT, key, {
+            "id": key, "tenant": tenant, "doc_id": doc_id, "version": version,
+            "requires_acceptance": requires_acceptance})
+
+    async def current_pointer(self, tenant: str, doc_id: str) -> dict | None:
+        return await self._store.get(_LEGAL_CURRENT, self._ckey(tenant, doc_id))
+
+    async def current(self, tenant: str, doc_id: str) -> LegalDocument | None:
+        ptr = await self.current_pointer(tenant, doc_id)
+        if not ptr:
+            return None
+        return await self.get_version(tenant, doc_id, ptr["version"])
+
+    async def versions(self, tenant: str, doc_id: str, limit: int = 100) -> list[dict]:
+        rows, _ = await self._store.find(_LEGAL, {"tenant": tenant, "doc_id": doc_id},
+                                         limit=limit, sort=("created_at", "desc"))
+        return rows
+
+    async def documents(self, tenant: str, limit: int = 200) -> list[dict]:
+        """The current pointer for every doc in the tenant — what the gate and the panel list."""
+        rows, _ = await self._store.find(_LEGAL_CURRENT, {"tenant": tenant},
+                                         limit=limit, sort=("doc_id", "asc"))
         return rows
 
 

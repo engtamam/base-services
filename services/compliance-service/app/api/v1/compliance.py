@@ -20,13 +20,21 @@ from app.core.models import DSAR_TYPES
 from app.core.privacy_dispatcher import PrivacyDispatcher
 from app.core.privacy_sweeper import PrivacySweeper
 from app.core.retention import RetentionEnforcer
-from app.core.stores import (BreachStore, ConsentStore, DsarStore, HoldStore, RopaStore,
-                             TargetStore)
+from app.core import pdpl_templates
+from app.core.legal_gate import LegalGate, LegalGateError
+from app.core.legal_pages import LegalError, LegalPageService
+from app.core.pdpl_templates import TemplateError
+from app.core.stores import (BreachStore, ConsentStore, DsarStore, HoldStore, LegalPageStore,
+                             RopaStore, TargetStore)
 
 router = APIRouter(prefix="/api/v1/compliance", tags=["compliance"])
 
 _ADMIN = require_any_capability("platform.compliance", "compliance.manage")
 _READ = require_any_capability("platform.compliance", "compliance.manage", "compliance.read")
+# Reading a legal page is the lightest privilege here: any authenticated user must be able to see
+# the terms they are being asked to accept. Authoring stays under _ADMIN.
+_VIEW = require_any_capability("compliance.self", "compliance.read", "compliance.manage",
+                              "platform.compliance")
 # The data subject acting FOR THEMSELVES. Never resolves a subject from a body — it is always the
 # caller's own token — so a self-service DSAR cannot be opened against anyone else.
 _SELF = require_any_capability("compliance.self", "compliance.manage", "platform.compliance")
@@ -463,3 +471,153 @@ async def notify_breach(request: Request, breach_id: str,
 @router.get("/breaches", dependencies=[Depends(_READ)])
 async def list_breaches(request: Request, principal: Principal = Depends(_READ)) -> dict:
     return {"breaches": await build_compliance(request).list_breaches(_tenant(principal))}
+
+
+# ── Legal / content pages ──────────────────────────────────────────────────────
+def build_legal(request: Request) -> LegalPageService:
+    c = request.app.state.container
+    return LegalPageService(store=LegalPageStore(c.datastore), clock=c.clock, event_bus=c.event_bus)
+
+
+class LegalDraftIn(BaseModel):
+    # locale -> {"title": str, "sections": [{"heading","body"}, ...]}
+    content: dict[str, Any] = Field(default_factory=dict)
+    requires_acceptance: bool = False
+    default_locale: str = Field(default="en", max_length=16)
+    effective_at: float = 0.0
+
+
+@router.put("/legal/{doc_id}/versions/{version}")
+async def draft_legal(request: Request, doc_id: str, version: str, body: LegalDraftIn,
+                      principal: Principal = Depends(_ADMIN)) -> dict:
+    """Create or replace a DRAFT version. A published version is immutable — this refuses to edit one."""
+    try:
+        doc = await build_legal(request).draft(
+            tenant=_tenant(principal), doc_id=doc_id, version=version, content=body.content,
+            requires_acceptance=body.requires_acceptance, default_locale=body.default_locale,
+            effective_at=body.effective_at)
+    except LegalError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"doc_id": doc.doc_id, "version": doc.version, "status": doc.status}
+
+
+@router.post("/legal/{doc_id}/versions/{version}/publish")
+async def publish_legal(request: Request, doc_id: str, version: str,
+                        principal: Principal = Depends(_ADMIN)) -> dict:
+    """Publish a version and point 'current' at it — the event a fresh publish turns into re-acceptance."""
+    await request.app.state.auditor.record(
+        "legal.published", actor=principal.subject, tenant=_tenant(principal),
+        resource=f"legal:{doc_id}:{version}",
+        ip=request.client.host if request.client else "")
+    try:
+        doc = await build_legal(request).publish(tenant=_tenant(principal), doc_id=doc_id, version=version)
+    except LegalError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {"doc_id": doc.doc_id, "version": doc.version, "status": doc.status,
+            "published_at": doc.published_at}
+
+
+@router.get("/legal", dependencies=[Depends(_VIEW)])
+async def list_legal(request: Request, principal: Principal = Depends(_VIEW)) -> dict:
+    """Each document's current version + whether it needs acceptance — what a panel or gate lists."""
+    return {"documents": await build_legal(request).list_documents(tenant=_tenant(principal))}
+
+
+@router.get("/legal/{doc_id}", dependencies=[Depends(_VIEW)])
+async def view_legal(request: Request, doc_id: str, locale: str = "", version: str = "",
+                     principal: Principal = Depends(_VIEW)) -> dict:
+    """The structured viewer payload: the current published version, or a specific one via ?version=."""
+    svc = build_legal(request)
+    tenant = _tenant(principal)
+    view = (await svc.get_view(tenant=tenant, doc_id=doc_id, version=version, locale=locale)
+            if version else await svc.current_view(tenant=tenant, doc_id=doc_id, locale=locale))
+    if view is None:
+        raise HTTPException(404, "NOT_FOUND")
+    return view
+
+
+@router.get("/legal/{doc_id}/history", dependencies=[Depends(_READ)])
+async def legal_history(request: Request, doc_id: str, principal: Principal = Depends(_READ)) -> dict:
+    return {"versions": await build_legal(request).history(tenant=_tenant(principal), doc_id=doc_id)}
+
+
+# ── PDPL template pack: fill-in-the-blank Saudi-PDPL documents → a publishable page ─────
+class InstantiateIn(BaseModel):
+    values: dict[str, str] = Field(default_factory=dict)   # placeholder -> the tenant's value
+    version: str = Field(..., min_length=1, max_length=64)
+    requires_acceptance: bool = True
+    publish: bool = False                                  # draft only, or publish immediately
+    default_locale: str = Field(default="ar", max_length=16)
+
+
+@router.get("/legal/templates", dependencies=[Depends(_READ)])
+async def list_legal_templates(request: Request, principal: Principal = Depends(_READ)) -> dict:
+    """The PDPL pack: each template's id, slug, bilingual title, and the placeholders it needs
+    filled. A panel renders these as a form the operator completes."""
+    return {"templates": pdpl_templates.list_templates()}
+
+
+@router.post("/legal/templates/{template_id}/instantiate")
+async def instantiate_legal_template(request: Request, template_id: str, body: InstantiateIn,
+                                     principal: Principal = Depends(_ADMIN)) -> dict:
+    """Fill a PDPL template with this tenant's values and DRAFT it as a legal page (optionally
+    publish). Refuses if a declared placeholder is left unfilled — a policy with a literal {{HOLE}}
+    must never reach a user. The page then lives in the normal legal-pages store: versioned,
+    viewable, and (if requires_acceptance) gated by the post-auth access gate."""
+    try:
+        rendered = pdpl_templates.render(template_id, body.values, strict=True)
+    except TemplateError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    tenant = _tenant(principal)
+    doc_id = rendered["slug"]
+    legal = build_legal(request)
+    # The rich blocks + the tenant's values, stored as-is. The renderer fills the tokens and picks
+    # the language at read time — nothing is flattened, so the document keeps its tables and structure.
+    content = {"title": rendered["title"], "blocks": rendered["blocks"], "values": rendered["values"]}
+    try:
+        await legal.draft(tenant=tenant, doc_id=doc_id, version=body.version,
+                          content=content, requires_acceptance=body.requires_acceptance,
+                          default_locale=body.default_locale)
+    except LegalError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    result = {"doc_id": doc_id, "version": body.version, "published": False}
+    if body.publish:
+        await request.app.state.auditor.record(
+            "legal.published", actor=principal.subject, tenant=tenant,
+            resource=f"legal:{doc_id}:{body.version}",
+            ip=request.client.host if request.client else "")
+        await legal.publish(tenant=tenant, doc_id=doc_id, version=body.version)
+        result["published"] = True
+    return result
+
+
+# ── Post-auth access gate: the caller's OWN outstanding acceptances ─────────────
+def build_legal_gate(request: Request) -> LegalGate:
+    c = request.app.state.container
+    return LegalGate(legal_store=LegalPageStore(c.datastore),
+                     consents=build_consent(request), clock=c.clock)
+
+
+@router.get("/me/legal/outstanding", dependencies=[Depends(_SELF)])
+async def my_outstanding_legal(request: Request, locale: str = "",
+                               principal: Principal = Depends(_SELF)) -> dict:
+    """Which required legal documents the CALLER must (re-)accept before proceeding. The subject is
+    the caller's own token — never a body — so this can only report on oneself. An app shell calls
+    it right after login and blocks until the list is empty."""
+    gate = build_legal_gate(request)
+    return {"outstanding": await gate.outstanding(
+        tenant=principal.tenant or "", subject=principal.subject, locale=locale)}
+
+
+@router.post("/me/legal/{doc_id}/accept", dependencies=[Depends(_SELF)])
+async def accept_legal(request: Request, doc_id: str,
+                       principal: Principal = Depends(_SELF)) -> dict:
+    """Record the CALLER's acceptance of a document's current published version. Pinned to the
+    version in force now, so a later publish correctly leaves this acceptance stale."""
+    try:
+        res = await build_legal_gate(request).accept(
+            tenant=principal.tenant or "", subject=principal.subject, doc_id=doc_id,
+            actor=principal.subject, ip=request.client.host if request.client else "")
+    except LegalGateError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return res

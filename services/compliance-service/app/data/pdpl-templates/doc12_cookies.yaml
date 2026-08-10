@@ -1,0 +1,287 @@
+id: doc12
+slug: cookies
+kind: policy
+block_schema_version: 1
+title:
+  en: Cookies & Tracking Technologies Policy
+  ar: سياسة ملفات الارتباط والتقنيات المتتبِّعة
+source_controls: []
+placeholders:
+- COMPANY_NAME
+- COMPANY_WEBSITE
+- DPO_EMAIL
+- PRIVACY_EMAIL
+- EFFECTIVE_DATE
+- VERSION
+blocks:
+- cover:
+    title:
+      en: Cookies & Tracking Technologies Policy
+      ar: سياسة ملفات الارتباط والتقنيات المتتبِّعة
+    subtitle:
+      en: Personal Data Protection Law (PDPL) — Kingdom of Saudi Arabia
+      ar: نظام حماية البيانات الشخصية — المملكة العربية السعودية
+- snapshot:
+    rows:
+    - - en: Controller
+        ar: جهة التحكم
+      - '{{COMPANY_NAME}}'
+    - - en: Data Protection Officer
+        ar: مسؤول حماية البيانات
+      - '{{DPO_EMAIL}}'
+    - - en: Legal basis for this document
+        ar: الأساس النظامي لهذه الوثيقة
+      - en: Law Arts. 5, 11, 12 · Reg. Art. 11 · SDAIA Privacy Policy Guideline
+        ar: النظام م.5، 11، 12 · اللائحة م.11 · دليل سدايا لسياسة الخصوصية
+    - - en: Version / Effective date
+        ar: الإصدار / تاريخ النفاذ
+      - '{{VERSION}}  ·  {{EFFECTIVE_DATE}}'
+- lead:
+    text:
+      en: This policy explains how {{COMPANY_NAME}} uses cookies and similar tracking technologies on
+        {{COMPANY_WEBSITE}} and its applications, the categories we use, the legal basis for each, and
+        how you control them. Where a cookie or similar technology collects data that identifies you,
+        directly or indirectly, it is Personal Data and the Personal Data Protection Law applies. This
+        policy forms part of, and is read with, our Privacy Policy.
+      ar: توضّح هذه السياسة كيف تستخدم {{COMPANY_NAME}} ملفات الارتباط والتقنيات المتتبِّعة المشابهة على
+        {{COMPANY_WEBSITE}} وتطبيقاتها، والفئات التي نستخدمها، والأساس النظامي لكلٍّ منها، وكيف تتحكّم بها.
+        ومتى جمع ملف ارتباط أو تقنية مشابهة بياناتٍ تُعرِّفك بشكل مباشر أو غير مباشر، فهي بيانات شخصية
+        ينطبق عليها نظام حماية البيانات الشخصية. وتُعدّ هذه السياسة جزءاً من سياسة الخصوصية وتُقرأ معها.
+- section:
+    level: 1
+    text:
+      en: What Cookies and Similar Technologies Are
+      ar: ما ملفات الارتباط والتقنيات المشابهة
+- lead:
+    text:
+      en: A cookie is a small file a website places on your device to remember information about your
+        visit. "Similar technologies" include local storage, software development kits (SDKs), pixels,
+        tags and device identifiers that serve the same functions. We refer to all of these as "cookies"
+        in this policy.
+      ar: ملف الارتباط ملفٌ صغير يضعه الموقع على جهازك لتذكّر معلومات عن زيارتك. وتشمل "التقنيات المشابهة"
+        التخزين المحلي وحزم تطوير البرمجيات (SDK) والبكسلات والوسوم ومعرّفات الأجهزة التي تؤدي الوظائف
+        نفسها. ونشير إليها جميعاً بـ"ملفات الارتباط" في هذه السياسة.
+- section:
+    level: 2
+    text:
+      en: The Categories We Use
+      ar: الفئات التي نستخدمها
+- lead:
+    text:
+      en: We group cookies by function. For each category we state its purpose, whether it needs your
+        consent, and how long it is retained. Strictly-necessary cookies do not require consent because
+        the service cannot be delivered without them; every other category is set only after you consent.
+      ar: نصنّف ملفات الارتباط بحسب وظيفتها. ونبيّن لكل فئة غرضها، وما إذا كانت تتطلّب موافقتك، ومدّة
+        الاحتفاظ بها. ولا تتطلّب الملفات الضرورية الموافقة لأن الخدمة لا تُقدَّم دونها؛ أما كل فئة أخرى
+        فلا تُفعَّل إلا بعد موافقتك.
+- table:
+    headers:
+    - en: Category
+      ar: الفئة
+    - en: Purpose
+      ar: الغرض
+    - en: Consent
+      ar: الموافقة
+    - en: Retention
+      ar: الاحتفاظ
+    rows:
+    - - en: Strictly necessary
+        ar: ضرورية
+      - en: Sign-in, security, load balancing, remembering your language and consent choices
+        ar: تسجيل الدخول والأمن وتوزيع الأحمال وتذكّر لغتك وخياراتك في الموافقة
+      - en: Not required
+        ar: غير مطلوبة
+      - '[SESSION / DAYS]'
+    - - en: Functional
+        ar: وظيفية
+      - en: Remembering preferences and settings to improve your experience — [EXAMPLES]
+        ar: تذكّر التفضيلات والإعدادات لتحسين تجربتك — [أمثلة]
+      - en: Required
+        ar: مطلوبة
+      - '[DAYS]'
+    - - en: Analytics / performance
+        ar: تحليلية / أداء
+      - en: Understanding how the service is used, to measure and improve it — [ANALYTICS_TOOL]
+        ar: فهم كيفية استخدام الخدمة لقياسها وتحسينها — [أداة التحليل]
+      - en: Required
+        ar: مطلوبة
+      - '[DAYS]'
+    - - en: Marketing / advertising
+        ar: تسويقية / إعلانية
+      - en: Delivering and measuring advertising, and limiting repetition — [TOOLS]
+        ar: عرض الإعلانات وقياسها والحدّ من تكرارها — [الأدوات]
+      - en: Required
+        ar: مطلوبة
+      - '[DAYS]'
+    widths:
+    - 1555400
+    - 2828000
+    - 1131200
+    - 1555400
+    centers:
+    - 2
+- section:
+    level: 3
+    text:
+      en: How We Obtain and Rely on Consent
+      ar: كيف نحصل على الموافقة ونستند إليها
+- bullets:
+    items:
+    - - en: Before non-essential cookies —
+        ar: قبل الملفات غير الضرورية —
+      - en: no analytics, functional or marketing cookie is set before you consent through the cookie
+          banner; strictly-necessary cookies are set without consent because the service depends on them.
+        ar: لا يُفعَّل أي ملف تحليلي أو وظيفي أو تسويقي قبل موافقتك عبر إشعار ملفات الارتباط؛ أما الضرورية
+          فتُفعَّل دون موافقة لأن الخدمة تعتمد عليها.
+    - - en: Valid consent —
+        ar: موافقة صحيحة —
+      - en: consent is freely given, specific to each category, informed, and given by a clear affirmative
+          action; it is never bundled and never obtained by misleading design (Law Art. 5 · Reg. Art. 11).
+        ar: تكون الموافقة حرة، ومحدّدة لكل فئة، ومستنيرة، وبفعل إيجابي واضح؛ ولا تُجمَع ولا تُنتزع بتصميم
+          مضلِّل (النظام م.5 · اللائحة م.11).
+    - - en: As easy to refuse as to accept —
+        ar: الرفض بسهولة القبول —
+      - en: refusing non-essential cookies is as easy as accepting them, and declining does not deny you
+          access to the core service.
+        ar: رفض الملفات غير الضرورية بسهولة قبولها، ولا يحرمك الرفض من الوصول إلى الخدمة الأساسية.
+    - - en: Withdraw at any time —
+        ar: السحب في أي وقت —
+      - en: you may change or withdraw your consent at any time; withdrawal takes effect without undue
+          delay and does not affect processing carried out beforehand.
+        ar: لك تغيير موافقتك أو سحبها في أي وقت؛ ويسري السحب دون تأخير غير مبرر ولا يؤثر على معالجة تمت
+          قبله.
+- section:
+    level: 4
+    text:
+      en: Managing Your Preferences
+      ar: إدارة تفضيلاتك
+- lead:
+    text:
+      en: You can review and change your choices at any time through our cookie-preferences control at
+        {{PREFERENCE_LINK}}, and through your browser or device settings, which let you block or delete
+        cookies. Blocking strictly-necessary cookies may stop parts of the service from working. For any
+        question, contact us at {{PRIVACY_EMAIL}}.
+      ar: يمكنك مراجعة خياراتك وتغييرها في أي وقت عبر أداة تفضيلات ملفات الارتباط لدينا على {{PREFERENCE_LINK}}،
+        وعبر إعدادات متصفّحك أو جهازك التي تتيح حظر الملفات أو حذفها. وقد يؤدي حظر الملفات الضرورية إلى
+        تعطّل أجزاء من الخدمة. ولأي استفسار، تواصل معنا على {{PRIVACY_EMAIL}}.
+- section:
+    level: 5
+    text:
+      en: Third-Party Cookies and Transfer
+      ar: ملفات الغير والنقل
+- lead:
+    text:
+      en: Some cookies are set by third parties that provide analytics or advertising on our behalf;
+        those parties are listed in the register below and act under our instructions. Where a provider
+        processes the data outside the Kingdom, the transfer follows our Cross-Border Data Transfer
+        Policy and Article 29 of the Law.
+      ar: تُفعَّل بعض الملفات من أطراف أخرى تقدّم التحليلات أو الإعلان نيابةً عنا، وهي مُدرَجة في السجل
+        أدناه وتعمل وفق تعليماتنا. ومتى عالج مزوّدٌ البيانات خارج المملكة، اتّبع النقلُ سياسة نقل البيانات
+        خارج المملكة والمادة (29) من النظام.
+- page_break
+- section:
+    level: 6
+    text:
+      en: Cookie Register
+      ar: سجل ملفات الارتباط
+- lead:
+    text:
+      en: Every cookie in use is recorded here — its name, who sets it, its category, purpose and
+        retention. This register is the evidence that our use of cookies is transparent and lawful.
+      ar: يُدوَّن هنا كل ملف ارتباط مستخدَم — اسمه، ومن يضعه، وفئته، وغرضه، ومدّة احتفاظه. وهذا السجل هو
+        الدليل على أن استخدامنا لملفات الارتباط شفّاف ومشروع.
+- table:
+    headers:
+    - en: Name
+      ar: الاسم
+    - en: Provider
+      ar: المزوّد
+    - en: Category
+      ar: الفئة
+    - en: Purpose
+      ar: الغرض
+    - en: Retention
+      ar: الاحتفاظ
+    rows:
+    - - '[NAME]'
+      - '[FIRST / THIRD PARTY]'
+      - '[CATEGORY]'
+      - '[PURPOSE]'
+      - '[DAYS]'
+    - - '[NAME]'
+      - '[FIRST / THIRD PARTY]'
+      - '[CATEGORY]'
+      - '[PURPOSE]'
+      - '[DAYS]'
+    widths:
+    - 1414000
+    - 1555400
+    - 1131200
+    - 1696800
+    - 1272600
+    centers: []
+- section:
+    level: 7
+    text:
+      en: PDPL Control Mapping
+      ar: مطابقة ضوابط النظام
+- table:
+    headers:
+    - en: PDPL Control
+      ar: الضابط
+    - en: Article
+      ar: المادة
+    - en: Evidenced in
+      ar: الدليل في
+    rows:
+    - - en: Consent for non-essential tracking
+        ar: الموافقة على التتبّع غير الضروري
+      - en: Law Art. 5 · Reg. 11
+        ar: النظام م.5 · اللائحة 11
+      - en: Sections 2, 3
+        ar: البندان 2، 3
+    - - en: Transparency / notice
+        ar: الشفافية / الإشعار
+      - en: Art. 12
+        ar: م.12
+      - en: Sections 1–2, 6
+        ar: البنود 1–2، 6
+    - - en: Data minimization
+        ar: تقليل البيانات
+      - en: Art. 11
+        ar: م.11
+      - en: Section 2
+        ar: البند 2
+    - - en: Cross-border transfer
+        ar: النقل خارج المملكة
+      - en: Art. 29
+        ar: م.29
+      - en: Section 5
+        ar: البند 5
+    widths:
+    - 2828000
+    - 1979600
+    - 2262400
+    centers: []
+- signoff:
+    roles:
+    - en: Approved by
+      ar: اعتمدها
+    - en: Data Protection Officer
+      ar: مسؤول حماية البيانات
+- references:
+    title:
+      en: Official Sources
+      ar: المصادر الرسمية
+    items:
+    - - en: PDPL (Royal Decree M/19), Articles 5, 11, 12, 29
+        ar: نظام حماية البيانات الشخصية (م/19)، المواد 5، 11، 12، 29
+      - sdaia.gov.sa
+    - - en: PDPL Implementing Regulation, Article 11 (conditions of consent)
+        ar: اللائحة التنفيذية للنظام، المادة 11 (شروط الموافقة)
+      - sdaia.gov.sa
+- footer_band:
+    text:
+      en: Template — replace [PLACEHOLDERS], complete the cookie register, and review with legal counsel
+        before use.
+      ar: نموذج — استبدل [PLACEHOLDERS] وأكمِل سجل ملفات الارتباط وراجعه مع المستشار النظامي قبل الاستخدام.

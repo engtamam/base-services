@@ -1,0 +1,437 @@
+id: doc10
+slug: dpia
+kind: register
+block_schema_version: 1
+title:
+  en: Data Protection Impact Assessment (DPIA)
+  ar: تقييم الأثر لحماية البيانات الشخصية
+satisfies:
+- req-ps2d8b
+source_controls:
+- pdpl-24
+placeholders:
+- COMPANY_NAME
+- DPO_NAME
+- EFFECTIVE_DATE
+- VERSION
+blocks:
+- cover:
+    title:
+      en: Data Protection Impact Assessment
+      ar: تقييم الأثر لحماية البيانات الشخصية
+    subtitle:
+      en: DPIA — Personal Data Protection Law (PDPL), Kingdom of Saudi Arabia
+      ar: تقييم الأثر — نظام حماية البيانات الشخصية، المملكة العربية السعودية
+- snapshot:
+    rows:
+    - - en: Controller
+        ar: جهة التحكم
+      - '{{COMPANY_NAME}}'
+    - - en: Data Protection Officer
+        ar: مسؤول حماية البيانات
+      - '{{DPO_EMAIL}}'
+    - - en: Legal basis for this document
+        ar: الأساس النظامي لهذه الوثيقة
+      - en: Implementing Regulation, Art. 25
+        ar: اللائحة التنفيذية، المادة 25
+    - - en: When required
+        ar: متى يلزم
+      - en: Before high-risk processing (see the checklist)
+        ar: قبل المعالجة عالية الخطورة (انظر قائمة التحقق)
+    - - en: Version / Effective date
+        ar: الإصدار / تاريخ النفاذ
+      - '{{VERSION}}  ·  {{EFFECTIVE_DATE}}'
+- lead:
+    text:
+      en: 'A DPIA is a written assessment of the privacy risks of a processing activity, carried out BEFORE
+        the activity begins, so risks are found and reduced early. Under Article 25 of the Implementing
+        Regulation, {{COMPANY_NAME}} conducts a DPIA for the high-risk cases below. This document is the
+        method and a reusable form: complete one DPIA per high-risk activity.'
+      ar: 'تقييم الأثر هو تقييم مكتوب لمخاطر الخصوصية الناتجة عن نشاط معالجة، يُجرى قبل بدء النشاط، بحيث
+        تُكتشف المخاطر وتُقلَّل مبكراً. وبموجب المادة (25) من اللائحة التنفيذية، تُجري {{COMPANY_NAME}}
+        تقييم أثر للحالات عالية الخطورة أدناه. وهذه الوثيقة هي المنهجية ونموذج قابل لإعادة الاستخدام:
+        استكمل تقييماً واحداً لكل نشاط عالي الخطورة.'
+- helper:
+    text:
+      en: 'How to use this template: replace each [SQUARE BRACKET] with your own value. Everything shown
+        in RED (in parentheses) is guidance — delete it before you publish. The rest is the ready legal
+        text; keep it.'
+      ar: 'طريقة استخدام النموذج: استبدل كل [قوس مربّع] بقيمتك الخاصة. وكل ما هو باللون الأحمر (بين قوسين)
+        هو إرشاد — احذفه قبل الاعتماد. أما البقية فهي النص النظامي الجاهز؛ احتفظ به.'
+- section:
+    level: 1
+    text:
+      en: When Is a DPIA Required? — Trigger Checklist
+      ar: متى يلزم تقييم الأثر؟ — قائمة تحقق
+- helper:
+    text:
+      en: Tick any that apply to the activity. If even ONE is ticked, a DPIA is required (Reg. Art. 25-1).
+      ar: حدّد ما ينطبق على النشاط. إذا تحقّق بند واحد على الأقل، فيلزم إجراء تقييم أثر (اللائحة م.25-1).
+- table:
+    headers:
+    - ✓
+    - en: Trigger
+      ar: المُحفّز
+    - ✓
+    - en: Trigger
+      ar: المُحفّز
+    rows:
+    - - ☐
+      - en: Processing sensitive data
+        ar: معالجة البيانات الحساسة
+      - ☐
+      - en: Linking 2+ datasets from different sources
+        ar: ربط مجموعتين أو أكثر من مصادر مختلفة
+    - - ☐
+      - en: Large-scale AND repetitive processing of the data of persons with partial or no legal capacity
+        ar: معالجة واسعة النطاق ومتكررة لبيانات ناقصي الأهلية أو عديميها
+      - ☐
+      - en: Processing that by its nature requires constant monitoring of Data Subjects
+        ar: معالجة تتطلب بطبيعتها مراقبة مستمرة لأصحاب البيانات
+    - - ☐
+      - en: Processing based on newly adopted technologies
+        ar: معالجة تعتمد على تقنيات حديثة الاستخدام
+      - ☐
+      - en: Making decisions based on automated processing of Personal Data
+        ar: اتخاذ قرارات بناءً على المعالجة الآلية للبيانات الشخصية
+    - - ☐
+      - en: Providing a product or service whose processing is likely to cause serious harm to Data Subjects'
+          privacy
+        ar: تقديم منتج أو خدمة تنطوي معالجتها على احتمال إلحاق ضرر جسيم بخصوصية أصحاب البيانات
+      - ☐
+      - en: '[ADD YOUR OWN TRIGGER]'
+        ar: '[أضف حالة أخرى لديك]'
+    widths:
+    - 494900
+    - 3040100
+    - 494900
+    - 3040100
+    centers:
+    - 0
+    - 2
+- callout:
+    title:
+      en: No trigger ticked?
+      ar: لم يتحقق أي مُحفّز؟
+    items:
+    - en: If none apply, a full DPIA is not mandatory — but record that you screened the activity and
+        found it low-risk. When in doubt, do the DPIA.
+      ar: إذا لم ينطبق أي بند، فلا يلزم تقييم أثر كامل — لكن سجّل أنك فحصت النشاط ووجدته منخفض الخطورة.
+        وعند الشك، أجرِ التقييم.
+    kind: help
+- section:
+    level: 2
+    text:
+      en: What the DPIA Must Contain
+      ar: ما يجب أن يتضمنه تقييم الأثر
+- lead:
+    text:
+      en: 'Each DPIA must include, at a minimum (Reg. Art. 25-2):'
+      ar: 'يجب أن يتضمن كل تقييم أثر، كحد أدنى (اللائحة م.25-2):'
+- table:
+    headers:
+    - '#'
+    - en: Required element
+      ar: العنصر المطلوب
+    rows:
+    - - '1'
+      - en: Purpose of the processing and its legal basis.
+        ar: غرض المعالجة وأساسها النظامي.
+    - - '2'
+      - en: Nature and types of data, its sources, and the recipients.
+        ar: طبيعة المعالجة وأنواع البيانات ومصادرها والمستقبِلون.
+    - - '3'
+      - en: Scope of processing and its geographic scope.
+        ar: نطاق المعالجة ونطاقها الجغرافي.
+    - - '4'
+      - en: Context of the processing and the relationships involved.
+        ar: سياق المعالجة والعلاقات ذات الصلة.
+    - - '5'
+      - en: Necessity, proportionality, and data minimization.
+        ar: الضرورة والتناسب وتقليل البيانات.
+    - - '6'
+      - en: Severity and likelihood of the impact on data subjects.
+        ar: شدة الأثر على أصحاب البيانات واحتماله.
+    - - '7'
+      - en: Measures to prevent or mitigate the risks, and their suitability.
+        ar: تدابير منع المخاطر أو الحد منها ومدى ملاءمتها.
+    widths:
+    - 565600
+    - 6504400
+    centers:
+    - 0
+- page_break
+- section:
+    level: 3
+    text:
+      en: DPIA Form — Blank Template
+      ar: نموذج تقييم الأثر — قالب فارغ
+- helper:
+    text:
+      en: Complete one form per high-risk activity. Duplicate this block as needed. Replace each [SQUARE
+        BRACKET] with your value; delete the red (guidance) notes.
+      ar: استكمل نموذجاً واحداً لكل نشاط عالي الخطورة. كرّر هذا القالب حسب الحاجة. استبدل كل [قوس مربّع]
+        بقيمتك؛ واحذف الملاحظات الحمراء (الإرشادية).
+- fields:
+    rows:
+    - - en: Activity name / reference
+        ar: اسم النشاط / المرجع
+      - '[ACTIVITY]'
+      - en: e.g. "Face-recognition login — BIO-01"
+        ar: مثل "الدخول بالتعرف على الوجه — BIO-01"
+    - - en: Owner / assessor
+        ar: المالك / المُقيّم
+      - '[OWNER]'
+      - en: team + person running the assessment
+        ar: الفريق + الشخص المُجري للتقييم
+    - - en: Purpose & legal basis
+        ar: الغرض والأساس النظامي
+      - '[PURPOSE + LEGAL_BASIS]'
+      - en: 'basis: Consent / Contract / Legal obligation / Legitimate interest'
+        ar: 'الأساس: الموافقة / التعاقد / التزام نظامي / مصلحة مشروعة'
+    - - en: Nature, types, sources & recipients
+        ar: طبيعة البيانات وأنواعها ومصادرها والمستقبِلون
+      - '[DATA_DETAILS]'
+      - en: e.g. biometric templates, collected from users, shared with auth provider
+        ar: 'مثل: بصمات حيوية، تُجمع من المستخدمين، تُشارك مع مزود المصادقة'
+    - - en: Scope & geographic scope
+        ar: النطاق والنطاق الجغرافي
+      - '[SCOPE]'
+      - en: how many people; where processed/stored — inside/outside KSA
+        ar: عدد الأشخاص؛ مكان المعالجة/التخزين — داخل/خارج المملكة
+    - - en: Context & relationships
+        ar: السياق والعلاقات
+      - '[CONTEXT]'
+      - en: relationship to data subjects, e.g. customers, employees; any imbalance
+        ar: العلاقة بأصحاب البيانات، مثل العملاء أو الموظفين؛ وأي اختلال في التوازن
+    - - en: Necessity, proportionality & minimization
+        ar: الضرورة والتناسب وتقليل البيانات
+      - '[NECESSITY]'
+      - en: is it needed? any less-intrusive way? is data minimized?
+        ar: هل هو ضروري؟ هل توجد وسيلة أقل تدخلاً؟ هل قُلِّلت البيانات؟
+    - - en: Date assessed / next review
+        ar: تاريخ التقييم / المراجعة التالية
+      - '[DATE]'
+      - en: format YYYY-MM-DD
+        ar: الصيغة سنة-شهر-يوم
+    sample: false
+- helper:
+    text:
+      en: Risk register — list each risk to individuals, rate it, and state the mitigation (Low / Medium
+        / High).
+      ar: سجل المخاطر — اذكر كل خطر على الأفراد، وقيّمه، وبيّن إجراء الحد منه (منخفض / متوسط / مرتفع).
+- table:
+    headers:
+    - en: Risk to individuals
+      ar: الخطر على الأفراد
+    - en: Likelihood
+      ar: الاحتمال
+    - en: Severity
+      ar: الشدة
+    - en: Mitigation measure
+      ar: إجراء الحد
+    - en: Residual
+      ar: المتبقي
+    rows:
+    - - en: '[RISK 1]'
+        ar: '[الخطر 1]'
+      - en: '[L/M/H]'
+        ar: '[م/و/ع]'
+      - en: '[L/M/H]'
+        ar: '[م/و/ع]'
+      - en: '[MITIGATION]'
+        ar: '[الإجراء]'
+      - en: '[L/M/H]'
+        ar: '[م/و/ع]'
+    - - en: '[RISK 2]'
+        ar: '[الخطر 2]'
+      - en: '[L/M/H]'
+        ar: '[م/و/ع]'
+      - en: '[L/M/H]'
+        ar: '[م/و/ع]'
+      - en: '[MITIGATION]'
+        ar: '[الإجراء]'
+      - en: '[L/M/H]'
+        ar: '[م/و/ع]'
+    - - en: '[RISK 3]'
+        ar: '[الخطر 3]'
+      - en: '[L/M/H]'
+        ar: '[م/و/ع]'
+      - en: '[L/M/H]'
+        ar: '[م/و/ع]'
+      - en: '[MITIGATION]'
+        ar: '[الإجراء]'
+      - en: '[L/M/H]'
+        ar: '[م/و/ع]'
+    widths:
+    - 2403800
+    - 848400
+    - 848400
+    - 2121000
+    - 848400
+    centers:
+    - 1
+    - 2
+    - 4
+- section:
+    level: 4
+    text:
+      en: Worked Example — One Completed DPIA
+      ar: مثال مُستكمل — تقييم أثر مكتمل
+- helper:
+    text:
+      en: Illustration only — face-recognition login (biometric = sensitive data). Delete this whole section;
+        replace with your own.
+      ar: للتوضيح فقط — الدخول بالتعرف على الوجه (البيانات الحيوية = بيانات حساسة). احذف هذا القسم بالكامل
+        واستبدله بنشاطك.
+- fields:
+    rows:
+    - - en: Activity
+        ar: النشاط
+      - en: Face-recognition login — BIO-01
+        ar: الدخول بالتعرف على الوجه — BIO-01
+    - - en: Purpose & legal basis
+        ar: الغرض والأساس النظامي
+      - en: 'Faster, more secure sign-in; basis: explicit consent'
+        ar: 'دخول أسرع وأكثر أماناً؛ الأساس: الموافقة الصريحة'
+    - - en: Data, sources & recipients
+        ar: البيانات والمصادر والمستقبِلون
+      - en: Facial biometric template; from users; shared with auth provider only
+        ar: قالب بصمة الوجه؛ من المستخدمين؛ يُشارك مع مزود المصادقة فقط
+    - - en: Scope & geography
+        ar: النطاق والجغرافيا
+      - en: ~50,000 app users; processed & stored in-Kingdom
+        ar: نحو 50,000 مستخدم؛ تُعالَج وتُخزَّن داخل المملكة
+    - - en: Necessity & minimization
+        ar: الضرورة وتقليل البيانات
+      - en: Optional feature; password login still offered; template stored, not raw images
+        ar: ميزة اختيارية؛ يبقى الدخول بكلمة المرور متاحاً؛ يُخزَّن القالب لا الصور الخام
+    sample: true
+- table:
+    headers:
+    - en: Risk to individuals
+      ar: الخطر على الأفراد
+    - en: Likelihood
+      ar: الاحتمال
+    - en: Severity
+      ar: الشدة
+    - en: Mitigation measure
+      ar: إجراء الحد
+    - en: Residual
+      ar: المتبقي
+    rows:
+    - - en: Biometric theft / spoofing
+        ar: سرقة/انتحال البيانات الحيوية
+      - en: Low
+        ar: منخفض
+      - en: High
+        ar: مرتفع
+      - en: Encryption, liveness check, in-Kingdom storage
+        ar: التشفير، فحص الحيوية، التخزين داخل المملكة
+      - en: Low
+        ar: منخفض
+    - - en: Use beyond login purpose
+        ar: الاستخدام لغير غرض الدخول
+      - en: Low
+        ar: منخفض
+      - en: Medium
+        ar: متوسط
+      - en: Purpose limitation, access controls, audit logs
+        ar: تقييد الغرض، ضبط الوصول، سجلات التدقيق
+      - en: Low
+        ar: منخفض
+    widths:
+    - 2121000
+    - 848400
+    - 848400
+    - 2403800
+    - 848400
+    centers:
+    - 1
+    - 2
+    - 4
+- section:
+    level: 5
+    text:
+      en: Outcome, Processor Copy & Re-assessment
+      ar: النتيجة، نسخة المعالج، وإعادة التقييم
+- bullets:
+    items:
+    - - ''
+      - en: 'Decision: ☐ Proceed  ☐ Proceed with the mitigations above  ☐ Do not proceed.'
+        ar: 'القرار: ☐ المتابعة  ☐ المتابعة مع تطبيق إجراءات الحد أعلاه  ☐ عدم المتابعة.'
+    - - ''
+      - en: We provide a copy of this assessment to every Processor acting on our behalf in relation to
+          the processing it covers. (Reg. Art. 25-3)
+        ar: نُسلّم نسخة من هذا التقييم إلى كل جهة معالجة تعمل نيابةً عنا في المعالجة التي يتناولها. (اللائحة
+          م.25-3)
+    - - ''
+      - en: 'Where this assessment indicates that the processing would harm the privacy of Data Subjects,
+          we do not proceed on the strength of the assessment alone: we address the causes of that harm,
+          and we conduct the impact assessment again on the amended processing. (Reg. Art. 25-4)'
+        ar: ومتى أظهر هذا التقييم أن المعالجة ستُلحق ضرراً بخصوصية أصحاب البيانات الشخصية، فلا نمضي فيها
+          استناداً إلى التقييم وحده، بل نعالج أسباب ذلك الضرر، ونُعيد إجراء تقييم الأثر على المعالجة بعد
+          تعديلها. (اللائحة م.25-4)
+    - - ''
+      - en: We repeat this assessment whenever the activity, the data it processes, or the risks it carries
+          change materially — a DPIA describes a processing activity as it is, not as it was at launch.
+        ar: ونُعيد هذا التقييم كلما تغيّر النشاط أو البيانات التي يعالجها أو المخاطر التي ينطوي عليها
+          تغيّراً جوهرياً — فتقييم الأثر يصف نشاط المعالجة كما هو، لا كما كان عند إطلاقه.
+- signoff:
+    roles:
+    - en: Assessed by (DPO)
+      ar: أجراه (مسؤول حماية البيانات)
+    - en: Approved by
+      ar: اعتمده
+- section:
+    level: 6
+    text:
+      en: PDPL Control Mapping
+      ar: مطابقة ضوابط النظام
+- table:
+    headers:
+    - en: PDPL Control
+      ar: الضابط
+    - en: Article
+      ar: المادة
+    - en: Evidenced in
+      ar: الدليل في
+    rows:
+    - - en: DPIA required for high-risk processing
+        ar: لزوم تقييم الأثر للمعالجة عالية الخطورة
+      - en: Reg. Art. 25-1
+        ar: اللائحة م.25-1
+      - en: Sections 1
+        ar: البند 1
+    - - en: Minimum contents of the DPIA
+        ar: الحد الأدنى لمحتويات التقييم
+      - en: Reg. Art. 25-2
+        ar: اللائحة م.25-2
+      - en: Sections 2–4
+        ar: البنود 2–4
+    - - en: Copy to Processor; re-assess on likely harm
+        ar: نسخة للمعالج؛ إعادة التقييم عند الضرر المحتمل
+      - en: Reg. Art. 25-3, 25-4
+        ar: اللائحة م.25-3، 25-4
+      - en: Section 5
+        ar: البند 5
+    widths:
+    - 3110800
+    - 1838200
+    - 2121000
+    centers: []
+- references:
+    title:
+      en: Official Sources
+      ar: المصادر الرسمية
+    items:
+    - - en: PDPL Implementing Regulation, Article 25
+        ar: اللائحة التنفيذية لنظام حماية البيانات، المادة 25
+      - sdaia.gov.sa
+    - - en: PDPL (Royal Decree M/19), Article 22
+        ar: نظام حماية البيانات الشخصية (م/19)، المادة 22
+      - sdaia.gov.sa
+- footer_band:
+    text:
+      en: Template — screen with Section 1, complete the form, and review with legal counsel before use.
+      ar: نموذج — افحص عبر البند 1، واستكمل النموذج، وراجعه مع المستشار النظامي قبل الاستخدام.

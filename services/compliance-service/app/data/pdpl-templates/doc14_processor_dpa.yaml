@@ -1,0 +1,365 @@
+id: doc14
+slug: processor-dpa
+kind: register
+block_schema_version: 1
+title:
+  en: Data Processing Agreement (Processor's Commitments)
+  ar: اتفاقية معالجة البيانات (التزامات المعالِج)
+satisfies:
+- req-pw4b2f
+source_controls:
+- pdpl-28
+placeholders:
+- COMPANY_NAME
+- EFFECTIVE_DATE
+- VERSION
+blocks:
+- cover:
+    title:
+      en: Data Processing Agreement — Processor's Commitments
+      ar: اتفاقية معالجة البيانات — التزامات المعالِج
+    subtitle:
+      en: Personal Data Protection Law (PDPL) — Kingdom of Saudi Arabia
+      ar: نظام حماية البيانات الشخصية — المملكة العربية السعودية
+- snapshot:
+    rows:
+    - - en: Processor
+        ar: المعالِج
+      - '{{COMPANY_NAME}}'
+    - - en: Controller
+        ar: جهة التحكم
+      - '{{CONTROLLER_NAME}}'
+    - - en: Legal basis for this document
+        ar: الأساس النظامي لهذه الوثيقة
+      - en: Reg. Art. 17 · Law Arts. 18, 19, 20, 29
+        ar: اللائحة م.17 · النظام م.18، 19، 20، 29
+    - - en: Version / Effective date
+        ar: الإصدار / تاريخ النفاذ
+      - '{{VERSION}}  ·  {{EFFECTIVE_DATE}}'
+- lead:
+    text:
+      en: This Agreement sets out how {{COMPANY_NAME}} ("the Processor") processes Personal Data on behalf
+        of {{CONTROLLER_NAME}} ("the Controller"). It reflects the obligations Article 17 of the Implementing
+        Regulation places on a controller–processor relationship, stated as the Processor's commitments. It
+        applies to all Personal Data the Processor processes for the Controller.
+      ar: تبيّن هذه الاتفاقية كيف يعالج {{COMPANY_NAME}} ("المعالِج") البيانات الشخصية نيابةً عن
+        {{CONTROLLER_NAME}} ("جهة التحكم"). وتعكس الالتزامات التي تفرضها المادة (17) من اللائحة التنفيذية على
+        علاقة المتحكم–المعالِج، مصوغةً كالتزامات للمعالِج. وتنطبق على كل البيانات الشخصية التي يعالجها
+        المعالِج لجهة التحكم.
+- section:
+    level: 1
+    text:
+      en: Processing on Instructions
+      ar: المعالجة بالتعليمات
+- bullets:
+    items:
+    - - en: On documented instructions —
+        ar: بتعليمات موثّقة —
+      - en: the Processor processes Personal Data only on the Controller's documented instructions and only
+          for the purpose in Annex A (Reg. Art. 17-2).
+        ar: يعالج المعالِج البيانات الشخصية فقط وفق تعليمات جهة التحكم الموثّقة ولغرض الملحق (أ) فقط
+          (اللائحة م.17-2).
+    - - en: Notify on conflict —
+        ar: الإشعار عند التعارض —
+      - en: the Processor notifies the Controller in writing, without undue delay, if an instruction or any
+          applicable law in the Kingdom would be violated (Reg. Art. 17-2).
+        ar: يُشعِر المعالِج جهة التحكم كتابةً، دون تأخير غير مبرر، إذا كان في تعليمٍ أو في أي نظام مطبَّق
+          في المملكة مخالفةٌ (اللائحة م.17-2).
+    - - en: Accountability —
+        ar: المساءلة —
+      - en: if the Processor breaches the Controller's instructions or this Agreement, it is treated as a
+          Controller and is directly accountable for any violation of the Law (Reg. Art. 17-4).
+        ar: إذا خالف المعالِج تعليمات جهة التحكم أو هذه الاتفاقية، عُدَّ جهة تحكم وتحمّل المسؤولية المباشرة
+          عن أي مخالفة للنظام (اللائحة م.17-4).
+    - - en: No own use —
+        ar: لا استخدام خاص —
+      - en: the Processor does not process the Personal Data for its own purposes and does not sell it.
+        ar: لا يعالج المعالِج البيانات لأغراضه الخاصة ولا يبيعها.
+- section:
+    level: 2
+    text:
+      en: What This Agreement Includes
+      ar: ما تتضمّنه هذه الاتفاقية
+- lead:
+    text:
+      en: 'In line with Article 17-1 of the Regulation, this Agreement and its annexes state: the purpose
+        (Annex A · 17-1-a); the categories of Personal Data (Annex A · 17-1-b); the duration (Annex A ·
+        17-1-c); the Processor''s commitment to notify a breach without undue delay (§3 · 17-1-d); whether
+        the Processor is subject to foreign regulations (§6 · 17-1-e); that no prior consent is required
+        for a disclosure mandated by KSA law, provided the Controller is notified (§6 · 17-1-f); and the
+        sub-processors engaged (Annex C · 17-1-g).'
+      ar: 'تماشياً مع المادة (17-1) من اللائحة، تبيّن هذه الاتفاقية وملاحقها: الغرض (الملحق أ · 17-1-أ)؛
+        وفئات البيانات الشخصية (الملحق أ · 17-1-ب)؛ والمدّة (الملحق أ · 17-1-ج)؛ والتزام المعالِج بالإشعار
+        بالانتهاك دون تأخير غير مبرر (البند 3 · 17-1-د)؛ وما إذا كان المعالِج خاضعاً لأنظمة أجنبية (البند 6
+        · 17-1-هـ)؛ وأنه لا تُشترط موافقة مسبقة لإفصاحٍ تُوجبه أنظمة المملكة شريطة إشعار جهة التحكم (البند
+        6 · 17-1-و)؛ والمعالِجين الفرعيين (الملحق ج · 17-1-ز).'
+- section:
+    level: 3
+    text:
+      en: Personal Data Breach
+      ar: انتهاك البيانات الشخصية
+- lead:
+    text:
+      en: The Processor notifies the Controller of any Personal Data Breach without undue delay, with the
+        information the Controller needs to meet its own duty to notify the Competent Authority and, where
+        the breach may cause damage or affect rights, the Data Subjects (Reg. Art. 17-1-d · Law Art. 20).
+      ar: يُشعِر المعالِج جهة التحكم بأي انتهاك للبيانات الشخصية دون تأخير غير مبرر، بالمعلومات التي تحتاجها
+        للوفاء بواجبها في إشعار الجهة المختصة — وعند احتمال الضرر أو المساس بالحقوق، أصحاب البيانات (اللائحة
+        م.17-1-د · النظام م.20).
+- section:
+    level: 4
+    text:
+      en: Security and Confidentiality
+      ar: الأمن والسرّية
+- lead:
+    text:
+      en: The Processor implements the organizational, administrative and technical measures necessary to
+        protect the Personal Data — proportionate to the nature of the Processing and the sensitivity and
+        amount of data — as set out in Annex B, and ensures its personnel are bound by confidentiality
+        (Law Art. 19).
+      ar: ينفّذ المعالِج التدابير التنظيمية والإدارية والتقنية اللازمة لحماية البيانات الشخصية — بما
+        يتناسب مع طبيعة المعالجة وحساسية البيانات وكميتها — كما في الملحق (ب)، ويضمن التزام منسوبيه
+        بالسرّية (النظام م.19).
+- section:
+    level: 5
+    text:
+      en: Sub-Processors
+      ar: المعالِجون الفرعيون
+- lead:
+    text:
+      en: 'Before engaging any sub-processor, the Processor shall (Reg. Art. 17-5):'
+      ar: 'قبل الاستعانة بأي معالِج فرعي، على المعالِج (اللائحة م.17-5):'
+- bullets:
+    items:
+    - - en: Sufficient guarantees —
+        ar: ضمانات كافية —
+      - en: take sufficient guarantees that the sub-contract will not lower the level of protection given
+          to the Personal Data (Reg. Art. 17-5-a).
+        ar: أخذ ضمانات كافية بألّا يُخفِّض العقد الفرعي مستوى الحماية الممنوح للبيانات الشخصية (اللائحة
+          م.17-5-أ).
+    - - en: Compliant sub-processors only —
+        ar: معالِجون فرعيون ملتزمون فقط —
+      - en: choose only sub-processors that provide sufficient guarantees to comply with the Law and its
+          Regulations (Reg. Art. 17-5-b).
+        ar: اختيار المعالِجين الفرعيين الذين يوفّرون ضمانات كافية للامتثال للنظام ولائحته فقط (اللائحة
+          م.17-5-ب).
+    - - en: Prior acceptance —
+        ar: قبول مسبق —
+      - en: obtain the Controller's prior acceptance, notifying it before entering the sub-contract and
+          allowing it to object within the timeframe agreed (Reg. Art. 17-5-c).
+        ar: الحصول على قبول جهة التحكم المسبق، بإشعارها قبل إبرام العقد الفرعي وتمكينها من الاعتراض خلال
+          المدّة المتفق عليها (اللائحة م.17-5-ج).
+- section:
+    level: 6
+    text:
+      en: Foreign Regulations, Mandatory Disclosure and Assessment
+      ar: الأنظمة الأجنبية والإفصاح الإلزامي والتقييم
+- bullets:
+    items:
+    - - en: Foreign regulations —
+        ar: الأنظمة الأجنبية —
+      - en: the Processor states whether it, or any sub-processor, is subject to the regulations of another
+          country and the impact on compliance with the Law (Annex C · Reg. Art. 17-1-e).
+        ar: يُبيّن المعالِج ما إذا كان هو أو أي معالِج فرعي خاضعاً لأنظمة دولة أخرى وأثر ذلك على الامتثال
+          للنظام (الملحق ج · اللائحة م.17-1-هـ).
+    - - en: Mandatory disclosure —
+        ar: الإفصاح الإلزامي —
+      - en: where a disclosure is mandatory under KSA law, the Data Subject's prior consent is not required,
+          provided the Processor notifies the Controller (Reg. Art. 17-1-f).
+        ar: حيث يكون الإفصاح إلزامياً بموجب أنظمة المملكة، لا تُشترط موافقة صاحب البيانات المسبقة، شريطة أن
+          يُشعِر المعالِج جهة التحكم (اللائحة م.17-1-و).
+    - - en: Compliance assessment —
+        ar: تقييم الالتزام —
+      - en: the Controller may periodically assess the Processor's compliance, and may appoint an
+          independent third party to do so; the Processor makes available the information reasonably needed
+          to demonstrate it (Reg. Art. 17-3).
+        ar: لجهة التحكم أن تُقيّم دورياً التزام المعالِج، ولها تعيين طرف ثالث مستقل لذلك؛ ويتيح المعالِج
+          المعلومات اللازمة بشكل معقول لإثباته (اللائحة م.17-3).
+- section:
+    level: 7
+    text:
+      en: Cross-Border Transfer, Return and Destruction
+      ar: النقل خارج المملكة والإرجاع والإتلاف
+- bullets:
+    items:
+    - - en: Cross-border —
+        ar: النقل الخارجي —
+      - en: the Processor does not transfer or disclose the Personal Data outside the Kingdom except on the
+          Controller's instructions and under Article 29 of the Law and the Transfer Regulation.
+        ar: لا ينقل المعالِج البيانات الشخصية أو يُفصح عنها خارج المملكة إلا بتعليمات جهة التحكم ووفق المادة
+          (29) من النظام ولائحة النقل.
+    - - en: On termination —
+        ar: عند الإنهاء —
+      - en: at the end of the Processing, the Processor returns or destroys the Personal Data at the
+          Controller's choice, and destroys existing copies, except where the law requires retention (Law
+          Art. 18).
+        ar: عند انتهاء المعالجة، يُرجِع المعالِج البيانات الشخصية أو يُتلفها بحسب اختيار جهة التحكم، ويُتلف
+          النسخ القائمة، إلا حيث يوجب النظام الاحتفاظ (النظام م.18).
+- page_break
+- section:
+    level: 8
+    text:
+      en: Annex A — Details of the Processing
+      ar: الملحق أ — تفاصيل المعالجة
+- table:
+    headers:
+    - en: Item
+      ar: البند
+    - en: Detail
+      ar: التفصيل
+    rows:
+    - - en: Purpose of processing
+        ar: غرض المعالجة
+      - '[PURPOSE]'
+    - - en: Categories of Personal Data
+        ar: فئات البيانات الشخصية
+      - '[CATEGORIES]'
+    - - en: Categories of Data Subjects
+        ar: فئات أصحاب البيانات
+      - '[DATA_SUBJECTS]'
+    - - en: Duration of processing
+        ar: مدّة المعالجة
+      - '[DURATION]'
+    widths:
+    - 2262400
+    - 4807600
+    centers: []
+- section:
+    level: 9
+    text:
+      en: Annex B — Security Measures
+      ar: الملحق ب — التدابير الأمنية
+- lead:
+    text:
+      en: The Processor applies at least the following, proportionate to the sensitivity and amount of data
+        (Law Art. 19). Amend to reflect the measures actually in place.
+      ar: يطبّق المعالِج ما لا يقلّ عمّا يلي، بما يتناسب مع حساسية البيانات وكميتها (النظام م.19). عدّلها
+        لتعكس التدابير المطبَّقة فعلاً.
+- table:
+    headers:
+    - en: Measure
+      ar: التدبير
+    - en: Description
+      ar: الوصف
+    rows:
+    - - en: Encryption in transit
+        ar: التشفير أثناء النقل
+      - en: Personal Data is encrypted while transmitted over networks.
+        ar: تُشفَّر البيانات الشخصية أثناء نقلها عبر الشبكات.
+    - - en: Access control (least privilege)
+        ar: ضبط الوصول (أقل الصلاحيات)
+      - en: Access is role-based and limited to personnel who need it, with authentication and audit logging.
+        ar: الوصول قائم على الأدوار ومحصور بمن يحتاجه، مع مصادقة وتسجيل تدقيقي.
+    - - en: Pseudonymization / minimization
+        ar: الترميز / التقليل
+      - en: Identifiers are minimized or pseudonymized where the purpose allows.
+        ar: تُقلَّل المُعرِّفات أو تُرمَّز بأسماء مستعارة حيثما سمح الغرض.
+    - - en: Monitoring & breach response
+        ar: المراقبة والاستجابة للانتهاك
+      - en: Logs are monitored, and a breach is detected, contained and notified to the Controller without
+          undue delay.
+        ar: تُراقَب السجلات، ويُكتشَف الانتهاك ويُحتوى ويُبلَّغ للمتحكم دون تأخير غير مبرر.
+    - - en: Secure retention & destruction
+        ar: الاحتفاظ والإتلاف الآمن
+      - en: Data is retained only as long as needed and destroyed so it cannot be viewed or recovered.
+        ar: تُحفَظ البيانات بقدر الحاجة فقط وتُتلَف بحيث لا يمكن الاطلاع عليها أو استعادتها.
+    widths:
+    - 2262400
+    - 4807600
+    centers: []
+- section:
+    level: 10
+    text:
+      en: Annex C — Approved Sub-Processors
+      ar: الملحق ج — المعالِجون الفرعيون المعتمدون
+- table:
+    headers:
+    - en: Sub-processor
+      ar: المعالِج الفرعي
+    - en: Purpose
+      ar: الغرض
+    - en: Location
+      ar: الموقع
+    rows:
+    - - '[NAME]'
+      - '[PURPOSE]'
+      - '[LOCATION]'
+    - - '[NAME]'
+      - '[PURPOSE]'
+      - '[LOCATION]'
+    widths:
+    - 2545200
+    - 2545200
+    - 1979600
+    centers: []
+- section:
+    level: 11
+    text:
+      en: PDPL Control Mapping
+      ar: مطابقة ضوابط النظام
+- table:
+    headers:
+    - en: PDPL Control
+      ar: الضابط
+    - en: Article
+      ar: المادة
+    - en: Evidenced in
+      ar: الدليل في
+    rows:
+    - - en: Processor selection & agreement
+        ar: اختيار المعالِج والاتفاقية
+      - en: Reg. Art. 17-1
+        ar: اللائحة م.17-1
+      - en: Sections 1–2, Annexes A, C
+        ar: البندان 1–2، الملحقان أ، ج
+    - - en: Instructions & accountability
+        ar: التعليمات والمساءلة
+      - en: Reg. Art. 17-2, 17-4
+        ar: اللائحة م.17-2، 17-4
+      - en: Section 1
+        ar: البند 1
+    - - en: Sub-processor conditions
+        ar: شروط المعالِج الفرعي
+      - en: Reg. Art. 17-5
+        ar: اللائحة م.17-5
+      - en: Section 5
+        ar: البند 5
+    - - en: Compliance assessment
+        ar: تقييم الالتزام
+      - en: Reg. Art. 17-3
+        ar: اللائحة م.17-3
+      - en: Section 6
+        ar: البند 6
+    - - en: Security · Breach · Destruction · Transfer
+        ar: الأمن · الانتهاك · الإتلاف · النقل
+      - en: Law Arts. 19, 20, 18, 29
+        ar: النظام م.19، 20، 18، 29
+      - en: Sections 3, 4, 7
+        ar: البنود 3، 4، 7
+    widths:
+    - 2828000
+    - 1979600
+    - 2262400
+    centers: []
+- signoff:
+    roles:
+    - en: For the Controller
+      ar: عن جهة التحكم
+    - en: For the Processor
+      ar: عن المعالِج
+- references:
+    title:
+      en: Official Sources
+      ar: المصادر الرسمية
+    items:
+    - - en: PDPL Implementing Regulation, Article 17 (Processor selection)
+        ar: اللائحة التنفيذية للنظام، المادة 17 (اختيار المعالِج)
+      - sdaia.gov.sa
+    - - en: PDPL (Royal Decree M/19), Articles 18, 19, 20, 29
+        ar: نظام حماية البيانات الشخصية (م/19)، المواد 18، 19، 20، 29
+      - sdaia.gov.sa
+- footer_band:
+    text:
+      en: Template — replace [PLACEHOLDERS], complete the annexes, and review with legal counsel before
+        signing.
+      ar: نموذج — استبدل [PLACEHOLDERS] وأكمِل الملاحق وراجعه مع المستشار النظامي قبل التوقيع.

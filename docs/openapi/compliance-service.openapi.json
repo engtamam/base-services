@@ -297,6 +297,71 @@
         "title": "HoldIn",
         "type": "object"
       },
+      "InstantiateIn": {
+        "properties": {
+          "default_locale": {
+            "default": "ar",
+            "maxLength": 16,
+            "title": "Default Locale",
+            "type": "string"
+          },
+          "publish": {
+            "default": false,
+            "title": "Publish",
+            "type": "boolean"
+          },
+          "requires_acceptance": {
+            "default": true,
+            "title": "Requires Acceptance",
+            "type": "boolean"
+          },
+          "values": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Values",
+            "type": "object"
+          },
+          "version": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "title": "InstantiateIn",
+        "type": "object"
+      },
+      "LegalDraftIn": {
+        "properties": {
+          "content": {
+            "additionalProperties": true,
+            "title": "Content",
+            "type": "object"
+          },
+          "default_locale": {
+            "default": "en",
+            "maxLength": 16,
+            "title": "Default Locale",
+            "type": "string"
+          },
+          "effective_at": {
+            "default": 0.0,
+            "title": "Effective At",
+            "type": "number"
+          },
+          "requires_acceptance": {
+            "default": false,
+            "title": "Requires Acceptance",
+            "type": "boolean"
+          }
+        },
+        "title": "LegalDraftIn",
+        "type": "object"
+      },
       "MeDsarIn": {
         "description": "A self-service DSAR. Carries only the KIND of request \u2014 never a subject id: the subject is\nthe caller's own token, so this shape makes opening a request against someone else impossible,\nnot merely forbidden (CWE-639).",
         "properties": {
@@ -1010,6 +1075,30 @@
         ]
       }
     },
+    "/api/v1/compliance/legal": {
+      "get": {
+        "description": "Each document's current version + whether it needs acceptance \u2014 what a panel or gate lists.",
+        "operationId": "list_legal_api_v1_compliance_legal_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Legal Api V1 Compliance Legal Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Legal",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
     "/api/v1/compliance/legal-holds": {
       "get": {
         "operationId": "list_holds_api_v1_compliance_legal_holds_get",
@@ -1118,6 +1207,312 @@
         ]
       }
     },
+    "/api/v1/compliance/legal/templates": {
+      "get": {
+        "description": "The PDPL pack: each template's id, slug, bilingual title, and the placeholders it needs\nfilled. A panel renders these as a form the operator completes.",
+        "operationId": "list_legal_templates_api_v1_compliance_legal_templates_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Legal Templates Api V1 Compliance Legal Templates Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Legal Templates",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/legal/templates/{template_id}/instantiate": {
+      "post": {
+        "description": "Fill a PDPL template with this tenant's values and DRAFT it as a legal page (optionally\npublish). Refuses if a declared placeholder is left unfilled \u2014 a policy with a literal {{HOLE}}\nmust never reach a user. The page then lives in the normal legal-pages store: versioned,\nviewable, and (if requires_acceptance) gated by the post-auth access gate.",
+        "operationId": "instantiate_legal_template_api_v1_compliance_legal_templates__template_id__instantiate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "template_id",
+            "required": true,
+            "schema": {
+              "title": "Template Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InstantiateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Instantiate Legal Template Api V1 Compliance Legal Templates  Template Id  Instantiate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Instantiate Legal Template",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/legal/{doc_id}": {
+      "get": {
+        "description": "The structured viewer payload: the current published version, or a specific one via ?version=.",
+        "operationId": "view_legal_api_v1_compliance_legal__doc_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "doc_id",
+            "required": true,
+            "schema": {
+              "title": "Doc Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "locale",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Locale",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Version",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response View Legal Api V1 Compliance Legal  Doc Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "View Legal",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/legal/{doc_id}/history": {
+      "get": {
+        "operationId": "legal_history_api_v1_compliance_legal__doc_id__history_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "doc_id",
+            "required": true,
+            "schema": {
+              "title": "Doc Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Legal History Api V1 Compliance Legal  Doc Id  History Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Legal History",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/legal/{doc_id}/versions/{version}": {
+      "put": {
+        "description": "Create or replace a DRAFT version. A published version is immutable \u2014 this refuses to edit one.",
+        "operationId": "draft_legal_api_v1_compliance_legal__doc_id__versions__version__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "doc_id",
+            "required": true,
+            "schema": {
+              "title": "Doc Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LegalDraftIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Draft Legal Api V1 Compliance Legal  Doc Id  Versions  Version  Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Draft Legal",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/legal/{doc_id}/versions/{version}/publish": {
+      "post": {
+        "description": "Publish a version and point 'current' at it \u2014 the event a fresh publish turns into re-acceptance.",
+        "operationId": "publish_legal_api_v1_compliance_legal__doc_id__versions__version__publish_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "doc_id",
+            "required": true,
+            "schema": {
+              "title": "Doc Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Publish Legal Api V1 Compliance Legal  Doc Id  Versions  Version  Publish Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Publish Legal",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
     "/api/v1/compliance/me/dsar": {
       "post": {
         "description": "A data subject opens a DSAR about THEMSELVES.\n\nSubject and tenant are the caller's own token, never the body \u2014 the same DSAR machinery an\noperator drives, but with no way to name another subject. The verification token is returned\nonce so the subject can confirm the request from the channel they own.",
@@ -1157,6 +1552,97 @@
           }
         },
         "summary": "Create My Dsar",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/me/legal/outstanding": {
+      "get": {
+        "description": "Which required legal documents the CALLER must (re-)accept before proceeding. The subject is\nthe caller's own token \u2014 never a body \u2014 so this can only report on oneself. An app shell calls\nit right after login and blocks until the list is empty.",
+        "operationId": "my_outstanding_legal_api_v1_compliance_me_legal_outstanding_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "locale",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Locale",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response My Outstanding Legal Api V1 Compliance Me Legal Outstanding Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "My Outstanding Legal",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/me/legal/{doc_id}/accept": {
+      "post": {
+        "description": "Record the CALLER's acceptance of a document's current published version. Pinned to the\nversion in force now, so a later publish correctly leaves this acceptance stale.",
+        "operationId": "accept_legal_api_v1_compliance_me_legal__doc_id__accept_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "doc_id",
+            "required": true,
+            "schema": {
+              "title": "Doc Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Accept Legal Api V1 Compliance Me Legal  Doc Id  Accept Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Accept Legal",
         "tags": [
           "compliance"
         ]

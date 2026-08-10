@@ -216,6 +216,72 @@ class LegalHold:
         return cls(**{k: d.get(k, getattr(cls, k, None)) for k in cls.__dataclass_fields__})
 
 
+DRAFT, PUBLISHED = "draft", "published"
+
+
+@dataclass
+class LegalSection:
+    """One structured block of a legal document, so a viewer renders STRUCTURE — not raw HTML it
+    would have to trust. `heading` may be empty (a lead paragraph); `body` is plain text."""
+    heading: str = ""
+    body: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class LegalDocument:
+    """One VERSION of a legal/content page (privacy policy, terms, a cookie notice…).
+
+    A document is identified by a stable `doc_id` slug and carries many versions over time. A
+    PUBLISHED version is IMMUTABLE — you publish a NEW version to change the text — because an
+    acceptance proof points at the exact version the person agreed to, and rewriting it under their
+    feet would make that proof a lie. Only a draft is editable.
+
+    Bilingual by construction — but NOT by storing a separate copy per language. `content` holds ONE
+    set of rich blocks (`{kind: {…}}`, each localizable field carrying `{en, ar}`) plus a `title`
+    ({en, ar}) and a `values` map for the `{{PLACEHOLDER}}` slots. The SAME renderer the pack was
+    authored in (the UI's DocBlocksView) resolves the tokens from `values` and picks the language at
+    read time, so a table stays a table, an Arabic reader gets Arabic, and the two editions can never
+    drift apart. `requires_acceptance` is what the post-auth gate reads to decide whether a fresh
+    publish must be re-accepted before the person may proceed.
+    """
+    tenant: str
+    doc_id: str                       # slug: "privacy-policy", "terms-of-service", …
+    version: str                      # caller-chosen, monotonic by convention: "1.0", "2026-08-10"
+    status: str = DRAFT               # draft | published
+    requires_acceptance: bool = False
+    # {"title": {en, ar}, "blocks": [ {kind: {...}}, ... ], "values": {PLACEHOLDER: value}}
+    content: dict[str, Any] = field(default_factory=dict)
+    created_at: float = 0.0
+    published_at: float = 0.0
+    effective_at: float = 0.0         # 0 = effective on publish
+    default_locale: str = "en"
+
+    def view(self, locale: str = "") -> dict[str, Any]:
+        """The viewer payload: the rich blocks, the placeholder values, and the title in the asked
+        language (falling back so a half-translated title is never blank). The blocks themselves are
+        bilingual — the renderer picks the language — so there is nothing to select here but the
+        title."""
+        loc = locale or self.default_locale
+        title = self.content.get("title", {})
+        if isinstance(title, dict):
+            title = title.get(loc) or title.get(self.default_locale) or next(iter(title.values()), "")
+        return {"doc_id": self.doc_id, "version": self.version, "locale": loc,
+                "title": title, "blocks": self.content.get("blocks", []),
+                "values": self.content.get("values", {}),
+                "requires_acceptance": self.requires_acceptance,
+                "effective_at": self.effective_at or self.published_at}
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "LegalDocument":
+        return cls(**{k: d.get(k, getattr(cls, k, None)) for k in cls.__dataclass_fields__})
+
+
 @dataclass
 class ProcessingActivity:
     """RoPA — Records of Processing Activities (PDPL art. / GDPR art. 30)."""
