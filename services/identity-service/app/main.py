@@ -51,6 +51,9 @@ def create_app() -> FastAPI:
     # And a service that demands a proven address must be able to ask for proof.
     settings.assert_email_verification_ok()
     settings.assert_operator_config_ok()
+    # A misspelled onboarding method must stop the service, not silently disable a signup path.
+    from app.core.onboarding import build_onboarding_policy
+    build_onboarding_policy(settings)
     configure_logging(settings.SERVICE_NAME, settings.ENV, settings.LOG_LEVEL)
     logger = get_logger("app.main")
 

@@ -955,6 +955,30 @@
         ]
       }
     },
+    "/api/v1/auth/onboarding-methods": {
+      "get": {
+        "description": "Which onboarding methods this deployment has enabled \u2014 so a signup screen renders exactly the\noptions that will work (a 'Create account' button only when open registration is on, an 'I have\nan invite' path only when invites are, and so on). Pre-auth by nature: the caller has no session\nyet, that is the whole point of onboarding.",
+        "operationId": "onboarding_methods_api_v1_auth_onboarding_methods_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Onboarding Methods Api V1 Auth Onboarding Methods Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Onboarding Methods",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
     "/api/v1/auth/person/claim": {
       "post": {
         "description": "The invited human sets their OWN password. No token, no admin, no session \u2014 just the invite.\n\nSingle-use: redeeming consumes it. An invite that worked twice would be a password reset for\nanyone who ever saw the link.",

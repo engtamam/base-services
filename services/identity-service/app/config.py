@@ -256,6 +256,12 @@ class Settings(BaseSettings):
     MFA_ISSUER_NAME: str = "base-services"      # shown in authenticator apps
     MFA_TOTP_WINDOW: int = 1                     # TOTP clock-skew tolerance (± steps)
     REGISTRATION_ENABLED: bool = True           # open signup vs admin-only
+    # The authoritative, FAIL-CLOSED list of how a new person may onboard. A comma-list of known
+    # methods: open | invite_token | join_request | invite_link | temp_password. Empty = derive from
+    # the legacy knobs (open follows REGISTRATION_ENABLED, admin-invite stays on) so nothing changes
+    # until a deployment opts in. An unknown method here fails at BOOT, never silently. See
+    # app/core/onboarding.py.
+    ONBOARDING_METHODS: str = ""
     # ── email verification ────────────────────────────────────────────────────
     # An unproven address is not an identity: without this, anyone may register as
     # cfo@bank.com and every service that treats the address as a person inherits the lie.

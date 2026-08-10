@@ -117,9 +117,24 @@ def _svc(request: Request) -> AuthService:
 
 
 # ── Routes ──────────────────────────────────────────────────────────────────
+@router.get("/onboarding-methods")
+async def onboarding_methods() -> dict:
+    """Which onboarding methods this deployment has enabled — so a signup screen renders exactly the
+    options that will work (a 'Create account' button only when open registration is on, an 'I have
+    an invite' path only when invites are, and so on). Pre-auth by nature: the caller has no session
+    yet, that is the whole point of onboarding."""
+    from app.core.onboarding import build_onboarding_policy
+    return {"methods": build_onboarding_policy(get_settings()).list_enabled()}
+
+
 @router.post("/register", status_code=status.HTTP_201_CREATED, dependencies=[Depends(rate_limit)])
 async def register(request: Request, body: RegisterIn) -> dict:
-    if not get_settings().REGISTRATION_ENABLED:
+    # Open self-service registration is one onboarding METHOD, gated by the authoritative policy.
+    # With no explicit ONBOARDING_METHODS this asks REGISTRATION_ENABLED exactly as before.
+    from app.core.onboarding import OPEN, OnboardingMethodDisabled, build_onboarding_policy
+    try:
+        build_onboarding_policy(get_settings()).require(OPEN)
+    except OnboardingMethodDisabled:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "REGISTRATION_DISABLED")
     svc = _svc(request)
     try:
