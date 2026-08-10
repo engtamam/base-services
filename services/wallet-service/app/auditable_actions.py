@@ -74,4 +74,20 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "why": "erasure is irreversible and the data is gone — nothing but this record can "
                "show we honoured the DSAR, or prove we erased the right person",
     },
+    {
+        "action": "wallet.withdrawn",
+        "source": "internal",
+        "critical": True,
+        "why": "money leaves the wallet — a withdrawal is a debit against a customer's balance, so "
+               "an unrecorded one is unreconstructable and an unattributable one is indistinguishable "
+               "from theft",
+    },
+    {
+        "action": "wallet.withdrawal_settled",
+        "source": "internal",
+        "critical": True,
+        "why": "settlement is the moment a withdrawal becomes final (or reverses on failure); which "
+               "withdrawal settled and when is the record that proves the funds actually moved as "
+               "the ledger claims",
+    },
 ]

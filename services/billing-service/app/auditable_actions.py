@@ -148,5 +148,14 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "why": "a cross-tenant read is a privileged act: it sees every customer's money, so who "
                "looked across all tenants and when is worth recording even though it changes "
                "nothing",
+    },
+    {
+        "action": "payment.reconciled",
+        "source": "admin",
+        "critical": True,
+        "resource": "payment",
+        "why": "reconciliation pulls a gateway's status to recover a missed webhook and can move a "
+               "payment to paid — the same money-moving effect as the webhook it stands in for, so "
+               "who triggered it and against which payment must be recorded",
     }
 ]

@@ -87,6 +87,16 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "why": "policy changes explain later behaviour — why a sweep deleted more, why a limit "
                "started refusing — and that history is unavailable anywhere else. Not critical: "
                "refusing to change a retention period because the log is down protects nothing",
+    },
+    {
+        "action": "operator.whatsapp_onboarded",
+        "source": "admin",
+        "critical": True,
+        "resource": "waba",
+        "why": "onboarding a business exchanges Meta's code for a token that can send in that "
+               "shop's name and stores it as the tenant's credential — a credential-granting act, "
+               "and like every other one here it must be attributable and is gone the moment it "
+               "happens; the row names the WABA, never the code or the token",
     }
 
 ]
