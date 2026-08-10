@@ -435,6 +435,12 @@ jobs:
           # is a FAILURE, not a skipped note. It arrived transitively before; a gate
           # must not depend on another package's dependency tree.
           pip install pytest pyyaml asyncpg jsonschema
+          # safety:template-green runs the _template seed's OWN pytest, so _template must be
+          # importable in THIS job. Install it explicitly and NOT quietly, so a resolution failure
+          # is a loud red step here — not a bare "No module named 'fastapi'" surfacing three gates
+          # downstream (which is exactly how it failed a v0.15.0 tag attempt: the quiet editable
+          # loop below left fastapi absent and only template-green noticed).
+          pip install -e "services/_template[dev,ci,s3]"
           for d in services/*/; do
             pip install -e "$d[dev,ci,s3]" -q
           done
