@@ -42,7 +42,7 @@ from app.config import Settings
 from app.ports.cache import Cache
 from app.ports.datastore import DataStore
 from app.ports.errors import ConfigError
-from app.adapters.login_identifier import EmailIdentifier, UsernameIdentifier
+from app.adapters.login_identifier import EmailIdentifier, PhoneIdentifier, UsernameIdentifier
 from app.ports.login_identifier import LoginIdentifier
 from app.ports.event_bus import EventBus
 from app.ports.object_store import ObjectStore
@@ -150,6 +150,7 @@ _MFA: dict[str, Builder] = {
 _LOGIN_IDENTIFIER: dict[str, Builder] = {
     "username": lambda s: UsernameIdentifier(),
     "email": lambda s: EmailIdentifier(),
+    "phone": lambda s: PhoneIdentifier(default_cc=s.IDENTITY_PHONE_DEFAULT_CC),
 }
 _CAPS_RESOLVER: dict[str, Builder] = {
     # Roles are the input; capabilities are derived. `membership` keeps them on the row (no authz
@@ -194,6 +195,7 @@ class Container:
     mfa: Any = None
     login_identifier: LoginIdentifier = None  # type: ignore[assignment]
     caps_resolver: Any = None
+    otp_service: Any = None
 
     def describe(self) -> list[dict[str, str]]:
         """[{port, driver}] for the service manifest."""
@@ -252,9 +254,10 @@ def _build_audit_sink(settings: Settings, event_bus) -> Any:
 def build_container(settings: Settings) -> Container:
     """Resolve every port from config. Fail-fast on any unknown driver."""
     event_bus = _pick(_EVENTBUS, settings.EVENTBUS_DRIVER, "event_bus", settings)
+    cache = _pick(_CACHE, settings.CACHE_DRIVER, "cache", settings)
     return Container(
         datastore=_pick(_DATASTORE, settings.DATASTORE_DRIVER, "datastore", settings),
-        cache=_pick(_CACHE, settings.CACHE_DRIVER, "cache", settings),
+        cache=cache,
         event_bus=event_bus,
         queue=_pick(_QUEUE, settings.QUEUE_DRIVER, "queue", settings),
         object_store=_pick(_OBJECTSTORE, settings.OBJECTSTORE_DRIVER, "object_store", settings),
@@ -268,6 +271,30 @@ def build_container(settings: Settings) -> Container:
         token_issuer=_pick(_TOKEN_ISSUER, settings.TOKEN_ISSUER_DRIVER, "token_issuer", settings),
         mfa=_pick(_MFA, settings.MFA_DRIVER, "mfa", settings),
         caps_resolver=_pick(_CAPS_RESOLVER, settings.IDENTITY_CAPS_SOURCE, "caps_resolver", settings),
-        login_identifier=_pick(_LOGIN_IDENTIFIER, settings.IDENTITY_LOGIN_FIELD,
-                               "login_identifier", settings),
+        login_identifier=_build_login_identifier(settings),
+        otp_service=_build_otp_service(settings, cache),
     )
+
+
+def _build_otp_service(settings, cache):
+    from app.core.otp_service import OtpService
+    return OtpService(
+        cache=cache,
+        salt=settings.OTP_SALT or settings.PII_SALT,      # own salt; PII_SALT only to avoid empty
+        code_length=settings.OTP_CODE_LENGTH,
+        ttl_seconds=settings.OTP_TTL_SECONDS,
+        max_attempts=settings.OTP_MAX_ATTEMPTS,
+        resend_cooldown_seconds=settings.OTP_RESEND_COOLDOWN_SECONDS,
+        max_per_hour=settings.OTP_MAX_PER_HOUR,
+    )
+
+
+def _build_login_identifier(settings) -> LoginIdentifier:
+    """One kind → the plain adapter (byte-for-byte as before). Several (comma-list) → a composite
+    that accepts any of them and namespaces the key by kind."""
+    kinds = [k.strip() for k in str(settings.IDENTITY_LOGIN_FIELD).split(",") if k.strip()]
+    if len(kinds) <= 1:
+        return _pick(_LOGIN_IDENTIFIER, settings.IDENTITY_LOGIN_FIELD, "login_identifier", settings)
+    from app.adapters.login_identifier.composite import CompositeIdentifier
+    return CompositeIdentifier([(k, _pick(_LOGIN_IDENTIFIER, k, "login_identifier", settings))
+                                for k in kinds])

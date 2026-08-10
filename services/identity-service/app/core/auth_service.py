@@ -183,7 +183,7 @@ class AuthService:
         user = await self._users.get(str(row.get("user_id", "")))
         if user is None:
             return None
-        if self._identifier.display(user.username) != self._identifier.display(
+        if self._identifier.normalize(user.username) != self._identifier.normalize(
                 str(row.get("address", ""))):
             return None
         if user.email_verified is True:
@@ -251,7 +251,7 @@ class AuthService:
         """
         if self._memberships is None:
             raise RuntimeError("IDENTITY_MULTI_TENANT is off — no membership store is wired")
-        ident = self._identifier.display(identifier)
+        ident = self._identifier.normalize(identifier)   # the canonical key — one human, one account
         if self._lockout and await self._lockout.is_locked(source, ident):
             return None
         person = await self._memberships.person_by_identifier(ident)
@@ -304,7 +304,7 @@ class AuthService:
             raise TenantAccessDenied()
 
         self._identifier.validate(identifier)
-        ident = self._identifier.display(identifier)
+        ident = self._identifier.normalize(identifier)   # the canonical key — one human, one account
         person = await self._memberships.person_by_identifier(ident)
         invite: str | None = None
 
@@ -375,7 +375,7 @@ class AuthService:
                 f"which is the exact bootstrap this endpoint exists to solve")
 
         self._identifier.validate(identifier)
-        ident = self._identifier.display(identifier)
+        ident = self._identifier.normalize(identifier)   # the canonical key — one human, one account
         person_before = await self._memberships.person_by_identifier(ident)
         already_member = (
             person_before is not None

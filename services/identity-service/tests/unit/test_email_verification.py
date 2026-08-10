@@ -44,8 +44,14 @@ class _Users:
 class _Ident:
     driver = "email"
 
-    def display(self, v):
+    def validate(self, v):
+        return None
+
+    def normalize(self, v):                 # the canonical key (uniqueness + comparison)
         return v.strip().casefold()
+
+    def display(self, v):
+        return v.strip()
 
 
 class _Issuer:

@@ -234,8 +234,14 @@ class Settings(BaseSettings):
 
     # How users identify themselves at login. `username` reproduces the historical
     # behavior exactly; `email` validates the address and folds case so one address is
-    # one account. A new adapter (phone, a federated provider) is a new value here.
-    IDENTITY_LOGIN_FIELD: str = "username"       # username | email
+    # one account; `phone` folds every spelling of a number to one canonical E.164 so one
+    # human is one account. A federated provider is a new value here.
+    # A single kind, or a COMMA-LIST to accept several (e.g. "phone,email"): a value is routed to
+    # the first kind that accepts it, and the key is namespaced by kind so they never collide.
+    IDENTITY_LOGIN_FIELD: str = "username"       # username | email | phone | "phone,email" | …
+    # The country calling code applied to a NATIONAL phone number (leading 0 / no country code).
+    # Digits only; config, not hardcoded, so phone login works for any market. 966 = KSA.
+    IDENTITY_PHONE_DEFAULT_CC: str = "966"
 
     # Salts the subject pseudonym written into every IMMUTABLE record (audit chain, ledgers,
     # invoices). FROZEN — see config/product.identifiers.lock.json. Change it and every pseudonym
@@ -269,6 +275,26 @@ class Settings(BaseSettings):
     # Peppers the stored digest. A thief with the table still cannot recognise a token they
     # obtained elsewhere. Empty degrades to plain SHA-256 rather than disabling verification.
     EMAIL_VERIFICATION_PEPPER: str = ""
+
+    # ── OTP: a channel-agnostic one-time code (prove a phone, an email, a number at a counter) ──
+    # Own salt so a leaked OTP store can't be correlated with any other digest table. Falls back to
+    # PII_SALT only to avoid an empty salt in dev; production should set it explicitly.
+    OTP_SALT: str = ""
+    OTP_CODE_LENGTH: int = 6                     # digits; >=4 enforced
+    OTP_TTL_SECONDS: int = 300                   # a code lives 5 min by default
+    OTP_MAX_ATTEMPTS: int = 5                    # wrong tries before the code is burned
+    OTP_RESEND_COOLDOWN_SECONDS: int = 60        # min gap between two sends to one identifier
+    OTP_MAX_PER_HOUR: int = 5                    # hourly cap per identifier (anti mail/SMS-bomb)
+    # Delivery: identity owns issue/verify, notification-service owns the wire. The template maps to
+    # a channel THERE; the channel hint travels as a variable so one template can fan to sms|whatsapp
+    # |email by the recipient's shape. Empty template ⇒ delivery disabled (issue still returns a code
+    # to a trusted internal caller, e.g. a test harness or a bring-your-own-sender).
+    OTP_TEMPLATE: str = "auth.otp"
+    OTP_DELIVERY_CHANNEL: str = ""               # "", sms, whatsapp, email — "" lets notification pick
+    # NOTE: recycled-number policy (a reused phone is a DIFFERENT person) is enforced at person-bind
+    # time, which lives in the onboarding release — the knob lands there with the code that reads it,
+    # not here as an advertised-but-unread setting.
+
     # Where the link points. NEVER derived from the request Host header: an attacker-controlled
     # host would put a live credential in a URL they own.
     EMAIL_VERIFICATION_URL: str = ""      # e.g. https://app.example.com/verify?token=
