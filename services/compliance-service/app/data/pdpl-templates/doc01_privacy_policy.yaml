@@ -1,0 +1,486 @@
+id: doc01
+slug: privacy-policy
+kind: policy
+block_schema_version: 1
+title:
+  en: Privacy Policy
+  ar: سياسة الخصوصية
+satisfies:
+- req-p6f3d8
+source_controls:
+- pdpl-30
+- pdpl-09
+placeholders:
+- COMPANY_ACTIVITY
+- COMPANY_ADDRESS
+- COMPANY_NAME
+- COMPANY_PHONE
+- COMPANY_WEBSITE
+- COMPLAINT_CONTACT
+- COMPLAINT_DEPARTMENT
+- COMPLAINT_PERIOD
+- DPO_EMAIL
+- DPO_NAME
+- DPO_PHONE
+- EFFECTIVE_DATE
+- PRIVACY_EMAIL
+- RESPONSE_TIME
+- VERSION
+blocks:
+- cover:
+    title:
+      en: Privacy Policy
+      ar: سياسة الخصوصية
+    subtitle:
+      en: Personal Data Protection Law (PDPL) — Kingdom of Saudi Arabia
+      ar: نظام حماية البيانات الشخصية — المملكة العربية السعودية
+- snapshot:
+    rows:
+    - - en: Controller
+        ar: جهة التحكم
+      - '{{COMPANY_NAME}}'
+    - - en: Framework
+        ar: الإطار
+      - en: Saudi PDPL (Royal Decree M/19) + Implementing Regulations
+        ar: نظام حماية البيانات الشخصية (م/19) واللائحة التنفيذية
+    - - en: Legal basis for this document
+        ar: الأساس النظامي لهذه الوثيقة
+      - en: Articles 4, 12, 13 · SDAIA Privacy Policy Guideline
+        ar: المواد 4، 12، 13 · دليل سدايا لسياسة الخصوصية
+    - - en: Version / Effective date
+        ar: الإصدار / تاريخ النفاذ
+      - '{{VERSION}}  ·  {{EFFECTIVE_DATE}}'
+- lead:
+    text:
+      en: This Privacy Policy explains how {{COMPANY_NAME}} ("the Controller") collects, uses, shares,
+        stores, and destroys Personal Data, and the rights available to Data Subjects. It is published
+        in accordance with Article 12 of the Personal Data Protection Law, which requires the Controller
+        to make a privacy policy available to Data Subjects for their information prior to collecting
+        their Personal Data. It is written in clear, non-misleading language.
+      ar: توضّح سياسة الخصوصية هذه كيفية قيام {{COMPANY_NAME}} ("جهة التحكم") بجمع البيانات الشخصية واستخدامها
+        ومشاركتها وتخزينها وإتلافها، والحقوق المتاحة لأصحاب البيانات. وقد نُشرت وفقاً للمادة (12) من نظام
+        حماية البيانات الشخصية التي تُلزم جهة التحكم بإتاحة سياسة الخصوصية لأصحاب البيانات للاطلاع عليها
+        قبل جمع بياناتهم الشخصية. وهي مكتوبة بلغة واضحة وغير مضللة.
+- clause:
+    n: '1'
+    title:
+      en: Controller — Name and Activity
+      ar: جهة التحكم — الاسم والنشاط
+    paras:
+    - en: 'Official name: {{COMPANY_NAME}}. Activity, services and target group: {{COMPANY_ACTIVITY}}.'
+      ar: 'الاسم الرسمي: {{COMPANY_NAME}}. النشاط والخدمات والفئة المستهدفة: {{COMPANY_ACTIVITY}}.'
+- clause:
+    n: '2'
+    title:
+      en: Contact Information, DPO and Update Record
+      ar: معلومات التواصل ومسؤول حماية البيانات وسجل التحديث
+    paras:
+    - en: 'Address: {{COMPANY_ADDRESS}} · Phone: {{COMPANY_PHONE}} · Website: {{COMPANY_WEBSITE}}.'
+      ar: 'العنوان: {{COMPANY_ADDRESS}} · الهاتف: {{COMPANY_PHONE}} · الموقع الإلكتروني: {{COMPANY_WEBSITE}}.'
+    - en: 'Data Protection Officer: {{DPO_EMAIL}} · {{DPO_PHONE}}. The DPO can provide further details
+        about the processing of Personal Data. The name of the officer currently holding this role is
+        recorded in the contact annex to this policy.'
+      ar: 'مسؤول حماية البيانات: {{DPO_EMAIL}} · {{DPO_PHONE}}. ويمكن لمسؤول حماية البيانات تقديم مزيد
+        من التفاصيل حول معالجة البيانات الشخصية. ويُدوَّن اسم الموظف الذي يشغل هذا الدور حاليًا في ملحق
+        بيانات التواصل المرفق بهذه السياسة.'
+    - en: Update record — every amendment to this policy is logged below (version, date, summary).
+      ar: سجل التحديث — يُدوَّن كل تعديل على هذه السياسة أدناه (الإصدار، التاريخ، ملخص التغيير).
+- table:
+    headers:
+    - en: Version
+      ar: الإصدار
+    - en: Date
+      ar: التاريخ
+    - en: Summary of change
+      ar: ملخص التغيير
+    rows:
+    - - '{{VERSION}}'
+      - '{{EFFECTIVE_DATE}}'
+      - en: Initial publication.
+        ar: النشر الأول.
+    - - '[VERSION]'
+      - '[DATE]'
+      - '[CHANGE]'
+    widths:
+    - 1272600
+    - 1555400
+    - 4242000
+    centers: []
+- clause:
+    n: '3'
+    title:
+      en: Personal Data We Collect
+      ar: البيانات الشخصية التي نجمعها
+    paras:
+    - en: We collect the categories below. For each, we indicate at the point of collection whether providing
+        it is mandatory or optional for the relevant service.
+      ar: نجمع الفئات التالية. ونوضّح لكل منها عند نقطة الجمع ما إذا كان تقديمها إلزامياً أو اختيارياً
+        للخدمة المعنية.
+- table:
+    headers:
+    - en: Category
+      ar: الفئة
+    - en: Examples
+      ar: أمثلة
+    - en: Mandatory / optional
+      ar: إلزامي / اختياري
+    rows:
+    - - en: Account data
+        ar: بيانات الحساب
+      - en: name, national/Iqama ID, address, contact numbers — [DATA_TYPES]
+        ar: الاسم، رقم الهوية/الإقامة، العنوان، أرقام التواصل — [DATA_TYPES]
+      - '[MANDATORY/OPTIONAL]'
+    - - en: Payment data
+        ar: بيانات الدفع
+      - en: card number, payment amounts
+        ar: رقم البطاقة، مبالغ الدفع
+      - '[MANDATORY/OPTIONAL]'
+    - - en: Data from third parties
+        ar: بيانات من أطراف أخرى
+      - en: data obtained from other parties — [SOURCES]
+        ar: بيانات من جهات أخرى — [SOURCES]
+      - '[MANDATORY/OPTIONAL]'
+    - - en: Cookies / technical
+        ar: ملفات الارتباط / تقنية
+      - en: logs, cookies, device data — [COOKIE_TYPES]
+        ar: السجلات، ملفات الارتباط، بيانات الجهاز — [COOKIE_TYPES]
+      - '[MANDATORY/OPTIONAL]'
+    - - en: Location data
+        ar: بيانات الموقع
+      - en: geolocation where enabled
+        ar: الموقع الجغرافي عند التفعيل
+      - '[MANDATORY/OPTIONAL]'
+    widths:
+    - 1696800
+    - 3676400
+    - 1696800
+    centers:
+    - 2
+- clause:
+    n: '4'
+    title:
+      en: Collection Methods, Purposes and Legal Basis
+      ar: طرق الجمع والأغراض والأساس النظامي
+    paras:
+    - en: 'Direct collection — from the Data Subject via e-forms, fields, drop-down lists: {{DIRECT_METHODS}}.'
+      ar: 'الجمع المباشر — من صاحب البيانات عبر النماذج الإلكترونية والحقول والقوائم المنسدلة: {{DIRECT_METHODS}}.'
+    - en: 'Indirect collection — via cookies, website analytics, automatic collection, or interconnection
+        with another entity: {{INDIRECT_METHODS}}.'
+      ar: 'الجمع غير المباشر — عبر ملفات الارتباط وتحليلات الموقع والجمع التلقائي أو الربط مع جهة أخرى:
+        {{INDIRECT_METHODS}}.'
+    - en: 'Purposes: {{PURPOSES}}. Each purpose rests on your consent (Law Art. 5-1), or on one of the cases
+        in which the Law provides that processing is not subject to your consent: where the processing
+        serves your actual interests but communicating with you is impossible or difficult; where it is
+        pursuant to another law or in implementation of a previous agreement to which you are a party;
+        where the Controller is a Public Entity and the processing is required for security purposes or
+        to satisfy judicial requirements; or where it is necessary to achieve the Controller''s legitimate
+        interests, provided it does not prejudice your rights or interests and no Sensitive Data is processed.
+        (Law Arts. 5, 6)'
+      ar: 'الأغراض: {{PURPOSES}}. ويستند كل غرض إلى موافقتك (النظام م.5-1)، أو إلى إحدى الحالات التي نصّ
+        فيها النظام على ألا تخضع المعالجة لموافقتك: إذا كانت المعالجة تحقق مصلحة فعلية لك وكان التواصل
+        معك متعذراً أو غير ممكن؛ أو إذا كانت بناءً على نظام آخر أو تنفيذاً لاتفاق سابق تكون طرفاً فيه؛
+        أو إذا كانت جهة التحكم جهة عامة وكانت المعالجة مطلوبة لأغراض أمنية أو لاستيفاء متطلبات قضائية؛
+        أو إذا كانت ضرورية لتحقيق مصالح مشروعة لجهة التحكم، على ألا يخل ذلك بحقوقك أو يتعارض مع مصالحك،
+        وألا تكون البيانات حساسة. (النظام م.5، 6)'
+    - en: Articles 10 and 15 do not create legal bases. Article 10 governs the cases in which we may collect
+        your Personal Data from a source other than you, or process it for a purpose other than the one
+        it was collected for. Article 15 governs the cases in which we may disclose it. Where we rely
+        on either, we say so at the point of collection or disclosure.
+      ar: ولا تُنشئ المادتان (10) و(15) مسوغات نظامية للمعالجة. فالمادة (10) تحكم الأحوال التي يجوز فيها
+        جمع بياناتك الشخصية من غير صاحبها مباشرةً، أو معالجتها لغرض آخر غير الذي جُمعت من أجله. والمادة
+        (15) تحكم الأحوال التي يجوز فيها الإفصاح عنها. ومتى استندنا إلى أيٍ منهما، بيّنّا ذلك عند الجمع
+        أو الإفصاح.
+    - en: A single purpose may rest on more than one of the cases above at the same time.
+      ar: وقد يستند الغرض الواحد إلى أكثر من حالة من الحالات أعلاه في آنٍ واحد.
+    - en: Data minimization — collection is limited to the minimum necessary and directly relevant to
+        the purpose; means of collection are clear, direct and free from deception or manipulation.
+      ar: تقليل البيانات — يقتصر الجمع على الحد الأدنى اللازم والمرتبط مباشرةً بالغرض؛ وتكون وسائل الجمع
+        واضحة ومباشرة وخالية من التضليل أو التلاعب.
+    - en: Where processing rests on your consent, you may withdraw it at any time, and the withdrawal
+        does not affect the lawfulness of processing carried out before it. We do not make your consent
+        a condition of providing a service or a benefit, unless that service or benefit is directly related
+        to the processing you consented to. (Law Arts. 5, 7)
+      ar: ومتى استندت المعالجة إلى موافقتك، جاز لك العدول عنها في أي وقت، ولا يؤثر العدول على مشروعية
+        المعالجة التي تمت قبله. ولا نجعل موافقتك شرطاً لتقديم خدمة أو منفعة، ما لم تكن تلك الخدمة أو المنفعة
+        ذات صلة مباشرة بالمعالجة التي وافقت عليها. (النظام م.5، 7)
+- clause:
+    n: '5'
+    title:
+      en: How We Process Personal Data (Data Life Cycle)
+      ar: كيفية معالجة البيانات الشخصية (دورة حياة البيانات)
+    paras:
+    - en: 'Processing is defined precisely at each stage of the data life cycle and limited to what is
+        necessary for the stated purposes:'
+      ar: 'تُحدَّد المعالجة بدقة في كل مرحلة من دورة حياة البيانات وتقتصر على ما يلزم للأغراض المذكورة:'
+- table:
+    headers:
+    - en: Stage
+      ar: المرحلة
+    - en: What we do
+      ar: ما نقوم به
+    rows:
+    - - en: Collect
+        ar: الجمع
+      - en: gather only the data needed for the purpose.
+        ar: جمع البيانات اللازمة للغرض فقط.
+    - - en: Store
+        ar: التخزين
+      - en: hold it securely for the retention period.
+        ar: حفظها بأمان طوال مدة الاحتفاظ.
+    - - en: Use
+        ar: الاستخدام
+      - en: use it strictly for the declared purposes.
+        ar: استخدامها للأغراض المعلنة حصراً.
+    - - en: Share
+        ar: المشاركة
+      - en: disclose only as described in Section 6.
+        ar: الإفصاح فقط وفق ما ورد في البند 6.
+    - - en: Destroy
+        ar: الإتلاف
+      - en: destroy it when no longer needed (Section 7).
+        ar: إتلافها عند انتفاء الحاجة (البند 7).
+    widths:
+    - 1555400
+    - 5514600
+    centers: []
+- clause:
+    n: '6'
+    title:
+      en: Sharing and Disclosure
+      ar: المشاركة والإفصاح
+    paras:
+    - en: 'We disclose Personal Data only to: {{RECIPIENTS}} (with a description of each entity). We state
+        whether the disclosure is inside or outside the Kingdom, its purpose, and whether it is occasional
+        (one-off) or regular: {{DISCLOSURE_FREQUENCY}}.'
+      ar: 'لا نُفصح عن البيانات الشخصية إلا إلى: {{RECIPIENTS}} (مع وصف لكل جهة). ونوضّح ما إذا كان الإفصاح
+        داخل المملكة أو خارجها، وغرضه، وما إذا كان عرضياً (لمرة واحدة) أو منتظماً: {{DISCLOSURE_FREQUENCY}}.'
+    - en: We disclose Personal Data only where the disclosure serves the purpose you were told about,
+        rests on a lawful basis, and is limited to the minimum data the recipient needs. We do not disclose
+        it where doing so would harm you, prejudice national security or the Kingdom's vital interests,
+        or conflict with a judicial proceeding. (Law Arts. 6, 15, 16)
+      ar: ولا نُفصح عن البيانات الشخصية إلا متى كان الإفصاح محققاً للغرض الذي أُبلغتَ به، ومستنداً إلى
+        مسوغ نظامي، ومقتصراً على الحد الأدنى من البيانات التي تحتاجها الجهة المستقبِلة. ولا نُفصح عنها
+        متى كان في ذلك إضرار بك، أو مساس بالأمن الوطني أو بالمصالح الحيوية للمملكة، أو تعارض مع دعوى قضائية.
+        (النظام م.6، 15، 16)
+    - en: Where a recipient is outside the Kingdom, we transfer only for a purpose Article 29 permits,
+        and only to a destination the Competent Authority lists as providing adequate protection — or,
+        failing that, under Standard Contractual Clauses, Binding Common Rules or an accreditation certificate
+        — after a documented transfer risk assessment, and limited to the minimum data needed. Our Cross-Border
+        Data Transfer Policy sets this out in full. (Law Art. 29 · Transfer Reg.)
+      ar: ومتى كانت الجهة المستقبِلة خارج المملكة، فلا ننقل البيانات إلا لغرض تجيزه المادة (29)، وإلى
+        جهة مُدرَجة في قائمة الجهة المختصة بوصفها توفّر مستوى حماية مناسباً — أو، عند تعذّر ذلك، بموجب
+        البنود التعاقدية القياسية أو القواعد المشتركة الملزمة أو شهادة اعتماد — وبعد تقويم موثّق لمخاطر
+        النقل، وبالحد الأدنى من البيانات اللازمة. وتفصّل ذلك سياسة نقل البيانات خارج المملكة. (النظام
+        م.29 · لائحة النقل)
+- clause:
+    n: '7'
+    title:
+      en: Storage, Retention, Destruction and Security
+      ar: التخزين والاحتفاظ والإتلاف والأمن
+    paras:
+    - en: Storage — Personal Data is stored using {{STORAGE_LOCATION}} (e.g. the Controller's servers or
+        a cloud provider, inside or outside the Kingdom).
+      ar: التخزين — تُخزَّن البيانات الشخصية باستخدام {{STORAGE_LOCATION}} (مثل خوادم جهة التحكم أو مزوّد
+        سحابي، داخل المملكة أو خارجها).
+    - en: 'Retention — data is kept only for the period necessary for the purpose or as required by law:
+        {{RETENTION_PERIOD}}, with specific periods per data type where applicable.'
+      ar: 'الاحتفاظ — يُحتفظ بالبيانات فقط للمدة اللازمة للغرض أو وفق ما يقتضيه النظام: {{RETENTION_PERIOD}}،
+        مع تحديد مدد لكل نوع بيانات عند الاقتضاء.'
+    - en: 'Destruction — we destroy Personal Data without undue delay once it is no longer necessary for
+        the purpose it was collected for, so that it cannot afterwards be viewed or recovered. We keep
+        it beyond that point in only two cases: where a legal basis requires us to retain it for a set
+        period — then we destroy it when that period lapses or the purpose is satisfied, whichever is
+        later — and where it is closely related to a case before a judicial authority and is needed for
+        it, in which case we destroy it once those proceedings conclude. We may also keep data after the
+        purpose ends only if it no longer contains anything that could identify you. (Law Art. 18)'
+      ar: 'الإتلاف — نُتلف البيانات الشخصية دون تأخير غير مبرر متى لم تعد لازمة للغرض الذي جُمعت من أجله،
+        بحيث لا يمكن بعدها الاطلاع عليها أو استعادتها. ولا نحتفظ بها بعد ذلك إلا في حالتين: إذا وُجد مسوغ
+        نظامي يوجب الاحتفاظ بها مدة محددة — فتُتلَف بعد انتهاء تلك المدة أو انتهاء الغرض من جمعها، أيهما
+        أطول — وإذا كانت متصلة اتصالاً وثيقاً بقضية منظورة أمام جهة قضائية وكان الاحتفاظ بها مطلوباً لذلك
+        الغرض، فتُتلَف بعد استكمال الإجراءات القضائية الخاصة بالقضية. ويجوز لنا كذلك الاحتفاظ بها بعد
+        انتهاء الغرض متى لم تعد تحوي ما يؤدي إلى معرفتك على وجه التحديد. (النظام م.18)'
+    - en: 'Security — administrative, technical and organizational measures protect the data from leakage,
+        damage or unlawful access, including encryption, anonymization and pseudonymisation: {{SECURITY_MEASURES}}.
+        The level of measures reflects the sensitivity and amount of data.'
+      ar: 'الأمن — تحمي التدابير الإدارية والتقنية والتنظيمية البيانات من التسرّب أو التلف أو الوصول غير
+        المشروع، بما في ذلك التشفير وإخفاء الهوية والترميز: {{SECURITY_MEASURES}}. ويتناسب مستوى التدابير
+        مع حساسية البيانات وكميتها.'
+- section:
+    level: 8
+    text:
+      en: Your Rights as a Data Subject
+      ar: حقوقك بصفتك صاحب البيانات
+- lead:
+    text:
+      en: You may exercise the following rights through {{PRIVACY_EMAIL}} or other channels we provide
+        (email, SMS, in-app). We respond within {{RESPONSE_TIME}}.
+      ar: يمكنك ممارسة الحقوق التالية عبر {{PRIVACY_EMAIL}} أو القنوات الأخرى التي نوفّرها (البريد الإلكتروني،
+        الرسائل النصية، التطبيق). ونستجيب خلال {{RESPONSE_TIME}}.
+- bullets:
+    items:
+    - - en: Be informed
+        ar: العلم
+      - en: of the legal basis and purpose of collection.
+        ar: بالأساس النظامي وغرض الجمع.
+    - - en: Access
+        ar: الاطلاع
+      - en: your Personal Data held by the Controller, in accordance with the rules and procedures set
+          out in the Regulations, and without prejudice to the cases in which the Law requires or permits
+          access to be limited or prevented. (Law Arts. 4-2, 9)
+        ar: على بياناتك الشخصية المحفوظة لدى جهة التحكم، وفقاً للقواعد والإجراءات التي تحددها اللائحة،
+          ودون الإخلال بالأحوال التي يوجب فيها النظام أو يجيز تقييد الاطلاع أو منعه. (النظام م.4-2، 9)
+    - - en: Obtain a copy
+        ar: الحصول على نسخة
+      - en: in a readable, clear format; printed if feasible.
+        ar: بصيغة واضحة قابلة للقراءة؛ ومطبوعة إن أمكن.
+    - - en: Correct / complete / update
+        ar: التصحيح / الإكمال / التحديث
+      - en: your Personal Data.
+        ar: لبياناتك الشخصية.
+    - - en: Request destruction
+        ar: طلب الإتلاف
+      - en: of your Personal Data held by the Controller when you no longer need it, without prejudice
+          to the cases in which the Law requires us to retain it — a statutory retention period, or a
+          case before a judicial authority. (Law Arts. 4-5, 18)
+        ar: لبياناتك الشخصية المحفوظة لدى جهة التحكم متى لم تعد لازمة لك، دون الإخلال بالأحوال التي يوجب
+          فيها النظام الاحتفاظ بها — كمدة نظامية للاحتفاظ، أو قضية منظورة أمام جهة قضائية. (النظام م.4-5،
+          18)
+    - - en: Withdraw consent
+        ar: العدول عن الموافقة
+      - en: at any time, through any channel above. Withdrawing is as easy as giving consent was. On withdrawal
+          we stop the processing without undue delay, notify everyone we disclosed your data to and ask
+          them to destroy it. Withdrawal does not make the processing carried out beforehand unlawful,
+          and it does not stop processing that rests on a legal basis other than your consent. (Reg. Art.
+          12)
+        ar: في أي وقت، وعبر أي من القنوات أعلاه. وتكون إجراءات العدول مماثلة أو أكثر سهولة من إجراءات
+          الحصول على الموافقة. وعند العدول نوقف المعالجة دون تأخير غير مبرر، ونُشعر كل من أفصحنا لهم عن
+          بياناتك ونطلب إتلافها. ولا يؤثر العدول على مشروعية أي معالجة تمت قبله، ولا يوقف المعالجة القائمة
+          على مسوغ نظامي آخر غير موافقتك. (اللائحة م.12)
+    - - en: Submit a complaint
+        ar: تقديم شكوى
+      - en: to the Competent Authority (SDAIA).
+        ar: إلى الجهة المختصة (سدايا).
+    - - en: Claim compensation
+        ar: المطالبة بالتعويض
+      - en: through the competent court, for proportionate compensation for the material or moral damage
+          you suffer as a result of a violation of the Law or its Regulations. (Law Art. 40)
+        ar: أمام المحكمة المختصة، بتعويض يتناسب مع الضرر المادي أو المعنوي الذي يلحق بك نتيجة أي من المخالفات
+          الواردة في النظام أو اللائحة. (النظام م.40)
+- section:
+    level: 9
+    text:
+      en: Complaint and Objection Mechanism
+      ar: آلية تقديم الشكاوى والاعتراضات
+- lead:
+    text:
+      en: 'If you cannot exercise a right within the stated period, or you object to processing, contact
+        our complaints function: {{COMPLAINT_DEPARTMENT}} — {{COMPLAINT_CONTACT}}. Complaints are processed
+        within {{COMPLAINT_PERIOD}}. If you are dissatisfied with the outcome, you may escalate to the
+        Competent Authority (SDAIA).'
+      ar: 'إذا تعذّر عليك ممارسة حق خلال المدة المحددة، أو كان لديك اعتراض على المعالجة، تواصل مع جهة
+        الشكاوى لدينا: {{COMPLAINT_DEPARTMENT}} — {{COMPLAINT_CONTACT}}. وتُعالَج الشكاوى خلال {{COMPLAINT_PERIOD}}.
+        وإذا لم تكن راضياً عن النتيجة، يمكنك التصعيد إلى الجهة المختصة (سدايا).'
+- section:
+    level: 10
+    text:
+      en: Availability, Notification and Updates
+      ar: الإتاحة والإشعار والتحديث
+- bullets:
+    items:
+    - - ''
+      - en: This policy is available before collection via {{COMPANY_WEBSITE}}, written in clear, easy-to-read
+          language suitable for all Data Subjects.
+        ar: تتاح هذه السياسة قبل الجمع عبر {{COMPANY_WEBSITE}}، ومكتوبة بلغة واضحة سهلة القراءة تناسب
+          جميع أصحاب البيانات.
+    - - ''
+      - en: We notify Data Subjects via app notifications, SMS, email, or a standalone form before or
+          during collection.
+        ar: نُشعر أصحاب البيانات عبر إشعارات التطبيق أو الرسائل النصية أو البريد الإلكتروني أو نموذج مستقل
+          قبل الجمع أو أثناءه.
+    - - ''
+      - en: We review the policy periodically and log any change in the update record (Section 2).
+        ar: نراجع السياسة دورياً ونُدوّن أي تغيير في سجل التحديث (البند 2).
+    - - ''
+      - en: 'Related links: Terms & Conditions, Cookie Policy, and the Personal Data Protection Law —
+          {{RELATED_LINKS}}.'
+        ar: 'روابط ذات صلة: الشروط والأحكام، وسياسة ملفات الارتباط، ونظام حماية البيانات الشخصية — {{RELATED_LINKS}}.'
+- helper:
+    text:
+      en: 'Before publishing: this policy must be reachable BEFORE any Personal Data is collected — Article
+        12 makes it mandatory, not optional. Check that Section 4 names the actual legal basis for each
+        of your purposes; the bases available to you are in Articles 5, 6, 10 and 15, and Section 4 already
+        lists them. Delete this red note once the policy is published.'
+      ar: 'قبل النشر: يجب أن تكون هذه السياسة متاحة قبل جمع أي بيانات شخصية — فالمادة (12) تجعلها إلزامية
+        لا اختيارية. وتأكّد من أن البند (4) يذكر المسوغ النظامي الفعلي لكل غرض من أغراضك؛ والمسوغات المتاحة
+        لك واردة في المواد (5) و(6) و(10) و(15)، وقد عدّدها البند (4). واحذف هذه الملاحظة الحمراء بعد
+        نشر السياسة.'
+- section:
+    level: 11
+    text:
+      en: PDPL Control Mapping
+      ar: مطابقة ضوابط النظام
+- table:
+    headers:
+    - en: PDPL Control
+      ar: الضابط
+    - en: Article / Source
+      ar: المادة / المصدر
+    - en: Evidenced in
+      ar: الدليل في
+    rows:
+    - - en: Transparency / privacy notice
+        ar: الشفافية / إشعار الخصوصية
+      - en: Art. 12 · Guideline
+        ar: م.12 · الدليل
+      - en: Sections 1–10
+        ar: البنود 1–10
+    - - en: Right to be informed
+        ar: الحق في العلم
+      - en: Art. 4, 13
+        ar: م.4، 13
+      - en: Sections 3, 4, 8
+        ar: البنود 3، 4، 8
+    - - en: Lawful basis for processing
+        ar: المسوغ النظامي للمعالجة
+      - en: Law Arts. 5, 6, 7
+        ar: النظام م.5، 6، 7
+      - en: Section 4
+        ar: البند 4
+    - - en: Collection from another source / other purpose; disclosure
+        ar: الجمع من غير صاحبها أو لغرض آخر؛ والإفصاح
+      - en: Law Arts. 10, 15
+        ar: النظام م.10، 15
+      - en: Sections 4, 6
+        ar: البندان 4، 6
+    - - en: Data minimization
+        ar: تقليل البيانات
+      - en: Art. 11
+        ar: م.11
+      - en: Section 4
+        ar: البند 4
+    widths:
+    - 2828000
+    - 1979600
+    - 2262400
+    centers: []
+- signoff:
+    roles:
+    - en: Approved by
+      ar: اعتمدها
+    - en: Data Protection Officer
+      ar: مسؤول حماية البيانات
+- references:
+    title:
+      en: Official Sources
+      ar: المصادر الرسمية
+    items:
+    - - en: PDPL (Royal Decree M/19), Articles 4, 5, 6, 7, 10, 11, 12, 13, 15, 18, 40
+        ar: نظام حماية البيانات الشخصية (م/19)، المواد 4، 5، 6، 7، 10، 11، 12، 13، 15، 18، 40
+      - sdaia.gov.sa
+    - - en: SDAIA — Elaboration and Developing Privacy Policy Guideline (Aug 2024)
+        ar: سدايا — الدليل الاسترشادي لإعداد وتطوير سياسة الخصوصية (أغسطس 2024)
+      - sdaia.gov.sa
+- footer_band:
+    text:
+      en: Template — replace [PLACEHOLDERS] and review with legal counsel before publishing.
+      ar: نموذج — استبدل [PLACEHOLDERS] وراجعه مع المستشار النظامي قبل النشر.

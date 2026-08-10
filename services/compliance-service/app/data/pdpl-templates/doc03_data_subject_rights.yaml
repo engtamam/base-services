@@ -1,0 +1,456 @@
+id: doc03
+slug: data-subject-rights
+kind: policy
+block_schema_version: 1
+title:
+  en: Data Subject Rights Procedure
+  ar: إجراء حقوق أصحاب البيانات
+source_controls:
+- pdpl-03
+- pdpl-04
+- pdpl-05
+- pdpl-06
+- pdpl-07
+- pdpl-08
+- pdpl-29
+- pdpl-11
+- pdpl-26
+placeholders:
+- COMPANY_NAME
+- COMPANY_WEBSITE
+- EFFECTIVE_DATE
+- PRIVACY_EMAIL
+- VERSION
+blocks:
+- cover:
+    title:
+      en: Data Subject Rights Procedure
+      ar: إجراء حقوق أصحاب البيانات
+    subtitle:
+      en: Personal Data Protection Law (PDPL) — Kingdom of Saudi Arabia
+      ar: نظام حماية البيانات الشخصية — المملكة العربية السعودية
+- snapshot:
+    rows:
+    - - en: Controller
+        ar: جهة التحكم
+      - '{{COMPANY_NAME}}'
+    - - en: Request channel
+        ar: قناة تقديم الطلب
+      - '{{PRIVACY_EMAIL}}'
+    - - en: Response time
+        ar: مدة الاستجابة
+      - en: 30 days (extendable +30)
+        ar: 30 يوماً (قابلة للتمديد +30)
+    - - en: Legal basis for this document
+        ar: الأساس النظامي لهذه الوثيقة
+      - en: Law Art. 4, 9 · Reg. Art. 3–8
+        ar: النظام م.4، 9 · اللائحة م.3–8
+    - - en: Version / Effective date
+        ar: الإصدار / تاريخ النفاذ
+      - '{{VERSION}}  ·  {{EFFECTIVE_DATE}}'
+- lead:
+    text:
+      en: This procedure explains how {{COMPANY_NAME}} receives, verifies, and fulfils requests from Data
+        Subjects exercising their rights under the Law, and the timelines and records that apply.
+      ar: يوضّح هذا الإجراء كيفية استقبال {{COMPANY_NAME}} لطلبات أصحاب البيانات لممارسة حقوقهم بموجب
+        النظام والتحقق منها وتنفيذها، والمُدد والسجلات المطبّقة.
+- section:
+    level: 1
+    text:
+      en: The Rights at a Glance
+      ar: الحقوق باختصار
+- table:
+    headers:
+    - en: Right
+      ar: الحق
+    - en: Source
+      ar: المصدر
+    - en: What we do
+      ar: ما نقوم به
+    rows:
+    - - en: Be informed
+        ar: العلم
+      - en: Art. 4 · Reg. 4
+        ar: م.4 · اللائحة 4
+      - en: Disclose basis, purpose, recipients and rights.
+        ar: الإفصاح عن الأساس والغرض والمستقبِلين والحقوق.
+    - - en: Access
+        ar: الوصول
+      - en: Art. 4 · Reg. 5
+        ar: م.4 · اللائحة 5
+      - en: Let the DS view their data (or via a direct channel).
+        ar: تمكين صاحب البيانات من الاطلاع (أو عبر قناة مباشرة).
+    - - en: Obtain a copy
+        ar: الحصول على نسخة
+      - en: Art. 4 · Reg. 6
+        ar: م.4 · اللائحة 6
+      - en: Provide a readable, clear copy; printed if feasible.
+        ar: تقديم نسخة واضحة قابلة للقراءة؛ ومطبوعة إن أمكن.
+    - - en: Correct / complete
+        ar: التصحيح / الإكمال
+      - en: Art. 4 · Reg. 7
+        ar: م.4 · اللائحة 7
+      - en: Correct data; restrict processing while verifying.
+        ar: تصحيح البيانات؛ وتقييد المعالجة أثناء التحقق.
+    - - en: Destruction
+        ar: الإتلاف
+      - en: Art. 4 · Reg. 8
+        ar: م.4 · اللائحة 8
+      - en: Destroy data and all copies; notify recipients.
+        ar: إتلاف البيانات وكل نسخها؛ وإبلاغ المستقبِلين.
+    widths:
+    - 1696800
+    - 1555400
+    - 3817800
+    centers: []
+- section:
+    level: 2
+    text:
+      en: Submitting a Request
+      ar: تقديم الطلب
+- bullets:
+    items:
+    - - ''
+      - en: Requests may be submitted at {{PRIVACY_EMAIL}} or via {{COMPANY_WEBSITE}}.
+        ar: يمكن تقديم الطلبات عبر {{PRIVACY_EMAIL}} أو من خلال {{COMPANY_WEBSITE}}.
+    - - ''
+      - en: We accept requests through any means, including oral requests.
+        ar: نقبل الطلبات بأي وسيلة، بما في ذلك الطلبات الشفهية.
+    - - ''
+      - en: Every request — including oral ones — is documented and logged (see the Request Log).
+        ar: يُوثَّق كل طلب — بما في ذلك الشفهي — ويُسجَّل (انظر سجل الطلبات).
+- section:
+    level: 3
+    text:
+      en: Identity Verification
+      ar: التحقق من الهوية
+- lead:
+    text:
+      en: Before acting on a request we verify that the requester is the Data Subject, or their legal
+        guardian, so that we do not disclose Personal Data to the wrong person. We ask only for what is
+        needed to establish identity, never for more data than the request itself concerns, and we do
+        not treat the verification step as a way to delay or discourage the request. Any supporting evidence
+        collected for verification is used for nothing else and is destroyed once verification is complete.
+      ar: قبل تنفيذ أي طلب نتحقق من أن مقدّم الطلب هو صاحب البيانات الشخصية أو وليّه الشرعي، حتى لا نُفصح
+        عن البيانات الشخصية لغير صاحبها. ولا نطلب إلا ما يلزم لإثبات الهوية، ولا نطلب بيانات تزيد على
+        ما يتناوله الطلب ذاته، ولا نتخذ من خطوة التحقق وسيلة لتأخير الطلب أو تثبيط تقديمه. ولا تُستخدم
+        أي مستندات داعمة تُجمع لأغراض التحقق في أي غرض آخر، وتُتلف فور اكتمال عملية التحقق.
+- section:
+    level: 4
+    text:
+      en: Response Timeline
+      ar: مدة الاستجابة
+- callout:
+    title:
+      en: 30 days — extendable by 30 (Reg. Art. 3)
+      ar: 30 يوماً — قابلة للتمديد 30 (اللائحة م.3)
+    items:
+    - en: We act on a request within 30 days and without undue delay.
+      ar: ننفّذ الطلب خلال 30 يوماً ودون تأخير غير مبرر.
+    - en: The period may be extended by up to a further 30 days for disproportionate effort or multiple
+        requests — the Data Subject is notified in advance with the reasons.
+      ar: يجوز تمديد المدة حتى 30 يوماً إضافية للجهد غير المتناسب أو تعدد الطلبات — ويُبلَّغ صاحب البيانات
+        مسبقاً بالأسباب.
+    kind: info
+- section:
+    level: 5
+    text:
+      en: Handling Each Right
+      ar: معالجة كل حق
+- clause:
+    n: '5.1'
+    title:
+      en: Access, and obtaining a copy
+      ar: الاطلاع، والحصول على نسخة
+    paras:
+    - en: We enable the Data Subject to view their Personal Data, and on request we provide a copy of
+        it in a readable and clear format, in a commonly used electronic format; the Data Subject may
+        request a printed hard copy where feasible. (Reg. Arts. 5, 6)
+      ar: نمكّن صاحب البيانات الشخصية من الاطلاع على بياناته، ونزوده عند الطلب بنسخة منها بصيغة واضحة
+        قابلة للقراءة، وبصيغة إلكترونية شائعة الاستخدام؛ وله طلب نسخة ورقية مطبوعة متى كان ذلك ممكناً.
+        (اللائحة م.5، 6)
+    - en: Exercising this right may not adversely affect the rights of others — for example intellectual
+        property rights or trade secrets. Where those rights would be affected, we provide what can be
+        provided and explain what is withheld and why. (Reg. Art. 6-1)
+      ar: ولا يجوز أن تؤثر ممارسة هذا الحق سلباً على حقوق الآخرين — كحقوق الملكية الفكرية أو الأسرار التجارية.
+        ومتى تأثرت تلك الحقوق، قدّمنا ما يمكن تقديمه وبيّنّا ما حُجب وسببه. (اللائحة م.6-1)
+    - en: 'This right is a right to a copy of the data. It is not a right to have the data transmitted
+        to another Controller: the Law provides no such right.'
+      ar: وهذا الحق هو حق في الحصول على نسخة من البيانات، وليس حقاً في نقلها إلى جهة تحكم أخرى؛ إذ لم
+        يقرر النظام حقاً من هذا القبيل.
+- clause:
+    n: '5.2'
+    title:
+      en: Correction, completion and updating
+      ar: التصحيح والإكمال والتحديث
+    paras:
+    - en: We correct, complete or update the Data Subject's Personal Data on request. We may ask for the
+        supporting documents or evidence needed to verify the correction, and we destroy those documents
+        once the verification is complete. (Reg. Art. 7-2)
+      ar: نصحّح البيانات الشخصية لصاحبها أو نكملها أو نحدّثها بناءً على طلبه. ولنا أن نطلب المستندات أو
+        الأدلة الداعمة اللازمة للتحقق من التصحيح، ونُتلف تلك المستندات فور اكتمال التحقق. (اللائحة م.7-2)
+    - en: Where the Data Subject contests the accuracy of their Personal Data, they have the right to
+        obtain a restriction of the processing for the period we need to verify that accuracy. This restriction
+        is tied to the verification; it is not a standing right to restrict processing, and it does not
+        apply where providing the data would contravene the Law or the Regulation. (Reg. Art. 7-1)
+      ar: ومتى اعترض صاحب البيانات الشخصية على دقة بياناته، كان له الحق في تقييد معالجتها خلال المدة التي
+        نحتاجها للتحقق من دقتها. وهذا التقييد مرتبط بالتحقق، وليس حقاً دائماً في تقييد المعالجة، ولا يسري
+        متى كان في تقديم البيانات مخالفة لأحكام النظام أو اللائحة. (اللائحة م.7-1)
+    - en: Once the Personal Data is corrected, we notify without undue delay the other entities to which
+        the data was disclosed, and we notify the Data Subject upon completing the correction. (Reg. Art.
+        7-3)
+      ar: وبعد تصحيح البيانات الشخصية، نُشعر دون تأخير الجهات الأخرى التي أُفصح لها عن البيانات، ونُشعر
+        صاحب البيانات عند الانتهاء من التصحيح. (اللائحة م.7-3)
+- clause:
+    n: '5.3'
+    title:
+      en: Destruction
+      ar: الإتلاف
+    paras:
+    - en: We destroy the data on request, when it is no longer needed, when consent — being the sole basis
+        for the processing — is withdrawn, or when the processing was unlawful. We destroy every copy,
+        including backups, and ask each recipient we disclosed it to, to destroy their copies. (Reg. Art.
+        8)
+      ar: نتلف البيانات عند الطلب، أو عند انتفاء الحاجة إليها، أو عند العدول عن الموافقة متى كانت هي المسوّغ
+        الوحيد للمعالجة، أو عند عدم مشروعية المعالجة. ونتلف كل نسخة منها بما في ذلك النسخ الاحتياطية،
+        ونطلب من كل جهة أفصحنا لها عنها إتلاف نسخها. (اللائحة م.8)
+    - en: 'We refuse a destruction request, and keep the data, in the two cases the Law reserves: where
+        a legal basis obliges us to retain it for a set period — we destroy it when that period lapses
+        or the purpose ends, whichever is later — and where it is closely related to a case before a judicial
+        authority, in which case we destroy it once those proceedings conclude. We tell the Data Subject
+        which case applies and when the data will be destroyed. (Law Art. 18-2)'
+      ar: 'ونرفض طلب الإتلاف ونحتفظ بالبيانات في الحالتين اللتين استثناهما النظام: إذا وُجد مسوغ نظامي
+        يوجب الاحتفاظ بها مدة محددة — فنتلفها بعد انتهاء تلك المدة أو انتهاء الغرض من جمعها، أيهما أطول
+        — وإذا كانت متصلة اتصالاً وثيقاً بقضية منظورة أمام جهة قضائية، فنتلفها بعد استكمال الإجراءات القضائية.
+        ونُبلغ صاحب البيانات بالحالة المنطبقة وبموعد الإتلاف. (النظام م.18-2)'
+- clause:
+    n: '5.4'
+    title:
+      en: Automated decisions
+      ar: القرارات الآلية
+    paras:
+    - en: Where a decision about the Data Subject is made solely on the basis of automated processing,
+        we obtain the Data Subject's EXPLICIT consent before the processing (Reg. Art. 11-2-c), we inform
+        them at collection that decisions will be made solely by automated processing (Reg. Art. 4), and
+        we conduct a Data Protection Impact Assessment beforehand (Reg. Art. 25-1).
+      ar: متى اتُّخذ قرار بشأن صاحب البيانات الشخصية بناءً على المعالجة الآلية وحدها، حصلنا على موافقته
+        الصريحة قبل المعالجة (اللائحة م.11-2-ج)، وأبلغناه عند الجمع بأن القرارات ستُتخذ بناءً على المعالجة
+        الآلية وحدها (اللائحة م.4)، وأجرينا تقييم الأثر على معالجة البيانات الشخصية مسبقاً (اللائحة م.25-1).
+    - en: The Law grants no right to human review of such a decision, and this document does not create
+        one. The Data Subject's remedies are to withdraw consent, to complain to the Competent Authority,
+        and to claim compensation before the competent court. (Law Arts. 5-2, 40)
+      ar: ولم يقرر النظام حقاً في مراجعة بشرية لمثل هذا القرار، ولا تُنشئ هذه الوثيقة حقاً كهذا. وسبل
+        صاحب البيانات هي العدول عن الموافقة، وتقديم شكوى إلى الجهة المختصة، والمطالبة بالتعويض أمام المحكمة
+        المختصة. (النظام م.5-2، 40)
+- section:
+    level: 6
+    text:
+      en: When We May Limit or Refuse
+      ar: متى يجوز التقييد أو الرفض
+- bullets:
+    items:
+    - - en: Limit access —
+        ar: تقييد الوصول —
+      - en: we may limit the right of access where it is necessary to protect the Data Subject or others
+          from harm, or — if we are a Public Entity — where the restriction is required for security purposes,
+          by another law, or to fulfil judicial requirements. (Law Art. 9-1)
+        ar: يجوز لنا تقييد ممارسة الحق في الاطلاع متى كان ذلك ضرورياً لحماية صاحب البيانات الشخصية أو
+          غيره من أي ضرر، أو — إذا كنا جهة عامة — متى كان التقييد مطلوباً لأغراض أمنية أو لتنفيذ نظام
+          آخر أو لاستيفاء متطلبات قضائية. (النظام م.9-1)
+    - - en: Prevent access —
+        ar: منع الاطلاع —
+      - en: we must prevent access altogether where disclosing the data would do any of the following.
+          (Law Art. 9-2, applying Art. 16-1 to 16-6)
+        ar: ويجب علينا منع صاحب البيانات من الاطلاع عليها متى ترتب على الإفصاح أيٌ مما يلي. (النظام م.9-2،
+          تطبيقاً للمادة 16 الفقرات 1-6)
+- bullets:
+    items:
+    - - '1.'
+      - en: Represent a threat to security, harm the reputation of the Kingdom, or conflict with its interests.
+        ar: أن يمثل خطراً على الأمن، أو يسيء إلى سمعة المملكة، أو يتعارض مع مصالحها.
+    - - '2.'
+      - en: Affect the Kingdom's relations with any other state.
+        ar: أن يؤثر على علاقات المملكة مع دولة أخرى.
+    - - '3.'
+      - en: Prevent the detection of a crime, affect an accused person's right to a fair trial, or affect
+          the integrity of existing criminal procedures.
+        ar: أن يمنع من كشف جريمة أو يمس حقوق متهم في الحصول على محاكمة عادلة أو يؤثر في سلامة إجراءات
+          جنائية قائمة.
+    - - '4.'
+      - en: Compromise the safety of an individual.
+        ar: أن يعرض سلامة فرد أو أفراد للخطر.
+    - - '5.'
+      - en: Result in violating the privacy of a person other than the Data Subject.
+        ar: أن يترتب عليه انتهاك خصوصية فرد آخر غير صاحب البيانات الشخصية.
+    - - '6.'
+      - en: Conflict with the interests of a person who fully or partially lacks legal capacity.
+        ar: أن يتعارض مع مصلحة ناقص أو عديم للأهلية.
+- lead:
+    text:
+      en: Article 16 lists three further grounds — a breach of statutory professional obligations, a breach
+        of an obligation, procedure or judicial decision, and exposing a confidential source where the
+        public interest requires it stay confidential. Those three bar disclosure to third parties; they
+        are not grounds for barring the Data Subject's own access. (Law Art. 16-7, 16-8, 16-9)
+      ar: وتُورِد المادة (16) ثلاثة أسباب إضافية — الإخلال بالتزامات مهنية مقررة نظاماً، والإخلال بالتزام
+        أو إجراء أو حكم قضائي، وكشف مصدر سري لمعلومات تحتم المصلحة العامة عدم الكشف عنه. وهذه الثلاثة
+        تمنع الإفصاح للغير، وليست سبباً لمنع صاحب البيانات من الاطلاع على بياناته. (النظام م.16-7، 16-8،
+        16-9)
+- bullets:
+    items:
+    - - en: Refuse a request —
+        ar: رفض الطلب —
+      - en: we may refuse a request that is repetitive, manifestly unfounded, or would require disproportionate
+          effort, and we tell the Data Subject the reason for the refusal. (Reg. Art. 3-2)
+        ar: يجوز لنا رفض الطلب المتكرر أو غير المبرر بوضوح أو الذي يتطلب جهداً غير متناسب، ونُبلغ صاحب
+          البيانات بسبب الرفض. (اللائحة م.3-2)
+- section:
+    level: 7
+    text:
+      en: Capacity, Legal Guardian and Children's Data
+      ar: الأهلية والولي الشرعي وبيانات الأطفال
+- lead:
+    text:
+      en: Where a Data Subject fully or partially lacks legal capacity (including children), the legal
+        guardian acts in the Data Subject's best interests and may exercise their rights and give consent
+        to processing on their behalf (Reg. Art. 3-3, 13). We take appropriate measures to verify the
+        validity of guardianship; a guardian's consent must not harm the Data Subject's interests; and
+        the Data Subject may exercise their rights themselves upon reaching legal capacity.
+      ar: عندما يفتقر صاحب البيانات كلياً أو جزئياً إلى الأهلية (بما في ذلك الأطفال)، يتصرّف الولي الشرعي
+        بما يحقق مصلحة صاحب البيانات، وله ممارسة حقوقه والموافقة على المعالجة نيابةً عنه (اللائحة م.3-3،
+        13). ونتخذ التدابير المناسبة للتحقق من صحة الولاية؛ ويجب ألا تضر موافقة الولي بمصالح صاحب البيانات؛
+        ولصاحب البيانات ممارسة حقوقه بنفسه عند بلوغه الأهلية.
+- page_break
+- section:
+    level: 8
+    text:
+      en: Request Log
+      ar: سجل الطلبات
+- lead:
+    text:
+      en: Every request is recorded here — the evidence that requests were handled within the timeline
+        (Reg. Art. 3-1-d).
+      ar: يُسجَّل كل طلب هنا — وهو الدليل على معالجة الطلبات ضمن المدة (اللائحة م.3-1-د).
+- table:
+    headers:
+    - en: Ref / Date
+      ar: المرجع / التاريخ
+    - en: Requester
+      ar: مقدّم الطلب
+    - en: Right requested
+      ar: الحق المطلوب
+    - en: ID verified
+      ar: تحقّق الهوية
+    - en: Action & date closed
+      ar: الإجراء وتاريخ الإغلاق
+    rows:
+    - - '[REF / DATE]'
+      - '[NAME]'
+      - '[RIGHT]'
+      - '[YES/NO]'
+      - '[ACTION / DATE]'
+    - - '[REF / DATE]'
+      - '[NAME]'
+      - '[RIGHT]'
+      - '[YES/NO]'
+      - '[ACTION / DATE]'
+    - - '[REF / DATE]'
+      - '[NAME]'
+      - '[RIGHT]'
+      - '[YES/NO]'
+      - '[ACTION / DATE]'
+    widths:
+    - 1272600
+    - 1414000
+    - 1555400
+    - 989800
+    - 1838200
+    centers:
+    - 3
+- section:
+    level: 9
+    text:
+      en: PDPL Control Mapping
+      ar: مطابقة ضوابط النظام
+- table:
+    headers:
+    - en: PDPL Control
+      ar: الضابط
+    - en: Article
+      ar: المادة
+    - en: Evidenced in
+      ar: الدليل في
+    rows:
+    - - en: Access / be informed
+        ar: الوصول / العلم
+      - en: Art. 4 · Reg. 4, 5
+        ar: م.4 · اللائحة 4، 5
+      - en: Sections 1, 5.1
+        ar: البندان 1، 5.1
+    - - en: Obtain a copy
+        ar: الحصول على نسخة
+      - en: Law Art. 4-3 · Reg. Art. 6
+        ar: النظام م.4-3 · اللائحة م.6
+      - en: Section 5.1
+        ar: البند 5.1
+    - - en: Correction / restriction
+        ar: التصحيح / التقييد
+      - en: Art. 4 · Reg. 7
+        ar: م.4 · اللائحة 7
+      - en: Section 5.2
+        ar: البند 5.2
+    - - en: Erasure / destruction
+        ar: الإتلاف
+      - en: Art. 4 · Reg. 8
+        ar: م.4 · اللائحة 8
+      - en: Section 5.3
+        ar: البند 5.3
+    - - en: Object / restrict processing
+        ar: الاعتراض / تقييد المعالجة
+      - en: Art. 9 · Reg. 7
+        ar: م.9 · اللائحة 7
+      - en: Sections 5.2, 6
+        ar: البندان 5.2، 6
+    - - en: Automated decision-making
+        ar: اتخاذ القرار آلياً
+      - en: Reg. 11-2
+        ar: اللائحة 11-2
+      - en: Section 5.4
+        ar: البند 5.4
+    - - en: Accuracy (correction / update)
+        ar: الدقة (التصحيح / التحديث)
+      - en: Art. 14 · Reg. 7
+        ar: م.14 · اللائحة 7
+      - en: Section 5.2
+        ar: البند 5.2
+    - - en: Children / incapacity — guardian
+        ar: الأطفال / نقص الأهلية — الولي
+      - en: Reg. 13
+        ar: اللائحة 13
+      - en: Section 7
+        ar: البند 7
+    widths:
+    - 2686600
+    - 2262400
+    - 2121000
+    centers: []
+- signoff:
+    roles:
+    - en: Approved by
+      ar: اعتمدها
+    - en: Data Protection Officer
+      ar: مسؤول حماية البيانات
+- references:
+    title:
+      en: Official Sources
+      ar: المصادر الرسمية
+    items:
+    - - en: PDPL (Royal Decree M/19), Articles 4, 9, 14
+        ar: نظام حماية البيانات الشخصية (م/19)، المواد 4، 9، 14
+      - sdaia.gov.sa
+    - - en: PDPL Implementing Regulation, Articles 3–8, 11, 13
+        ar: اللائحة التنفيذية للنظام، المواد 3–8، 11، 13
+      - sdaia.gov.sa
+- footer_band:
+    text:
+      en: Template — replace [PLACEHOLDERS] and review with legal counsel before use.
+      ar: نموذج — استبدل [PLACEHOLDERS] وراجعه مع المستشار النظامي قبل الاستخدام.

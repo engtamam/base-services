@@ -206,4 +206,25 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         "capability": "platform.compliance", "group": "Legal pages",
         "params": [{"name": "doc_id", "in": "path", "type": "string", "required": True}],
     },
+    {
+        "id": "compliance.legal_templates", "label": "PDPL template pack", "method": "GET",
+        "path": "/api/v1/compliance/legal/templates",
+        "capability": "platform.compliance", "group": "Legal pages",
+    },
+    {
+        "id": "compliance.legal_instantiate",
+        "label": "Fill a PDPL template into a legal page", "method": "POST",
+        "path": "/api/v1/compliance/legal/templates/{template_id}/instantiate",
+        "capability": "platform.compliance", "group": "Legal pages", "confirm": True,
+        "params": [
+            {"name": "template_id", "in": "path", "type": "string", "required": True,
+             "help": "e.g. doc01_privacy_policy, doc12_cookies, doc13_processing_agreement"},
+            {"name": "values", "in": "body", "type": "object", "required": True,
+             "help": "placeholder -> value (COMPANY_NAME, DPO_EMAIL, …); all declared ones required"},
+            {"name": "version", "in": "body", "type": "string", "required": True},
+            {"name": "requires_acceptance", "in": "body", "type": "boolean", "required": False},
+            {"name": "publish", "in": "body", "type": "boolean", "required": False,
+             "help": "false = draft only; true = publish immediately"},
+        ],
+    },
 ]
