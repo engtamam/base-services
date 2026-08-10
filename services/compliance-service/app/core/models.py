@@ -216,6 +216,69 @@ class LegalHold:
         return cls(**{k: d.get(k, getattr(cls, k, None)) for k in cls.__dataclass_fields__})
 
 
+DRAFT, PUBLISHED = "draft", "published"
+
+
+@dataclass
+class LegalSection:
+    """One structured block of a legal document, so a viewer renders STRUCTURE — not raw HTML it
+    would have to trust. `heading` may be empty (a lead paragraph); `body` is plain text."""
+    heading: str = ""
+    body: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class LegalDocument:
+    """One VERSION of a legal/content page (privacy policy, terms, a cookie notice…).
+
+    A document is identified by a stable `doc_id` slug and carries many versions over time. A
+    PUBLISHED version is IMMUTABLE — you publish a NEW version to change the text — because an
+    acceptance proof points at the exact version the person agreed to, and rewriting it under their
+    feet would make that proof a lie. Only a draft is editable.
+
+    Bilingual by construction: `content` maps a locale ("ar", "en") to that language's title +
+    sections, so one version is the same legal instrument in every language rather than separate
+    documents that can drift. `requires_acceptance` is what the post-auth gate reads to decide
+    whether a fresh publish must be re-accepted before the person may proceed.
+    """
+    tenant: str
+    doc_id: str                       # slug: "privacy-policy", "terms-of-service", …
+    version: str                      # caller-chosen, monotonic by convention: "1.0", "2026-08-10"
+    status: str = DRAFT               # draft | published
+    requires_acceptance: bool = False
+    # locale -> {"title": str, "sections": [ {heading, body}, ... ]}
+    content: dict[str, Any] = field(default_factory=dict)
+    created_at: float = 0.0
+    published_at: float = 0.0
+    effective_at: float = 0.0         # 0 = effective on publish
+    default_locale: str = "en"
+
+    def view(self, locale: str = "") -> dict[str, Any]:
+        """The viewer payload for one language, falling back to the default locale then to ANY
+        available one — a person must never be shown a blank page because a translation is missing."""
+        loc = locale or self.default_locale
+        block = self.content.get(loc) or self.content.get(self.default_locale)
+        if block is None and self.content:
+            loc, block = next(iter(self.content.items()))
+        else:
+            loc = loc if self.content.get(loc) else self.default_locale
+        block = block or {"title": "", "sections": []}
+        return {"doc_id": self.doc_id, "version": self.version, "locale": loc,
+                "title": block.get("title", ""), "sections": block.get("sections", []),
+                "requires_acceptance": self.requires_acceptance,
+                "effective_at": self.effective_at or self.published_at}
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "LegalDocument":
+        return cls(**{k: d.get(k, getattr(cls, k, None)) for k in cls.__dataclass_fields__})
+
+
 @dataclass
 class ProcessingActivity:
     """RoPA — Records of Processing Activities (PDPL art. / GDPR art. 30)."""
