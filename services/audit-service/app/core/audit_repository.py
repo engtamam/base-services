@@ -112,6 +112,9 @@ class AuditRepository:
         """Delete idempotency keys older than `before_ts`. The retries these guard happen in seconds,
         so an entry past the window is only housekeeping — the receipt lives in the chain itself."""
         removed = 0
+        # sweeper: pruning expired idempotency keys IS visiting the collection — a time-window
+        # question the store's equality filter cannot express. Never a request path: this runs from
+        # the retention/housekeeping cron, bounded by `limit` per pass.
         for row in await self._store.scan_all(_IDEMPO, limit):
             if float(row.get("ts", 0)) < before_ts and row.get("key"):
                 if await self._store.delete(_IDEMPO, row["key"]):

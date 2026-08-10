@@ -95,6 +95,9 @@ class WebhookErasure:
                 if not cursor:
                     break
             return hits, scanned >= self._max
+        # sweeper: a DSAR erasure with no indexed subject key must visit every row of the collection
+        # to redact the subject wherever they appear — a whole-collection question by nature, not a
+        # request path. Reached only from the privacy erasure fan-out, bounded by `_max` per pass.
         # Unscoped: scan_all takes (collection, limit) and returns up to `limit` rows (no cursor), so
         # the whole collection is read in one bounded pass. truncated is true only if we hit the cap.
         rows = await self._store.scan_all(collection, self._max)
