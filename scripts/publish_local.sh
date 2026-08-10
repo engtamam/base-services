@@ -77,23 +77,31 @@ echo "==> changed since ${PREV:-<all>}: ${CHANGED:-<none>}"
 # these in parallel. A failure drops a marker file rather than a shared variable, because each
 # invocation is its own subshell and a `fail=1` there would not survive back to the parent.
 FAIL_MARK="$(mktemp)"; rm -f "$FAIL_MARK"
+build_push() {   # build+push one service by digest; log to /tmp/pl_$1.log
+  s="$1"; img="$2"
+  docker buildx build --platform linux/amd64 \
+    --label "org.opencontainers.image.source=https://github.com/$OWNER/$(basename "$ROOT")" \
+    --label "org.opencontainers.image.revision=$SHA" \
+    --label "org.opencontainers.image.version=$VERSION" \
+    --label "org.opencontainers.image.licenses=Proprietary" \
+    -t "$img" --push "services/$s" >/tmp/pl_$s.log 2>&1
+}
+export -f build_push
+
 publish_one() {
   s="$1"
   img="$REG/$s:$VERSION"
   if echo "$CHANGED" | grep -qx "$s"; then
     echo "==> build+push $s"
-    if ! docker buildx build --platform linux/amd64 \
-          --label "org.opencontainers.image.source=https://github.com/$OWNER/$(basename "$ROOT")" \
-          --label "org.opencontainers.image.revision=$SHA" \
-          --label "org.opencontainers.image.version=$VERSION" \
-          --label "org.opencontainers.image.licenses=Proprietary" \
-          -t "$img" --push "services/$s" >/tmp/pl_$s.log 2>&1; then
-      echo "   FAIL build $s (see /tmp/pl_$s.log)"; : > "$FAIL_MARK"; return 1
-    fi
+    build_push "$s" "$img" || { echo "   FAIL build $s (see /tmp/pl_$s.log)"; : > "$FAIL_MARK"; return 1; }
   else
-    # unchanged: copy the previous release's manifest to the new tag — no rebuild
+    # unchanged: copy the previous release's manifest to the new tag — no rebuild. A re-tag is an
+    # OPTIMISATION, never a requirement: if it cannot run (a GHCR permission quirk on that package, a
+    # missing PREV image) FALL BACK to a full rebuild rather than fail the release. The image is
+    # identical either way; the digest verify below is the single source of truth for correctness.
     if ! docker buildx imagetools create --tag "$img" "$REG/$s:$PREV" >/tmp/pl_$s.log 2>&1; then
-      echo "   FAIL retag $s (see /tmp/pl_$s.log)"; : > "$FAIL_MARK"; return 1
+      echo "   retag failed for $s — rebuilding instead"
+      build_push "$s" "$img" || { echo "   FAIL build(after retag) $s (see /tmp/pl_$s.log)"; : > "$FAIL_MARK"; return 1; }
     fi
   fi
   # move :latest onto the new version
