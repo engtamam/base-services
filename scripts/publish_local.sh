@@ -106,7 +106,7 @@ export REG VERSION PREV SHA OWNER ROOT CHANGED FAIL_MARK MSYS_NO_PATHCONV
 # TWO budgets, because a build and a re-tag cost wildly different things.
 #
 # A BUILD is CPU/RAM/disk-bound. Docker already parallelizes layers WITHIN a build, so running many
-# at once just thrashes a small builder and finishes no sooner — often later. Bounded, default 4,
+# at once just thrashes a small builder and finishes no sooner — often later. Bounded, default 10,
 # override with PL_JOBS.
 #
 # A RE-TAG is a registry manifest copy (`imagetools create`): no image data moves, no CPU, just a
@@ -114,7 +114,7 @@ export REG VERSION PREV SHA OWNER ROOT CHANGED FAIL_MARK MSYS_NO_PATHCONV
 # service, twenty-two near-instant re-tags queued four-at-a-time behind nothing. They get their own,
 # much higher budget (PL_RETAG_JOBS, default 24 ≈ all-at-once) and run CONCURRENTLY with the builds,
 # so total time is ~the build time and the re-tags are effectively free.
-JOBS="${PL_JOBS:-4}"
+JOBS="${PL_JOBS:-10}"
 RETAG_JOBS="${PL_RETAG_JOBS:-24}"
 CHANGED_SVCS=""; UNCHANGED_SVCS=""
 for s in $SVCS; do
