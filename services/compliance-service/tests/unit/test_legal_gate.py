@@ -50,14 +50,14 @@ def test_a_required_doc_is_outstanding_until_accepted():
 
     run(gate.accept(tenant="t", subject="u1", doc_id="terms"))
     assert run(gate.outstanding(tenant="t", subject="u1")) == []
-    assert run(gate.is_clear(tenant="t", subject="u1")) is True
+    assert run(gate.outstanding(tenant="t", subject="u1")) == []
 
 
 def test_a_version_bump_forces_reacceptance():
     legal, gate = _harness()
     _publish(legal, "terms", "1.0")
     run(gate.accept(tenant="t", subject="u1", doc_id="terms"))
-    assert run(gate.is_clear(tenant="t", subject="u1")) is True
+    assert run(gate.outstanding(tenant="t", subject="u1")) == []
 
     _publish(legal, "terms", "2.0")                     # terms change
     out = run(gate.outstanding(tenant="t", subject="u1"))
@@ -65,7 +65,7 @@ def test_a_version_bump_forces_reacceptance():
     assert out[0]["accepted_version"] == "1.0" and out[0]["current_version"] == "2.0"
 
     run(gate.accept(tenant="t", subject="u1", doc_id="terms"))
-    assert run(gate.is_clear(tenant="t", subject="u1")) is True   # cleared at v2
+    assert run(gate.outstanding(tenant="t", subject="u1")) == []   # cleared at v2
 
 
 def test_an_informational_doc_is_never_gated_on():
@@ -91,5 +91,5 @@ def test_acceptance_is_per_subject_and_per_tenant():
     legal, gate = _harness()
     _publish(legal, "terms", "1.0")
     run(gate.accept(tenant="t", subject="u1", doc_id="terms"))
-    assert run(gate.is_clear(tenant="t", subject="u2")) is False   # u2 hasn't accepted
+    assert run(gate.outstanding(tenant="t", subject="u2"))   # u2 hasn't accepted
     assert run(gate.outstanding(tenant="other", subject="u1")) == []  # other tenant has no doc

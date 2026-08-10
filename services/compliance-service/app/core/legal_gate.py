@@ -55,10 +55,6 @@ class LegalGate:
             out.append(entry)
         return out
 
-    async def is_clear(self, *, tenant: str, subject: str) -> bool:
-        """True when nothing is outstanding — the one boolean a post-auth guard needs."""
-        return not await self.outstanding(tenant=tenant, subject=subject)
-
     async def accept(self, *, tenant: str, subject: str, doc_id: str, method: str = "",
                      actor: str = "", ip: str = "") -> dict[str, Any]:
         """Record acceptance of a document's CURRENT published version. Refuses if the document is
