@@ -20,6 +20,7 @@ from app.core.models import DSAR_TYPES
 from app.core.privacy_dispatcher import PrivacyDispatcher
 from app.core.privacy_sweeper import PrivacySweeper
 from app.core.retention import RetentionEnforcer
+from app.core.legal_gate import LegalGate, LegalGateError
 from app.core.legal_pages import LegalError, LegalPageService
 from app.core.stores import (BreachStore, ConsentStore, DsarStore, HoldStore, LegalPageStore,
                              RopaStore, TargetStore)
@@ -536,3 +537,35 @@ async def view_legal(request: Request, doc_id: str, locale: str = "", version: s
 @router.get("/legal/{doc_id}/history", dependencies=[Depends(_READ)])
 async def legal_history(request: Request, doc_id: str, principal: Principal = Depends(_READ)) -> dict:
     return {"versions": await build_legal(request).history(tenant=_tenant(principal), doc_id=doc_id)}
+
+
+# ── Post-auth access gate: the caller's OWN outstanding acceptances ─────────────
+def build_legal_gate(request: Request) -> LegalGate:
+    c = request.app.state.container
+    return LegalGate(legal_store=LegalPageStore(c.datastore),
+                     consents=build_consent(request), clock=c.clock)
+
+
+@router.get("/me/legal/outstanding", dependencies=[Depends(_SELF)])
+async def my_outstanding_legal(request: Request, locale: str = "",
+                               principal: Principal = Depends(_SELF)) -> dict:
+    """Which required legal documents the CALLER must (re-)accept before proceeding. The subject is
+    the caller's own token — never a body — so this can only report on oneself. An app shell calls
+    it right after login and blocks until the list is empty."""
+    gate = build_legal_gate(request)
+    return {"outstanding": await gate.outstanding(
+        tenant=principal.tenant or "", subject=principal.subject, locale=locale)}
+
+
+@router.post("/me/legal/{doc_id}/accept", dependencies=[Depends(_SELF)])
+async def accept_legal(request: Request, doc_id: str,
+                       principal: Principal = Depends(_SELF)) -> dict:
+    """Record the CALLER's acceptance of a document's current published version. Pinned to the
+    version in force now, so a later publish correctly leaves this acceptance stale."""
+    try:
+        res = await build_legal_gate(request).accept(
+            tenant=principal.tenant or "", subject=principal.subject, doc_id=doc_id,
+            actor=principal.subject, ip=request.client.host if request.client else "")
+    except LegalGateError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return res

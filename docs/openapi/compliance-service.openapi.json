@@ -1440,6 +1440,97 @@
         ]
       }
     },
+    "/api/v1/compliance/me/legal/outstanding": {
+      "get": {
+        "description": "Which required legal documents the CALLER must (re-)accept before proceeding. The subject is\nthe caller's own token \u2014 never a body \u2014 so this can only report on oneself. An app shell calls\nit right after login and blocks until the list is empty.",
+        "operationId": "my_outstanding_legal_api_v1_compliance_me_legal_outstanding_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "locale",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Locale",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response My Outstanding Legal Api V1 Compliance Me Legal Outstanding Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "My Outstanding Legal",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/me/legal/{doc_id}/accept": {
+      "post": {
+        "description": "Record the CALLER's acceptance of a document's current published version. Pinned to the\nversion in force now, so a later publish correctly leaves this acceptance stale.",
+        "operationId": "accept_legal_api_v1_compliance_me_legal__doc_id__accept_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "doc_id",
+            "required": true,
+            "schema": {
+              "title": "Doc Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Accept Legal Api V1 Compliance Me Legal  Doc Id  Accept Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Accept Legal",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
     "/api/v1/compliance/ropa": {
       "get": {
         "operationId": "list_activities_api_v1_compliance_ropa_get",

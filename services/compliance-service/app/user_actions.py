@@ -26,6 +26,15 @@ USER_ACTIONS: list[dict[str, Any]] = [
         "danger": True,                    # an erasure request is destructive to the subject's data
         "group": "Privacy",
     },
+    {
+        "id": "compliance.accept_legal",
+        "label": "Accept the current terms",
+        "method": "POST",
+        "path": "/api/v1/compliance/me/legal/{doc_id}/accept",
+        "capability": "compliance.self",
+        "params": [{"name": "doc_id", "in": "path", "type": "string", "required": True}],
+        "group": "Legal",
+    },
 ]
 
 # Routes deliberately NOT rendered as app controls. Machine-checked by safety:action-coverage: every
@@ -37,4 +46,7 @@ UNDECLARED_ROUTES: list[dict[str, str]] = [
     {"method": "GET", "path": "/api/v1/compliance/legal/{doc_id}",
      "why": "the structured legal-page viewer payload — the terms are shown inline for reading and "
             "acceptance, so this is a content fetch, not a catalog action"},
+    {"method": "GET", "path": "/api/v1/compliance/me/legal/outstanding",
+     "why": "the app shell calls this automatically right after login to decide whether to block on "
+            "a re-acceptance — a gate check the shell drives, not a button a user clicks"},
 ]

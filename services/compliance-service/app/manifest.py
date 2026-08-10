@@ -111,6 +111,8 @@ def build_manifest(
             {"path": "/api/v1/compliance/legal", "tier": "user", "method": "GET"},
             {"path": "/api/v1/compliance/legal/{doc_id}", "tier": "user", "method": "GET"},
             {"path": "/api/v1/compliance/legal/{doc_id}/history", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/compliance/me/legal/outstanding", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/compliance/me/legal/{doc_id}/accept", "tier": "user", "method": "POST"},
             {"path": "/internal/compliance/dsar/run", "tier": "internal", "method": "POST"},
             {"path": "/internal/compliance/retention/run", "tier": "internal", "method": "POST"},
             # The operator surface: credentials and policy an operator changes after launch.
