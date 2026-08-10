@@ -25,6 +25,8 @@ from app.config import get_settings
 from app.core.pii import subject_ref
 from app.core.runtime_config import RuntimeConfig, RuntimeConfigError
 from app.core.secret_store import SecretError, SecretStore
+from app.core.whatsapp_onboarding import OnboardingError, WhatsAppOnboarding
+from app.ports.errors import ConfigError
 
 router = APIRouter(prefix="/api/v1/operator", tags=["operator"])
 
@@ -142,6 +144,46 @@ async def clear_secret(request: Request, name: str, tenant: str = "",
     cleared = await _secret_store(request).clear(tenant=tenant, name=name)
     _invalidate(request, tenant)
     return {"cleared": cleared}
+
+
+class EmbeddedSignupIn(BaseModel):
+    """What Embedded Signup hands back to the browser. The `code` is the short-lived exchangeable
+    token code (~30s TTL) — the reason this must be exchanged inside the request that carries it."""
+    code: str = Field(..., min_length=1, max_length=4096)
+    waba_id: str = Field(..., min_length=1, max_length=128)
+    phone_number_id: str = Field(..., min_length=1, max_length=128)
+    tenant: str = Field(default="", max_length=128)
+
+
+@router.post("/whatsapp/embedded-signup", dependencies=[Depends(_SECRETS), Depends(rate_limit)])
+async def whatsapp_embedded_signup(request: Request, body: EmbeddedSignupIn,
+                                   principal: Principal = Depends(require_user)) -> dict:
+    """Exchange an Embedded Signup code for the tenant's WhatsApp business token and store it.
+
+    The token NEVER appears in this response, the audit row, or a log — the whole point of doing the
+    exchange in our service is that the shop's token reaches the sealed store without leaking. Audited
+    write-ahead by WABA id (never the code or the token), like every other credential mutation.
+    """
+    s = get_settings()
+    await request.app.state.auditor.record(
+        "operator.whatsapp_onboarded", actor=_actor(principal), tenant=body.tenant or "",
+        resource=f"waba:{body.waba_id}",          # the WABA id, never the code or the token
+        ip=request.client.host if request.client else "")
+    onboarding = WhatsAppOnboarding(
+        _secret_store(request),
+        app_id=s.META_APP_ID, app_secret=s.META_APP_SECRET,
+        graph_base=s.WHATSAPP_ONBOARDING_GRAPH_BASE,
+        on_stored=lambda t: _invalidate(request, t))
+    try:
+        result = await onboarding.exchange(
+            tenant=body.tenant, code=body.code, waba_id=body.waba_id,
+            phone_number_id=body.phone_number_id, actor_ref=_actor(principal))
+    except ConfigError as exc:
+        # Not configured as a Tech Provider (no app id/secret) or no KEK — a server-state problem.
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+    except OnboardingError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return result
 
 
 # ── policy ────────────────────────────────────────────────────────────────────

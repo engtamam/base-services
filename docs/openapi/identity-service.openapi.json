@@ -287,6 +287,55 @@
         "title": "MfaVerifyIn",
         "type": "object"
       },
+      "OtpRequestIn": {
+        "properties": {
+          "identifier": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Identifier",
+            "type": "string"
+          },
+          "purpose": {
+            "default": "verify",
+            "maxLength": 32,
+            "title": "Purpose",
+            "type": "string"
+          }
+        },
+        "required": [
+          "identifier"
+        ],
+        "title": "OtpRequestIn",
+        "type": "object"
+      },
+      "OtpVerifyIn": {
+        "properties": {
+          "code": {
+            "maxLength": 32,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          },
+          "identifier": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Identifier",
+            "type": "string"
+          },
+          "purpose": {
+            "default": "verify",
+            "maxLength": 32,
+            "title": "Purpose",
+            "type": "string"
+          }
+        },
+        "required": [
+          "identifier",
+          "code"
+        ],
+        "title": "OtpVerifyIn",
+        "type": "object"
+      },
       "PersonLoginIn": {
         "properties": {
           "code": {
@@ -1543,6 +1592,94 @@
         "summary": "Clear Secret",
         "tags": [
           "operator"
+        ]
+      }
+    },
+    "/api/v1/otp/request": {
+      "post": {
+        "description": "Issue a code and hand it to notification-service. The response is the SAME whether or not\ndelivery succeeded and whether or not the identifier is known \u2014 it reveals only that a code was\nrequested, never that an account exists (no enumeration oracle).",
+        "operationId": "request_otp_api_v1_otp_request_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OtpRequestIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Request Otp Api V1 Otp Request Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request Otp",
+        "tags": [
+          "otp"
+        ]
+      }
+    },
+    "/api/v1/otp/verify": {
+      "post": {
+        "description": "Consume a code. Every failure \u2014 never issued, expired, wrong, exhausted \u2014 collapses to ONE\ngeneric 400 so a caller cannot distinguish 'wrong code' from 'no code for this identifier'.",
+        "operationId": "verify_otp_api_v1_otp_verify_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OtpVerifyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Verify Otp Api V1 Otp Verify Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Verify Otp",
+        "tags": [
+          "otp"
         ]
       }
     },

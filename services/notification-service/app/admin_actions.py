@@ -98,6 +98,22 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         "params": [{"name": "name", "in": "path", "type": "string", "required": True}],
     },
     {
+        "id": "operator.whatsapp_embedded_signup",
+        "label": "WhatsApp Embedded Signup — onboard a business", "method": "POST",
+        "path": "/api/v1/operator/whatsapp/embedded-signup", "capability": "platform.secrets",
+        "group": "Credentials", "confirm": True,
+        "params": [
+            {"name": "code", "in": "body", "type": "string", "required": True,
+             "help": "the exchangeable code from Embedded Signup — valid ~30s, exchanged in-request"},
+            {"name": "waba_id", "in": "body", "type": "string", "required": True,
+             "help": "the business's WhatsApp Business Account id, returned by the flow"},
+            {"name": "phone_number_id", "in": "body", "type": "string", "required": True,
+             "help": "the business's phone-number id, returned by the flow"},
+            {"name": "tenant", "in": "body", "type": "string", "required": False,
+             "help": "leave empty for platform-wide"},
+        ],
+    },
+    {
         "id": "operator.get_config", "label": "Runtime settings", "method": "GET",
         "path": "/api/v1/operator/config", "capability": "platform.config", "group": "Settings",
     },

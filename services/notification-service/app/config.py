@@ -356,6 +356,17 @@ class Settings(BaseSettings):
     WHATSAPP_ACCESS_TOKEN: str = ""       # per-tenant credential, resolved via the secret store
     WHATSAPP_PHONE_NUMBER_ID: str = ""    # the sending phone number's id
     WHATSAPP_GRAPH_BASE: str = "https://graph.facebook.com/v19.0"
+    # Embedded Signup (Tech Provider onboarding). These identify US as the Tech Provider — NOT the
+    # shop — so they are platform-wide, from the environment, and never settable through any panel
+    # (the same reasoning as SECRETS_KEK). The exchange endpoint reads them in CORE, never a route,
+    # so the shop's freshly-minted token never transits the API layer. Empty ⇒ Embedded Signup
+    # onboarding is disabled and the endpoint refuses cleanly (a deployment that brings tokens by
+    # hand is unaffected).
+    META_APP_ID: str = ""
+    META_APP_SECRET: str = ""
+    # The Graph version for onboarding calls (code exchange, subscribe). Separate from the send-path
+    # base above so upgrading the onboarding flow can't silently change how messages are sent.
+    WHATSAPP_ONBOARDING_GRAPH_BASE: str = "https://graph.facebook.com/v21.0"
     # Template-management (submit to Meta + poll approval). `console` auto-approves for dev; `meta`
     # calls the Graph message_templates API on the WhatsApp Business Account.
     WHATSAPP_TEMPLATE_MANAGER: str = "console"   # console | meta

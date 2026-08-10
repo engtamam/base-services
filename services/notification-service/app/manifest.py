@@ -88,6 +88,7 @@ def build_manifest(
             {"path": "/api/v1/operator/secrets", "tier": "user", "method": "GET"},
             {"path": "/api/v1/operator/secrets", "tier": "user", "method": "PUT"},
             {"path": "/api/v1/operator/secrets/{}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/operator/whatsapp/embedded-signup", "tier": "user", "method": "POST"},
             {"path": "/api/v1/operator/config", "tier": "user", "method": "GET"},
             {"path": "/api/v1/operator/config", "tier": "user", "method": "PUT"},
             {"path": "/api/v1/operator/config/{}", "tier": "user", "method": "DELETE"},

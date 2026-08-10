@@ -23,8 +23,8 @@ def configure(timeout_seconds: int) -> None:
     _timeout = max(1, timeout_seconds)
 
 
-def _request(url: str, data: bytes, headers: dict[str, str]) -> tuple[int, str]:
-    req = urllib.request.Request(url, data=data, headers={"User-Agent": _UA, **headers}, method="POST")
+def _request(url: str, data: bytes, headers: dict[str, str], method: str = "POST") -> tuple[int, str]:
+    req = urllib.request.Request(url, data=data, headers={"User-Agent": _UA, **headers}, method=method)
     try:
         with urllib.request.urlopen(req, timeout=_timeout) as resp:  # nosec B310 - fixed https provider hosts
             return resp.status, resp.read().decode("utf-8", "replace")
@@ -32,6 +32,15 @@ def _request(url: str, data: bytes, headers: dict[str, str]) -> tuple[int, str]:
         return exc.code, exc.read().decode("utf-8", "replace")
     except Exception:
         return 0, "request failed"
+
+
+def get_json(url: str, params: dict[str, str] | None = None,
+             headers: dict[str, str] | None = None) -> tuple[int, str]:
+    """GET with a query string. Same fixed-trusted-host contract as post_json — the URL is a
+    config-derived provider host, never caller input, so this is not the SSRF surface."""
+    if params:
+        url = f"{url}?{urllib.parse.urlencode(params)}"
+    return _request(url, None, {"Accept": "application/json", **(headers or {})}, method="GET")
 
 
 def post_json(url: str, payload: dict, headers: dict[str, str] | None = None) -> tuple[int, str]:

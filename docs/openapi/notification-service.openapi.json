@@ -89,6 +89,42 @@
         "title": "ConfigIn",
         "type": "object"
       },
+      "EmbeddedSignupIn": {
+        "description": "What Embedded Signup hands back to the browser. The `code` is the short-lived exchangeable\ntoken code (~30s TTL) \u2014 the reason this must be exchanged inside the request that carries it.",
+        "properties": {
+          "code": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          },
+          "phone_number_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Phone Number Id",
+            "type": "string"
+          },
+          "tenant": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Tenant",
+            "type": "string"
+          },
+          "waba_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Waba Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "waba_id",
+          "phone_number_id"
+        ],
+        "title": "EmbeddedSignupIn",
+        "type": "object"
+      },
       "EraseIn": {
         "properties": {
           "subject": {
@@ -835,6 +871,50 @@
           }
         },
         "summary": "Clear Secret",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/v1/operator/whatsapp/embedded-signup": {
+      "post": {
+        "description": "Exchange an Embedded Signup code for the tenant's WhatsApp business token and store it.\n\nThe token NEVER appears in this response, the audit row, or a log \u2014 the whole point of doing the\nexchange in our service is that the shop's token reaches the sealed store without leaking. Audited\nwrite-ahead by WABA id (never the code or the token), like every other credential mutation.",
+        "operationId": "whatsapp_embedded_signup_api_v1_operator_whatsapp_embedded_signup_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmbeddedSignupIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Whatsapp Embedded Signup Api V1 Operator Whatsapp Embedded Signup Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Whatsapp Embedded Signup",
         "tags": [
           "operator"
         ]
