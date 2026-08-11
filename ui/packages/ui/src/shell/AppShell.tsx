@@ -81,7 +81,9 @@ export interface AppShellProps {
   onSelect?: (key: string) => void;
   /** Content rendered in the main column INSTEAD of the router <Outlet/> — for a channel without routes. */
   children?: ReactNode;
-  brand: { name: string; tagline?: string };
+  /** `mark` is the brand glyph shown beside the name; it DEFAULTS to the platform's BrandMark, so a
+   *  consuming product supplies its own (e.g. its logo) without forking the shell. */
+  brand: { name: string; tagline?: string; mark?: ReactNode };
   /** The signed-in user, or null (footer collapses to controls only). */
   user: AppShellUser | null;
   labels: AppShellLabels;
@@ -243,10 +245,10 @@ export function AppShell({
         {/* brand */}
         <div className={cn('flex items-center px-3 py-3.5', collapsed ? 'justify-center' : 'justify-start')}>
           {collapsed ? (
-            <BrandMark size={26} className="shrink-0" />
+            brand.mark ?? <BrandMark size={26} className="shrink-0" />
           ) : (
             <div className="flex min-w-0 items-center gap-2.5 ps-2">
-              <BrandMark size={26} className="shrink-0" />
+              {brand.mark ?? <BrandMark size={26} className="shrink-0" />}
               <div className="min-w-0">
                 <div data-testid="brand-name" className="truncate text-base font-semibold">
                   {brand.name}
@@ -412,7 +414,7 @@ export function AppShell({
             <Menu size={20} />
           </button>
           <div className="flex items-center gap-2">
-            <BrandMark size={22} className="shrink-0" />
+            {brand.mark ?? <BrandMark size={22} className="shrink-0" />}
             <span className="text-sm font-semibold">{brand.name}</span>
           </div>
         </div>
