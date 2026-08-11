@@ -83,7 +83,10 @@ const BRAND = typeof __PRODUCT_ACCENT__ !== 'undefined'
 /** Mix two hex colours by `amount` (0..1 toward `to`). Lets us derive a hover, a soft tint and on-soft
  *  text from a single brand hex, so the ramp is computed rather than hand-picked in a second place. */
 function mix(from: string, to: string, amount: number): string {
-  const h = (c: string) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
+  // The `#` is stripped first, so the channels start at 0/2/4 — NOT 1/3/5. With 1/3/5 (a leftover
+  // from indexing WITH the '#'), h('ffffff') read ['ff','ff','f'] → blue=15 not 255, so every derived
+  // tint skewed hard toward yellow (accent-soft rendered #f1ec0f, a highlighter, on the active nav row).
+  const h = (c: string) => [0, 2, 4].map((i) => parseInt(c.slice(i, i + 2), 16));
   const [r1, g1, b1] = h(from.replace('#', ''));
   const [r2, g2, b2] = h(to.replace('#', ''));
   const m = (a: number, b: number) => Math.round(a + (b - a) * amount).toString(16).padStart(2, '0');

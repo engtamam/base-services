@@ -115,7 +115,9 @@ function renderNavItem(
   { collapsed, activeKey, onSelect, onNavigate }: { collapsed: boolean; activeKey?: string; onSelect?: (key: string) => void; onNavigate?: () => void },
 ) {
   const Icon = item.icon;
-  const base = 'relative flex items-center rounded-lg py-1.5 text-sm font-medium transition-colors focus-ring';
+  // min-h-11 (44px) is the accessible touch-target floor; py-1.5 alone rendered ~32px and failed the
+  // mobile spec. The row still hugs its content width; only its HEIGHT is floored.
+  const base = 'relative flex min-h-11 items-center rounded-lg py-1.5 text-sm font-medium transition-colors focus-ring';
   const layout = collapsed ? 'justify-center px-0' : 'gap-3 px-3';
   const active = 'bg-accent-soft text-accent-on-soft before:absolute before:inset-y-2 before:start-0 before:w-[3px] before:rounded-full before:bg-accent';
   const inactive = 'text-text-secondary hover:bg-surface-2 hover:text-text-primary';
@@ -218,7 +220,7 @@ export function AppShell({
           type="button"
           onClick={closeMobile}
           aria-label={labels.collapse}
-          className="absolute end-3 top-3 z-10 grid size-8 place-items-center rounded-lg text-text-secondary transition hover:bg-surface-2 hover:text-text-primary md:hidden"
+          className="absolute end-3 top-3 z-10 grid size-11 place-items-center rounded-lg text-text-secondary transition hover:bg-surface-2 hover:text-text-primary md:hidden"
         >
           <X size={18} />
         </button>

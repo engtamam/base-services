@@ -25,9 +25,18 @@ export interface LoginFormProps {
   /** Optional heading/subheading overrides; default to i18n keys. */
   title?: string;
   subtitle?: string;
+  /** The identifier field. Defaults to EMAIL for backward compatibility. In markets where the phone
+   *  IS the identity (KSA: 05XXXXXXXX, no email), pass {type:'tel', inputMode:'tel', autoComplete:
+   *  'username', label:t('auth.phone')} — the identity service already accepts a phone login field. */
+  identifierField?: {
+    label?: string;
+    type?: string;                                   // 'email' | 'tel' | 'text'
+    inputMode?: 'text' | 'tel' | 'email' | 'numeric';
+    autoComplete?: string;
+  };
 }
 
-export function LoginForm({ onLogin, onChooseOrg, mapError, footerSlot, title, subtitle }: LoginFormProps) {
+export function LoginForm({ onLogin, onChooseOrg, mapError, footerSlot, title, subtitle, identifierField }: LoginFormProps) {
   const { t } = useAuthI18n();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -96,8 +105,10 @@ export function LoginForm({ onLogin, onChooseOrg, mapError, footerSlot, title, s
       <h2 className="text-2xl font-semibold tracking-tight text-text-primary">{title || t('auth.signIn')}</h2>
       {subtitle && <p className="mb-6 mt-1 text-sm text-text-muted">{subtitle}</p>}
       <form onSubmit={submit} className="mt-6 flex flex-col gap-3.5">
-        <Field label={t('auth.email')} htmlFor="login-email">
-          <Input id="login-email" type="email" autoComplete="username" required value={username}
+        <Field label={identifierField?.label ?? t('auth.email')} htmlFor="login-identifier">
+          <Input id="login-identifier" type={identifierField?.type ?? 'email'}
+            inputMode={identifierField?.inputMode}
+            autoComplete={identifierField?.autoComplete ?? 'username'} required value={username}
             onChange={(e) => setUsername(e.target.value)} />
         </Field>
         <Field label={t('auth.password')} htmlFor="login-password">

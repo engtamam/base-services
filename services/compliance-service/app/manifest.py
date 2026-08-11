@@ -116,6 +116,9 @@ def build_manifest(
             # PDPL template pack: list + fill-in-the-blank instantiate into a legal page.
             {"path": "/api/v1/compliance/legal/templates", "tier": "user", "method": "GET"},
             {"path": "/api/v1/compliance/legal/templates/{template_id}/instantiate", "tier": "user", "method": "POST"},
+            # Product provisioning wires the data map + fetches a DSAR verify code, at the internal tier.
+            {"path": "/internal/compliance/data-targets", "tier": "internal", "method": "POST"},
+            {"path": "/internal/compliance/dsar/{id}/verification-code", "tier": "internal", "method": "GET"},
             {"path": "/internal/compliance/dsar/run", "tier": "internal", "method": "POST"},
             {"path": "/internal/compliance/retention/run", "tier": "internal", "method": "POST"},
             # The operator surface: credentials and policy an operator changes after launch.

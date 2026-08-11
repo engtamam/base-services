@@ -335,6 +335,39 @@
         "title": "InstantiateIn",
         "type": "object"
       },
+      "InternalTargetIn": {
+        "properties": {
+          "category": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Category",
+            "type": "string"
+          },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "service": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Service",
+            "type": "string"
+          },
+          "tenant": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "category"
+        ],
+        "title": "InternalTargetIn",
+        "type": "object"
+      },
       "LegalDraftIn": {
         "properties": {
           "content": {
@@ -2436,6 +2469,68 @@
         ]
       }
     },
+    "/internal/compliance/data-targets": {
+      "post": {
+        "description": "Register a tenant's data-map target from a product's own provisioning saga \u2014 the internal-tier\ntwin of POST /api/v1/compliance/data-targets (tenant in the body).\n\nWHY IT EXISTS: DsarService.dispatch refuses with NO_DATA_TARGETS_REGISTERED on an empty map, so\nNO DSAR can complete for a real shop \u2014 and the user-tier route needs compliance.manage, which a\nshop owner must never hold (it also grants DELETE /data-targets, NARROWING the erasure fan-out \u2014 a\nworse PDPL posture than the honest refusal). So the map is wired HERE, at the same trusted moment\nthe signup seeds roles and the catalogue. Idempotency is the store's (a repeated target is fine).",
+        "operationId": "internal_register_target_internal_compliance_data_targets_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InternalTargetIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Internal Register Target Internal Compliance Data Targets Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Internal Register Target",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/compliance/dsar/run": {
       "post": {
         "description": "Drive every open DSAR's unacked targets. Called by the erasure CronJob.\n\nThis is the worker that makes an erasure an EFFECT rather than a record. Safe to call at any\ntime and from any replica: acked targets are skipped and backoff suppresses duplicate dials, so\nan overlapping run costs a no-op. The response names anything STUCK \u2014 a target that exhausted\nits attempts and is holding a DSAR open \u2014 because a jammed erasure nobody can see is how an\nSLA breach becomes a regulatory one.",
@@ -2554,6 +2649,67 @@
           }
         },
         "summary": "Target Ack",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/compliance/dsar/{dsar_id}/verification-code": {
+      "get": {
+        "description": "Hand the DSAR verification code to the PRODUCT that owns delivery.\n\nThe code is minted at DSAR creation to prove the subject controls their channel \u2014 but compliance\nholds no channel for them, so it reached no one and the verify step could never be completed. A\nproduct with the internal token fetches it here and delivers it under its OWN consent record, then\ncompletes POST /dsar/{id}/verify. Internal-tier only (never a user route), and it returns nothing\nonce the DSAR is already verified \u2014 a spent code is not re-handed out.",
+        "operationId": "internal_dsar_verification_code_internal_compliance_dsar__dsar_id__verification_code_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dsar_id",
+            "required": true,
+            "schema": {
+              "title": "Dsar Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Internal Dsar Verification Code Internal Compliance Dsar  Dsar Id  Verification Code Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Internal Dsar Verification Code",
         "tags": [
           "internal"
         ]

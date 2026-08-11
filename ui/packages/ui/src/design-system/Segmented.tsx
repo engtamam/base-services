@@ -57,7 +57,9 @@ export function Segmented<T extends string>({
             data-testid={testId ? `${testId}-${opt.value}` : undefined}
             onClick={() => onChange(opt.value)}
             className={cn(
-              'rounded-md px-3 py-1.5 text-sm font-medium transition-colors focus-ring',
+              // min-h-11 (44px) is the accessible touch-target floor (Apple 44 / Material 48); the
+              // flex centres the label within it. py-1.5 alone rendered ~32px and failed on mobile.
+              'inline-flex min-h-11 items-center justify-center rounded-md px-3 py-1.5 text-sm font-medium transition-colors focus-ring',
               disabled && 'cursor-not-allowed',
               active
                 ? 'bg-accent text-accent-contrast shadow-sm'

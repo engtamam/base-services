@@ -52,6 +52,57 @@ async def internal_health(settings: Settings = Depends(get_settings)) -> dict[st
     return {"status": "ok", "service": settings.SERVICE_NAME}
 
 
+class InternalTargetIn(BaseModel):
+    tenant: str = Field(default="", max_length=128)
+    service: str = Field(min_length=1, max_length=128)
+    category: str = Field(min_length=1, max_length=128)
+    description: str = ""
+
+
+@router.post("/compliance/data-targets", dependencies=[Depends(require_internal_token)])
+async def internal_register_target(request: Request, body: InternalTargetIn) -> dict:
+    """Register a tenant's data-map target from a product's own provisioning saga — the internal-tier
+    twin of POST /api/v1/compliance/data-targets (tenant in the body).
+
+    WHY IT EXISTS: DsarService.dispatch refuses with NO_DATA_TARGETS_REGISTERED on an empty map, so
+    NO DSAR can complete for a real shop — and the user-tier route needs compliance.manage, which a
+    shop owner must never hold (it also grants DELETE /data-targets, NARROWING the erasure fan-out — a
+    worse PDPL posture than the honest refusal). So the map is wired HERE, at the same trusted moment
+    the signup seeds roles and the catalogue. Idempotency is the store's (a repeated target is fine)."""
+    try:
+        t = await build_compliance(request).register_target(
+            tenant=body.tenant, service=body.service, category=body.category,
+            description=body.description)
+    except ValueError as e:
+        # 422: well-formed, authorised, but the NAME is not a configured target — the message lists
+        # the real set so a typo or an undeployed service is obvious.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e))
+    await request.app.state.auditor.record(
+        "data_target.registered", actor="", tenant=body.tenant,
+        resource=f"target:{t.id}", ip=request.client.host if request.client else "",
+        metadata={"service": body.service, "category": body.category})
+    return t.to_dict()
+
+
+@router.get("/compliance/dsar/{dsar_id}/verification-code",
+            dependencies=[Depends(require_internal_token)])
+async def internal_dsar_verification_code(request: Request, dsar_id: str) -> dict:
+    """Hand the DSAR verification code to the PRODUCT that owns delivery.
+
+    The code is minted at DSAR creation to prove the subject controls their channel — but compliance
+    holds no channel for them, so it reached no one and the verify step could never be completed. A
+    product with the internal token fetches it here and delivers it under its OWN consent record, then
+    completes POST /dsar/{id}/verify. Internal-tier only (never a user route), and it returns nothing
+    once the DSAR is already verified — a spent code is not re-handed out."""
+    from app.core.stores import DsarStore
+    d = await DsarStore(request.app.state.container.datastore).get(dsar_id)
+    if d is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    return {"dsar_id": d.id, "tenant": d.tenant, "verified": d.verified,
+            "code": "" if d.verified else d.verification_token,
+            "expires_at": d.verification_expires}
+
+
 @router.get("/compliance/consent-check", dependencies=[Depends(require_internal_token)])
 async def consent_check(request: Request, tenant: str, subject: str, purpose: str) -> dict:
     """HOT PATH — any service asks before processing personal data. Default DENY, cached."""
