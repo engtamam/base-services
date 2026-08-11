@@ -404,7 +404,24 @@ jobs:
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
             | sh -s -- -b /usr/local/bin
-          # docker/login-action already authenticated to GHCR, so trivy reads ~/.docker/config.json.
+          # GHCR is eventually consistent: build-push returns a digest the instant the write is
+          # ACCEPTED, but a read of that manifest from a scanner can briefly 404 (MANIFEST_UNKNOWN)
+          # until it propagates across registry nodes. trivy does NOT retry that transient — it exits
+          # FATAL, and a fail-fast:false rerun re-hits the same gha-cache timing, so one service can
+          # fail the release deterministically for a reason that is not a vulnerability. So WAIT for
+          # the manifest to be resolvable FIRST (docker/login-action already authenticated us), then
+          # run trivy ONCE as the authoritative CVE gate — separating "is it propagated" (retryable
+          # infra) from "is it vulnerable" (a real finding that must still block).
+          for i in $(seq 1 12); do
+            if docker buildx imagetools inspect "$IMAGE" >/dev/null 2>&1; then
+              echo "manifest resolvable after ${i} attempt(s)"; break
+            fi
+            if [ "$i" = "12" ]; then
+              echo "::error::$IMAGE did not become resolvable on GHCR after propagation wait"; exit 1
+            fi
+            echo "manifest not yet propagated (attempt ${i}); waiting 5s"; sleep 5
+          done
+          # trivy reads ~/.docker/config.json for the same GHCR credentials.
           trivy image --quiet --scanners vuln --severity HIGH,CRITICAL \
             --ignore-unfixed --exit-code 1 "$IMAGE"
 
