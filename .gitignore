@@ -54,6 +54,9 @@ sbom.json
 sbom.xml
 *.tar.gz
 deploy/pinned/
+# release_local.sh transient artifacts (regenerated each run, attached to the Release)
+digests.json
+checksums.txt
 
 # ── Editors / OS ────────────────────────────────────────────────────────────
 .idea/
