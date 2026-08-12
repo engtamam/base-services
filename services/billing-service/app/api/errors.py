@@ -14,6 +14,7 @@ from starlette.responses import JSONResponse
 
 from app.config import get_settings
 from app.core.audit import AuditUnavailable
+from app.core.tax_profile import TaxProfileIncomplete
 from app.middleware.request_context import get_request_id
 from app.middleware.security import apply_security_headers, build_security_headers
 from app.observability.logging import get_logger
@@ -60,6 +61,20 @@ def register_error_handlers(app: FastAPI) -> None:
             _logger.error("http_exception", extra={"status": exc.status_code})
             code = "INTERNAL_ERROR"
         return _json(code, exc.status_code)
+
+    @app.exception_handler(TaxProfileIncomplete)
+    async def _tax_profile_incomplete(request: Request, exc: TaxProfileIncomplete):
+        # A DELIBERATE exception to the generic-code rule. The refusal must NAME the missing key so
+        # the operator can act on it — "incomplete" they cannot. Naming it is safe: a settable config
+        # KEY is not a secret (the whole point of the operator panel is that these are the knobs an
+        # operator owns), so this leaks nothing an attacker does not already know from the manifest.
+        body = {"error": "TAX_PROFILE_INCOMPLETE", "missing_key": exc.missing_key}
+        rid = get_request_id()
+        if rid:
+            body["request_id"] = rid
+        resp = JSONResponse(body, status_code=400)
+        apply_security_headers(resp, _sec_headers)
+        return resp
 
     @app.exception_handler(RequestValidationError)
     async def _validation_exc(request: Request, exc: RequestValidationError):

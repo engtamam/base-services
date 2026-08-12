@@ -50,7 +50,10 @@ def _make_app():
 
     os.environ.update(ENV="test", INTERNAL_SERVICE_TOKEN=ITOKEN, TOKEN_VERIFIER_DRIVER="hs256",
                       TOKEN_HS256_SECRET=SECRET, RATELIMIT_MAX="1000", PAYMENT_WEBHOOK_SECRET=ITOKEN,
-                      BILLING_DOCUMENT_MODE="tax_invoice")
+                      BILLING_DOCUMENT_MODE="tax_invoice",
+                      # A COMPLETE tax profile — tax_invoice mode now issues a tax invoice ONLY when
+                      # the calculator (vat, default), rate (0.15, default) and seller number are set.
+                      INVOICE_SELLER_NAME="ACME KSA", INVOICE_SELLER_VAT="300000000000003")
     get_settings.cache_clear()
     from app.main import create_app
 

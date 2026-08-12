@@ -22,6 +22,7 @@ from app.api.auth import Principal, require_user
 from app.api.authz import require_capability
 from app.api.ratelimit import rate_limit
 from app.config import get_settings
+from app.core import tax_profile
 from app.core.pii import subject_ref
 from app.core.runtime_config import RuntimeConfig, RuntimeConfigError
 from app.core.secret_store import SecretError, SecretStore
@@ -95,6 +96,44 @@ class ConfigIn(BaseModel):
     tenant: str = Field(default="", max_length=128)
 
 
+# The keys whose value decides whether a tax invoice can be backed. A write to ANY of them is
+# evaluated against the resulting WHOLE profile, so the mode and the calculator/rate/seller number
+# behind it can never drift apart — the split that let a tenant be flipped to tax_invoice with no
+# seller registration was the whole defect. See app/core/tax_profile.py.
+_TAX_PROFILE_KEYS = frozenset({
+    "BILLING_DOCUMENT_MODE", "TAX_CALCULATOR_DRIVER", "VAT_RATE", "INVOICE_SELLER_VAT"})
+
+
+async def _guard_tax_profile(request: Request, *, tenant: str, key: str,
+                             new_value: object, cleared: bool) -> None:
+    """Refuse a config change that would leave a tax-issuing tenant with an INCOMPLETE tax profile,
+    naming the missing key — the same judgement _mark_paid and the document routes make, applied at
+    the write so the panel refuses it up front rather than the next paid invoice rendering a void
+    document. A no-op for a non-tax key or a receipt-mode tenant. Raises TaxProfileIncomplete."""
+    if key not in _TAX_PROFILE_KEYS:
+        return
+    rc = _runtime_config(request)
+    s = get_settings()
+
+    async def eff(k: str) -> object:
+        default = getattr(s, k, None)
+        if k == key:
+            return default if cleared else new_value   # the value this change WOULD result in
+        try:
+            return await rc.get(tenant=tenant, key=k, default=default)
+        except Exception:  # noqa: BLE001 — a completeness read must not 500 the config write
+            return default
+
+    # The mode is per tenant; the seller number is the platform's. Evaluated TOGETHER (effective
+    # scope resolves tenant override then the platform value), so completeness reflects what a paid
+    # invoice for this tenant would actually see.
+    tax_profile.check(
+        str(await eff("BILLING_DOCUMENT_MODE")),
+        tax_driver=str(await eff("TAX_CALCULATOR_DRIVER")),
+        vat_rate=await eff("VAT_RATE"),
+        seller_vat=str(await eff("INVOICE_SELLER_VAT") or ""))
+
+
 # ── credentials ───────────────────────────────────────────────────────────────
 @router.get("/secrets", dependencies=[Depends(_SECRETS), Depends(rate_limit)])
 async def list_secrets(request: Request, tenant: str = "",
@@ -165,6 +204,10 @@ async def set_config(request: Request, body: ConfigIn,
         "operator.config_changed", actor=_actor(principal), tenant=body.tenant or "",
         resource=f"config:{body.key}", ip=request.client.host if request.client else "",
         metadata={"key": body.key})     # the KEY is not a secret; settable knobs never are
+    # A tax invoice may not be enabled from — or left standing on — an incomplete profile. Raises
+    # TaxProfileIncomplete, which has its own handler so the refusal reaches the operator BY NAME.
+    await _guard_tax_profile(request, tenant=body.tenant, key=body.key,
+                             new_value=body.value, cleared=False)
     try:
         o = await _runtime_config(request).set(
             tenant=body.tenant, key=body.key, value=body.value, actor_ref=_actor(principal))
@@ -187,6 +230,10 @@ async def clear_config(request: Request, key: str, tenant: str = "",
         "operator.config_changed", actor=_actor(principal), tenant=tenant,
         resource=f"config:{key}", ip=request.client.host if request.client else "",
         metadata={"key": key, "cleared": True})
+    # Clearing an override falls back to the configured default — which, for a seller number, may be
+    # empty. Refuse the clear (by name, via the TaxProfileIncomplete handler) if it would leave a
+    # tax-issuing tenant unable to back a tax invoice.
+    await _guard_tax_profile(request, tenant=tenant, key=key, new_value=None, cleared=True)
     cleared = await _runtime_config(request).clear(tenant=tenant, key=key)
     _invalidate(request, tenant)
     return {"cleared": cleared}

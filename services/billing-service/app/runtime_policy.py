@@ -22,6 +22,18 @@ from __future__ import annotations
 # both). READ per tenant in build_billing and applied in _mark_paid (the ZATCA e-invoice is finalized
 # only for tax_invoice/both) and the document routes. Default `receipt`: a fresh platform issues our
 # own receipt with no VAT/ZATCA until it opts into tax.
+#
+# THE TAX PROFILE IS ONE UNIT. The mode was live-editable while the profile behind it — the tax
+# calculator, the VAT rate, the seller's registration number — was read from static settings at boot.
+# That split WAS the whole defect: one click flipped a tenant to tax_invoice and the next paid invoice
+# rendered a document titled "tax invoice" carrying 0% VAT and no seller number — formally well-shaped,
+# legally void, and silent. So the rest of the profile is brought in here AS ONE UNIT: each key below
+# is READ in build_billing at the point of use, and a mode that issues a tax invoice is refused —
+# at the operator write AND at render time — unless the calculator, rate and seller number behind it
+# are all present (see app/core/tax_profile.py). Editing any of them from the panel is now atomic with
+# the mode, and completeness is enforced across all of them together.
 RUNTIME_POLICY: frozenset[str] = frozenset({
     "PAYMENT_GATEWAY_DRIVER", "BILLING_AUTO_REACTIVATE", "BILLING_CLAWBACK_ENABLED",
-    "BILLING_DOCUMENT_MODE"})
+    "BILLING_DOCUMENT_MODE",
+    "TAX_CALCULATOR_DRIVER", "VAT_RATE", "EINVOICER_DRIVER",
+    "INVOICE_SELLER_NAME", "INVOICE_SELLER_VAT", "INVOICE_SELLER_CR", "INVOICE_SELLER_ADDRESS"})

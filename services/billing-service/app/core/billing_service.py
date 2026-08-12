@@ -18,6 +18,7 @@ from app.core.entitlement_resolver import EntitlementResolver
 from app.core import pricing
 from app.core import events as _events
 from app.core import settlement as _stl
+from app.core import tax_profile
 from app.core.models import (Coupon, Invoice, Payment, Plan, Settlement, Subscription, iso,
                              new_id, now_ts)
 from app.core.stores import (CouponStore, IdempotencyStore, InvoiceStore, LedgerStore,
@@ -647,10 +648,22 @@ class BillingService:
         inv.paid_at = paid_at or iso()
         if not inv.settled_minor:
             inv.settled_minor = inv.total_minor
-        # The ZATCA e-invoice is finalized ONLY when the operator's document mode issues a tax
-        # invoice. A receipt-only platform never touches e-invoicing — no VAT clearance, no QR — it
-        # just confirms the money (see render_receipt). tax_invoice/both keep the full ZATCA path.
-        if self._cfg.get("document_mode", "receipt") in ("tax_invoice", "both"):
+        # WHAT THIS INVOICE IS, decided ONCE and FROZEN here. The mode alone is not enough: a tax
+        # invoice is only issued when the profile behind it can back one (a real calculator, a rate
+        # above zero, a seller registration number). If the mode says tax but the profile cannot,
+        # the document degrades to a RECEIPT — the true, lesser thing — rather than a void tax
+        # invoice. The decided type is stamped on the invoice so every later render follows the
+        # INVOICE, not whatever the setting happens to be then (a mode switched, or switched back,
+        # after issue must never rewrite a document already produced). See app/core/tax_profile.py.
+        seller = self._cfg.get("seller", {}) or {}
+        inv.doc_type = tax_profile.effective_doc_type(
+            self._cfg.get("document_mode", "receipt"),
+            tax_driver=self._cfg.get("tax_driver"), vat_rate=self._cfg.get("vat_rate", "0"),
+            seller_vat=seller.get("vat_number", ""))
+        if inv.doc_type == "tax_invoice":
+            # Freeze the seller's legal identity onto the invoice, so re-rendering a delivered tax
+            # invoice always shows the registration number it was ISSUED with.
+            inv.seller = {k: v for k, v in seller.items() if v}
             buyer = await self._buyer_for(inv)
             inv.einvoice = self._einv.finalize(tenant=inv.tenant,
                                                invoice=self._einvoice_payload(inv, buyer))
@@ -913,10 +926,54 @@ class BillingService:
         return {"id": inv.tenant}
 
     def _einvoice_payload(self, inv: Invoice, buyer: dict[str, Any]) -> dict[str, Any]:
+        # The seller MUST be on the payload — an empty seller was exactly how a "tax invoice" went to
+        # ZATCA with no registration number. Prefer the snapshot frozen on the invoice at issue,
+        # falling back to the live profile for a payload assembled before the stamp is written.
+        seller = inv.seller or self._cfg.get("seller", {}) or {}
         return {"number": inv.number, "issued_at": int(now_ts()), "currency": inv.currency,
-                "vat_rate": self._cfg.get("vat_rate", "0.15"), "seller": {}, "buyer": buyer,
+                "vat_rate": self._cfg.get("vat_rate", "0.15"),
+                "seller": {k: seller.get(k, "") for k in ("name", "vat_number", "cr_number", "address")},
+                "buyer": buyer,
                 "lines": [{"description": li["description"], "qty": li.get("quantity", 1),
                            "amount_minor": li["amount_minor"]} for li in inv.lines]}
+
+    # ── which document THIS invoice is, now ─────────────────────────────────────────
+    @staticmethod
+    def _issued_doc_type(inv: Invoice) -> str:
+        """What the invoice WAS issued as. The stamp is the truth; a legacy row with no stamp is
+        inferred from whether a ZATCA e-invoice was finalized on it."""
+        if inv.doc_type:
+            return inv.doc_type
+        if inv.einvoice and str(inv.einvoice.get("status", "")) not in ("", "skipped"):
+            return "tax_invoice"
+        return "receipt"
+
+    def _profile_complete_now(self) -> bool:
+        seller = self._cfg.get("seller", {}) or {}
+        return tax_profile.complete(tax_driver=self._cfg.get("tax_driver"),
+                                    vat_rate=self._cfg.get("vat_rate", "0"),
+                                    seller_vat=seller.get("vat_number", ""))
+
+    def resolve_document(self, inv: Invoice) -> str:
+        """The document to serve NOW — "tax_invoice" or "receipt".
+
+        The invoice's ISSUED type (so a pre-switch invoice downloads exactly what it was, and a tax
+        invoice stays a tax invoice after the mode is switched back), DOWNGRADED to a receipt if the
+        live tax profile can no longer back a tax invoice — a seller registration emptied by a bad
+        rollout. The safe failure is a receipt, never a tax invoice missing its registration number.
+        """
+        if self._issued_doc_type(inv) == "tax_invoice" and self._profile_complete_now():
+            return "tax_invoice"
+        return "receipt"
+
+    def receipt_available(self, inv: Invoice) -> bool:
+        """May a payment RECEIPT be served for this invoice? Any paid invoice that resolves to a
+        receipt, was issued as one, or belongs to a `both`-mode tenant."""
+        if inv.status != "paid":
+            return False
+        mode = str(self._cfg.get("document_mode", "receipt")).strip().lower()
+        return (self.resolve_document(inv) == "receipt"
+                or self._issued_doc_type(inv) == "receipt" or mode == "both")
 
     # ── dunning ────────────────────────────────────────────────────────────────────
     async def _dunning(self, pay: Payment) -> None:
@@ -1205,6 +1262,11 @@ class BillingService:
                              if k in ("name", "vat_number", "cr_number", "address") and v}
         else:
             data["buyer"] = {"account": inv.tenant}
+        # The seller printed on the document is the one FROZEN at issue for a tax invoice, so a
+        # delivered document keeps its original registration number even if the live value later
+        # changes; a receipt (or a legacy row) falls back to the live seller identity.
+        if inv.seller:
+            data["seller"] = inv.seller
         return data
 
     async def render_receipt(self, inv: Invoice) -> tuple[str, bytes] | None:

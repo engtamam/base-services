@@ -65,6 +65,15 @@ webhook (signature-verified) → reconcile paid/failed/refunded (idempotent)
 - **Multi-currency** — correct minor-unit precision (SAR/USD 2-dp, KWD/BHD/OMR 3-dp, JPY 0-dp).
 - **Buyer tax identity** — `buyer_vat`/`buyer_cr` on the subscription flow into the e-invoice;
   optional B2B **reverse-charge** zeroes VAT.
+- **Tax profile is one unit, and complete or nothing** — `BILLING_DOCUMENT_MODE` and the profile
+  behind it (`TAX_CALCULATOR_DRIVER`, `VAT_RATE`, `INVOICE_SELLER_VAT`) are edited together from the
+  operator panel. A mode that issues a **tax invoice** is refused — at the write **and** at render —
+  unless a real calculator, a rate above zero, and a seller registration number are all present;
+  the refusal **names the missing key** (`TAX_PROFILE_INCOMPLETE: INVOICE_SELLER_VAT`). What a paid
+  invoice **is** (`receipt` | `tax_invoice`) is **frozen on the invoice** and the seller identity
+  captured with it, so switching the mode — or switching back — never rewrites a document already
+  issued, and a seller number emptied later makes a document **fall back to a receipt**, never a tax
+  invoice missing its registration.
 - **Recording mode + verify** — `PAYMENT_GATEWAY_DRIVER=recording` runs the flow without
   charging (pilot-safe); `GET /gateway/verify` confirms which gateway is wired without moving money.
 - **Grandfathering** (`GRANDFATHER=true`) — a subscription captures its **price + limits at

@@ -109,6 +109,29 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
             document_mode = v if v in ("receipt", "tax_invoice", "both") else s.BILLING_DOCUMENT_MODE
         except Exception:  # noqa: BLE001 — a config read must never break a charge
             document_mode = s.BILLING_DOCUMENT_MODE
+
+    # The REST of the tax profile, read AS ONE UNIT with the mode — the whole point is that a tax
+    # invoice's completeness (calculator + rate + seller number) is decided from live values at the
+    # point of use, never a boot snapshot half of which needed a redeploy. A read must never break a
+    # charge, so each falls back to its configured value.
+    async def _rc_str(key: str, default: str) -> str:
+        if rc is None:
+            return default
+        try:
+            v = await rc.get(tenant=tenant, key=key, default=default)
+            return str(v) if v is not None else default
+        except Exception:  # noqa: BLE001 — a config read must never break a charge
+            return default
+    tax_driver = await _rc_str("TAX_CALCULATOR_DRIVER", s.TAX_CALCULATOR_DRIVER)
+    vat_rate = await _rc_str("VAT_RATE", s.VAT_RATE)
+    einvoicer_driver = await _rc_str("EINVOICER_DRIVER", s.EINVOICER_DRIVER)
+    # The seller identity is the PLATFORM's — its registration serves every tenant. Read at the
+    # effective scope (tenant override, then the platform value) so a reseller with its own
+    # registration MAY override, while completeness is evaluated against whatever actually applies.
+    seller = {"name": await _rc_str("INVOICE_SELLER_NAME", s.INVOICE_SELLER_NAME),
+              "vat_number": await _rc_str("INVOICE_SELLER_VAT", s.INVOICE_SELLER_VAT),
+              "cr_number": await _rc_str("INVOICE_SELLER_CR", s.INVOICE_SELLER_CR),
+              "address": await _rc_str("INVOICE_SELLER_ADDRESS", s.INVOICE_SELLER_ADDRESS)}
     return BillingService(
         plans=PlanStore(c.datastore, c.cache), coupons=CouponStore(c.datastore),
         subs=SubscriptionStore(c.datastore, c.cache),
@@ -121,7 +144,10 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
         grants=build_grants(request, s),
         gateway=gateway, tax=c.tax_calculator, einvoicer=c.einvoicer, pdf=c.pdf_renderer,
         cache=c.cache, settlements=SettlementStore(c.datastore),
-        config={"currency": s.CURRENCY, "trial_days": s.TRIAL_DAYS, "vat_rate": s.VAT_RATE,
+        config={"currency": s.CURRENCY, "trial_days": s.TRIAL_DAYS, "vat_rate": vat_rate,
+                # The tax profile, resolved together — completeness (tax_profile.py) is judged from
+                # these at issue AND at render, and the seller snapshot is frozen onto a tax invoice.
+                "tax_driver": tax_driver, "einvoicer_driver": einvoicer_driver, "seller": seller,
                 "reverse_charge": s.REVERSE_CHARGE_B2B, "grandfather": s.GRANDFATHER,
                 "dunning_base_hours": s.DUNNING_RETRY_BASE_HOURS, "dunning_max_attempts": s.DUNNING_MAX_ATTEMPTS,
                 "grace_days": s.GRACE_DAYS, "list_limit": s.BILLING_LIST_LIMIT,
@@ -658,31 +684,35 @@ async def _fetch_own(request: Request, invoice_id: str, principal: Principal):
 
 @router.get("/invoices/{invoice_id}/pdf")
 async def invoice_pdf(request: Request, invoice_id: str, principal: Principal = Depends(_SELF)):
-    """The TAX invoice. Refused when the tenant's document mode does not issue one (receipt-only)."""
+    """The TAX invoice. Served on the invoice's ISSUED type (the stamp), so it stays downloadable
+    after the mode is switched back to receipt. Refused — and /document serves a receipt instead —
+    when the live tax profile can no longer back a tax invoice (a seller registration emptied)."""
     svc, inv = await _fetch_own(request, invoice_id, principal)
-    if svc._cfg.get("document_mode", "receipt") not in ("tax_invoice", "both"):
+    if svc.resolve_document(inv) != "tax_invoice":
         raise HTTPException(status.HTTP_409_CONFLICT, "TAX_INVOICE_NOT_ISSUED")
     return _pdf_response(await svc.render_pdf(inv), f"{inv.number}.pdf")
 
 
 @router.get("/invoices/{invoice_id}/receipt")
 async def invoice_receipt(request: Request, invoice_id: str, principal: Principal = Depends(_SELF)):
-    """Our internal payment RECEIPT (non-tax), carrying the gateway reference. Refused when the mode
-    does not issue one, or the invoice is not paid."""
+    """Our internal payment RECEIPT (non-tax), carrying the gateway reference. Available for any paid
+    invoice that resolves to a receipt, was issued as one, or belongs to a `both`-mode tenant."""
     svc, inv = await _fetch_own(request, invoice_id, principal)
-    if svc._cfg.get("document_mode", "receipt") not in ("receipt", "both"):
-        raise HTTPException(status.HTTP_409_CONFLICT, "RECEIPT_NOT_ISSUED")
     if inv.status != "paid":
         raise HTTPException(status.HTTP_409_CONFLICT, "NOT_PAID")
+    if not svc.receipt_available(inv):
+        raise HTTPException(status.HTTP_409_CONFLICT, "RECEIPT_NOT_ISSUED")
     return _pdf_response(await svc.render_receipt(inv), f"{inv.number}-receipt.pdf")
 
 
 @router.get("/invoices/{invoice_id}/document")
 async def invoice_document(request: Request, invoice_id: str, principal: Principal = Depends(_SELF)):
-    """Whatever THIS tenant's document mode issues — so a client asks for 'the document' and gets the
-    right one: the tax invoice (tax_invoice/both), otherwise the receipt."""
+    """Whatever THIS invoice IS — the type follows the INVOICE, not the current setting. The tax
+    invoice if it was issued as one and the live profile still backs it; otherwise the receipt. So a
+    pre-switch invoice downloads exactly what was originally issued, and a tax invoice whose seller
+    number was later emptied falls back to a receipt rather than an invoice without a registration."""
     svc, inv = await _fetch_own(request, invoice_id, principal)
-    if svc._cfg.get("document_mode", "receipt") in ("tax_invoice", "both"):
+    if svc.resolve_document(inv) == "tax_invoice":
         return _pdf_response(await svc.render_pdf(inv), f"{inv.number}.pdf")
     if inv.status != "paid":
         raise HTTPException(status.HTTP_409_CONFLICT, "NOT_PAID")

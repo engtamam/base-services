@@ -1467,7 +1467,7 @@
     },
     "/api/v1/billing/invoices/{invoice_id}/document": {
       "get": {
-        "description": "Whatever THIS tenant's document mode issues \u2014 so a client asks for 'the document' and gets the\nright one: the tax invoice (tax_invoice/both), otherwise the receipt.",
+        "description": "Whatever THIS invoice IS \u2014 the type follows the INVOICE, not the current setting. The tax\ninvoice if it was issued as one and the live profile still backs it; otherwise the receipt. So a\npre-switch invoice downloads exactly what was originally issued, and a tax invoice whose seller\nnumber was later emptied falls back to a receipt rather than an invoice without a registration.",
         "operationId": "invoice_document_api_v1_billing_invoices__invoice_id__document_get",
         "parameters": [
           {
@@ -1508,7 +1508,7 @@
     },
     "/api/v1/billing/invoices/{invoice_id}/pdf": {
       "get": {
-        "description": "The TAX invoice. Refused when the tenant's document mode does not issue one (receipt-only).",
+        "description": "The TAX invoice. Served on the invoice's ISSUED type (the stamp), so it stays downloadable\nafter the mode is switched back to receipt. Refused \u2014 and /document serves a receipt instead \u2014\nwhen the live tax profile can no longer back a tax invoice (a seller registration emptied).",
         "operationId": "invoice_pdf_api_v1_billing_invoices__invoice_id__pdf_get",
         "parameters": [
           {
@@ -1549,7 +1549,7 @@
     },
     "/api/v1/billing/invoices/{invoice_id}/receipt": {
       "get": {
-        "description": "Our internal payment RECEIPT (non-tax), carrying the gateway reference. Refused when the mode\ndoes not issue one, or the invoice is not paid.",
+        "description": "Our internal payment RECEIPT (non-tax), carrying the gateway reference. Available for any paid\ninvoice that resolves to a receipt, was issued as one, or belongs to a `both`-mode tenant.",
         "operationId": "invoice_receipt_api_v1_billing_invoices__invoice_id__receipt_get",
         "parameters": [
           {

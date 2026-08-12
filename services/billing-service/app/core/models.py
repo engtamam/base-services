@@ -134,6 +134,15 @@ class Invoice:
     settled_minor: int = 0
     credit_note: bool = False
     einvoice: dict[str, Any] = field(default_factory=dict)
+    # What money document this invoice IS, FROZEN the moment it is paid — "receipt" | "tax_invoice"
+    # (empty on a legacy row, inferred from `einvoice`). The document follows the INVOICE, not the
+    # current setting: a mode switched after issue, or switched back, never retroactively changes a
+    # document already produced. The render/download routes read THIS, not the live document mode.
+    doc_type: str = ""
+    # The seller's legal identity captured at issue when this was a tax invoice (name / VAT / CR /
+    # address). Frozen here so re-rendering a delivered tax invoice shows the registration number it
+    # was ISSUED with — never a later, emptied one — which would be forgery in good faith.
+    seller: dict[str, Any] = field(default_factory=dict)
     # What this invoice entitles the buyer to beyond the money itself — currently `grant_minor`,
     # the wallet credits the plan included. Recorded ON THE INVOICE at the moment it is raised, so
     # a plan repriced afterwards cannot change what an already-sold invoice grants, and so a
