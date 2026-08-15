@@ -15,7 +15,11 @@ class ConsoleTemplateManager:
     driver = "console"
 
     def submit(self, *, name, language, category, body, variables, examples=None) -> SubmitResult:
-        _log.info("whatsapp_template_submitted", extra={"provider": "console", "name": name})
+        # `name` is a RESERVED LogRecord attribute — putting it in `extra` makes Python's logging
+        # raise KeyError the moment the record is built (i.e. whenever this logger is at INFO), which
+        # is how a console submit crashed in a real deployment while the tests, sitting above INFO,
+        # stayed green. Use a non-reserved key.
+        _log.info("whatsapp_template_submitted", extra={"provider": "console", "template_name": name})
         return SubmitResult(ok=True, provider_template_id=f"console:{name}:{language}",
                             status="approved")
 

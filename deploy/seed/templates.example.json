@@ -1,0 +1,26 @@
+[
+  {
+    "name": "otp_login",
+    "language": "ar",
+    "category": "AUTHENTICATION",
+    "body": "رمز الدخول الخاص بك هو {{1}} وينتهي خلال {{2}} دقائق.",
+    "variables": ["code", "minutes"],
+    "examples": ["123456", "5"]
+  },
+  {
+    "name": "otp_login",
+    "language": "en",
+    "category": "AUTHENTICATION",
+    "body": "Your login code is {{1}}. It expires in {{2}} minutes.",
+    "variables": ["code", "minutes"],
+    "examples": ["123456", "5"]
+  },
+  {
+    "name": "order_shipped",
+    "language": "ar",
+    "category": "UTILITY",
+    "body": "تم شحن طلبك رقم {{1}}. تتبّع الشحنة عبر {{2}}.",
+    "variables": ["order_id", "tracking_url"],
+    "examples": ["A-1042", "https://track.example.com/A-1042"]
+  }
+]

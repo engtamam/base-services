@@ -89,6 +89,20 @@ def test_sync_leaves_a_rejected_template_alone():
     assert out["scanned"] == 0 and run(reg.get("acme", "promo", "en")).status == REJECTED
 
 
+# ── the console manager must survive its own INFO log line ────────────────────
+def test_console_submit_does_not_crash_at_info_level():
+    """`extra={"name": ...}` collides with LogRecord's reserved `name` and raises KeyError the moment
+    the record is built — i.e. whenever this logger is at INFO (production). A submit that logs must
+    not crash; the tests sit above INFO by default, so this pins the level explicitly."""
+    import logging
+
+    from app.adapters.whatsapp_templates.console import ConsoleTemplateManager
+    logging.getLogger("app.whatsapp_templates.console").setLevel(logging.INFO)
+    res = ConsoleTemplateManager().submit(name="otp", language="en", category="AUTHENTICATION",
+                                          body="x {{1}}", variables=["code"], examples=["1"])
+    assert res.ok and res.status == "approved"
+
+
 # ── submit-pending: the rate-limited library drain ────────────────────────────
 class _CountingManager(_Manager):
     def __init__(self, **kw):
