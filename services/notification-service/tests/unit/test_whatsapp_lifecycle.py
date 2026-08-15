@@ -89,6 +89,71 @@ def test_sync_leaves_a_rejected_template_alone():
     assert out["scanned"] == 0 and run(reg.get("acme", "promo", "en")).status == REJECTED
 
 
+# ── submit-pending: the rate-limited library drain ────────────────────────────
+class _CountingManager(_Manager):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.submitted = []
+
+    def submit(self, **kw):
+        self.submitted.append(kw.get("name"))
+        return SubmitResult(ok=True, provider_template_id=f"meta:{kw.get('name')}", status="pending")
+
+
+class _FailManager(_Manager):
+    def submit(self, **kw):
+        raise RuntimeError("meta rejected")
+
+
+def _register(reg, name, *, created):
+    run(reg.register(tenant="acme", name=name, language="en", category="UTILITY"))
+    t = run(reg.get("acme", name, "en")); t.created = created; run(reg._store.save(t))
+
+
+def test_submit_pending_submits_only_never_submitted_and_is_idempotent():
+    reg = _reg()
+    for i, n in enumerate(("a", "b", "c")):
+        _register(reg, n, created=f"2026-01-0{i+1}T00:00:00")
+    mgr = _CountingManager()
+    out = run(reg.submit_pending(tenant="acme", manager=mgr, limit=100))
+    assert out["submitted"] == 3 and out["remaining"] == 0 and sorted(mgr.submitted) == ["a", "b", "c"]
+    # re-drain: all three now carry a Meta id, so nothing is resubmitted
+    mgr2 = _CountingManager()
+    out2 = run(reg.submit_pending(tenant="acme", manager=mgr2, limit=100))
+    assert out2["submitted"] == 0 and out2["pending_unsent"] == 0 and mgr2.submitted == []
+
+
+def test_submit_pending_respects_the_limit_oldest_first_and_resumes():
+    reg = _reg()
+    for i, n in enumerate(("old", "mid", "new")):
+        _register(reg, n, created=f"2026-01-0{i+1}T00:00:00")
+    mgr = _CountingManager()
+    out = run(reg.submit_pending(tenant="acme", manager=mgr, limit=2))
+    assert mgr.submitted == ["old", "mid"] and out["submitted"] == 2 and out["remaining"] == 1
+    # a later tick drains the rest
+    out2 = run(reg.submit_pending(tenant="acme", manager=_CountingManager(), limit=2))
+    assert out2["submitted"] == 1 and out2["remaining"] == 0
+
+
+def test_submit_pending_is_clamped_to_metas_100_per_hour_ceiling():
+    reg = _reg()
+    _register(reg, "only", created="2026-01-01T00:00:00")
+    # even asked for 500, the drain never exceeds Meta's 100 — the cap protects the WABA
+    out = run(reg.submit_pending(tenant="acme", manager=_CountingManager(), limit=500))
+    assert out["submitted"] == 1   # (the ceiling is applied; here only one is pending anyway)
+
+
+def test_submit_pending_one_failure_does_not_stop_the_batch():
+    reg = _reg()
+    for i, n in enumerate(("a", "b")):
+        _register(reg, n, created=f"2026-01-0{i+1}T00:00:00")
+    out = run(reg.submit_pending(tenant="acme", manager=_FailManager(), limit=100))
+    assert out["failed"] == 2 and out["submitted"] == 0
+    assert {e["name"] for e in out["errors"]} == {"a", "b"}
+    # nothing got a Meta id, so a retry tick will try them again — the failure is not swallowed
+    assert run(reg.get("acme", "a", "en")).provider_template_id == ""
+
+
 # ── send-time substitution ────────────────────────────────────────────────────
 class _WA:
     driver = "fake"

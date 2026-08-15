@@ -163,6 +163,40 @@ class WhatsAppTemplateRegistry:
         t.updated = _now()
         return await self._store.save(t)
 
+    async def submit_pending(self, *, tenant: str, manager, limit: int = 100,
+                             scan_limit: int = 200) -> dict[str, Any]:
+        """Submit the tenant's NEVER-SUBMITTED templates to Meta, up to `limit`, oldest first.
+
+        This is the backend answer to "upload the whole library on connect": Meta rate-limits template
+        creation to 100/hour per WABA, and a library is often larger, so a scheduled tick drains the
+        next batch until nothing is left — the throttle lives HERE, where Meta's limit is known,
+        instead of in every caller. `limit` is clamped to Meta's ceiling so no config can exceed it.
+
+        IDEMPOTENT by construction: the drain targets pending templates that have NO
+        provider_template_id — i.e. registered but not yet handed to Meta. A template already
+        submitted (awaiting a verdict) carries its id and is skipped, so a re-run never double-submits.
+        One template's failure (a Meta hiccup, a bad definition) records its reason and does not stop
+        the batch — the same one-bad-row-must-not-stop-the-sweep discipline as sync/cycle.
+        """
+        limit = max(0, min(int(limit), 100))     # Meta's hard 100/hour ceiling; never exceeded
+        rows, _ = await self._store.find(tenant=tenant, status=PENDING, limit=max(limit, scan_limit))
+        # Never handed to Meta yet == no provider id. Oldest first, so the library uploads in order
+        # and a stuck tail cannot starve earlier templates across ticks.
+        unsent = sorted((r for r in rows if not r.get("provider_template_id")),
+                        key=lambda r: r.get("created", ""))
+        submitted = failed = 0
+        errors: list[dict[str, str]] = []
+        for row in unsent[:limit]:
+            t = WhatsAppTemplate.from_dict(row)
+            try:
+                await self.submit(tenant=tenant, name=t.name, language=t.language, manager=manager)
+                submitted += 1
+            except Exception as exc:   # noqa: BLE001 — one unsubmittable template must not stop the batch
+                failed += 1
+                errors.append({"name": t.name, "language": t.language, "error": type(exc).__name__})
+        return {"tenant": tenant, "pending_unsent": len(unsent), "submitted": submitted,
+                "failed": failed, "remaining": max(0, len(unsent) - submitted), "errors": errors}
+
     # The statuses worth re-checking against Meta. rejected and disabled are terminal (a rejected
     # name cannot be resubmitted; a disabled template does not return), so re-querying them is wasted
     # calls. Everything else is LIVE: pending awaits a verdict, paused can recover to approved, and —

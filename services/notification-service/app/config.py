@@ -372,6 +372,11 @@ class Settings(BaseSettings):
     WHATSAPP_TEMPLATE_MANAGER: str = "console"   # console | meta
     WHATSAPP_BUSINESS_ACCOUNT_ID: str = ""       # WABA id — the template-management endpoint
     WHATSAPP_TEMPLATE_SYNC_LIMIT: int = 200      # max pending templates reconciled per sweep
+    # Max templates SUBMITTED to Meta per drain call — Meta rate-limits template creation to 100/hour
+    # per WABA, so the whole library (often >100 texts) is submitted across scheduled ticks. Bounded
+    # HERE, where the Meta limit is known, so no consumer has to reimplement the throttle. A value
+    # above 100 is clamped to 100 by the drain: the cap protects the WABA, it is not a tuning knob.
+    WHATSAPP_TEMPLATE_SUBMIT_LIMIT: int = 100
     # How long a phone number's messaging limit / quality rating is cached before Meta is read again.
     # SHORT on purpose: Meta can move the tier within ~6 hours of the conditions being met, and a
     # caller reserves the day's capacity against this number — a stale ceiling plans a campaign that

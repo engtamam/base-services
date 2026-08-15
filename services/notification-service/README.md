@@ -34,6 +34,16 @@ each vendor's official docs.
 
 `POST /internal/notify` body: `{recipient, channel, template_key, locale?, variables?, user_id?, event?, idempotency_key?}`.
 
+> **WhatsApp template library — a backend job, not a browser.** Registering a shop's ~66 texts × 2
+> languages belongs to the moment its account connects, and Meta rate-limits template creation to
+> **100/hour per WABA**. So the two user-tier write routes have **internal (`X-Internal-Token`) twins**
+> with the tenant in the body — `POST /internal/whatsapp/templates` (register, same approved-guard: a
+> no-op re-register never un-approves) and `POST /internal/whatsapp/templates/{name}/{language}/submit`.
+> Register the library once (a local upsert, no Meta call), then **cron
+> `POST /internal/whatsapp/templates/submit-pending?tenant=<t>` hourly**: it submits the next batch of
+> never-submitted templates within Meta's cap (`WHATSAPP_TEMPLATE_SUBMIT_LIMIT`, ≤100), oldest-first,
+> idempotent, until the library is through — the throttle lives here, so no caller reimplements it.
+
 > **An outage delays a message, it does not lose it.** `NOTIFY_DELIVERY_MODE=queued` (default): a
 > failed send is classified (retryable vs permanent), backed off with full jitter, retried by the
 > drain worker, and **dead-lettered** after `NOTIFY_MAX_ATTEMPTS` (distinct from `failed`). Point a

@@ -201,6 +201,106 @@ async def sync_whatsapp_templates(request: Request, tenant: str,
                           limit=settings.WHATSAPP_TEMPLATE_SYNC_LIMIT)
 
 
+class WaTemplateInternalIn(BaseModel):
+    """Same shape as POST /api/v1/whatsapp/templates, but the TENANT rides in the body — the caller
+    is a product service acting FOR a shop (an account just connected, a scheduled library upload),
+    not a human whose token carries a tenant."""
+    tenant: str = Field(min_length=1, max_length=128)
+    name: str = Field(min_length=1, max_length=512)
+    language: str = Field(min_length=2, max_length=16)
+    category: str = Field(min_length=1, max_length=32)
+    body: str = Field(default="", max_length=4_000)
+    variables: list[str] = Field(default_factory=list)   # ordered parameter names (send-time keys)
+    examples: list[str] = Field(default_factory=list)     # ordered example values Meta needs at review
+
+
+class WaSubmitInternalIn(BaseModel):
+    tenant: str = Field(min_length=1, max_length=128)
+
+
+@router.post("/whatsapp/templates", status_code=201, dependencies=[Depends(require_internal_token)])
+async def register_whatsapp_template_internal(request: Request, body: WaTemplateInternalIn) -> dict:
+    """The internal twin of POST /api/v1/whatsapp/templates.
+
+    WHY IT EXISTS: registering the library is NOT a user action — it belongs to the moment an account
+    connects, and Meta rate-limits it, so it is a backend job, not a browser doing 132 calls that stop
+    when the tab closes. The user route needs a JWT whose signing key must stay in identity-service;
+    a service holds no session. So this is the token-authed counterpart with the tenant in the body —
+    the SAME registry.register() upsert, INCLUDING the guard that a no-op re-register never resets an
+    approved template back to pending (whatsapp_templates.register)."""
+    from app.core.whatsapp_templates import (TemplateError, WhatsAppTemplateRegistry,
+                                             WhatsAppTemplateStore)
+    await request.app.state.auditor.record(
+        "whatsapp_template.registered", actor="", tenant=body.tenant,
+        resource=f"wa_template:{body.name}", ip=request.client.host if request.client else "",
+        metadata={"category": body.category, "language": body.language})
+    reg = WhatsAppTemplateRegistry(WhatsAppTemplateStore(request.app.state.container.datastore))
+    try:
+        t = await reg.register(tenant=body.tenant, name=body.name, language=body.language,
+                               category=body.category, body=body.body, variables=body.variables,
+                               examples=body.examples)
+    except TemplateError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return t.public()
+
+
+@router.post("/whatsapp/templates/{name}/{language}/submit",
+             dependencies=[Depends(require_internal_token)])
+async def submit_whatsapp_template_internal(request: Request, name: str, language: str,
+                                            body: WaSubmitInternalIn) -> dict:
+    """The internal twin of POST /api/v1/whatsapp/templates/{name}/{language}/submit — hand ONE
+    registered template to Meta for review. Same registry.submit, tenant in the body. For draining a
+    whole freshly-registered library within Meta's rate limit, prefer submit-pending below."""
+    from app.api.v1.notifications import build_template_manager
+    from app.core.whatsapp_templates import (TemplateError, WhatsAppTemplateRegistry,
+                                             WhatsAppTemplateStore)
+    await request.app.state.auditor.record(
+        "whatsapp_template.submitted", actor="", tenant=body.tenant,
+        resource=f"wa_template:{name}", ip=request.client.host if request.client else "")
+    reg = WhatsAppTemplateRegistry(WhatsAppTemplateStore(request.app.state.container.datastore))
+    try:
+        t = await reg.submit(tenant=body.tenant, name=name, language=language,
+                             manager=await build_template_manager(request, body.tenant))
+    except TemplateError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return t.public()
+
+
+@router.post("/whatsapp/templates/submit-pending", dependencies=[Depends(require_internal_token)])
+async def submit_pending_whatsapp_templates_internal(
+        request: Request, tenant: str, settings: Settings = Depends(get_settings)) -> dict:
+    """Drain a tenant's never-submitted templates to Meta, within its 100/hour cap.
+
+    This is the backend job the escalation asked for: "automatic library upload on connect" without a
+    browser and without any caller reimplementing Meta's throttle. Register the library once (loop the
+    register twin — it is a local upsert, no Meta call, no limit), then let the platform scheduler tick
+    this hourly per tenant until the library is through — the same per-tenant cron pattern as
+    /whatsapp/templates/sync:
+
+        cronJobs:
+          - name: notify-wa-template-drain
+            schedule: "7 * * * *"
+            path: /internal/whatsapp/templates/submit-pending?tenant=<tenant>
+
+    Idempotent: it submits only pending templates with NO Meta id (never handed over), so a re-tick
+    never double-submits one already awaiting a verdict."""
+    if not tenant:
+        raise HTTPException(400, "tenant is required")
+    from app.api.v1.notifications import build_template_manager
+    from app.core.whatsapp_templates import WhatsAppTemplateRegistry, WhatsAppTemplateStore
+    reg = WhatsAppTemplateRegistry(WhatsAppTemplateStore(request.app.state.container.datastore))
+    result = await reg.submit_pending(
+        tenant=tenant, manager=await build_template_manager(request, tenant),
+        limit=settings.WHATSAPP_TEMPLATE_SUBMIT_LIMIT, scan_limit=settings.WHATSAPP_TEMPLATE_SYNC_LIMIT)
+    # Recorded AFTER: submit-pending is a batch of individually-audited submits' net effect; the row
+    # names counts, never a person, and an empty batch is a legitimate no-op worth seeing.
+    await request.app.state.auditor.record(
+        "whatsapp_template.submitted", actor="system", tenant=tenant,
+        resource="whatsapp_templates", ip=request.client.host if request.client else "",
+        metadata={k: str(result[k]) for k in ("submitted", "failed", "remaining")})
+    return result
+
+
 @router.get("/whatsapp/messaging-limit", dependencies=[Depends(require_internal_token)])
 async def whatsapp_messaging_limit_internal(request: Request, tenant: str = "") -> dict:
     """This tenant's WhatsApp messaging limit (unique customers / 24h) + quality rating, read live

@@ -414,6 +414,21 @@
         "title": "ValidationError",
         "type": "object"
       },
+      "WaSubmitInternalIn": {
+        "properties": {
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant"
+        ],
+        "title": "WaSubmitInternalIn",
+        "type": "object"
+      },
       "WaTemplateIn": {
         "properties": {
           "body": {
@@ -461,6 +476,63 @@
           "category"
         ],
         "title": "WaTemplateIn",
+        "type": "object"
+      },
+      "WaTemplateInternalIn": {
+        "description": "Same shape as POST /api/v1/whatsapp/templates, but the TENANT rides in the body \u2014 the caller\nis a product service acting FOR a shop (an account just connected, a scheduled library upload),\nnot a human whose token carries a tenant.",
+        "properties": {
+          "body": {
+            "default": "",
+            "maxLength": 4000,
+            "title": "Body",
+            "type": "string"
+          },
+          "category": {
+            "maxLength": 32,
+            "minLength": 1,
+            "title": "Category",
+            "type": "string"
+          },
+          "examples": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Examples",
+            "type": "array"
+          },
+          "language": {
+            "maxLength": 16,
+            "minLength": 2,
+            "title": "Language",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          },
+          "variables": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Variables",
+            "type": "array"
+          }
+        },
+        "required": [
+          "tenant",
+          "name",
+          "language",
+          "category"
+        ],
+        "title": "WaTemplateInternalIn",
         "type": "object"
       }
     }
@@ -1866,6 +1938,127 @@
         "tags": [
           "internal"
         ]
+      },
+      "post": {
+        "description": "The internal twin of POST /api/v1/whatsapp/templates.\n\nWHY IT EXISTS: registering the library is NOT a user action \u2014 it belongs to the moment an account\nconnects, and Meta rate-limits it, so it is a backend job, not a browser doing 132 calls that stop\nwhen the tab closes. The user route needs a JWT whose signing key must stay in identity-service;\na service holds no session. So this is the token-authed counterpart with the tenant in the body \u2014\nthe SAME registry.register() upsert, INCLUDING the guard that a no-op re-register never resets an\napproved template back to pending (whatsapp_templates.register).",
+        "operationId": "register_whatsapp_template_internal_internal_whatsapp_templates_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaTemplateInternalIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Register Whatsapp Template Internal Internal Whatsapp Templates Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register Whatsapp Template Internal",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/whatsapp/templates/submit-pending": {
+      "post": {
+        "description": "Drain a tenant's never-submitted templates to Meta, within its 100/hour cap.\n\nThis is the backend job the escalation asked for: \"automatic library upload on connect\" without a\nbrowser and without any caller reimplementing Meta's throttle. Register the library once (loop the\nregister twin \u2014 it is a local upsert, no Meta call, no limit), then let the platform scheduler tick\nthis hourly per tenant until the library is through \u2014 the same per-tenant cron pattern as\n/whatsapp/templates/sync:\n\n    cronJobs:\n      - name: notify-wa-template-drain\n        schedule: \"7 * * * *\"\n        path: /internal/whatsapp/templates/submit-pending?tenant=<tenant>\n\nIdempotent: it submits only pending templates with NO Meta id (never handed over), so a re-tick\nnever double-submits one already awaiting a verdict.",
+        "operationId": "submit_pending_whatsapp_templates_internal_internal_whatsapp_templates_submit_pending_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Submit Pending Whatsapp Templates Internal Internal Whatsapp Templates Submit Pending Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit Pending Whatsapp Templates Internal",
+        "tags": [
+          "internal"
+        ]
       }
     },
     "/internal/whatsapp/templates/sync": {
@@ -1924,6 +2117,86 @@
           }
         },
         "summary": "Sync Whatsapp Templates",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/whatsapp/templates/{name}/{language}/submit": {
+      "post": {
+        "description": "The internal twin of POST /api/v1/whatsapp/templates/{name}/{language}/submit \u2014 hand ONE\nregistered template to Meta for review. Same registry.submit, tenant in the body. For draining a\nwhole freshly-registered library within Meta's rate limit, prefer submit-pending below.",
+        "operationId": "submit_whatsapp_template_internal_internal_whatsapp_templates__name___language__submit_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "language",
+            "required": true,
+            "schema": {
+              "title": "Language",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaSubmitInternalIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Submit Whatsapp Template Internal Internal Whatsapp Templates  Name   Language  Submit Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit Whatsapp Template Internal",
         "tags": [
           "internal"
         ]

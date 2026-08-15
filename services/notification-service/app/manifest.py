@@ -96,6 +96,13 @@ def build_manifest(
             {"path": "/internal/notifications/drain", "tier": "internal", "method": "POST"},
             {"path": "/internal/whatsapp/templates/sync", "tier": "internal", "method": "POST"},
             {"path": "/internal/whatsapp/templates", "tier": "internal", "method": "GET"},
+            # Internal WRITE twins of the user-tier register/submit routes: a backend service (an
+            # account just connected, a scheduled library upload) is not a user and holds no session.
+            {"path": "/internal/whatsapp/templates", "tier": "internal", "method": "POST"},
+            {"path": "/internal/whatsapp/templates/{name}/{language}/submit", "tier": "internal", "method": "POST"},
+            # Rate-limited drain: submit the next batch of never-submitted templates within Meta's
+            # 100/hour cap. Cron this per tenant (like sync) to upload a whole library across ticks.
+            {"path": "/internal/whatsapp/templates/submit-pending", "tier": "internal", "method": "POST"},
             {"path": "/internal/whatsapp/messaging-limit", "tier": "internal", "method": "GET"},
             # Backup fan-out (backup-service orchestrates): export + verify + import this
             # service's data. Declared so the fan-out discovers this holder — an undeclared holder
