@@ -97,6 +97,16 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "shop's name and stores it as the tenant's credential — a credential-granting act, "
                "and like every other one here it must be attributable and is gone the moment it "
                "happens; the row names the WABA, never the code or the token",
+    },
+    {
+        "action": "whatsapp.number_registered",
+        "source": "internal",
+        "critical": False,
+        "resource": "phone",
+        "why": "registering a phone number is what makes it able to SEND — the step between a stored "
+               "token and a working channel. The row names the phone id and the outcome (registered, "
+               "or a distinct reason) so a launch that silently never registered is provable after "
+               "the fact. Not critical: refusing to register because the log blinked helps no one.",
     }
 
 ]

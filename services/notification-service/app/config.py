@@ -363,9 +363,15 @@ class Settings(BaseSettings):
     # onboarding is disabled and the endpoint refuses cleanly (a deployment that brings tokens by
     # hand is unaffected).
     META_APP_ID: str = ""
-    META_APP_SECRET: str = ""
-    # The Graph version for onboarding calls (code exchange, subscribe). Separate from the send-path
-    # base above so upgrading the onboarding flow can't silently change how messages are sent.
+    META_APP_SECRET: str = ""     # also verifies the inbound webhook signature (X-Hub-Signature-256)
+    # The token WE choose and hand Meta when subscribing the webhook; Meta echoes it on the GET
+    # verification handshake (hub.verify_token) and we compare it constant-time. Empty => the inbound
+    # webhook cannot be verified, so it is refused (fail closed) rather than accepting an unverified
+    # subscription. This is NOT a secret Meta issues — it is a shared nonce we set on both sides.
+    WHATSAPP_WEBHOOK_VERIFY_TOKEN: str = ""
+    # The Graph version for onboarding calls (code exchange, subscribe, phone-number register).
+    # Separate from the send-path base above so upgrading the onboarding flow can't silently change
+    # how messages are sent.
     WHATSAPP_ONBOARDING_GRAPH_BASE: str = "https://graph.facebook.com/v21.0"
     # Template-management (submit to Meta + poll approval). `console` auto-approves for dev; `meta`
     # calls the Graph message_templates API on the WhatsApp Business Account.

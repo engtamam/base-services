@@ -44,6 +44,23 @@ each vendor's official docs.
 > never-submitted templates within Meta's cap (`WHATSAPP_TEMPLATE_SUBMIT_LIMIT`, ≤100), oldest-first,
 > idempotent, until the library is through — the throttle lives here, so no caller reimplements it.
 
+> **A connected number cannot send until it is registered.** Embedded Signup stores the token but
+> Meta refuses to send until the number is registered with the business's 6-digit two-step PIN.
+> `POST /internal/whatsapp/register {tenant, pin}` does it (token + phone id resolved per tenant, so
+> only the PIN travels), and returns **three distinct outcomes**: `registered:true`, or
+> `{registered:false, reason}` where reason is `WRONG_PIN` · `RATE_LIMITED` (Meta's 10-per-72h lock,
+> error 133016 — tell the owner to *wait*) · `UNREACHABLE` · `NOT_CONNECTED` (finish Embedded Signup
+> first). A malformed PIN is refused (422) before it spends one of the 10 attempts.
+
+> **Inbound Meta webhook — the platform owns it** (it holds the app secret needed to verify). `GET
+> /webhooks/whatsapp` answers the subscription handshake (`hub.challenge` iff `hub.verify_token`
+> matches `WHATSAPP_WEBHOOK_VERIFY_TOKEN`, constant-time); `POST /webhooks/whatsapp` verifies
+> `X-Hub-Signature-256` (HMAC-SHA256 over the raw body under `META_APP_SECRET`, constant-time,
+> fail-closed) then **fans every change out to the event bus under `whatsapp.<field>`** — delivery
+> statuses (also exploded to `whatsapp.status`), inbound messages, `account_update`, `user_preferences`,
+> and **any unrecognised future field, never filtered**. A consumer subscribes to what it needs; an
+> unknown type is emitted rather than dropped, so this can't silently recreate the gap it closes.
+
 > **An outage delays a message, it does not lose it.** `NOTIFY_DELIVERY_MODE=queued` (default): a
 > failed send is classified (retryable vs permanent), backed off with full jitter, retried by the
 > drain worker, and **dead-lettered** after `NOTIFY_MAX_ATTEMPTS` (distinct from `failed`). Point a

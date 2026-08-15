@@ -414,6 +414,27 @@
         "title": "ValidationError",
         "type": "object"
       },
+      "WaRegisterIn": {
+        "properties": {
+          "pin": {
+            "pattern": "^[0-9]{6}$",
+            "title": "Pin",
+            "type": "string"
+          },
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant",
+          "pin"
+        ],
+        "title": "WaRegisterIn",
+        "type": "object"
+      },
       "WaSubmitInternalIn": {
         "properties": {
           "tenant": {
@@ -1858,6 +1879,64 @@
         ]
       }
     },
+    "/internal/whatsapp/register": {
+      "post": {
+        "description": "Register a tenant's business phone number for Cloud API sending \u2014 the PIN-carrying step that\nEmbedded Signup deliberately stops before.\n\nWHY IT EXISTS: exchange() stores the token but Meta refuses to SEND until the number is registered,\nso a tenant that finished Embedded Signup shows green everywhere and cannot deliver a single\nmessage. The token + phone id are read from the SAME per-tenant credentials ProviderPool holds\n(in core \u2014 a route never reads credential plaintext), so the caller supplies only the PIN.\n\nTHE FAILURES ARE THREE SENTENCES, never one 400: WRONG_PIN (the business mistyped), RATE_LIMITED\n(Meta's 10-per-72h lock, error 133016 \u2014 tell them to WAIT, not retry), UNREACHABLE (we could not\nreach Meta). NOT_CONNECTED means no token is stored yet \u2014 finish Embedded Signup first.",
+        "operationId": "register_whatsapp_number_internal_whatsapp_register_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaRegisterIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register Whatsapp Number",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/whatsapp/templates": {
       "get": {
         "description": "Which templates are approved (or pending/paused/\u2026) for this tenant \u2014 for a PEER SERVICE.\n\nA sending service that picks a template by TYPE needs to prefer an APPROVED one before it spends\na send and a slot in the daily cap on a template notify() will refuse. The user-tier list needs a\nJWT (whose signing key must stay in identity-service) and caching the statuses is a second copy\nof another service's state that drifts on the first sync \u2014 so this is the internal, token-authed\ncounterpart to GET /api/v1/whatsapp/templates: same handler, tenant as a parameter.",
@@ -2237,6 +2316,90 @@
         "summary": "Readyz",
         "tags": [
           "health"
+        ]
+      }
+    },
+    "/webhooks/whatsapp": {
+      "get": {
+        "description": "Meta's subscription handshake: echo hub.challenge iff the verify token matches (constant-time).\n\nReturns the challenge as PLAIN TEXT \u2014 Meta compares the body verbatim, so a JSON wrapper fails the\nsubscription silently.",
+        "operationId": "verify_subscription_webhooks_whatsapp_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "hub.mode",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Hub.Mode",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "hub.verify_token",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Hub.Verify Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "hub.challenge",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Hub.Challenge",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Verify Subscription",
+        "tags": [
+          "webhooks"
+        ]
+      },
+      "post": {
+        "description": "Verify the signature over the RAW body, then fan out. A bad or missing signature is refused;\na verified body is always fanned out whole \u2014 unknown event types included.",
+        "operationId": "receive_webhooks_whatsapp_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Receive Webhooks Whatsapp Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Receive",
+        "tags": [
+          "webhooks"
         ]
       }
     }

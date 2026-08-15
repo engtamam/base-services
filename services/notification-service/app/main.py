@@ -168,6 +168,10 @@ def create_app() -> FastAPI:
     # ── Routers: public -> internal -> user ─────────────────────────────────
     app.include_router(health.router)
     app.include_router(metrics.router)
+    # Public, unauthenticated by a token — the inbound Meta webhook's auth IS its signature (POST) and
+    # the shared verify token (GET). Mounted with the other public routers, before the internal tier.
+    from app.api import webhooks
+    app.include_router(webhooks.router)
     app.include_router(internal.router)
     app.include_router(v1_router)
     # Operator controls: credentials and policy an operator changes after launch.

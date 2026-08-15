@@ -301,6 +301,55 @@ async def submit_pending_whatsapp_templates_internal(
     return result
 
 
+class WaRegisterIn(BaseModel):
+    tenant: str = Field(min_length=1, max_length=128)
+    # Meta's 6-digit two-step-verification PIN, validated HERE so a malformed PIN never spends one of
+    # the 10 attempts Meta allows before it locks the number for 72 hours.
+    pin: str = Field(pattern=r"^[0-9]{6}$")
+
+
+@router.post("/whatsapp/register", dependencies=[Depends(require_internal_token)])
+async def register_whatsapp_number(request: Request, body: WaRegisterIn):
+    """Register a tenant's business phone number for Cloud API sending — the PIN-carrying step that
+    Embedded Signup deliberately stops before.
+
+    WHY IT EXISTS: exchange() stores the token but Meta refuses to SEND until the number is registered,
+    so a tenant that finished Embedded Signup shows green everywhere and cannot deliver a single
+    message. The token + phone id are read from the SAME per-tenant credentials ProviderPool holds
+    (in core — a route never reads credential plaintext), so the caller supplies only the PIN.
+
+    THE FAILURES ARE THREE SENTENCES, never one 400: WRONG_PIN (the business mistyped), RATE_LIMITED
+    (Meta's 10-per-72h lock, error 133016 — tell them to WAIT, not retry), UNREACHABLE (we could not
+    reach Meta). NOT_CONNECTED means no token is stored yet — finish Embedded Signup first."""
+    import asyncio
+
+    from starlette.responses import JSONResponse
+
+    from app.core.whatsapp_register import register_number
+
+    s = get_settings()
+    pool = getattr(request.app.state, "provider_pool", None)
+    if pool is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "PROVIDER_POOL_UNAVAILABLE")
+    token = await pool.whatsapp_access_token(body.tenant)
+    phone_id = await pool.whatsapp_phone_number_id(body.tenant)
+    if not token or not phone_id:
+        # No stored credential: the tenant has not completed Embedded Signup. A DISTINCT reason —
+        # this is not a Meta failure and must not read as one.
+        return JSONResponse({"registered": False, "reason": "NOT_CONNECTED"}, status_code=400)
+    # Off the event loop: a blocking Graph POST must not stall the loop.
+    res = await asyncio.to_thread(
+        register_number, access_token=token, phone_number_id=phone_id, pin=body.pin,
+        graph_base=s.WHATSAPP_ONBOARDING_GRAPH_BASE)
+    await request.app.state.auditor.record(
+        "whatsapp.number_registered", actor="", tenant=body.tenant,
+        resource=f"phone:{phone_id}", ip=request.client.host if request.client else "",
+        metadata={"registered": str(res.registered), "reason": res.reason})
+    if res.registered:
+        return {"registered": True}
+    return JSONResponse({"registered": False, "reason": res.reason}, status_code=400)
+
+
 @router.get("/whatsapp/messaging-limit", dependencies=[Depends(require_internal_token)])
 async def whatsapp_messaging_limit_internal(request: Request, tenant: str = "") -> dict:
     """This tenant's WhatsApp messaging limit (unique customers / 24h) + quality rating, read live

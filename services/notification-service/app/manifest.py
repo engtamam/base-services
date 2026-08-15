@@ -104,6 +104,13 @@ def build_manifest(
             # 100/hour cap. Cron this per tenant (like sync) to upload a whole library across ticks.
             {"path": "/internal/whatsapp/templates/submit-pending", "tier": "internal", "method": "POST"},
             {"path": "/internal/whatsapp/messaging-limit", "tier": "internal", "method": "GET"},
+            # Register a business phone number for Cloud API sending — the PIN-carrying step exchange
+            # stops before. Without it a tenant is "connected" everywhere and cannot send.
+            {"path": "/internal/whatsapp/register", "tier": "internal", "method": "POST"},
+            # Inbound Meta webhook (public — auth is the signature / verify token, not a token gate):
+            # GET verifies the subscription, POST verifies X-Hub-Signature-256 and fans out every event.
+            {"path": "/webhooks/whatsapp", "tier": "public", "method": "GET"},
+            {"path": "/webhooks/whatsapp", "tier": "public", "method": "POST"},
             # Backup fan-out (backup-service orchestrates): export + verify + import this
             # service's data. Declared so the fan-out discovers this holder — an undeclared holder
             # is one nobody backs up.

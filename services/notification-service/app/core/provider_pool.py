@@ -144,6 +144,14 @@ class ProviderPool:
         in core — a route may not read stored credentials."""
         return await self._credential(tenant, "WHATSAPP_PHONE_NUMBER_ID")
 
+    async def whatsapp_access_token(self, tenant: str = "") -> str:
+        """The tenant's WhatsApp business access token (config fallback for the single-brand case).
+
+        Reading credential PLAINTEXT is a core act, never a route's — the same rule the send chains
+        and the template manager follow. Used by phone-number registration, which must call Meta as
+        the business without the token ever transiting the route or a log."""
+        return await self._credential(tenant, "WHATSAPP_ACCESS_TOKEN")
+
     def invalidate(self, tenant: str | None = None) -> None:
         """Drop the cache so the next send resolves fresh.
 
