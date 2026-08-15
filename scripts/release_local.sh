@@ -67,6 +67,23 @@ REG="ghcr.io/$OWNER"
 SVCS="$(find services -maxdepth 2 -name Dockerfile -printf '%h\n' | sed 's#services/##' | grep -v '^_template$' | sort)"
 N="$(echo "$SVCS" | wc -w | tr -d ' ')"
 
+# The previous release tag, used ONLY to skip re-scanning unchanged images: a re-tagged service
+# carries the EXACT digest of the previous release, which already passed the CVE gate there, so
+# scanning it again is a wasted pull + scan (and after the post-release image prune, a full re-pull
+# of the whole fleet). The skip is by DIGEST EQUALITY, not a path heuristic — if a rebuild changed an
+# image, its digest differs and it IS scanned. No prev, or --all, means scan everything.
+SCAN_ALL=0
+PREV_TAG=""
+if [ "$PREV_ARG" = "--all" ]; then
+  SCAN_ALL=1
+elif [ -n "$PREV_ARG" ]; then
+  PREV_TAG="$PREV_ARG"
+else
+  PREV_TAG="$(git tag --merged HEAD 2>/dev/null | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | grep -vx "$VERSION" | sort -V | tail -1)"
+fi
+[ -n "$PREV_TAG" ] || SCAN_ALL=1
+
 echo "======================================================================"
 echo " release_local  $VERSION   ->  $REG   ($N services)"
 echo " prev=${PREV_ARG:-<auto>}  tag=$([ $DO_TAG = 1 ] && echo yes || echo no)  scan=$([ $DO_SCAN = 1 ] && echo yes || echo no)"
@@ -102,14 +119,24 @@ print(f'    {len(m)} digests recorded')
 # vuln-DB download itself fails. The DB is cached in a named volume so only the
 # first scan downloads it.
 if [ "$DO_SCAN" = 1 ]; then
-  echo; echo "==> [2/7] CVE gate — trivy HIGH,CRITICAL (--ignore-unfixed) on all $N images"
+  echo; echo "==> [2/7] CVE gate — trivy HIGH,CRITICAL (--ignore-unfixed)$([ "$SCAN_ALL" = 1 ] && echo " on all $N images" || echo ", changed images only (unchanged already scanned at $PREV_TAG)")"
   command -v docker >/dev/null || die "docker is required for the CVE gate (or pass --no-scan)"
   EMPTY_CFG="$(mktemp -d)"; echo '{}' > "$EMPTY_CFG/config.json"
   docker pull -q aquasec/trivy:latest >/dev/null 2>&1 || true
-  vulns=0
+  vulns=0; scanned=0; skipped=0
   for s in $SVCS; do
     img="$REG/$s:$VERSION"
+    # Skip when this release's digest is byte-identical to the previous release's (a re-tag): it was
+    # already CVE-scanned there. Digest equality is the truth — a rebuilt image differs and is scanned.
+    if [ "$SCAN_ALL" != 1 ]; then
+      cur="$(docker buildx imagetools inspect "$img" 2>/dev/null | awk '/^Digest:/{print $2; exit}')"
+      prev="$(docker buildx imagetools inspect "$REG/$s:$PREV_TAG" 2>/dev/null | awk '/^Digest:/{print $2; exit}')"
+      if [ -n "$cur" ] && [ "$cur" = "$prev" ]; then
+        printf '    %-26s skip (unchanged since %s)\n' "$s" "$PREV_TAG"; skipped=$((skipped+1)); continue
+      fi
+    fi
     docker pull -q "$img" >/dev/null 2>&1 || die "could not pull $img to scan it"
+    scanned=$((scanned+1))
     if DOCKER_CONFIG="$EMPTY_CFG" docker run --rm \
          -v //var/run/docker.sock:/var/run/docker.sock \
          -v trivy-db-cache:/root/.cache/trivy \
