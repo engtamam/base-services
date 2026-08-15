@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as _dt
 
+from app.core import caps_grant
 from app.core.membership import (
     ACTIVE,
     PENDING,
@@ -279,7 +280,9 @@ class AuthService:
     # ── the directory's write side: an admin staffs a tenant ──────────────────
     async def add_member(self, tenant: str, identifier: str, *, roles=None, caps=None,
                          password: str | None = None, mode: str = INVITE,
-                         invite_ttl: int = 0) -> tuple[Membership, str | None]:
+                         invite_ttl: int = 0, granter_caps: frozenset[str] | None = None,
+                         caps_policy: str = "subset",
+                         grantable_caps: frozenset[str] = frozenset()) -> tuple[Membership, str | None]:
         """Add someone to THIS tenant. Returns the membership and, in invite mode, a one-time token.
 
         THE HARD BOUNDARY, and it holds in every mode:
@@ -302,6 +305,12 @@ class AuthService:
             raise RuntimeError("IDENTITY_MULTI_TENANT is off — no membership store is wired")
         if not tenant:
             raise TenantAccessDenied()
+
+        # GOVERN THE GRANT, before any side effect (no Person is created for a refused grant). Direct
+        # caps are unioned into the minted token, so a caller must not grant a capability it does not
+        # itself hold. `granter_caps is None` is the internal-bootstrap exemption (seed_owner, internal
+        # add-member): platform authority, guarded separately. Refused BY NAME — never a silent drop.
+        caps_grant.check(caps, granter_caps=granter_caps, policy=caps_policy, grantable=grantable_caps)
 
         self._identifier.validate(identifier)
         ident = self._identifier.normalize(identifier)   # the canonical key — one human, one account
@@ -493,7 +502,9 @@ class AuthService:
                 "tenant": tenant}
 
     async def update_member_roles(self, tenant: str, person_id: str, *,
-                                  roles=None, caps=None):
+                                  roles=None, caps=None, granter_caps: frozenset[str] | None = None,
+                                  caps_policy: str = "subset",
+                                  grantable_caps: frozenset[str] = frozenset()):
         """Change an EXISTING member's roles/caps in this tenant — never their credential (T2).
 
         Without this, changing what a member may do meant removing and re-inviting them, which drops
@@ -503,6 +514,10 @@ class AuthService:
             raise RuntimeError("IDENTITY_MULTI_TENANT is off — no membership store is wired")
         if not tenant or not person_id:
             raise TenantAccessDenied()
+        # Same governance as add_member: a caps change may not grant a capability the caller lacks.
+        # Checked before the membership is even loaded — a refused grant reads nothing and writes
+        # nothing. `granter_caps is None` exempts a trusted internal caller.
+        caps_grant.check(caps, granter_caps=granter_caps, policy=caps_policy, grantable=grantable_caps)
         m = await self._memberships.membership(person_id, tenant)
         if m is None:
             return None

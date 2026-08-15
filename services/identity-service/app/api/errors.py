@@ -14,6 +14,7 @@ from starlette.responses import JSONResponse
 
 from app.config import get_settings
 from app.core.audit import AuditUnavailable
+from app.core.caps_grant import CapsNotGrantable
 from app.middleware.request_context import get_request_id
 from app.middleware.security import apply_security_headers, build_security_headers
 from app.observability.logging import get_logger
@@ -60,6 +61,23 @@ def register_error_handlers(app: FastAPI) -> None:
             _logger.error("http_exception", extra={"status": exc.status_code})
             code = "INTERNAL_ERROR"
         return _json(code, exc.status_code)
+
+    @app.exception_handler(CapsNotGrantable)
+    async def _caps_not_grantable(request: Request, exc: CapsNotGrantable):
+        # A DELIBERATE exception to the generic-code rule: the refusal must NAME the cap the caller
+        # may not grant, or a silent-shaped answer teaches them it worked. Naming it leaks nothing —
+        # it is a value the caller themselves supplied. `off` (roles-only) is a 400 (the feature is
+        # disabled); a subset/allowlist miss is a 403 (this caller may not grant THAT capability).
+        disabled = exc.policy == "off"
+        body: dict[str, str] = {"error": "DIRECT_CAPS_DISABLED" if disabled else "CAPS_NOT_GRANTABLE"}
+        if not disabled:
+            body["cap"] = exc.cap
+        rid = get_request_id()
+        if rid:
+            body["request_id"] = rid
+        resp = JSONResponse(body, status_code=400 if disabled else 403)
+        apply_security_headers(resp, _sec_headers)
+        return resp
 
     @app.exception_handler(RequestValidationError)
     async def _validation_exc(request: Request, exc: RequestValidationError):

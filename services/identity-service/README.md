@@ -44,11 +44,21 @@ by default; when off these routes 404.
 | POST | `/api/v1/tenancy/members` | `members:write` cap | add a member (invite by default; never touches an existing person's credentials) |
 | DELETE | `/api/v1/tenancy/members/{id}` | `members:write` cap | revoke a membership (the person survives — they work elsewhere) |
 | GET | `/internal/tenancy/members?tenant=` | internal token | the directory for a **background job** (no user JWT) |
+| POST | `/internal/tenancy/members` | internal token | add the Nth member **service-to-service, roles only** — a product staffs its tenant without any human holding `members:write` |
 
 **Capabilities from roles.** With `IDENTITY_CAPS_SOURCE=authz`, a member's caps are resolved from
 authz-service at mint time (`roles` are the input, `caps` are derived) — edit a role, everyone's
 caps follow on next mint. Default `membership` keeps caps on the row. Authz unreachable → **no
 token** (fails closed), never a token with zero caps.
+
+**Direct caps on a membership cannot exceed the granter.** Direct `caps` are unioned into the minted
+token, so an ungoverned grant would be a privilege escalation — a tenant admin minting a capability
+no role grants. The grant is governed at the write: `IDENTITY_MEMBER_CAPS_POLICY=subset` (default) a
+caller may grant **only caps it holds itself**; `off` refuses direct caps entirely (**roles-only** —
+the strongest posture, and what to pair with the internal add-member route above); `allowlist` narrows
+to `IDENTITY_MEMBER_GRANTABLE_CAPS`. A refusal **names the cap** (`403 CAPS_NOT_GRANTABLE` / `400
+DIRECT_CAPS_DISABLED`), never a silent drop. `seed-owner` and the internal add-member route are exempt
+(platform authority, guarded separately).
 
 ## Plug-and-play (config only — no code changes)
 
@@ -63,6 +73,7 @@ token** (fails closed), never a token with zero caps.
 | Multi-tenant | `IDENTITY_MULTI_TENANT` | `false`(default) · `true` |
 | Where caps come from | `IDENTITY_CAPS_SOURCE` | `membership` · `authz` |
 | How a new member is added | `IDENTITY_MEMBER_ADD_MODE` | `invite`(default, secure) · `password` |
+| Direct-caps grant policy | `IDENTITY_MEMBER_CAPS_POLICY` | `subset`(default) · `off`(roles-only) · `allowlist` |
 | Step-up on tenant switch | `IDENTITY_TENANT_SWITCH_REAUTH` | `false` · `true` |
 
 ## How other services verify its tokens

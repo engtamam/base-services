@@ -172,6 +172,61 @@ def test_switch_without_any_proof_is_401(mt):
     assert mt.post("/api/v1/auth/tenant", json={"tenant": "own-shop"}).status_code == 401
 
 
+# ── direct caps on a membership may not exceed the granter (privilege escalation) ────
+def _admin_token(mt, caps, tenant="own-shop"):
+    """A token for `consultant`, scoped to `tenant`, carrying exactly `caps` (no resolver wired, so
+    the membership caps ARE the token caps)."""
+    seed(mt, {tenant: caps})
+    r = mt.post("/api/v1/auth/tenant", json={
+        "username": "consultant", "password": "correct-horse-battery", "tenant": tenant})
+    return {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+
+def test_add_member_cannot_grant_a_capability_the_caller_lacks(mt):
+    # The reported escalation: a tenant admin holding members:write mints platform.operations onto a
+    # member and crosses the tenant boundary. It must be REFUSED, and named — never silently dropped.
+    h = _admin_token(mt, ["members:write"])
+    r = mt.post("/api/v1/tenancy/members",
+                json={"identifier": "employee-a", "roles": ["staff"],
+                      "caps": ["platform.operations"]}, headers=h)
+    assert r.status_code == 403
+    assert r.json()["error"] == "CAPS_NOT_GRANTABLE" and r.json()["cap"] == "platform.operations"
+
+
+def test_add_member_may_grant_a_capability_the_caller_holds(mt):
+    h = _admin_token(mt, ["members:write", "reports:read"])
+    r = mt.post("/api/v1/tenancy/members",
+                json={"identifier": "employee-b", "roles": ["staff"], "caps": ["reports:read"]},
+                headers=h)
+    assert r.status_code == 201, r.text
+
+
+def test_update_member_cannot_grant_a_capability_the_caller_lacks(mt):
+    h = _admin_token(mt, ["members:write"])
+    made = mt.post("/api/v1/tenancy/members",
+                   json={"identifier": "employee-c", "roles": ["staff"]}, headers=h)
+    pid = made.json()["member"]["person_id"]
+    r = mt.put(f"/api/v1/tenancy/members/{pid}",
+               json={"caps": ["platform.operations"]}, headers=h)
+    assert r.status_code == 403 and r.json()["cap"] == "platform.operations"
+
+
+def test_caps_policy_off_refuses_any_direct_caps_but_roles_still_work(env):
+    mt = env(IDENTITY_MULTI_TENANT="true", IDENTITY_MEMBER_CAPS_POLICY="off")
+    seed(mt, {"own-shop": ["members:write"]})
+    h = {"Authorization": "Bearer " + mt.post("/api/v1/auth/tenant", json={
+        "username": "consultant", "password": "correct-horse-battery",
+        "tenant": "own-shop"}).json()["access_token"]}
+    # any direct cap refused — even one the caller holds — under a roles-only posture
+    r = mt.post("/api/v1/tenancy/members",
+                json={"identifier": "e-off", "roles": ["staff"], "caps": ["members:write"]}, headers=h)
+    assert r.status_code == 400 and r.json()["error"] == "DIRECT_CAPS_DISABLED"
+    # a roles-only add is unaffected
+    ok = mt.post("/api/v1/tenancy/members",
+                 json={"identifier": "e-roles", "roles": ["staff"]}, headers=h)
+    assert ok.status_code == 201, ok.text
+
+
 # ── the directory: who works HERE ────────────────────────────────────────────
 def _seed_two_companies(client):
     """Two companies, three people. `boss` is an admin at acme ONLY."""

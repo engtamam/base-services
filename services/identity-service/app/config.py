@@ -330,6 +330,11 @@ class Settings(BaseSettings):
     @property
     def registration_default_roles(self) -> list[str]:
         return [r.strip() for r in self.REGISTRATION_DEFAULT_ROLES.split(",") if r.strip()]
+
+    @property
+    def member_grantable_caps(self) -> frozenset[str]:
+        """The allow-list of directly-grantable caps (only consulted when the policy is `allowlist`)."""
+        return frozenset(c.strip() for c in self.IDENTITY_MEMBER_GRANTABLE_CAPS.split(",") if c.strip())
     PASSWORD_MIN_LENGTH: int = 8                 # minimum password length policy
     # Per-account brute-force lockout (generic rate-limit doesn't stop targeted stuffing).
     LOGIN_MAX_ATTEMPTS: int = 5                  # consecutive failures before lockout
@@ -355,6 +360,14 @@ class Settings(BaseSettings):
     IDENTITY_MEMBERS_WRITE_CAP: str = "members:write"   # staffing a tenant is a bigger deal than reading it
     IDENTITY_MEMBERS_PAGE_SIZE: int = 50         # default page
     IDENTITY_MEMBERS_MAX_PAGE_SIZE: int = 200    # a caller may not ask for the whole company at once
+    # How DIRECT capabilities on a membership are governed at the human admin routes (add/update
+    # member). Direct caps are unioned into the minted token, so an ungoverned grant is a privilege
+    # escalation. `subset` (default): a caller may only grant caps it holds ITSELF. `off`: no direct
+    # caps at all — authority is roles-only (the strictest posture; a caller passing caps is refused).
+    # `allowlist`: caps must be within (the caller's own caps ∩ IDENTITY_MEMBER_GRANTABLE_CAPS). The
+    # internal bootstrap (seed-owner, internal add-member) is exempt — it is platform authority.
+    IDENTITY_MEMBER_CAPS_POLICY: str = "subset"   # subset | off | allowlist
+    IDENTITY_MEMBER_GRANTABLE_CAPS: str = ""       # comma list, used only when policy = allowlist
 
     # ── Machine identity (OAuth2 client-credentials, RFC 6749 §4.4) ───────────────────────────
     # A tenant-scoped service account for a partner's own code — a POS, an ERP — that calls our API
@@ -578,6 +591,17 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"unknown IDENTITY_MEMBER_ADD_MODE {v!r} — allowed: {', '.join(allowed)}"
             )
+        return v
+
+    @field_validator("IDENTITY_MEMBER_CAPS_POLICY")
+    @classmethod
+    def _known_caps_policy(cls, v: str) -> str:
+        # A typo must not silently fall back — `off` misspelled as `of` selecting `subset` would keep
+        # direct caps grantable on a deployment that meant roles-only. Fail at BOOT.
+        from app.core.caps_grant import POLICIES
+        if v not in POLICIES:
+            raise ValueError(
+                f"unknown IDENTITY_MEMBER_CAPS_POLICY {v!r} — allowed: {', '.join(POLICIES)}")
         return v
 
 

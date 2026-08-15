@@ -259,6 +259,68 @@ async def seed_owner(request: Request, body: SeedOwnerIn) -> dict:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "TENANT_ACCESS_DENIED")
 
 
+class InternalMemberIn(BaseModel):
+    """Add an ORDINARY member service-to-service. ROLES ONLY — the product decides who is hired and
+    with which role; capabilities are DERIVED from roles, so there is nothing to over-grant and no
+    tenant admin ever needs members:write. Same shape as seed-owner minus only_if_empty (this is the
+    second employee, not the first owner)."""
+    tenant: str = Field(min_length=1, max_length=128)
+    identifier: str = Field(min_length=1, max_length=320)
+    roles: list[str] = Field(default_factory=list, max_length=32)
+    password: str | None = Field(default=None, max_length=1024)
+
+
+@router.post("/tenancy/members", status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_internal_token)])
+async def add_member_internal(request: Request, body: InternalMemberIn) -> dict:
+    """The internal twin of POST /api/v1/tenancy/members — staff a tenant's SECOND (and Nth) member
+    over the internal token.
+
+    WHY IT EXISTS: seed-owner refuses to overwrite an existing owner (only_if_empty), so it is the
+    first-account primitive and unusable for the second. Without this, a product could only staff a
+    tenant by handing the shop owner members:write and letting the browser call identity — which is
+    the privilege-escalation surface (direct caps) AND puts a platform-shaped API in front of a shop
+    owner. This door hires everyone after the owner: ROLES ONLY (no caps parameter — capabilities are
+    derived from roles), so it can never over-grant, and it is the same division that makes seed-owner
+    safe applied to the Nth employee. Audited WRITE-AHEAD and CRITICAL; the human is a PSEUDONYM."""
+    from app.api.v1.auth import _svc
+    from app.core.auth_service import CredentialNotYours, WeakPassword
+    from app.core.pii import subject_ref
+    from app.core.tenancy import TenantAccessDenied
+    from app.ports.errors import ValidationError
+
+    s = get_settings()
+    if not s.IDENTITY_MULTI_TENANT:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "MULTI_TENANT_OFF")
+    member_ref = subject_ref(s.PII_SALT, body.tenant, body.identifier) if s.PII_SALT else ""
+    # Write-ahead: an add that cannot be recorded must not happen. Records tenant + a PSEUDONYM of the
+    # hired human + roles — never the raw identifier, never the credential.
+    await request.app.state.auditor.record(
+        "member.added", actor="", tenant=body.tenant, resource="member",
+        ip=request.client.host if request.client else "",
+        metadata={"member_ref": member_ref, "roles": ",".join(body.roles)})
+    try:
+        # granter_caps omitted (None) → the internal-bootstrap exemption; and caps=[] regardless, so
+        # this route carries NO capability authority a role does not derive.
+        m, invite = await _svc(request).add_member(
+            body.tenant, body.identifier, roles=body.roles, caps=[], password=body.password,
+            mode=s.IDENTITY_MEMBER_ADD_MODE, invite_ttl=s.IDENTITY_INVITE_TTL_SECONDS)
+    except ValidationError:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "INVALID_IDENTIFIER")
+    except WeakPassword:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "WEAK_PASSWORD")
+    except CredentialNotYours:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "CANNOT_SET_EXISTING_PERSON_CREDENTIAL")
+    except TenantAccessDenied:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "TENANT_ACCESS_DENIED")
+    out = {"person_id": m.person_id, "tenant": body.tenant,
+           "membership": m.public() | {"person_id": m.person_id, "roles": list(m.roles)}}
+    if invite:
+        # Returned EXACTLY once (invite mode), never stored in the clear — a lost invite is reissued.
+        out["invite_token"] = invite
+    return out
+
+
 @router.delete("/tenancy/membership/{ref}", dependencies=[Depends(require_internal_token)])
 async def revoke_membership(request: Request, ref: str) -> dict:
     """Compensation for a seeded owner: revoke ONE membership, idempotently.

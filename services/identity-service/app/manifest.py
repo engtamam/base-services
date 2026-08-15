@@ -114,6 +114,10 @@ def build_manifest(
              # onboarding declares identity as the OWNER of these facts; it must be able to ask.
              "caller": "service"},
             {"path": "/internal/tenancy/members", "tier": "internal", "method": "GET"},
+            # Add the Nth member service-to-service (roles only) — seed-owner is the first-owner
+            # primitive (only_if_empty); this staffs everyone after, so a product hires an employee
+            # without any human holding members:write.
+            {"path": "/internal/tenancy/members", "tier": "internal", "method": "POST"},
             {"path": "/internal/tenancy/seed-owner", "tier": "internal", "method": "POST"},
             {"path": "/internal/tenancy/membership/{ref}", "tier": "internal", "method": "DELETE"},
             {"path": "/internal/ratelimit/unblock", "tier": "internal", "method": "POST"},

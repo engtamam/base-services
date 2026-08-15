@@ -105,7 +105,10 @@ async def add_member(request: Request, body: AddMemberIn) -> dict:
     try:
         m, invite = await svc.add_member(
             tenant, body.identifier, roles=body.roles, caps=body.caps, password=body.password,
-            mode=s.IDENTITY_MEMBER_ADD_MODE, invite_ttl=s.IDENTITY_INVITE_TTL_SECONDS)
+            mode=s.IDENTITY_MEMBER_ADD_MODE, invite_ttl=s.IDENTITY_INVITE_TTL_SECONDS,
+            # A caller may not grant a capability it does not itself hold (CapsNotGrantable → handled).
+            granter_caps=principal.caps, caps_policy=s.IDENTITY_MEMBER_CAPS_POLICY,
+            grantable_caps=s.member_grantable_caps)
     except ValidationError:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "INVALID_IDENTIFIER")
     except WeakPassword:
@@ -165,6 +168,7 @@ async def update_member(request: Request, person_id: str, body: UpdateMemberIn) 
     Without this, changing what a member may do meant removing and re-inviting them: it dropped the
     membership and forced a fresh password claim. This edits only the roles/caps on the membership.
     A role change is a change in who holds power, so it is audited write-ahead as critical."""
+    s = get_settings()
     principal, tenant = await _caller_tenant(request, _write_cap())
     await request.app.state.auditor.record(
         "member.roles_changed", actor=principal.subject, tenant=tenant,
@@ -172,7 +176,9 @@ async def update_member(request: Request, person_id: str, body: UpdateMemberIn) 
         metadata={"roles": ",".join(body.roles or []), "caps": ",".join(body.caps or [])})
     try:
         m = await _svc(request).update_member_roles(
-            tenant, person_id, roles=body.roles, caps=body.caps)
+            tenant, person_id, roles=body.roles, caps=body.caps,
+            granter_caps=principal.caps, caps_policy=s.IDENTITY_MEMBER_CAPS_POLICY,
+            grantable_caps=s.member_grantable_caps)
     except SoleOwnerError:
         # Stripping `owner` from the tenant's last owner strands it.
         raise HTTPException(status.HTTP_409_CONFLICT, "LAST_OWNER")

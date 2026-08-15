@@ -203,6 +203,49 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "InternalMemberIn": {
+        "description": "Add an ORDINARY member service-to-service. ROLES ONLY \u2014 the product decides who is hired and\nwith which role; capabilities are DERIVED from roles, so there is nothing to over-grant and no\ntenant admin ever needs members:write. Same shape as seed-owner minus only_if_empty (this is the\nsecond employee, not the first owner).",
+        "properties": {
+          "identifier": {
+            "maxLength": 320,
+            "minLength": 1,
+            "title": "Identifier",
+            "type": "string"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "maxLength": 1024,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password"
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Roles",
+            "type": "array"
+          },
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant",
+          "identifier"
+        ],
+        "title": "InternalMemberIn",
+        "type": "object"
+      },
       "IssueIn": {
         "properties": {
           "caps": {
@@ -2787,6 +2830,66 @@
           }
         },
         "summary": "Internal Members",
+        "tags": [
+          "internal"
+        ]
+      },
+      "post": {
+        "description": "The internal twin of POST /api/v1/tenancy/members \u2014 staff a tenant's SECOND (and Nth) member\nover the internal token.\n\nWHY IT EXISTS: seed-owner refuses to overwrite an existing owner (only_if_empty), so it is the\nfirst-account primitive and unusable for the second. Without this, a product could only staff a\ntenant by handing the shop owner members:write and letting the browser call identity \u2014 which is\nthe privilege-escalation surface (direct caps) AND puts a platform-shaped API in front of a shop\nowner. This door hires everyone after the owner: ROLES ONLY (no caps parameter \u2014 capabilities are\nderived from roles), so it can never over-grant, and it is the same division that makes seed-owner\nsafe applied to the Nth employee. Audited WRITE-AHEAD and CRITICAL; the human is a PSEUDONYM.",
+        "operationId": "add_member_internal_internal_tenancy_members_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InternalMemberIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Add Member Internal Internal Tenancy Members Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Member Internal",
         "tags": [
           "internal"
         ]

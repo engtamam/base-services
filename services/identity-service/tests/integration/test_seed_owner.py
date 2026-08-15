@@ -41,6 +41,48 @@ def _seed(client, **body):
     return client.post("/internal/tenancy/seed-owner", json=body, headers=_h())
 
 
+def _add(client, **body):
+    return client.post("/internal/tenancy/members", json=body, headers=_h())
+
+
+# ── internal add-member: staffing the SECOND (and Nth) employee, roles only ───
+def test_internal_add_member_requires_the_internal_token(client):
+    assert client.post("/internal/tenancy/members",
+                       json={"tenant": "acme", "identifier": "e@acme", "roles": ["operator"]}
+                       ).status_code == 401
+
+
+def test_internal_add_member_staffs_a_second_employee_with_an_invite(client):
+    # seed the owner first (seed-owner is the FIRST account), then hire a second person over the
+    # internal token — the exact gap: seed-owner refuses a second account, this door adds it.
+    _seed(client, tenant="shop", identifier="owner@shop", caps=["members:write"])
+    r = _add(client, tenant="shop", identifier="+966500000009", roles=["operator"])
+    assert r.status_code == 201, r.text
+    b = r.json()
+    assert b["person_id"] and b["membership"]["roles"] == ["operator"]
+    assert b["invite_token"], "a brand-new member with no password gets a one-time invite"
+    # both people are now in the directory — the shop has more than one login
+    idents = {m["identifier"] for m in
+              client.get("/internal/tenancy/members?tenant=shop", headers=_h()).json()["members"]}
+    assert "+966500000009" in idents and "owner@shop" in idents
+
+
+def test_internal_add_member_is_roles_only_no_caps_can_be_injected(client):
+    # even if a caller puts caps in the body, the route has no caps field — capabilities come from
+    # roles alone, so nothing crosses that a role does not derive.
+    r = _add(client, tenant="t", identifier="staff@t", roles=["operator"],
+             caps=["platform.operations"])
+    assert r.status_code == 201
+    assert r.json()["membership"].get("caps", []) == []      # the injected cap was never honoured
+
+
+def test_internal_add_member_never_touches_an_existing_persons_credential(client):
+    _add(client, tenant="a", identifier="shared@corp", roles=["operator"])          # person exists
+    r = _add(client, tenant="b", identifier="shared@corp", roles=["operator"],
+             password="try-to-set-it-1234")
+    assert r.status_code == 403                              # CANNOT_SET_EXISTING_PERSON_CREDENTIAL
+
+
 # ── the egg breaks ────────────────────────────────────────────────────────────
 def test_a_fresh_tenant_gets_a_real_person_owner_with_an_invite(client):
     r = _seed(client, tenant="acme", identifier="founder@acme", caps=["members:write"])
