@@ -97,6 +97,9 @@ def build_manifest(
             {"path": "/api/v1/billing/invoices/{invoice_id}/settle", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/invoices/{invoice_id}/settlements", "tier": "user", "method": "GET"},
             {"path": "/api/v1/billing/settlements/{settlement_id}/reverse", "tier": "user", "method": "POST"},
+            # What a tenant currently holds — the billable set the resolver computes over — for a peer
+            # service enforcing a base-plus-apps catalogue (one base per tenant; an app bought once).
+            {"path": "/internal/billing/subscriptions", "tier": "internal", "method": "GET"},
             # Advisory read. ENFORCEMENT is /internal/billing/usage/consume (atomic).
             {"path": "/internal/billing/entitlements/check", "tier": "internal", "method": "GET"},
             {"path": "/internal/billing/usage/consume", "tier": "internal", "method": "POST"},

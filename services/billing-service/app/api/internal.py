@@ -108,6 +108,33 @@ async def entitlement_check(request: Request, tenant: str, key: str, amount: int
     return await (await build_usage(request)).check(tenant=tenant, key=key, amount=amount)
 
 
+@router.get("/billing/subscriptions", dependencies=[Depends(require_internal_token)])
+async def list_subscriptions_internal(request: Request, tenant: str,
+                                      settings: Settings = Depends(get_settings)) -> dict:
+    """Every subscription a tenant currently HOLDS — the exact billable set EntitlementResolver
+    computes over — for a peer product service acting on behalf of a shop.
+
+    WHY IT EXISTS: a base-plus-apps catalogue turns on one structural fact — what does this tenant
+    hold right now? (one base per tenant; an app bought once). GET /api/v1/billing/subscriptions is
+    _SELF, so a service is not a clean caller; and encoding "has a base" as a feature flag loses WHICH
+    subscription, WHEN it renews and WHAT was paid. This returns exactly the fields those rules need —
+    id, plan_id, status, current_period_end, limits_snapshot — and NOTHING else: the payment token and
+    the buyer's tax identity on the row never cross the internal API. It is the same status-filtered,
+    indexed read the resolver runs (SubscriptionStore.billable_for), so the two never disagree.
+    """
+    if not tenant:
+        raise HTTPException(400, "tenant is required")
+    from app.core.stores import SubscriptionStore
+    c = request.app.state.container
+    rows = await SubscriptionStore(c.datastore, c.cache).billable_for(
+        tenant, tuple(settings.billable_statuses), limit=settings.MAX_BILLABLE_SUBSCRIPTIONS)
+    return {"subscriptions": [
+        {"id": r.get("id", ""), "plan_id": r.get("plan_id", ""), "status": r.get("status", ""),
+         "current_period_end": float(r.get("current_period_end", 0) or 0),
+         "limits_snapshot": r.get("limits_snapshot") or {}}
+        for r in rows]}
+
+
 @router.post("/billing/usage/consume", dependencies=[Depends(require_internal_token)])
 async def usage_consume(body: ConsumeIn, request: Request) -> dict:
     """THE enforcing call: atomic check-and-increment of a counter entitlement.

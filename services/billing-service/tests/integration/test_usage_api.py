@@ -174,3 +174,47 @@ def test_manifest_advertises_the_enforcement_endpoint(client):
     m = client.get("/internal/manifest", headers=IT).json()
     paths = {e["path"] for e in m["endpoints"]}
     assert "/internal/billing/usage/consume" in paths
+
+
+# ── internal subscriptions list (what a tenant HOLDS) ─────────────────────────
+def test_internal_subscriptions_lists_what_a_tenant_holds(client, subscribed):
+    r = client.get("/internal/billing/subscriptions?tenant=t1", headers=IT)
+    assert r.status_code == 200
+    subs = r.json()["subscriptions"]
+    assert len(subs) >= 1
+    s0 = subs[0]
+    # EXACTLY the five fields the base-plus-apps rules need — and nothing else. The payment token and
+    # the buyer's tax identity that live on the row must never cross the internal API.
+    assert set(s0) == {"id", "plan_id", "status", "current_period_end", "limits_snapshot"}
+    assert s0["plan_id"] == subscribed["id"] and isinstance(s0["limits_snapshot"], dict)
+
+
+def test_internal_subscriptions_lists_every_held_item_not_just_one(client, subscribed):
+    # base-plus-apps: a tenant holds MORE than one subscription and the union IS the entitlement, so
+    # every held item must be listed — the whole reason a "has a base" boolean was not enough.
+    app = client.post("/api/v1/billing/plans",
+                      json={"name": "Extra App", "prices": [{"currency": "SAR", "amount_minor": 500,
+                                                             "interval": "month"}]},
+                      headers=tok(ADMIN)).json()
+    client.post("/api/v1/billing/subscriptions",
+                json={"tenant": "t_multi", "plan_id": subscribed["id"]}, headers=tok(ADMIN))
+    client.post("/api/v1/billing/subscriptions",
+                json={"tenant": "t_multi", "plan_id": app["id"]}, headers=tok(ADMIN))
+    plans = {s["plan_id"] for s in client.get("/internal/billing/subscriptions?tenant=t_multi",
+                                              headers=IT).json()["subscriptions"]}
+    assert {subscribed["id"], app["id"]} <= plans
+
+
+def test_internal_subscriptions_empty_for_an_unsubscribed_tenant(client):
+    r = client.get("/internal/billing/subscriptions?tenant=never_subscribed_here", headers=IT)
+    assert r.status_code == 200 and r.json()["subscriptions"] == []
+
+
+def test_internal_subscriptions_requires_the_internal_token(client):
+    assert client.get("/internal/billing/subscriptions?tenant=t1").status_code == 401
+    # a user token is not a service — the internal tier refuses it
+    assert client.get("/internal/billing/subscriptions?tenant=t1", headers=tok(ADMIN)).status_code == 401
+
+
+def test_internal_subscriptions_requires_a_tenant(client):
+    assert client.get("/internal/billing/subscriptions", headers=IT).status_code == 422

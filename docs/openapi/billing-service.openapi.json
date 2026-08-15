@@ -3507,6 +3507,67 @@
         ]
       }
     },
+    "/internal/billing/subscriptions": {
+      "get": {
+        "description": "Every subscription a tenant currently HOLDS \u2014 the exact billable set EntitlementResolver\ncomputes over \u2014 for a peer product service acting on behalf of a shop.\n\nWHY IT EXISTS: a base-plus-apps catalogue turns on one structural fact \u2014 what does this tenant\nhold right now? (one base per tenant; an app bought once). GET /api/v1/billing/subscriptions is\n_SELF, so a service is not a clean caller; and encoding \"has a base\" as a feature flag loses WHICH\nsubscription, WHEN it renews and WHAT was paid. This returns exactly the fields those rules need \u2014\nid, plan_id, status, current_period_end, limits_snapshot \u2014 and NOTHING else: the payment token and\nthe buyer's tax identity on the row never cross the internal API. It is the same status-filtered,\nindexed read the resolver runs (SubscriptionStore.billable_for), so the two never disagree.",
+        "operationId": "list_subscriptions_internal_internal_billing_subscriptions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Subscriptions Internal Internal Billing Subscriptions Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Subscriptions Internal",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/billing/usage": {
       "get": {
         "operationId": "usage_summary_internal_internal_billing_usage_get",
