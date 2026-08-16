@@ -12,7 +12,7 @@ import json as _json
 from app.adapters.notify_http import bearer, ok, post_json
 from app.ports.errors import ConfigError
 
-_DEFAULT_BASE = "https://graph.facebook.com/v19.0"
+_DEFAULT_BASE = "https://graph.facebook.com/v26.0"
 
 
 class MetaWhatsApp:

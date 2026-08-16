@@ -24,10 +24,13 @@ from app.adapters.notify_http import bearer, get_json, ok, post_json
 # lives beside the token in the same SecretStore, and is NEVER returned by any read.
 _PIN_PREFIX = "WHATSAPP_2FA_PIN_"
 
-# The readiness fields Meta exposes on GET /{phone_number_id}. `platform_type` tells a native CLOUD_API
-# number from a coexistence one (which stops after ~14 days of primary-device inactivity), and
-# `code_verification_status` is the truth behind a screen that merely assumes "connected".
-_STATUS_FIELDS = "platform_type,code_verification_status,throughput,quality_rating,name_status"
+# The readiness fields Meta exposes on GET /{phone_number_id}. `status` is the one that answers the
+# question the screen actually asks — is this number REGISTERED on the Cloud API and able to send
+# (CONNECTED) — which `code_verification_status` does NOT: that only says the two-step code was
+# verified, and a number can read verified and still refuse every message. `platform_type` tells a
+# native CLOUD_API number from a coexistence one (which stops after ~14 days of primary-device
+# inactivity); the rest are quality/throughput.
+_STATUS_FIELDS = "status,platform_type,code_verification_status,throughput,quality_rating,name_status"
 
 
 def pin_secret_name(phone_number_id: str) -> str:
@@ -38,6 +41,12 @@ def pin_secret_name(phone_number_id: str) -> str:
 _WRONG_PIN_CODES = {133005}
 # Too many attempts: Meta locks the number after 10 registration attempts per 72h and answers 133016.
 _RATE_LIMITED_CODES = {133016}
+# An AUTHENTICATION failure — the token is expired, invalid or REVOKED (Graph error 190 / OAuthException,
+# subcodes 463/467). This is the ONE failure that means "stop and re-connect", not "retry later", and
+# it must be told apart from every other Meta rejection: when Meta revokes a shop's token the token is
+# still stored on our side (so NOT_CONNECTED is wrong), and a disconnect sweep can only act on an
+# unambiguous signal — otherwise a revoked shop stays "connected" forever and never sends.
+_TOKEN_REVOKED_CODES = {190}
 
 
 @dataclass(frozen=True)
@@ -55,13 +64,19 @@ def _classify(status: int, body: str) -> str:
         # DNS or TLS failure is "we could not reach Meta", never "wrong PIN".
         return "UNREACHABLE"
     code = None
+    err_type = ""
     msg = ""
     try:
         err = _json.loads(body).get("error", {}) or {}
         code = err.get("code")
+        err_type = str(err.get("type", "") or "")
         msg = str(err.get("message", "") or "")
     except Exception:  # noqa: BLE001 — a non-JSON error body is still a Meta rejection, just unlabelled
         pass
+    # Authentication FIRST — a revoked token can surface as a 401 with 190/OAuthException, and it is
+    # the one reason that must never be swallowed into the generic META_ERROR bucket.
+    if code in _TOKEN_REVOKED_CODES or err_type == "OAuthException":
+        return "TOKEN_REVOKED"
     if code in _RATE_LIMITED_CODES:
         return "RATE_LIMITED"
     if code in _WRONG_PIN_CODES:
@@ -78,7 +93,7 @@ def register_number(*, access_token: str, phone_number_id: str, pin: str,
     The PIN is assumed already validated as 6 digits by the caller, so a malformed PIN never spends
     one of the 10 attempts Meta allows before it locks the number.
     """
-    base = (graph_base or "https://graph.facebook.com/v21.0").rstrip("/")
+    base = (graph_base or "https://graph.facebook.com/v26.0").rstrip("/")
     status, body = post_json(
         f"{base}/{phone_number_id}/register",
         {"messaging_product": "whatsapp", "pin": pin}, bearer(access_token))
@@ -95,7 +110,7 @@ def fetch_status(*, access_token: str, phone_number_id: str, graph_base: str) ->
     {ok: False, reason} with the same distinct vocabulary as register — UNREACHABLE for a network
     failure, META_ERROR[:msg] for a rejection — never a fabricated "ready".
     """
-    base = (graph_base or "https://graph.facebook.com/v21.0").rstrip("/")
+    base = (graph_base or "https://graph.facebook.com/v26.0").rstrip("/")
     status, body = get_json(f"{base}/{phone_number_id}", {"fields": _STATUS_FIELDS},
                             bearer(access_token))
     if not ok(status):
@@ -105,6 +120,11 @@ def fetch_status(*, access_token: str, phone_number_id: str, graph_base: str) ->
     except ValueError:
         return {"ok": False, "reason": "META_ERROR"}
     return {"ok": True,
+            # `status` (CONNECTED == registered and able to send) is the field the screen actually
+            # needs; `registered` is a convenience boolean over it so a caller need not know Meta's
+            # vocabulary. code_verification_status is kept but is NOT registration.
+            "status": data.get("status", ""),
+            "registered": str(data.get("status", "")).upper() == "CONNECTED",
             "platform_type": data.get("platform_type", ""),
             "code_verification_status": data.get("code_verification_status", ""),
             "throughput": data.get("throughput", {}),

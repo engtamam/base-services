@@ -17,7 +17,7 @@ import json
 import urllib.error
 import urllib.request
 
-from app.ports.privacy_transport import ACKED, FAILED, PENDING, EraseOutcome
+from app.ports.privacy_transport import ACKED, FAILED, PARTIAL, PENDING, EraseOutcome
 
 
 class HttpPrivacyTransport:
@@ -25,6 +25,11 @@ class HttpPrivacyTransport:
 
     async def erase(self, *, url: str, token: str, request_id: str, action: str,
                     tenant: str, subject: str, timeout: int) -> EraseOutcome:
+        # The subject is passed VERBATIM and must be a real reference. An empty/blank one would erase
+        # against nothing and come back already_absent — a clean ack over no work. Refuse it here as a
+        # DISTINGUISHABLE failure rather than let a malformed id read as "she was erased".
+        if not (subject or "").strip():
+            return EraseOutcome(status=FAILED, detail="INVALID_SUBJECT: empty subject reference")
         payload = {"tenant": tenant, "subject": subject, "action": action,
                    "request_id": request_id}
         headers = {"Content-Type": "application/json"}
@@ -50,5 +55,16 @@ class HttpPrivacyTransport:
                 return EraseOutcome(status=FAILED, detail=f"HTTP {status} with unreadable ack body")
             if not isinstance(ack, dict):
                 return EraseOutcome(status=FAILED, detail=f"HTTP {status} ack was not an object")
-            return EraseOutcome(status=ACKED, ack=ack)
+            # TRUNCATED == the target erased only part of the subject's rows this call (a bounded
+            # batch, a scan cap). It is NOT done — record it PARTIAL so the target stays unacked and
+            # the erase re-dispatches idempotently until a call returns without truncated. A scanner
+            # that erased 5,000 of 40,000 and said `truncated` was previously recorded as a full ack.
+            if ack.get("truncated"):
+                return EraseOutcome(status=PARTIAL, ack=ack,
+                                    detail="target erased a partial batch (truncated); re-dispatching")
+            # A zero-row erasure is legitimate BUT distinguishable: `already_absent` means the target
+            # held nothing — which, if it is every target, is the fingerprint of a wrong subject id
+            # (the double-hash bug) rather than a real absence. Kept in `detail` so the record shows it.
+            detail = "already_absent (held nothing)" if ack.get("already_absent") else ""
+            return EraseOutcome(status=ACKED, ack=ack, detail=detail)
         return EraseOutcome(status=FAILED, detail=f"HTTP {status}")

@@ -244,6 +244,11 @@ def make_provider_pool(settings, secret_store, runtime_config):
             _tolerant_chain(chain, _SMS_PROVIDERS, "sms", _Overlay(settings, creds))),
         build_whatsapp=lambda chain, creds: FailoverWhatsApp(
             _tolerant_chain(chain, _WHATSAPP_PROVIDERS, "whatsapp", _Overlay(settings, creds))),
+        # A provider bound to ONE specific number (a branch's), same token. A single-element failover:
+        # it yields the same (ok, provider, message_id) shape the notifier expects, and single-element
+        # means NO fallback — a send explicitly addressed to a number never goes out from another.
+        build_whatsapp_identity=lambda token, phone_id: FailoverWhatsApp(
+            [MetaWhatsApp(token, phone_id, settings.WHATSAPP_GRAPH_BASE)]),
         build_template_manager=lambda token, waba: _tenant_template_manager(settings, token, waba),
         ttl_s=settings.PROVIDER_REFRESH_SECONDS,
     )

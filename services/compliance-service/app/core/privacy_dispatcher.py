@@ -28,7 +28,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from app.ports.privacy_transport import ACKED, FAILED, PENDING
+from app.ports.privacy_transport import ACKED, FAILED, PARTIAL, PENDING
 
 UNREGISTERED = "no PRIVACY_TARGETS entry for this service — it is in the data map but we do not know where it lives"
 
@@ -102,6 +102,15 @@ class PrivacyDispatcher:
             st["ack"] = ack
             st["next_at"] = 0.0
             dsar.targets[key] = True           # the ack map is the single source of completion
+        elif outcome_status == PARTIAL:
+            # The target erased a bounded batch and MORE REMAINS. Keep the partial evidence, but do
+            # NOT ack (dsar.targets[key] stays False) so completion cannot be derived over unfinished
+            # work — re-dispatch on the normal backoff, and if it never finishes it exhausts and shows
+            # up in `stuck` like any other target that will not complete. Attempts count, deliberately.
+            st["ack"] = ack
+            exhausted = st["attempts"] >= self._cfg.PRIVACY_MAX_ATTEMPTS
+            st["exhausted"] = exhausted
+            st["next_at"] = 0.0 if exhausted else now + self._backoff(st["attempts"])
         elif outcome_status == PENDING:
             # The target owns the rest of this: it will PUSH its ack. We stop dialing so a slow
             # erasure is not restarted every sweep — but only for a BOUNDED time.

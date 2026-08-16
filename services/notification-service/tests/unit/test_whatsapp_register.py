@@ -51,6 +51,32 @@ def test_other_meta_error_surfaces_its_message_but_stays_distinct(monkeypatch):
     assert not r.registered and r.reason.startswith("META_ERROR") and "bad param" in r.reason
 
 
+def test_a_revoked_token_is_its_own_reason_not_meta_error(monkeypatch):
+    # Item 7: a revoked/expired token (Graph 190 / OAuthException) is the ONE failure that means
+    # "stop and re-connect" — it must not be swallowed into the generic META_ERROR bucket that also
+    # holds rate limits and wrong PINs, or a disconnect sweep can never act on it.
+    for body in ('{"error": {"code": 190, "message": "expired"}}',
+                 '{"error": {"type": "OAuthException", "message": "invalid"}}'):
+        monkeypatch.setattr(wr, "post_json", _fake_post(401, body))
+        r = wr.register_number(access_token="t", phone_number_id="p", pin="123456", graph_base="")
+        assert r.reason == "TOKEN_REVOKED"
+
+
+def test_status_reports_the_registration_status_field(monkeypatch):
+    # Item 6: `status` (CONNECTED == registered and able to send) is the field the screen needs —
+    # code_verification_status only says the two-step code was verified, which a number can pass and
+    # still refuse every message.
+    monkeypatch.setattr(wr, "get_json", lambda url, params=None, headers=None: (
+        200, '{"status": "CONNECTED", "code_verification_status": "VERIFIED"}'))
+    # the field list asks Meta for `status`
+    called = {}
+    monkeypatch.setattr(wr, "get_json", lambda url, params=None, headers=None: called.update(params or {}) or (
+        200, '{"status": "CONNECTED", "code_verification_status": "VERIFIED"}'))
+    out = wr.fetch_status(access_token="t", phone_number_id="p", graph_base="")
+    assert "status" in called["fields"]
+    assert out["status"] == "CONNECTED" and out["registered"] is True
+
+
 # ── the route: token gate, PIN validation, distinct reasons over HTTP ─────────
 ITOKEN = "i" * 40
 
@@ -142,6 +168,39 @@ def test_status_reads_the_numbers_real_state(client, monkeypatch):
 
 def test_status_requires_the_internal_token(client):
     assert client.get("/internal/whatsapp/status", params={"tenant": "acme"}).status_code == 401
+
+
+def test_status_refusal_is_non_2xx_not_a_200_with_ok_false(client, monkeypatch):
+    # Item 5: one rule across the internal API — a refusal is a non-2xx, never {ok:false} on a 200 a
+    # status-code-only caller reads as success. NOT_CONNECTED -> 409; a failed Meta read -> 502.
+    import app.core.whatsapp_register as wrmod
+    # no creds for this tenant -> NOT_CONNECTED must be 409
+    monkeypatch.setenv("WHATSAPP_ACCESS_TOKEN", "")
+    monkeypatch.setenv("WHATSAPP_PHONE_NUMBER_ID", "")
+    get_settings.cache_clear()
+    from app.main import create_app
+    with TestClient(create_app()) as c:
+        r = c.get("/internal/whatsapp/status", params={"tenant": "fresh"}, headers=_hdr())
+        assert r.status_code == 409 and r.json()["reason"] == "NOT_CONNECTED"
+    get_settings.cache_clear()
+
+
+def test_status_failed_meta_read_is_502(client, monkeypatch):
+    import app.core.whatsapp_register as wrmod
+    monkeypatch.setattr(wrmod, "get_json",
+                        lambda url, params=None, headers=None: (401, '{"error":{"code":190}}'))
+    r = client.get("/internal/whatsapp/status", params={"tenant": "acme"}, headers=_hdr())
+    assert r.status_code == 502 and r.json()["reason"] == "TOKEN_REVOKED"
+
+
+# ── item 1: per-branch sending identity ───────────────────────────────────────
+def test_notify_refuses_an_unknown_sending_identity(client):
+    # a message from the wrong branch's number is worse than one not sent: an unknown identity is a
+    # 409, never a silent fall-back to the tenant default.
+    r = client.post("/internal/notify", headers=_hdr(), json={
+        "recipient": "+966500000000", "channel": "whatsapp", "template_key": "otp",
+        "tenant": "acme", "sending_identity": "NOT_MY_NUMBER"})
+    assert r.status_code == 409 and r.json()["reason"] == "UNKNOWN_SENDING_IDENTITY"
 
 
 def test_register_route_says_not_connected_when_no_token_is_stored(monkeypatch):

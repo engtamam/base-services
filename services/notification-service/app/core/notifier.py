@@ -84,7 +84,8 @@ class NotificationService:
                      locale: str | None = None, variables: dict[str, Any] | None = None,
                      user_id: str | None = None, event: str | None = None,
                      idempotency_key: str | None = None,
-                     biz_opaque_callback_data: str | None = None) -> dict:
+                     biz_opaque_callback_data: str | None = None,
+                     whatsapp_override=None) -> dict:
         # Dedupe FIRST: a retried call with the same key must not re-send (duplicate OTP
         # SMS costs money; duplicate emails erode trust). Returns the original result.
         if idempotency_key:
@@ -142,7 +143,7 @@ class NotificationService:
             return await self._finish(idempotency_key, await self._deliver_whatsapp(
                 recipient=recipient, tenant=tenant or "", template_key=template_key,
                 language=locale or self._default_locale, variables=variables or {},
-                biz_opaque=biz_opaque_callback_data or ""))
+                biz_opaque=biz_opaque_callback_data or "", whatsapp_override=whatsapp_override))
 
         # 2) template (with locale fallback)
         tmpl = await self._templates.get(template_key, locale or self._default_locale, self._default_locale)
@@ -173,9 +174,15 @@ class NotificationService:
                      "event": event}))
 
     async def _deliver_whatsapp(self, *, recipient: str, tenant: str, template_key: str,
-                                language: str, variables: dict, biz_opaque: str = "") -> dict:
-        """Resolve the APPROVED template, substitute variables in declared order, send, record."""
-        if self._whatsapp is None:
+                                language: str, variables: dict, biz_opaque: str = "",
+                                whatsapp_override=None) -> dict:
+        """Resolve the APPROVED template, substitute variables in declared order, send, record.
+
+        `whatsapp_override` sends from a SPECIFIC number (a branch's), bypassing the tenant's default
+        chain — the caller has already resolved and entitled it, and refused if unknown, so here it is
+        simply the provider to send through."""
+        wa = whatsapp_override if whatsapp_override is not None else self._whatsapp
+        if wa is None:
             return await self._record(recipient, "whatsapp", template_key, "failed",
                                       error="whatsapp channel not configured")
         # No registry wired ⇒ dev/raw mode: forward the name + values as-is (order by key).
@@ -196,7 +203,7 @@ class NotificationService:
             ordered = [str(variables[v]) for v in tmpl.variables]
         try:
             ok, provider, message_id = await asyncio.to_thread(
-                self._whatsapp.send, recipient, template_key, language, ordered, biz_opaque)
+                wa.send, recipient, template_key, language, ordered, biz_opaque)
         except Exception as exc:  # noqa: BLE001
             return await self._record(recipient, "whatsapp", template_key, "failed",
                                       error=f"{type(exc).__name__}: {exc}")

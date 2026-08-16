@@ -64,6 +64,7 @@ class ProviderPool:
 
     def __init__(self, settings, secret_store, runtime_config, *,
                  build_email, build_sms, build_whatsapp, build_template_manager=None,
+                 build_whatsapp_identity=None,
                  ttl_s: int = 30, now=time.monotonic) -> None:
         self._s = settings
         self._secrets = secret_store          # None when no KEK is configured
@@ -71,6 +72,10 @@ class ProviderPool:
         self._build_email = build_email
         self._build_sms = build_sms
         self._build_whatsapp = build_whatsapp
+        # Builds a WhatsApp provider bound to ONE specific number (a branch's), from (token, phone_id).
+        # Kept in the container so this core class never imports an adapter; None disables per-branch
+        # sending (the single-brand default chain is unaffected).
+        self._build_whatsapp_identity = build_whatsapp_identity
         # Resolves the WhatsApp TEMPLATE manager per tenant. Reading the token/WABA is a secret read,
         # so it belongs here in core, not in a route (the API layer may not read credential
         # plaintext). Returns None to mean "no per-tenant identity — use the boot-built manager".
@@ -151,6 +156,28 @@ class ProviderPool:
         and the template manager follow. Used by phone-number registration, which must call Meta as
         the business without the token ever transiting the route or a log."""
         return await self._credential(tenant, "WHATSAPP_ACCESS_TOKEN")
+
+    async def whatsapp_for_identity(self, tenant: str, phone_number_id: str):
+        """A WhatsApp provider bound to a SPECIFIC number this tenant is entitled to send from, or
+        None when the number is not one of the tenant's — in which case the caller must REFUSE, never
+        fall back: a message arriving from another branch's number is worse than one not sent.
+
+        A WABA holds many numbers (one per branch). The token is the WABA's (shared); the number is
+        the branch's. `phone_number_id` is entitled when it is the tenant's default number OR one this
+        tenant REGISTERED (proven by a sealed PIN for it — register seals it on success). Reading the
+        credentials is a core act; the route only names the identity."""
+        if not phone_number_id or self._build_whatsapp_identity is None:
+            return None
+        token = await self._credential(tenant, "WHATSAPP_ACCESS_TOKEN")
+        if not token:
+            return None
+        default = await self._credential(tenant, "WHATSAPP_PHONE_NUMBER_ID")
+        from app.core.whatsapp_register import pin_secret_name
+        entitled = phone_number_id == default or bool(
+            await self._credential(tenant, pin_secret_name(phone_number_id)))
+        if not entitled:
+            return None
+        return self._build_whatsapp_identity(token, phone_number_id)
 
     async def whatsapp_pin(self, tenant: str, phone_number_id: str) -> str:
         """The sealed 6-digit two-step-verification PIN for ONE phone number, or "".

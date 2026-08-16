@@ -275,6 +275,18 @@
             "title": "Recipient",
             "type": "string"
           },
+          "sending_identity": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sending Identity"
+          },
           "template_key": {
             "maxLength": 128,
             "minLength": 1,

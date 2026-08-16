@@ -50,7 +50,7 @@ class WhatsAppOnboarding:
         self._secrets = secret_store
         self._app_id = app_id
         self._app_secret = app_secret
-        self._base = (graph_base or "https://graph.facebook.com/v21.0").rstrip("/")
+        self._base = (graph_base or "https://graph.facebook.com/v26.0").rstrip("/")
         self._on_stored = on_stored          # e.g. ProviderPool.invalidate — refresh the tenant now
 
     @property

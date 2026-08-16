@@ -47,6 +47,11 @@ class NotifyIn(BaseModel):
     # WhatsApp only: an arbitrary caller string (≤512) Meta echoes verbatim in the status webhook, so a
     # caller can correlate a receipt against its OWN send id with no join and no extra read.
     biz_opaque_callback_data: str | None = Field(default=None, max_length=512)
+    # WhatsApp only: which of the tenant's NUMBERS to send from — a WABA holds many (one per branch).
+    # It is the branch's phone-number-id. Resolved to a number this tenant is entitled to send from;
+    # an UNKNOWN identity is REFUSED (a message from another branch's number is worse than none sent),
+    # never quietly resolved to the tenant default. Absent = the tenant's default number.
+    sending_identity: str | None = Field(default=None, max_length=128)
 
 _HEADER = "X-Internal-Token"
 
@@ -77,11 +82,23 @@ async def internal_notify(request: Request, body: NotifyIn) -> dict:
     # field from a loud AttributeError on the first request into a silent wrong answer. And the
     # tenant must reach .notify() too — build_notifier's tenant only scopes the provider pool, while
     # the consent gate reads notify()'s own tenant argument.
+    # A per-branch sending identity is resolved to the entitled number BEFORE the send, and REFUSED
+    # (409, non-2xx like every other internal refusal) when it is not this tenant's — never falling
+    # back to the default number, because a message from the wrong branch is worse than one not sent.
+    whatsapp_override = None
+    if body.sending_identity:
+        from starlette.responses import JSONResponse
+        pool = getattr(request.app.state, "provider_pool", None)
+        whatsapp_override = (await pool.whatsapp_for_identity(body.tenant or "", body.sending_identity)
+                             if pool is not None else None)
+        if whatsapp_override is None:
+            # Non-2xx + reason in the body, the same refusal shape as register/status (item 5).
+            return JSONResponse({"ok": False, "reason": "UNKNOWN_SENDING_IDENTITY"}, status_code=409)
     return await (await build_notifier(request, body.tenant or "")).notify(
         recipient=body.recipient, channel=body.channel, template_key=body.template_key,
         tenant=body.tenant, locale=body.locale, variables=body.variables,
         user_id=body.user_id, event=body.event, idempotency_key=body.idempotency_key,
-        biz_opaque_callback_data=body.biz_opaque_callback_data,
+        biz_opaque_callback_data=body.biz_opaque_callback_data, whatsapp_override=whatsapp_override,
     )
 
 
@@ -404,12 +421,22 @@ async def whatsapp_number_status(request: Request, tenant: str, phone_number_id:
     pool = getattr(request.app.state, "provider_pool", None)
     if pool is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "PROVIDER_POOL_UNAVAILABLE")
+    from starlette.responses import JSONResponse
     token = await pool.whatsapp_access_token(tenant)
     phone_id = phone_number_id or await pool.whatsapp_phone_number_id(tenant)
     if not token or not phone_id:
-        return {"ok": False, "reason": "NOT_CONNECTED"}
-    return await asyncio.to_thread(fetch_status, access_token=token, phone_number_id=phone_id,
-                                   graph_base=s.WHATSAPP_ONBOARDING_GRAPH_BASE)
+        # ONE rule across the internal API: a refusal is a NON-2xx, never {ok:false} on a 200 that a
+        # status-code-only caller reads as success — which is exactly how a shop stayed "connected"
+        # while sending nothing. The body still carries the reason for a caller that reads it.
+        return JSONResponse({"ok": False, "reason": "NOT_CONNECTED"}, status_code=409)
+    res = await asyncio.to_thread(fetch_status, access_token=token, phone_number_id=phone_id,
+                                  graph_base=s.WHATSAPP_ONBOARDING_GRAPH_BASE)
+    if not res.get("ok"):
+        # We could not read the number's state from Meta (unreachable, a rejection, a revoked token).
+        # That is a failed read, not a status of "not ready" — answer 502 so a caller does not record
+        # a live number as broken; TOKEN_REVOKED especially must reach a disconnect sweep as a failure.
+        return JSONResponse(res, status_code=status.HTTP_502_BAD_GATEWAY)
+    return res
 
 
 @router.get("/whatsapp/messaging-limit", dependencies=[Depends(require_internal_token)])

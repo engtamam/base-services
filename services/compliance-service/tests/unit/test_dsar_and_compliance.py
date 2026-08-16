@@ -92,6 +92,23 @@ def test_erasure_completes_only_when_every_target_acks():
     assert a2["status"] == COMPLETED and run(ds.get(d.id)).completed_at > 0
 
 
+def test_re_processing_does_not_wipe_acks_already_received():
+    # Item 3: a second /process on an in-flight request used to REBUILD d.targets = {key: False},
+    # resetting acks already in — and since completion is derived from those acks, the request could
+    # never complete while the 30-day clock ran. setdefault preserves them.
+    comp, ds, _ = _env()
+    _targets(comp)
+    d, _ = run(ds.create(tenant="t1", subject="u1", type="erasure"))
+    run(ds.process(d.id))
+    run(ds.ack_target(d.id, "identity", "profile"))                # one target acks
+    assert run(ds.get(d.id)).targets["identity:profile"] is True
+    run(ds.process(d.id))                                          # a SECOND process
+    # the ack survived — the request can still complete when the other target acks
+    assert run(ds.get(d.id)).targets["identity:profile"] is True
+    a2 = run(ds.ack_target(d.id, "billing", "invoices"))
+    assert a2["status"] == COMPLETED
+
+
 def test_ack_is_idempotent_and_unknown_target_rejected():
     comp, ds, _ = _env()
     _targets(comp)

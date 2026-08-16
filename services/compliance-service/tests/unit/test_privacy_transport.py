@@ -17,7 +17,7 @@ from app.adapters.privacy_transport.http import HttpPrivacyTransport
 from app.adapters.privacy_transport.null import NullPrivacyTransport
 from app.container import build_container
 from app.config import Settings
-from app.ports.privacy_transport import ACKED, FAILED, PENDING, PrivacyTransport
+from app.ports.privacy_transport import ACKED, FAILED, PARTIAL, PENDING, PrivacyTransport
 
 _ARGS = dict(url="http://identity:8080/internal/privacy/erase", token="t" * 40,
              request_id="dsar_1", action="erase", tenant="acme", subject="u_7", timeout=5)
@@ -77,6 +77,35 @@ def test_http_200_with_ack_body_is_acked_and_carries_the_evidence(monkeypatch):
     assert json.loads(req.data) == {"tenant": "acme", "subject": "u_7",
                                     "action": "erase", "request_id": "dsar_1"}
     assert seen["timeout"] == 5       # the configured budget is actually applied
+
+
+def test_a_truncated_ack_is_partial_not_acked(monkeypatch):
+    # Item 2: a target that erased only PART of the rows (truncated) must NOT be recorded as a full
+    # acknowledgement — it is PARTIAL, stays unacked, and re-dispatches.
+    ack = {**_ACK, "erased": ["rows:5000"], "truncated": True}
+    _urlopen(monkeypatch, _Resp(200, json.dumps(ack).encode()))
+    out = run(HttpPrivacyTransport().erase(**_ARGS))
+    assert out.status == PARTIAL and out.is_acked is False and out.is_partial is True
+    assert out.ack == ack                              # the partial evidence is kept
+
+
+def test_an_empty_subject_is_refused_before_any_call(monkeypatch):
+    # Item 4: an empty subject would erase against nothing and come back already_absent — a clean ack
+    # over no work. Refused as a distinguishable FAILED, and Meta is never called.
+    called = {"n": 0}
+    monkeypatch.setattr("app.adapters.privacy_transport.http.urllib.request.urlopen",
+                        lambda *a, **k: called.__setitem__("n", called["n"] + 1))
+    out = run(HttpPrivacyTransport().erase(**{**_ARGS, "subject": "   "}))
+    assert out.status == FAILED and "INVALID_SUBJECT" in out.detail and called["n"] == 0
+
+
+def test_a_zero_row_ack_is_acked_but_distinguishable(monkeypatch):
+    # Item 4: already_absent (held nothing) is a legitimate ack, but recorded DISTINCTLY — if every
+    # target says it, the subject id was probably wrong (the double-hash bug).
+    ack = {**_ACK, "erased": [], "already_absent": True}
+    _urlopen(monkeypatch, _Resp(200, json.dumps(ack).encode()))
+    out = run(HttpPrivacyTransport().erase(**_ARGS))
+    assert out.status == ACKED and "already_absent" in out.detail
 
 
 def test_http_202_is_pending_not_done(monkeypatch):

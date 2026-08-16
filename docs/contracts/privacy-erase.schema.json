@@ -18,7 +18,7 @@
         },
         "subject": {
           "type": "string",
-          "description": "The data subject's identifier within that tenant."
+          "description": "The platform's subject reference for this tenant — the exact value the records key on. Passed VERBATIM and matched VERBATIM: never re-hash it (we hashed an already-hashed subject once, matched zero rows, and got a clean 'erased' over the wrong id). Pseudonymise only for your ACK's subject_ref, never to match."
         },
         "action": {
           "type": "string",
@@ -72,7 +72,11 @@
         },
         "already_absent": {
           "type": "boolean",
-          "description": "True when this service held nothing for the subject. An honest 'nothing here' — distinct from a failure, and distinct from having erased something."
+          "description": "True when this service held nothing for the subject. An honest 'nothing here' — distinct from a failure, and distinct from having erased something. The dispatcher records it DISTINCTLY: a zero-row 'erasure' is never silently a clean full success (if every target says this, the subject id was probably wrong)."
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "True when you erased only PART of the subject's rows this call (a bounded batch, a scan cap) and MORE REMAINS. Return HTTP 200 with this set: the dispatcher records PARTIAL — you stay UNACKED and the erase re-dispatches (idempotently) until a call returns WITHOUT truncated. NEVER omit it for work that is not finished: a target that erased 5,000 of 40,000 and did not say truncated is recorded as fully done."
         }
       }
     }

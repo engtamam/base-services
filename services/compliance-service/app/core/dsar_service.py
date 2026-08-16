@@ -105,7 +105,15 @@ class DsarService:
         if not targets:
             return {"ok": False, "reason": "NO_DATA_TARGETS_REGISTERED"}
 
-        d.targets = {f"{t.service}:{t.category}": False for t in targets}
+        # setdefault, NOT rebuild: a second /process on an in-flight request must not reset acks
+        # already received. It used to be an unconditional `d.targets = {key: False ...}`, which wiped
+        # every acknowledgement — and since completion is DERIVED from these acks, the request could no
+        # longer complete at all while the 30-day statutory clock ran. New targets start unacked; a
+        # target that already acked keeps its True.
+        if d.targets is None:
+            d.targets = {}
+        for t in targets:
+            d.targets.setdefault(f"{t.service}:{t.category}", False)
         dispatched = 0
         for t in targets:
             ok = await self._orch.dispatch(request_id=d.id, action=d.type, tenant=d.tenant,
