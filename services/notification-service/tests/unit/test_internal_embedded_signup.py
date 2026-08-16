@@ -18,8 +18,8 @@ class _FakeOnboarding:
     def __init__(self, *a, **k):
         pass
 
-    async def exchange(self, *, tenant, code, waba_id, phone_number_id, actor_ref=""):
-        _FakeOnboarding.last = {"tenant": tenant, "waba_id": waba_id, "code": code}
+    async def exchange(self, *, tenant, code, waba_id, phone_number_id, pin="", actor_ref=""):
+        _FakeOnboarding.last = {"tenant": tenant, "waba_id": waba_id, "code": code, "pin": pin}
         return {"ok": True, "subscribed": True}
 
 

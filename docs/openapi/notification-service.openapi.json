@@ -104,6 +104,18 @@
             "title": "Phone Number Id",
             "type": "string"
           },
+          "pin": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{6}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pin"
+          },
           "tenant": {
             "default": "",
             "maxLength": 128,
@@ -139,6 +151,18 @@
             "minLength": 1,
             "title": "Phone Number Id",
             "type": "string"
+          },
+          "pin": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{6}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pin"
           },
           "tenant": {
             "default": "",
@@ -416,10 +440,29 @@
       },
       "WaRegisterIn": {
         "properties": {
+          "phone_number_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone Number Id"
+          },
           "pin": {
-            "pattern": "^[0-9]{6}$",
-            "title": "Pin",
-            "type": "string"
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{6}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pin"
           },
           "tenant": {
             "maxLength": 128,
@@ -429,8 +472,7 @@
           }
         },
         "required": [
-          "tenant",
-          "pin"
+          "tenant"
         ],
         "title": "WaRegisterIn",
         "type": "object"
@@ -1881,7 +1923,7 @@
     },
     "/internal/whatsapp/register": {
       "post": {
-        "description": "Register a tenant's business phone number for Cloud API sending \u2014 the PIN-carrying step that\nEmbedded Signup deliberately stops before.\n\nWHY IT EXISTS: exchange() stores the token but Meta refuses to SEND until the number is registered,\nso a tenant that finished Embedded Signup shows green everywhere and cannot deliver a single\nmessage. The token + phone id are read from the SAME per-tenant credentials ProviderPool holds\n(in core \u2014 a route never reads credential plaintext), so the caller supplies only the PIN.\n\nTHE FAILURES ARE THREE SENTENCES, never one 400: WRONG_PIN (the business mistyped), RATE_LIMITED\n(Meta's 10-per-72h lock, error 133016 \u2014 tell them to WAIT, not retry), UNREACHABLE (we could not\nreach Meta). NOT_CONNECTED means no token is stored yet \u2014 finish Embedded Signup first.",
+        "description": "Register a business phone number for Cloud API sending \u2014 the PIN-carrying step Embedded Signup\nstops before. Meta refuses to SEND until a number is registered (error 133010), so an unregistered\nnumber is \"connected\" and mute.\n\nPER NUMBER: the token is the WABA's (per tenant); the number is `phone_number_id` (a chain has\nmany). The PIN may be supplied, or read from the sealed store for a re-registration. Meta's verdict\nis returned as three distinct sentences, never one 400: WRONG_PIN (mistyped), RATE_LIMITED (the\n10-per-72h lock, error 133016 \u2014 WAIT, do not retry), UNREACHABLE. NOT_CONNECTED = no token stored\n(finish Embedded Signup); NO_PIN = no PIN supplied and none sealed.",
         "operationId": "register_whatsapp_number_internal_whatsapp_register_post",
         "parameters": [
           {
@@ -1932,6 +1974,73 @@
           }
         },
         "summary": "Register Whatsapp Number",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/whatsapp/status": {
+      "get": {
+        "description": "A number's REAL readiness, read live from Meta \u2014 so a shop's state is READABLE, not assumed.\n\nReturns platform_type (native CLOUD_API vs a coexistence number, which stops after ~14 days of\nprimary-device inactivity), code_verification_status, throughput and quality_rating. Per number:\n`phone_number_id` selects one of a chain's numbers, or falls back to the tenant's single number.",
+        "operationId": "whatsapp_number_status_internal_whatsapp_status_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "phone_number_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Phone Number Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Whatsapp Number Status",
         "tags": [
           "internal"
         ]

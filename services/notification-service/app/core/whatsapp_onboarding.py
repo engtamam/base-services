@@ -58,9 +58,16 @@ class WhatsAppOnboarding:
         return bool(self._app_id and self._app_secret and self._secrets is not None)
 
     async def exchange(self, *, tenant: str, code: str, waba_id: str,
-                       phone_number_id: str, actor_ref: str = "") -> dict:
-        """Exchange `code` and store the tenant's credentials. Returns {ok, subscribed} — never the
-        token. Raises OnboardingError with a caller-safe reason on any failure."""
+                       phone_number_id: str, pin: str = "", actor_ref: str = "") -> dict:
+        """Exchange `code` and store the tenant's credentials. Returns {ok, subscribed, registered,
+        register_reason} — never the token. Raises OnboardingError with a caller-safe reason on any
+        failure of the exchange itself.
+
+        When a `pin` is supplied, the onboarded number is REGISTERED here as a fourth step (Meta
+        refuses to send until a number is registered), reported like `subscribed` — non-fatal, so a
+        failed register leaves a usable token the standalone route can retry against, and never
+        discards a token over the ~30s code. The PIN is sealed beside the token so re-registration
+        (required after some account events) can be repeated without the human re-entering it."""
         if not self.enabled:
             raise ConfigError(
                 "Embedded Signup is not configured: META_APP_ID and META_APP_SECRET identify us as "
@@ -96,11 +103,30 @@ class WhatsAppOnboarding:
                                 value=phone_number_id, actor_ref=actor_ref)
         await self._secrets.set(tenant=tenant, name="WHATSAPP_BUSINESS_ACCOUNT_ID", value=waba_id,
                                 actor_ref=actor_ref)
+        # ── 4. register the number so it can actually SEND (reported, non-fatal — like subscribe) ──
+        # Meta refuses to send from an unregistered number (error 133010), so without this the shop is
+        # "connected" and mute. Only attempted when the business supplied its 6-digit PIN; a failure is
+        # reported, never fatal — the token is already sealed and the standalone route can retry.
+        registered = False
+        register_reason = "NO_PIN"
+        if pin:
+            from app.core.whatsapp_register import pin_secret_name, register_number
+            res = await asyncio.to_thread(
+                register_number, access_token=token, phone_number_id=phone_number_id, pin=pin,
+                graph_base=self._base)
+            registered, register_reason = res.registered, res.reason
+            if registered:
+                # Seal the PIN per number so re-registration can be repeated. Sealed only on success,
+                # so a wrong PIN is never stored as if it were the real one.
+                await self._secrets.set(tenant=tenant, name=pin_secret_name(phone_number_id),
+                                        value=pin, actor_ref=actor_ref)
+
         token = ""                            # drop the plaintext from this frame as soon as it's sealed
         if self._on_stored is not None:
             self._on_stored(tenant)           # invalidate the pool cache — no TTL wait
 
-        return {"ok": True, "subscribed": subscribed}
+        return {"ok": True, "subscribed": subscribed,
+                "registered": registered, "register_reason": register_reason}
 
 
 def _token_from(body: str) -> str:

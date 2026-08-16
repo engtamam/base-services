@@ -152,6 +152,15 @@ class ProviderPool:
         the business without the token ever transiting the route or a log."""
         return await self._credential(tenant, "WHATSAPP_ACCESS_TOKEN")
 
+    async def whatsapp_pin(self, tenant: str, phone_number_id: str) -> str:
+        """The sealed 6-digit two-step-verification PIN for ONE phone number, or "".
+
+        Meta requires the same PIN on every RE-registration, and a number whose PIN is not kept can
+        never be re-registered (after an account event, say). It is sealed per number beside the
+        token and read here in core — never returned by any API read."""
+        from app.core.whatsapp_register import pin_secret_name
+        return await self._credential(tenant, pin_secret_name(phone_number_id))
+
     def invalidate(self, tenant: str | None = None) -> None:
         """Drop the cache so the next send resolves fresh.
 

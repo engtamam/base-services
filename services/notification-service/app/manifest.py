@@ -105,8 +105,12 @@ def build_manifest(
             {"path": "/internal/whatsapp/templates/submit-pending", "tier": "internal", "method": "POST"},
             {"path": "/internal/whatsapp/messaging-limit", "tier": "internal", "method": "GET"},
             # Register a business phone number for Cloud API sending — the PIN-carrying step exchange
-            # stops before. Without it a tenant is "connected" everywhere and cannot send.
+            # stops before. Without it a tenant is "connected" everywhere and cannot send. Per NUMBER
+            # (a WABA holds many); the PIN is sealed so re-registration repeats without a human.
             {"path": "/internal/whatsapp/register", "tier": "internal", "method": "POST"},
+            # A number's real readiness (platform_type, code_verification_status, throughput, quality)
+            # read live from Meta — so a shop's state is readable, not assumed.
+            {"path": "/internal/whatsapp/status", "tier": "internal", "method": "GET"},
             # Inbound Meta webhook (public — auth is the signature / verify token, not a token gate):
             # GET verifies the subscription, POST verifies X-Hub-Signature-256 and fans out every event.
             {"path": "/webhooks/whatsapp", "tier": "public", "method": "GET"},

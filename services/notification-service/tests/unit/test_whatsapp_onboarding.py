@@ -55,7 +55,8 @@ def test_happy_path_stores_all_three_credentials_and_subscribes(monkeypatch):
     svc = _svc(store, on_stored=lambda t: seen.append(t))
     res = run(svc.exchange(tenant="acme", code="CODE30S", waba_id="W1", phone_number_id="P1"))
 
-    assert res == {"ok": True, "subscribed": True}
+    # No PIN supplied → registration is deferred (register_reason NO_PIN), reported, not swallowed.
+    assert res == {"ok": True, "subscribed": True, "registered": False, "register_reason": "NO_PIN"}
     assert store.saved[("acme", "WHATSAPP_ACCESS_TOKEN")] == "BShopToken"
     assert store.saved[("acme", "WHATSAPP_PHONE_NUMBER_ID")] == "P1"
     assert store.saved[("acme", "WHATSAPP_BUSINESS_ACCOUNT_ID")] == "W1"
@@ -81,6 +82,33 @@ def test_an_expired_or_invalid_code_fails_cleanly_and_stores_nothing(monkeypatch
         run(_svc(store).exchange(tenant="acme", code="dead", waba_id="W1", phone_number_id="P1"))
     assert "Meta rejected" in str(e.value)
     assert store.saved == {}                                  # nothing stored on failure
+
+
+def test_a_pin_registers_the_number_and_seals_the_pin(monkeypatch):
+    # The fourth step: with a PIN, the onboarded number is registered so it can actually SEND, and the
+    # PIN is sealed per number so re-registration can be repeated later without a human.
+    _patch_http(monkeypatch)
+    import app.core.whatsapp_register as wr
+    monkeypatch.setattr(wr, "post_json", lambda url, payload, headers=None: (200, "{}"))
+    store = _Store()
+    res = run(_svc(store).exchange(tenant="acme", code="c", waba_id="W1", phone_number_id="P1",
+                                   pin="123456"))
+    assert res["registered"] is True and res["register_reason"] == ""
+    assert store.saved[("acme", "WHATSAPP_2FA_PIN_P1")] == "123456"      # sealed per number
+    assert "123456" not in str({k: v for k, v in res.items()})           # never in the result
+
+
+def test_a_wrong_pin_at_onboarding_is_reported_and_not_sealed(monkeypatch):
+    _patch_http(monkeypatch)
+    import app.core.whatsapp_register as wr
+    monkeypatch.setattr(wr, "post_json",
+                        lambda url, payload, headers=None: (400, '{"error":{"code":133005}}'))
+    store = _Store()
+    res = run(_svc(store).exchange(tenant="acme", code="c", waba_id="W1", phone_number_id="P1",
+                                   pin="000000"))
+    # the token is still stored (non-fatal), the PIN is NOT sealed (only on success), reason is named
+    assert res["ok"] is True and res["registered"] is False and res["register_reason"] == "WRONG_PIN"
+    assert ("acme", "WHATSAPP_2FA_PIN_P1") not in store.saved
 
 
 def test_a_failed_subscribe_is_nonfatal_but_reported(monkeypatch):

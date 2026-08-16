@@ -88,6 +88,10 @@ class EmbeddedSignupInternalIn(BaseModel):
     code: str = Field(..., min_length=1, max_length=4096)
     waba_id: str = Field(..., min_length=1, max_length=128)
     phone_number_id: str = Field(..., min_length=1, max_length=128)
+    # Optional: when the business supplies its 6-digit PIN at connect, the number is REGISTERED in the
+    # same flow (a mute "connected" number is the failure this avoids). Validated shape; sealed on
+    # success. Absent => the token is stored and the standalone /whatsapp/register finishes it later.
+    pin: str | None = Field(default=None, pattern=r"^[0-9]{6}$")
 
 
 @router.post("/whatsapp/embedded-signup", dependencies=[Depends(require_internal_token)])
@@ -118,7 +122,7 @@ async def internal_embedded_signup(request: Request, body: EmbeddedSignupInterna
     try:
         return await onboarding.exchange(
             tenant=body.tenant, code=body.code, waba_id=body.waba_id,
-            phone_number_id=body.phone_number_id)
+            phone_number_id=body.phone_number_id, pin=body.pin or "")
     except ConfigError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
     except OnboardingError as exc:
@@ -303,44 +307,60 @@ async def submit_pending_whatsapp_templates_internal(
 
 class WaRegisterIn(BaseModel):
     tenant: str = Field(min_length=1, max_length=128)
-    # Meta's 6-digit two-step-verification PIN, validated HERE so a malformed PIN never spends one of
-    # the 10 attempts Meta allows before it locks the number for 72 hours.
-    pin: str = Field(pattern=r"^[0-9]{6}$")
+    # PER NUMBER, not per tenant: a WABA can hold many numbers (a number per branch for a chain) and
+    # registration is per number. Optional — omitted falls back to the tenant's single stored number,
+    # for the single-brand case.
+    phone_number_id: str | None = Field(default=None, max_length=128)
+    # Meta's 6-digit PIN, validated HERE so a malformed PIN never spends one of the 10 attempts Meta
+    # allows before it locks the number for 72 hours. OPTIONAL: omitted, the sealed PIN for this number
+    # is used, so a re-registration (required after some account events) needs no human to re-enter it.
+    pin: str | None = Field(default=None, pattern=r"^[0-9]{6}$")
 
 
 @router.post("/whatsapp/register", dependencies=[Depends(require_internal_token)])
 async def register_whatsapp_number(request: Request, body: WaRegisterIn):
-    """Register a tenant's business phone number for Cloud API sending — the PIN-carrying step that
-    Embedded Signup deliberately stops before.
+    """Register a business phone number for Cloud API sending — the PIN-carrying step Embedded Signup
+    stops before. Meta refuses to SEND until a number is registered (error 133010), so an unregistered
+    number is "connected" and mute.
 
-    WHY IT EXISTS: exchange() stores the token but Meta refuses to SEND until the number is registered,
-    so a tenant that finished Embedded Signup shows green everywhere and cannot deliver a single
-    message. The token + phone id are read from the SAME per-tenant credentials ProviderPool holds
-    (in core — a route never reads credential plaintext), so the caller supplies only the PIN.
-
-    THE FAILURES ARE THREE SENTENCES, never one 400: WRONG_PIN (the business mistyped), RATE_LIMITED
-    (Meta's 10-per-72h lock, error 133016 — tell them to WAIT, not retry), UNREACHABLE (we could not
-    reach Meta). NOT_CONNECTED means no token is stored yet — finish Embedded Signup first."""
+    PER NUMBER: the token is the WABA's (per tenant); the number is `phone_number_id` (a chain has
+    many). The PIN may be supplied, or read from the sealed store for a re-registration. Meta's verdict
+    is returned as three distinct sentences, never one 400: WRONG_PIN (mistyped), RATE_LIMITED (the
+    10-per-72h lock, error 133016 — WAIT, do not retry), UNREACHABLE. NOT_CONNECTED = no token stored
+    (finish Embedded Signup); NO_PIN = no PIN supplied and none sealed."""
     import asyncio
 
     from starlette.responses import JSONResponse
 
-    from app.core.whatsapp_register import register_number
+    from app.core.whatsapp_register import pin_secret_name, register_number
 
     s = get_settings()
     pool = getattr(request.app.state, "provider_pool", None)
     if pool is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "PROVIDER_POOL_UNAVAILABLE")
     token = await pool.whatsapp_access_token(body.tenant)
-    phone_id = await pool.whatsapp_phone_number_id(body.tenant)
+    # The specified number, or the tenant's single stored one (single-brand fallback).
+    phone_id = body.phone_number_id or await pool.whatsapp_phone_number_id(body.tenant)
     if not token or not phone_id:
-        # No stored credential: the tenant has not completed Embedded Signup. A DISTINCT reason —
-        # this is not a Meta failure and must not read as one.
         return JSONResponse({"registered": False, "reason": "NOT_CONNECTED"}, status_code=400)
-    # Off the event loop: a blocking Graph POST must not stall the loop.
-    res = await asyncio.to_thread(
-        register_number, access_token=token, phone_number_id=phone_id, pin=body.pin,
+    # Supplied PIN, else the one sealed for THIS number — so a re-registration repeats without a human.
+    pin = body.pin or await pool.whatsapp_pin(body.tenant, phone_id)
+    if not pin:
+        return JSONResponse({"registered": False, "reason": "NO_PIN"}, status_code=400)
+    res = await asyncio.to_thread(       # off the loop: a blocking Graph POST must not stall it
+        register_number, access_token=token, phone_number_id=phone_id, pin=pin,
         graph_base=s.WHATSAPP_ONBOARDING_GRAPH_BASE)
+    if res.registered and body.pin:
+        # Seal a freshly-supplied PIN (only on success, only when the caller gave one), so the next
+        # re-registration needs no human. A sealed value is never returned by any read. BEST-EFFORT:
+        # the number IS registered at Meta — a store that cannot seal the PIN must not turn that
+        # success into a failure; the PIN is simply re-supplied next time.
+        try:
+            from app.api.v1.operator import _secret_store
+            await _secret_store(request).set(tenant=body.tenant, name=pin_secret_name(phone_id),
+                                             value=pin, actor_ref="")
+        except Exception:  # noqa: BLE001 — sealing is a convenience, registration already succeeded
+            pass
     await request.app.state.auditor.record(
         "whatsapp.number_registered", actor="", tenant=body.tenant,
         resource=f"phone:{phone_id}", ip=request.client.host if request.client else "",
@@ -348,6 +368,30 @@ async def register_whatsapp_number(request: Request, body: WaRegisterIn):
     if res.registered:
         return {"registered": True}
     return JSONResponse({"registered": False, "reason": res.reason}, status_code=400)
+
+
+@router.get("/whatsapp/status", dependencies=[Depends(require_internal_token)])
+async def whatsapp_number_status(request: Request, tenant: str, phone_number_id: str = ""):
+    """A number's REAL readiness, read live from Meta — so a shop's state is READABLE, not assumed.
+
+    Returns platform_type (native CLOUD_API vs a coexistence number, which stops after ~14 days of
+    primary-device inactivity), code_verification_status, throughput and quality_rating. Per number:
+    `phone_number_id` selects one of a chain's numbers, or falls back to the tenant's single number."""
+    if not tenant:
+        raise HTTPException(400, "tenant is required")
+    import asyncio
+
+    from app.core.whatsapp_register import fetch_status
+    s = get_settings()
+    pool = getattr(request.app.state, "provider_pool", None)
+    if pool is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "PROVIDER_POOL_UNAVAILABLE")
+    token = await pool.whatsapp_access_token(tenant)
+    phone_id = phone_number_id or await pool.whatsapp_phone_number_id(tenant)
+    if not token or not phone_id:
+        return {"ok": False, "reason": "NOT_CONNECTED"}
+    return await asyncio.to_thread(fetch_status, access_token=token, phone_number_id=phone_id,
+                                   graph_base=s.WHATSAPP_ONBOARDING_GRAPH_BASE)
 
 
 @router.get("/whatsapp/messaging-limit", dependencies=[Depends(require_internal_token)])

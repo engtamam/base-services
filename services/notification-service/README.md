@@ -44,13 +44,22 @@ each vendor's official docs.
 > never-submitted templates within Meta's cap (`WHATSAPP_TEMPLATE_SUBMIT_LIMIT`, ≤100), oldest-first,
 > idempotent, until the library is through — the throttle lives here, so no caller reimplements it.
 
-> **A connected number cannot send until it is registered.** Embedded Signup stores the token but
-> Meta refuses to send until the number is registered with the business's 6-digit two-step PIN.
-> `POST /internal/whatsapp/register {tenant, pin}` does it (token + phone id resolved per tenant, so
-> only the PIN travels), and returns **three distinct outcomes**: `registered:true`, or
-> `{registered:false, reason}` where reason is `WRONG_PIN` · `RATE_LIMITED` (Meta's 10-per-72h lock,
-> error 133016 — tell the owner to *wait*) · `UNREACHABLE` · `NOT_CONNECTED` (finish Embedded Signup
-> first). A malformed PIN is refused (422) before it spends one of the 10 attempts.
+> **A connected number cannot send until it is REGISTERED** (Meta error 133010 otherwise). Registration
+> is **per phone number** — a WABA holds many (a number per branch for a chain) — and needs the
+> business's 6-digit two-step PIN. Three ways in:
+> - **At connect:** pass `pin` to Embedded Signup and `exchange()` registers the number as a fourth
+>   step, reported (`registered`, `register_reason`) — a mute "connected" number never happens.
+> - **Standalone:** `POST /internal/whatsapp/register {tenant, phone_number_id?, pin?}` — the code
+>   lives ~30s and can't be replayed, so this recovers a number whose signup registration failed, and
+>   re-registers after account events. The PIN is **sealed per number** on success, so `pin` may be
+>   omitted on a re-registration. Outcomes: `registered:true`, or `{registered:false, reason}` where
+>   reason is `WRONG_PIN` · `RATE_LIMITED` (Meta's 10-per-72h lock, 133016 — *wait*) · `UNREACHABLE` ·
+>   `NOT_CONNECTED` · `NO_PIN`. A malformed PIN is refused (422) before it spends one of the 10 attempts.
+> - **Readiness:** `GET /internal/whatsapp/status?tenant=&phone_number_id=` reads a number's real state
+>   from Meta — `platform_type` (native CLOUD_API vs a coexistence number, which stops after ~14 days
+>   of primary-device inactivity), `code_verification_status`, `throughput`, `quality_rating`.
+>
+> The PIN is sealed beside the token (`WHATSAPP_2FA_PIN_<phone_id>`) and **never returned by any read**.
 
 > **Inbound Meta webhook — the platform owns it** (it holds the app secret needed to verify). `GET
 > /webhooks/whatsapp` answers the subscription handshake (`hub.challenge` iff `hub.verify_token`

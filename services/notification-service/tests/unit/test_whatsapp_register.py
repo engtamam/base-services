@@ -100,6 +100,50 @@ def test_register_route_returns_the_distinct_reason(client, monkeypatch):
     assert r.status_code == 400 and r.json() == {"registered": False, "reason": "RATE_LIMITED"}
 
 
+def test_register_route_is_per_number(client, monkeypatch):
+    # a chain has many numbers under one WABA — the caller names which number to register, and it is
+    # the one registered (not the tenant's default).
+    captured = {}
+
+    def _capture(url, payload, headers=None):
+        captured["url"] = url
+        return (200, "{}")
+
+    monkeypatch.setattr(wr, "post_json", _capture)
+    r = client.post("/internal/whatsapp/register",
+                    json={"tenant": "chain", "phone_number_id": "BRANCH_7", "pin": "123456"},
+                    headers=_hdr())
+    assert r.status_code == 200 and r.json() == {"registered": True}
+    assert "/BRANCH_7/register" in captured["url"]      # the SPECIFIED number, not the tenant default
+
+
+def test_register_route_says_no_pin_when_none_supplied_and_none_sealed(client, monkeypatch):
+    # PIN omitted and nothing sealed for this number → a DISTINCT NO_PIN, never a Meta call.
+    called = {"n": 0}
+    monkeypatch.setattr(wr, "post_json",
+                        lambda *a, **k: called.__setitem__("n", called["n"] + 1) or (200, "{}"))
+    r = client.post("/internal/whatsapp/register",
+                    json={"tenant": "acme", "phone_number_id": "NEW1"}, headers=_hdr())
+    assert r.status_code == 400 and r.json()["reason"] == "NO_PIN"
+    assert called["n"] == 0                              # never reached Meta
+
+
+# ── the readiness read ────────────────────────────────────────────────────────
+def test_status_reads_the_numbers_real_state(client, monkeypatch):
+    monkeypatch.setattr(
+        wr, "get_json",
+        lambda url, params=None, headers=None: (200, '{"platform_type": "CLOUD_API", '
+        '"code_verification_status": "VERIFIED", "quality_rating": "GREEN", "throughput": {"level": "STANDARD"}}'))
+    r = client.get("/internal/whatsapp/status", params={"tenant": "acme"}, headers=_hdr())
+    assert r.status_code == 200
+    b = r.json()
+    assert b["ok"] and b["platform_type"] == "CLOUD_API" and b["quality_rating"] == "GREEN"
+
+
+def test_status_requires_the_internal_token(client):
+    assert client.get("/internal/whatsapp/status", params={"tenant": "acme"}).status_code == 401
+
+
 def test_register_route_says_not_connected_when_no_token_is_stored(monkeypatch):
     monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", ITOKEN)
     monkeypatch.setenv("WHATSAPP_ACCESS_TOKEN", "")      # no stored credential

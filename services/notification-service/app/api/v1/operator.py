@@ -153,6 +153,9 @@ class EmbeddedSignupIn(BaseModel):
     waba_id: str = Field(..., min_length=1, max_length=128)
     phone_number_id: str = Field(..., min_length=1, max_length=128)
     tenant: str = Field(default="", max_length=128)
+    # Optional 6-digit PIN: when present the onboarded number is REGISTERED in the same flow so it can
+    # actually send; sealed on success for later re-registration. Absent leaves it to /whatsapp/register.
+    pin: str | None = Field(default=None, pattern=r"^[0-9]{6}$")
 
 
 @router.post("/whatsapp/embedded-signup", dependencies=[Depends(_SECRETS), Depends(rate_limit)])
@@ -177,7 +180,7 @@ async def whatsapp_embedded_signup(request: Request, body: EmbeddedSignupIn,
     try:
         result = await onboarding.exchange(
             tenant=body.tenant, code=body.code, waba_id=body.waba_id,
-            phone_number_id=body.phone_number_id, actor_ref=_actor(principal))
+            phone_number_id=body.phone_number_id, pin=body.pin or "", actor_ref=_actor(principal))
     except ConfigError as exc:
         # Not configured as a Tech Provider (no app id/secret) or no KEK — a server-state problem.
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc

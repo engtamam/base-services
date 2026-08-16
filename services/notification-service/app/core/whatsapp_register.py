@@ -17,7 +17,22 @@ from __future__ import annotations
 import json as _json
 from dataclasses import dataclass
 
-from app.adapters.notify_http import bearer, ok, post_json
+from app.adapters.notify_http import bearer, get_json, ok, post_json
+
+# The 6-digit two-step-verification PIN Meta requires on EVERY (re-)registration is sealed per PHONE
+# NUMBER — a WABA can hold many numbers (a number per branch for a chain) and each has its own PIN. It
+# lives beside the token in the same SecretStore, and is NEVER returned by any read.
+_PIN_PREFIX = "WHATSAPP_2FA_PIN_"
+
+# The readiness fields Meta exposes on GET /{phone_number_id}. `platform_type` tells a native CLOUD_API
+# number from a coexistence one (which stops after ~14 days of primary-device inactivity), and
+# `code_verification_status` is the truth behind a screen that merely assumes "connected".
+_STATUS_FIELDS = "platform_type,code_verification_status,throughput,quality_rating,name_status"
+
+
+def pin_secret_name(phone_number_id: str) -> str:
+    """The per-number secret name the PIN is sealed under."""
+    return f"{_PIN_PREFIX}{phone_number_id}"
 
 # Two-step-verification PIN mismatch — the business typed the wrong 6 digits.
 _WRONG_PIN_CODES = {133005}
@@ -70,3 +85,28 @@ def register_number(*, access_token: str, phone_number_id: str, pin: str,
     if ok(status):
         return RegisterResult(True)
     return RegisterResult(False, _classify(status, body))
+
+
+def fetch_status(*, access_token: str, phone_number_id: str, graph_base: str) -> dict:
+    """A number's real readiness, read live from Meta: GET /{phone_number_id}?fields=…
+
+    Returns the parsed fields (platform_type, code_verification_status, throughput, quality_rating,
+    name_status) so a shop's true state is READABLE instead of assumed. On failure returns
+    {ok: False, reason} with the same distinct vocabulary as register — UNREACHABLE for a network
+    failure, META_ERROR[:msg] for a rejection — never a fabricated "ready".
+    """
+    base = (graph_base or "https://graph.facebook.com/v21.0").rstrip("/")
+    status, body = get_json(f"{base}/{phone_number_id}", {"fields": _STATUS_FIELDS},
+                            bearer(access_token))
+    if not ok(status):
+        return {"ok": False, "reason": _classify(status, body)}
+    try:
+        data = _json.loads(body)
+    except ValueError:
+        return {"ok": False, "reason": "META_ERROR"}
+    return {"ok": True,
+            "platform_type": data.get("platform_type", ""),
+            "code_verification_status": data.get("code_verification_status", ""),
+            "throughput": data.get("throughput", {}),
+            "quality_rating": data.get("quality_rating", ""),
+            "name_status": data.get("name_status", "")}
