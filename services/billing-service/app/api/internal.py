@@ -135,6 +135,56 @@ async def list_subscriptions_internal(request: Request, tenant: str,
         for r in rows]}
 
 
+@router.get("/billing/plans", dependencies=[Depends(require_internal_token)])
+async def list_plans_internal(request: Request, tenant: str = "",
+                              include_hidden: bool = False) -> dict:
+    """The internal twin of GET /api/v1/billing/plans — the purchasable plan catalogue, for a peer
+    service (operations during signup / the purchase flow). The user route is _SELF and rate-limited
+    per caller; a service presents no subject, so the limiter falls back to the operations pod's IP
+    and every establishment shares one bucket — 429s on the purchase path that must fail closed. This
+    is the same read behind the internal token, tenant an explicit field. `include_hidden` (retired /
+    unlisted pricing) is an operator view; the internal token is platform authority, so it is honoured
+    here rather than forced to a person's capability."""
+    return {"plans": await (await build_billing(request, tenant)).list_plans(
+        include_hidden=include_hidden)}
+
+
+class SubscribeInternalIn(BaseModel):
+    """Same shape as POST /api/v1/billing/subscriptions, but the TENANT rides in the body — the caller
+    is a product service acting FOR a shop, not a human whose token carries a tenant."""
+    tenant: str = Field(min_length=1, max_length=128)
+    plan_id: str = Field(min_length=1, max_length=128)
+    interval: str = Field(default="month", pattern="^(month|year|once)$")
+    quantity: int = Field(default=1, ge=1)
+    coupon_code: str = Field(default="", max_length=128)
+    payment_token: str = Field(default="", max_length=512)
+    buyer_name: str = Field(default="", max_length=256)
+    buyer_vat: str = Field(default="", max_length=64)
+    buyer_cr: str = Field(default="", max_length=64)
+
+
+@router.post("/billing/subscriptions", status_code=201,
+             dependencies=[Depends(require_internal_token)])
+async def subscribe_internal(request: Request, body: SubscribeInternalIn) -> dict:
+    """The internal twin of POST /api/v1/billing/subscriptions — create a subscription for a shop,
+    service-to-service. Same core .subscribe(); tenant in the body; the SAME grandfathering, coupon
+    and proration behaviour as the user route. Exists because the purchase is the one path that must
+    NOT 429 on a shared per-pod IP bucket (see list_plans_internal); the internal token is the auth
+    every other cross-service call already uses."""
+    try:
+        sub = await (await build_billing(request, body.tenant)).subscribe(
+            tenant=body.tenant, plan_id=body.plan_id, interval=body.interval,
+            quantity=body.quantity, coupon_code=body.coupon_code, payment_token=body.payment_token,
+            buyer_name=body.buyer_name, buyer_vat=body.buyer_vat, buyer_cr=body.buyer_cr)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    await request.app.state.auditor.record(
+        "subscription.created", actor="", tenant=sub.tenant,
+        resource=f"subscription:{sub.id}", ip=request.client.host if request.client else "",
+        metadata={"plan": body.plan_id})
+    return sub.to_dict()
+
+
 @router.post("/billing/usage/consume", dependencies=[Depends(require_internal_token)])
 async def usage_consume(body: ConsumeIn, request: Request) -> dict:
     """THE enforcing call: atomic check-and-increment of a counter entitlement.

@@ -218,3 +218,35 @@ def test_internal_subscriptions_requires_the_internal_token(client):
 
 def test_internal_subscriptions_requires_a_tenant(client):
     assert client.get("/internal/billing/subscriptions", headers=IT).status_code == 422
+
+
+# ── internal plan/subscribe twins (a peer service, no per-pod IP bucket) ───────
+def test_internal_plans_list_is_token_authed(client, subscribed):
+    assert client.get("/internal/billing/plans").status_code == 401          # no token
+    r = client.get("/internal/billing/plans", headers=IT)
+    assert r.status_code == 200
+    assert any(p["id"] == subscribed["id"] for p in r.json()["plans"])
+
+
+def test_internal_subscribe_creates_a_subscription_with_tenant_in_the_body(client, subscribed):
+    r = client.post("/internal/billing/subscriptions", headers=IT,
+                    json={"tenant": "peer_shop", "plan_id": subscribed["id"]})
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["tenant"] == "peer_shop" and body["plan_id"] == subscribed["id"]
+    # and it is now the tenant's held set (the resolver's view agrees)
+    held = client.get("/internal/billing/subscriptions?tenant=peer_shop", headers=IT).json()
+    assert any(s["plan_id"] == subscribed["id"] for s in held["subscriptions"])
+
+
+def test_internal_subscribe_requires_the_token_and_a_tenant(client, subscribed):
+    assert client.post("/internal/billing/subscriptions",
+                       json={"tenant": "x", "plan_id": subscribed["id"]}).status_code == 401
+    assert client.post("/internal/billing/subscriptions", headers=IT,
+                       json={"plan_id": subscribed["id"]}).status_code == 422   # tenant required
+
+
+def test_internal_subscribe_unknown_plan_is_404(client):
+    r = client.post("/internal/billing/subscriptions", headers=IT,
+                    json={"tenant": "t", "plan_id": "nope"})
+    assert r.status_code == 404

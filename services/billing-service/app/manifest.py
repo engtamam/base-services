@@ -100,6 +100,12 @@ def build_manifest(
             # What a tenant currently holds — the billable set the resolver computes over — for a peer
             # service enforcing a base-plus-apps catalogue (one base per tenant; an app bought once).
             {"path": "/internal/billing/subscriptions", "tier": "internal", "method": "GET"},
+            # Read + create twins of the user-tier plan/subscribe routes, for a peer service (operations
+            # during signup / purchase): the user routes are rate-limited per caller, and a service has
+            # no subject to key on, so the limiter falls to the pod IP and every shop shares one bucket
+            # — 429 on the purchase path that must fail closed. Tenant is an explicit field.
+            {"path": "/internal/billing/plans", "tier": "internal", "method": "GET"},
+            {"path": "/internal/billing/subscriptions", "tier": "internal", "method": "POST"},
             # Advisory read. ENFORCEMENT is /internal/billing/usage/consume (atomic).
             {"path": "/internal/billing/entitlements/check", "tier": "internal", "method": "GET"},
             {"path": "/internal/billing/usage/consume", "tier": "internal", "method": "POST"},

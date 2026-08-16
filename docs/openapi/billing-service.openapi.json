@@ -735,6 +735,71 @@
         "title": "SubscribeIn",
         "type": "object"
       },
+      "SubscribeInternalIn": {
+        "description": "Same shape as POST /api/v1/billing/subscriptions, but the TENANT rides in the body \u2014 the caller\nis a product service acting FOR a shop, not a human whose token carries a tenant.",
+        "properties": {
+          "buyer_cr": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Buyer Cr",
+            "type": "string"
+          },
+          "buyer_name": {
+            "default": "",
+            "maxLength": 256,
+            "title": "Buyer Name",
+            "type": "string"
+          },
+          "buyer_vat": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Buyer Vat",
+            "type": "string"
+          },
+          "coupon_code": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Coupon Code",
+            "type": "string"
+          },
+          "interval": {
+            "default": "month",
+            "pattern": "^(month|year|once)$",
+            "title": "Interval",
+            "type": "string"
+          },
+          "payment_token": {
+            "default": "",
+            "maxLength": 512,
+            "title": "Payment Token",
+            "type": "string"
+          },
+          "plan_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Plan Id",
+            "type": "string"
+          },
+          "quantity": {
+            "default": 1,
+            "minimum": 1.0,
+            "title": "Quantity",
+            "type": "integer"
+          },
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant",
+          "plan_id"
+        ],
+        "title": "SubscribeInternalIn",
+        "type": "object"
+      },
       "UsageIn": {
         "properties": {
           "metric": {
@@ -3507,6 +3572,78 @@
         ]
       }
     },
+    "/internal/billing/plans": {
+      "get": {
+        "description": "The internal twin of GET /api/v1/billing/plans \u2014 the purchasable plan catalogue, for a peer\nservice (operations during signup / the purchase flow). The user route is _SELF and rate-limited\nper caller; a service presents no subject, so the limiter falls back to the operations pod's IP\nand every establishment shares one bucket \u2014 429s on the purchase path that must fail closed. This\nis the same read behind the internal token, tenant an explicit field. `include_hidden` (retired /\nunlisted pricing) is an operator view; the internal token is platform authority, so it is honoured\nhere rather than forced to a person's capability.",
+        "operationId": "list_plans_internal_internal_billing_plans_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_hidden",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Hidden",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Plans Internal Internal Billing Plans Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Plans Internal",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/billing/subscriptions": {
       "get": {
         "description": "Every subscription a tenant currently HOLDS \u2014 the exact billable set EntitlementResolver\ncomputes over \u2014 for a peer product service acting on behalf of a shop.\n\nWHY IT EXISTS: a base-plus-apps catalogue turns on one structural fact \u2014 what does this tenant\nhold right now? (one base per tenant; an app bought once). GET /api/v1/billing/subscriptions is\n_SELF, so a service is not a clean caller; and encoding \"has a base\" as a feature flag loses WHICH\nsubscription, WHEN it renews and WHAT was paid. This returns exactly the fields those rules need \u2014\nid, plan_id, status, current_period_end, limits_snapshot \u2014 and NOTHING else: the payment token and\nthe buyer's tax identity on the row never cross the internal API. It is the same status-filtered,\nindexed read the resolver runs (SubscriptionStore.billable_for), so the two never disagree.",
@@ -3563,6 +3700,66 @@
           }
         },
         "summary": "List Subscriptions Internal",
+        "tags": [
+          "internal"
+        ]
+      },
+      "post": {
+        "description": "The internal twin of POST /api/v1/billing/subscriptions \u2014 create a subscription for a shop,\nservice-to-service. Same core .subscribe(); tenant in the body; the SAME grandfathering, coupon\nand proration behaviour as the user route. Exists because the purchase is the one path that must\nNOT 429 on a shared per-pod IP bucket (see list_plans_internal); the internal token is the auth\nevery other cross-service call already uses.",
+        "operationId": "subscribe_internal_internal_billing_subscriptions_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubscribeInternalIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Subscribe Internal Internal Billing Subscriptions Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Subscribe Internal",
         "tags": [
           "internal"
         ]
