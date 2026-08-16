@@ -25,7 +25,7 @@
 #   scripts/release_local.sh v0.16.5 v0.16.4      # prev given explicitly
 #   scripts/release_local.sh v0.16.5 --all        # rebuild ALL, not just changed
 #   scripts/release_local.sh v0.16.5 --no-tag     # do everything but the git tag
-#   scripts/release_local.sh v0.16.5 --no-scan    # skip the CVE gate (NOT for prod)
+#   scripts/release_local.sh v0.16.5 --scan       # ALSO run the local CVE gate (off by default)
 #
 # Auth: GHCR push uses your `docker login ghcr.io` (needs write:packages). The
 # GitHub Release uses `gh` if present, else $GH_TOKEN/$GITHUB_TOKEN, else the
@@ -41,14 +41,20 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 
 # ── args ────────────────────────────────────────────────────────────────────
 VERSION="${1:-}"
-[ -n "$VERSION" ] || die "usage: scripts/release_local.sh vX.Y.Z [vPREV|--all] [--no-tag] [--no-scan]"
+[ -n "$VERSION" ] || die "usage: scripts/release_local.sh vX.Y.Z [vPREV|--all] [--no-tag] [--scan]"
 echo "$VERSION" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$' || die "version must look like v1.2.3, got: $VERSION"
 
-PREV_ARG=""; DO_TAG=1; DO_SCAN=1
+# The CVE gate is OFF by default and runs only on request (--scan). The images this pipeline ships
+# are already CVE-scanned by the release CI on every push, so re-scanning here — which after the
+# post-release prune re-pulls each image — is redundant on a routine local cut. Pass --scan to run it
+# (before a real customer-facing launch, or when CI is unavailable). --no-scan stays accepted as a
+# no-op so old muscle memory does not error.
+PREV_ARG=""; DO_TAG=1; DO_SCAN=0
 shift
 for a in "$@"; do
   case "$a" in
     --no-tag)  DO_TAG=0 ;;
+    --scan)    DO_SCAN=1 ;;
     --no-scan) DO_SCAN=0 ;;
     --all)     PREV_ARG="--all" ;;
     v[0-9]*)   PREV_ARG="$a" ;;
@@ -120,7 +126,7 @@ print(f'    {len(m)} digests recorded')
 # first scan downloads it.
 if [ "$DO_SCAN" = 1 ]; then
   echo; echo "==> [2/7] CVE gate — trivy HIGH,CRITICAL (--ignore-unfixed)$([ "$SCAN_ALL" = 1 ] && echo " on all $N images" || echo ", changed images only (unchanged already scanned at $PREV_TAG)")"
-  command -v docker >/dev/null || die "docker is required for the CVE gate (or pass --no-scan)"
+  command -v docker >/dev/null || die "docker is required for the CVE gate (--scan); omit it to skip"
   EMPTY_CFG="$(mktemp -d)"; echo '{}' > "$EMPTY_CFG/config.json"
   docker pull -q aquasec/trivy:latest >/dev/null 2>&1 || true
   vulns=0; scanned=0; skipped=0
@@ -150,7 +156,7 @@ if [ "$DO_SCAN" = 1 ]; then
   done
   [ "$vulns" = 0 ] || die "CVE gate FAILED — a HIGH/CRITICAL fixable vulnerability is present. Not releasing."
 else
-  echo; echo "==> [2/7] CVE gate SKIPPED (--no-scan) — do NOT ship this to production"
+  echo; echo "==> [2/7] CVE gate SKIPPED (default; pass --scan to run it) — images are CVE-scanned by release CI"
 fi
 
 # ── 3. pin the digests into deploy values ───────────────────────────────────
