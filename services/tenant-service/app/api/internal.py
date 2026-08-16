@@ -20,7 +20,7 @@ from app.config import Settings, get_settings
 from app.core import backup as _backup
 from app.core.erasure import TenantErasure
 from app.core.tenant_repository import DomainTaken, SlugTaken
-from app.core.tenant_service import InvalidSlug
+from app.core.tenant_service import InvalidName, InvalidSlug
 from app.manifest import build_manifest
 
 router = APIRouter(prefix="/internal", tags=["internal"])
@@ -170,6 +170,38 @@ async def internal_create(request: Request, body: ProvisionTenantIn) -> dict:
     await request.app.state.auditor.record(
         "tenant.created", actor="", tenant=t.id, resource=f"tenant:{t.id}",
         ip=request.client.host if request.client else "")
+    return t.public()
+
+
+class RenameTenantIn(BaseModel):
+    name: str = Field(min_length=1, max_length=256)
+
+
+@router.patch("/tenants/{tenant_id}", dependencies=[Depends(require_internal_token)])
+async def internal_rename(request: Request, tenant_id: str, body: RenameTenantIn) -> dict:
+    """Change a tenant's NAME after signup — the one field captured once at creation with no way to
+    correct it since. A signup autofill dropped a password into it on a real pilot shop, and that
+    garbage was then permanent AND the first thing the owner read on his account, propagating to
+    invoices, exports and admin views a product console cannot reach. The slug/identity are untouched;
+    only the human-facing name moves. Service-to-service (operations proxies the owner's edit): the
+    internal token is the auth every other cross-service call here already uses."""
+    svc = build_service(request)
+    tenant = await svc.get(tenant_id)
+    if tenant is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    old_name = tenant.name
+    try:
+        t = await svc.rename(tenant, body.name)
+    except InvalidName:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "INVALID_NAME")
+    # Recorded AFTER a successful rename (not write-ahead): a rename is not a destructive/credential
+    # act, so logging a refused-validation attempt would be noise. The names are the tenant's own
+    # BUSINESS name shown publicly, not personal data — kept (truncated) so an audit answers "renamed
+    # from what, to what".
+    await request.app.state.auditor.record(
+        "tenant.renamed", actor="", tenant=t.id, resource=f"tenant:{t.id}",
+        ip=request.client.host if request.client else "",
+        metadata={"from": old_name[:120], "to": t.name[:120]})
     return t.public()
 
 

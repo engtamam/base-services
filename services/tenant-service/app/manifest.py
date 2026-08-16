@@ -74,6 +74,9 @@ def build_manifest(
             # the shared internal token — creation over the user tier needs a platform-capable JWT no
             # provisioner should hold.
             {"path": "/internal/tenants", "tier": "internal", "method": "POST"},
+            # Rename after signup — the one field captured once at creation with no way to correct it
+            # since (a signup autofill can drop garbage into the name shown on the account + invoices).
+            {"path": "/internal/tenants/{id}", "tier": "internal", "method": "PATCH"},
             {"path": "/internal/tenants/{id}", "tier": "internal", "method": "DELETE"},
             # Backup fan-out (backup-service orchestrates): export + verify + import the tenant
             # registry. Declared so the fan-out discovers this holder the same way the DSAR fan-out

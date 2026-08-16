@@ -19,6 +19,11 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "critical": False,
     },
     {
+        "action": "tenant.renamed",
+        "source": "internal",
+        "critical": False,
+    },
+    {
         "action": "tenant.config_updated",
         "source": "admin",
         "critical": False,

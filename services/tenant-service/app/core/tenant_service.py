@@ -27,6 +27,17 @@ class InvalidSlug(Exception):
     pass
 
 
+class InvalidName(Exception):
+    pass
+
+
+# A display NAME is shown on the account screen, invoices and support — so it must not carry control
+# characters (which corrupt a document or a terminal) and must not be blank once trimmed. It is
+# otherwise free text: the point of the rename is to ALLOW correcting a garbage autofill, not to have
+# a validator clever enough to have rejected `Cacad$453453`, which is a perfectly well-formed string.
+_NAME_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
 class TenantService:
     def __init__(self, *, repo: TenantRepository, isolation, resolver, event_bus,
                  default_isolation: str, default_locale: str, default_timezone: str,
@@ -99,6 +110,20 @@ class TenantService:
 
     async def set_branding(self, tenant: Tenant, branding: dict[str, Any]) -> Tenant:
         tenant.branding.update(branding)
+        await self._repo.update(tenant)
+        await self._emit("tenant.updated", tenant)
+        return tenant
+
+    async def rename(self, tenant: Tenant, name: str) -> Tenant:
+        """Change the tenant's NAME — the record-of-truth name captured once at signup and, until now,
+        unchangeable. A browser autofilled a password into that field on a real pilot shop; the garbage
+        was then the first thing its owner read on his own account, and propagated to anything the
+        platform renders (invoices, exports, admin). The slug and identity are untouched — only the
+        human-facing name moves. Raises InvalidName on a blank or control-character value."""
+        cleaned = (name or "").strip()
+        if not cleaned or len(cleaned) > 256 or _NAME_CONTROL_RE.search(cleaned):
+            raise InvalidName(f"invalid tenant name: {name!r}")
+        tenant.name = cleaned
         await self._repo.update(tenant)
         await self._emit("tenant.updated", tenant)
         return tenant

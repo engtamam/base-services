@@ -263,7 +263,11 @@ class Settings(BaseSettings):
     # with the customer's logo) does not have to mint a token with a cross-tenant admin capability
     # just to fetch a logo — least privilege: the smaller capability must be enough for the
     # smaller job.
-    TENANT_INTERNAL_FIELDS: str = "id,slug,status,branding,config,deleted_at"
+    # `name` is included so a peer rendering the tenant (an invoice, an export, an admin view over the
+    # internal token) reads the record-of-truth NAME — the whole reason the rename exists is that this
+    # value propagates everywhere the platform renders, so peers must be able to read the corrected one.
+    # It is the business name, already shown publicly, not sensitive; a deployment may drop it here.
+    TENANT_INTERNAL_FIELDS: str = "id,slug,name,status,branding,config,deleted_at"
 
     @property
     def tombstone_fields(self) -> tuple[str, ...]:

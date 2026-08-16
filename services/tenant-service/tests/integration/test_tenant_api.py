@@ -152,6 +152,40 @@ def test_internal_provision_and_undo(client):
     assert client.delete("/internal/tenants/does-not-exist", headers=_internal()).status_code == 404
 
 
+def test_internal_rename_fixes_a_garbage_signup_name(client):
+    # the real case: a browser autofilled a password into the name at signup, and it was permanent.
+    tid = client.post("/internal/tenants", json={"slug": "mistyped", "name": "Cacad$453453"},
+                      headers=_internal()).json()["id"]
+    r = client.patch(f"/internal/tenants/{tid}", json={"name": "Raje3 Shop"}, headers=_internal())
+    assert r.status_code == 200 and r.json()["name"] == "Raje3 Shop"
+    # persisted to the record of truth (read back through the full admin view, not just echoed)
+    assert client.get(f"/api/v1/tenants/{tid}", headers=_platform()).json()["name"] == "Raje3 Shop"
+    # …and a PEER reading over the internal token sees the corrected name too — so it reaches the
+    # invoice/export/render paths a product console cannot touch, which is the point of the rename.
+    assert client.get(f"/internal/tenants/{tid}", headers=_internal()).json()["name"] == "Raje3 Shop"
+
+
+def test_internal_rename_trims_and_refuses_blank_or_control_chars(client):
+    tid = client.post("/internal/tenants", json={"slug": "trimz", "name": "X"},
+                      headers=_internal()).json()["id"]
+    assert client.patch(f"/internal/tenants/{tid}", json={"name": "  Spaced Co  "},
+                        headers=_internal()).json()["name"] == "Spaced Co"          # trimmed
+    assert client.patch(f"/internal/tenants/{tid}", json={"name": "   "},
+                        headers=_internal()).status_code == 400                     # blank -> INVALID_NAME
+    assert client.patch(f"/internal/tenants/{tid}", json={"name": "badbell"},
+                        headers=_internal()).status_code == 400                     # control char
+
+
+def test_internal_rename_requires_the_token_and_a_real_tenant(client):
+    tid = client.post("/internal/tenants", json={"slug": "authz", "name": "Y"},
+                      headers=_internal()).json()["id"]
+    assert client.patch(f"/internal/tenants/{tid}", json={"name": "Z"}).status_code == 401   # no token
+    assert client.patch(f"/internal/tenants/{tid}", json={"name": "Z"},
+                        headers=_platform()).status_code == 401                     # a user token is not a service
+    assert client.patch("/internal/tenants/nope", json={"name": "Z"},
+                        headers=_internal()).status_code == 404
+
+
 def test_declared_actions_reach_the_audit_sink_with_a_bound_actor(client):
     """auditable_actions.py declares tenant.created / config_updated / branding_updated. A contract
     file that names a control the code never records is worse than one that never claimed it — a
