@@ -9,6 +9,8 @@ _PREFS = "preferences"
 _DELIVERIES = "deliveries"
 _INAPP = "inapp"
 _IDEMPO = "notify_idempo"    # idempotency_key -> {result, ts}
+_RECEIPTS = "notify_receipts"  # append-only receipt-event log, ordered by receipt_ts (catch-up read)
+_RECEIPT_KIND = "receipt"      # constant partition key so the ordered read is a filtered query, not a scan
 
 
 class TemplateStore:
@@ -75,6 +77,51 @@ class DeliveryStore:
     async def save(self, d: Delivery) -> Delivery:
         await self._store.put(_DELIVERIES, d.id, d.to_dict())
         return d
+
+    # ── receipts: match a webhook status back to the send it belongs to ────────
+    async def by_provider_message_id(self, wamid: str) -> Delivery | None:
+        """The delivery a receipt belongs to, found by the wamid both sides carry. Filtered read,
+        never a scan — the id is the join key persisted at send time."""
+        if not wamid:
+            return None
+        rows, _ = await self._store.find(_DELIVERIES, {"provider_message_id": wamid}, limit=1)
+        return Delivery.from_dict(rows[0]) if rows else None
+
+    async def apply_receipt(self, wamid: str, receipt_status: str, ts: float,
+                            seq: str = "") -> str | None:
+        """Record what Meta says HAPPENED to a message: update its delivery AND append a receipt EVENT
+        to the ordered catch-up log. Returns the delivery id, or None if the wamid matches nothing here
+        (a receipt for a send we never made — never invented).
+
+        Monotonic on the delivery: a later `read` is not overwritten by an out-of-order `delivered`,
+        and the receipt axis stays separate from the send-state machine, so recording a receipt never
+        disturbs `sent`/`queued`/`failed`. The event log is APPEND-ONLY (every state is its own row),
+        so a consumer reading the log forward sees `delivered` then `read`, each exactly once."""
+        d = await self.by_provider_message_id(wamid)
+        if d is None:
+            return None
+        if ts >= d.receipt_ts:
+            d.receipt_status, d.receipt_ts = receipt_status, ts
+            await self._store.put(_DELIVERIES, d.id, d.to_dict())
+        # Append-only event, keyed by a monotonic seq so the ordered forward read is stable and every
+        # state change is a distinct row (id would collapse delivered+read into one).
+        eid = seq or f"{d.id}:{receipt_status}:{ts}"
+        await self._store.put(_RECEIPTS, eid, {
+            "id": eid, "kind": _RECEIPT_KIND, "delivery_id": d.id, "provider_message_id": wamid,
+            "receipt_status": receipt_status, "receipt_ts": ts, "recipient": d.recipient,
+            "template_key": d.template_key})
+        return d.id
+
+    async def changed_since(self, *, after: str | None, limit: int) -> tuple[list[dict], str | None]:
+        """The ordered catch-up read: receipt events forward from a cursor, oldest first, bounded.
+
+        The bus is at-most-once — a pod that restarts through a receipt hears it never — so a consumer
+        reconciles by reading this log forward and persisting the returned cursor as its watermark. The
+        log is append-only and ordered by receipt_ts, so cursor pagination reads every receipt exactly
+        once and never misses one behind the watermark. Filtered on a constant kind (not an empty
+        `where`), so it stays an indexed, ordered read and never a scan (safety:scans)."""
+        return await self._store.find(_RECEIPTS, {"kind": _RECEIPT_KIND}, limit=limit, after=after,
+                                      sort=("receipt_ts", "asc"))
 
     # ── idempotency (at-least-once callers must not double-send) ───────────────
     async def idempotent_get(self, key: str, *, now: float, ttl: int) -> dict | None:

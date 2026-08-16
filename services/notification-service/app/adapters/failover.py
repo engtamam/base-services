@@ -45,11 +45,15 @@ class FailoverWhatsApp:
         self._providers = providers
         self.driver = ",".join(p.driver for p in providers)
 
-    def send(self, to: str, template_name: str, language: str, variables: list) -> tuple[bool, str]:
+    def send(self, to: str, template_name: str, language: str, variables: list,
+             biz_opaque_callback_data: str = "") -> tuple[bool, str, str]:
+        """Try each provider; return (ok, winning driver, provider_message_id). The message id is the
+        wamid the receipt will echo — carried up so the delivery can be matched to its receipt."""
         for p in self._providers:
             try:
-                if p.send(to, template_name, language, variables):
-                    return True, p.driver
+                mid = p.send(to, template_name, language, variables, biz_opaque_callback_data)
+                if mid:                       # non-empty == success (and carries the wamid)
+                    return True, p.driver, mid
             except Exception:
                 _log.warning("whatsapp_provider_error", extra={"provider": p.driver})
-        return False, self.driver
+        return False, self.driver, ""

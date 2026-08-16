@@ -175,9 +175,9 @@ class _WA:
     def __init__(self):
         self.calls = []
 
-    def send(self, to, template_name, language, variables):
+    def send(self, to, template_name, language, variables, biz_opaque_callback_data=""):
         self.calls.append((to, template_name, language, list(variables)))
-        return True, "fake"
+        return True, "fake", "wamid.fake"      # (ok, provider, provider_message_id)
 
 
 def _svc(reg):

@@ -70,6 +70,16 @@ each vendor's official docs.
 > and **any unrecognised future field, never filtered**. A consumer subscribes to what it needs; an
 > unknown type is emitted rather than dropped, so this can't silently recreate the gap it closes.
 
+> **A receipt can be matched to the message it belongs to.** Every WhatsApp send captures the
+> provider's `wamid` onto the `Delivery` (`provider_message_id`), returns it from `/internal/notify`,
+> and indexes it — it is the only join key to the receipt, which echoes the identical value. A status
+> webhook **resolves** by that wamid, records the receipt on the delivery (its own `receipt_status`
+> axis, monotonic, separate from the send state machine), and fans out `whatsapp.status` carrying the
+> resolved `delivery_id`. `/internal/notify` also accepts `biz_opaque_callback_data` (≤512, echoed by
+> Meta in the status) so a caller can round-trip its own id with no join. And because the bus is
+> at-most-once, `GET /internal/notifications/receipts?after=<cursor>` replays the append-only receipt
+> log forward from a cursor — a pod that restarted through a receipt catches up, never loses it.
+
 > **An outage delays a message, it does not lose it.** `NOTIFY_DELIVERY_MODE=queued` (default): a
 > failed send is classified (retryable vs permanent), backed off with full jitter, retried by the
 > drain worker, and **dead-lettered** after `NOTIFY_MAX_ATTEMPTS` (distinct from `failed`). Point a

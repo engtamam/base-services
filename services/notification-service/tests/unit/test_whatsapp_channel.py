@@ -15,7 +15,9 @@ def test_the_drivers_satisfy_the_port():
 
 
 def test_console_reports_success():
-    assert ConsoleWhatsApp().send("+9665...", "otp", "en", ["123456"]) is True
+    # send now returns the provider message id ("" == failure); console yields a synthetic one.
+    mid = ConsoleWhatsApp().send("+9665...", "otp", "en", ["123456"])
+    assert mid and mid.startswith("console:")
 
 
 def test_meta_requires_credentials():
@@ -28,18 +30,18 @@ def test_meta_requires_credentials():
 class _P:
     def __init__(self, driver, ok):
         self.driver = driver
-        self._ok = ok
+        self._mid = f"{driver}:wamid" if ok else ""   # "" == failure, non-empty == the wamid
         self.calls = []
 
-    def send(self, to, template_name, language, variables):
+    def send(self, to, template_name, language, variables, biz_opaque_callback_data=""):
         self.calls.append((to, template_name, language, tuple(variables)))
-        return self._ok
+        return self._mid
 
 
 def test_failover_tries_each_until_one_wins():
     down, up = _P("meta", False), _P("console", True)
-    ok, provider = FailoverWhatsApp([down, up]).send("+966", "otp", "en", ["1"])
-    assert ok is True and provider == "console"
+    ok, provider, mid = FailoverWhatsApp([down, up]).send("+966", "otp", "en", ["1"])
+    assert ok is True and provider == "console" and mid == "console:wamid"   # the wamid is carried up
     assert down.calls and up.calls               # tried meta, then console
 
 
@@ -49,16 +51,16 @@ def test_failover_reports_the_chain_as_its_driver():
 
 
 def test_failover_all_down_returns_false():
-    ok, _ = FailoverWhatsApp([_P("meta", False), _P("webhook", False)]).send("+966", "t", "en", [])
-    assert ok is False
+    ok, _, mid = FailoverWhatsApp([_P("meta", False), _P("webhook", False)]).send("+966", "t", "en", [])
+    assert ok is False and mid == ""
 
 
 def test_a_raising_provider_is_skipped_not_fatal():
     class _Boom:
         driver = "meta"
 
-        def send(self, *a):
+        def send(self, *a, **k):
             raise RuntimeError("network")
 
-    ok, provider = FailoverWhatsApp([_Boom(), _P("console", True)]).send("+966", "t", "en", [])
+    ok, provider, mid = FailoverWhatsApp([_Boom(), _P("console", True)]).send("+966", "t", "en", [])
     assert ok is True and provider == "console"

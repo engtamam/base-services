@@ -23,6 +23,10 @@ BACKUP: dict[str, Any] = {
         {"name": "preferences", "tenant_scoped": False, "key": "{user}"},
         {"name": "inapp", "tenant_scoped": False},
         {"name": "deliveries", "tenant_scoped": False},
+        # The append-only delivery/read receipt log. Backed up because it is the DURABLE catch-up
+        # source: the status bus is at-most-once, so this ordered log is how a consumer reconciles
+        # receipts it missed — losing it on a restore silently loses that history. Id-keyed.
+        {"name": "notify_receipts", "tenant_scoped": False},
     ],
     "excluded": [
         {"name": "notify_idempo",

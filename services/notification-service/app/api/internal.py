@@ -44,6 +44,9 @@ class NotifyIn(BaseModel):
     user_id: str | None = None
     event: str | None = None
     idempotency_key: str | None = Field(default=None, max_length=256)
+    # WhatsApp only: an arbitrary caller string (≤512) Meta echoes verbatim in the status webhook, so a
+    # caller can correlate a receipt against its OWN send id with no join and no extra read.
+    biz_opaque_callback_data: str | None = Field(default=None, max_length=512)
 
 _HEADER = "X-Internal-Token"
 
@@ -78,6 +81,7 @@ async def internal_notify(request: Request, body: NotifyIn) -> dict:
         recipient=body.recipient, channel=body.channel, template_key=body.template_key,
         tenant=body.tenant, locale=body.locale, variables=body.variables,
         user_id=body.user_id, event=body.event, idempotency_key=body.idempotency_key,
+        biz_opaque_callback_data=body.biz_opaque_callback_data,
     )
 
 
@@ -127,6 +131,20 @@ async def internal_embedded_signup(request: Request, body: EmbeddedSignupInterna
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
     except OnboardingError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+
+@router.get("/notifications/receipts", dependencies=[Depends(require_internal_token)])
+async def delivery_receipts(request: Request, after: str = "", limit: int = 200) -> dict:
+    """The catch-up read: delivery/read receipts forward from a cursor, oldest first, bounded.
+
+    The status bus is at-most-once — a pod that restarts through a receipt hears it never — so this is
+    how a consumer reconciles: read forward, persist the returned `cursor` as its watermark, repeat.
+    Each row carries delivery_id + provider_message_id, so a receipt is matched to the send it belongs
+    to with no guesswork. Ordered by receipt_ts; a receipt that only lived on the bus is still here."""
+    from app.core.stores import DeliveryStore
+    store = DeliveryStore(request.app.state.container.datastore)
+    rows, cursor = await store.changed_since(after=after or None, limit=max(1, min(1000, limit)))
+    return {"receipts": rows, "cursor": cursor}
 
 
 @router.post("/notifications/drain", dependencies=[Depends(require_internal_token)])

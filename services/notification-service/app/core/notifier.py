@@ -83,7 +83,8 @@ class NotificationService:
                      tenant: str | None = None,
                      locale: str | None = None, variables: dict[str, Any] | None = None,
                      user_id: str | None = None, event: str | None = None,
-                     idempotency_key: str | None = None) -> dict:
+                     idempotency_key: str | None = None,
+                     biz_opaque_callback_data: str | None = None) -> dict:
         # Dedupe FIRST: a retried call with the same key must not re-send (duplicate OTP
         # SMS costs money; duplicate emails erode trust). Returns the original result.
         if idempotency_key:
@@ -140,7 +141,8 @@ class NotificationService:
         if channel == "whatsapp":
             return await self._finish(idempotency_key, await self._deliver_whatsapp(
                 recipient=recipient, tenant=tenant or "", template_key=template_key,
-                language=locale or self._default_locale, variables=variables or {}))
+                language=locale or self._default_locale, variables=variables or {},
+                biz_opaque=biz_opaque_callback_data or ""))
 
         # 2) template (with locale fallback)
         tmpl = await self._templates.get(template_key, locale or self._default_locale, self._default_locale)
@@ -171,7 +173,7 @@ class NotificationService:
                      "event": event}))
 
     async def _deliver_whatsapp(self, *, recipient: str, tenant: str, template_key: str,
-                                language: str, variables: dict) -> dict:
+                                language: str, variables: dict, biz_opaque: str = "") -> dict:
         """Resolve the APPROVED template, substitute variables in declared order, send, record."""
         if self._whatsapp is None:
             return await self._record(recipient, "whatsapp", template_key, "failed",
@@ -193,14 +195,15 @@ class NotificationService:
                                           error=f"missing variables: {','.join(missing)}")
             ordered = [str(variables[v]) for v in tmpl.variables]
         try:
-            ok, provider = await asyncio.to_thread(
-                self._whatsapp.send, recipient, template_key, language, ordered)
+            ok, provider, message_id = await asyncio.to_thread(
+                self._whatsapp.send, recipient, template_key, language, ordered, biz_opaque)
         except Exception as exc:  # noqa: BLE001
             return await self._record(recipient, "whatsapp", template_key, "failed",
                                       error=f"{type(exc).__name__}: {exc}")
         if ok:
+            # Capture the wamid: it is the ONLY key a later receipt can be matched back to this send by.
             return await self._record(recipient, "whatsapp", template_key, SENT, provider=provider,
-                                      attempts=1)
+                                      attempts=1, provider_message_id=message_id)
         return await self._record(recipient, "whatsapp", template_key, "failed", provider=provider,
                                   error="send failed")
 
@@ -267,11 +270,12 @@ class NotificationService:
 
     async def _record(self, recipient: str, channel: str, template_key: str, status: str,
                       provider: str = "", error: str = "", attempts: int = 0,
-                      next_attempt_ts: float = 0.0, payload: dict | None = None) -> dict:
+                      next_attempt_ts: float = 0.0, payload: dict | None = None,
+                      provider_message_id: str = "") -> dict:
         d = Delivery(id=new_id(), recipient=recipient, channel=channel,
                      template_key=template_key, status=status, provider=provider, error=error,
                      attempts=attempts, next_attempt_ts=next_attempt_ts,
-                     payload=dict(payload or {}))
+                     payload=dict(payload or {}), provider_message_id=provider_message_id)
         await self._deliveries.record(d)
         if status == SENT and self._auditor is not None:
             # Non-critical; a provider that delivered must not be un-sent because the log blinked.
@@ -280,6 +284,9 @@ class NotificationService:
                 "notification.sent", actor="system", resource=f"delivery:{d.id}",
                 metadata={"channel": channel, "template": template_key, "provider": provider})
         out = {"delivery_id": d.id, "status": status, "provider": provider}
+        if provider_message_id:
+            # Returned so a caller can keep the wamid→delivery mapping itself, even before any receipt.
+            out["provider_message_id"] = provider_message_id
         if status == QUEUED:
             # Tell the caller the truth: not sent yet, and WHEN we will try again. A 'queued' that
             # looks like a 'sent' is the same lie in a different colour.

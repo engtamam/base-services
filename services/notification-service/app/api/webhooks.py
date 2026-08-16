@@ -62,14 +62,17 @@ async def verify_subscription(
     raise HTTPException(status.HTTP_403_FORBIDDEN, "VERIFY_FAILED")
 
 
-async def _fan_out(bus, data: dict) -> int:
+async def _fan_out(bus, deliveries, data: dict) -> int:
     """Publish every change to the bus, NOTHING filtered. Returns how many events were emitted.
 
     Meta's shape: {object, entry:[{id: <waba id>, changes:[{field, value}]}]}. Each change's `field`
     is the event type (messages, account_update, user_preferences, message_template_status_update,
     history, …). We emit one event per change under `whatsapp.<field>`, and additionally EXPLODE a
-    `messages` change's delivery/read statuses and inbound messages into their own first-class events,
-    so a receipt reaches the receipt path without every consumer re-parsing the envelope.
+    `messages` change's delivery/read statuses and inbound messages into their own first-class events.
+
+    Each status is RESOLVED to the delivery it belongs to (by the wamid both sides carry) and recorded
+    on that delivery, so `whatsapp.status` carries `delivery_id` — the receipt is attributable — and a
+    consumer can also reconcile durably via the catch-up read even when the bus (at-most-once) drops it.
     """
     emitted = 0
     for entry in data.get("entry", []) or []:
@@ -83,10 +86,18 @@ async def _fan_out(bus, data: dict) -> int:
             await bus.publish(f"{_TOPIC}.{field}", Event(type=f"{_TOPIC}.{field}",
                                                          payload={**base, "value": value}))
             emitted += 1
-            # 2) first-class receipts + inbound, so the product's receipt path gets them directly.
+            # 2) first-class receipts, RESOLVED to a delivery, so the receipt is attributable.
             for st in value.get("statuses", []) or []:
-                await bus.publish(f"{_TOPIC}.status",
-                                  Event(type=f"{_TOPIC}.status", payload={**base, "status": st}))
+                delivery_id = None
+                if deliveries is not None:
+                    try:
+                        delivery_id = await deliveries.apply_receipt(
+                            str(st.get("id", "")), str(st.get("status", "")),
+                            float(st.get("timestamp", 0) or 0))
+                    except Exception:  # noqa: BLE001 — a receipt we cannot record must still fan out
+                        delivery_id = None
+                await bus.publish(f"{_TOPIC}.status", Event(
+                    type=f"{_TOPIC}.status", payload={**base, "delivery_id": delivery_id, "status": st}))
                 emitted += 1
             for msg in value.get("messages", []) or []:
                 await bus.publish(f"{_TOPIC}.message",
@@ -107,8 +118,10 @@ async def receive(request: Request) -> dict:
         data = _json.loads(raw or b"{}")
     except ValueError:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "BAD_JSON")
+    from app.core.stores import DeliveryStore
     bus = request.app.state.container.event_bus
-    emitted = await _fan_out(bus, data if isinstance(data, dict) else {})
+    deliveries = DeliveryStore(request.app.state.container.datastore)
+    emitted = await _fan_out(bus, deliveries, data if isinstance(data, dict) else {})
     # Meta retries on any non-2xx and treats the retries as duplicates, so acknowledge fast once the
     # events are on the bus. The count is for our observability, not for Meta.
     return {"received": True, "events": emitted}

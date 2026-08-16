@@ -77,13 +77,23 @@ class Delivery:
     next_attempt_ts: float = 0.0       # when the next one may run (backoff + full jitter)
     payload: dict[str, Any] = field(default_factory=dict)   # what a worker needs to re-send
     ts: str = field(default_factory=now)
+    # The provider's own message id (WhatsApp's wamid). The ONLY join key between this send and the
+    # delivery/read receipt that arrives later by webhook — the receipt echoes the identical value.
+    provider_message_id: str = ""
+    # The receipt axis, DISTINCT from our send-state machine above (queued/sent/failed/…): what Meta
+    # last told us HAPPENED to the message — "" | sent | delivered | read | failed — and WHEN. The ts
+    # is the watermark a consumer reads deliveries "changed after" to catch up on missed bus events.
+    receipt_status: str = ""
+    receipt_ts: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "recipient": self.recipient, "channel": self.channel,
                 "template_key": self.template_key, "status": self.status,
                 "provider": self.provider, "error": self.error,
                 "attempts": self.attempts, "next_attempt_ts": self.next_attempt_ts,
-                "payload": self.payload, "ts": self.ts}
+                "payload": self.payload, "ts": self.ts,
+                "provider_message_id": self.provider_message_id,
+                "receipt_status": self.receipt_status, "receipt_ts": self.receipt_ts}
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Delivery":
@@ -95,6 +105,9 @@ class Delivery:
             next_attempt_ts=float(d.get("next_attempt_ts", 0.0)),
             payload=dict(d.get("payload") or {}),
             ts=d.get("ts", now()),
+            provider_message_id=d.get("provider_message_id", ""),
+            receipt_status=d.get("receipt_status", ""),
+            receipt_ts=float(d.get("receipt_ts", 0.0)),
         )
 
 

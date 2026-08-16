@@ -7,6 +7,8 @@ send at a host of their choosing. Host is allow-listed at the http layer.
 """
 from __future__ import annotations
 
+import json as _json
+
 from app.adapters.notify_http import bearer, ok, post_json
 from app.ports.errors import ConfigError
 
@@ -24,15 +26,28 @@ class MetaWhatsApp:
         self._phone_id = phone_number_id
         self._headers = bearer(access_token)
 
-    def send(self, to: str, template_name: str, language: str, variables: list[str]) -> bool:
+    def send(self, to: str, template_name: str, language: str, variables: list[str],
+             biz_opaque_callback_data: str = "") -> str:
         template: dict = {"name": template_name, "language": {"code": language or "en"}}
         if variables:
             template["components"] = [{
                 "type": "body",
                 "parameters": [{"type": "text", "text": str(v)} for v in variables],
             }]
-        status, _ = post_json(
-            f"{self._base}/{self._phone_id}/messages",
-            {"messaging_product": "whatsapp", "to": to, "type": "template", "template": template},
-            self._headers)
-        return ok(status)
+        payload: dict = {"messaging_product": "whatsapp", "to": to, "type": "template",
+                         "template": template}
+        if biz_opaque_callback_data:
+            # Echoed verbatim in the status webhook (statuses[].biz_opaque_callback_data), so a caller
+            # can correlate a receipt against its own send id with no join. Meta caps it at 512 chars.
+            payload["biz_opaque_callback_data"] = biz_opaque_callback_data[:512]
+        status, body = post_json(f"{self._base}/{self._phone_id}/messages", payload, self._headers)
+        if not ok(status):
+            return ""
+        # The wamid is the ONLY join key to the receipt. Discarding it (as this did) is exactly why
+        # every receipt was unattributable. messages[0].id on every accepted send.
+        try:
+            return str(_json.loads(body).get("messages", [{}])[0].get("id", "") or "")
+        except (ValueError, IndexError, AttributeError, KeyError):
+            # Accepted but unparseable body: the send succeeded, we just have no id to match on. A
+            # non-empty marker keeps it TRUTHY (a success) without pretending to be a real wamid.
+            return "wamid:unparsed"

@@ -218,6 +218,18 @@
       },
       "NotifyIn": {
         "properties": {
+          "biz_opaque_callback_data": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Biz Opaque Callback Data"
+          },
           "channel": {
             "pattern": "^(email|sms|whatsapp|inapp)$",
             "title": "Channel",
@@ -1668,6 +1680,78 @@
           }
         },
         "summary": "Drain Queue",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/notifications/receipts": {
+      "get": {
+        "description": "The catch-up read: delivery/read receipts forward from a cursor, oldest first, bounded.\n\nThe status bus is at-most-once \u2014 a pod that restarts through a receipt hears it never \u2014 so this is\nhow a consumer reconciles: read forward, persist the returned `cursor` as its watermark, repeat.\nEach row carries delivery_id + provider_message_id, so a receipt is matched to the send it belongs\nto with no guesswork. Ordered by receipt_ts; a receipt that only lived on the bus is still here.",
+        "operationId": "delivery_receipts_internal_notifications_receipts_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "After",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delivery Receipts Internal Notifications Receipts Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delivery Receipts",
         "tags": [
           "internal"
         ]

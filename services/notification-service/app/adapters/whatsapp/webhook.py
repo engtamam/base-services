@@ -18,9 +18,12 @@ class WebhookWhatsApp:
         self._url = url
         self._headers = bearer(token) if token else {}
 
-    def send(self, to: str, template_name: str, language: str, variables: list[str]) -> bool:
+    def send(self, to: str, template_name: str, language: str, variables: list[str],
+             biz_opaque_callback_data: str = "") -> str:
         status, _ = post_json(
             self._url,
             {"to": to, "template": template_name, "language": language, "variables": variables},
             self._headers)
-        return ok(status)
+        # A relay gateway is not Cloud API and returns no wamid, so there is no receipt to match. A
+        # non-empty marker keeps success TRUTHY without inventing a wamid that can never resolve.
+        return "webhook:sent" if ok(status) else ""
