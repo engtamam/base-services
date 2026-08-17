@@ -71,6 +71,41 @@ def test_a_legitimate_hostname_still_works():
     assert hostname("::1") == "::1"
 
 
+def test_aliases_all_go_into_the_one_site_block():
+    """The reported bug: one name in the block means every OTHER name that resolves here matches no
+    block, gets no certificate, and fails the TLS handshake — total for a year under HSTS. Every
+    intended name must sit in the site header so Caddy requests a cert (one SAN list) for each."""
+    out = render(cfg(domain="kobo-cloud.com",
+                     aliases=["www.kobo-cloud.com", "admin.kobo-cloud.com", "api.kobo-cloud.com"]))
+    opener = next(line for line in out.splitlines() if line.rstrip().endswith("{") and "." in line)
+    for name in ("kobo-cloud.com", "www.kobo-cloud.com", "admin.kobo-cloud.com", "api.kobo-cloud.com"):
+        assert name in opener
+    assert ", " in opener                          # comma-separated, one block
+
+
+def test_aliases_are_validated_like_the_domain():
+    # an alias cannot open a new site block any more than the domain can (T1 injection).
+    with pytest.raises(EdgeValueRejected):
+        render(cfg(aliases=["evil.com {\n  reverse_proxy https://attacker\n}\nexample.com"]))
+
+
+def test_the_guard_refuses_a_config_whose_intended_name_is_not_served():
+    # the guard that matters more than the fix: if a name the config intends to serve is ever dropped
+    # from a served block, the RENDER fails — not the certificate, silently, in a browser a year on.
+    import render as render_mod
+    assert render_mod._assert_serves_all(["a.com", "b.com"],
+                                         "a.com, b.com {\n}\n") is None            # both served: ok
+    with pytest.raises(EdgeValueRejected):
+        render_mod._assert_serves_all(["a.com", "b.com"], "a.com {\n}\n")          # b.com unserved
+
+
+def test_no_aliases_is_exactly_the_old_single_name_block():
+    # exact backward compatibility: an edge.json with no aliases renders the same single-name block.
+    out = render(cfg(domain="example.com"))
+    assert "example.com {" in out and ", " not in out.splitlines()[out.splitlines().index(
+        next(l for l in out.splitlines() if l.startswith("example.com")))]
+
+
 def test_the_upstream_is_validated_too():
     """An attacker who controls where the edge FORWARDS owns your traffic just as completely."""
     with pytest.raises(EdgeValueRejected):

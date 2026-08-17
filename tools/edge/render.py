@@ -52,6 +52,13 @@ def render_caddy(cfg: dict) -> str:
     stop looking. `Security-tools` gates it on `acme_enabled` and is right to.
     """
     domain = v_host(cfg["domain"])
+    # Additional names this host answers for — www, admin, api, my, a bare apex vs its www. Each is
+    # validated the SAME way as `domain` (v_host rejects the Caddyfile metacharacters and anything over
+    # 253 chars), so a list of names opens no directive injection. Without them, Caddy matches the site
+    # block by name and a request for any OTHER name that resolves here matches NO block, so no cert is
+    # ever requested for it — the browser gets the 80->443 redirect and then a handshake failure, made
+    # total for a year by the HSTS this edge itself sends. Serving them all is a single certificate SAN.
+    aliases = [v_host(a) for a in (cfg.get("aliases") or [])]
     tls = bool(cfg.get("tls", True))
     routes = cfg.get("routes") or []
     if not routes:
@@ -73,7 +80,15 @@ def render_caddy(cfg: dict) -> str:
         # Dev/loopback. No ACME, no public cert dance — and NO HSTS above.
         lines += ["{", "\tauto_https off", "}", ""]
 
-    site = domain if tls else f"http://{domain}:{int(cfg.get('http_port', 80))}"
+    # EVERY intended name goes into the one site block, so Caddy requests a cert for each (one SAN
+    # list) and matches a request for any of them. Comma-separated for TLS; each as its own
+    # http://name:port for the dev/loopback case so an alias is served there too.
+    names = [domain, *aliases]
+    if tls:
+        site = ", ".join(names)
+    else:
+        _port = int(cfg.get("http_port", 80))
+        site = ", ".join(f"http://{n}:{_port}" for n in names)
     lines += [f"{site} {{", "\tencode gzip zstd", ""]
 
     # ── security headers ─────────────────────────────────────────────────────
@@ -106,7 +121,49 @@ def render_caddy(cfg: dict) -> str:
         lines += ["\thandle {", "\t\trespond 404", "\t}"]
 
     lines.append("}")
-    return "\n".join(lines) + "\n"
+    rendered = "\n".join(lines) + "\n"
+    # THE GUARD (matters more than the fix): prove every name this config INTENDS to serve is served
+    # by a block. A name in DNS and a name in the edge are two facts with no line of code holding them
+    # together — this closes the class "a name reaches the host and nothing serves it". If a future
+    # change ever drops an intended name from the site header, the render FAILS here instead of the
+    # certificate failing silently in a browser a year from now.
+    _assert_serves_all(names, rendered)
+    return rendered
+
+
+def _served_names(caddyfile: str) -> set[str]:
+    """The set of names any site block in this Caddyfile answers for — parsed from each block-opener
+    line (`a, b {` or `http://a:80, http://b:80 {`), so the check reads what was ACTUALLY emitted."""
+    served: set[str] = set()
+    for line in caddyfile.splitlines():
+        s = line.strip()
+        if s.startswith("{") or not s.endswith("{"):
+            continue                       # the global block, or a nested directive — not a site opener
+        for tok in s[:-1].split(","):
+            name = tok.strip()
+            if name.startswith("http://"):
+                name = name[len("http://"):].rsplit(":", 1)[0]
+            elif "://" in name:
+                name = name.split("://", 1)[1].rsplit(":", 1)[0]
+            if name:
+                served.add(name)
+    return served
+
+
+def _assert_serves_all(intended: list[str], caddyfile: str) -> None:
+    served = _served_names(caddyfile)
+    # Only WELL-FORMED names are this guard's concern. A name carrying Caddyfile-structural characters
+    # is a validation failure (v_host runs first and rejects exactly those) — treating one as
+    # "unserved" here would make this guard, not the validator, the thing that rejects an injected
+    # name, which would let it MASK a broken validator. The guard answers one question only: did a
+    # legitimate intended name fall out of the served set?
+    missing = [n for n in intended
+               if n and not any(c in n for c in " \t\r\n{}") and n not in served]
+    if missing:
+        raise EdgeValueRejected(
+            f"the edge intends to serve {missing} but no site block serves them — a request for such "
+            f"a name would reach the host, match no block, and fail TLS with no certificate. Every "
+            f"intended name (domain + aliases) must be in a served block.")
 
 
 def render(cfg: dict) -> str:

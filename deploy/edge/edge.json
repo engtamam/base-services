@@ -4,6 +4,8 @@
   "driver": "caddy",
 
   "domain": "localhost",
+  "_aliases": "OPTIONAL additional names this same host answers for (www, admin, api, my, an apex vs its www). Each goes into the one site block, so Caddy requests a certificate (one SAN list) for every one — without them, a request for any name NOT listed matches no block, gets no cert, and fails the TLS handshake (total for a year under HSTS). Validated exactly like `domain`. A render-time guard refuses a config whose intended name is not served.",
+  "aliases": [],
   "tls": false,
   "http_port": 8080,
   "acme_email": "ops@example.com",
