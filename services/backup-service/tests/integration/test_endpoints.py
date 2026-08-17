@@ -38,3 +38,12 @@ def test_internal_manifest_with_token(client):
 def test_internal_rejects_wrong_token(client):
     r = client.get("/internal/health", headers={"X-Internal-Token": "wrong"})
     assert r.status_code == 401
+
+
+def test_backup_run_accepts_the_empty_post_its_cron_sends(client):
+    # The nightly backup never ran because the run route required a body and the scheduled-job template
+    # POSTs empty -> FastAPI 422 before the handler, invisible except in a Job exit code. It must accept
+    # both an empty POST and no body at all.
+    h = {"X-Internal-Token": INTERNAL_TOKEN}
+    assert client.post("/internal/backup/run", headers=h).status_code == 200          # no body
+    assert client.post("/internal/backup/run", json={}, headers=h).status_code == 200  # empty JSON

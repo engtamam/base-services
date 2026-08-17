@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+gate_name="safety:cron-body"
+gate_desc="a cron-driven route accepts the empty POST its own scheduler sends"
+gate_protects="The platform's scheduled-job template POSTs an EMPTY body with a JSON content type. A
+route that declares a REQUIRED Pydantic body makes FastAPI answer 422 before the handler
+runs, so the job never executes — and the failure lives ONLY in a Job's exit code while
+every probe and dashboard stays green. That is exactly how the nightly BACKUP never ran
+(the run route required its body), and it had already happened once to campaigns' tick.
+This gate reads every cronJob path (deploy/services/*.values.yaml) and fails the build if
+its POST route declares a required body instead of an optional one."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_cron_body.py"
+gate_units=0
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_cron_body.py; }

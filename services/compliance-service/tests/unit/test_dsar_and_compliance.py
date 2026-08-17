@@ -109,6 +109,34 @@ def test_re_processing_does_not_wipe_acks_already_received():
     assert a2["status"] == COMPLETED
 
 
+def test_the_attestation_map_is_saved_before_any_target_is_dispatched():
+    # 11-ز: the map used to be broadcast BEFORE it was saved, so a target that erased fast and pushed
+    # its ack back found no map yet (UNKNOWN_TARGET) and a late ack was overwritten by the in-memory
+    # save — a real deletion never reached `completed` and went overdue at day 30. This proves the map
+    # is persisted before dispatch: a target reading the store mid-dispatch already sees its own key.
+    st = MemoryDataStore()
+    clk = ManualClock(1_000_000.0)
+    comp = ComplianceService(holds=HoldStore(st), ropa=RopaStore(st), breaches=BreachStore(st),
+                             targets=TargetStore(st), clock=clk, config=CFG)
+    dsars = DsarStore(st)
+    seen_key_at_dispatch = []
+
+    class CheckingOrch:
+        async def dispatch(self, *, request_id, action, tenant, subject, target):
+            stored = await dsars.get(request_id)               # what a fast target would read
+            key = f"{target['service']}:{target['category']}"
+            seen_key_at_dispatch.append(stored is not None and key in (stored.targets or {}))
+            return True
+
+    ds = DsarService(dsars=dsars, holds=HoldStore(st), targets=TargetStore(st),
+                     orchestrator=CheckingOrch(), clock=clk, config=CFG)
+    _targets(comp)
+    d, _ = run(ds.create(tenant="t1", subject="u1", type="erasure"))
+    run(ds.process(d.id))
+    assert seen_key_at_dispatch and all(seen_key_at_dispatch), \
+        "a target dispatched before the map was saved would be refused UNKNOWN_TARGET"
+
+
 def test_ack_is_idempotent_and_unknown_target_rejected():
     comp, ds, _ = _env()
     _targets(comp)

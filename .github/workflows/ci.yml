@@ -159,6 +159,10 @@ jobs:
           python tools/ci/selftest_schedule_coverage.py
           python tools/ci/check_schedule_coverage.py
 
+      # gates: safety:cron-body
+      - name: "safety:cron-body — a cron route accepts the empty POST its scheduler sends (no 422'd job)"
+        run: python tools/ci/check_cron_body.py
+
       # gates: safety:peer-paths
       - name: "safety:peer-paths — every configured peer path is served by a real endpoint"
         run: |

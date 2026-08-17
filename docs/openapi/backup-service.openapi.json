@@ -1620,7 +1620,7 @@
     },
     "/internal/backup/run": {
       "post": {
-        "description": "Capture every enabled target now. Driven by a cron; also callable for an out-of-band run.\n\nThe run's status is the WORST target's, and a target that could not be reached is MISSED, never\ndropped \u2014 so a run cannot report complete while a service was silently skipped.",
+        "description": "Capture every enabled target now. Driven by a cron; also callable for an out-of-band run.\n\nThe run's status is the WORST target's, and a target that could not be reached is MISSED, never\ndropped \u2014 so a run cannot report complete while a service was silently skipped.\n\nBODY IS OPTIONAL, and that is not cosmetic. The platform's scheduled-job template POSTs an EMPTY\nbody with a JSON content type; a required model makes FastAPI answer 422 before this function runs,\nso the NIGHTLY BACKUP never executed \u2014 the failure living only in a Job's exit code while every\nprobe and dashboard stayed green. A cron-driven route must accept the empty POST its own scheduler\nsends (safety:cron-body enforces this platform-wide).",
         "operationId": "run_backup_internal_backup_run_post",
         "parameters": [
           {
@@ -1644,11 +1644,18 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/_RunIn"
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/_RunIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {

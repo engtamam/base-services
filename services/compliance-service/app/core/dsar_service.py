@@ -114,13 +114,25 @@ class DsarService:
             d.targets = {}
         for t in targets:
             d.targets.setdefault(f"{t.service}:{t.category}", False)
+
+        # SAVE THE ATTESTATION MAP BEFORE ANYONE IS TOLD TO ERASE. The map used to be dispatched first
+        # and saved after: a target that erased fast and pushed its ack back found no map yet and was
+        # refused UNKNOWN_TARGET, and the later in-memory save overwrote any ack that HAD landed — so a
+        # deletion that really happened never reached `completed` and went overdue at day 30, which is
+        # what a regulator reads. Persisting first means an early ack finds its key and is kept.
+        d.status = IN_PROGRESS
+        await self._dsars.save(d)
+
         dispatched = 0
         for t in targets:
             ok = await self._orch.dispatch(request_id=d.id, action=d.type, tenant=d.tenant,
                                            subject=d.subject, target=t.to_dict())
             dispatched += 1 if ok else 0
+        # Re-read before recording the dispatched flag: an ack may have landed in the store DURING
+        # dispatch, and a blind save of the stale in-memory copy would clobber it. The map is already
+        # persisted, so this only stamps metadata onto the current row.
+        d = await self._dsars.get(d.id) or d
         d.dispatched = dispatched == len(targets)
-        d.status = IN_PROGRESS
         await self._dsars.save(d)
         await self._emit("dsar.dispatched", {"id": d.id, "targets": len(targets),
                                              "dispatched": dispatched})

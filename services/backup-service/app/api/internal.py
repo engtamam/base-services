@@ -237,13 +237,20 @@ async def remove_target(request: Request, service: str) -> dict:
 
 
 @router.post("/backup/run", dependencies=[Depends(require_internal_token)])
-async def run_backup(request: Request, body: _RunIn,
+async def run_backup(request: Request, body: _RunIn | None = None,
                      settings: Settings = Depends(get_settings)) -> dict:
     """Capture every enabled target now. Driven by a cron; also callable for an out-of-band run.
 
     The run's status is the WORST target's, and a target that could not be reached is MISSED, never
     dropped — so a run cannot report complete while a service was silently skipped.
+
+    BODY IS OPTIONAL, and that is not cosmetic. The platform's scheduled-job template POSTs an EMPTY
+    body with a JSON content type; a required model makes FastAPI answer 422 before this function runs,
+    so the NIGHTLY BACKUP never executed — the failure living only in a Job's exit code while every
+    probe and dashboard stayed green. A cron-driven route must accept the empty POST its own scheduler
+    sends (safety:cron-body enforces this platform-wide).
     """
+    body = body or _RunIn()
     await request.app.state.auditor.record(
         "backup.run_started", actor="", resource="backup_run",
         ip=request.client.host if request.client else "", metadata={"tenant": body.tenant})
