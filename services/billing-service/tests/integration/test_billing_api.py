@@ -89,6 +89,27 @@ def _plan(client):
                        headers=_adm()).json()
 
 
+def test_platform_invoice_list_rejects_a_non_iso_bound(client):
+    # Round-3 #1: an epoch bound compared AS TEXT drops every real invoice ("2026…" > "178…") and
+    # returns a plausible empty page — which settled partner statements at 0.00. It must 422, loudly.
+    r = client.get("/api/v1/billing/admin/invoices?tenant=t1&since=1780272000", headers=_adm())
+    assert r.status_code == 422
+    ok = client.get("/api/v1/billing/admin/invoices?tenant=t1&since=2026-01-01T00:00:00Z", headers=_adm())
+    assert ok.status_code == 200
+
+
+def test_platform_invoice_list_exposes_tax_breakdown_and_refunds(client):
+    # Round-3 #2 + #3: a partner commission needs the NET (subtotal, not VAT-inclusive total) and what
+    # actually went back (refunded_minor) — both are now projected.
+    plan = _plan(client)
+    sub = client.post("/api/v1/billing/subscriptions",
+                      json={"plan_id": plan["id"], "payment_token": "pm"}, headers=_adm()).json()
+    client.post(f"/api/v1/billing/subscriptions/{sub['id']}/run", headers=_adm())
+    rows = client.get("/api/v1/billing/admin/invoices?tenant=t1", headers=_adm()).json()["invoices"]
+    assert rows
+    assert {"subtotal_minor", "tax_minor", "total_minor", "refunded_minor"}.issubset(rows[0])
+
+
 def test_subscribe_run_paid_einvoiced(client):
     plan = _plan(client)
     sub = client.post("/api/v1/billing/subscriptions",

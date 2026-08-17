@@ -247,8 +247,13 @@ class BillingService:
     # tenant, the amount and the status, not the buyer. A platform operator scanning unpaid
     # invoices across every customer has no need for a thousand buyers' names and VAT numbers, and
     # a whitelist keeps a field added later from leaking into that view by default.
+    # A money PROJECTION for a platform finance view — never buyer PII. subtotal_minor + tax_minor let
+    # a partner commission be computed on the NET (VAT-inclusive prices otherwise pay the partner a
+    # share of tax we remit to ZATCA); refunded_minor answers "what the shop actually kept paying"
+    # (total_minor - refunded_minor) so a partial refund is not billed at full value.
     PLATFORM_INVOICE_FIELDS = ("id", "tenant", "number", "subscription_id", "status",
-                               "total_minor", "currency", "created", "paid_at")
+                               "subtotal_minor", "tax_minor", "total_minor", "refunded_minor",
+                               "currency", "created", "paid_at")
 
     async def list_invoices_platform(self, *, status: str = "", subscription_id: str = "",
                                      tenant: str = "", since: str = "", until: str = "",
@@ -1126,6 +1131,9 @@ class BillingService:
             pay.status = "refunded"
             await self._payments.save(pay)
             if inv:
+                # A gateway refund webhook carries no partial amount here, so it is a FULL refund:
+                # record the whole total as returned and void the invoice.
+                inv.refunded_minor = inv.total_minor
                 inv.status = "void"
                 await self._invoices.save(inv)
                 await self._claw_back(inv)      # same reversal as a manual refund / a settlement recall
@@ -1208,16 +1216,23 @@ class BillingService:
             await self._payments.save(pay)
             inv = await self._invoices.fetch(pay.invoice_id)
             if inv:
-                inv.status = "void"
+                refund_amt = amount_minor if amount_minor is not None else inv.total_minor
+                is_partial = amount_minor is not None and amount_minor < inv.total_minor
+                # Record the amount that went BACK, so "what the shop kept paying" is answerable
+                # (total_minor - refunded_minor). A PARTIAL refund no longer voids the whole invoice —
+                # the shop kept the rest, and voiding it charged commission on nothing or excluded a
+                # still-paid invoice; only a full refund (refunded reaching the total) voids it.
+                inv.refunded_minor = (inv.refunded_minor or 0) + refund_amt
                 inv.credit_note = True
+                if inv.refunded_minor >= inv.total_minor:
+                    inv.status = "void"
                 await self._invoices.save(inv)
                 await self._ledger.record(tenant=inv.tenant, kind="refund",
-                                          amount_minor=-(amount_minor or inv.total_minor),
+                                          amount_minor=-refund_amt,
                                           currency=inv.currency, invoice_id=inv.id, source="refund")
                 # Reverse the wallet grant this invoice made — else the customer keeps the credits
                 # the refunded money bought. A partial refund reverses only if the operator opted in.
-                await self._claw_back(inv, partial=amount_minor is not None
-                                      and amount_minor < inv.total_minor)
+                await self._claw_back(inv, partial=is_partial)
                 if self._events is not None:
                     # A consumer that granted something on payment.succeeded needs to know to take
                     # it back. Without this, a refunded customer keeps whatever the payment bought.

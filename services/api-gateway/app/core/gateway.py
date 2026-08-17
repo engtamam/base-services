@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import json
+from urllib.parse import urlsplit
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -24,6 +25,14 @@ _HOP_BY_HOP = frozenset({
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailers", "transfer-encoding", "upgrade", "host", "content-length",
 })
+
+
+def _targets_internal(p: str) -> bool:
+    """True if a path addresses the internal tier — any `internal` segment. The internal tier is
+    mounted at /internal/… in every service, and `internal` is not a public resource name here, so a
+    segment match is the robust, config-independent test (catches /internal/…, and a rewrite that
+    lands on …/internal/…)."""
+    return "internal" in [seg for seg in p.split("/") if seg]
 
 
 def _err(code: str, status: int) -> JSONResponse:
@@ -43,6 +52,14 @@ class Gateway:
 
     async def handle(self, request: Request) -> Response:
         path = request.url.path
+        # THE EDGE NEVER PROXIES THE INTERNAL TIER — unconditionally, whatever the route table says.
+        # The gateway injects the fleet's internal token into every forwarded request, so a single
+        # route-table line pointing at an /internal/ path would put the public internet one edit away
+        # from /internal/operations/recipient (a pseudonym -> real phone number). This refuses the
+        # internal prefix as a PROPERTY OF THE CODE, not of a YAML file, and answers 404 so the surface
+        # is not even confirmed to exist. Checked BEFORE the match, so no route can opt out of it.
+        if _targets_internal(path):
+            return _err("NOT_FOUND", 404)
         route = self._routes.match(path)
         if route is None:
             return _err("NOT_FOUND", 404)
@@ -87,6 +104,11 @@ class Gateway:
         # ── forward ──────────────────────────────────────────────────────────
         headers = self._forward_headers(request, identity)
         url = route.build_url(path)
+        # Belt AND braces: even if a route REWRITES a public prefix onto an internal upstream path,
+        # the internal-token'd request must not reach it. The incoming-path guard above catches the
+        # direct case; this catches a rewrite.
+        if _targets_internal(urlsplit(url).path):
+            return _err("NOT_FOUND", 404)
         body = await request.body()
         params = list(request.query_params.multi_items())
         try:

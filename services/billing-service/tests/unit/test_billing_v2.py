@@ -65,6 +65,46 @@ def _svc(st, einv=None, cfg=None):
                           tax=VatCalculator("0.15"), einvoicer=einv or EInv(), pdf=NullPdf(), config=cfg or CFG)
 
 
+# ── refunds are visible per invoice (round-3 #3) ──────────────────────────────
+def _paid(st, iid, total):
+    from app.core.models import Invoice, Payment
+    run(InvoiceStore(st).save(Invoice(id=iid, tenant="t1", number=iid, status="paid",
+                                      total_minor=total, currency="SAR")))
+    run(PaymentStore(st).save(Payment(id=f"pay_{iid}", tenant="t1", invoice_id=iid,
+                                      status="succeeded", provider_id="ch", currency="SAR")))
+
+
+def test_partial_refund_records_refunded_minor_and_keeps_the_invoice_paid():
+    # 299.00 invoice, 150.00 back: the shop kept 149.00, so it must NOT void — and refunded_minor
+    # answers "what actually went back" so a partner commission is not charged on the refunded part.
+    st = MemoryDataStore(); b = _svc(st)
+    _paid(st, "inv_1", 29900)
+    assert run(b.refund(f"pay_inv_1", amount_minor=15000))["ok"]
+    got = run(InvoiceStore(st).fetch("inv_1"))
+    assert got.refunded_minor == 15000 and got.status == "paid"
+
+
+def test_full_refund_voids_and_records_the_whole_total():
+    st = MemoryDataStore(); b = _svc(st)
+    _paid(st, "inv_2", 29900)
+    run(b.refund("pay_inv_2"))                                  # no amount == full
+    got = run(InvoiceStore(st).fetch("inv_2"))
+    assert got.refunded_minor == 29900 and got.status == "void"
+
+
+def test_two_partial_refunds_accumulate_and_then_void():
+    st = MemoryDataStore(); b = _svc(st)
+    _paid(st, "inv_3", 20000)
+    run(b.refund("pay_inv_3", amount_minor=8000))
+    # the second refund needs a still-refundable payment; re-mark it succeeded for the test
+    from app.core.models import Payment
+    run(PaymentStore(st).save(Payment(id="pay_inv_3", tenant="t1", invoice_id="inv_3",
+                                      status="succeeded", provider_id="ch", currency="SAR")))
+    run(b.refund("pay_inv_3", amount_minor=12000))             # now fully refunded
+    got = run(InvoiceStore(st).fetch("inv_3"))
+    assert got.refunded_minor == 20000 and got.status == "void"
+
+
 # ── currency ──────────────────────────────────────────────────────────────────
 def test_currency_decimals():
     assert currency.major(5000, "SAR") == "50.00"

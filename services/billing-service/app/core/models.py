@@ -132,6 +132,11 @@ class Invoice:
     # Sum of CONFIRMED settlements. An invoice can be paid in tranches (a 60-day enterprise
     # often pays two), so `paid` is a transition, not the only way to have received money.
     settled_minor: int = 0
+    # Money given BACK on this invoice — card refunds, credit notes, recalled settlements — accumulated
+    # as they happen. Partial refunds were previously discoverable only in the ledger, so a partner
+    # commission computed on the invoice charged on money that had returned to the customer. What the
+    # shop actually KEPT paying is total_minor - refunded_minor.
+    refunded_minor: int = 0
     credit_note: bool = False
     einvoice: dict[str, Any] = field(default_factory=dict)
     # What money document this invoice IS, FROZEN the moment it is paid — "receipt" | "tax_invoice"

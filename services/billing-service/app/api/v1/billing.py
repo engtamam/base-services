@@ -652,6 +652,21 @@ async def list_invoices_platform(request: Request,
         # A filter is mandatory — an unfiltered cross-tenant ledger dump is an exfiltration
         # primitive, not a feature. Any of status/tenant/subscription/date-window counts.
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "PLATFORM_LISTING_NEEDS_A_FILTER")
+    # `since`/`until` bound an ISO-8601 issue date and are compared AS TEXT against the stored ISO
+    # `created`. A caller with an epoch in hand (the natural thing) would get a lexicographic compare —
+    # "2026-…" vs "1780272000" decides on the first character, '2' > '1', so EVERY real invoice reads
+    # as outside the window and the response is a plausible, valid-cursored empty page. That silently
+    # settled partner commission statements at 0.00. So a bound that is not ISO-8601 FAILS LOUDLY here.
+    import datetime as _dt
+    for _name, _val in (("since", since), ("until", until)):
+        if not _val:
+            continue
+        try:
+            _dt.datetime.fromisoformat(_val.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(
+                422,
+                f"{_name} must be an ISO-8601 timestamp (e.g. 2026-06-15T09:00:00Z), not {_val!r}")
     await request.app.state.auditor.record(
         "billing.platform_invoices_viewed", actor=principal.subject, tenant=principal.tenant,
         resource="invoices:all-tenants", ip=request.client.host if request.client else "",

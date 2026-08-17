@@ -105,6 +105,18 @@ def test_no_route_404():
     assert run(_gw(None).handle(make_request())).status_code == 404
 
 
+def test_internal_prefix_is_refused_even_when_a_route_matches_it():
+    # Round-3 #4: the gateway injects the fleet internal token, so a route pointing at /internal/
+    # would put the public internet one YAML edit from /internal/operations/recipient. The refusal is
+    # a property of the code, not the route table — 404 even with a matching route, and BEFORE forward.
+    fwd = FakeForwarder()
+    r = Route(prefix="/internal", upstream="http://operations")
+    assert run(_gw(r, forwarder=fwd).handle(make_request(path="/internal/operations/recipient"))).status_code == 404
+    # a nested internal segment is caught too
+    r2 = Route(prefix="/x", upstream="http://operations")
+    assert run(_gw(r2).handle(make_request(path="/x/internal/erase"))).status_code == 404
+
+
 def test_method_not_allowed_405():
     r = Route(prefix="/echo", upstream="http://up", methods=("GET",))
     assert run(_gw(r).handle(make_request(method="POST"))).status_code == 405
