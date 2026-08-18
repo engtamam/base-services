@@ -92,7 +92,12 @@ def validate_driver(dest: str, value: str) -> str:
 
 
 def replace_placeholders(text: str, name: str) -> str:
-    return text.replace("{service-name}", name).replace("service-template", name)
+    # `<service>` is the placeholder the scaffold's docstrings use (admin_actions.py, user_actions.py);
+    # it was surviving generation verbatim because only the two tokens below were handled. All three
+    # name the same thing — the new service — so they resolve to the same value.
+    return (text.replace("{service-name}", name)
+                .replace("service-template", name)
+                .replace("<service>", name))
 
 
 def should_replace(relpath: str) -> bool:

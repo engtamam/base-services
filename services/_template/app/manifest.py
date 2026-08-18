@@ -54,11 +54,13 @@ def build_manifest(
         "name": settings.SERVICE_NAME,
         "version": settings.SERVICE_VERSION,
         "env": settings.ENV,
-        # FILL THIS. An empty list is a CLAIM — "this service grants no capabilities" — that an
-        # adopter's client app reads as fact and renders nothing from. A blank app is the usual
-        # symptom of a service that shipped this untouched. If a service genuinely grants none,
-        # leaving it empty is correct; the point is that it must be a decision, not a leftover.
-        "capabilities": [],  # e.g. ["files.upload", "files.read"] — atomic capability keys
+        # The two the scaffold's OWN operator routes already enforce (api/v1/operator.py:
+        # require_capability("platform.secrets") / ("platform.config")) — pre-declared so a freshly
+        # generated service's operator routes are grantable and reachable, not permanently dark until
+        # someone remembers to advertise them. ADD this service's domain capabilities alongside them
+        # (e.g. "files.upload", "files.read"); remove one only if you also remove the route that
+        # enforces it. An advertised capability is what the admin panel and onboarding grant against.
+        "capabilities": ["platform.secrets", "platform.config"],
         "endpoints": [
             {"path": "/healthz", "tier": "public", "method": "GET"},
             {"path": "/readyz", "tier": "public", "method": "GET"},
