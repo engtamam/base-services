@@ -10,15 +10,37 @@ worker; a driver that cannot pass them does not belong behind this port.
 """
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from app.adapters.queue.memory import MemoryQueue
 from tests.contracts.util import run
 
+# The redis adapter is held to the SAME contract against a REAL server whenever REDIS_TEST_URL is set,
+# and SKIPS VISIBLY otherwise (mirrors the datastore contract's DATASTORE_TEST_DSN):
+#   docker run -d -p 6379:6379 redis:7-alpine
+#   REDIS_TEST_URL=redis://127.0.0.1:6379/0 pytest tests/contracts
+_REDIS_URL = os.environ.get("REDIS_TEST_URL", "")
+
+
+def _memory():
+    return MemoryQueue()
+
+
+def _redis():
+    from app.adapters.queue.redis import RedisQueue
+    return RedisQueue(_REDIS_URL)
+
+
+_PARAMS = [pytest.param(_memory, id="memory")]
+_PARAMS.append(pytest.param(_redis, id="redis") if _REDIS_URL else pytest.param(
+    _redis, id="redis", marks=pytest.mark.skip(reason="set REDIS_TEST_URL to run the redis contract")))
+
 LEASE = 30
 
 
-@pytest.fixture(params=[MemoryQueue])
+@pytest.fixture(params=_PARAMS)
 def queue(request):
     q = request.param()
     yield q

@@ -16,6 +16,7 @@ is already gone by the time anybody looks.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from starlette.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.api.auth import Principal, require_user
@@ -29,6 +30,20 @@ from app.core.whatsapp_onboarding import OnboardingError, WhatsAppOnboarding
 from app.ports.errors import ConfigError
 
 router = APIRouter(prefix="/api/v1/operator", tags=["operator"])
+
+
+def _refuse(reason: str, *, status_code: int = status.HTTP_400_BAD_REQUEST,
+            code: str = "BAD_REQUEST") -> JSONResponse:
+    """A person-facing refusal for an OPERATOR route, with its reason intact.
+
+    The global error handler strips an HTTPException's detail to a bare {"error": "BAD_REQUEST"}
+    (CWE-209) — right for an untrusted client, wrong here: the operator is a privileged caller and the
+    reason is a domain validation message ("unknown key", "value out of range") they must SEE to act
+    on. So a refusal is RETURNED with its reason rather than raised into the stripper. The reason is
+    domain text the route chose to surface, never an exception's internals or a stack trace.
+    """
+    return JSONResponse({"error": code, "reason": reason}, status_code=status_code)
+
 
 _SECRETS = require_capability("platform.secrets")
 _CONFIG = require_capability("platform.config")
@@ -129,7 +144,7 @@ async def set_secret(request: Request, body: SecretIn,
         info = await _secret_store(request).set(
             tenant=body.tenant, name=body.name, value=body.value, actor_ref=_actor(principal))
     except SecretError as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        return _refuse(str(exc))
     _invalidate(request, body.tenant)
     return {"name": info.name, "hint": info.hint, "rotating": info.rotating}
 
@@ -185,7 +200,7 @@ async def whatsapp_embedded_signup(request: Request, body: EmbeddedSignupIn,
         # Not configured as a Tech Provider (no app id/secret) or no KEK — a server-state problem.
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
     except OnboardingError as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        return _refuse(str(exc))
     return result
 
 
@@ -214,7 +229,7 @@ async def set_config(request: Request, body: ConfigIn,
         o = await _runtime_config(request).set(
             tenant=body.tenant, key=body.key, value=body.value, actor_ref=_actor(principal))
     except RuntimeConfigError as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        return _refuse(str(exc))
     _invalidate(request, body.tenant)      # EMAIL_CHAIN/SMS_CHAIN reorder the providers
     # The tenant is NOT echoed. The caller supplied it, so returning it adds nothing, and a
     # response field named "tenant" is indistinguishable — to a reader and to the tenancy gate —

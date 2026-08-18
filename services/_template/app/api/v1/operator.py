@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
+from starlette.responses import JSONResponse
 
 from app.api.auth import Principal, require_user
 from app.api.authz import require_capability
@@ -30,6 +31,19 @@ router = APIRouter(prefix="/api/v1/operator", tags=["operator"])
 
 _SECRETS = require_capability("platform.secrets")
 _CONFIG = require_capability("platform.config")
+
+
+def _refuse(reason: str, *, status_code: int = status.HTTP_400_BAD_REQUEST,
+            code: str = "BAD_REQUEST") -> JSONResponse:
+    """A person-facing refusal for an OPERATOR route, with its reason intact.
+
+    The global error handler strips an HTTPException's detail to a bare {"error": "BAD_REQUEST"}
+    (CWE-209) — right for an untrusted client, wrong here: the operator is a privileged caller and the
+    reason is a domain validation message ("unknown key", "value out of range") they must SEE to act
+    on. So a refusal is RETURNED with its reason rather than raised into the stripper. The reason is
+    domain text the route chose to surface, never an exception's internals or a stack trace.
+    """
+    return JSONResponse({"error": code, "reason": reason}, status_code=status_code)
 
 
 def _actor(principal: Principal) -> str:
@@ -115,7 +129,7 @@ async def set_secret(request: Request, body: SecretIn,
         info = await _secret_store(request).set(
             tenant=body.tenant, name=body.name, value=body.value, actor_ref=_actor(principal))
     except SecretError as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        return _refuse(str(exc))
     return {"name": info.name, "hint": info.hint, "rotating": info.rotating}
 
 
@@ -154,7 +168,7 @@ async def set_config(request: Request, body: ConfigIn,
         o = await _runtime_config(request).set(
             tenant=body.tenant, key=body.key, value=body.value, actor_ref=_actor(principal))
     except RuntimeConfigError as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        return _refuse(str(exc))
     # The tenant is NOT echoed. The caller supplied it, so returning it adds nothing, and a
     # response field named "tenant" is indistinguishable — to a reader and to the tenancy gate —
     # from a verified claim. The one wall between every company on this platform is that the

@@ -45,6 +45,11 @@ def subject_ref(salt: str, tenant: str, subject: str) -> str:
                          "every email address, which is not a pseudonym at all")
     if not subject:
         raise ValueError("subject must not be empty")
+    # Idempotent: an already-wrapped pseudonym passed back in folds to ITSELF, never a second hash.
+    # Double-wrapping is how an erasure re-hashes a subject_ref, matches zero rows, reports
+    # already_absent, and closes the request COMPLETED over data it never actually touched.
+    if is_subject_ref(subject):
+        return subject
     mac = hmac.new(salt.encode("utf-8"),
                    f"{tenant}|{subject}".encode("utf-8"),
                    hashlib.sha256)

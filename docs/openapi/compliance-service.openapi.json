@@ -250,6 +250,12 @@
             "title": "Subject",
             "type": "string"
           },
+          "subject_kind": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Subject Kind",
+            "type": "string"
+          },
           "tenant": {
             "title": "Tenant",
             "type": "string"
