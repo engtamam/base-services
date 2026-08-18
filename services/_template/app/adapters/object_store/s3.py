@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.adapters.lazy import load
+from app.adapters.object_store import credentials as _credentials
 from app.adapters.object_store.keys import validate_key
 from app.ports.errors import ConfigError, NotFound
 
@@ -27,7 +28,8 @@ class S3ObjectStore:
 
     def __init__(self, bucket: str, endpoint_url: str = "", *,
                  access_key: str = "", secret_key: str = "", region: str = "",
-                 force_path_style: bool = False) -> None:
+                 force_path_style: bool = False,
+                 credentials: "_credentials.CredentialConfig | None" = None) -> None:
         if not bucket:
             raise ConfigError("OBJECTSTORE_BUCKET is required for the s3 driver")
         self._aioboto3 = load("aioboto3", "s3")
@@ -40,18 +42,14 @@ class S3ObjectStore:
             from botocore.config import Config
 
             self._config = Config(s3={"addressing_style": "path"})
-        # Empty credentials => fall back to the ambient chain (IAM role, instance profile). That is
-        # the RIGHT default on AWS, where handing us static keys would be worse than not.
-        self._creds: dict[str, str] = {}
-        if access_key and secret_key:
-            self._creds = {"aws_access_key_id": access_key,
-                           "aws_secret_access_key": secret_key}
-        elif access_key or secret_key:
-            raise ConfigError(
-                "OBJECTSTORE_ACCESS_KEY and OBJECTSTORE_SECRET_KEY must be set together — "
-                "half a credential authenticates nothing, and silently falling back to the "
-                "ambient AWS chain would hide the misconfiguration until the first upload")
-        self._session = self._aioboto3.Session()
+        # Credentials are resolved by ONE provider seam (see credentials.py): static keys, botocore's
+        # ambient chain, an Alibaba ECS RAM role, or a generic STS endpoint — selected by config so the
+        # cloud is a deploy-time value. A caller passing no CredentialConfig gets STATIC from the two
+        # legacy keys — byte-for-byte today's behaviour and its half-credential refusal. Validated
+        # synchronously: an unknown mode or a missing endpoint fails at STARTUP, not at first use.
+        cred = credentials or _credentials.CredentialConfig(
+            mode=_credentials.STATIC, access_key=access_key, secret_key=secret_key)
+        self._session, self._creds = _credentials.build_session(self._aioboto3, cred)
 
     def _client(self) -> Any:
         return self._session.client("s3", endpoint_url=self._endpoint,

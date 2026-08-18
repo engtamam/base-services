@@ -81,8 +81,28 @@ _OBJECTSTORE: dict[str, Builder] = {
     "s3": lambda s: S3ObjectStore(
         s.OBJECTSTORE_BUCKET, s.OBJECTSTORE_ENDPOINT_URL,
         access_key=s.OBJECTSTORE_ACCESS_KEY, secret_key=s.OBJECTSTORE_SECRET_KEY,
-        region=s.OBJECTSTORE_REGION, force_path_style=s.OBJECTSTORE_FORCE_PATH_STYLE),
+        region=s.OBJECTSTORE_REGION, force_path_style=s.OBJECTSTORE_FORCE_PATH_STYLE,
+        credentials=_objectstore_credentials(s)),
 }
+
+
+def _objectstore_credentials(s):
+    """Read the credential mode + its config off Settings (never a request) into one CredentialConfig.
+
+    The cloud is a deploy-time value: which of static / imds / alibaba-ecs-ram / sts-endpoint, and the
+    metadata endpoint, all come from config, so no caller of the ObjectStore changes when the cloud does.
+    """
+    from app.adapters.object_store.credentials import CredentialConfig
+    return CredentialConfig(
+        mode=s.OBJECTSTORE_CREDENTIALS,
+        access_key=s.OBJECTSTORE_ACCESS_KEY, secret_key=s.OBJECTSTORE_SECRET_KEY,
+        endpoint=s.OBJECTSTORE_METADATA_ENDPOINT, role=s.OBJECTSTORE_METADATA_ROLE,
+        metadata_token_ttl=s.OBJECTSTORE_METADATA_TOKEN_TTL,
+        fetch_timeout=s.OBJECTSTORE_METADATA_TIMEOUT_SECONDS,
+        sts_fields={"access_key": s.OBJECTSTORE_STS_ACCESS_KEY_FIELD,
+                    "secret_key": s.OBJECTSTORE_STS_SECRET_KEY_FIELD,
+                    "token": s.OBJECTSTORE_STS_TOKEN_FIELD,
+                    "expiry_time": s.OBJECTSTORE_STS_EXPIRY_FIELD})
 _SECRETS: dict[str, Builder] = {
     "env": lambda s: EnvSecrets(),
     "file": lambda s: FileSecrets(s.SECRETS_FILE),

@@ -4,30 +4,38 @@ from __future__ import annotations
 from typing import Any
 
 from app.adapters.lazy import load
+from app.adapters.object_store import credentials as _credentials
 from app.adapters.object_store.keys import validate_key
 from app.ports.errors import ConfigError, NotFound
 
 
 class S3ObjectStore:
-    """Any S3-compatible store: AWS S3, MinIO, or a Saudi cloud's object storage.
+    """Any S3-compatible store: AWS S3, MinIO, or a Saudi/Alibaba cloud's object storage.
 
     There is no separate "minio driver" and there should not be — MinIO speaks the S3 API, so it
     IS this adapter. What it needs is config, and three knobs were missing:
 
-      * credentials — the adapter relied on the ambient AWS chain (AWS_ACCESS_KEY_ID in the pod's
-        environment). That works on AWS and nowhere else. A user pointing us at their own MinIO had
-        no supported way to give us its keys.
+      * credentials — see credentials.py. The adapter authenticates by ONE of four provider-shaped
+        modes (static keys, botocore's ambient chain, an Alibaba ECS RAM role, or a generic STS
+        endpoint), selected by config, so the cloud is a deploy-time value and not a code change.
+        The ambient chain is AWS-only: off AWS it must be an explicit mode, or "" credentials fail
+        silently. Short-lived instance-role tokens refresh through botocore's own machinery.
       * region — boto refuses to sign without one, and MinIO does not care what it is.
       * PATH-STYLE ADDRESSING — and this is the one that actually bites. Boto defaults to
         virtual-host style (`https://bucket.host/key`), which requires a wildcard DNS record. MinIO
         and most on-prem S3 stores serve path-style (`https://host/bucket/key`) and simply fail to
         resolve otherwise. Every "why can't I connect to MinIO" is this.
+
+    ⚠ An instance RAM role is granted to the NODE: on single-node k3s every pod that can reach the
+    metadata address inherits it, so the isolation lives in a NetworkPolicy (egress to the metadata
+    address only from this service), not here. See credentials.py.
     """
     driver = "s3"
 
     def __init__(self, bucket: str, endpoint_url: str = "", *,
                  access_key: str = "", secret_key: str = "", region: str = "",
-                 force_path_style: bool = False) -> None:
+                 force_path_style: bool = False,
+                 credentials: "_credentials.CredentialConfig | None" = None) -> None:
         if not bucket:
             raise ConfigError("OBJECTSTORE_BUCKET is required for the s3 driver")
         self._aioboto3 = load("aioboto3", "s3")
@@ -40,18 +48,13 @@ class S3ObjectStore:
             from botocore.config import Config
 
             self._config = Config(s3={"addressing_style": "path"})
-        # Empty credentials => fall back to the ambient chain (IAM role, instance profile). That is
-        # the RIGHT default on AWS, where handing us static keys would be worse than not.
-        self._creds: dict[str, str] = {}
-        if access_key and secret_key:
-            self._creds = {"aws_access_key_id": access_key,
-                           "aws_secret_access_key": secret_key}
-        elif access_key or secret_key:
-            raise ConfigError(
-                "OBJECTSTORE_ACCESS_KEY and OBJECTSTORE_SECRET_KEY must be set together — "
-                "half a credential authenticates nothing, and silently falling back to the "
-                "ambient AWS chain would hide the misconfiguration until the first upload")
-        self._session = self._aioboto3.Session()
+        # A caller that passes no CredentialConfig gets STATIC from the two legacy keys — byte-for-byte
+        # today's behaviour (and its half-credential refusal), so every existing caller is unchanged.
+        cred = credentials or _credentials.CredentialConfig(
+            mode=_credentials.STATIC, access_key=access_key, secret_key=secret_key)
+        # Validates SYNCHRONOUSLY here: an unknown mode or a missing endpoint fails at STARTUP, where a
+        # human is standing, not at the first nightly backup.
+        self._session, self._creds = _credentials.build_session(self._aioboto3, cred)
 
     def _client(self) -> Any:
         return self._session.client("s3", endpoint_url=self._endpoint,

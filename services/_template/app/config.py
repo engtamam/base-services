@@ -219,6 +219,27 @@ class Settings(BaseSettings):
     # (https://host/bucket/key) and simply fail to resolve otherwise.
     OBJECTSTORE_FORCE_PATH_STYLE: bool = False
 
+    # ── object-store credentials: one provider seam, selected by config (see credentials.py) ─────
+    # static | imds | alibaba-ecs-ram | sts-endpoint. Default static = the two keys above, unchanged.
+    #   imds             botocore's ambient chain (AWS EC2 / ECS task role).
+    #   alibaba-ecs-ram  the Alibaba ECS instance RAM role (short-lived, self-refreshing); botocore's
+    #                    imds provider cannot read Alibaba's dialect, so "" credentials there fail.
+    #   sts-endpoint     a generic STS-style HTTP endpoint (JSON field names configurable below).
+    OBJECTSTORE_CREDENTIALS: str = "static"
+    # Metadata / STS base URL — REQUIRED for the two metadata modes (refused empty at startup). The
+    # address is a property of the cloud (e.g. Alibaba serves it at http://100.100.100.200); set it in
+    # the deploy values, never in code. Config allowlist, never a request value (SSRF).
+    OBJECTSTORE_METADATA_ENDPOINT: str = ""
+    OBJECTSTORE_METADATA_ROLE: str = ""                 # alibaba: optional — auto-discovered if empty
+    OBJECTSTORE_METADATA_TOKEN_TTL: int = 21600         # alibaba IMDSv2-style metadata-token TTL (s)
+    OBJECTSTORE_METADATA_TIMEOUT_SECONDS: float = 5.0   # bound the metadata call
+    # sts-endpoint: which JSON field carries each value. Defaults to Alibaba's STS names; override for
+    # another provider so the next cloud is a values change, not a release.
+    OBJECTSTORE_STS_ACCESS_KEY_FIELD: str = "AccessKeyId"
+    OBJECTSTORE_STS_SECRET_KEY_FIELD: str = "AccessKeySecret"
+    OBJECTSTORE_STS_TOKEN_FIELD: str = "SecurityToken"
+    OBJECTSTORE_STS_EXPIRY_FIELD: str = "Expiration"
+
     SECRETS_DRIVER: str = "env"
     SECRETS_FILE: str = ""  # file driver: path to a KEY=VALUE file
     VAULT_ADDR: str = ""
