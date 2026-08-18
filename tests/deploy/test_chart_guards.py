@@ -493,6 +493,9 @@ MUTATIONS = [
     ("nameOverride", [], "renamed"),
     ("fullnameOverride", [], "renamed-full"),
     ("cronJobs[0].schedule", _CRON, "5 5 * * *"),
+    # A CronJob's zone is read from the deployment timeZone: mutating it changes spec.timeZone. Uses
+    # a real IANA zone because the template REJECTS an unknown one (that rejection is itself a consumer).
+    ("timeZone", _CRON, "UTC"),
 ]
 
 

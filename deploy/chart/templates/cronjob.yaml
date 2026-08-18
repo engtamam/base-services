@@ -22,6 +22,20 @@ metadata:
   labels: {{- include "base-service.labels" $root | nindent 4 }}
 spec:
   schedule: {{ .schedule | quote }}
+  {{- /* A schedule with no timeZone is timed by whatever zone the NODE keeps — so a sweep written for
+         09:00 Riyadh fires at 04:00 on an Asia/Shanghai node, and every hour reasoned about in a values
+         file is silently wrong by the node's offset. The zone is a property of WHERE THE PRODUCT IS
+         SOLD, not a per-tenant setting: it defaults from the chart (.Values.timeZone) and a single job
+         may override it. An UNKNOWN zone is rejected HERE, at template time, against the IANA list
+         bundled in the chart — never discovered at the scheduler tick. Set "" to accept the node zone
+         deliberately (the old behaviour), which is then a choice on the record, not an accident. */}}
+  {{- $tz := .timeZone | default $root.Values.timeZone }}
+  {{- if $tz }}
+  {{- if not (has $tz ($root.Files.Get "timezones.txt" | trimSuffix "\n" | splitList "\n")) }}
+  {{- fail (printf "cronJob %q: timeZone %q is not a known IANA zone (e.g. Asia/Riyadh, UTC, Europe/London). A schedule timed by the node's zone is silently wrong by its offset — set a real zone, or \"\" to accept the node zone on purpose." .name $tz) }}
+  {{- end }}
+  timeZone: {{ $tz | quote }}
+  {{- end }}
   concurrencyPolicy: Forbid          # a slow sweep must never overlap itself
   startingDeadlineSeconds: 300
   successfulJobsHistoryLimit: 1

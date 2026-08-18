@@ -146,10 +146,20 @@ existingSecret: ""
 # ── Scheduled maintenance ───────────────────────────────────────────────────
 # Retention/prune endpoints exist in the services and have no caller without these.
 # Each entry POSTs to an /internal path with the internal token.
+#
+# timeZone: the zone EVERY schedule below is interpreted in — a property of where the product
+# is sold, not a per-tenant setting. Without it a CronJob is timed by whatever zone the node
+# keeps, so a "09:00 Riyadh" digest fires at 04:00 on an Asia/Shanghai node. Defaults to the
+# platform's home market (KSA); a deployment sold elsewhere overrides it, and an unknown zone is
+# rejected at TEMPLATE time against the IANA list bundled in the chart. Set "" to deliberately
+# accept the node's own zone (the pre-timeZone behaviour) — a choice on the record, not an accident.
+# A single cronJob entry may carry its own `timeZone:` to override this default.
+timeZone: "Asia/Riyadh"
 cronJobs: []
 #  - name: prune-raw
 #    schedule: "17 3 * * *"
 #    path: /internal/analytics/prune-raw
+#    timeZone: "Asia/Riyadh"          # optional per-job override of the deployment default above
 
 # ── Scheduling ──────────────────────────────────────────────────────────────
 # Two "HA" replicas on the same node is not HA.
