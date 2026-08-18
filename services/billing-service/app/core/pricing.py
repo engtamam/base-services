@@ -52,3 +52,41 @@ def proration_delta(old_minor: int, new_minor: int, *, period_start: float,
     credit = int(Decimal(old_minor) * Decimal(frac))
     charge = int(Decimal(new_minor) * Decimal(frac))
     return charge - credit
+
+
+def recurring_component(price: dict, *, quantity: int = 1) -> int:
+    """The RECURRING commitment portion of a price (minor units) — the part a partial first period
+    prorates. Usage is metered on ACTUALS and is NEVER prorated, so:
+
+        flat / per_seat  -> the whole amount is the recurring commitment
+        hybrid           -> only the base fee; the overage is metered usage
+        usage            -> zero; there is no recurring commitment to prorate
+
+    This is the complement line_amount() splits on: line_amount(...) − recurring_component(...) is
+    exactly the metered portion for a period, which a partial first period charges in full.
+    """
+    kind = price.get("type", "flat")
+    base = int(price.get("amount_minor", 0))
+    if kind == "flat":
+        return base
+    if kind == "per_seat":
+        return base * max(1, int(quantity))
+    if kind == "hybrid":
+        return base
+    return 0                                  # usage: nothing recurring to prorate
+
+
+def prorate(amount_minor: int, fraction: Decimal) -> int:
+    """`amount_minor` scaled by `fraction` of a period, rounded HALF-UP, clamped to [0, amount].
+
+    `fraction` is an EXACT Decimal built from whole-second period lengths by the caller (never a
+    binary float), so the same signup produces the same charge to the minor unit on every platform
+    and every run — money must be deterministic, not merely close.
+    """
+    f = fraction
+    if f < 0:
+        f = Decimal(0)
+    elif f > 1:
+        f = Decimal(1)
+    scaled = (Decimal(int(amount_minor)) * f).quantize(Decimal(1), ROUND_HALF_UP)
+    return max(0, min(int(amount_minor), int(scaled)))

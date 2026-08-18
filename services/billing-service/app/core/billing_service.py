@@ -10,11 +10,13 @@ from __future__ import annotations
 import datetime as _dt
 import json as _json
 import time
+from decimal import Decimal as _Decimal
 from typing import Any
 
 from app.core import coupons as _coupons
 from app.core import entitlements as _ent
 from app.core.entitlement_resolver import EntitlementResolver
+from app.core import periods
 from app.core import pricing
 from app.core import events as _events
 from app.core import settlement as _stl
@@ -24,7 +26,10 @@ from app.core.models import (Coupon, Invoice, Payment, Plan, Settlement, Subscri
 from app.core.stores import (CouponStore, IdempotencyStore, InvoiceStore, LedgerStore,
                              PaymentStore, PlanStore, SettlementStore, SubscriptionStore,
                              UsageStore)
+from app.observability.logging import get_logger
 from app.ports.payment_gateway import GatewayUnavailable
+
+_log = get_logger("app.billing")
 
 _INTERVAL = {"month": 30 * 86400, "year": 365 * 86400, "once": 0}
 
@@ -371,19 +376,54 @@ class BillingService:
         #              interval then. Setting a full interval here gave a 14-day trial 30 free days,
         #              because trial_end was written and never read.
         #   else     — a full interval from now.
+        first_period_prorated = False
         if interval == "once":
             period_end, status = 0.0, "active"
         elif trial_days:
             period_end, status = trial_end, "trialing"
         else:
-            period_end, status = now + _INTERVAL.get(interval, _INTERVAL["month"]), "active"
+            interval_secs = _INTERVAL.get(interval, _INTERVAL["month"])
+            period_end, status = now + interval_secs, "active"
+            # ALIGN a second+ subscription onto the tenant's EXISTING billing grid so it renews on the
+            # same day as the first, instead of opening its own cycle (the escalated defect: buy on the
+            # 3rd and the 17th → charged twice a month for ever). One indexed read of the tenant's live
+            # billable subscriptions; only same-interval, renewing ones are a valid grid reference. When
+            # one exists, the first period ends at the shared grid boundary — a PARTIAL period, prorated
+            # on the first cycle — never a full interval from now. A tenant's FIRST subscription finds no
+            # reference and is completely unchanged.
+            existing = await self._subs.billable_for(tenant, _BILLABLE)
+            refs = [float(r.get("current_period_end") or 0) for r in existing
+                    if r.get("interval") == interval and r.get("interval") != "once"
+                    and r.get("status") != "trialing" and float(r.get("current_period_end") or 0) > 0]
+            if refs:
+                aligned = periods.aligned_period_end(now, interval_secs, min(refs))
+                # Money-safe direction, asserted explicitly: alignment may only SHORTEN the first
+                # period (the next grid boundary is always within one interval of now). It must never
+                # lengthen it — that would hand out free time — so we align only when strictly shorter.
+                if aligned < period_end:
+                    period_end = aligned
+                    first_period_prorated = True
+            # RUNTIME INVARIANT (the guard the escalation valued above the fix): after this signup the
+            # tenant must have ONE renewal day for this interval. Projecting the new subscription onto
+            # the existing set, more than one distinct period-end means an alignment gap — a drift a
+            # product built on the platform must be able to SEE, so it is logged, loudly, rather than
+            # discovered from a customer charged twice a month. Never raises: a legacy tenant that was
+            # already misaligned must still be able to subscribe. `distinct_renewing_period_ends` is the
+            # same pure check any product can assert at boot.
+            projected = [*existing, {"interval": interval, "status": status,
+                                     "current_period_end": period_end}]
+            ends = periods.distinct_renewing_period_ends(projected, interval)
+            if len(ends) > 1:
+                _log.warning("billing_period_misaligned",
+                             extra={"tenant": tenant, "interval": interval,
+                                    "distinct_period_ends": sorted(ends)})
         sub = Subscription(
             id=new_id("sub_"), tenant=tenant, plan_id=plan_id, interval=interval, quantity=quantity,
             coupon_code=coupon_code, payment_token=payment_token, buyer_name=buyer_name,
             buyer_vat=buyer_vat, buyer_cr=buyer_cr,
             price_snapshot=price_snap, limits_snapshot=limits_snap, terms_version=iso(),
             status=status, current_period_start=now, current_period_end=period_end,
-            trial_end=trial_end, created=iso())
+            trial_end=trial_end, first_period_prorated=first_period_prorated, created=iso())
         return await self._subs.save(sub)
 
     async def change_plan(self, sub_id: str, *, new_plan_id: str, interval: str | None = None,
@@ -522,6 +562,23 @@ class BillingService:
             usage_units = await self._usage.aggregate(sub.id, price["usage_metric"],
                                                       sub.current_period_start, sub.current_period_end)
         subtotal = pricing.line_amount(price, quantity=sub.quantity, usage_units=usage_units)
+        # FIRST-CYCLE PRORATION for a subscription aligned onto the tenant's grid: its first period is
+        # partial, so charge the RECURRING fee for the fraction of a full interval it covered. Usage is
+        # metered on actuals and billed in full — only the recurring commitment is prorated. Gated on the
+        # explicit flag, never on period length, because a trial's first period is short too and must be
+        # charged in FULL when it converts. The fraction is an exact Decimal over whole seconds, so the
+        # charge is deterministic to the minor unit.
+        proration = None
+        if getattr(sub, "first_period_prorated", False):
+            interval_secs = _INTERVAL.get(sub.interval, _INTERVAL["month"])
+            period_secs = round(sub.current_period_end - sub.current_period_start)
+            frac = _Decimal(max(0, period_secs)) / _Decimal(interval_secs) if interval_secs > 0 else _Decimal(1)
+            recurring = pricing.recurring_component(price, quantity=sub.quantity)
+            metered = subtotal - recurring                    # usage/overage: charged in full
+            subtotal = pricing.prorate(recurring, frac) + metered
+            proration = {"fraction": str(frac), "period_seconds": max(0, period_secs),
+                         "interval_seconds": interval_secs,
+                         "recurring_full_minor": recurring, "recurring_charged_minor": subtotal - metered}
         coupon = await self._coupons.fetch(sub.coupon_code) if sub.coupon_code else None
         # `now` gates the campaign window: an expired or exhausted coupon must stop
         # discounting, and until this argument existed neither ever did.
@@ -529,9 +586,16 @@ class BillingService:
                                            now=self._clock())
         taxable, tax, total = self._split_tax(subtotal - discount, price.get("includes_tax", False),
                                               reverse_charge=bool(sub.buyer_vat) and self._cfg.get("reverse_charge", False))
-        lines = [{"description": (plan.name if plan else "Subscription"),
-                  "quantity": sub.quantity, "unit_minor": price.get("amount_minor", 0),
-                  "amount_minor": taxable}]
+        line = {"description": (plan.name if plan else "Subscription"),
+                "quantity": sub.quantity, "unit_minor": price.get("amount_minor", 0),
+                "amount_minor": taxable}
+        if proration is not None:
+            # A tax invoice must state WHY the amount is not the full unit price. The line names the
+            # partial first period explicitly and carries the exact fraction, so the charge is legible
+            # to the customer, an auditor and the regulator — never a silent short amount.
+            line["description"] += " (prorated first period)"
+            line["proration"] = proration
+        lines = [line]
         # Captured from the plan AS SOLD, onto the invoice. Recomputing this later from the live
         # plan would mean a repriced plan silently changes what an old invoice granted.
         granted = int((plan.limits or {}).get(self._cfg["plan_credit_limit_key"], 0) or 0) if plan else 0
@@ -545,6 +609,9 @@ class BillingService:
         await self._invoices.save(inv)
         sub.current_period_start = sub.current_period_end
         sub.current_period_end += _INTERVAL.get(sub.interval, _INTERVAL["month"])
+        # The partial first period is now billed; every cycle after is a full interval on the shared
+        # grid. Clear the flag so a later cycle can never re-prorate a full period.
+        sub.first_period_prorated = False
         if sub.status == "trialing":
             sub.status = "active"
         await self._subs.save(sub)

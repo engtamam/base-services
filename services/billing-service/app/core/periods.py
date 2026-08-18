@@ -64,6 +64,50 @@ def billing_period_key(now: float, anchor: float) -> str:
     return f"bp:{period_start.strftime('%Y-%m-%d')}"
 
 
+def aligned_period_end(now: float, interval_seconds: float, reference_end: float) -> float:
+    """The first period-end for a NEW subscription so it shares an EXISTING one's billing grid.
+
+    A tenant's second subscription must not open its own billing cycle on its own day — a customer
+    who buys on the 3rd and again on the 17th would be charged twice a month on two days for ever.
+    Every subscription advances by the same fixed `interval_seconds` (see billing_service._INTERVAL),
+    so two subscriptions stay aligned for ever iff their period boundaries are congruent modulo that
+    interval. This returns the smallest grid boundary STRICTLY AFTER `now` on the reference's grid —
+    i.e. `reference_end + k*interval` for the least integer k with the result > now.
+
+    The new subscription's first period [now, aligned_end) is therefore PARTIAL, and its recurring
+    charge is prorated by that fraction (billing_service.run_cycle); every cycle after advances a full
+    interval and stays on the shared grid. Returns `now` for a non-renewing interval (caller must not
+    align those). Pure and integer-second deterministic — the same inputs give the same boundary on
+    every platform.
+    """
+    if interval_seconds <= 0:
+        return now                                       # non-renewing; nothing to align to
+    # Least integer k such that reference_end + k*interval > now. floor(x)+1 is strictly-greater even
+    # when now sits exactly on a boundary, so the first period is never zero-or-negative length.
+    import math
+    k = math.floor((now - reference_end) / interval_seconds) + 1
+    return reference_end + k * interval_seconds
+
+
+def distinct_renewing_period_ends(subs: list[dict], interval: str) -> set[int]:
+    """The set of distinct current_period_end values (whole seconds) among a tenant's LIVE, RENEWING
+    subscriptions of one interval — the invariant behind alignment. A tenant past its subscriptions'
+    first cycle must have exactly ONE, per interval: they share a billing grid, so they renew on ONE
+    day. Excludes non-renewing ("once", zero end) and trial periods (a trial end is not a grid
+    boundary). Any product on the platform can assert this to catch a drift the moment it appears.
+    """
+    ends: set[int] = set()
+    for s in subs:
+        if s.get("interval") != interval or interval == "once":
+            continue
+        if s.get("status") == "trialing":
+            continue
+        end = float(s.get("current_period_end") or 0)
+        if end > 0:
+            ends.add(round(end))
+    return ends
+
+
 def period_key(period: str, now: float, anchor: float | None = None) -> str:
     """A stable, sortable UTC key for the period containing `now`."""
     if not period:

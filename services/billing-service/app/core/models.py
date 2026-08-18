@@ -105,6 +105,11 @@ class Subscription:
     current_period_start: float = 0.0
     current_period_end: float = 0.0
     trial_end: float = 0.0
+    # True only for a FIRST period that was shortened to align this subscription onto the tenant's
+    # existing billing grid (a second+ subscription). The first run_cycle prorates the recurring fee
+    # by the partial period and clears this; every cycle after is a full interval. Explicit rather than
+    # inferred from period length, because a TRIAL also has a short first period and must NOT prorate.
+    first_period_prorated: bool = False
     cancel_at_period_end: bool = False
     created: str = ""
 

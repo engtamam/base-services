@@ -62,6 +62,55 @@ def test_vat():
     assert t.compute(amount_minor=10000, reverse_charge=True) == 0
 
 
+# ── proration primitives for aligning a second subscription (pure) ──────────────
+def test_recurring_component_is_the_prorated_part_only():
+    from app.core import pricing as p
+    assert p.recurring_component({"type": "flat", "amount_minor": 10000}) == 10000
+    assert p.recurring_component({"type": "per_seat", "amount_minor": 5000}, quantity=3) == 15000
+    assert p.recurring_component({"type": "usage", "overage_minor": 10}) == 0          # never prorated
+    # hybrid: base is recurring, overage is metered usage (not prorated)
+    assert p.recurring_component({"type": "hybrid", "amount_minor": 10000, "overage_minor": 5}) == 10000
+
+
+def test_prorate_is_deterministic_half_up_and_clamped():
+    from decimal import Decimal
+    from app.core import pricing as p
+    assert p.prorate(10000, Decimal(16) / Decimal(30)) == 5333       # 5333.33 -> half-up 5333
+    assert p.prorate(10000, Decimal(1)) == 10000                     # full period unchanged
+    assert p.prorate(10000, Decimal(0)) == 0
+    assert p.prorate(10000, Decimal(2)) == 10000                     # clamped to the amount
+    assert p.prorate(10000, Decimal(-1)) == 0                        # clamped to zero
+    assert p.prorate(101, Decimal(1) / Decimal(2)) == 51            # 50.5 -> half-up 51
+
+
+def test_aligned_period_end_lands_on_the_existing_grid():
+    from app.core import periods
+    day = 86400
+    month = 30 * day
+    # A subscription's period ends at month; a second bought 14 days in aligns to that SAME boundary.
+    assert periods.aligned_period_end(14 * day, month, month) == month
+    # Bought the instant before the boundary → still that boundary (a tiny partial period).
+    assert periods.aligned_period_end(month - 1, month, month) == month
+    # Bought exactly on a boundary → the NEXT one (a full period, never zero-length).
+    assert periods.aligned_period_end(month, month, month) == 2 * month
+    # A non-renewing interval has nothing to align to.
+    assert periods.aligned_period_end(100.0, 0, 0) == 100.0
+    # Every result advances by a full interval from there — so two subs stay aligned for ever.
+    e = periods.aligned_period_end(14 * day, month, month)
+    assert (e + month - e) == month
+
+
+def test_distinct_renewing_period_ends_is_the_invariant():
+    from app.core import periods
+    subs = [{"interval": "month", "status": "active", "current_period_end": 2592000.0},
+            {"interval": "month", "status": "active", "current_period_end": 2592000.0},
+            {"interval": "month", "status": "trialing", "current_period_end": 111.0},   # excluded
+            {"interval": "once", "status": "active", "current_period_end": 0.0},        # excluded
+            {"interval": "year", "status": "active", "current_period_end": 9999.0}]     # other grid
+    assert periods.distinct_renewing_period_ends(subs, "month") == {2592000}
+    assert periods.distinct_renewing_period_ends(subs, "year") == {9999}
+
+
 # ── stores ────────────────────────────────────────────────────────────────────
 def test_sequential_invoice_numbers():
     st = InvoiceStore(MemoryDataStore())
@@ -127,6 +176,87 @@ def _plan_sub(b, token="pm_1", coupon=""):
                                                    "currency": "SAR", "type": "flat"}]))
     sub = run(b.subscribe(tenant="t1", plan_id=plan.id, payment_token=token, coupon_code=coupon))
     return plan, sub
+
+
+def _flat_month_plan(b, name="Pro", amount=10000):
+    return run(b.create_plan(name=name, prices=[{"interval": "month", "amount_minor": amount,
+                                                 "currency": "SAR", "type": "flat"}]))
+
+
+# ── aligning a tenant's second subscription onto ONE billing grid ────────────────
+def test_a_first_subscription_is_never_aligned_or_prorated(monkeypatch):
+    # A tenant's FIRST subscription has no grid to align to and is completely unchanged: a full
+    # interval from now, no proration flag.
+    import app.core.billing_service as bs
+    b = _svc(MemoryDataStore(), MockGW(ok=True))
+    monkeypatch.setattr(bs, "now_ts", lambda: 1_000_000.0)
+    plan = _flat_month_plan(b)
+    sub = run(b.subscribe(tenant="t1", plan_id=plan.id, payment_token="pm_1"))
+    assert sub.first_period_prorated is False
+    assert sub.current_period_end == 1_000_000.0 + bs._INTERVAL["month"]
+
+
+def test_second_subscription_aligns_to_the_first_and_prorates_its_first_cycle(monkeypatch):
+    # THE escalated defect: a second subscription must renew on the SAME day as the first, not open
+    # its own cycle. It aligns to the shared grid boundary (a partial first period) and the first
+    # cycle charges the recurring fee prorated to that partial period.
+    import app.core.billing_service as bs
+    b = _svc(MemoryDataStore(), MockGW(ok=True))
+    T0, month, day = 1_000_000.0, bs._INTERVAL["month"], 86400
+    monkeypatch.setattr(bs, "now_ts", lambda: T0)
+    a = run(b.subscribe(tenant="t1", plan_id=_flat_month_plan(b, "A").id, payment_token="pm_1"))
+
+    monkeypatch.setattr(bs, "now_ts", lambda: T0 + 14 * day)          # 14 days later
+    bsub = run(b.subscribe(tenant="t1", plan_id=_flat_month_plan(b, "B", 6000).id, payment_token="pm_1"))
+    assert bsub.first_period_prorated is True
+    assert bsub.current_period_end == a.current_period_end == T0 + month     # one shared renewal day
+
+    inv = run(b.run_cycle(bsub.id))                                  # first cycle at the boundary
+    assert inv.subtotal_minor == 3200                                # 16/30 of 6000 = 3200 (taxable)
+    pr = inv.lines[0]["proration"]
+    assert pr["recurring_full_minor"] == 6000 and pr["period_seconds"] == 16 * day
+    assert "prorated first period" in inv.lines[0]["description"]
+    # the flag is consumed and the next period is a FULL interval on the shared grid
+    after = run(b._subs.fetch(bsub.id))
+    assert after.first_period_prorated is False
+    assert round(after.current_period_end - after.current_period_start) == month
+
+
+def test_the_invariant_one_renewal_day_after_first_cycle(monkeypatch):
+    # The guard the escalation values above the fix: a tenant with more than one live renewing
+    # subscription has exactly ONE distinct current_period_end. Proven end-to-end.
+    import app.core.billing_service as bs
+    from app.core import periods
+    b = _svc(MemoryDataStore(), MockGW(ok=True))
+    T0, month, day = 1_000_000.0, bs._INTERVAL["month"], 86400
+    plan = _flat_month_plan(b)
+    monkeypatch.setattr(bs, "now_ts", lambda: T0)
+    a = run(b.subscribe(tenant="t1", plan_id=plan.id, payment_token="pm_1"))
+    monkeypatch.setattr(bs, "now_ts", lambda: T0 + 17 * day)         # a different day
+    c = run(b.subscribe(tenant="t1", plan_id=plan.id, payment_token="pm_1"))
+
+    subs = run(b._subs.billable_for("t1", bs._BILLABLE))
+    assert len(periods.distinct_renewing_period_ends(subs, "month")) == 1    # aligned at signup
+
+    run(b.run_cycle(a.id))
+    run(b.run_cycle(c.id))                                           # both first cycles
+    subs = run(b._subs.billable_for("t1", bs._BILLABLE))
+    assert len(periods.distinct_renewing_period_ends(subs, "month")) == 1    # and after
+
+
+def test_month_and_year_subscriptions_do_not_cross_align(monkeypatch):
+    # Alignment is per interval: a yearly subscription is not dragged onto a monthly grid.
+    import app.core.billing_service as bs
+    b = _svc(MemoryDataStore(), MockGW(ok=True))
+    T0, day = 1_000_000.0, 86400
+    monkeypatch.setattr(bs, "now_ts", lambda: T0)
+    run(b.subscribe(tenant="t1", plan_id=_flat_month_plan(b).id, payment_token="pm_1"))
+    yplan = run(b.create_plan(name="Yr", prices=[{"interval": "year", "amount_minor": 100000,
+                                                  "currency": "SAR", "type": "flat"}]))
+    monkeypatch.setattr(bs, "now_ts", lambda: T0 + 5 * day)
+    y = run(b.subscribe(tenant="t1", plan_id=yplan.id, interval="year", payment_token="pm_1"))
+    assert y.first_period_prorated is False
+    assert y.current_period_end == T0 + 5 * day + bs._INTERVAL["year"]
 
 
 def test_run_cycle_paid_and_einvoiced():
