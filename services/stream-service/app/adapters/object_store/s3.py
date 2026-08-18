@@ -36,11 +36,15 @@ class S3ObjectStore:
         # Endpoint (if any) comes from config only — never from a caller (SSRF, CWE-918).
         self._endpoint = endpoint_url or None
         self._region = region or None
-        self._config = None
-        if force_path_style:
-            from botocore.config import Config
+        # Addressing style is a STATED choice both ways. force_path_style=False used to leave
+        # self._config = None and let botocore GUESS the style — and against a non-AWS endpoint
+        # (Alibaba OSS) that guess resolved wrong: head_bucket answered a bare 403 and /readyz
+        # reported the store "down" with no log line to tell it from a real outage. So request it
+        # outright — virtual-hosted is the explicit default (AWS and Alibaba OSS serve it),
+        # path-style is THE MinIO / on-prem knob. Verified live: virtual succeeds, None -> 403.
+        from botocore.config import Config
 
-            self._config = Config(s3={"addressing_style": "path"})
+        self._config = Config(s3={"addressing_style": "path" if force_path_style else "virtual"})
         # Empty credentials => fall back to the ambient chain (IAM role, instance profile). That is
         # the RIGHT default on AWS, where handing us static keys would be worse than not.
         self._creds: dict[str, str] = {}

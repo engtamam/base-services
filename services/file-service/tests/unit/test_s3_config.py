@@ -32,13 +32,12 @@ def test_no_credentials_falls_back_to_the_ambient_chain():
 
 
 def test_path_style_is_configurable():
-    """THE MinIO knob. Boto defaults to virtual-host addressing (https://bucket.host/key), which
-    needs a wildcard DNS record MinIO does not have — so it fails to resolve. Path style
-    (https://host/bucket/key) is what on-prem stores serve."""
+    """THE MinIO knob, now a STATED choice BOTH ways. force_path_style=False used to leave the
+    addressing style unset and let botocore GUESS — and against a non-AWS endpoint (Alibaba OSS) that
+    guess resolved wrong: head_bucket answered a bare 403 and /readyz reported the store "down" with
+    no log line. So virtual-hosted is now requested outright, path-style when forced."""
     virtual = S3ObjectStore("b", "http://minio:9000")
-    # A Config always exists now (it carries the presign-safety checksum setting), but WITHOUT a
-    # path-style override unless asked.
-    assert not getattr(virtual._config, "s3", None)
+    assert virtual._config.s3["addressing_style"] == "virtual"      # explicit, never an ambient guess
 
     path = S3ObjectStore("b", "http://minio:9000", force_path_style=True)
     assert path._config.s3["addressing_style"] == "path"

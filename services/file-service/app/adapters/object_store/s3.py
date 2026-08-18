@@ -47,9 +47,13 @@ class S3ObjectStore:
         # calculation to "when required" — the presigned URL then signs only `host`, and any client
         # can use it. (Whole-object integrity is verified separately, by hashing the object on the
         # scan pass, not by a per-request header.)
-        cfg: dict[str, Any] = {"signature_version": "s3v4"}
-        if force_path_style:
-            cfg["s3"] = {"addressing_style": "path"}
+        # Addressing style is a STATED choice both ways. force_path_style=False used to leave it unset
+        # and let botocore GUESS — and against a non-AWS endpoint (Alibaba OSS) that guess resolved
+        # wrong: head_bucket answered a bare 403 and /readyz reported the store "down" with no log line
+        # to tell it from a real outage. Request it outright — virtual-hosted is the explicit default
+        # (AWS and Alibaba OSS serve it), path-style is THE MinIO / on-prem knob.
+        cfg: dict[str, Any] = {"signature_version": "s3v4",
+                               "s3": {"addressing_style": "path" if force_path_style else "virtual"}}
         try:
             self._config = Config(request_checksum_calculation="when_required",
                                   response_checksum_validation="when_required", **cfg)
