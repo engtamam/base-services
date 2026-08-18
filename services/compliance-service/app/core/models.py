@@ -145,6 +145,12 @@ class Dsar:
     id: str
     tenant: str
     subject: str
+    # The KIND of identifier `subject` is — a pseudonym, a phone hash, an internal id. Optional and ""
+    # by default (unchanged behaviour: a target erases the verbatim value as before). When set, it
+    # travels on the wire so a target that indexes by a DIFFERENT kind can REFUSE explicitly rather
+    # than match zero rows and ack a clean "erased" — a false completion indistinguishable from a real
+    # one. It is metadata ABOUT the subject, never a second value to match on.
+    subject_kind: str = ""
     type: str = ACCESS
     status: str = PENDING
     verified: bool = False            # identity proven BEFORE any PII is released

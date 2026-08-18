@@ -4,6 +4,27 @@ from __future__ import annotations
 from tests.conftest import INTERNAL_TOKEN
 
 
+def test_privacy_erase_refuses_an_unindexed_subject_kind(client, monkeypatch):
+    # Item 6: compliance is itself an erase target. Handed a subject_kind it does not index, it must
+    # refuse explicitly (unrecognized_subject_kind) — never match nothing and ack a false "erased".
+    from app import config
+    monkeypatch.setenv("PRIVACY_INDEXED_SUBJECT_KINDS", "internal_id")
+    monkeypatch.setenv("PII_SALT", "test-salt-0123456789")   # the accepted branch runs the real eraser
+    config.get_settings.cache_clear()
+    h = {"X-Internal-Token": INTERNAL_TOKEN}
+    try:
+        r = client.post("/internal/privacy/erase",
+                        json={"tenant": "t1", "subject": "u_7", "subject_kind": "phone_hash"},
+                        headers=h)
+        assert r.status_code == 200 and r.json()["unrecognized_subject_kind"] is True
+        ok = client.post("/internal/privacy/erase",
+                         json={"tenant": "t1", "subject": "u_7", "subject_kind": "internal_id"},
+                         headers=h)
+        assert ok.status_code == 200 and "unrecognized_subject_kind" not in ok.json()
+    finally:
+        config.get_settings.cache_clear()
+
+
 def test_healthz(client):
     r = client.get("/healthz")
     assert r.status_code == 200

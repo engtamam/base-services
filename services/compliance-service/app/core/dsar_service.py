@@ -43,13 +43,14 @@ class DsarService:
 
     # ── create (idempotent) ─────────────────────────────────────────────────────
     async def create(self, *, tenant: str, subject: str, type: str,
-                     payload: dict | None = None) -> tuple[Dsar, bool]:
+                     payload: dict | None = None, subject_kind: str = "") -> tuple[Dsar, bool]:
         existing = await self._dsars.open_for(tenant, subject, type)
         if existing is not None:
             return existing, False                    # never start a second erasure
 
         now = self._clock.now()
-        d = Dsar(id=new_id("dsar_"), tenant=tenant, subject=subject, type=type, status=PENDING,
+        d = Dsar(id=new_id("dsar_"), tenant=tenant, subject=subject, subject_kind=subject_kind,
+                 type=type, status=PENDING,
                  payload=payload or {}, created_at=now,
                  deadline_at=now + self._cfg["sla_days"] * 86400,          # UTC
                  verification_token=secrets.token_urlsafe(32),

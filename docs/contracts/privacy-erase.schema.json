@@ -20,6 +20,10 @@
           "type": "string",
           "description": "The platform's subject reference for this tenant — the exact value the records key on. Passed VERBATIM and matched VERBATIM: never re-hash it (we hashed an already-hashed subject once, matched zero rows, and got a clean 'erased' over the wrong id). Pseudonymise only for your ACK's subject_ref, never to match."
         },
+        "subject_kind": {
+          "type": "string",
+          "description": "OPTIONAL. The KIND of identifier `subject` is — e.g. 'pseudonym', 'phone_hash', 'internal_id'. Absent/empty means the caller did not qualify it and you match the verbatim value as usual. When present, and you index your records by a DIFFERENT kind that you cannot match this value against, you MUST refuse explicitly: return the ack with unrecognized_subject_kind=true (see the ack). Matching a kind you do not index against zero rows and acking 'erased' is a false completion — the worst lie this system can tell. This field is metadata ABOUT the subject; it is never a second value to match on."
+        },
         "action": {
           "type": "string",
           "enum": ["erase", "export"],
@@ -77,6 +81,10 @@
         "truncated": {
           "type": "boolean",
           "description": "True when you erased only PART of the subject's rows this call (a bounded batch, a scan cap) and MORE REMAINS. Return HTTP 200 with this set: the dispatcher records PARTIAL — you stay UNACKED and the erase re-dispatches (idempotently) until a call returns WITHOUT truncated. NEVER omit it for work that is not finished: a target that erased 5,000 of 40,000 and did not say truncated is recorded as fully done."
+        },
+        "unrecognized_subject_kind": {
+          "type": "boolean",
+          "description": "True when the request carried a subject_kind you do NOT index by, so you could not match the value against any records. This is an explicit REFUSAL, not an erasure: the dispatcher records it FAILED (never acked), so the DSAR stays open and visible rather than closing over a subject you never found. Set this instead of returning already_absent (which asserts you looked and held nothing) — you did not look, because you could not. Any service in any language is safe by returning this flag: the DSAR-protecting classification lives in the dispatcher, not in you."
         }
       }
     }

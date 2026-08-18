@@ -49,7 +49,8 @@ class _Network:
         self.script = script or {}
         self.calls = []
 
-    async def erase(self, *, url, token, request_id, action, tenant, subject, timeout):
+    async def erase(self, *, url, token, request_id, action, tenant, subject, timeout,
+                    subject_kind=""):
         self.calls.append(url)
         for name, outcome in self.script.items():
             if name in url:

@@ -190,6 +190,18 @@ def test_erasure_does_not_require_verification():
 
 
 # ── idempotency + SLA ──────────────────────────────────────────────────────────
+def test_subject_kind_is_carried_on_the_dsar_and_survives_a_round_trip():
+    # Item 6: the KIND of identifier is stored on the DSAR so it can travel to targets. Default "" for
+    # a request created without one (unchanged behaviour), and it round-trips through to_dict/from_dict.
+    from app.core.models import Dsar
+    _, ds, _ = _env()
+    d, _ = run(ds.create(tenant="t1", subject="u1", type="erasure", subject_kind="phone_hash"))
+    assert d.subject_kind == "phone_hash"
+    assert Dsar.from_dict(d.to_dict()).subject_kind == "phone_hash"
+    d2, _ = run(ds.create(tenant="t1", subject="u2", type="erasure"))
+    assert d2.subject_kind == ""
+
+
 def test_duplicate_open_request_returns_the_same_one():
     _, ds, _ = _env()
     a, c1 = run(ds.create(tenant="t1", subject="u1", type="erasure"))

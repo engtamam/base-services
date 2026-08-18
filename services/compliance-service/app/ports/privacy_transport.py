@@ -63,7 +63,14 @@ class PrivacyTransport(Protocol):
     driver: str
 
     async def erase(self, *, url: str, token: str, request_id: str, action: str,
-                    tenant: str, subject: str, timeout: int) -> EraseOutcome:
+                    tenant: str, subject: str, timeout: int, subject_kind: str = "") -> EraseOutcome:
         """POST the erase request to `url` and classify the answer. Never raises for a remote
-        failure — it returns FAILED with the detail, so the dispatcher can retry and record."""
+        failure — it returns FAILED with the detail, so the dispatcher can retry and record.
+
+        `subject_kind` (optional) names the KIND of identifier `subject` is. It travels in the request
+        so a target that indexes by a different kind can REFUSE — by returning `unrecognized_subject_kind:
+        true` in its ack — instead of matching zero rows and acking a false "erased". That refusal is
+        classified FAILED here (never ACKED), exactly like `truncated` is classified PARTIAL: the
+        DSAR-protecting decision lives on THIS side, so any target in any language is safe by returning
+        the flag, whether or not it implements the check."""
         ...

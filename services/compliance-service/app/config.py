@@ -322,6 +322,15 @@ class Settings(BaseSettings):
     PRIVACY_SWEEP_PAGE_SIZE: int = 100       # open DSARs read per page
     PRIVACY_SWEEP_MAX_PER_RUN: int = 1000    # cap per run: a backlog becomes several runs, not one
                                              # run that never finishes
+    # The subject-identifier KINDS this service indexes by, as a comma list (e.g. "internal_id,phone_hash").
+    # Empty (default) = accept ANY kind and match the verbatim subject exactly as before — unchanged
+    # behaviour. When set, an inbound erase whose subject_kind is NOT one of these is REFUSED explicitly
+    # (unrecognized_subject_kind) rather than matched against nothing and acked as a false "erased".
+    PRIVACY_INDEXED_SUBJECT_KINDS: str = ""
+
+    @property
+    def privacy_indexed_subject_kinds(self) -> list[str]:
+        return [k.strip() for k in self.PRIVACY_INDEXED_SUBJECT_KINDS.split(",") if k.strip()]
 
     @property
     def privacy_targets(self) -> dict[str, str]:

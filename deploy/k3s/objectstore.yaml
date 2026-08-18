@@ -77,7 +77,9 @@ spec:
           type: RuntimeDefault
       containers:
         - name: seaweedfs
-          image: chrislusf/seaweedfs:3.73          # Apache-2.0
+          # Apache-2.0. Digest-pinned — the 3.73 tag is mutable at the registry, so the digest is what
+          # guarantees the next pull is byte-identical to what was reviewed. Tag kept for legibility.
+          image: chrislusf/seaweedfs:3.73@sha256:d372192d42d1d8d8dbfcb73fb6789152d7eeb6e27044f8c0c99202196cfd20fb
           # All-in-one (master+volume+filer+s3) is right for a single node. The S3 gateway listens
           # on 9000 and validates callers against the identities in the mounted s3.json.
           args:

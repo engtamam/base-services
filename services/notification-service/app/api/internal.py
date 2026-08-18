@@ -203,6 +203,10 @@ async def internal_manifest(
 class EraseIn(BaseModel):
     tenant: str
     subject: str
+    # The KIND of identifier `subject` is (pseudonym, phone_hash, internal_id). Optional; "" = today's
+    # behaviour. When set and this service indexes by a DIFFERENT kind, the request is refused
+    # explicitly rather than matched against nothing — see the handler.
+    subject_kind: str = Field(default="", max_length=64)
 
 
 @router.post("/privacy/erase", dependencies=[Depends(require_internal_token)])
@@ -212,6 +216,16 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     Returns the ack: what was erased, and what was RETAINED with its legal basis. Idempotent —
     a DSAR retries, so erasing an already-erased subject must not fail.
     """
+    s = get_settings()
+    # EXPLICIT REFUSAL of an identifier kind we do not index — BEFORE the write-ahead audit, since a
+    # refusal is not an erasure and must not be logged as one. Matching a phone_hash against a store
+    # keyed by internal_id yields zero rows and a false "erased"; we say unrecognized_subject_kind
+    # instead and the dispatcher classifies it FAILED, keeping the DSAR open. Default = accept any kind.
+    indexed = s.privacy_indexed_subject_kinds
+    if body.subject_kind and indexed and body.subject_kind not in indexed:
+        return {"service": s.SERVICE_NAME, "erased": [], "retained": [], "already_absent": False,
+                "unrecognized_subject_kind": True, "subject_kind": body.subject_kind,
+                "indexed_kinds": indexed}
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
@@ -219,7 +233,6 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
         "subject.erased", actor="", tenant=body.tenant, resource=f"subject:{body.subject}",
         ip=request.client.host if request.client else "")
     c = request.app.state.container
-    s = get_settings()
     eraser = NotificationErasure(store=c.datastore, pii_salt=s.PII_SALT)
     return await eraser.erase(body.tenant, body.subject)
 
@@ -377,11 +390,16 @@ async def register_whatsapp_number(request: Request, body: WaRegisterIn):
     # The specified number, or the tenant's single stored one (single-brand fallback).
     phone_id = body.phone_number_id or await pool.whatsapp_phone_number_id(body.tenant)
     if not token or not phone_id:
-        return JSONResponse({"registered": False, "reason": "NOT_CONNECTED"}, status_code=400)
+        # 409, NOT 400 — the SAME NOT_CONNECTED contract that /whatsapp/status returns 409 for. A
+        # missing stored token/phone is a state CONFLICT (the shop has not finished Embedded Signup),
+        # not a malformed request; the two sibling endpoints used to disagree (400 here, 409 there),
+        # forcing every consumer to special-case one and mis-reading a refusal from the wrong sibling.
+        return JSONResponse({"registered": False, "reason": "NOT_CONNECTED"}, status_code=409)
     # Supplied PIN, else the one sealed for THIS number — so a re-registration repeats without a human.
     pin = body.pin or await pool.whatsapp_pin(body.tenant, phone_id)
     if not pin:
-        return JSONResponse({"registered": False, "reason": "NO_PIN"}, status_code=400)
+        # Also a precondition/state conflict (no PIN supplied and none sealed), not a syntax error → 409.
+        return JSONResponse({"registered": False, "reason": "NO_PIN"}, status_code=409)
     res = await asyncio.to_thread(       # off the loop: a blocking Graph POST must not stall it
         register_number, access_token=token, phone_number_id=phone_id, pin=pin,
         graph_base=s.WHATSAPP_ONBOARDING_GRAPH_BASE)

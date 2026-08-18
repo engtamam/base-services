@@ -90,6 +90,7 @@ class PrivacyDispatcher:
             out = await self._transport.erase(
                 url=url, token=await self._token_for(service, dsar.tenant), request_id=dsar.id,
                 action=dsar.type, tenant=dsar.tenant, subject=dsar.subject,
+                subject_kind=getattr(dsar, "subject_kind", "") or "",
                 timeout=self._cfg.PRIVACY_DISPATCH_TIMEOUT_SECONDS)
             outcome_status, detail, ack = out.status, out.detail, out.ack
 

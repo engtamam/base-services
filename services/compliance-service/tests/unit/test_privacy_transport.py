@@ -108,6 +108,30 @@ def test_a_zero_row_ack_is_acked_but_distinguishable(monkeypatch):
     assert out.status == ACKED and "already_absent" in out.detail
 
 
+def test_unrecognized_subject_kind_is_failed_not_acked(monkeypatch):
+    # Item 6: a target that does not index by the KIND of identifier we sent (it holds internal ids,
+    # we sent a phone hash) refuses by returning unrecognized_subject_kind=true. Even on a 200 that
+    # must be FAILED, never ACKED — matching zero rows and closing the DSAR is a false "erased". The
+    # DSAR-protecting classification lives HERE, so any target in any language is safe by setting it.
+    ack = {**_ACK, "erased": [], "unrecognized_subject_kind": True}
+    _urlopen(monkeypatch, _Resp(200, json.dumps(ack).encode()))
+    out = run(HttpPrivacyTransport().erase(**{**_ARGS, "subject_kind": "phone_hash"}))
+    assert out.status == FAILED and out.is_acked is False
+    assert "unrecognized_subject_kind" in out.detail and "phone_hash" in out.detail
+    assert out.ack == ack                              # the refusal evidence is kept
+
+
+def test_subject_kind_travels_in_the_payload_only_when_set(monkeypatch):
+    # Item 6: subject_kind is additive — sent when known so a target can refuse, and OMITTED when not,
+    # so an existing target sees the exact same request body as before (additionalProperties-safe).
+    seen = _urlopen(monkeypatch, _Resp(200, json.dumps(_ACK).encode()))
+    run(HttpPrivacyTransport().erase(**{**_ARGS, "subject_kind": "internal_id"}))
+    assert json.loads(seen["req"].data)["subject_kind"] == "internal_id"
+    seen2 = _urlopen(monkeypatch, _Resp(200, json.dumps(_ACK).encode()))
+    run(HttpPrivacyTransport().erase(**_ARGS))         # no subject_kind
+    assert "subject_kind" not in json.loads(seen2["req"].data)
+
+
 def test_http_202_is_pending_not_done(monkeypatch):
     _urlopen(monkeypatch, _Resp(202))
     out = run(HttpPrivacyTransport().erase(**_ARGS))

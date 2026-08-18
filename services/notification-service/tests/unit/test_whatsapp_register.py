@@ -150,7 +150,9 @@ def test_register_route_says_no_pin_when_none_supplied_and_none_sealed(client, m
                         lambda *a, **k: called.__setitem__("n", called["n"] + 1) or (200, "{}"))
     r = client.post("/internal/whatsapp/register",
                     json={"tenant": "acme", "phone_number_id": "NEW1"}, headers=_hdr())
-    assert r.status_code == 400 and r.json()["reason"] == "NO_PIN"
+    # 409, matching /whatsapp/status: a missing precondition (no PIN available) is a state conflict,
+    # not a malformed request. The two sibling endpoints must agree so no consumer special-cases one.
+    assert r.status_code == 409 and r.json()["reason"] == "NO_PIN"
     assert called["n"] == 0                              # never reached Meta
 
 
@@ -213,4 +215,6 @@ def test_register_route_says_not_connected_when_no_token_is_stored(monkeypatch):
         r = c.post("/internal/whatsapp/register",
                    json={"tenant": "fresh", "pin": "123456"}, headers=_hdr())
     get_settings.cache_clear()
-    assert r.status_code == 400 and r.json()["reason"] == "NOT_CONNECTED"
+    # 409, the SAME code /whatsapp/status returns for NOT_CONNECTED — a shop that has not finished
+    # Embedded Signup is a state conflict, not a bad request. The two used to disagree (400 vs 409).
+    assert r.status_code == 409 and r.json()["reason"] == "NOT_CONNECTED"

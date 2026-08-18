@@ -63,12 +63,20 @@ cronJobs:
   - name: run
     schedule: "42 2 * * *"
     path: /internal/backup/run
+    # The run captures targets SEQUENTIALLY (orchestrator._capture_one per target), so worst-case
+    # wall-clock = (targets) x BACKUP_TARGET_TIMEOUT_SECONDS (120s). The old fixed 300s cron timeout
+    # covered barely two targets: a healthy nightly backup of ~20 targets ran ~2400s and was reported
+    # FAILED every night, and "backup always fails" is where a real failure hides. Budget = worst case
+    # + margin. Raise this if you register more targets, or lower BACKUP_TARGET_TIMEOUT_SECONDS.
+    timeoutSeconds: 2700
+  - name: drill
+    # The drill test-restores every target's most recent backup, also one at a time — same worst case.
+    schedule: "7 4 * * 0"
+    path: /internal/backup/drill
+    timeoutSeconds: 2700
   - name: health-check
     schedule: "23 * * * *"
     path: /internal/backup/health/check
   - name: prune
     schedule: "51 3 * * *"
     path: /internal/backup/prune
-  - name: drill
-    schedule: "7 4 * * 0"
-    path: /internal/backup/drill

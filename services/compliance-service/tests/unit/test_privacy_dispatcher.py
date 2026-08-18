@@ -85,6 +85,21 @@ def test_all_targets_ack_completes_the_dsar():
     assert d.target_state["identity-service:identity"]["ack"] == _OK.ack   # evidence retained
 
 
+def test_subject_kind_threads_from_the_dsar_to_the_transport():
+    # Item 6: the DSAR's subject_kind must reach transport.erase so a target can refuse a kind it does
+    # not index. It defaults to "" for a DSAR created without one (unchanged behaviour).
+    d = Dsar(id=new_id("dsar_"), tenant="acme", subject="u_7", subject_kind="phone_hash",
+             type="erasure", targets={"identity-service:identity": False})
+    t = _Transport({"identity": _OK})
+    run(_mk(t).drive(d))
+    assert t.calls[0]["subject_kind"] == "phone_hash"
+
+    d2 = _dsar("identity-service:identity")          # no subject_kind → ""
+    t2 = _Transport({"identity": _OK})
+    run(_mk(t2).drive(d2))
+    assert t2.calls[0]["subject_kind"] == ""
+
+
 def test_one_failing_target_keeps_the_dsar_incomplete():
     # The whole point: 1 of 2 erased is NOT "done".
     d = _dsar("identity-service:identity", "billing-service:invoices")

@@ -24,7 +24,7 @@ class HttpPrivacyTransport:
     driver = "http"
 
     async def erase(self, *, url: str, token: str, request_id: str, action: str,
-                    tenant: str, subject: str, timeout: int) -> EraseOutcome:
+                    tenant: str, subject: str, timeout: int, subject_kind: str = "") -> EraseOutcome:
         # The subject is passed VERBATIM and must be a real reference. An empty/blank one would erase
         # against nothing and come back already_absent — a clean ack over no work. Refuse it here as a
         # DISTINGUISHABLE failure rather than let a malformed id read as "she was erased".
@@ -32,6 +32,11 @@ class HttpPrivacyTransport:
             return EraseOutcome(status=FAILED, detail="INVALID_SUBJECT: empty subject reference")
         payload = {"tenant": tenant, "subject": subject, "action": action,
                    "request_id": request_id}
+        # Carry the identifier KIND when we know it, so a target that indexes by a different kind can
+        # say so instead of silently matching nothing. Only sent when set — a target that ignores it
+        # behaves exactly as before (the field is additive and additionalProperties-safe in the schema).
+        if subject_kind:
+            payload["subject_kind"] = subject_kind
         headers = {"Content-Type": "application/json"}
         if token:
             headers["X-Internal-Token"] = token
@@ -55,6 +60,18 @@ class HttpPrivacyTransport:
                 return EraseOutcome(status=FAILED, detail=f"HTTP {status} with unreadable ack body")
             if not isinstance(ack, dict):
                 return EraseOutcome(status=FAILED, detail=f"HTTP {status} ack was not an object")
+            # UNRECOGNISED SUBJECT KIND == the target does not index by the kind of identifier we sent
+            # (it holds internal ids, we sent a phone hash). It matched NOTHING it could recognise, so
+            # a 2xx here is NOT an erasure — record it FAILED (never ACKED) so the DSAR stays open and
+            # VISIBLE rather than closing over a subject the target never actually found. This is the
+            # explicit refusal the contract asks for: a target refuses by setting the flag, and the
+            # DSAR-protecting classification is HERE, so it is safe even against a target that returns
+            # the flag on a 200. Checked before `truncated`/`already_absent`: a kind it cannot match is
+            # not a partial erasure and not a real absence.
+            if ack.get("unrecognized_subject_kind"):
+                return EraseOutcome(status=FAILED, ack=ack,
+                                    detail=(f"target does not index subject_kind={subject_kind!r} "
+                                            f"(unrecognized_subject_kind) — refused, not erased"))
             # TRUNCATED == the target erased only part of the subject's rows this call (a bounded
             # batch, a scan cap). It is NOT done — record it PARTIAL so the target stays unacked and
             # the erase re-dispatches idempotently until a call returns without truncated. A scanner

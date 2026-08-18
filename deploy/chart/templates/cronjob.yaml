@@ -29,6 +29,15 @@ spec:
   jobTemplate:
     spec:
       backoffLimit: 3
+      {{- /* The whole-job deadline MUST cover the work the job drives. A backup sweep that fans out
+             to 20 targets at up to 120s each is 2400s worst case; with the old fixed 300s the Job was
+             reaped — and the HTTP client below timed out — while the sweep was still SUCCEEDING, so a
+             healthy backup was reported failed and "backup always fails" became the expected state
+             that hides a real failure. timeoutSeconds is per-cronJob (default 300, so every existing
+             short job is unchanged); a long sweep sets it above its own worst-case total. The Job
+             deadline is that plus headroom for image pull and pod startup, so the pod is never killed
+             before the call it is waiting on can return. */}}
+      activeDeadlineSeconds: {{ add (.timeoutSeconds | default 300) 120 }}
       template:
         metadata:
           labels: {{- include "base-service.selectorLabels" $root | nindent 12 }}
@@ -63,6 +72,10 @@ spec:
               env:
                 - name: TARGET_URL
                   value: "http://{{ include "base-service.fullname" $root }}:{{ $root.Values.service.port }}{{ .path }}"
+                - name: TIMEOUT_SECONDS
+                  # Per-cronJob; must exceed the endpoint's own worst-case work (a fan-out sweep sums
+                  # its targets). Default 300 keeps every short maintenance call exactly as it was.
+                  value: {{ .timeoutSeconds | default 300 | quote }}
                 - name: INTERNAL_SERVICE_TOKEN
                   valueFrom:
                     secretKeyRef:
@@ -76,7 +89,7 @@ spec:
                       os.environ["TARGET_URL"], method="POST", data=b"",
                       headers={"X-Internal-Token": os.environ["INTERNAL_SERVICE_TOKEN"],
                                "Content-Type": "application/json"})
-                  with urllib.request.urlopen(req, timeout=300) as r:
+                  with urllib.request.urlopen(req, timeout=int(os.environ["TIMEOUT_SECONDS"])) as r:
                       body = r.read().decode()
                       print(f"{r.status} {body}")
                       # Any non-2xx raises above; a 2xx with a failure body is still a failure

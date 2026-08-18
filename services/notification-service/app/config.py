@@ -397,6 +397,16 @@ class Settings(BaseSettings):
     # re-maps: the history orphans and an erasure can no longer prove it erased the right person.
     PII_SALT: str = ""
 
+    # The subject-identifier KINDS this service indexes by, comma-separated. Empty (default) = accept
+    # ANY kind and match the verbatim subject exactly as before. When set, an inbound privacy-erase
+    # whose subject_kind is NOT one of these is REFUSED explicitly (unrecognized_subject_kind) instead
+    # of matched against nothing and acked as a false "erased".
+    PRIVACY_INDEXED_SUBJECT_KINDS: str = ""
+
+    @property
+    def privacy_indexed_subject_kinds(self) -> list[str]:
+        return [k.strip() for k in self.PRIVACY_INDEXED_SUBJECT_KINDS.split(",") if k.strip()]
+
     # ── operator-managed credentials ──────────────────────────────────────────
     # Seals credentials an operator sets from the panel. Never settable through any API: a key
     # that protects the secrets and is itself editable in the UI protects nothing from someone

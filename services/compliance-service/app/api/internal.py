@@ -278,6 +278,10 @@ async def internal_manifest(
 class EraseIn(BaseModel):
     tenant: str
     subject: str
+    # The KIND of identifier `subject` is (pseudonym, phone_hash, internal_id). Optional; "" = today's
+    # behaviour (match the verbatim value). When set and this service indexes by a DIFFERENT kind, the
+    # request is refused explicitly rather than matched against nothing — see the handler.
+    subject_kind: str = Field(default="", max_length=64)
 
 
 @router.post("/privacy/erase", dependencies=[Depends(require_internal_token)])
@@ -287,6 +291,17 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     Returns the ack: what was erased, and what was RETAINED with its legal basis. Idempotent —
     a DSAR retries, so erasing an already-erased subject must not fail.
     """
+    s = get_settings()
+    # EXPLICIT REFUSAL of an identifier kind we do not index — BEFORE the write-ahead audit, because a
+    # refusal is not an erasure and must not be logged as one. A target that indexes by internal_id and
+    # is handed a phone_hash would otherwise match zero rows and ack a clean "erased": a false completion
+    # indistinguishable from a real one. We say so instead; the dispatcher classifies the flag as FAILED,
+    # so the DSAR stays open and visible. Default (no configured kinds) accepts any kind, as before.
+    indexed = s.privacy_indexed_subject_kinds
+    if body.subject_kind and indexed and body.subject_kind not in indexed:
+        return {"service": s.SERVICE_NAME, "erased": [], "retained": [], "already_absent": False,
+                "unrecognized_subject_kind": True, "subject_kind": body.subject_kind,
+                "indexed_kinds": indexed}
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
@@ -294,7 +309,6 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
         "subject.erased", actor="", tenant=body.tenant, resource=f"subject:{body.subject}",
         ip=request.client.host if request.client else "")
     c = request.app.state.container
-    s = get_settings()
     eraser = ComplianceErasure(store=c.datastore, pii_salt=s.PII_SALT)
     return await eraser.erase(body.tenant, body.subject)
 
