@@ -135,6 +135,58 @@ async def list_subscriptions_internal(request: Request, tenant: str,
         for r in rows]}
 
 
+# Money-relevant states only: 'paid' (a peer accrues on it) and 'void' (it claws back). draft/open are
+# internal working states and are never exposed across the internal API.
+_INVOICE_HISTORY_STATUSES = ("paid", "void")
+
+
+@router.get("/billing/invoices", dependencies=[Depends(require_internal_token)])
+async def list_invoices_internal(request: Request, tenant: str, status: str = "paid",
+                                 settings: Settings = Depends(get_settings)) -> dict:
+    """A tenant's PAID (or voided) invoice history for a peer service that must key MONEY on it.
+
+    WHY IT EXISTS: events.py's own contract says the at-most-once bus is NOT how a money consequence
+    is delivered — "anything that MUST happen ... reads the fact back; the event only makes that path
+    faster". This is that durable, idempotent read. A commission engine (affiliate-service) accrues on
+    a real payment, holds for N days from paid_at, and pays a renewal at the Nth cycle — none of which
+    may silently lose a payout because a subscriber was redeploying when the event fired.
+
+    PRIVACY — the same discipline as events.payment_payload(): the amount and the payment DATE, and
+    nothing that is not the caller's to hold. NO buyer name, NO tax identity (vat/cr), NO line items,
+    NO invoice number. tenant + invoice id are enough to look up more from a service allowed to.
+
+    Each row carries paid_sequence (1 = the tenant's FIRST-ever payment — the conversion) and
+    subscription_paid_sequence (1 = the first payment of THAT subscription; N = its (N-1)th renewal),
+    so the caller distinguishes a conversion from an Nth renewal without a second read. refunded_minor
+    travels too, so a commission is never paid on money that was refunded. One bounded, indexed read
+    (never a scan); `truncated` is the loud signal for a history past the cap."""
+    if not tenant:
+        raise HTTPException(400, "tenant is required")
+    if status not in _INVOICE_HISTORY_STATUSES:
+        raise HTTPException(400, f"status must be one of {', '.join(_INVOICE_HISTORY_STATUSES)}")
+    from app.core.stores import InvoiceStore
+    c = request.app.state.container
+    rows, truncated = await InvoiceStore(c.datastore).history_for_tenant(
+        tenant, status, settings.INTERNAL_INVOICE_HISTORY_MAX)
+    per_sub: dict[str, int] = {}
+    invoices: list[dict] = []
+    for i, r in enumerate(rows, start=1):
+        sub = r.get("subscription_id", "") or ""
+        per_sub[sub] = per_sub.get(sub, 0) + 1
+        invoices.append({
+            "id": r.get("id", ""),
+            "subscription_id": sub,
+            "status": r.get("status", ""),
+            "paid_at": r.get("paid_at", "") or "",
+            "amount_minor": int(r.get("total_minor", 0) or 0),
+            "refunded_minor": int(r.get("refunded_minor", 0) or 0),
+            "currency": r.get("currency", "") or "",
+            "paid_sequence": i,                             # tenant-wide; 1 = the conversion
+            "subscription_paid_sequence": per_sub[sub],     # per-subscription; N-1 renewals before it
+        })
+    return {"tenant": tenant, "status": status, "invoices": invoices, "truncated": truncated}
+
+
 @router.get("/billing/plans", dependencies=[Depends(require_internal_token)])
 async def list_plans_internal(request: Request, tenant: str = "",
                               include_hidden: bool = False) -> dict:

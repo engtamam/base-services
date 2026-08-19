@@ -315,6 +315,23 @@ class InvoiceStore(_Repo):
         return await self._store.find(self.collection, {"status": "paid"}, limit=limit,
                                       sort=("paid_at", "asc"))
 
+    async def history_for_tenant(self, tenant: str, status: str,
+                                 limit: int) -> tuple[list[dict], bool]:
+        """A tenant's invoices of ONE status, oldest-payment first — the durable, idempotent read a
+        peer service must key MONEY on, instead of the at-most-once event bus.
+
+        A FILTERED find, NEVER a scan: {tenant, status} is an indexed equality filter, so this stays
+        one bounded read as a tenant's history grows for years. Ordered deterministically by
+        (paid_at, created, id) so the caller can number the list and tell a first payment (a
+        conversion) from an Nth renewal. Fetches one past the cap to report truncation loudly rather
+        than silently dropping the tail. Returns (rows, truncated)."""
+        rows, _ = await self._store.find(self.collection, {"tenant": tenant, "status": status},
+                                         limit=max(1, limit) + 1, sort=("paid_at", "asc"))
+        truncated = len(rows) > limit
+        rows = sorted(rows[:limit],
+                      key=lambda r: (r.get("paid_at", ""), r.get("created", ""), r.get("id", "")))
+        return rows, truncated
+
     async def find_voided(self, *, limit: int = 200) -> tuple[list[dict], str]:
         """Voided (refunded / charged-back) invoices, for the grant-clawback reconciliation sweep.
 

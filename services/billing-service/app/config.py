@@ -365,6 +365,10 @@ class Settings(BaseSettings):
             raise ValueError('ENTITLEMENT_RANK_ORDERS must be {"key": ["low", …, "high"]}')
         return parsed
     BILLING_LIST_LIMIT: int = 100
+    # The most paid/voided invoices GET /internal/billing/invoices returns for one tenant — a bounded
+    # read (never a scan) for a peer service keying money on the history. Generous (a decade of monthly
+    # invoices is ~120), and a truncated flag makes the pathological case loud rather than silent.
+    INTERNAL_INVOICE_HISTORY_MAX: int = 1000
 
     # ── usage metering / entitlement enforcement (Phase 25) ──────────────────
     # Limits are cacheable (a plan changes on upgrade, not per request). USAGE IS NOT:

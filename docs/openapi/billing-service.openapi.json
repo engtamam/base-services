@@ -3572,6 +3572,77 @@
         ]
       }
     },
+    "/internal/billing/invoices": {
+      "get": {
+        "description": "A tenant's PAID (or voided) invoice history for a peer service that must key MONEY on it.\n\nWHY IT EXISTS: events.py's own contract says the at-most-once bus is NOT how a money consequence\nis delivered \u2014 \"anything that MUST happen ... reads the fact back; the event only makes that path\nfaster\". This is that durable, idempotent read. A commission engine (affiliate-service) accrues on\na real payment, holds for N days from paid_at, and pays a renewal at the Nth cycle \u2014 none of which\nmay silently lose a payout because a subscriber was redeploying when the event fired.\n\nPRIVACY \u2014 the same discipline as events.payment_payload(): the amount and the payment DATE, and\nnothing that is not the caller's to hold. NO buyer name, NO tax identity (vat/cr), NO line items,\nNO invoice number. tenant + invoice id are enough to look up more from a service allowed to.\n\nEach row carries paid_sequence (1 = the tenant's FIRST-ever payment \u2014 the conversion) and\nsubscription_paid_sequence (1 = the first payment of THAT subscription; N = its (N-1)th renewal),\nso the caller distinguishes a conversion from an Nth renewal without a second read. refunded_minor\ntravels too, so a commission is never paid on money that was refunded. One bounded, indexed read\n(never a scan); `truncated` is the loud signal for a history past the cap.",
+        "operationId": "list_invoices_internal_internal_billing_invoices_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "paid",
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Invoices Internal Internal Billing Invoices Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Invoices Internal",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/billing/plans": {
       "get": {
         "description": "The internal twin of GET /api/v1/billing/plans \u2014 the purchasable plan catalogue, for a peer\nservice (operations during signup / the purchase flow). The user route is _SELF and rate-limited\nper caller; a service presents no subject, so the limiter falls back to the operations pod's IP\nand every establishment shares one bucket \u2014 429s on the purchase path that must fail closed. This\nis the same read behind the internal token, tenant an explicit field. `include_hidden` (retired /\nunlisted pricing) is an operator view; the internal token is platform authority, so it is honoured\nhere rather than forced to a person's capability.",
