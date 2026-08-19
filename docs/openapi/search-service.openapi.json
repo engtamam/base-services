@@ -130,6 +130,68 @@
         "title": "IndexIn",
         "type": "object"
       },
+      "QueryIn": {
+        "description": "Same shape as the user-tier SearchIn, but the TENANT rides in the body \u2014 an internal caller is\na peer service that already resolved the tenant from ITS OWN caller's token, not a human whose JWT\ncarries it.",
+        "properties": {
+          "cursor": {
+            "default": "",
+            "title": "Cursor",
+            "type": "string"
+          },
+          "facets": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Facets",
+            "type": "array"
+          },
+          "filters": {
+            "additionalProperties": true,
+            "title": "Filters",
+            "type": "object"
+          },
+          "highlight": {
+            "default": true,
+            "title": "Highlight",
+            "type": "boolean"
+          },
+          "index": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._-]+$",
+            "title": "Index",
+            "type": "string"
+          },
+          "size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size"
+          },
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          },
+          "text": {
+            "default": "",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "index",
+          "tenant"
+        ],
+        "title": "QueryIn",
+        "type": "object"
+      },
       "SearchIn": {
         "properties": {
           "cursor": {
@@ -766,6 +828,147 @@
           }
         },
         "summary": "Index Doc",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/search/query": {
+      "post": {
+        "description": "Whole-token search for a PEER service \u2014 the internal twin of POST /api/v1/search. Same\nSearchService.search(), tenant in the body. Same 422 on a malformed query as the user route.",
+        "operationId": "internal_query_internal_search_query_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueryIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Internal Query Internal Search Query Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Internal Query",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/search/suggest": {
+      "get": {
+        "description": "Prefix suggest for a PEER service calling on its own caller's behalf.\n\nThe user route (/api/v1/search/suggest) takes the tenant from the caller's JWT \u2014 which a peer\nlike operations, holding only TOKEN_PUBLIC_KEY, can VERIFY but never MINT (identity-service alone\nkeeps the signing key). So it could never present the Bearer token that route requires, and every\nconsole phone-prefix suggest failed 401, silently, from day one. This is the token-authed twin:\nsame SearchService.suggest(), tenant explicit because the peer already resolved it. A READ, so no\naudit row \u2014 matching the user route and the internal manifest/health reads.",
+        "operationId": "internal_suggest_internal_search_suggest_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "index",
+            "required": true,
+            "schema": {
+              "title": "Index",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "prefix",
+            "required": true,
+            "schema": {
+              "title": "Prefix",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Internal Suggest Internal Search Suggest Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Internal Suggest",
         "tags": [
           "internal"
         ]

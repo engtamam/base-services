@@ -106,3 +106,31 @@ def test_the_index_catalogue_lists_indexes_for_an_operator(client):
     assert {"cat_a", "cat_b"} <= names
     a = next(i for i in out.json()["indexes"] if i["index"] == "cat_a")
     assert a["n_docs"] >= 1
+
+
+# ── internal (token-gated) suggest + query — the peer-service twins ──────────────────────────
+# operations holds only TOKEN_PUBLIC_KEY, so it can never MINT the Bearer token the user routes
+# require; the console phone-prefix suggest failed 401 from day one until these existed.
+def test_internal_suggest_happy_path(client):
+    _index(client, "isg", "i1", "t1", {"t": "riyadh"})
+    _index(client, "isg", "i2", "t1", {"t": "riyal"})
+    out = client.get("/internal/search/suggest?index=isg&prefix=riy&tenant=t1",
+                     headers=_int()).json()["suggestions"]
+    assert "riyadh" in out and "riyal" in out
+
+
+def test_internal_suggest_requires_the_internal_token(client):
+    assert client.get("/internal/search/suggest?index=isg&prefix=riy&tenant=t1").status_code == 401
+
+
+def test_internal_query_happy_path(client):
+    _index(client, "iq", "q1", "t1", {"t": "quick brown fox"})
+    hits = client.post("/internal/search/query",
+                       json={"index": "iq", "tenant": "t1", "text": "fox"},
+                       headers=_int()).json()["hits"]
+    assert any(h["id"] == "q1" for h in hits)
+
+
+def test_internal_query_requires_the_internal_token(client):
+    assert client.post("/internal/search/query",
+                       json={"index": "iq", "tenant": "t1", "text": "fox"}).status_code == 401

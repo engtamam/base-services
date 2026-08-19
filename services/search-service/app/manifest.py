@@ -58,6 +58,8 @@ def build_manifest(
             {"path": "/internal/search/index", "tier": "internal", "method": "POST"},
             {"path": "/internal/search/bulk", "tier": "internal", "method": "POST"},
             {"path": "/internal/search/delete", "tier": "internal", "method": "POST"},
+            {"path": "/internal/search/suggest", "tier": "internal", "method": "GET"},
+            {"path": "/internal/search/query", "tier": "internal", "method": "POST"},
             {"path": "/api/v1/search", "tier": "user", "method": "POST"},
             {"path": "/api/v1/search/suggest", "tier": "user", "method": "GET"},
             {"path": "/api/v1/search/indexes", "tier": "user", "method": "GET"},
