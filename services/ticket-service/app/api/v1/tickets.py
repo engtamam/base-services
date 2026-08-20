@@ -79,6 +79,11 @@ class StatusIn(BaseModel):
     to: str = Field(min_length=1, max_length=64)
 
 
+class EscalateIn(BaseModel):
+    level: str = Field(default="", max_length=64)     # optional severity/tier label
+    reason: str = Field(default="", max_length=2000)
+
+
 class AssignIn(BaseModel):
     assignee: str = Field(min_length=1, max_length=256)
 
@@ -232,6 +237,25 @@ async def transition_ticket(request: Request, ticket_id: str, body: StatusIn,
         raise HTTPException(status.HTTP_409_CONFLICT, "INVALID_TRANSITION")
     except TransitionForbidden:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "FORBIDDEN")
+    return t.public()
+
+
+@router.post("/tickets/{ticket_id}/escalate", dependencies=[Depends(rate_limit)])
+async def escalate_ticket(request: Request, ticket_id: str, body: EscalateIn,
+                          principal: Principal = Depends(_MANAGE)) -> dict:
+    """Mark a ticket as escalated — a first-class support fact recorded in the log, so an SLA/stipend
+    KPI can answer 'was it escalated, when, how far' from truth rather than a guess at a status name."""
+    tenant = _tenant(principal)
+    await request.app.state.auditor.record(
+        "ticket.escalated", actor=principal.subject, tenant=tenant,
+        resource=f"ticket:{ticket_id}", ip=request.client.host if request.client else "",
+        metadata={"level": body.level})
+    try:
+        t = await build_tickets(request).escalate(
+            tenant=tenant, ticket_id=ticket_id, actor=principal.subject,
+            level=body.level, reason=body.reason, is_operator=True)
+    except TicketNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
     return t.public()
 
 

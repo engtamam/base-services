@@ -80,7 +80,10 @@ def test_a_legal_transition_moves_and_logs():
                             actor_caps=OP, is_operator=True))
     assert t2.status == "triaged"
     hist, _ = run(svc.history("acme", t.id))
-    assert hist[-1]["kind"] == "status_changed" and hist[-1]["data"] == {"from": "new", "to": "triaged"}
+    # `resolved` marks a move to a TERMINAL status so a KPI read can derive resolution time from the
+    # log; triaged is not terminal, so it is False.
+    assert hist[-1]["kind"] == "status_changed"
+    assert hist[-1]["data"] == {"from": "new", "to": "triaged", "resolved": False}
 
 
 def test_an_illegal_transition_is_refused():

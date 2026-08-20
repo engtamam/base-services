@@ -170,6 +170,143 @@ async def backup_import(request: Request, body: BackupImportIn,
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
 
+# ── scoped cross-service ticket visibility (a shop's consented share to one named party) ────────────
+# See core/share.py. The GENERAL primitive between tickets.self (too narrow) and platform.tickets (too
+# broad): a tenant consents to ONE outside party (grantee) reading a scoped subset of its tickets. This
+# service holds and ENFORCES the grant — a peer presents (tenant, grantee) and gets only what consent
+# allows. The reads carry STRUCTURE + PERFORMANCE (KPIs), never free text (subject/body may hold the
+# shop's customer PII, which is not the grantee's to read); actors are pseudonyms, as everywhere here.
+def _stores(request: Request):
+    from app.core.share import ShareStore
+    from app.core.stores import EventStore, TicketStore
+    ds = request.app.state.container.datastore
+    return TicketStore(ds), EventStore(ds), ShareStore(ds)
+
+
+def _project(row: dict) -> dict:
+    """A grantee-safe ticket view: structure, status and timing only — NO subject, body or meta."""
+    return {"id": row.get("id", ""), "type": row.get("type", ""), "status": row.get("status", ""),
+            "priority": row.get("priority", "normal"), "created": row.get("created", ""),
+            "updated": row.get("updated", ""), "assignee": row.get("assignee", ""),
+            "tags": list(row.get("tags") or []), "raiser_ref": row.get("raiser_ref", "")}
+
+
+async def _active_grant(request: Request, tenant: str, grantee: str):
+    """The active consent grant for (tenant, grantee), or None. Fails CLOSED: a revoked or expired
+    grant is None, so a read over it returns nothing."""
+    import time
+    _, _, shares = _stores(request)
+    g = await shares.get(tenant, grantee)
+    return g if (g is not None and g.is_active(time.time())) else None
+
+
+class ShareIn(BaseModel):
+    tenant: str
+    grantee: str                                  # a stable, opaque handle for the ONE outside party
+    granted_by: str = ""                          # who consented (a shop id); stored ONLY as a pseudonym
+    scope: dict = {}                              # {"type":[...], "status":[...]}; {} = all of the tenant
+    ttl_seconds: int = 0                          # 0 = use the configured default (which may also be 0)
+
+
+@router.post("/tickets/shares", dependencies=[Depends(require_internal_token)])
+async def grant_share(request: Request, body: ShareIn,
+                      settings: Settings = Depends(get_settings)) -> dict:
+    """Record a shop's CONSENT to let one named party read a scoped subset of its tickets (spec §13).
+
+    Idempotent: one grant per (tenant, grantee), so recording consent twice is one upsert. granted_by
+    is stored ONLY as a per-tenant pseudonym — who consented is a fact, their raw identity is not this
+    service's to keep. Audited write-ahead, because a consent record that cannot be logged must not be
+    created: a grant nobody can prove was given is indistinguishable from one an attacker planted."""
+    import time
+
+    from app.core.pii import subject_ref
+    from app.core.share import ShareGrant
+    if not body.tenant or not body.grantee:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "tenant and grantee are required")
+    granted_by = subject_ref(settings.PII_SALT, body.tenant, body.granted_by) if body.granted_by else ""
+    await request.app.state.auditor.record(
+        "ticket.share_granted", actor=granted_by, tenant=body.tenant,
+        resource=f"grantee:{body.grantee}", ip=request.client.host if request.client else "")
+    ttl = body.ttl_seconds or settings.TICKET_SHARE_DEFAULT_TTL_SECONDS
+    grant = ShareGrant(tenant=body.tenant, grantee=body.grantee, scope=dict(body.scope or {}),
+                       granted_by=granted_by, granted_at=_now_iso(),
+                       expires_at=(time.time() + ttl) if ttl > 0 else 0.0)
+    _, _, shares = _stores(request)
+    await shares.upsert(grant)
+    return {"granted": True, **grant.to_dict()}
+
+
+@router.delete("/tickets/shares/{grantee}", dependencies=[Depends(require_internal_token)])
+async def revoke_share(request: Request, grantee: str, tenant: str) -> dict:
+    """Withdraw a share. Idempotent (revoking an absent/already-revoked grant is success), kept as a
+    tombstone so 'consent was withdrawn' stays answerable. Audited write-ahead."""
+    if not tenant:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "tenant is required")
+    await request.app.state.auditor.record(
+        "ticket.share_revoked", actor="", tenant=tenant,
+        resource=f"grantee:{grantee}", ip=request.client.host if request.client else "")
+    _, _, shares = _stores(request)
+    return {"revoked": await shares.revoke(tenant, grantee)}
+
+
+@router.get("/tickets/shares", dependencies=[Depends(require_internal_token)])
+async def list_shares(request: Request, tenant: str,
+                      settings: Settings = Depends(get_settings)) -> dict:
+    """Every party a tenant has shared with — so a shop can audit exactly who it consented to."""
+    if not tenant:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "tenant is required")
+    _, _, shares = _stores(request)
+    rows = await shares.list_for_tenant(tenant, limit=settings.TICKET_SHARE_LIST_MAX)
+    return {"shares": rows}
+
+
+@router.get("/tickets", dependencies=[Depends(require_internal_token)])
+async def list_shared_tickets(request: Request, tenant: str, grantee: str,
+                              settings: Settings = Depends(get_settings)) -> dict:
+    """A grantee's consented, scoped view of a tenant's tickets — structure and status only, no content.
+
+    Requires an ACTIVE grant for (tenant, grantee); without one it refuses (409 NO_ACTIVE_GRANT) rather
+    than leak that the tenant has tickets at all. One bounded, indexed find (never a scan); `truncated`
+    is loud."""
+    if not tenant or not grantee:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "tenant and grantee are required")
+    from starlette.responses import JSONResponse
+    grant = await _active_grant(request, tenant, grantee)
+    if grant is None:
+        return JSONResponse({"error": "NO_ACTIVE_GRANT",
+                             "reason": "no active consent grant for this grantee"}, status_code=409)
+    tickets, _, _ = _stores(request)
+    cap = settings.TICKET_SHARE_LIST_MAX
+    rows, cursor = await tickets.find(tenant=tenant, limit=cap + 1)
+    covered = [r for r in rows if grant.covers(r)]
+    truncated = len(covered) > cap
+    return {"tenant": tenant, "grantee": grantee,
+            "tickets": [_project(r) for r in covered[:cap]], "truncated": truncated}
+
+
+@router.get("/tickets/{ticket_id}", dependencies=[Depends(require_internal_token)])
+async def read_shared_ticket(request: Request, ticket_id: str, tenant: str, grantee: str,
+                             settings: Settings = Depends(get_settings)) -> dict:
+    """One ticket a grantee may see, WITH its derived KPIs (first-response speed, escalation, resolution
+    — kpis.ticket_kpis over the event log). Grant-checked and scope-checked; a ticket the grant does not
+    cover answers 404 exactly like a missing one, so the grant can never be used to probe existence."""
+    if not tenant or not grantee:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "tenant and grantee are required")
+    from starlette.responses import JSONResponse
+    from app.core.kpis import ticket_kpis
+    grant = await _active_grant(request, tenant, grantee)
+    if grant is None:
+        return JSONResponse({"error": "NO_ACTIVE_GRANT",
+                             "reason": "no active consent grant for this grantee"}, status_code=409)
+    tickets, events, _ = _stores(request)
+    t = await tickets.fetch(ticket_id)
+    row = t.to_dict() if t is not None else None
+    if row is None or row.get("tenant") != tenant or not grant.covers(row):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    hist, _ = await events.history(tenant=tenant, ticket_id=ticket_id, limit=settings.ERASURE_MAX_SCAN)
+    return {"ticket": _project(row), "kpis": ticket_kpis(row, hist)}
+
+
 @router.post("/tickets/notifications/drain", dependencies=[Depends(require_internal_token)])
 async def drain_notifications(request: Request,
                               settings: Settings = Depends(get_settings)) -> dict:

@@ -115,10 +115,28 @@ class TicketService:
         t.status = to
         t.touch()
         await self._tickets.save(t)
+        # `resolved` marks a move to a TERMINAL status, so a KPI read (kpis.ticket_kpis) can derive
+        # resolution time from the log without knowing this type's workflow — the log carries the fact.
+        data = {"from": frm, "to": to, "resolved": to in tt.terminal}
         await self._events.append(tenant=tenant, ticket_id=t.id, kind="status_changed",
-                                  actor_ref=actor_ref, data={"from": frm, "to": to})
-        await self._after(t, tt, "status_changed", actor_ref=actor_ref,
-                          data={"from": frm, "to": to})
+                                  actor_ref=actor_ref, data=data)
+        await self._after(t, tt, "status_changed", actor_ref=actor_ref, data=data)
+        return t
+
+    # ── escalate ────────────────────────────────────────────────────────────────
+    async def escalate(self, *, tenant: str, ticket_id: str, actor: str, level: str = "",
+                        reason: str = "", is_operator: bool = True) -> Ticket:
+        """Record that a ticket was ESCALATED — a first-class support fact, not a guess derived from a
+        status name. It appends an `escalated` event (with an optional severity level) so 'was it
+        escalated, when, how far' is answerable from the log for an SLA/stipend KPI. Idempotent-friendly
+        by nature: each call records one escalation; a KPI keys on the FIRST."""
+        t = await self._fetch(tenant, ticket_id)
+        actor_ref = actor if is_operator else self.pseudonym(tenant, actor)
+        t.touch()
+        await self._tickets.save(t)
+        await self._events.append(tenant=tenant, ticket_id=t.id, kind="escalated",
+                                  actor_ref=actor_ref, body=reason, data={"level": level})
+        await self._after(t, self._wf.require(t.type), "escalated", actor_ref=actor_ref)
         return t
 
     # ── assign / tag / rate ─────────────────────────────────────────────────────

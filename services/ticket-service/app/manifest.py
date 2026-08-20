@@ -70,6 +70,12 @@ def build_manifest(
             {"path": "/internal/backup/import", "tier": "internal", "method": "POST"},
             {"path": "/internal/backup/verify", "tier": "internal", "method": "POST"},
             {"path": "/internal/tickets/notifications/drain", "tier": "internal", "method": "POST"},
+            # Scoped cross-service ticket visibility (a shop's consented share to one named party).
+            {"path": "/internal/tickets/shares", "tier": "internal", "method": "POST"},
+            {"path": "/internal/tickets/shares", "tier": "internal", "method": "GET"},
+            {"path": "/internal/tickets/shares/{grantee}", "tier": "internal", "method": "DELETE"},
+            {"path": "/internal/tickets", "tier": "internal", "method": "GET"},
+            {"path": "/internal/tickets/{ticket_id}", "tier": "internal", "method": "GET"},
             {"path": "/internal/privacy/erase", "tier": "internal", "method": "POST",
              # DECLARED, because a data map built from manifests is how a DSAR fan-out
              # finds who holds a person. An undeclared holder is never asked, never acks,
@@ -87,6 +93,7 @@ def build_manifest(
             # ── tickets: operator ───────────────────────────────────────────────
             {"path": "/api/v1/operator/tickets", "tier": "user", "method": "GET"},
             {"path": "/api/v1/tickets/{ticket_id}/status", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/tickets/{ticket_id}/escalate", "tier": "user", "method": "POST"},
             {"path": "/api/v1/tickets/{ticket_id}/assign", "tier": "user", "method": "POST"},
             {"path": "/api/v1/tickets/{ticket_id}/tags", "tier": "user", "method": "POST"},
             {"path": "/api/v1/tickets/{ticket_id}/suggest-reply", "tier": "user", "method": "POST"},

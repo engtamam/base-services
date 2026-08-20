@@ -40,6 +40,7 @@ def seq_now() -> int:
 # invent an event kind that no reader knows how to render.
 EVENT_KINDS = (
     "created", "replied", "status_changed", "assigned", "tagged", "rated", "ai_suggested", "erased",
+    "escalated",
 )
 
 PRIORITIES = ("low", "normal", "high", "urgent")

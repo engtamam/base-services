@@ -173,6 +173,32 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "resource": "ticket",
     },
     {
+        "action": "ticket.escalated",
+        "source": "admin",
+        "critical": False,
+        "resource": "ticket",
+        "why": "an escalation is a support-performance fact an SLA/stipend keys on; recorded so the "
+               "signal is trustworthy, not critical because refusing to escalate during an audit blip "
+               "would keep a customer waiting, which is the opposite of what escalation is for",
+    },
+    {
+        "action": "ticket.share_granted",
+        "source": "internal",
+        "critical": True,
+        "resource": "grantee",
+        "why": "a share is a shop's CONSENT to let one outside party read its tickets; a consent "
+               "record that cannot be logged must not be created, or a grant nobody can prove was "
+               "given is indistinguishable from one an attacker planted",
+    },
+    {
+        "action": "ticket.share_revoked",
+        "source": "internal",
+        "critical": False,
+        "resource": "grantee",
+        "why": "withdrawing consent must be attributable, but not critical: refusing to revoke during "
+               "an audit blip would keep a share OPEN, the less safe outcome",
+    },
+    {
         "action": "subject.erased",
         "source": "internal",
         "critical": True,

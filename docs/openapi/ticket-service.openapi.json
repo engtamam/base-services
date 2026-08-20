@@ -122,6 +122,24 @@
         "title": "EraseIn",
         "type": "object"
       },
+      "EscalateIn": {
+        "properties": {
+          "level": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Level",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "title": "EscalateIn",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -264,6 +282,40 @@
           "value"
         ],
         "title": "SecretIn",
+        "type": "object"
+      },
+      "ShareIn": {
+        "properties": {
+          "granted_by": {
+            "default": "",
+            "title": "Granted By",
+            "type": "string"
+          },
+          "grantee": {
+            "title": "Grantee",
+            "type": "string"
+          },
+          "scope": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Scope",
+            "type": "object"
+          },
+          "tenant": {
+            "title": "Tenant",
+            "type": "string"
+          },
+          "ttl_seconds": {
+            "default": 0,
+            "title": "Ttl Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tenant",
+          "grantee"
+        ],
+        "title": "ShareIn",
         "type": "object"
       },
       "StatusIn": {
@@ -937,6 +989,61 @@
           }
         },
         "summary": "Assign Ticket",
+        "tags": [
+          "tickets"
+        ]
+      }
+    },
+    "/api/v1/tickets/{ticket_id}/escalate": {
+      "post": {
+        "description": "Mark a ticket as escalated \u2014 a first-class support fact recorded in the log, so an SLA/stipend\nKPI can answer 'was it escalated, when, how far' from truth rather than a guess at a status name.",
+        "operationId": "escalate_ticket_api_v1_tickets__ticket_id__escalate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticket_id",
+            "required": true,
+            "schema": {
+              "title": "Ticket Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EscalateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Escalate Ticket Api V1 Tickets  Ticket Id  Escalate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Escalate Ticket",
         "tags": [
           "tickets"
         ]
@@ -1669,6 +1776,76 @@
         ]
       }
     },
+    "/internal/tickets": {
+      "get": {
+        "description": "A grantee's consented, scoped view of a tenant's tickets \u2014 structure and status only, no content.\n\nRequires an ACTIVE grant for (tenant, grantee); without one it refuses (409 NO_ACTIVE_GRANT) rather\nthan leak that the tenant has tickets at all. One bounded, indexed find (never a scan); `truncated`\nis loud.",
+        "operationId": "list_shared_tickets_internal_tickets_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "grantee",
+            "required": true,
+            "schema": {
+              "title": "Grantee",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Shared Tickets Internal Tickets Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Shared Tickets",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/tickets/notifications/drain": {
       "post": {
         "description": "Deliver every queued ticket notification to notification-service.\n\nDriven by the platform's scheduler rather than a thread in here, so a restart cannot lose the\nonly thing that was retrying, and so an operator can see the schedule. A null transport records\nbut delivers nothing; pointing NOTIFY_DRIVER at http later delivers everything accumulated.",
@@ -1716,6 +1893,276 @@
           }
         },
         "summary": "Drain Notifications",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/tickets/shares": {
+      "get": {
+        "description": "Every party a tenant has shared with \u2014 so a shop can audit exactly who it consented to.",
+        "operationId": "list_shares_internal_tickets_shares_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Shares Internal Tickets Shares Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Shares",
+        "tags": [
+          "internal"
+        ]
+      },
+      "post": {
+        "description": "Record a shop's CONSENT to let one named party read a scoped subset of its tickets (spec \u00a713).\n\nIdempotent: one grant per (tenant, grantee), so recording consent twice is one upsert. granted_by\nis stored ONLY as a per-tenant pseudonym \u2014 who consented is a fact, their raw identity is not this\nservice's to keep. Audited write-ahead, because a consent record that cannot be logged must not be\ncreated: a grant nobody can prove was given is indistinguishable from one an attacker planted.",
+        "operationId": "grant_share_internal_tickets_shares_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShareIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Grant Share Internal Tickets Shares Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Grant Share",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/tickets/shares/{grantee}": {
+      "delete": {
+        "description": "Withdraw a share. Idempotent (revoking an absent/already-revoked grant is success), kept as a\ntombstone so 'consent was withdrawn' stays answerable. Audited write-ahead.",
+        "operationId": "revoke_share_internal_tickets_shares__grantee__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "grantee",
+            "required": true,
+            "schema": {
+              "title": "Grantee",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Revoke Share Internal Tickets Shares  Grantee  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Share",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/tickets/{ticket_id}": {
+      "get": {
+        "description": "One ticket a grantee may see, WITH its derived KPIs (first-response speed, escalation, resolution\n\u2014 kpis.ticket_kpis over the event log). Grant-checked and scope-checked; a ticket the grant does not\ncover answers 404 exactly like a missing one, so the grant can never be used to probe existence.",
+        "operationId": "read_shared_ticket_internal_tickets__ticket_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticket_id",
+            "required": true,
+            "schema": {
+              "title": "Ticket Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "grantee",
+            "required": true,
+            "schema": {
+              "title": "Grantee",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Read Shared Ticket Internal Tickets  Ticket Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Shared Ticket",
         "tags": [
           "internal"
         ]

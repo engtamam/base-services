@@ -136,6 +136,12 @@ class Settings(BaseSettings):
     # Salts the subject pseudonym on an erasure ack. FROZEN — config/product.identifiers.lock.json.
     PII_SALT: str = ""
     ERASURE_MAX_SCAN: int = 100_000   # a DSAR is rare, but must never be an unbounded read
+    # Scoped ticket sharing (core/share.py): the most tickets one grantee's internal read returns per
+    # tenant — a bounded read, never a scan; a `truncated` flag makes a larger history loud, not silent.
+    TICKET_SHARE_LIST_MAX: int = 200
+    # Default lifetime of a consent grant when the caller sets none. 0 = no expiry (consent stands
+    # until revoked). A platform that wants consent to lapse by default sets a positive value.
+    TICKET_SHARE_DEFAULT_TTL_SECONDS: int = 0
 
     # ── notifications (through notification-service, never sent here) ─────────
     # The service NEVER sends mail. It records a durable notification-outbox row on notify-worthy
