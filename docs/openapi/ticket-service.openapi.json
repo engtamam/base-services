@@ -140,6 +140,73 @@
         "title": "EscalateIn",
         "type": "object"
       },
+      "GranteeOpenIn": {
+        "properties": {
+          "body": {
+            "default": "",
+            "title": "Body",
+            "type": "string"
+          },
+          "grantee": {
+            "title": "Grantee",
+            "type": "string"
+          },
+          "priority": {
+            "default": "normal",
+            "title": "Priority",
+            "type": "string"
+          },
+          "ref": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Ref",
+            "type": "object"
+          },
+          "subject": {
+            "default": "",
+            "title": "Subject",
+            "type": "string"
+          },
+          "tenant": {
+            "title": "Tenant",
+            "type": "string"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant",
+          "grantee",
+          "type"
+        ],
+        "title": "GranteeOpenIn",
+        "type": "object"
+      },
+      "GranteeReplyIn": {
+        "properties": {
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "grantee": {
+            "title": "Grantee",
+            "type": "string"
+          },
+          "tenant": {
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant",
+          "grantee",
+          "body"
+        ],
+        "title": "GranteeReplyIn",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -294,6 +361,16 @@
           "grantee": {
             "title": "Grantee",
             "type": "string"
+          },
+          "permissions": {
+            "default": [
+              "read"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "title": "Permissions",
+            "type": "array"
           },
           "scope": {
             "additionalProperties": true,
@@ -1844,6 +1921,62 @@
         "tags": [
           "internal"
         ]
+      },
+      "post": {
+        "description": "A write-granted party opens a NEW ticket on the tenant's behalf. Scope-checked on type (the new\nticket cannot fall outside what the shop consented to); attributed to the grantee's own pseudonym;\nmarked raised_by_grantee so the shop can tell its own team's tickets from a partner's.",
+        "operationId": "open_ticket_as_grantee_internal_tickets_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GranteeOpenIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Open Ticket As Grantee",
+        "tags": [
+          "internal"
+        ]
       }
     },
     "/internal/tickets/notifications/drain": {
@@ -2163,6 +2296,73 @@
           }
         },
         "summary": "Read Shared Ticket",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/tickets/{ticket_id}/replies": {
+      "post": {
+        "description": "A write-granted party replies to an EXISTING ticket the grant covers. A ticket the grant does not\ncover answers 404 exactly like a missing one (never a probe). The reply is attributed to the\ngrantee's own pseudonym and labelled by=\"grantee\", so a KPI never counts it as the shop's own\nfirst response and the log never confuses it with the customer or an operator.",
+        "operationId": "reply_as_grantee_internal_tickets__ticket_id__replies_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticket_id",
+            "required": true,
+            "schema": {
+              "title": "Ticket Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GranteeReplyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reply As Grantee",
         "tags": [
           "internal"
         ]

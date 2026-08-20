@@ -86,13 +86,16 @@ class TicketService:
 
     # ── reply ─────────────────────────────────────────────────────────────────
     async def reply(self, *, tenant: str, ticket_id: str, author: str, body: str,
-                    is_operator: bool = False) -> Ticket:
+                    is_operator: bool = False, by: str = "") -> Ticket:
         t = await self._fetch(tenant, ticket_id)
         tt = self._wf.require(t.type)
         actor_ref = author if is_operator else self.pseudonym(tenant, author)
+        # `by` labels the author class in the log ("operator"/"customer"/"grantee"). A KPI keys
+        # first-response on "operator" only, so a grantee's reply is recorded truthfully as its own
+        # class and never miscounted as the shop's own SLA response.
+        label = by or ("operator" if is_operator else "customer")
         await self._events.append(tenant=tenant, ticket_id=t.id, kind="replied",
-                                  actor_ref=actor_ref, body=body,
-                                  data={"by": "operator" if is_operator else "customer"})
+                                  actor_ref=actor_ref, body=body, data={"by": label})
         t.touch()
         await self._tickets.save(t)
         await self._after(t, tt, "replied", actor_ref=actor_ref, body=body)

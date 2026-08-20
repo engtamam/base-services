@@ -199,6 +199,23 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "an audit blip would keep a share OPEN, the less safe outcome",
     },
     {
+        "action": "ticket.grantee_opened",
+        "source": "internal",
+        "critical": False,
+        "resource": "ticket",
+        "why": "a party that is not the tenant opened a ticket on its behalf under a write grant — who "
+               "acted must be on the record; not critical because refusing during an audit blip only "
+               "delays support the shop consented to",
+    },
+    {
+        "action": "ticket.grantee_replied",
+        "source": "internal",
+        "critical": False,
+        "resource": "ticket",
+        "why": "a write-granted party replied on the tenant's behalf; attribution to the grantee's own "
+               "pseudonym is the point, so the log never reads the reply as the shop's own",
+    },
+    {
         "action": "subject.erased",
         "source": "internal",
         "critical": True,

@@ -200,11 +200,26 @@ async def _active_grant(request: Request, tenant: str, grantee: str):
     return g if (g is not None and g.is_active(time.time())) else None
 
 
+# The namespace a grantee's pseudonymous actor ref is derived under — general grant vocabulary, not any
+# caller's domain term. It keeps a grantee's pseudonym distinct from a shop customer's raiser_ref by
+# construction, so the log can never confuse "the party we shared with acted" with "the customer acted".
+_GRANTEE_NS = "grantee"
+
+
+def _grantee_ref(svc, tenant: str, grantee: str) -> str:
+    """The grantee's OWN per-tenant pseudonym — never a shop raiser_ref, never blank."""
+    return svc.pseudonym(tenant, f"{_GRANTEE_NS}:{grantee}")
+
+
 class ShareIn(BaseModel):
     tenant: str
     grantee: str                                  # a stable, opaque handle for the ONE outside party
     granted_by: str = ""                          # who consented (a shop id); stored ONLY as a pseudonym
     scope: dict = {}                              # {"type":[...], "status":[...]}; {} = all of the tenant
+    # What the grantee may do: ["read"] (default) or ["read","write"]. Write is a SEPARATE consent — a
+    # platform grants it to a party that should act on the tenant's behalf, and withholds it for a
+    # read-only watcher. Read stays implied so an existing read grant is unchanged.
+    permissions: list[str] = ["read"]
     ttl_seconds: int = 0                          # 0 = use the configured default (which may also be 0)
 
 
@@ -228,8 +243,11 @@ async def grant_share(request: Request, body: ShareIn,
         "ticket.share_granted", actor=granted_by, tenant=body.tenant,
         resource=f"grantee:{body.grantee}", ip=request.client.host if request.client else "")
     ttl = body.ttl_seconds or settings.TICKET_SHARE_DEFAULT_TTL_SECONDS
+    # Normalise permissions: "read" is always implied; keep only known verbs so an unknown one can
+    # never silently widen a grant.
+    perms = ["read"] + (["write"] if "write" in (body.permissions or []) else [])
     grant = ShareGrant(tenant=body.tenant, grantee=body.grantee, scope=dict(body.scope or {}),
-                       granted_by=granted_by, granted_at=_now_iso(),
+                       permissions=perms, granted_by=granted_by, granted_at=_now_iso(),
                        expires_at=(time.time() + ttl) if ttl > 0 else 0.0)
     _, _, shares = _stores(request)
     await shares.upsert(grant)
@@ -305,6 +323,104 @@ async def read_shared_ticket(request: Request, ticket_id: str, tenant: str, gran
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
     hist, _ = await events.history(tenant=tenant, ticket_id=ticket_id, limit=settings.ERASURE_MAX_SCAN)
     return {"ticket": _project(row), "kpis": ticket_kpis(row, hist)}
+
+
+# ── grantee WRITE, when the grant carries the "write" permission ─────────────────────────────────────
+# A grantee that a tenant consented to WRITE (not just read) may open and reply on the tenant's behalf,
+# within the same scope the read enforces. Every write is attributed to the GRANTEE's OWN pseudonym in
+# the append-only log — never the shop's raiser_ref, never blank — so the log always answers who really
+# acted. General: whether write is allowed is the GRANT's decision, not this service's assumption.
+async def _writable_grant(request: Request, tenant: str, grantee: str):
+    """(grant, error_response). The grant if it is active AND carries write; otherwise the JSONResponse
+    to return — 409 if there is no active grant, 403 if the grant is read-only."""
+    from starlette.responses import JSONResponse
+    grant = await _active_grant(request, tenant, grantee)
+    if grant is None:
+        return None, JSONResponse({"error": "NO_ACTIVE_GRANT",
+                                   "reason": "no active consent grant for this grantee"},
+                                  status_code=409)
+    if not grant.can_write:
+        return None, JSONResponse({"error": "WRITE_NOT_GRANTED",
+                                   "reason": "this grant is read-only; write was not consented to"},
+                                  status_code=403)
+    return grant, None
+
+
+class GranteeOpenIn(BaseModel):
+    tenant: str
+    grantee: str
+    type: str
+    subject: str = ""
+    body: str = ""
+    ref: dict = {}
+    priority: str = "normal"
+
+
+class GranteeReplyIn(BaseModel):
+    tenant: str
+    grantee: str
+    body: str
+
+
+@router.post("/tickets", status_code=201, dependencies=[Depends(require_internal_token)])
+async def open_ticket_as_grantee(request: Request, body: GranteeOpenIn):
+    """A write-granted party opens a NEW ticket on the tenant's behalf. Scope-checked on type (the new
+    ticket cannot fall outside what the shop consented to); attributed to the grantee's own pseudonym;
+    marked raised_by_grantee so the shop can tell its own team's tickets from a partner's."""
+    if not body.tenant or not body.grantee:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "tenant and grantee are required")
+    grant, err = await _writable_grant(request, body.tenant, body.grantee)
+    if err is not None:
+        return err
+    from starlette.responses import JSONResponse
+    allowed_types = grant.scope.get("type")
+    if allowed_types and body.type not in allowed_types:
+        return JSONResponse({"error": "OUT_OF_SCOPE",
+                             "reason": "this type is outside the consented scope"}, status_code=403)
+    from app.api.v1.tickets import build_tickets
+    from app.core.ticket_service import RequiredFieldMissing, UnknownType
+    svc = build_tickets(request)
+    gref = _grantee_ref(svc, body.tenant, body.grantee)
+    await request.app.state.auditor.record(
+        "ticket.grantee_opened", actor=gref, tenant=body.tenant, resource="ticket",
+        ip=request.client.host if request.client else "", metadata={"grantee": body.grantee})
+    try:
+        t = await svc.open(tenant=body.tenant, type=body.type, subject=body.subject, body=body.body,
+                           raiser=f"{_GRANTEE_NS}:{body.grantee}", ref=dict(body.ref or {}),
+                           priority=body.priority, metadata={"raised_by_grantee": body.grantee})
+    except UnknownType as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "UNKNOWN_TYPE") from exc
+    except RequiredFieldMissing as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    return {"id": t.id, **_project(t.to_dict())}
+
+
+@router.post("/tickets/{ticket_id}/replies", dependencies=[Depends(require_internal_token)])
+async def reply_as_grantee(request: Request, ticket_id: str, body: GranteeReplyIn):
+    """A write-granted party replies to an EXISTING ticket the grant covers. A ticket the grant does not
+    cover answers 404 exactly like a missing one (never a probe). The reply is attributed to the
+    grantee's own pseudonym and labelled by="grantee", so a KPI never counts it as the shop's own
+    first response and the log never confuses it with the customer or an operator."""
+    if not body.tenant or not body.grantee:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "tenant and grantee are required")
+    grant, err = await _writable_grant(request, body.tenant, body.grantee)
+    if err is not None:
+        return err
+    tickets, _, _ = _stores(request)
+    t = await tickets.fetch(ticket_id)
+    row = t.to_dict() if t is not None else None
+    if row is None or row.get("tenant") != body.tenant or not grant.covers(row):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    from app.api.v1.tickets import build_tickets
+    svc = build_tickets(request)
+    gref = _grantee_ref(svc, body.tenant, body.grantee)
+    await request.app.state.auditor.record(
+        "ticket.grantee_replied", actor=gref, tenant=body.tenant, resource=f"ticket:{ticket_id}",
+        ip=request.client.host if request.client else "", metadata={"grantee": body.grantee})
+    t2 = await svc.reply(tenant=body.tenant, ticket_id=ticket_id,
+                         author=f"{_GRANTEE_NS}:{body.grantee}", body=body.body,
+                         is_operator=False, by=_GRANTEE_NS)
+    return {"id": t2.id, **_project(t2.to_dict())}
 
 
 @router.post("/tickets/notifications/drain", dependencies=[Depends(require_internal_token)])

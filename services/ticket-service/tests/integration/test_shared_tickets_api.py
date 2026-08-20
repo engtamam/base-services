@@ -119,3 +119,78 @@ def test_every_share_route_requires_the_internal_token(app):
     assert app.get("/internal/tickets?tenant=acme&grantee=mkr1").status_code == 401
     assert app.post("/internal/tickets/shares", json={"tenant": "acme", "grantee": "x"}).status_code == 401
     assert app.get("/internal/tickets/shares?tenant=acme").status_code == 401
+
+
+# ── grantee WRITE (open/reply on the tenant's behalf) — only when the grant carries "write" ──────────
+def _grant_rw(app, tenant="acme", grantee="mkr_w", **body):
+    return app.post("/internal/tickets/shares", headers=IT, json={
+        "tenant": tenant, "grantee": grantee, "permissions": ["read", "write"], **body})
+
+
+def test_a_read_only_grant_cannot_write(app):
+    _grant(app, grantee="mkr_ro")                     # default permissions = ["read"]
+    o = app.post("/internal/tickets", headers=IT, json={
+        "tenant": "acme", "grantee": "mkr_ro", "type": "feedback", "subject": "S", "body": "B",
+        "ref": {"kind": "document", "id": "tpl_1"}})
+    assert o.status_code == 403 and o.json()["error"] == "WRITE_NOT_GRANTED"
+
+
+def test_no_grant_at_all_cannot_write(app):
+    o = app.post("/internal/tickets", headers=IT, json={
+        "tenant": "acme", "grantee": "ghost", "type": "feedback", "subject": "S", "body": "B",
+        "ref": {"kind": "document", "id": "tpl_1"}})
+    assert o.status_code == 409 and o.json()["error"] == "NO_ACTIVE_GRANT"
+
+
+def test_a_write_grant_opens_a_ticket_attributed_to_the_grantee(app):
+    _grant_rw(app, grantee="mkr_open")
+    r = app.post("/internal/tickets", headers=IT, json={
+        "tenant": "acme", "grantee": "mkr_open", "type": "feedback", "subject": "Broken checkout",
+        "body": "the pay button 500s", "ref": {"kind": "document", "id": "tpl_1"}})
+    assert r.status_code == 201
+    tid = r.json()["id"]
+    # The row is marked as opened-by-a-grantee, and its raiser is the GRANTEE's pseudonym — an operator
+    # reading it can tell it apart from a ticket the shop's own customer raised.
+    op = _tok("op1", ["tickets.manage"], "acme")
+    row = app.get(f"/api/v1/tickets/{tid}", headers=op).json()
+    assert row["meta"]["raised_by_grantee"] == "mkr_open"
+    assert row["raiser_ref"].startswith("sub_")       # a pseudonym, never blank, never a raw id
+    assert row["raiser_ref"] != row.get("assignee", "")
+
+
+def test_a_write_grant_replies_and_the_log_names_the_grantee_not_the_shop(app):
+    # a shop customer opens the ticket...
+    cust = _tok("ada@x.com", ["tickets.self"], "acme")
+    tid = app.post("/api/v1/tickets", headers=cust, json={
+        "type": "feedback", "subject": "S", "body": "B",
+        "ref": {"kind": "document", "id": "tpl_1"}}).json()["id"]
+    raiser_ref = app.get(f"/api/v1/tickets/{tid}", headers=_tok("op1", ["tickets.manage"], "acme")).json()["raiser_ref"]
+
+    _grant_rw(app, grantee="mkr_reply")
+    r = app.post(f"/internal/tickets/{tid}/replies", headers=IT,
+                 json={"tenant": "acme", "grantee": "mkr_reply", "body": "I can help with this"})
+    assert r.status_code == 200
+
+    # the reply event's actor is the GRANTEE's pseudonym — never the shop raiser, never blank — and it
+    # is labelled its own class, so it is not miscounted as the shop's own first response.
+    hist = app.get(f"/api/v1/tickets/{tid}/history",
+                   headers=_tok("op1", ["tickets.manage"], "acme")).json()["events"]
+    grantee_reply = [e for e in hist if e["kind"] == "replied" and e["data"].get("by") == "grantee"]
+    assert len(grantee_reply) == 1
+    assert grantee_reply[0]["actor_ref"] and grantee_reply[0]["actor_ref"] != raiser_ref
+
+
+def test_write_stays_inside_the_consented_scope(app):
+    _grant_rw(app, grantee="mkr_scoped", scope={"type": ["support"]})   # only support, not feedback
+    o = app.post("/internal/tickets", headers=IT, json={
+        "tenant": "acme", "grantee": "mkr_scoped", "type": "feedback", "subject": "S", "body": "B",
+        "ref": {"kind": "document", "id": "tpl_1"}})
+    assert o.status_code == 403 and o.json()["error"] == "OUT_OF_SCOPE"
+    # and a reply to a feedback ticket the scope does not cover is 404, not a probe
+    fb = _tok("ada@x.com", ["tickets.self"], "acme")
+    tid = app.post("/api/v1/tickets", headers=fb, json={
+        "type": "feedback", "subject": "S", "body": "B",
+        "ref": {"kind": "document", "id": "tpl_1"}}).json()["id"]
+    r = app.post(f"/internal/tickets/{tid}/replies", headers=IT,
+                 json={"tenant": "acme", "grantee": "mkr_scoped", "body": "hi"})
+    assert r.status_code == 404

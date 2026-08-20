@@ -41,6 +41,11 @@ class ShareGrant:
     tenant: str
     grantee: str
     scope: dict[str, Any] = field(default_factory=dict)   # {"type": [...], "status": [...]}; {} = all
+    # What the grantee may DO within the scope. "read" is implied by any grant; "write" additionally
+    # lets the grantee OPEN and REPLY on the tenant's behalf. Read-only by default, so an existing grant
+    # and a cautious platform stay read-only unless write is explicitly consented to — a platform that
+    # wants a partner to act (not just watch) adds "write"; one sharing with an auditor never does.
+    permissions: list[str] = field(default_factory=lambda: ["read"])
     granted_by: str = ""                                  # pseudonym of who consented (the shop)
     granted_at: str = ""
     expires_at: float = 0.0                               # epoch seconds; 0 = never
@@ -50,18 +55,23 @@ class ShareGrant:
     def id(self) -> str:
         return grant_id(self.tenant, self.grantee)
 
+    @property
+    def can_write(self) -> bool:
+        return "write" in (self.permissions or [])
+
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "tenant": self.tenant, "grantee": self.grantee,
-                "scope": dict(self.scope or {}), "granted_by": self.granted_by,
-                "granted_at": self.granted_at, "expires_at": float(self.expires_at or 0.0),
-                "revoked": bool(self.revoked)}
+                "scope": dict(self.scope or {}), "permissions": list(self.permissions or ["read"]),
+                "granted_by": self.granted_by, "granted_at": self.granted_at,
+                "expires_at": float(self.expires_at or 0.0), "revoked": bool(self.revoked)}
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "ShareGrant":
         return cls(tenant=d.get("tenant", ""), grantee=d.get("grantee", ""),
-                   scope=dict(d.get("scope") or {}), granted_by=d.get("granted_by", ""),
-                   granted_at=d.get("granted_at", ""), expires_at=float(d.get("expires_at") or 0.0),
-                   revoked=bool(d.get("revoked", False)))
+                   scope=dict(d.get("scope") or {}),
+                   permissions=list(d.get("permissions") or ["read"]),
+                   granted_by=d.get("granted_by", ""), granted_at=d.get("granted_at", ""),
+                   expires_at=float(d.get("expires_at") or 0.0), revoked=bool(d.get("revoked", False)))
 
     def is_active(self, now: float) -> bool:
         """A grant a peer may act on: consent given, not withdrawn, not lapsed. Fails CLOSED — an
