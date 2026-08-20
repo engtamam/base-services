@@ -140,6 +140,39 @@
         "title": "EscalateIn",
         "type": "object"
       },
+      "GranteeEscalateIn": {
+        "properties": {
+          "assignee": {
+            "default": "",
+            "title": "Assignee",
+            "type": "string"
+          },
+          "grantee": {
+            "title": "Grantee",
+            "type": "string"
+          },
+          "level": {
+            "default": "",
+            "title": "Level",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "tenant": {
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant",
+          "grantee"
+        ],
+        "title": "GranteeEscalateIn",
+        "type": "object"
+      },
       "GranteeOpenIn": {
         "properties": {
           "body": {
@@ -2296,6 +2329,73 @@
           }
         },
         "summary": "Read Shared Ticket",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/tickets/{ticket_id}/escalate": {
+      "post": {
+        "description": "A write-granted party escalates a covered ticket \u2014 recording the escalation and, when it names\nan `assignee`, moving the ticket to that handle (the shop's marketing manager, in the \u00a713 flow).\n\nWHY only the primitive: this service does not know or store WHY the escalation happened \u2014 a\nno-response timeout, a suspended account. That policy lives entirely on the caller's side (driven by\nthe first_response_at KPI this service already exposes). It just acts on the decision, within the\nsame grant/scope checks as the reads and replies, and attributes it to the grantee's OWN pseudonym\n\u2014 the assigned/escalated events name who acted, never blank, never the shop's raiser.",
+        "operationId": "escalate_as_grantee_internal_tickets__ticket_id__escalate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticket_id",
+            "required": true,
+            "schema": {
+              "title": "Ticket Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GranteeEscalateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Escalate As Grantee",
         "tags": [
           "internal"
         ]

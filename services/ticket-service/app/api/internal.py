@@ -423,6 +423,50 @@ async def reply_as_grantee(request: Request, ticket_id: str, body: GranteeReplyI
     return {"id": t2.id, **_project(t2.to_dict())}
 
 
+class GranteeEscalateIn(BaseModel):
+    tenant: str
+    grantee: str
+    assignee: str = ""          # optional: move the ticket to THIS handle (e.g. a marketing manager)
+    level: str = ""             # optional severity/tier label recorded with the escalation
+    reason: str = ""
+
+
+@router.post("/tickets/{ticket_id}/escalate", dependencies=[Depends(require_internal_token)])
+async def escalate_as_grantee(request: Request, ticket_id: str, body: GranteeEscalateIn):
+    """A write-granted party escalates a covered ticket — recording the escalation and, when it names
+    an `assignee`, moving the ticket to that handle (the shop's marketing manager, in the §13 flow).
+
+    WHY only the primitive: this service does not know or store WHY the escalation happened — a
+    no-response timeout, a suspended account. That policy lives entirely on the caller's side (driven by
+    the first_response_at KPI this service already exposes). It just acts on the decision, within the
+    same grant/scope checks as the reads and replies, and attributes it to the grantee's OWN pseudonym
+    — the assigned/escalated events name who acted, never blank, never the shop's raiser."""
+    if not body.tenant or not body.grantee:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "tenant and grantee are required")
+    grant, err = await _writable_grant(request, body.tenant, body.grantee)
+    if err is not None:
+        return err
+    tickets, _, _ = _stores(request)
+    t = await tickets.fetch(ticket_id)
+    row = t.to_dict() if t is not None else None
+    if row is None or row.get("tenant") != body.tenant or not grant.covers(row):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    from app.api.v1.tickets import build_tickets
+    svc = build_tickets(request)
+    gref = _grantee_ref(svc, body.tenant, body.grantee)
+    await request.app.state.auditor.record(
+        "ticket.grantee_escalated", actor=gref, tenant=body.tenant, resource=f"ticket:{ticket_id}",
+        ip=request.client.host if request.client else "",
+        metadata={"grantee": body.grantee, "assignee": body.assignee, "level": body.level})
+    if body.assignee:
+        # Reassign to the named handle; the `assigned` event is attributed to the grantee's pseudonym.
+        await svc.assign(tenant=body.tenant, ticket_id=ticket_id, assignee=body.assignee, actor=gref)
+    t2 = await svc.escalate(tenant=body.tenant, ticket_id=ticket_id,
+                            actor=f"{_GRANTEE_NS}:{body.grantee}", level=body.level,
+                            reason=body.reason, is_operator=False)
+    return {"id": t2.id, **_project(t2.to_dict())}
+
+
 @router.post("/tickets/notifications/drain", dependencies=[Depends(require_internal_token)])
 async def drain_notifications(request: Request,
                               settings: Settings = Depends(get_settings)) -> dict:

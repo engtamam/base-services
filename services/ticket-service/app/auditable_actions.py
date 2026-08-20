@@ -216,6 +216,14 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "pseudonym is the point, so the log never reads the reply as the shop's own",
     },
     {
+        "action": "ticket.grantee_escalated",
+        "source": "internal",
+        "critical": False,
+        "resource": "ticket",
+        "why": "a write-granted party escalated/reassigned a ticket on the tenant's behalf; who acted, "
+               "and to which handle it was moved, must be on the record under the grantee's own pseudonym",
+    },
+    {
         "action": "subject.erased",
         "source": "internal",
         "critical": True,

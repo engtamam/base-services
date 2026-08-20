@@ -194,3 +194,55 @@ def test_write_stays_inside_the_consented_scope(app):
     r = app.post(f"/internal/tickets/{tid}/replies", headers=IT,
                  json={"tenant": "acme", "grantee": "mkr_scoped", "body": "hi"})
     assert r.status_code == 404
+
+
+# ── grantee ESCALATE / reassign (write grant) ────────────────────────────────────────────────────────
+def test_a_read_only_grant_cannot_escalate(app):
+    tid = _seed_ticket(app)
+    _grant(app, grantee="mkr_ro_esc")                 # read-only
+    r = app.post(f"/internal/tickets/{tid}/escalate", headers=IT,
+                 json={"tenant": "acme", "grantee": "mkr_ro_esc", "assignee": "mgr1"})
+    assert r.status_code == 403 and r.json()["error"] == "WRITE_NOT_GRANTED"
+
+
+def test_a_write_grant_reassigns_and_records_the_escalation_as_the_grantee(app):
+    tid = _seed_ticket(app)
+    _grant_rw(app, grantee="mkr_esc")
+    r = app.post(f"/internal/tickets/{tid}/escalate", headers=IT,
+                 json={"tenant": "acme", "grantee": "mkr_esc", "assignee": "manager_9", "level": "tier2"})
+    assert r.status_code == 200
+    op = _tok("op1", ["tickets.manage"], "acme")
+    row = app.get(f"/api/v1/tickets/{tid}", headers=op).json()
+    assert row["assignee"] == "manager_9"             # moved to the handle the grantee named
+    hist = app.get(f"/api/v1/tickets/{tid}/history", headers=op).json()["events"]
+    esc = [e for e in hist if e["kind"] == "escalated"]
+    asg = [e for e in hist if e["kind"] == "assigned"]
+    assert esc and esc[-1]["actor_ref"] and esc[-1]["actor_ref"] != row["raiser_ref"]   # grantee, not shop
+    assert asg and asg[-1]["actor_ref"] == esc[-1]["actor_ref"]      # same grantee pseudonym on both
+
+
+def test_escalate_can_flag_without_reassigning(app):
+    # a FRESH ticket (not the pre-escalated seed): the KPI keys on the FIRST escalation, so this proves
+    # the grantee's own escalation is the one recorded.
+    cust = _tok("ada@x.com", ["tickets.self"], "acme")
+    tid = app.post("/api/v1/tickets", headers=cust, json={
+        "type": "feedback", "subject": "S", "body": "B",
+        "ref": {"kind": "document", "id": "tpl_1"}}).json()["id"]
+    _grant_rw(app, grantee="mkr_flag")
+    r = app.post(f"/internal/tickets/{tid}/escalate", headers=IT,
+                 json={"tenant": "acme", "grantee": "mkr_flag", "level": "urgent"})   # no assignee
+    assert r.status_code == 200
+    k = app.get(f"/internal/tickets/{tid}?tenant=acme&grantee=mkr_flag", headers=IT).json()["kpis"]
+    assert k["escalated"] is True and k["escalation_level"] == "urgent"
+
+
+def test_escalate_respects_grant_scope_and_never_probes(app):
+    _grant_rw(app, grantee="mkr_esc_scope", scope={"type": ["support"]})   # not feedback
+    tid = _seed_ticket(app)                                                # a feedback ticket
+    r = app.post(f"/internal/tickets/{tid}/escalate", headers=IT,
+                 json={"tenant": "acme", "grantee": "mkr_esc_scope", "assignee": "m"})
+    assert r.status_code == 404          # out of scope -> 404 exactly like a missing ticket
+    # and with no grant at all
+    r2 = app.post(f"/internal/tickets/{tid}/escalate", headers=IT,
+                  json={"tenant": "acme", "grantee": "nobody", "assignee": "m"})
+    assert r2.status_code == 409

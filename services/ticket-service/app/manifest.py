@@ -78,6 +78,7 @@ def build_manifest(
             {"path": "/internal/tickets", "tier": "internal", "method": "POST"},
             {"path": "/internal/tickets/{ticket_id}", "tier": "internal", "method": "GET"},
             {"path": "/internal/tickets/{ticket_id}/replies", "tier": "internal", "method": "POST"},
+            {"path": "/internal/tickets/{ticket_id}/escalate", "tier": "internal", "method": "POST"},
             {"path": "/internal/privacy/erase", "tier": "internal", "method": "POST",
              # DECLARED, because a data map built from manifests is how a DSAR fan-out
              # finds who holds a person. An undeclared holder is never asked, never acks,
