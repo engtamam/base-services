@@ -196,3 +196,26 @@ def test_update_payment_method_empty_token_is_refused(client):
     r = client.post(f"/api/v1/billing/subscriptions/{sub['id']}/payment-method",
                     json={"payment_token": ""}, headers=_adm(caps=("billing.self",)))
     assert r.status_code == 422                           # min_length=1 blocks a blank token at the door
+
+
+# ── undo a scheduled cancellation (self-service "changed my mind") ────────────────────────────────────
+def test_undo_cancel_reverses_a_scheduled_cancellation(client):
+    plan = _plan(client)
+    sub = client.post("/api/v1/billing/subscriptions",
+                      json={"plan_id": plan["id"], "payment_token": "pm"}, headers=_adm()).json()
+    slf = _adm(caps=("billing.self",))
+    assert client.post(f"/api/v1/billing/subscriptions/{sub['id']}/cancel", headers=slf).status_code == 200
+    r = client.post(f"/api/v1/billing/subscriptions/{sub['id']}/undo-cancel", headers=slf)
+    assert r.status_code == 200 and r.json()["undone_cancellation"] is True
+    # idempotent: a second undo is a harmless no-op, not an error
+    r2 = client.post(f"/api/v1/billing/subscriptions/{sub['id']}/undo-cancel", headers=slf)
+    assert r2.status_code == 200 and r2.json()["undone_cancellation"] is False
+
+
+def test_undo_cancel_rejects_another_tenants_subscription(client):
+    plan = _plan(client)
+    sub = client.post("/api/v1/billing/subscriptions",
+                      json={"plan_id": plan["id"], "payment_token": "pm"}, headers=_adm()).json()
+    r = client.post(f"/api/v1/billing/subscriptions/{sub['id']}/undo-cancel",
+                    headers=_adm(caps=("billing.self",), tenant="intruder"))
+    assert r.status_code in (403, 404)

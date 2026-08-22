@@ -541,6 +541,26 @@ class BillingService:
         await self._subs.save(sub)
         return {"subscription_id": sub.id, "cancelled_scheduled_change": had}
 
+    async def undo_cancel(self, sub_id: str) -> dict[str, Any]:
+        """Undo a scheduled cancellation on a subscription that has NOT yet ended — the shop changed
+        its mind.
+
+        `cancel(at_period_end=True)` leaves a subscription LIVE (active/trialing/past_due) with
+        cancel_at_period_end=True, and reactivate() deliberately refuses anything but paused -> active.
+        So this is the missing self-service undo, the mirror of cancel_scheduled_change: it clears the
+        flag for any subscription that is not already terminal — a `canceled` one has ended and is never
+        resurrected here — and is an idempotent no-op (never an error) when nothing is scheduled to
+        cancel, so a double click or a stale button is harmless.
+        """
+        sub = await self._subs.fetch(sub_id)
+        if sub is None:
+            raise ValueError("SUB_NOT_FOUND")
+        undone = sub.status != "canceled" and sub.cancel_at_period_end
+        if undone:
+            sub.cancel_at_period_end = False
+            await self._subs.save(sub)
+        return {"subscription_id": sub.id, "undone_cancellation": bool(undone)}
+
     async def migrate_terms(self, sub_id: str) -> dict[str, Any]:
         """Explicitly move a grandfathered subscription onto the CURRENT plan terms.
 

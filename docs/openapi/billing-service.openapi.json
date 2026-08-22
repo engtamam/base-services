@@ -2786,6 +2786,51 @@
         ]
       }
     },
+    "/api/v1/billing/subscriptions/{sub_id}/undo-cancel": {
+      "post": {
+        "description": "Undo a scheduled cancellation on a still-active subscription \u2014 the \"changed my mind\" next to\n\"won't renew after this period.\" reactivate() refuses an active subscription by design, so this is\nthe dedicated undo. A no-op (undone_cancellation: false) when nothing is scheduled \u2014 harmless to\ndouble-click.",
+        "operationId": "undo_cancel_api_v1_billing_subscriptions__sub_id__undo_cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sub_id",
+            "required": true,
+            "schema": {
+              "title": "Sub Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Undo Cancel Api V1 Billing Subscriptions  Sub Id  Undo Cancel Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Undo Cancel",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
     "/api/v1/billing/usage": {
       "get": {
         "description": "'18 of 25 seats'. Without this the client has to count, which is how it went wrong.",

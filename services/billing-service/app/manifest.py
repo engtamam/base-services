@@ -87,6 +87,7 @@ def build_manifest(
             {"path": "/api/v1/billing/subscriptions", "tier": "user", "method": "GET"},
             {"path": "/api/v1/billing/subscriptions/{id}/change", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/subscriptions/{id}/cancel-scheduled-change", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/billing/subscriptions/{id}/undo-cancel", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/subscriptions/{id}/payment-method", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/subscriptions/{id}/pause", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/subscriptions/{id}/reactivate", "tier": "user", "method": "POST"},

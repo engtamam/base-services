@@ -102,6 +102,33 @@ def test_reactivating_clears_a_pending_cancel_at_period_end():
     assert sub.cancel_at_period_end is False
 
 
+# ── undo a scheduled cancellation on a still-active subscription ─────────────────
+def test_undo_cancel_clears_the_flag_on_an_active_subscription():
+    """reactivate() refuses an active subscription by design, so this is the dedicated undo for a
+    shop that scheduled a cancel and changed its mind before the period ended."""
+    svc = _svc(_Sub("active", cancel_at_period_end=True))
+    res = run(svc.undo_cancel("sub_1"))
+    assert res["undone_cancellation"] is True
+    assert svc._subs.sub.cancel_at_period_end is False
+
+
+def test_undo_cancel_is_a_noop_when_nothing_is_scheduled():
+    svc = _svc(_Sub("active", cancel_at_period_end=False))
+    assert run(svc.undo_cancel("sub_1"))["undone_cancellation"] is False
+
+
+def test_undo_cancel_does_not_resurrect_a_canceled_subscription():
+    # a subscription already ended is terminal — undo is a no-op, never a back door to revive it
+    svc = _svc(_Sub("canceled", cancel_at_period_end=True))
+    assert run(svc.undo_cancel("sub_1"))["undone_cancellation"] is False
+    assert svc._subs.sub.status == "canceled"
+
+
+def test_undo_cancel_unknown_subscription_raises():
+    with pytest.raises(ValueError):
+        run(_svc(None).undo_cancel("sub_1"))
+
+
 # ── the cycle honours all of it ────────────────────────────────────────────────
 def test_the_billable_set_is_an_allowlist_that_excludes_stopped_states():
     """Written as a positive list so a status added later defaults to NOT being charged. A

@@ -523,6 +523,25 @@ async def cancel_scheduled_change(request: Request, sub_id: str,
     return result
 
 
+@router.post("/subscriptions/{sub_id}/undo-cancel")
+async def undo_cancel(request: Request, sub_id: str,
+                      principal: Principal = Depends(_SELF)) -> dict:
+    """Undo a scheduled cancellation on a still-active subscription — the "changed my mind" next to
+    "won't renew after this period." reactivate() refuses an active subscription by design, so this is
+    the dedicated undo. A no-op (undone_cancellation: false) when nothing is scheduled — harmless to
+    double-click."""
+    svc = (await build_billing(request))
+    sub = await svc._subs.fetch(sub_id)
+    if sub is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    _guard(principal, sub.tenant)
+    result = await svc.undo_cancel(sub_id)
+    await request.app.state.auditor.record(
+        "subscription.cancellation_undone", actor=principal.subject, tenant=sub.tenant,
+        resource=f"subscription:{sub_id}", ip=request.client.host if request.client else "")
+    return result
+
+
 class PaymentMethodIn(BaseModel):
     payment_token: str = Field(min_length=1, max_length=512)
 
