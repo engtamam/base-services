@@ -496,6 +496,38 @@ async def change_plan(request: Request, sub_id: str, body: ChangeIn,
     return result
 
 
+class PaymentMethodIn(BaseModel):
+    payment_token: str = Field(min_length=1, max_length=512)
+
+
+@router.post("/subscriptions/{sub_id}/payment-method")
+async def update_payment_method(request: Request, sub_id: str, body: PaymentMethodIn,
+                                principal: Principal = Depends(_SELF)) -> dict:
+    """Replace the card on a subscription — self-service recovery from an expired/declined card.
+
+    Without it, dunning retried the same failing token until the subscription was suspended: a tenant
+    whose card merely expired had no path but a support ticket. This changes ONLY the stored token; the
+    next scheduled dunning pass spends it, so nothing is charged here and no status moves. The token is
+    the gateway's opaque handle for a card the tenant just re-tokenised on the console — never raw card
+    data, which this platform never sees."""
+    svc = (await build_billing(request))
+    sub = await svc._subs.fetch(sub_id)
+    if sub is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    _guard(principal, sub.tenant)
+    try:
+        updated = await svc.update_payment_method(sub_id, body.payment_token)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    if updated is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    await request.app.state.auditor.record(
+        "subscription.payment_method_updated", actor=principal.subject, tenant=sub.tenant,
+        resource=f"subscription:{sub_id}", ip=request.client.host if request.client else "")
+    # The token is NEVER echoed back — a write-only credential, like the operator secret routes.
+    return {"subscription_id": sub_id, "updated": True}
+
+
 @router.post("/subscriptions/{sub_id}/pause")
 async def pause(request: Request, sub_id: str, principal: Principal = Depends(_SELF)) -> dict:
     return await _transition(request, sub_id, principal, "pause")

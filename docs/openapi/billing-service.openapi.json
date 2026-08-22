@@ -394,6 +394,21 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "PaymentMethodIn": {
+        "properties": {
+          "payment_token": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Payment Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "payment_token"
+        ],
+        "title": "PaymentMethodIn",
+        "type": "object"
+      },
       "PlanAvailabilityIn": {
         "properties": {
           "active": {
@@ -2578,6 +2593,61 @@
           }
         },
         "summary": "Pause",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/subscriptions/{sub_id}/payment-method": {
+      "post": {
+        "description": "Replace the card on a subscription \u2014 self-service recovery from an expired/declined card.\n\nWithout it, dunning retried the same failing token until the subscription was suspended: a tenant\nwhose card merely expired had no path but a support ticket. This changes ONLY the stored token; the\nnext scheduled dunning pass spends it, so nothing is charged here and no status moves. The token is\nthe gateway's opaque handle for a card the tenant just re-tokenised on the console \u2014 never raw card\ndata, which this platform never sees.",
+        "operationId": "update_payment_method_api_v1_billing_subscriptions__sub_id__payment_method_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sub_id",
+            "required": true,
+            "schema": {
+              "title": "Sub Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PaymentMethodIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Update Payment Method Api V1 Billing Subscriptions  Sub Id  Payment Method Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Payment Method",
         "tags": [
           "billing"
         ]

@@ -160,3 +160,39 @@ def test_cross_tenant_invoice_hidden(client):
     # a tenant-scoped admin from another tenant can't fetch the PDF
     other = _adm(caps=("billing.manage",), tenant="intruder")
     assert client.get(f"/api/v1/billing/invoices/{inv['id']}/pdf", headers=other).status_code == 404
+
+
+# ── update payment method: self-service recovery from an expired/declined card ───────────────────────
+def test_update_payment_method_updates_the_token_without_echoing_it(client):
+    plan = _plan(client)
+    sub = client.post("/api/v1/billing/subscriptions",
+                      json={"plan_id": plan["id"], "payment_token": "pm_old"}, headers=_adm()).json()
+    r = client.post(f"/api/v1/billing/subscriptions/{sub['id']}/payment-method",
+                    json={"payment_token": "pm_new_9"}, headers=_adm(caps=("billing.self",)))
+    assert r.status_code == 200 and r.json() == {"subscription_id": sub["id"], "updated": True}
+    assert "pm_new_9" not in r.text                      # a write-only credential, never echoed
+
+
+def test_update_payment_method_unknown_subscription_is_404(client):
+    r = client.post("/api/v1/billing/subscriptions/nope/payment-method",
+                    json={"payment_token": "pm_x"}, headers=_adm(caps=("billing.self",)))
+    assert r.status_code == 404
+
+
+def test_update_payment_method_rejects_another_tenants_subscription(client):
+    plan = _plan(client)
+    sub = client.post("/api/v1/billing/subscriptions",
+                      json={"plan_id": plan["id"], "payment_token": "pm"}, headers=_adm()).json()
+    r = client.post(f"/api/v1/billing/subscriptions/{sub['id']}/payment-method",
+                    json={"payment_token": "pm_evil"},
+                    headers=_adm(caps=("billing.self",), tenant="intruder"))
+    assert r.status_code in (403, 404)                   # the tenant guard refuses; never another's row
+
+
+def test_update_payment_method_empty_token_is_refused(client):
+    plan = _plan(client)
+    sub = client.post("/api/v1/billing/subscriptions",
+                      json={"plan_id": plan["id"], "payment_token": "pm"}, headers=_adm()).json()
+    r = client.post(f"/api/v1/billing/subscriptions/{sub['id']}/payment-method",
+                    json={"payment_token": ""}, headers=_adm(caps=("billing.self",)))
+    assert r.status_code == 422                           # min_length=1 blocks a blank token at the door

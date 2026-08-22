@@ -469,6 +469,25 @@ class BillingService:
                 "new_amount_minor": sub.price_snapshot.get("amount_minor"),
                 "limits": sub.limits_snapshot}
 
+    async def update_payment_method(self, sub_id: str, payment_token: str) -> Subscription | None:
+        """Replace the stored payment token on a subscription — the self-service recovery from an
+        expired or declined card that was missing.
+
+        payment_token was writable exactly once, at subscribe(), so dunning retried the SAME failing
+        token until the subscription was suspended — involuntary churn a tenant could not fix without a
+        support ticket. This is the one write that lets them fix it themselves. NO status transition and
+        NO retry here: the next scheduled dunning pass spends the new token, exactly as it does today —
+        this call only changes what that pass will use. Returns None for an unknown id (the route 404s);
+        an empty token is refused, because a blank one would guarantee the next charge fails.
+        """
+        if not (payment_token or "").strip():
+            raise ValueError("PAYMENT_TOKEN_REQUIRED")
+        sub = await self._subs.fetch(sub_id)
+        if sub is None:
+            return None
+        sub.payment_token = payment_token
+        return await self._subs.save(sub)
+
     async def pause(self, sub_id: str) -> Subscription | None:
         """Active → paused. Refuses anything else.
 
