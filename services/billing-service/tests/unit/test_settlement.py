@@ -57,7 +57,8 @@ def _svc(store=None, **over):
                settlement_allow_partial=True, settlement_tolerance_minor=0,
                settlement_max_backdate_days=90, document_mode="tax_invoice",
                # A COMPLETE tax profile — tax_invoice now finalizes the e-invoice only when backed.
-               tax_driver="vat", seller={"name": "ACME KSA", "vat_number": "300000000000003"},
+               tax_driver="vat", einvoicer_driver="zatca-http",
+               seller={"name": "ACME KSA", "vat_number": "300000000000003"},
                # Phase 42: required by EntitlementResolver.
                billable_statuses=("active", "trialing", "past_due"),
                max_subscriptions=200, merge_strategies={}, rank_orders={}, period_tolerance_seconds=86400)

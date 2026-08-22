@@ -39,13 +39,14 @@ _SELLER = {"name": "ACME KSA", "vat_number": "300000000000003", "cr_number": "CR
            "address": "Riyadh"}
 
 
-def _svc(store, *, mode, pdf=None, tax_driver="vat", vat_rate="0.15", seller=None):
+def _svc(store, *, mode, pdf=None, tax_driver="vat", vat_rate="0.15", seller=None,
+         einvoicer_driver="zatca"):
     cfg = {"currency": "SAR", "trial_days": 0, "vat_rate": vat_rate, "reverse_charge": False,
            "grandfather": True, "dunning_base_hours": 24, "dunning_max_attempts": 4, "grace_days": 7,
            "list_limit": 100, "limits_cache_ttl": 300, "billable_statuses": ("active",),
            "max_subscriptions": 200, "merge_strategies": {}, "rank_orders": {}, "period_tolerance_seconds": 86400,
            "grant_fund": "credits", "plan_credit_grant_mode": "accumulate", "document_mode": mode,
-           "tax_driver": tax_driver,
+           "tax_driver": tax_driver, "einvoicer_driver": einvoicer_driver,
            "seller": _SELLER if seller is None else seller}
     return BillingService(
         plans=PlanStore(store), coupons=CouponStore(store), subs=SubscriptionStore(store),
@@ -148,6 +149,21 @@ def test_tax_mode_with_null_calculator_or_zero_rate_issues_a_receipt():
         inv = _paid_invoice(st, svc)
         run(svc._mark_paid(inv))
         assert inv.doc_type == "receipt" and not inv.einvoice
+
+
+def test_tax_mode_with_null_einvoicer_issues_a_receipt_not_a_false_cleared_invoice():
+    """The escalated defect: calculator, rate and seller number are all set, but EINVOICER_DRIVER is
+    still 'null' (its default) — so NullEInvoicer.finalize() would return {"status":"skipped"}, a
+    truthy dict that reads as einvoice_finalized=True over a document that was NEVER cleared with
+    ZATCA. The profile is INCOMPLETE without a real e-invoicer, so the paid invoice must degrade to a
+    receipt and never call finalize at all."""
+    for driver in ("null", "none", ""):
+        st = MemoryDataStore()
+        svc = _svc(st, mode="tax_invoice", einvoicer_driver=driver)
+        inv = _paid_invoice(st, svc)
+        run(svc._mark_paid(inv))
+        assert inv.doc_type == "receipt"          # degraded — not a false 'tax invoice'
+        assert not inv.einvoice                    # finalize never ran; no {"status":"skipped"} stamp
 
 
 def test_a_complete_profile_stamps_tax_invoice_and_freezes_the_seller():

@@ -1,8 +1,9 @@
 """tax_profile — the one judgement about whether a tenant may issue a tax invoice.
 
-These pin the CONTRACT the operator write, the payment, and the render all share: a tax invoice
-needs a real calculator, a rate above zero, and a seller registration number — and the FIRST thing
-missing is named, because 'incomplete' is not something an operator can act on.
+These pin the CONTRACT the operator write, the payment, and the render all share: a tax invoice needs
+a real calculator, a rate above zero, a seller registration number, AND a real e-invoicer to clear it
+with ZATCA — and the FIRST thing missing is named, because 'incomplete' is not something an operator
+can act on.
 """
 from __future__ import annotations
 
@@ -10,7 +11,8 @@ import pytest
 
 from app.core import tax_profile as tp
 
-_OK = {"tax_driver": "vat", "vat_rate": "0.15", "seller_vat": "300000000000003"}
+_OK = {"tax_driver": "vat", "vat_rate": "0.15", "seller_vat": "300000000000003",
+       "einvoicer_driver": "zatca"}
 
 
 def test_a_complete_profile_is_complete():
@@ -27,31 +29,38 @@ def test_issues_tax(mode, is_tax):
 
 def test_missing_key_names_the_first_gap_in_order():
     # calculator first — nothing else matters if VAT is never computed
-    assert tp.missing_key(tax_driver="null", vat_rate="0.15", seller_vat="3") == "TAX_CALCULATOR_DRIVER"
+    assert tp.missing_key(**{**_OK, "tax_driver": "null"}) == "TAX_CALCULATOR_DRIVER"
     # then the rate
-    assert tp.missing_key(tax_driver="vat", vat_rate="0", seller_vat="3") == "VAT_RATE"
-    assert tp.missing_key(tax_driver="vat", vat_rate="bad", seller_vat="3") == "VAT_RATE"
-    # then the seller registration — the escalation's named example
-    assert tp.missing_key(tax_driver="vat", vat_rate="0.15", seller_vat="") == "INVOICE_SELLER_VAT"
-    assert tp.missing_key(tax_driver="vat", vat_rate="0.15", seller_vat="   ") == "INVOICE_SELLER_VAT"
+    assert tp.missing_key(**{**_OK, "vat_rate": "0"}) == "VAT_RATE"
+    assert tp.missing_key(**{**_OK, "vat_rate": "bad"}) == "VAT_RATE"
+    # then the seller registration
+    assert tp.missing_key(**{**_OK, "seller_vat": ""}) == "INVOICE_SELLER_VAT"
+    assert tp.missing_key(**{**_OK, "seller_vat": "   "}) == "INVOICE_SELLER_VAT"
+    # then the e-invoicer, checked LAST — everything else real, but ZATCA cannot be reached
+    for driver in ("null", "none", "", "  "):
+        assert tp.missing_key(**{**_OK, "einvoicer_driver": driver}) == "EINVOICER_DRIVER"
+    # and the order holds: a null calculator is named before a null e-invoicer
+    assert tp.missing_key(**{**_OK, "tax_driver": "null",
+                             "einvoicer_driver": "null"}) == "TAX_CALCULATOR_DRIVER"
 
 
-def test_require_complete_raises_named_error():
+def test_require_complete_raises_named_error_for_the_einvoicer_gap():
     with pytest.raises(tp.TaxProfileIncomplete) as ei:
-        tp.require_complete(tax_driver="vat", vat_rate="0.15", seller_vat="")
-    assert ei.value.missing_key == "INVOICE_SELLER_VAT"
-    assert str(ei.value) == "TAX_PROFILE_INCOMPLETE: INVOICE_SELLER_VAT"
+        tp.require_complete(**{**_OK, "einvoicer_driver": "null"})
+    assert ei.value.missing_key == "EINVOICER_DRIVER"
+    assert str(ei.value) == "TAX_PROFILE_INCOMPLETE: EINVOICER_DRIVER"
 
 
 def test_check_is_a_noop_for_receipt_mode():
     # a receipt needs none of this — even a wholly empty profile is fine
-    tp.check("receipt", tax_driver="null", vat_rate="0", seller_vat="")
+    tp.check("receipt", tax_driver="null", vat_rate="0", seller_vat="", einvoicer_driver="null")
 
 
 def test_check_refuses_tax_mode_on_an_incomplete_profile():
+    # the escalated case: calculator/rate/seller all set, e-invoicer still null -> refused at the write
     with pytest.raises(tp.TaxProfileIncomplete) as ei:
-        tp.check("tax_invoice", tax_driver="vat", vat_rate="0.15", seller_vat="")
-    assert ei.value.missing_key == "INVOICE_SELLER_VAT"
+        tp.check("tax_invoice", **{**_OK, "einvoicer_driver": "null"})
+    assert ei.value.missing_key == "EINVOICER_DRIVER"
 
 
 def test_effective_doc_type_degrades_to_receipt_when_incomplete():
@@ -59,5 +68,5 @@ def test_effective_doc_type_degrades_to_receipt_when_incomplete():
     assert tp.effective_doc_type("both", **_OK) == "tax_invoice"
     assert tp.effective_doc_type("receipt", **_OK) == "receipt"
     # mode asks for tax, profile cannot back it → the safe, true, lesser thing
-    assert tp.effective_doc_type("tax_invoice", tax_driver="vat", vat_rate="0.15",
-                                 seller_vat="") == "receipt"
+    assert tp.effective_doc_type("tax_invoice", **{**_OK, "seller_vat": ""}) == "receipt"
+    assert tp.effective_doc_type("tax_invoice", **{**_OK, "einvoicer_driver": "null"}) == "receipt"

@@ -116,7 +116,8 @@ class ConfigIn(BaseModel):
 # behind it can never drift apart — the split that let a tenant be flipped to tax_invoice with no
 # seller registration was the whole defect. See app/core/tax_profile.py.
 _TAX_PROFILE_KEYS = frozenset({
-    "BILLING_DOCUMENT_MODE", "TAX_CALCULATOR_DRIVER", "VAT_RATE", "INVOICE_SELLER_VAT"})
+    "BILLING_DOCUMENT_MODE", "TAX_CALCULATOR_DRIVER", "VAT_RATE", "INVOICE_SELLER_VAT",
+    "EINVOICER_DRIVER"})
 
 
 async def _guard_tax_profile(request: Request, *, tenant: str, key: str,
@@ -146,7 +147,8 @@ async def _guard_tax_profile(request: Request, *, tenant: str, key: str,
         str(await eff("BILLING_DOCUMENT_MODE")),
         tax_driver=str(await eff("TAX_CALCULATOR_DRIVER")),
         vat_rate=await eff("VAT_RATE"),
-        seller_vat=str(await eff("INVOICE_SELLER_VAT") or ""))
+        seller_vat=str(await eff("INVOICE_SELLER_VAT") or ""),
+        einvoicer_driver=str(await eff("EINVOICER_DRIVER")))
 
 
 # ── credentials ───────────────────────────────────────────────────────────────

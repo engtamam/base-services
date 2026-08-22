@@ -731,7 +731,8 @@ class BillingService:
         inv.doc_type = tax_profile.effective_doc_type(
             self._cfg.get("document_mode", "receipt"),
             tax_driver=self._cfg.get("tax_driver"), vat_rate=self._cfg.get("vat_rate", "0"),
-            seller_vat=seller.get("vat_number", ""))
+            seller_vat=seller.get("vat_number", ""),
+            einvoicer_driver=self._cfg.get("einvoicer_driver"))
         if inv.doc_type == "tax_invoice":
             # Freeze the seller's legal identity onto the invoice, so re-rendering a delivered tax
             # invoice always shows the registration number it was ISSUED with.
@@ -1024,7 +1025,8 @@ class BillingService:
         seller = self._cfg.get("seller", {}) or {}
         return tax_profile.complete(tax_driver=self._cfg.get("tax_driver"),
                                     vat_rate=self._cfg.get("vat_rate", "0"),
-                                    seller_vat=seller.get("vat_number", ""))
+                                    seller_vat=seller.get("vat_number", ""),
+                                    einvoicer_driver=self._cfg.get("einvoicer_driver"))
 
     def resolve_document(self, inv: Invoice) -> str:
         """The document to serve NOW — "tax_invoice" or "receipt".

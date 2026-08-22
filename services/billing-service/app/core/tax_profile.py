@@ -7,7 +7,12 @@ false one, and the customer's accountant finds it before we do:
 
   * a tax CALCULATOR is wired (not the null driver), so VAT is actually computed;
   * the VAT RATE is greater than zero, so the tax line is real;
-  * the seller's VAT REGISTRATION NUMBER is present, so the document names who charged the tax.
+  * the seller's VAT REGISTRATION NUMBER is present, so the document names who charged the tax;
+  * an E-INVOICER is wired (not the null driver), so the document can actually be CLEARED with ZATCA.
+    The first three make the money math real; this one is whether the clearance the document ASSERTS
+    can happen at all. Without it, NullEInvoicer.finalize() returns {"status":"skipped"} — a truthy
+    dict — so einvoice_finalized reads True over a document that was never cleared: a page that claims
+    ZATCA clearance it never got. Checked LAST, because there is nothing to clear until the tax is real.
 
 The whole defect this closes was that the switch (BILLING_DOCUMENT_MODE) was live-editable while
 the profile behind it (calculator, rate, seller number) was read from static settings — so one
@@ -52,12 +57,13 @@ def _rate(vat_rate: object) -> float:
         return 0.0
 
 
-def missing_key(*, tax_driver: object, vat_rate: object, seller_vat: object) -> str | None:
+def missing_key(*, tax_driver: object, vat_rate: object, seller_vat: object,
+                einvoicer_driver: object) -> str | None:
     """The FIRST fact a tax invoice needs and does not have, or None if the profile is complete.
 
     Order is deliberate — the calculator first (nothing else matters if VAT is never computed),
-    then the rate, then the registration number — so the name returned is the most foundational
-    thing to fix.
+    then the rate, then the registration number, then the e-invoicer (nothing to CLEAR until the tax
+    is real) — so the name returned is the most foundational thing to fix.
     """
     if str(tax_driver or "").strip().lower() in _NULL_DRIVERS:
         return "TAX_CALCULATOR_DRIVER"
@@ -65,21 +71,28 @@ def missing_key(*, tax_driver: object, vat_rate: object, seller_vat: object) -> 
         return "VAT_RATE"
     if not str(seller_vat or "").strip():
         return "INVOICE_SELLER_VAT"
+    if str(einvoicer_driver or "").strip().lower() in _NULL_DRIVERS:
+        return "EINVOICER_DRIVER"
     return None
 
 
-def complete(*, tax_driver: object, vat_rate: object, seller_vat: object) -> bool:
-    return missing_key(tax_driver=tax_driver, vat_rate=vat_rate, seller_vat=seller_vat) is None
+def complete(*, tax_driver: object, vat_rate: object, seller_vat: object,
+             einvoicer_driver: object) -> bool:
+    return missing_key(tax_driver=tax_driver, vat_rate=vat_rate, seller_vat=seller_vat,
+                       einvoicer_driver=einvoicer_driver) is None
 
 
-def require_complete(*, tax_driver: object, vat_rate: object, seller_vat: object) -> None:
+def require_complete(*, tax_driver: object, vat_rate: object, seller_vat: object,
+                     einvoicer_driver: object) -> None:
     """Raise TaxProfileIncomplete(<first missing key>), else return None."""
-    k = missing_key(tax_driver=tax_driver, vat_rate=vat_rate, seller_vat=seller_vat)
+    k = missing_key(tax_driver=tax_driver, vat_rate=vat_rate, seller_vat=seller_vat,
+                    einvoicer_driver=einvoicer_driver)
     if k is not None:
         raise TaxProfileIncomplete(k)
 
 
-def check(mode: str | None, *, tax_driver: object, vat_rate: object, seller_vat: object) -> None:
+def check(mode: str | None, *, tax_driver: object, vat_rate: object, seller_vat: object,
+          einvoicer_driver: object) -> None:
     """Operator-write gate: refuse a mode that ISSUES a tax invoice from an incomplete profile.
 
     A no-op for a receipt mode — a receipt needs none of this. This is what makes the whole tax
@@ -87,17 +100,19 @@ def check(mode: str | None, *, tax_driver: object, vat_rate: object, seller_vat:
     the other keys under a mode that is already tax, the resulting profile is evaluated together.
     """
     if issues_tax(mode):
-        require_complete(tax_driver=tax_driver, vat_rate=vat_rate, seller_vat=seller_vat)
+        require_complete(tax_driver=tax_driver, vat_rate=vat_rate, seller_vat=seller_vat,
+                         einvoicer_driver=einvoicer_driver)
 
 
 def effective_doc_type(mode: str | None, *, tax_driver: object, vat_rate: object,
-                       seller_vat: object) -> str:
+                       seller_vat: object, einvoicer_driver: object) -> str:
     """What a paid invoice under `mode` actually BECOMES, given the profile behind it.
 
     `tax_invoice` only when the mode asks for tax AND the profile can back it; otherwise `receipt`.
     This is the fail-safe: the document degrades to the true, lesser thing (a payment receipt)
     rather than emit a false greater one.
     """
-    if issues_tax(mode) and complete(tax_driver=tax_driver, vat_rate=vat_rate, seller_vat=seller_vat):
+    if issues_tax(mode) and complete(tax_driver=tax_driver, vat_rate=vat_rate, seller_vat=seller_vat,
+                                     einvoicer_driver=einvoicer_driver):
         return "tax_invoice"
     return "receipt"

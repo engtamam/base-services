@@ -23,7 +23,7 @@ def _make_app():
     # (0.15) are present, so the seller number is the missing piece the refusal must name.
     os.environ.update(ENV="test", INTERNAL_SERVICE_TOKEN=ITOKEN, TOKEN_VERIFIER_DRIVER="hs256",
                       TOKEN_HS256_SECRET=SECRET, RATELIMIT_MAX="1000",
-                      SECRETS_KEK="0" * 64, PII_SALT="pepper",
+                      SECRETS_KEK="0" * 64, PII_SALT="pepper", EINVOICER_DRIVER="zatca-http",
                       BILLING_DOCUMENT_MODE="receipt", INVOICE_SELLER_VAT="", INVOICE_SELLER_NAME="")
     get_settings.cache_clear()
     from app.main import create_app
@@ -71,6 +71,25 @@ def test_lowering_the_rate_to_zero_under_tax_mode_is_refused_by_name(client):
     r = _put(client, "VAT_RATE", "0")
     assert r.status_code == 400
     assert r.json()["error"] == "TAX_PROFILE_INCOMPLETE" and r.json()["missing_key"] == "VAT_RATE"
+
+
+def test_enabling_tax_invoice_with_a_null_einvoicer_is_refused_by_name(client):
+    """The escalated gap: calculator, rate and seller number are all set, but EINVOICER_DRIVER is
+    null — so the document would claim a ZATCA clearance that NullEInvoicer never performs. The write
+    is refused up front, naming EINVOICER_DRIVER, instead of the next paid invoice silently degrading."""
+    _put(client, "INVOICE_SELLER_VAT", "300000000000003")   # calculator + rate + seller all real
+    _put(client, "EINVOICER_DRIVER", "null")                # ...but nothing to clear with ZATCA
+    r = _put(client, "BILLING_DOCUMENT_MODE", "tax_invoice")
+    assert r.status_code == 400
+    assert r.json()["error"] == "TAX_PROFILE_INCOMPLETE" and r.json()["missing_key"] == "EINVOICER_DRIVER"
+
+
+def test_nulling_the_einvoicer_under_tax_mode_is_refused(client):
+    # atomic both ways: once tax mode is on, lowering the e-invoicer back to null is refused, named.
+    _put(client, "INVOICE_SELLER_VAT", "300000000000003")
+    assert _put(client, "BILLING_DOCUMENT_MODE", "tax_invoice").status_code == 200
+    r = _put(client, "EINVOICER_DRIVER", "null")
+    assert r.status_code == 400 and r.json()["missing_key"] == "EINVOICER_DRIVER"
 
 
 def test_clearing_the_seller_vat_under_tax_mode_is_refused(client):
