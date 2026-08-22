@@ -40,6 +40,20 @@ _INTERVAL = {"month": 30 * 86400, "year": 365 * 86400, "once": 0}
 _BILLABLE = ("active", "trialing", "past_due")
 
 
+class UpgradeChargeFailed(ValueError):
+    """The upgrade's prorated charge was DECLINED (or no payment method) — the plan did not change.
+
+    A synchronous refusal the caller surfaces as a 402: the shop can fix the card (update-payment-method)
+    and retry. Deliberately NOT the async dunning path — an upgrade a customer just asked for either
+    happens now or is refused now, never queued to retry silently.
+    """
+
+
+class UpgradeChargeUnavailable(RuntimeError):
+    """The gateway was unreachable while charging the upgrade — try again. Surfaced as a 503, distinct
+    from a decline: retrying a decline is pointless, retrying an outage is exactly right."""
+
+
 class BillingService:
     def __init__(self, *, plans: PlanStore, coupons: CouponStore, subs: SubscriptionStore,
                  invoices: InvoiceStore, payments: PaymentStore, usage: UsageStore,
@@ -428,6 +442,18 @@ class BillingService:
 
     async def change_plan(self, sub_id: str, *, new_plan_id: str, interval: str | None = None,
                           quantity: int | None = None) -> dict[str, Any]:
+        """Change a subscription's plan, Stripe-style — and NEVER produce a credit.
+
+        UPGRADE (new price >= current): the prorated difference is CHARGED FIRST, and the plan and
+        entitlements flip ONLY once that charge clears. A decline changes nothing (and does NOT enter the
+        async dunning cycle — this is a synchronous user action, so it fails synchronously). An upgrade
+        also supersedes any scheduled downgrade.
+
+        DOWNGRADE (new price < current): nothing changes now — the shop keeps the more expensive plan it
+        already paid for, at full value, until the period ends — and the target is SCHEDULED for the next
+        renewal (pending_plan_id). At that renewal run_cycle adopts it and invoices the new plan at full
+        price, no proration, no credit.
+        """
         sub = await self._subs.fetch(sub_id)
         if sub is None:
             raise ValueError("SUB_NOT_FOUND")
@@ -435,26 +461,85 @@ class BillingService:
         new_plan = await self._plans.fetch(new_plan_id)
         if new_plan is None:
             raise ValueError("PLAN_NOT_FOUND")
-        old_price = pricing.line_amount(self._effective_price(sub, old_plan), quantity=sub.quantity)
         new_interval = interval or sub.interval
         new_qty = quantity or sub.quantity
+        old_price = pricing.line_amount(self._effective_price(sub, old_plan), quantity=sub.quantity)
         new_price = pricing.line_amount(self._price_for(new_plan, new_interval), quantity=new_qty)
+
+        if new_price < old_price:
+            # ── DOWNGRADE: schedule at renewal, touch nothing now ──────────────────────────────
+            sub.pending_plan_id, sub.pending_interval, sub.pending_quantity = \
+                new_plan_id, new_interval, new_qty
+            await self._subs.save(sub)
+            return {"subscription_id": sub.id, "applied": "scheduled_downgrade",
+                    "pending_plan_id": new_plan_id, "effective": "next_renewal", "proration_minor": 0}
+
+        # ── UPGRADE (or lateral): charge the difference FIRST, flip only on success ─────────────
         delta = pricing.proration_delta(old_price, new_price, period_start=sub.current_period_start,
                                         period_end=sub.current_period_end, now=now_ts())
+        invoice_id = ""
+        if delta > 0:
+            inv = await self._charge_upgrade(sub, new_plan, new_interval, new_qty, delta)  # may raise
+            invoice_id = inv.id
+        # Only now — the money cleared (or there was nothing to charge) — does the plan take effect.
         sub.plan_id, sub.interval, sub.quantity = new_plan_id, new_interval, new_qty
-        # a deliberate plan change re-captures the terms (the customer chose them)
-        sub.price_snapshot, sub.limits_snapshot = self._snapshot(new_plan, new_interval)
+        sub.price_snapshot, sub.limits_snapshot = self._snapshot(new_plan, new_interval)  # customer chose these
         sub.terms_version = iso()
-        # APPLY the proration instead of discarding it: the new entitlements take effect immediately
-        # (above), so the prorated difference for the rest of THIS period is owed too. It is accumulated
-        # onto the subscription — signed, so an upgrade adds a charge and a downgrade adds a credit, and
-        # two changes in one period net correctly — and the NEXT run_cycle folds it into the invoice.
-        # Charging it via the same cycle seam (tax, gateway, ledger, e-invoice, idempotency) rather than
-        # a second immediate-charge path is what keeps a plan change auditable and exactly-once.
-        sub.pending_adjustment_minor = int(getattr(sub, "pending_adjustment_minor", 0) or 0) + int(delta)
+        # An upgrade supersedes a scheduled downgrade — the shop went up instead of down.
+        sub.pending_plan_id, sub.pending_interval, sub.pending_quantity = "", "", 0
         await self._subs.save(sub)
-        return {"subscription_id": sub.id, "proration_minor": delta,
-                "pending_adjustment_minor": sub.pending_adjustment_minor}
+        return {"subscription_id": sub.id, "applied": "upgraded", "proration_minor": delta,
+                "invoice_id": invoice_id}
+
+    async def _charge_upgrade(self, sub: Subscription, new_plan: Plan, new_interval: str,
+                              new_qty: int, delta: int) -> Invoice:
+        """Charge an upgrade's prorated difference NOW, and persist a paid invoice ONLY on success.
+
+        Charge-first, persist-on-success: a decline burns no invoice number and leaves no unpaid row.
+        The gateway idempotency key is deterministic per (subscription, period, target plan, amount), so
+        a retried request — or a crash after the charge but before we persisted — dedupes at the gateway
+        instead of double-charging. On success the invoice runs through the SAME _mark_paid seam every
+        other paid invoice does (doc_type / VAT / e-invoice / ledger / grants / event); it never touches
+        the dunning path, because a synchronous user action must fail synchronously, not silently retry.
+        """
+        if not (sub.payment_token or "").strip():
+            raise UpgradeChargeFailed("NO_PAYMENT_METHOD")
+        price = self._price_for(new_plan, new_interval)
+        currency = price.get("currency", self._cfg["currency"])
+        taxable, tax, total = self._split_tax(
+            delta, price.get("includes_tax", False),
+            reverse_charge=bool(sub.buyer_vat) and self._cfg.get("reverse_charge", False))
+        idem = f"upgrade:{sub.id}:{int(sub.current_period_end)}:{new_plan.id}:{total}"
+        try:
+            charge = self._gw.charge(amount_minor=total, currency=currency, token=sub.payment_token,
+                                     idempotency_key=idem, description="Plan change — upgrade")
+        except GatewayUnavailable as ex:
+            raise UpgradeChargeUnavailable(str(ex)) from ex
+        if not charge.ok:
+            raise UpgradeChargeFailed(charge.error or "DECLINED")
+        inv = Invoice(id=new_id("inv_"), tenant=sub.tenant,
+                      number=await self._invoices.next_number(sub.tenant), subscription_id=sub.id,
+                      lines=[{"description": "Plan change — upgrade", "quantity": 1,
+                              "unit_minor": delta, "amount_minor": taxable}],
+                      subtotal_minor=taxable, tax_minor=tax, total_minor=total, currency=currency,
+                      status="open", created=iso())
+        await self._invoices.save(inv)
+        pay = Payment(id=new_id("pay_"), tenant=sub.tenant, invoice_id=inv.id, amount_minor=total,
+                      currency=currency, provider=charge.provider, provider_id=charge.provider_id,
+                      status="succeeded", created=iso())
+        await self._payments.save(pay)
+        await self._mark_paid(inv)                          # doc_type, VAT, e-invoice, ledger, event
+        return inv
+
+    async def cancel_scheduled_change(self, sub_id: str) -> dict[str, Any]:
+        """Undo a scheduled downgrade before it takes effect — the shop stays on its current plan."""
+        sub = await self._subs.fetch(sub_id)
+        if sub is None:
+            raise ValueError("SUB_NOT_FOUND")
+        had = bool(sub.pending_plan_id)
+        sub.pending_plan_id, sub.pending_interval, sub.pending_quantity = "", "", 0
+        await self._subs.save(sub)
+        return {"subscription_id": sub.id, "cancelled_scheduled_change": had}
 
     async def migrate_terms(self, sub_id: str) -> dict[str, Any]:
         """Explicitly move a grandfathered subscription onto the CURRENT plan terms.
@@ -581,6 +666,20 @@ class BillingService:
         prior = await self._idempo.seen(key)
         if prior:
             return await self._invoices.fetch(prior["result"]["invoice_id"]) or Invoice(id="", tenant=sub.tenant)
+        # A SCHEDULED DOWNGRADE takes effect at THIS renewal: adopt the new plan BEFORE pricing, so the
+        # invoice is the new plan at its FULL price for the new period — no proration, no credit, the
+        # shop having had full value from the old plan through the period it paid for. `cancel_at_period_end`
+        # WINS: an ending subscription does not renew onto a new plan. A pending plan that was since
+        # deleted is simply cleared (the subscription stays as it is), never a crash.
+        if sub.pending_plan_id and not sub.cancel_at_period_end:
+            pending_plan = await self._plans.fetch(sub.pending_plan_id)
+            if pending_plan is not None:
+                sub.plan_id = sub.pending_plan_id
+                sub.interval = sub.pending_interval or sub.interval
+                sub.quantity = sub.pending_quantity or sub.quantity
+                sub.price_snapshot, sub.limits_snapshot = self._snapshot(pending_plan, sub.interval)
+                sub.terms_version = iso()
+            sub.pending_plan_id, sub.pending_interval, sub.pending_quantity = "", "", 0
         plan = await self._plans.fetch(sub.plan_id)
         price = self._effective_price(sub, plan)          # grandfathered signup price
         currency = price.get("currency", self._cfg["currency"])
@@ -611,26 +710,11 @@ class BillingService:
         # discounting, and until this argument existed neither ever did.
         discount = pricing.coupon_discount(coupon.to_dict() if coupon else None, subtotal,
                                            now=self._clock())
-        net_base = subtotal - discount
-        # PLAN-CHANGE PRORATION, folded in here (a coupon discounts the plan fee, not a plan-change
-        # amount, so the adjustment lands AFTER the discount). Signed: an upgrade charge adds, a
-        # downgrade credit subtracts. A credit larger than this invoice is applied only down to zero and
-        # the remainder is carried forward on the subscription — an invoice never goes negative, and the
-        # shop is never over-credited in one cycle. It is folded before tax, so the prorated plan
-        # difference carries VAT exactly as the plan fee does.
-        pending = int(getattr(sub, "pending_adjustment_minor", 0) or 0)
-        applied_adj = 0
-        if pending:
-            applied_adj = pending if net_base + pending >= 0 else -net_base
-            sub.pending_adjustment_minor = pending - applied_adj    # carried remainder; 0 when fully applied
-            net_base += applied_adj
-        taxable, tax, total = self._split_tax(net_base, price.get("includes_tax", False),
+        taxable, tax, total = self._split_tax(subtotal - discount, price.get("includes_tax", False),
                                               reverse_charge=bool(sub.buyer_vat) and self._cfg.get("reverse_charge", False))
         line = {"description": (plan.name if plan else "Subscription"),
                 "quantity": sub.quantity, "unit_minor": price.get("amount_minor", 0),
-                # The plan portion — the adjustment (if any) is its own line below, and the two sum to
-                # the invoice's taxable subtotal.
-                "amount_minor": taxable - applied_adj}
+                "amount_minor": taxable}
         if proration is not None:
             # A tax invoice must state WHY the amount is not the full unit price. The line names the
             # partial first period explicitly and carries the exact fraction, so the charge is legible
@@ -638,14 +722,6 @@ class BillingService:
             line["description"] += " (prorated first period)"
             line["proration"] = proration
         lines = [line]
-        if applied_adj != 0:
-            # A separate, named line so a plan change is visible on the bill — an upgrade CHARGE or a
-            # downgrade CREDIT for the rest of the period, with what (if anything) was carried forward.
-            lines.append({
-                "description": "Plan change " + ("charge" if applied_adj > 0 else "credit"),
-                "quantity": 1, "unit_minor": applied_adj, "amount_minor": applied_adj,
-                "adjustment": {"pending_before": pending, "applied": applied_adj,
-                               "carried_forward": sub.pending_adjustment_minor}})
         # Captured from the plan AS SOLD, onto the invoice. Recomputing this later from the live
         # plan would mean a repriced plan silently changes what an old invoice granted.
         granted = int((plan.limits or {}).get(self._cfg["plan_credit_limit_key"], 0) or 0) if plan else 0

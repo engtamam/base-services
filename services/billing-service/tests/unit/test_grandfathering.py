@@ -30,9 +30,15 @@ def run(c):
 class GW:
     driver = "mock"
 
+    def __init__(self, ok=True):
+        self.ok = ok
+        self.charges = []
+
     def charge(self, **k):
-        return Charge(ok=True, status="succeeded", provider="mock", provider_id="ch",
-                      amount_minor=k["amount_minor"], currency=k["currency"])
+        self.charges.append(k)
+        return Charge(ok=self.ok, status="succeeded" if self.ok else "failed", provider="mock",
+                      provider_id="ch", amount_minor=k["amount_minor"], currency=k["currency"],
+                      error="" if self.ok else "DECLINED")
 
     def refund(self, **k):
         return Charge(ok=True, status="refunded", provider="mock")
@@ -55,10 +61,10 @@ class NullPdf:
         return None
 
 
-def _svc(st, cfg=None):
+def _svc(st, cfg=None, gw=None):
     return BillingService(plans=PlanStore(st), coupons=CouponStore(st), subs=SubscriptionStore(st),
                           invoices=InvoiceStore(st), payments=PaymentStore(st), usage=UsageStore(st),
-                          ledger=LedgerStore(st), idempo=IdempotencyStore(st), gateway=GW(),
+                          ledger=LedgerStore(st), idempo=IdempotencyStore(st), gateway=gw or GW(),
                           tax=VatCalculator("0.15"), einvoicer=EInv(), pdf=NullPdf(), config=cfg or CFG)
 
 
@@ -153,74 +159,119 @@ def test_plan_change_recaptures_terms():
     assert s.price_snapshot["amount_minor"] == 30000 and s.limits_snapshot == {"seats": 20}
 
 
-# ── change_plan proration is APPLIED, not computed and discarded ──────────────────────────────────────
-def _two_plans(b, basic_price=10000, other_price=30000, other_seats=20):
-    basic = _setup(b, price=basic_price)
-    other = run(b.create_plan(name="Max", prices=[{"interval": "month", "amount_minor": other_price,
-                                                    "currency": "SAR"}], limits={"seats": other_seats}))
-    return basic, other
+# ── Stripe-style plan change: paid upgrade now, scheduled downgrade at renewal, NEVER a credit ────────
+def _two_plans(b):
+    basic = _setup(b, price=10000, seats=5)
+    pro = run(b.create_plan(name="Max", prices=[{"interval": "month", "amount_minor": 30000,
+                                                 "currency": "SAR"}], limits={"seats": 20}))
+    return basic, pro
 
 
-def test_upgrade_proration_is_charged_on_the_next_invoice(monkeypatch):
+def test_upgrade_charges_the_difference_first_then_flips(monkeypatch):
     import app.core.billing_service as bs
-    st = MemoryDataStore(); b = _svc(st)
-    basic, pro = _two_plans(b, 10000, 30000)
+    st = MemoryDataStore(); gw = GW(ok=True); b = _svc(st, gw=gw)
+    basic, pro = _two_plans(b)
     sub = run(b.subscribe(tenant="ali", plan_id=basic.id, payment_token="pm"))
-    monkeypatch.setattr(bs, "now_ts", lambda: sub.current_period_start)   # whole period remains -> full diff
+    monkeypatch.setattr(bs, "now_ts", lambda: sub.current_period_start)   # whole period remains
     res = run(b.change_plan(sub.id, new_plan_id=pro.id))
-    assert res["proration_minor"] == 20000 and res["pending_adjustment_minor"] == 20000
+    assert res["applied"] == "upgraded" and res["proration_minor"] == 20000 and res["invoice_id"]
+    assert gw.charges[-1]["amount_minor"] == 23000                        # 20000 + 15% VAT, charged NOW
+    up = run(InvoiceStore(st).fetch(res["invoice_id"]))
+    assert up.status == "paid" and up.total_minor == 23000
+    assert up.lines[0]["description"] == "Plan change — upgrade"
+    s = run(SubscriptionStore(st).fetch(sub.id))
+    assert s.plan_id == pro.id and s.limits_snapshot == {"seats": 20}     # flips only after the charge
+    assert run(b.run_cycle(sub.id)).subtotal_minor == 30000               # next renewal: pro full price, no leftover
 
-    inv = run(b.run_cycle(sub.id))
-    assert inv.subtotal_minor == 50000                     # 30000 next period + 20000 upgrade proration
-    assert any(l.get("description", "").startswith("Plan change charge") and l["amount_minor"] == 20000
-               for l in inv.lines)
-    assert inv.tax_minor == 7500                            # VAT applies to the proration too (15% of 50000)
-    assert run(SubscriptionStore(st).fetch(sub.id)).pending_adjustment_minor == 0   # consumed
+
+def test_upgrade_decline_changes_nothing():
+    from app.core.billing_service import UpgradeChargeFailed
+    st = MemoryDataStore(); b = _svc(st, gw=GW(ok=False))
+    basic, pro = _two_plans(b)
+    sub = run(b.subscribe(tenant="ali", plan_id=basic.id, payment_token="pm"))
+    with pytest.raises(UpgradeChargeFailed):
+        run(b.change_plan(sub.id, new_plan_id=pro.id))
+    s = run(SubscriptionStore(st).fetch(sub.id))
+    assert s.plan_id == basic.id and s.limits_snapshot == {"seats": 5}    # old plan intact
+    assert len(run(InvoiceStore(st).list("ali"))) == 0                    # no lingering invoice
 
 
-def test_downgrade_proration_credits_the_next_invoice(monkeypatch):
+def test_upgrade_without_a_card_is_refused(monkeypatch):
+    import app.core.billing_service as bs
+    from app.core.billing_service import UpgradeChargeFailed
+    st = MemoryDataStore(); b = _svc(st)
+    basic, pro = _two_plans(b)
+    sub = run(b.subscribe(tenant="ali", plan_id=basic.id, payment_token=""))   # no card on file
+    monkeypatch.setattr(bs, "now_ts", lambda: sub.current_period_start)
+    with pytest.raises(UpgradeChargeFailed, match="NO_PAYMENT_METHOD"):
+        run(b.change_plan(sub.id, new_plan_id=pro.id))
+    assert run(SubscriptionStore(st).fetch(sub.id)).plan_id == basic.id
+
+
+def test_downgrade_is_scheduled_never_credited(monkeypatch):
+    import app.core.billing_service as bs
+    st = MemoryDataStore(); gw = GW(ok=True); b = _svc(st, gw=gw)
+    basic, pro = _two_plans(b)
+    sub = run(b.subscribe(tenant="ali", plan_id=pro.id, payment_token="pm"))   # start high
+    monkeypatch.setattr(bs, "now_ts", lambda: sub.current_period_start)
+    res = run(b.change_plan(sub.id, new_plan_id=basic.id))
+    assert res["applied"] == "scheduled_downgrade" and res["pending_plan_id"] == basic.id
+    assert not gw.charges and len(run(InvoiceStore(st).list("ali"))) == 0    # nothing charged, no credit invoice
+    s = run(SubscriptionStore(st).fetch(sub.id))
+    assert s.plan_id == pro.id and s.limits_snapshot == {"seats": 20}        # keeps the paid-for plan
+    assert s.pending_plan_id == basic.id
+
+
+def test_scheduled_downgrade_applies_at_full_price_at_renewal(monkeypatch):
     import app.core.billing_service as bs
     st = MemoryDataStore(); b = _svc(st)
-    basic, mid = _two_plans(b, 30000, 25000)               # start high, move to a slightly cheaper plan
-    sub = run(b.subscribe(tenant="ali", plan_id=basic.id, payment_token="pm"))
+    basic, pro = _two_plans(b)
+    sub = run(b.subscribe(tenant="ali", plan_id=pro.id, payment_token="pm"))
     monkeypatch.setattr(bs, "now_ts", lambda: sub.current_period_start)
-    res = run(b.change_plan(sub.id, new_plan_id=mid.id))
-    assert res["proration_minor"] == -5000                 # a credit
-
+    run(b.change_plan(sub.id, new_plan_id=basic.id))
     inv = run(b.run_cycle(sub.id))
-    assert inv.subtotal_minor == 20000                     # 25000 next period − 5000 credit
-    assert any(l.get("description", "").startswith("Plan change credit") and l["amount_minor"] == -5000
-               for l in inv.lines)
-    assert run(SubscriptionStore(st).fetch(sub.id)).pending_adjustment_minor == 0
+    assert inv.subtotal_minor == 10000                                       # new plan, full price, no proration
+    assert all("Plan change" not in l.get("description", "") for l in inv.lines)   # never a credit line
+    s = run(SubscriptionStore(st).fetch(sub.id))
+    assert s.plan_id == basic.id and s.limits_snapshot == {"seats": 5} and not s.pending_plan_id
 
 
-def test_a_credit_larger_than_one_invoice_carries_forward_and_never_goes_negative(monkeypatch):
+def test_an_upgrade_supersedes_a_scheduled_downgrade(monkeypatch):
     import app.core.billing_service as bs
     st = MemoryDataStore(); b = _svc(st)
-    basic, cheap = _two_plans(b, 30000, 10000)             # big downgrade -> −20000 credit vs a 10000 plan
-    sub = run(b.subscribe(tenant="ali", plan_id=basic.id, payment_token="pm"))
+    basic, pro = _two_plans(b)
+    mid = run(b.create_plan(name="Mid", prices=[{"interval": "month", "amount_minor": 20000,
+                                                 "currency": "SAR"}], limits={"seats": 10}))
+    sub = run(b.subscribe(tenant="ali", plan_id=mid.id, payment_token="pm"))
     monkeypatch.setattr(bs, "now_ts", lambda: sub.current_period_start)
-    run(b.change_plan(sub.id, new_plan_id=cheap.id))       # pending = −20000
-
-    inv1 = run(b.run_cycle(sub.id))
-    assert inv1.subtotal_minor == 0 and inv1.total_minor == 0    # 10000 fully credited, never negative
-    assert run(SubscriptionStore(st).fetch(sub.id)).pending_adjustment_minor == -10000  # remainder carried
-
-    inv2 = run(b.run_cycle(sub.id))                        # next cycle applies the rest
-    assert inv2.subtotal_minor == 0
-    assert run(SubscriptionStore(st).fetch(sub.id)).pending_adjustment_minor == 0        # fully consumed
+    run(b.change_plan(sub.id, new_plan_id=basic.id))     # downgrade scheduled (20000 -> 10000)
+    assert run(SubscriptionStore(st).fetch(sub.id)).pending_plan_id == basic.id
+    run(b.change_plan(sub.id, new_plan_id=pro.id))       # upgrade (20000 -> 30000) supersedes it
+    s = run(SubscriptionStore(st).fetch(sub.id))
+    assert s.plan_id == pro.id and not s.pending_plan_id
 
 
-def test_two_changes_in_one_period_net_before_billing(monkeypatch):
+def test_cancel_scheduled_change_undoes_it_and_is_idempotent(monkeypatch):
     import app.core.billing_service as bs
     st = MemoryDataStore(); b = _svc(st)
-    basic, pro = _two_plans(b, 10000, 30000)
-    sub = run(b.subscribe(tenant="ali", plan_id=basic.id, payment_token="pm"))
+    basic, pro = _two_plans(b)
+    sub = run(b.subscribe(tenant="ali", plan_id=pro.id, payment_token="pm"))
     monkeypatch.setattr(bs, "now_ts", lambda: sub.current_period_start)
-    run(b.change_plan(sub.id, new_plan_id=pro.id))         # +20000
-    res = run(b.change_plan(sub.id, new_plan_id=basic.id))  # back down: −20000
-    assert res["pending_adjustment_minor"] == 0            # the two net to nothing
+    run(b.change_plan(sub.id, new_plan_id=basic.id))
+    assert run(b.cancel_scheduled_change(sub.id))["cancelled_scheduled_change"] is True
+    assert not run(SubscriptionStore(st).fetch(sub.id)).pending_plan_id
+    assert run(b.run_cycle(sub.id)).subtotal_minor == 30000               # stays on pro
+    assert run(b.cancel_scheduled_change(sub.id))["cancelled_scheduled_change"] is False   # no-op
 
+
+def test_cancel_at_period_end_wins_over_a_scheduled_downgrade(monkeypatch):
+    import app.core.billing_service as bs
+    st = MemoryDataStore(); b = _svc(st)
+    basic, pro = _two_plans(b)
+    sub = run(b.subscribe(tenant="ali", plan_id=pro.id, payment_token="pm"))
+    monkeypatch.setattr(bs, "now_ts", lambda: sub.current_period_start)
+    run(b.change_plan(sub.id, new_plan_id=basic.id))     # downgrade scheduled
+    run(b.cancel(sub.id, at_period_end=True))            # and then a cancel
     inv = run(b.run_cycle(sub.id))
-    assert inv.subtotal_minor == 10000                     # just the (basic) plan; no stray adjustment line
-    assert not any("Plan change" in l.get("description", "") for l in inv.lines)
+    assert run(SubscriptionStore(st).fetch(sub.id)).plan_id == pro.id     # downgrade NOT adopted
+    assert inv.subtotal_minor == 30000

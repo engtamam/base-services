@@ -2411,6 +2411,51 @@
         ]
       }
     },
+    "/api/v1/billing/subscriptions/{sub_id}/cancel-scheduled-change": {
+      "post": {
+        "description": "Undo a scheduled downgrade before it takes effect \u2014 the shop stays on its current plan.\n\nA no-op (cancelled_scheduled_change: false) when nothing was scheduled, so a double click or a\nstale button is harmless rather than an error.",
+        "operationId": "cancel_scheduled_change_api_v1_billing_subscriptions__sub_id__cancel_scheduled_change_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sub_id",
+            "required": true,
+            "schema": {
+              "title": "Sub Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Cancel Scheduled Change Api V1 Billing Subscriptions  Sub Id  Cancel Scheduled Change Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Scheduled Change",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
     "/api/v1/billing/subscriptions/{sub_id}/change": {
       "post": {
         "operationId": "change_plan_api_v1_billing_subscriptions__sub_id__change_post",

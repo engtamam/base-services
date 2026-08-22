@@ -484,15 +484,42 @@ async def change_plan(request: Request, sub_id: str, body: ChangeIn,
     if sub is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
     _guard(principal, sub.tenant)
+    from app.core.billing_service import UpgradeChargeFailed, UpgradeChargeUnavailable
     try:
         result = await svc.change_plan(sub_id, new_plan_id=body.new_plan_id,
                                        interval=body.interval, quantity=body.quantity)
+    except UpgradeChargeFailed as e:
+        # The upgrade's prorated charge was declined (or there is no card) — the plan did NOT change.
+        # 402 so the shop can fix the payment method and retry; the reason is a domain code, not internals.
+        raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, str(e))
+    except UpgradeChargeUnavailable as e:
+        # The gateway was unreachable — retryable, distinct from a decline.
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e))
     except ValueError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
     await request.app.state.auditor.record(
         "subscription.changed", actor=principal.subject, tenant=sub.tenant,
         resource=f"subscription:{sub_id}", ip=request.client.host if request.client else "",
-        metadata={"new_plan": body.new_plan_id or ""})
+        metadata={"new_plan": body.new_plan_id or "", "applied": result.get("applied", "")})
+    return result
+
+
+@router.post("/subscriptions/{sub_id}/cancel-scheduled-change")
+async def cancel_scheduled_change(request: Request, sub_id: str,
+                                  principal: Principal = Depends(_SELF)) -> dict:
+    """Undo a scheduled downgrade before it takes effect — the shop stays on its current plan.
+
+    A no-op (cancelled_scheduled_change: false) when nothing was scheduled, so a double click or a
+    stale button is harmless rather than an error."""
+    svc = (await build_billing(request))
+    sub = await svc._subs.fetch(sub_id)
+    if sub is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    _guard(principal, sub.tenant)
+    result = await svc.cancel_scheduled_change(sub_id)
+    await request.app.state.auditor.record(
+        "subscription.scheduled_change_cancelled", actor=principal.subject, tenant=sub.tenant,
+        resource=f"subscription:{sub_id}", ip=request.client.host if request.client else "")
     return result
 
 
