@@ -151,3 +151,76 @@ def test_plan_change_recaptures_terms():
     run(b.change_plan(sub.id, new_plan_id=pro.id))                  # customer chose this
     s = run(SubscriptionStore(st).fetch(sub.id))
     assert s.price_snapshot["amount_minor"] == 30000 and s.limits_snapshot == {"seats": 20}
+
+
+# ── change_plan proration is APPLIED, not computed and discarded ──────────────────────────────────────
+def _two_plans(b, basic_price=10000, other_price=30000, other_seats=20):
+    basic = _setup(b, price=basic_price)
+    other = run(b.create_plan(name="Max", prices=[{"interval": "month", "amount_minor": other_price,
+                                                    "currency": "SAR"}], limits={"seats": other_seats}))
+    return basic, other
+
+
+def test_upgrade_proration_is_charged_on_the_next_invoice(monkeypatch):
+    import app.core.billing_service as bs
+    st = MemoryDataStore(); b = _svc(st)
+    basic, pro = _two_plans(b, 10000, 30000)
+    sub = run(b.subscribe(tenant="ali", plan_id=basic.id, payment_token="pm"))
+    monkeypatch.setattr(bs, "now_ts", lambda: sub.current_period_start)   # whole period remains -> full diff
+    res = run(b.change_plan(sub.id, new_plan_id=pro.id))
+    assert res["proration_minor"] == 20000 and res["pending_adjustment_minor"] == 20000
+
+    inv = run(b.run_cycle(sub.id))
+    assert inv.subtotal_minor == 50000                     # 30000 next period + 20000 upgrade proration
+    assert any(l.get("description", "").startswith("Plan change charge") and l["amount_minor"] == 20000
+               for l in inv.lines)
+    assert inv.tax_minor == 7500                            # VAT applies to the proration too (15% of 50000)
+    assert run(SubscriptionStore(st).fetch(sub.id)).pending_adjustment_minor == 0   # consumed
+
+
+def test_downgrade_proration_credits_the_next_invoice(monkeypatch):
+    import app.core.billing_service as bs
+    st = MemoryDataStore(); b = _svc(st)
+    basic, mid = _two_plans(b, 30000, 25000)               # start high, move to a slightly cheaper plan
+    sub = run(b.subscribe(tenant="ali", plan_id=basic.id, payment_token="pm"))
+    monkeypatch.setattr(bs, "now_ts", lambda: sub.current_period_start)
+    res = run(b.change_plan(sub.id, new_plan_id=mid.id))
+    assert res["proration_minor"] == -5000                 # a credit
+
+    inv = run(b.run_cycle(sub.id))
+    assert inv.subtotal_minor == 20000                     # 25000 next period − 5000 credit
+    assert any(l.get("description", "").startswith("Plan change credit") and l["amount_minor"] == -5000
+               for l in inv.lines)
+    assert run(SubscriptionStore(st).fetch(sub.id)).pending_adjustment_minor == 0
+
+
+def test_a_credit_larger_than_one_invoice_carries_forward_and_never_goes_negative(monkeypatch):
+    import app.core.billing_service as bs
+    st = MemoryDataStore(); b = _svc(st)
+    basic, cheap = _two_plans(b, 30000, 10000)             # big downgrade -> −20000 credit vs a 10000 plan
+    sub = run(b.subscribe(tenant="ali", plan_id=basic.id, payment_token="pm"))
+    monkeypatch.setattr(bs, "now_ts", lambda: sub.current_period_start)
+    run(b.change_plan(sub.id, new_plan_id=cheap.id))       # pending = −20000
+
+    inv1 = run(b.run_cycle(sub.id))
+    assert inv1.subtotal_minor == 0 and inv1.total_minor == 0    # 10000 fully credited, never negative
+    assert run(SubscriptionStore(st).fetch(sub.id)).pending_adjustment_minor == -10000  # remainder carried
+
+    inv2 = run(b.run_cycle(sub.id))                        # next cycle applies the rest
+    assert inv2.subtotal_minor == 0
+    assert run(SubscriptionStore(st).fetch(sub.id)).pending_adjustment_minor == 0        # fully consumed
+
+
+def test_two_changes_in_one_period_net_before_billing(monkeypatch):
+    import app.core.billing_service as bs
+    st = MemoryDataStore(); b = _svc(st)
+    basic, pro = _two_plans(b, 10000, 30000)
+    sub = run(b.subscribe(tenant="ali", plan_id=basic.id, payment_token="pm"))
+    monkeypatch.setattr(bs, "now_ts", lambda: sub.current_period_start)
+    run(b.change_plan(sub.id, new_plan_id=pro.id))         # +20000
+    res = run(b.change_plan(sub.id, new_plan_id=basic.id))  # back down: −20000
+    assert res["pending_adjustment_minor"] == 0            # the two net to nothing
+
+    inv = run(b.run_cycle(sub.id))
+    assert inv.subtotal_minor == 10000                     # just the (basic) plan; no stray adjustment line
+    assert not any("Plan change" in l.get("description", "") for l in inv.lines)

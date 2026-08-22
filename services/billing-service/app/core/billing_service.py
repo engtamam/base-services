@@ -445,8 +445,16 @@ class BillingService:
         # a deliberate plan change re-captures the terms (the customer chose them)
         sub.price_snapshot, sub.limits_snapshot = self._snapshot(new_plan, new_interval)
         sub.terms_version = iso()
+        # APPLY the proration instead of discarding it: the new entitlements take effect immediately
+        # (above), so the prorated difference for the rest of THIS period is owed too. It is accumulated
+        # onto the subscription — signed, so an upgrade adds a charge and a downgrade adds a credit, and
+        # two changes in one period net correctly — and the NEXT run_cycle folds it into the invoice.
+        # Charging it via the same cycle seam (tax, gateway, ledger, e-invoice, idempotency) rather than
+        # a second immediate-charge path is what keeps a plan change auditable and exactly-once.
+        sub.pending_adjustment_minor = int(getattr(sub, "pending_adjustment_minor", 0) or 0) + int(delta)
         await self._subs.save(sub)
-        return {"subscription_id": sub.id, "proration_minor": delta}
+        return {"subscription_id": sub.id, "proration_minor": delta,
+                "pending_adjustment_minor": sub.pending_adjustment_minor}
 
     async def migrate_terms(self, sub_id: str) -> dict[str, Any]:
         """Explicitly move a grandfathered subscription onto the CURRENT plan terms.
@@ -603,11 +611,26 @@ class BillingService:
         # discounting, and until this argument existed neither ever did.
         discount = pricing.coupon_discount(coupon.to_dict() if coupon else None, subtotal,
                                            now=self._clock())
-        taxable, tax, total = self._split_tax(subtotal - discount, price.get("includes_tax", False),
+        net_base = subtotal - discount
+        # PLAN-CHANGE PRORATION, folded in here (a coupon discounts the plan fee, not a plan-change
+        # amount, so the adjustment lands AFTER the discount). Signed: an upgrade charge adds, a
+        # downgrade credit subtracts. A credit larger than this invoice is applied only down to zero and
+        # the remainder is carried forward on the subscription — an invoice never goes negative, and the
+        # shop is never over-credited in one cycle. It is folded before tax, so the prorated plan
+        # difference carries VAT exactly as the plan fee does.
+        pending = int(getattr(sub, "pending_adjustment_minor", 0) or 0)
+        applied_adj = 0
+        if pending:
+            applied_adj = pending if net_base + pending >= 0 else -net_base
+            sub.pending_adjustment_minor = pending - applied_adj    # carried remainder; 0 when fully applied
+            net_base += applied_adj
+        taxable, tax, total = self._split_tax(net_base, price.get("includes_tax", False),
                                               reverse_charge=bool(sub.buyer_vat) and self._cfg.get("reverse_charge", False))
         line = {"description": (plan.name if plan else "Subscription"),
                 "quantity": sub.quantity, "unit_minor": price.get("amount_minor", 0),
-                "amount_minor": taxable}
+                # The plan portion — the adjustment (if any) is its own line below, and the two sum to
+                # the invoice's taxable subtotal.
+                "amount_minor": taxable - applied_adj}
         if proration is not None:
             # A tax invoice must state WHY the amount is not the full unit price. The line names the
             # partial first period explicitly and carries the exact fraction, so the charge is legible
@@ -615,6 +638,14 @@ class BillingService:
             line["description"] += " (prorated first period)"
             line["proration"] = proration
         lines = [line]
+        if applied_adj != 0:
+            # A separate, named line so a plan change is visible on the bill — an upgrade CHARGE or a
+            # downgrade CREDIT for the rest of the period, with what (if anything) was carried forward.
+            lines.append({
+                "description": "Plan change " + ("charge" if applied_adj > 0 else "credit"),
+                "quantity": 1, "unit_minor": applied_adj, "amount_minor": applied_adj,
+                "adjustment": {"pending_before": pending, "applied": applied_adj,
+                               "carried_forward": sub.pending_adjustment_minor}})
         # Captured from the plan AS SOLD, onto the invoice. Recomputing this later from the live
         # plan would mean a repriced plan silently changes what an old invoice granted.
         granted = int((plan.limits or {}).get(self._cfg["plan_credit_limit_key"], 0) or 0) if plan else 0

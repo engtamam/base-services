@@ -110,6 +110,13 @@ class Subscription:
     # by the partial period and clears this; every cycle after is a full interval. Explicit rather than
     # inferred from period length, because a TRIAL also has a short first period and must NOT prorate.
     first_period_prorated: bool = False
+    # A SIGNED proration balance owed on the NEXT invoice, in minor units: POSITIVE = the shop owes it
+    # (an upgrade's prorated difference for the rest of the current period), NEGATIVE = the shop is owed
+    # it (a downgrade credit for the unused higher tier). change_plan() accumulates it here; the next
+    # run_cycle folds it into the invoice as an adjustment line, applying only up to the invoice (a
+    # credit larger than one invoice carries forward), so a plan change is actually billed — not
+    # computed and discarded.
+    pending_adjustment_minor: int = 0
     cancel_at_period_end: bool = False
     created: str = ""
 
