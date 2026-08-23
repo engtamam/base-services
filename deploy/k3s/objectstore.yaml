@@ -60,6 +60,12 @@ metadata:
   name: objectstore
 spec:
   replicas: 1
+  # SeaweedFS holds an EXCLUSIVE leveldb lock on its RWO volume. The default RollingUpdate starts the
+  # new pod before the old one frees the volume, so the new pod blocks forever on the lock and the old
+  # one is never torn down — a self-inflicted deadlock on every rollout. Recreate stops the old pod
+  # first, then starts the new one, which is the only correct strategy for a single-writer + RWO store.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: objectstore
