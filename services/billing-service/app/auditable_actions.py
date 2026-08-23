@@ -165,6 +165,15 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "nothing",
     },
     {
+        "action": "billing.platform_subscriptions_viewed",
+        "source": "admin",
+        "critical": False,
+        "resource": "subscriptions",
+        "why": "the cross-tenant subscription view sees every customer's plan and lifecycle across "
+               "the whole platform; like the invoice view it changes nothing, but who looked across "
+               "all tenants and when is a privileged read worth recording",
+    },
+    {
         "action": "payment.reconciled",
         "source": "admin",
         "critical": True,

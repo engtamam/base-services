@@ -315,6 +315,51 @@ class BillingService:
                              for r in collected[:limit]],
                 "next_cursor": nxt}
 
+    # A cross-tenant SUBSCRIPTION view, the counterpart to the invoice one: it answers "how many
+    # new / active / canceled subscriptions this month" that no per-tenant query gives without a
+    # tenant list. A lifecycle projection — plan, status, and the two timestamps — never buyer PII,
+    # for the same reason the invoice view is a money projection: a platform operator counting churn
+    # has no need for a thousand buyers' names, and a whitelist keeps a field added later from leaking.
+    PLATFORM_SUBSCRIPTION_FIELDS = ("id", "tenant", "plan_id", "status", "created", "canceled_at")
+
+    async def list_subscriptions_platform(self, *, status: str = "", plan_id: str = "",
+                                          tenant: str = "", since: str = "", until: str = "",
+                                          limit: int = 100, cursor: str | None = None) -> dict:
+        """Subscriptions ACROSS ALL TENANTS, newest first, for a platform lifecycle view.
+
+        Mirrors list_invoices_platform exactly — gated on platform.billing and audited at the route,
+        a mandatory filter, paginated and capped. `tenant` narrows to one customer (still the
+        cross-tenant path). `since`/`until` bound the CREATION date; the datastore is equality-only,
+        so the window is a bounded post-filter over the keyset-ordered (created desc) pages: paging
+        stops as soon as a row falls before `since`, and the scan is capped so a wide window cannot
+        become an unbounded read. The cursor stays a real (created, id) keyset so two subscriptions
+        created in the same instant never drop a row off a page.
+        """
+        collected: list[dict] = []
+        nxt = cursor
+        for _ in range(self._cfg["platform_max_pages"]):
+            rows, nxt = await self._subs.browse_platform(
+                where={"status": status, "plan_id": plan_id, "tenant": tenant},
+                limit=limit, after=nxt)
+            below_since = False
+            for r in rows:
+                created = r.get("created", "")
+                if until and created > until:
+                    continue                       # newer than the window; keep scanning down
+                if since and created < since:
+                    below_since = True             # created-desc: everything past here is older
+                    break
+                collected.append(r)
+                if len(collected) >= limit:
+                    break
+            if below_since or not nxt or len(collected) >= limit:
+                if below_since:
+                    nxt = None                     # the window is exhausted, not merely this page
+                break
+        return {"subscriptions": [{k: r.get(k) for k in self.PLATFORM_SUBSCRIPTION_FIELDS if k in r}
+                                  for r in collected[:limit]],
+                "next_cursor": nxt}
+
     async def get_coupon(self, code: str) -> dict | None:
         row = await self._coupons.get(code)
         return _coupons.view(row, self._clock()) if row else None
@@ -633,6 +678,7 @@ class BillingService:
             sub.cancel_at_period_end = True
         else:
             sub.status = "canceled"
+            sub.canceled_at = sub.canceled_at or iso()   # stamp the moment it actually ended
         saved = await self._subs.save(sub)
         if self._events is not None:
             # `at_period_end` is carried because the two cases are genuinely different to a
@@ -665,6 +711,8 @@ class BillingService:
         if allowed_from and sub.status not in allowed_from:
             raise ValueError(f"cannot move a {sub.status!r} subscription to {status!r}")
         sub.status = status
+        if status == "canceled":
+            sub.canceled_at = sub.canceled_at or iso()   # any path to canceled carries its timestamp
         return await self._subs.save(sub)
 
     async def record_usage(self, *, tenant: str, subscription_id: str, metric: str, quantity: int) -> dict:

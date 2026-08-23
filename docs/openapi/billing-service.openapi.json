@@ -1049,6 +1049,132 @@
         ]
       }
     },
+    "/api/v1/billing/admin/subscriptions": {
+      "get": {
+        "description": "Subscriptions ACROSS ALL TENANTS \u2014 a platform lifecycle view. platform.billing only.\n\nThe exact counterpart of /admin/invoices, fenced identically: the capability is platform-only (a\ntenant admin gets 403, never their own rows silently); a filter is mandatory (no unbounded dump);\nit is paginated and capped; it is audited write-ahead (who looked across every tenant, and when);\nit returns a lifecycle projection, not buyer PII; and it is a DISTINCT route, so it reads as the\nprivileged one rather than a magic parameter on the tenant-scoped list. Answers \"how many\nnew / active / canceled subscriptions this month\" (created / status / canceled_at).",
+        "operationId": "list_subscriptions_platform_api_v1_billing_admin_subscriptions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 32,
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "plan_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 64,
+              "title": "Plan Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 128,
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 32,
+              "title": "Since",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 32,
+              "title": "Until",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 1000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Subscriptions Platform Api V1 Billing Admin Subscriptions Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Subscriptions Platform",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
     "/api/v1/billing/checkouts": {
       "post": {
         "description": "Server-create a payment checkout/session for the customer's widget or redirect.\n\nWe never proxy a provider key: the client gets the session/checkout id (and, for a widget, the\nprovider's own script URL), never our credentials. A provider with no server-side session says\nso (`supported: false`). Completion reconciles through the existing webhook / GET-status path\ninto _mark_paid, so a completed checkout is the SAME paid invoice as a direct charge.",

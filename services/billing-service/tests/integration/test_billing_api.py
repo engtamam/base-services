@@ -112,6 +112,51 @@ def test_platform_invoice_list_exposes_tax_breakdown_and_refunds(client):
     assert {"subtotal_minor", "tax_minor", "total_minor", "refunded_minor"}.issubset(rows[0])
 
 
+def test_platform_subscription_list_needs_a_filter_and_rejects_a_non_iso_bound(client):
+    # Mirror of the invoice route: an unfiltered cross-tenant dump is refused, and an epoch bound
+    # (compared as text) that would silently return an empty page must 422 rather than mislead.
+    assert client.get("/api/v1/billing/admin/subscriptions", headers=_adm()).status_code == 400
+    assert client.get("/api/v1/billing/admin/subscriptions?tenant=t1&since=1780272000",
+                      headers=_adm()).status_code == 422
+    # since/until refine a store-level filter (status/plan_id/tenant), exactly as the invoice route:
+    ok = client.get("/api/v1/billing/admin/subscriptions?tenant=t1&since=2020-01-01T00:00:00Z",
+                    headers=_adm())
+    assert ok.status_code == 200
+
+
+def test_platform_subscription_list_projects_lifecycle_fields_no_pii(client):
+    plan = _plan(client)
+    client.post("/api/v1/billing/subscriptions",
+                json={"plan_id": plan["id"], "payment_token": "pm", "buyer_name": "Secret Buyer"},
+                headers=_adm()).json()
+    rows = client.get("/api/v1/billing/admin/subscriptions?tenant=t1",
+                      headers=_adm()).json()["subscriptions"]
+    assert rows
+    assert {"id", "tenant", "plan_id", "status", "created", "canceled_at"}.issubset(rows[0])
+    # a lifecycle projection, never buyer PII
+    assert "buyer_name" not in rows[0] and "payment_token" not in rows[0]
+    assert "Secret Buyer" not in client.get(
+        "/api/v1/billing/admin/subscriptions?tenant=t1", headers=_adm()).text
+
+
+def test_platform_subscription_list_is_platform_capability_only(client):
+    # a tenant admin (billing.manage) is refused outright, never handed their own rows silently
+    assert client.get("/api/v1/billing/admin/subscriptions?tenant=t1",
+                      headers=_adm(caps=("billing.manage",))).status_code == 403
+
+
+def test_canceled_at_is_stamped_on_immediate_cancel(client):
+    plan = _plan(client)
+    sub = client.post("/api/v1/billing/subscriptions",
+                      json={"plan_id": plan["id"], "payment_token": "pm"}, headers=_adm()).json()
+    # cancel immediately (not at period end)
+    client.post(f"/api/v1/billing/subscriptions/{sub['id']}/cancel?at_period_end=false",
+                headers=_adm())
+    row = next(r for r in client.get("/api/v1/billing/admin/subscriptions?status=canceled",
+                                     headers=_adm()).json()["subscriptions"] if r["id"] == sub["id"])
+    assert row["status"] == "canceled" and row["canceled_at"]
+
+
 def test_subscribe_run_paid_einvoiced(client):
     plan = _plan(client)
     sub = client.post("/api/v1/billing/subscriptions",

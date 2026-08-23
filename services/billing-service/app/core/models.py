@@ -121,6 +121,10 @@ class Subscription:
     pending_quantity: int = 0
     cancel_at_period_end: bool = False
     created: str = ""
+    # When the subscription actually became `canceled` (ISO-8601), stamped at the transition — not to
+    # be confused with cancel_at_period_end (a SCHEDULED intent that has not taken effect yet). Empty
+    # until then. A platform view answers "how many canceled this month" off this, never off `created`.
+    canceled_at: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

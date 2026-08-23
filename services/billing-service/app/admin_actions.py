@@ -41,6 +41,23 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         ],
     },
     {
+        "id": "billing.platform_subscriptions", "label": "Subscriptions (all tenants)",
+        "method": "GET", "path": "/api/v1/billing/admin/subscriptions",
+        "capability": "platform.billing", "group": "Subscriptions",
+        "params": [
+            {"name": "status", "in": "query", "type": "string", "required": False,
+             "help": "at least one filter is required — trialing | active | past_due | paused | canceled"},
+            {"name": "plan_id", "in": "query", "type": "string", "required": False},
+            {"name": "tenant", "in": "query", "type": "string", "required": False,
+             "help": "narrow to one customer"},
+            {"name": "since", "in": "query", "type": "string", "required": False,
+             "help": "creation-date lower bound, e.g. 2026-07-01"},
+            {"name": "until", "in": "query", "type": "string", "required": False},
+            {"name": "limit", "in": "query", "type": "integer", "required": False},
+            {"name": "cursor", "in": "query", "type": "string", "required": False},
+        ],
+    },
+    {
         "id": "billing.list_invoices", "label": "Invoices", "method": "GET",
         "path": "/api/v1/billing/invoices", "capability": "billing.manage", "group": "Invoices",
         "params": [

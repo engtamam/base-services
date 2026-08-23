@@ -125,6 +125,7 @@ def build_manifest(
             {"path": "/api/v1/billing/usage", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/invoices", "tier": "user", "method": "GET"},
             {"path": "/api/v1/billing/admin/invoices", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/billing/admin/subscriptions", "tier": "user", "method": "GET"},
             {"path": "/api/v1/billing/invoices/{id}/pdf", "tier": "user", "method": "GET"},
             {"path": "/api/v1/billing/invoices/{id}/receipt", "tier": "user", "method": "GET"},
             {"path": "/api/v1/billing/invoices/{id}/document", "tier": "user", "method": "GET"},

@@ -758,6 +758,55 @@ async def list_invoices_platform(request: Request,
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
 
+@router.get("/admin/subscriptions", dependencies=[Depends(_PLATFORM), Depends(rate_limit)])
+async def list_subscriptions_platform(request: Request,
+                                      status_: str = Query(default="", alias="status", max_length=32),
+                                      plan_id: str = Query(default="", max_length=64),
+                                      tenant: str = Query(default="", max_length=128),
+                                      since: str = Query(default="", max_length=32),
+                                      until: str = Query(default="", max_length=32),
+                                      limit: int | None = Query(default=None, ge=1, le=1000),
+                                      cursor: str | None = Query(default=None, max_length=512),
+                                      principal: Principal = Depends(require_user)) -> dict:
+    """Subscriptions ACROSS ALL TENANTS — a platform lifecycle view. platform.billing only.
+
+    The exact counterpart of /admin/invoices, fenced identically: the capability is platform-only (a
+    tenant admin gets 403, never their own rows silently); a filter is mandatory (no unbounded dump);
+    it is paginated and capped; it is audited write-ahead (who looked across every tenant, and when);
+    it returns a lifecycle projection, not buyer PII; and it is a DISTINCT route, so it reads as the
+    privileged one rather than a magic parameter on the tenant-scoped list. Answers "how many
+    new / active / canceled subscriptions this month" (created / status / canceled_at).
+    """
+    if not (status_ or plan_id or tenant or since or until):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "PLATFORM_LISTING_NEEDS_A_FILTER")
+    # `since`/`until` bound an ISO-8601 CREATION date, compared AS TEXT against the stored ISO
+    # `created`. An epoch bound would lexicographically compare "2026-…" vs "178…" and read EVERY
+    # real row as outside the window — a plausible, valid-cursored empty page. So reject a non-ISO
+    # bound LOUDLY here, exactly as the invoice route does.
+    import datetime as _dt
+    for _name, _val in (("since", since), ("until", until)):
+        if not _val:
+            continue
+        try:
+            _dt.datetime.fromisoformat(_val.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(
+                422,
+                f"{_name} must be an ISO-8601 timestamp (e.g. 2026-06-15T09:00:00Z), not {_val!r}")
+    await request.app.state.auditor.record(
+        "billing.platform_subscriptions_viewed", actor=principal.subject, tenant=principal.tenant,
+        resource="subscriptions:all-tenants", ip=request.client.host if request.client else "",
+        metadata={"status": status_, "plan_id": plan_id, "tenant": tenant,
+                  "since": since, "until": until})
+    s = get_settings()
+    try:
+        return await (await build_billing(request)).list_subscriptions_platform(
+            status=status_, plan_id=plan_id, tenant=tenant,
+            since=since, until=until, limit=_page(limit, s), cursor=cursor)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+
 def _pdf_response(rendered, filename: str) -> Response:
     if rendered is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "PDF_UNAVAILABLE")

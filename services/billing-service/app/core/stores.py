@@ -208,6 +208,8 @@ class CouponStore(_Repo):
 
 class SubscriptionStore(_Repo):
     filterable = ("status", "plan_id")
+    # The platform (all-tenants) view may additionally narrow to one tenant — same as InvoiceStore.
+    platform_filterable = ("tenant",)
     collection = "subscriptions"
 
     def __init__(self, store: DataStore, cache=None) -> None:
