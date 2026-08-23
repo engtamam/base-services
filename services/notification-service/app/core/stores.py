@@ -9,6 +9,7 @@ _PREFS = "preferences"
 _DELIVERIES = "deliveries"
 _INAPP = "inapp"
 _IDEMPO = "notify_idempo"    # idempotency_key -> {result, ts}
+_WA_NUMBER_INDEX = "wa_number_index"   # phone_number_id -> {tenant} (routing map, not a secret)
 _RECEIPTS = "notify_receipts"  # append-only receipt-event log, ordered by receipt_ts (catch-up read)
 _RECEIPT_KIND = "receipt"      # constant partition key so the ordered read is a filtered query, not a scan
 
@@ -61,6 +62,19 @@ class DeliveryStore:
         # sweeper: an operator's view of recent delivery attempts across every tenant. Bounded
         # by the caller's limit, and not reachable from any tenant-facing route.
         return await self._store.scan_all(_DELIVERIES, limit)
+
+    async def by_tenant(self, tenant: str, limit: int = 100, *, channel: str = "") -> list[dict]:
+        """Recent deliveries for ONE tenant, newest first, optionally one channel. Both filters are
+        pushed into the datastore, so this costs one tenant's rows — never a scan of every tenant's —
+        and backs the operator diagnostic ("why is this shop's WhatsApp broken"). An empty tenant
+        returns nothing rather than a cross-tenant scan: an unfiltered dump is not what this answers."""
+        if not tenant:
+            return []
+        where = {"tenant": tenant}
+        if channel:
+            where["channel"] = channel
+        rows, _ = await self._store.find(_DELIVERIES, where, limit=limit, sort=("ts", "desc"))
+        return rows
 
     async def due(self, status: str, limit: int) -> list[Delivery]:
         """Deliveries waiting for another attempt. Pushed down by status — never a scan.
@@ -134,6 +148,28 @@ class DeliveryStore:
 
     async def remember_idempotent(self, key: str, result: dict, now: float) -> None:
         await self._store.put(_IDEMPO, key, {"result": result, "ts": now})
+
+
+class WhatsAppNumberIndex:
+    """phone_number_id → tenant. A routing map, NOT a secret: a number id is not sensitive, and this
+    is what lets a caller holding a shop's WhatsApp NUMBER reach its deliveries without knowing the
+    internal tenant id (and, later, attribute an inbound event that arrives keyed only by number).
+    Written wherever a number is bound to a tenant — Embedded Signup exchange and registration."""
+
+    def __init__(self, store: DataStore) -> None:
+        self._store = store
+
+    async def bind(self, phone_number_id: str, tenant: str) -> None:
+        # Best-effort and idempotent: a re-registration of the same number rebinds to the same tenant.
+        if not phone_number_id or not tenant:
+            return
+        await self._store.put(_WA_NUMBER_INDEX, phone_number_id, {"tenant": tenant})
+
+    async def tenant_of(self, phone_number_id: str) -> str | None:
+        if not phone_number_id:
+            return None
+        row = await self._store.get(_WA_NUMBER_INDEX, phone_number_id)
+        return row.get("tenant") if row else None
 
 
 class InAppStore:

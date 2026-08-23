@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hmac
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from app.api.v1.notifications import build_notifier
@@ -141,13 +141,24 @@ async def internal_embedded_signup(request: Request, body: EmbeddedSignupInterna
         graph_base=s.WHATSAPP_ONBOARDING_GRAPH_BASE,
         on_stored=lambda t: _invalidate(request, t))
     try:
-        return await onboarding.exchange(
+        result = await onboarding.exchange(
             tenant=body.tenant, code=body.code, waba_id=body.waba_id,
             phone_number_id=body.phone_number_id, pin=body.pin or "")
     except ConfigError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
     except OnboardingError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    if result.get("ok"):
+        # Bind number → tenant so an operator (or later an inbound event keyed only by number) can
+        # reach this shop's deliveries. Best-effort: the credentials ARE stored, so a failure here
+        # must not turn onboarding into an error — the map is rebuilt on the next registration.
+        try:
+            from app.core.stores import WhatsAppNumberIndex
+            await WhatsAppNumberIndex(request.app.state.container.datastore).bind(
+                body.phone_number_id, body.tenant)
+        except Exception:  # noqa: BLE001
+            pass
+    return result
 
 
 @router.get("/notifications/receipts", dependencies=[Depends(require_internal_token)])
@@ -414,6 +425,13 @@ async def register_whatsapp_number(request: Request, body: WaRegisterIn):
                                              value=pin, actor_ref="")
         except Exception:  # noqa: BLE001 — sealing is a convenience, registration already succeeded
             pass
+    if res.registered:
+        # Bind number → tenant here too — registration is the other place a number becomes a tenant's.
+        try:
+            from app.core.stores import WhatsAppNumberIndex
+            await WhatsAppNumberIndex(request.app.state.container.datastore).bind(phone_id, body.tenant)
+        except Exception:  # noqa: BLE001 — best-effort, the number is registered regardless
+            pass
     await request.app.state.auditor.record(
         "whatsapp.number_registered", actor="", tenant=body.tenant,
         resource=f"phone:{phone_id}", ip=request.client.host if request.client else "",
@@ -455,6 +473,47 @@ async def whatsapp_number_status(request: Request, tenant: str, phone_number_id:
         # a live number as broken; TOKEN_REVOKED especially must reach a disconnect sweep as a failure.
         return JSONResponse(res, status_code=status.HTTP_502_BAD_GATEWAY)
     return res
+
+
+# Fields a delivery diagnostic exposes. A whitelist, and deliberately WITHOUT the raw recipient: the
+# operator needs to correlate a failed message, not a customer's full phone number, so the recipient
+# is masked to its last four. Everything else is the send/receipt state the "why is this broken"
+# screen reasons about — our status machine, Meta's receipt axis, and the failure reason.
+def _delivery_diag(row: dict) -> dict:
+    recipient = row.get("recipient", "") or ""
+    hint = ("•••" + recipient[-4:]) if len(recipient) > 4 else ("•" * len(recipient))
+    return {"id": row.get("id", ""), "recipient_hint": hint,
+            "template_key": row.get("template_key", ""), "status": row.get("status", ""),
+            "error": row.get("error", ""), "provider": row.get("provider", ""),
+            "provider_message_id": row.get("provider_message_id", ""),
+            "receipt_status": row.get("receipt_status", ""),
+            "receipt_ts": row.get("receipt_ts", 0.0), "attempts": row.get("attempts", 0),
+            "ts": row.get("ts", "")}
+
+
+@router.get("/whatsapp/deliveries", dependencies=[Depends(require_internal_token)])
+async def whatsapp_deliveries(request: Request, tenant: str = Query(default="", max_length=128),
+                              phone_number_id: str = Query(default="", max_length=128),
+                              limit: int = Query(default=50, ge=1, le=500)) -> dict:
+    """Recent WhatsApp deliveries for ONE shop — the 'why is this shop's WhatsApp broken' view.
+
+    Addressed by `tenant`, or by the shop's `phone_number_id` resolved through the number→tenant
+    index (the operator usually has the number, not the internal tenant id). Tenant-scoped by design:
+    the query is pushed into the datastore keyed on tenant + channel, so it reads one shop's rows and
+    never becomes a cross-tenant dump. Each row carries our send status, Meta's receipt status, and
+    the failure reason — with the recipient masked to its last four digits.
+    """
+    from app.core.stores import DeliveryStore, WhatsAppNumberIndex
+    ds = request.app.state.container.datastore
+    resolved = tenant
+    if not resolved and phone_number_id:
+        resolved = await WhatsAppNumberIndex(ds).tenant_of(phone_number_id) or ""
+    if not resolved:
+        # No tenant, and no number we recognise: refuse rather than answer an unfiltered scan.
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "a tenant, or a known phone_number_id, is required")
+    rows = await DeliveryStore(ds).by_tenant(resolved, limit, channel="whatsapp")
+    return {"tenant": resolved, "deliveries": [_delivery_diag(r) for r in rows]}
 
 
 @router.get("/whatsapp/messaging-limit", dependencies=[Depends(require_internal_token)])

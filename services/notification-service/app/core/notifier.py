@@ -96,14 +96,15 @@ class NotificationService:
 
         if channel not in CHANNELS:
             return await self._finish(idempotency_key, await self._record(
-                recipient, channel, template_key, "failed", error=f"unknown channel: {channel}"))
+                recipient, channel, template_key, "failed", tenant=tenant or "",
+                error=f"unknown channel: {channel}"))
 
         # 1) preferences / opt-out
         if user_id:
             pref = await self._prefs.get(user_id)
             if not pref.allows(channel, event):
                 return await self._finish(idempotency_key, await self._record(
-                    recipient, channel, template_key, "suppressed"))
+                    recipient, channel, template_key, "suppressed", tenant=tenant or ""))
 
         # 1b) CONSENT — a different question from the preference above, and the one this service
         # could not previously ask. A preference is the user's channel opt-out; consent is the
@@ -122,7 +123,7 @@ class NotificationService:
                 # so a caller that dropped the tenant sees the cause instead of a plausible-looking
                 # deny.
                 return await self._finish(idempotency_key, await self._record(
-                    recipient, channel, template_key, "consent_no_tenant",
+                    recipient, channel, template_key, "consent_no_tenant", tenant=tenant or "",
                     error=f"{purpose}: a consent-gated send requires a tenant"))
             verdict = await self._consent.check(
                 tenant=tenant, subject=user_id, purpose=purpose)
@@ -131,7 +132,7 @@ class NotificationService:
                 # basis look identical in a delivery log otherwise, and they are answered very
                 # differently when somebody asks why a person stopped receiving mail.
                 return await self._finish(idempotency_key, await self._record(
-                    recipient, channel, template_key, "consent_denied",
+                    recipient, channel, template_key, "consent_denied", tenant=tenant or "",
                     error=f"{purpose}: {verdict.reason or verdict.status}"))
 
         # 1c) WHATSAPP takes a DIFFERENT path: the "template" is a Meta-APPROVED template referenced
@@ -149,14 +150,14 @@ class NotificationService:
         tmpl = await self._templates.get(template_key, locale or self._default_locale, self._default_locale)
         if tmpl is None:
             return await self._record(recipient, channel, template_key, "failed",
-                                      error="template not found")
+                                      tenant=tenant or "", error="template not found")
 
         # 3) render (injection-safe)
         try:
             subject, body = self._renderer.render(tmpl.subject, tmpl.body, variables or {})
         except Exception as exc:
             return await self._record(recipient, channel, template_key, "failed",
-                                      error=f"render: {type(exc).__name__}")
+                                      tenant=tenant or "", error=f"render: {type(exc).__name__}")
 
         # 4) send via the channel
         ok, provider, error = await self._deliver(channel, recipient, subject, body, user_id)
@@ -164,14 +165,15 @@ class NotificationService:
         # 5) record — and if it failed, decide whether it is DEAD or merely DELAYED.
         if ok:
             return await self._finish(idempotency_key, await self._record(
-                recipient, channel, template_key, SENT, provider=provider, attempts=1))
+                recipient, channel, template_key, SENT, provider=provider, attempts=1,
+                tenant=tenant or ""))
 
         return await self._finish(idempotency_key, await self._on_failure(
             recipient=recipient, channel=channel, template_key=template_key, provider=provider,
-            error=error, attempt=1,
+            error=error, attempt=1, tenant=tenant or "",
             payload={"recipient": recipient, "channel": channel, "template_key": template_key,
                      "locale": locale, "variables": variables or {}, "user_id": user_id,
-                     "event": event}))
+                     "event": event, "tenant": tenant or ""}))
 
     async def _deliver_whatsapp(self, *, recipient: str, tenant: str, template_key: str,
                                 language: str, variables: dict, biz_opaque: str = "",
@@ -181,9 +183,14 @@ class NotificationService:
         `whatsapp_override` sends from a SPECIFIC number (a branch's), bypassing the tenant's default
         chain — the caller has already resolved and entitled it, and refused if unknown, so here it is
         simply the provider to send through."""
+        # Every delivery this method records belongs to `tenant`, so stamp it once here rather than
+        # threading tenant= through each of the branch returns below.
+        async def rec(*args, **kwargs):
+            return await self._record(*args, tenant=tenant, **kwargs)
+
         wa = whatsapp_override if whatsapp_override is not None else self._whatsapp
         if wa is None:
-            return await self._record(recipient, "whatsapp", template_key, "failed",
+            return await rec(recipient, "whatsapp", template_key, "failed",
                                       error="whatsapp channel not configured")
         # No registry wired ⇒ dev/raw mode: forward the name + values as-is (order by key).
         if self._wa_templates is None:
@@ -191,27 +198,27 @@ class NotificationService:
         else:
             tmpl = await self._wa_templates.get(tenant, template_key, language)
             if tmpl is None:
-                return await self._record(recipient, "whatsapp", template_key, "failed",
+                return await rec(recipient, "whatsapp", template_key, "failed",
                                           error="whatsapp template not found")
             if tmpl.status != "approved":
-                return await self._record(recipient, "whatsapp", template_key, "failed",
+                return await rec(recipient, "whatsapp", template_key, "failed",
                                           error=f"whatsapp template not approved: {tmpl.status}")
             missing = [v for v in tmpl.variables if v not in variables]
             if missing:
-                return await self._record(recipient, "whatsapp", template_key, "failed",
+                return await rec(recipient, "whatsapp", template_key, "failed",
                                           error=f"missing variables: {','.join(missing)}")
             ordered = [str(variables[v]) for v in tmpl.variables]
         try:
             ok, provider, message_id = await asyncio.to_thread(
                 wa.send, recipient, template_key, language, ordered, biz_opaque)
         except Exception as exc:  # noqa: BLE001
-            return await self._record(recipient, "whatsapp", template_key, "failed",
+            return await rec(recipient, "whatsapp", template_key, "failed",
                                       error=f"{type(exc).__name__}: {exc}")
         if ok:
             # Capture the wamid: it is the ONLY key a later receipt can be matched back to this send by.
-            return await self._record(recipient, "whatsapp", template_key, SENT, provider=provider,
+            return await rec(recipient, "whatsapp", template_key, SENT, provider=provider,
                                       attempts=1, provider_message_id=message_id)
-        return await self._record(recipient, "whatsapp", template_key, "failed", provider=provider,
+        return await rec(recipient, "whatsapp", template_key, "failed", provider=provider,
                                   error="send failed")
 
     async def _deliver(self, channel: str, recipient: str, subject: str, body: str,
@@ -242,7 +249,8 @@ class NotificationService:
             return False, "", f"{type(exc).__name__}: {exc}"
 
     async def _on_failure(self, *, recipient: str, channel: str, template_key: str,
-                          provider: str, error: str, attempt: int, payload: dict) -> dict:
+                          provider: str, error: str, attempt: int, payload: dict,
+                          tenant: str = "") -> dict:
         """A failed send is a DECISION, not an ending.
 
         Before this, every failure recorded `failed` and stopped. A five-minute provider outage
@@ -258,7 +266,8 @@ class NotificationService:
         """
         if self._retry is None or self._mode == INLINE:
             return await self._record(recipient, channel, template_key, FAILED,
-                                      provider=provider, error=error, attempts=attempt)
+                                      provider=provider, error=error, attempts=attempt,
+                                      tenant=tenant)
 
         state = self._retry.next_state(attempt, error)
         next_ts = 0.0
@@ -267,7 +276,7 @@ class NotificationService:
 
         return await self._record(recipient, channel, template_key, state, provider=provider,
                                   error=error, attempts=attempt, next_attempt_ts=next_ts,
-                                  payload=payload if state == QUEUED else {})
+                                  payload=payload if state == QUEUED else {}, tenant=tenant)
 
     async def _finish(self, idempotency_key: str | None, result: dict) -> dict:
         """Remember a terminal-success result so a retry with the same key won't re-send."""
@@ -278,11 +287,12 @@ class NotificationService:
     async def _record(self, recipient: str, channel: str, template_key: str, status: str,
                       provider: str = "", error: str = "", attempts: int = 0,
                       next_attempt_ts: float = 0.0, payload: dict | None = None,
-                      provider_message_id: str = "") -> dict:
+                      provider_message_id: str = "", tenant: str = "") -> dict:
         d = Delivery(id=new_id(), recipient=recipient, channel=channel,
                      template_key=template_key, status=status, provider=provider, error=error,
                      attempts=attempts, next_attempt_ts=next_attempt_ts,
-                     payload=dict(payload or {}), provider_message_id=provider_message_id)
+                     payload=dict(payload or {}), provider_message_id=provider_message_id,
+                     tenant=tenant)
         await self._deliveries.record(d)
         if status == SENT and self._auditor is not None:
             # Non-critical; a provider that delivered must not be un-sent because the log blinked.

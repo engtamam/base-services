@@ -71,6 +71,10 @@ class Delivery:
     #   dead_letter  it could have worked, we retried, we ran out of patience
     # Collapsing them hides which outages actually cost us messages.
     status: str
+    # The tenant this send belongs to, populated at send time (the caller knows it). Empty for a send
+    # with no tenant context. It is what lets an operator ask "show me THIS shop's deliveries" — a
+    # WhatsApp diagnostic screen filters on it — without a phone_number_id→tenant guess after the fact.
+    tenant: str = ""
     provider: str = ""
     error: str = ""
     attempts: int = 0                  # how many sends were tried
@@ -88,6 +92,7 @@ class Delivery:
 
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "recipient": self.recipient, "channel": self.channel,
+                "tenant": self.tenant,
                 "template_key": self.template_key, "status": self.status,
                 "provider": self.provider, "error": self.error,
                 "attempts": self.attempts, "next_attempt_ts": self.next_attempt_ts,
@@ -99,6 +104,7 @@ class Delivery:
     def from_dict(cls, d: dict[str, Any]) -> "Delivery":
         return cls(
             id=d["id"], recipient=d["recipient"], channel=d["channel"],
+            tenant=d.get("tenant", ""),
             template_key=d["template_key"], status=d["status"],
             provider=d.get("provider", ""), error=d.get("error", ""),
             attempts=int(d.get("attempts", 0)),

@@ -1899,6 +1899,92 @@
         ]
       }
     },
+    "/internal/whatsapp/deliveries": {
+      "get": {
+        "description": "Recent WhatsApp deliveries for ONE shop \u2014 the 'why is this shop's WhatsApp broken' view.\n\nAddressed by `tenant`, or by the shop's `phone_number_id` resolved through the number\u2192tenant\nindex (the operator usually has the number, not the internal tenant id). Tenant-scoped by design:\nthe query is pushed into the datastore keyed on tenant + channel, so it reads one shop's rows and\nnever becomes a cross-tenant dump. Each row carries our send status, Meta's receipt status, and\nthe failure reason \u2014 with the recipient masked to its last four digits.",
+        "operationId": "whatsapp_deliveries_internal_whatsapp_deliveries_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 128,
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "phone_number_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 128,
+              "title": "Phone Number Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Whatsapp Deliveries Internal Whatsapp Deliveries Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Whatsapp Deliveries",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/whatsapp/embedded-signup": {
       "post": {
         "description": "The internal twin of POST /api/v1/operator/whatsapp/embedded-signup.\n\nWHY IT EXISTS: the exchange needs platform.secrets, which a SHOP OWNER must never hold \u2014 it reads\nand writes every establishment's credentials. But only the owner's browser ever sees the ~30s\nauthorization code. So a product service the owner IS authenticated to receives the code and\nforwards it here with X-Internal-Token + the tenant, and the exchange runs under the internal\ncredential instead of a human capability. No new logic \u2014 the SAME WhatsAppOnboarding.exchange:\nthe token never leaves core, the audit row names the WABA, the pool is invalidated. Adopting it\nis one values flip on the product side (WHATSAPP_ONBOARDING_DRIVER: http).",
