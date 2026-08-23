@@ -51,7 +51,17 @@ class S3ObjectStore:
         # path-style is THE MinIO / on-prem knob. Verified live: virtual succeeds, None -> 403.
         from botocore.config import Config
 
-        self._config = Config(s3={"addressing_style": "path" if force_path_style else "virtual"})
+        # botocore >= 1.36 defaults uploads to STREAMING-UNSIGNED-PAYLOAD-TRAILER checksums, which
+        # Alibaba OSS (and some other S3-compatible stores) REJECT with NotImplemented — every
+        # put_object then fails. Only compute a checksum when the operation actually requires it, so
+        # the body streams in a form those stores accept. The try/except keeps this working on
+        # botocore < 1.36, which has neither knob (and no such trailer default to disable).
+        _s3 = {"addressing_style": "path" if force_path_style else "virtual"}
+        try:
+            self._config = Config(s3=_s3, request_checksum_calculation="when_required",
+                                  response_checksum_validation="when_required")
+        except TypeError:
+            self._config = Config(s3=_s3)
         # A caller that passes no CredentialConfig gets STATIC from the two legacy keys — byte-for-byte
         # today's behaviour (and its half-credential refusal), so every existing caller is unchanged.
         cred = credentials or _credentials.CredentialConfig(

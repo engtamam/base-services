@@ -25,3 +25,15 @@ def test_addressing_style_is_explicit_both_ways(force_path_style, expected):
                           force_path_style=force_path_style, credentials=_STATIC)
     assert store._config is not None, "addressing must be a stated Config, never None (the guess)"
     assert store._config.s3["addressing_style"] == expected
+
+
+def test_upload_checksums_are_computed_only_when_required():
+    """botocore >= 1.36 defaults uploads to STREAMING-UNSIGNED-PAYLOAD-TRAILER checksums, which Alibaba
+    OSS rejects with NotImplemented — every put_object fails and no off-server backup is written. The
+    adapter must request checksums only WHEN REQUIRED so the body streams in a form those stores accept.
+    Skipped on botocore < 1.36, which has no such knob (nor the trailer default to disable)."""
+    cfg = S3ObjectStore("bkt", "https://oss-cn.example.com", credentials=_STATIC)._config
+    if not hasattr(cfg, "request_checksum_calculation"):
+        pytest.skip("botocore < 1.36 has no checksum knob and no trailer default")
+    assert cfg.request_checksum_calculation == "when_required"
+    assert cfg.response_checksum_validation == "when_required"
