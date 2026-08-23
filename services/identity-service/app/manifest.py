@@ -81,6 +81,10 @@ def build_manifest(
             {"path": "/internal/backup/export", "tier": "internal", "method": "POST"},
             {"path": "/internal/backup/import", "tier": "internal", "method": "POST"},
             {"path": "/internal/backup/verify", "tier": "internal", "method": "POST"},
+            # The public verify half of the signing keyring, and the cron-driven rotation that adds a
+            # new key to it. The JWKS is public by design (public keys); rotation is internal-only.
+            {"path": "/.well-known/jwks.json", "tier": "public", "method": "GET"},
+            {"path": "/internal/signing-key/rotate", "tier": "internal", "method": "POST"},
             {"path": "/api/v1/auth/register", "tier": "user", "method": "POST"},
             {"path": "/api/v1/auth/login", "tier": "user", "method": "POST"},
             {"path": "/api/v1/auth/verify-email", "tier": "user", "method": "POST"},

@@ -15,6 +15,7 @@ _RESERVED = frozenset({"sub", "iat", "exp", "type", "iss", "aud"})
 def encode(
     *, key: str, algorithm: str, subject: str, issuer: str, audience: str,
     ttl_seconds: int, token_type: str, extra: dict[str, Any] | None = None,
+    kid: str | None = None,
 ) -> str:
     import jwt
 
@@ -37,4 +38,8 @@ def encode(
                 f"not be overridden by a caller"
             )
         payload.update(extra)
-    return jwt.encode(payload, key, algorithm=algorithm)
+    # A `kid` names WHICH key signed this, so a verifier can pick the matching public key from a
+    # JWKS during a rotation overlap. Omitted (None) on the static single-key path, which keeps the
+    # token header byte-for-byte what it was before rotation existed.
+    headers = {"kid": kid} if kid else None
+    return jwt.encode(payload, key, algorithm=algorithm, headers=headers)

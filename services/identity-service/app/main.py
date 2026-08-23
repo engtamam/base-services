@@ -13,11 +13,13 @@
 # =============================================================================
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api import health, internal, metrics
+from app.api import health, internal, jwks as jwks_api, metrics
 from app.api.errors import register_error_handlers
 from app.api.health import register_readiness_check
 from app.api.v1 import router as v1_router
@@ -39,6 +41,20 @@ from app.security.cwe_guard import CweGuard
 from app.security.step_map import load_step_map
 
 
+async def _refresh_signing_keys(sks, logger) -> None:
+    """Periodically re-read the sealed keyring so a rotation performed on another replica (or by the
+    cron hitting a different pod) is picked up here. Never raises out — a bad read keeps the last
+    good ring rather than dropping the ability to sign."""
+    while True:
+        try:
+            await asyncio.sleep(sks.refresh_seconds)
+            await sks.refresh()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.warning("signing_key_refresh_error", exc_info=True)
+
+
 def create_app() -> FastAPI:
     # Fail-fast: this raises (and aborts startup) if the environment is invalid.
     settings = get_settings()
@@ -51,6 +67,9 @@ def create_app() -> FastAPI:
     # And a service that demands a proven address must be able to ask for proof.
     settings.assert_email_verification_ok()
     settings.assert_operator_config_ok()
+    # Enabling signing-key rotation without its prerequisites (rs256, a KEK, a seed key, an overlap
+    # that outlives the refresh TTL) must stop the service, not degrade quietly.
+    settings.assert_signing_rotation_ok()
     # A misspelled onboarding method must stop the service, not silently disable a signup path.
     from app.core.onboarding import build_onboarding_policy
     build_onboarding_policy(settings)
@@ -88,7 +107,22 @@ def create_app() -> FastAPI:
                 "ports": container.describe(),
             },
         )
+        # Signing-key rotation: load the sealed keyring (seeding it from TOKEN_PRIVATE_KEY on first
+        # boot) and keep it fresh so a rotation done on another replica is picked up here too. Done
+        # inside the lifespan because it is async; the issuer was already pointed at the service's
+        # in-memory current key during composition, so it starts serving as soon as load() returns.
+        refresh_task = None
+        sks = getattr(_app.state, "signing_key_service", None)
+        if sks is not None:
+            await sks.load()
+            logger.info("signing_key_rotation_active",
+                        extra={"detail": f"jwks refresh every {int(sks.refresh_seconds)}s"})
+            refresh_task = asyncio.create_task(_refresh_signing_keys(sks, logger))
         yield
+        if refresh_task is not None:
+            refresh_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await refresh_task
         await container.close()
         logger.info("shutdown", extra={"service": settings.SERVICE_NAME})
 
@@ -122,6 +156,25 @@ def create_app() -> FastAPI:
             container.datastore, settings.SECRETS_KEK,
             rotation_window_s=settings.SECRETS_ROTATION_WINDOW_SECONDS)
     app.state.secret_store = secret_store
+    # ── Automatic signing-key rotation ─────────────────────────────────────
+    # When enabled (and only with a KEK to seal the ring and an rs256 issuer to swap), point the
+    # issuer at the keyring's in-memory current key. The ring itself is loaded async in the lifespan;
+    # until then the service is present but unloaded, and no token is minted before startup finishes.
+    app.state.signing_key_service = None
+    if settings.TOKEN_KEY_ROTATION_ENABLED:
+        from app.adapters.token_issuer.rs256 import RS256Issuer
+        from app.core.signing_key_service import SigningKeyService
+
+        overlap = (settings.TOKEN_SIGNING_OVERLAP_SECONDS
+                   or settings.REFRESH_TTL_SECONDS + 3600)
+        sks = SigningKeyService(
+            secret_store, overlap_seconds=overlap, seed_pem=settings.TOKEN_PRIVATE_KEY,
+            refresh_seconds=settings.TOKEN_KEY_REFRESH_SECONDS,
+            min_age_seconds=settings.TOKEN_KEY_ROTATION_MIN_AGE_SECONDS)
+        app.state.signing_key_service = sks
+        container.token_issuer = RS256Issuer(
+            issuer=settings.TOKEN_ISSUER, audience=settings.TOKEN_AUDIENCE,
+            key_provider=sks.current_signing_key)
     app.state.runtime_config = RuntimeConfig(
         container.datastore, Settings, policy=RUNTIME_POLICY)
     app.state.operator_credentials = OperatorCredentials(
@@ -175,6 +228,8 @@ def create_app() -> FastAPI:
     # ── Routers: public -> internal -> user ─────────────────────────────────
     app.include_router(health.router)
     app.include_router(metrics.router)
+    # Public JWKS: the verify half of the signing keyring, unauthenticated by design.
+    app.include_router(jwks_api.router)
     app.include_router(internal.router)
     app.include_router(v1_router)
     # Operator controls: credentials and policy an operator changes after launch.

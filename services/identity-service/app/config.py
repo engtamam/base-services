@@ -252,6 +252,20 @@ class Settings(BaseSettings):
     TOKEN_PRIVATE_KEY: str = ""                 # rs256 PEM private key
     ACCESS_TTL_SECONDS: int = 900               # 15 min access token
     REFRESH_TTL_SECONDS: int = 604_800          # 7 day refresh token
+    # ── automatic signing-key rotation (rs256 + SECRETS_KEK) ───────────────────────
+    # Off by default: a deployment keeps signing with the single TOKEN_PRIVATE_KEY exactly as today.
+    # Turned on, TOKEN_PRIVATE_KEY is ADOPTED as the first key, published in a JWKS, and rotated on a
+    # cron — old public keys stay verifiable through an overlap so no live token is ever rejected.
+    # Requires SECRETS_KEK (the ring is sealed at rest) and a jwks verifier on the fleet.
+    TOKEN_KEY_ROTATION_ENABLED: bool = False
+    # How long a superseded public key stays in the JWKS. MUST exceed the longest-lived token, which
+    # is the REFRESH token (not the access token) — 0 derives it as REFRESH_TTL + 1h of margin.
+    TOKEN_SIGNING_OVERLAP_SECONDS: int = 0
+    # A rotation is a no-op if the current key is younger than this, so a repeated/retried cron does
+    # not mint endless keys. Sized well under the cadence (default 1h vs a 24–72h cadence).
+    TOKEN_KEY_ROTATION_MIN_AGE_SECONDS: int = 3600
+    # How often each identity replica re-reads the sealed ring (picks up a rotation done elsewhere).
+    TOKEN_KEY_REFRESH_SECONDS: int = 45
     MFA_DRIVER: str = "null"                    # null (off) | totp
     MFA_ISSUER_NAME: str = "base-services"      # shown in authenticator apps
     MFA_TOTP_WINDOW: int = 1                     # TOTP clock-skew tolerance (± steps)
@@ -569,6 +583,41 @@ class Settings(BaseSettings):
                 f"not exceed SECRETS_ROTATION_WINDOW_SECONDS "
                 f"({self.SECRETS_ROTATION_WINDOW_SECONDS}) — otherwise a rotation leaves a window "
                 f"where replicas authenticate with a credential authz no longer accepts")
+
+    def assert_signing_rotation_ok(self) -> None:
+        """Boot guard for automatic signing-key rotation. Checked in every environment.
+
+        Rotation reseals the ring at rest and swaps the issuer for a keyring one — both have hard
+        prerequisites. Enabling it without them is a misconfiguration that must stop the service,
+        not degrade quietly to signing with no key or storing private keys in the clear.
+        """
+        if not self.TOKEN_KEY_ROTATION_ENABLED:
+            return
+        if self.TOKEN_ISSUER_DRIVER != "rs256":
+            raise ValueError(
+                f"TOKEN_KEY_ROTATION_ENABLED requires TOKEN_ISSUER_DRIVER=rs256 (asymmetric), not "
+                f"{self.TOKEN_ISSUER_DRIVER!r}: a symmetric HS256 secret has no public half to "
+                f"publish in a JWKS, so an overlap rotation cannot be verified by the fleet.")
+        if not self.SECRETS_KEK:
+            raise ValueError(
+                "TOKEN_KEY_ROTATION_ENABLED requires SECRETS_KEK: the keyring holds private signing "
+                "keys and is sealed at rest under the KEK. Without it there is nothing to seal with.")
+        if not self.TOKEN_PRIVATE_KEY:
+            raise ValueError(
+                "TOKEN_KEY_ROTATION_ENABLED requires TOKEN_PRIVATE_KEY as the seed key: it is "
+                "adopted as the first key in the ring on first boot and rotated automatically after.")
+        overlap = self.TOKEN_SIGNING_OVERLAP_SECONDS or self.REFRESH_TTL_SECONDS + 3600
+        if overlap <= self.REFRESH_TTL_SECONDS:
+            # The overlap must outlive the LONGEST token (refresh), or a rotation drops the old
+            # public key while refresh tokens it signed are still valid — logging those users out.
+            raise ValueError(
+                f"TOKEN_SIGNING_OVERLAP_SECONDS ({overlap}) must exceed REFRESH_TTL_SECONDS "
+                f"({self.REFRESH_TTL_SECONDS}): a retired signing key must stay verifiable until "
+                f"every token it signed — including week-long refresh tokens — has expired.")
+        if self.TOKEN_KEY_ROTATION_MIN_AGE_SECONDS >= overlap:
+            raise ValueError(
+                f"TOKEN_KEY_ROTATION_MIN_AGE_SECONDS ({self.TOKEN_KEY_ROTATION_MIN_AGE_SECONDS}) "
+                f"must be well below the overlap ({overlap}) — it only debounces a repeated cron.")
 
     @field_validator("INTERNAL_SERVICE_TOKEN")
     @classmethod

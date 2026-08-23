@@ -59,6 +59,40 @@ async def internal_manifest(
     return manifest
 
 
+class RotateSigningKeyResult(BaseModel):
+    rotated: bool
+    kid: str
+    reason: str
+    key_count: int
+
+
+@router.post("/signing-key/rotate", dependencies=[Depends(require_internal_token)])
+async def rotate_signing_key(
+    request: Request, force: bool = Query(default=False)
+) -> RotateSigningKeyResult:
+    """Rotate the token SIGNING key (cron-driven; `force=true` for an emergency compromise rotation).
+
+    Idempotent by design: a rotation is a no-op when the current key is younger than the configured
+    min-age, so the k3s CronJob may fire repeatedly (or retry) without minting a pile of keys. The
+    old public key stays in the JWKS for the overlap window, so no live token is rejected. Internal
+    only — the cron authenticates with the shared internal token, never a user JWT.
+    """
+    sks = getattr(request.app.state, "signing_key_service", None)
+    if sks is None:
+        # Rotation is not enabled for this deployment (no keyring service was wired). A 503 tells
+        # the cron this is a configuration state, not a transient failure to retry against.
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail="SIGNING_KEY_ROTATION_DISABLED")
+    result = await sks.rotate(force=force)
+    if result.get("rotated"):
+        auditor = getattr(request.app.state, "auditor", None)
+        if auditor is not None:
+            await auditor.record("identity.rotate_signing_key", actor="system", tenant="",
+                                 metadata={"kid": result["kid"], "reason": result["reason"],
+                                           "key_count": result["key_count"]})
+    return RotateSigningKeyResult(**result)
+
+
 class EraseIn(BaseModel):
     tenant: str
     subject: str

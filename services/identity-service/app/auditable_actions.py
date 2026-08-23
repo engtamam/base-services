@@ -187,6 +187,16 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "holds, which is a behaviour change nobody would otherwise see",
     },
     {
+        "action": "identity.rotate_signing_key",
+        "source": "admin",
+        "critical": True,
+        "resource": "secret",
+        "why": "rotating the key that signs every token the whole platform trusts is the highest-"
+               "leverage credential change there is. An unrecorded rotation is indistinguishable "
+               "from an attacker swapping in a signing key of their own, so if we cannot witness it "
+               "we must not perform it. Cron-driven, but each actual rotation is one critical event",
+    },
+    {
         "action": "operator.config_changed",
         "source": "admin",
         "critical": False,

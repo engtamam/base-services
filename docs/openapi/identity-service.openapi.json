@@ -492,6 +492,34 @@
         "title": "RotateIn",
         "type": "object"
       },
+      "RotateSigningKeyResult": {
+        "properties": {
+          "key_count": {
+            "title": "Key Count",
+            "type": "integer"
+          },
+          "kid": {
+            "title": "Kid",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "rotated": {
+            "title": "Rotated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "rotated",
+          "kid",
+          "reason",
+          "key_count"
+        ],
+        "title": "RotateSigningKeyResult",
+        "type": "object"
+      },
       "SecretIn": {
         "properties": {
           "name": {
@@ -758,6 +786,25 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/.well-known/jwks.json": {
+      "get": {
+        "operationId": "jwks__well_known_jwks_json_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Jwks",
+        "tags": [
+          "jwks"
+        ]
+      }
+    },
     "/api/v1/auth/change-password": {
       "post": {
         "operationId": "change_password_api_v1_auth_change_password_post",
@@ -2735,6 +2782,66 @@
           }
         },
         "summary": "Ratelimit Unblock",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/signing-key/rotate": {
+      "post": {
+        "description": "Rotate the token SIGNING key (cron-driven; `force=true` for an emergency compromise rotation).\n\nIdempotent by design: a rotation is a no-op when the current key is younger than the configured\nmin-age, so the k3s CronJob may fire repeatedly (or retry) without minting a pile of keys. The\nold public key stays in the JWKS for the overlap window, so no live token is rejected. Internal\nonly \u2014 the cron authenticates with the shared internal token, never a user JWT.",
+        "operationId": "rotate_signing_key_internal_signing_key_rotate_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Force",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RotateSigningKeyResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rotate Signing Key",
         "tags": [
           "internal"
         ]
