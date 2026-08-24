@@ -257,6 +257,18 @@ class Settings(BaseSettings):
     # Turned on, TOKEN_PRIVATE_KEY is ADOPTED as the first key, published in a JWKS, and rotated on a
     # cron — old public keys stay verifiable through an overlap so no live token is ever rejected.
     # Requires SECRETS_KEK (the ring is sealed at rest) and a jwks verifier on the fleet.
+    #
+    # TO ENABLE ROTATION you set this true AND schedule the rotation cron — the two go together, or a
+    # cron on a disabled deployment POSTs to a 503 and reports failed nightly. The cron is NOT
+    # generated into the values file (deploy/services/identity-service.values.yaml is generated from
+    # product.json and left with no cronJobs, since rotation is opt-in). Add it at deploy time, e.g.:
+    #     cronJobs:
+    #       - name: rotate-signing-key
+    #         schedule: "30 3 * * *"      # daily; the min-age guard makes a repeat/retry a safe no-op
+    #         timeZone: "Asia/Riyadh"
+    #         path: /internal/signing-key/rotate
+    # The endpoint is idempotent and each retired public key stays in the JWKS for the overlap window
+    # (sized off the 7-day refresh TTL), so a daily fire yields one rotation/day and no token is lost.
     TOKEN_KEY_ROTATION_ENABLED: bool = False
     # How long a superseded public key stays in the JWKS. MUST exceed the longest-lived token, which
     # is the REFRESH token (not the access token) — 0 derives it as REFRESH_TTL + 1h of margin.

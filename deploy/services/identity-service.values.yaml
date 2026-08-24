@@ -53,17 +53,3 @@ env:
 # No ingress: reached service-to-service on the internal tier only.
 ingress:
   enabled: false
-
-# Automatic signing-key rotation (opt-in). Rotation is OFF unless TOKEN_KEY_ROTATION_ENABLED=true is
-# set in the identity-service-secrets Secret AND this cron is uncommented — the two go together. It
-# is left commented so a default deployment does not schedule a job that POSTs to a 503 (rotation
-# disabled) and reports failed every night. When you enable it: the endpoint is idempotent (a no-op
-# below the min-age), so a daily fire yields one rotation/day, and each retired public key stays in
-# the JWKS for the overlap window (sized off the 7-day refresh TTL) — no live token is rejected.
-#   Prereqs: TOKEN_ISSUER_DRIVER=rs256, TOKEN_PRIVATE_KEY set (adopted as the first key), SECRETS_KEK
-#   set (the ring is sealed at rest), and the fleet on the jwks verifier pointed at this JWKS.
-# cronJobs:
-#   - name: rotate-signing-key
-#     schedule: "30 3 * * *"          # daily 03:30; min-age guard makes a repeat/retry a safe no-op
-#     timeZone: "Asia/Riyadh"
-#     path: /internal/signing-key/rotate
