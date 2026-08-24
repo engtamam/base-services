@@ -51,7 +51,7 @@ PUBLIC_INGRESS = {"api-gateway"}
 
 # Endpoints that exist today with no caller. Schedules are staggered so a cluster of
 # 16 services does not stampede its database on the hour.
-CRONS: dict[str, list[tuple[str, str, str]]] = {
+CRONS: dict[str, list] = {   # each job: a (name, schedule, path) tuple, or a dict with notes/timeout
     "analytics-service": [("prune-raw", "17 3 * * *", "/internal/analytics/prune-raw")],
     "audit-service": [("enforce-retention", "23 3 * * *", "/internal/audit/enforce-retention")],
     # Large-object path (Phase 34): drain the scan queue so staged uploads become readable, and abort
@@ -60,16 +60,23 @@ CRONS: dict[str, list[tuple[str, str, str]]] = {
         ("scan", "*/1 * * * *", "/internal/files/scan"),
         ("sweep-uploads", "*/15 * * * *", "/internal/files/sweep-uploads"),
     ],
+    # run + drill capture/restore SEQUENTIALLY, so their Job deadline must cover the whole sweep, not
+    # one target — hence the explicit timeoutSeconds (the default 300s reaped a healthy 20-target
+    # backup mid-success and reported it FAILED nightly). The YAML notes carry that reasoning into the
+    # values file so the number is legible where an operator would change it.
     "backup-service": [
-        ("run", "42 2 * * *", "/internal/backup/run"),
-        # Watch for a missed/stale/unverified backup and alert — more often than the daily capture,
-        # so a schedule that stops firing is caught within the hour, not the next day.
-        ("health-check", "23 * * * *", "/internal/backup/health/check"),
-        # Prune to the retention limits — never a target's last verified backup. Daily, offset.
-        ("prune", "51 3 * * *", "/internal/backup/prune"),
-        # The restore drill — prove, against the at-rest bytes, that every service still restores.
-        # Weekly (Sunday 04:07): DR that is never rehearsed is DR that fails when it is needed.
-        ("drill", "7 4 * * 0", "/internal/backup/drill"),
+        {"name": "run", "schedule": "42 2 * * *", "path": "/internal/backup/run", "timeout": 2700,
+         "note_path": [
+             "The run captures targets SEQUENTIALLY (orchestrator._capture_one per target), so worst-case",
+             "wall-clock = (targets) x BACKUP_TARGET_TIMEOUT_SECONDS (120s). The old fixed 300s cron timeout",
+             "covered barely two targets: a healthy nightly backup of ~20 targets ran ~2400s and was reported",
+             'FAILED every night, and "backup always fails" is where a real failure hides. Budget = worst case',
+             "+ margin. Raise this if you register more targets, or lower BACKUP_TARGET_TIMEOUT_SECONDS."]},
+        {"name": "drill", "schedule": "7 4 * * 0", "path": "/internal/backup/drill", "timeout": 2700,
+         "note_name": [
+             "The drill test-restores every target's most recent backup, also one at a time — same worst case."]},
+        {"name": "health-check", "schedule": "23 * * * *", "path": "/internal/backup/health/check"},
+        {"name": "prune", "schedule": "51 3 * * *", "path": "/internal/backup/prune"},
     ],
     "billing-service": [("dunning", "31 4 * * *", "/internal/billing/dunning"),
                         # The renewal engine — invoice subscriptions whose period has ended. Daily,
@@ -303,10 +310,21 @@ def render(name: str, cfg: dict) -> str:
     cron_block = ""
     if name in CRONS:
         lines = ["\n# These internal endpoints have NO caller without this block.", "cronJobs:"]
-        for job, schedule, path in CRONS[name]:
-            lines.append(f"  - name: {job}")
-            lines.append(f"    schedule: {schedule!r}".replace("'", '"'))
-            lines.append(f"    path: {path}")
+        for job in CRONS[name]:
+            # A job is a 3-tuple (name, schedule, path) for the common case, or a dict when it needs
+            # YAML comments or a non-default timeout — a long sweep MUST set timeoutSeconds above its
+            # own worst-case work or the Job is reaped while still succeeding (see backup-service).
+            if isinstance(job, tuple):
+                job = {"name": job[0], "schedule": job[1], "path": job[2]}
+            lines.append(f"  - name: {job['name']}")
+            for c in job.get("note_name", []):
+                lines.append(f"    # {c}")
+            lines.append(f"    schedule: {job['schedule']!r}".replace("'", '"'))
+            lines.append(f"    path: {job['path']}")
+            for c in job.get("note_path", []):
+                lines.append(f"    # {c}")
+            if "timeout" in job:
+                lines.append(f"    timeoutSeconds: {job['timeout']}")
         cron_block = "\n".join(lines) + "\n"
 
     return TEMPLATE.format(
