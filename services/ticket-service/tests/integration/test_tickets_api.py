@@ -112,6 +112,28 @@ def test_operator_sees_the_tenant_wide_inbox_and_can_filter(app):
     assert r.status_code == 200 and len(r.json()["tickets"]) >= 1
 
 
+def test_operator_list_embeds_per_ticket_kpis(app):
+    # The admin dashboard aggregates SLA metrics (avg first-response, unresolved > 48h) over this
+    # already-gated read, so each row must carry its derived KPIs alongside the raw ticket fields.
+    tid = _open(app, _customer(sub="kpi@x.com")).json()["id"]
+    # an operator's first reply is the first real response → first_response_seconds becomes computable
+    app.post(f"/api/v1/tickets/{tid}/replies", headers=_operator(), json={"body": "on it"})
+    rows = app.get("/api/v1/operator/tickets", headers=_operator()).json()["tickets"]
+    row = next(r for r in rows if r["id"] == tid)
+    assert "kpis" in row, "each operator-list row embeds ticket_kpis"
+    k = row["kpis"]
+    assert {"first_response_seconds", "resolution_seconds", "status"}.issubset(k)
+    assert k["first_response_seconds"] is not None      # an operator reply landed → SLA is derivable
+    assert k["operator_reply_count"] >= 1
+    assert k["status"] == row["status"]                 # kpis.status mirrors the row it rode in on
+    # a ticket with no operator reply yet has an OPEN (None) first-response, not a fabricated zero
+    tid2 = _open(app, _customer(sub="kpi2@x.com")).json()["id"]
+    rows2 = app.get("/api/v1/operator/tickets", headers=_operator()).json()["tickets"]
+    row2 = next(r for r in rows2 if r["id"] == tid2)
+    assert row2["kpis"]["first_response_seconds"] is None
+    assert row2["kpis"]["resolution_seconds"] is None
+
+
 def test_history_records_who_did_what(app):
     tid = _open(app, _customer()).json()["id"]
     app.post(f"/api/v1/tickets/{tid}/replies", headers=_customer(), json={"body": "any update?"})

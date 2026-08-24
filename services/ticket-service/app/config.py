@@ -136,6 +136,10 @@ class Settings(BaseSettings):
     # Salts the subject pseudonym on an erasure ack. FROZEN — config/product.identifiers.lock.json.
     PII_SALT: str = ""
     ERASURE_MAX_SCAN: int = 100_000   # a DSAR is rare, but must never be an unbounded read
+    # The most events read PER TICKET when embedding KPIs in the operator list. A ticket's event log is
+    # small (created/assigned/replies/status), so this is a generous-but-bounded cap, not a real limit —
+    # it keeps the per-row indexed read from ever being unbounded. Config, not a magic number.
+    OPERATOR_TICKET_KPI_MAX_EVENTS: int = 1_000
     # Scoped ticket sharing (core/share.py): the most tickets one grantee's internal read returns per
     # tenant — a bounded read, never a scan; a `truncated` flag makes a larger history loud, not silent.
     TICKET_SHARE_LIST_MAX: int = 200

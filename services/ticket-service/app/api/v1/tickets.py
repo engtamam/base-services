@@ -9,6 +9,7 @@
 # =============================================================================
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -216,7 +217,22 @@ async def operator_list(request: Request, principal: Principal = Depends(_MANAGE
     rows, nxt = await build_tickets(request)._tickets.find(
         tenant=tenant, filters={"type": type, "status": status_, "assignee": assignee,
                                 "priority": priority}, limit=limit, after=cursor or None)
-    return {"tickets": rows, "cursor": nxt}
+    # Embed per-ticket KPIs (first-response / resolution seconds, status) so an operator dashboard can
+    # aggregate SLA metrics — average first-response time, count unresolved > 48h — over a read it is
+    # already gated for (tickets.manage), with no new privileged surface. It is the SAME pure
+    # ticket_kpis the internal single-ticket read uses, applied per row. Each event read is an INDEXED
+    # per-ticket query (never a tenant-wide event scan); the page is capped (limit ≤ 200) so the
+    # fan-out is bounded, and the reads run concurrently rather than N sequential round trips.
+    from app.core.kpis import ticket_kpis
+    events = EventStore(request.app.state.container.datastore)
+    cap = get_settings().OPERATOR_TICKET_KPI_MAX_EVENTS
+
+    async def _with_kpis(row: dict) -> dict:
+        hist, _ = await events.history(tenant=tenant, ticket_id=row.get("id", ""), limit=cap)
+        return {**row, "kpis": ticket_kpis(row, hist)}
+
+    enriched = await asyncio.gather(*(_with_kpis(r) for r in rows))
+    return {"tickets": enriched, "cursor": nxt}
 
 
 @router.post("/tickets/{ticket_id}/status", dependencies=[Depends(rate_limit)])
