@@ -72,6 +72,7 @@ def build_manifest(
              # that did not happen.
              "erasure_category": "subject"},
             {"path": "/internal/notify", "tier": "internal", "method": "POST"},
+            {"path": "/internal/notify/whatsapp/interactive", "tier": "internal", "method": "POST"},
             {"path": "/api/v1/notifications", "tier": "user", "method": "GET"},
             {"path": "/api/v1/notifications/{id}/read", "tier": "user", "method": "POST"},
             {"path": "/api/v1/notifications/preferences", "tier": "user", "method": "GET"},

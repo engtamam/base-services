@@ -40,11 +40,25 @@ class MetaWhatsApp:
             # Echoed verbatim in the status webhook (statuses[].biz_opaque_callback_data), so a caller
             # can correlate a receipt against its own send id with no join. Meta caps it at 512 chars.
             payload["biz_opaque_callback_data"] = biz_opaque_callback_data[:512]
+        return self._post(payload)
+
+    def send_interactive(self, to: str, interactive: dict,
+                         biz_opaque_callback_data: str = "") -> str:
+        """An interactive (button/list) message — no template, sent inside the 24h window. The
+        `interactive` object is built and limit-checked upstream (core/whatsapp_interactive); here it
+        is simply wrapped in the message envelope and posted through the same endpoint as a template."""
+        payload: dict = {"messaging_product": "whatsapp", "to": to, "type": "interactive",
+                         "interactive": interactive}
+        if biz_opaque_callback_data:
+            payload["biz_opaque_callback_data"] = biz_opaque_callback_data[:512]
+        return self._post(payload)
+
+    def _post(self, payload: dict) -> str:
         status, body = post_json(f"{self._base}/{self._phone_id}/messages", payload, self._headers)
         if not ok(status):
             return ""
-        # The wamid is the ONLY join key to the receipt. Discarding it (as this did) is exactly why
-        # every receipt was unattributable. messages[0].id on every accepted send.
+        # The wamid is the ONLY join key to the receipt. Discarding it (as this once did) is exactly
+        # why every receipt was unattributable. messages[0].id on every accepted send.
         try:
             return str(_json.loads(body).get("messages", [{}])[0].get("id", "") or "")
         except (ValueError, IndexError, AttributeError, KeyError):

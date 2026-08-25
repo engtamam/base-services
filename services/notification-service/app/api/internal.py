@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import hmac
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
@@ -75,6 +76,25 @@ async def internal_health(settings: Settings = Depends(get_settings)) -> dict[st
     return {"status": "ok", "service": settings.SERVICE_NAME}
 
 
+async def _resolve_sending_identity(request: Request, tenant: str, sending_identity: str | None):
+    """Resolve a per-branch sending identity to the number this tenant is ENTITLED to send from.
+
+    Returns (override_provider, None) — override is None when no identity was requested (use the
+    tenant default) — or (None, JSONResponse-409) when the identity is not this tenant's. It is
+    REFUSED, never quietly resolved to the default number, because a message from the wrong branch's
+    number is worse than one not sent. Shared by /notify and /notify/whatsapp/interactive.
+    """
+    if not sending_identity:
+        return None, None
+    from starlette.responses import JSONResponse
+    pool = getattr(request.app.state, "provider_pool", None)
+    override = (await pool.whatsapp_for_identity(tenant or "", sending_identity)
+                if pool is not None else None)
+    if override is None:
+        return None, JSONResponse({"ok": False, "reason": "UNKNOWN_SENDING_IDENTITY"}, status_code=409)
+    return override, None
+
+
 @router.post("/notify", dependencies=[Depends(require_internal_token)])
 async def internal_notify(request: Request, body: NotifyIn) -> dict:
     """Service-to-service send. Returns the delivery id + status."""
@@ -82,24 +102,89 @@ async def internal_notify(request: Request, body: NotifyIn) -> dict:
     # field from a loud AttributeError on the first request into a silent wrong answer. And the
     # tenant must reach .notify() too — build_notifier's tenant only scopes the provider pool, while
     # the consent gate reads notify()'s own tenant argument.
-    # A per-branch sending identity is resolved to the entitled number BEFORE the send, and REFUSED
-    # (409, non-2xx like every other internal refusal) when it is not this tenant's — never falling
-    # back to the default number, because a message from the wrong branch is worse than one not sent.
-    whatsapp_override = None
-    if body.sending_identity:
-        from starlette.responses import JSONResponse
-        pool = getattr(request.app.state, "provider_pool", None)
-        whatsapp_override = (await pool.whatsapp_for_identity(body.tenant or "", body.sending_identity)
-                             if pool is not None else None)
-        if whatsapp_override is None:
-            # Non-2xx + reason in the body, the same refusal shape as register/status (item 5).
-            return JSONResponse({"ok": False, "reason": "UNKNOWN_SENDING_IDENTITY"}, status_code=409)
+    whatsapp_override, refusal = await _resolve_sending_identity(
+        request, body.tenant or "", body.sending_identity)
+    if refusal is not None:
+        return refusal
     return await (await build_notifier(request, body.tenant or "")).notify(
         recipient=body.recipient, channel=body.channel, template_key=body.template_key,
         tenant=body.tenant, locale=body.locale, variables=body.variables,
         user_id=body.user_id, event=body.event, idempotency_key=body.idempotency_key,
         biz_opaque_callback_data=body.biz_opaque_callback_data, whatsapp_override=whatsapp_override,
     )
+
+
+class _ButtonIn(BaseModel):
+    id: str = Field(min_length=1, max_length=256)     # echoed back in the reply webhook — the anchor
+    title: str = Field(min_length=1, max_length=256)  # builder enforces Meta's 20-char cap loudly
+
+
+class _RowIn(BaseModel):
+    id: str = Field(min_length=1, max_length=256)
+    title: str = Field(min_length=1, max_length=256)
+    description: str = Field(default="", max_length=256)
+
+
+class _SectionIn(BaseModel):
+    title: str = Field(default="", max_length=256)
+    rows: list[_RowIn] = Field(min_length=1)
+
+
+class InteractiveNotifyIn(BaseModel):
+    recipient: str = Field(min_length=1, max_length=256)
+    tenant: str | None = Field(default=None, max_length=128)
+    type: Literal["button", "list"]
+    body: str = Field(min_length=1, max_length=1024)
+    header: str = Field(default="", max_length=1024)
+    footer: str = Field(default="", max_length=1024)
+    # button messages:
+    buttons: list[_ButtonIn] = Field(default_factory=list)
+    # list messages:
+    button_text: str = Field(default="", max_length=256)
+    sections: list[_SectionIn] = Field(default_factory=list)
+    biz_opaque_callback_data: str | None = Field(default=None, max_length=512)
+    sending_identity: str | None = Field(default=None, max_length=128)
+    idempotency_key: str | None = Field(default=None, max_length=256)
+
+
+@router.post("/notify/whatsapp/interactive", dependencies=[Depends(require_internal_token)])
+async def internal_notify_interactive(request: Request, body: InteractiveNotifyIn) -> dict:
+    """Send an interactive (reply-buttons / list) WhatsApp message — the state-change-safe path.
+
+    An interactive message drives an action by the customer TAPPING a button/list row, whose id
+    returns in a webhook — never a free-text or LLM-inferred action. It is sent inside the 24h
+    customer-service window (no template needed), and goes through the SAME audited, rate-limited,
+    ceiling-aware plumbing as every other WhatsApp send (a tenant-scoped Delivery carrying the wamid),
+    so a caller need not reach the Cloud API directly. The interactive object is built and
+    limit-checked here (core/whatsapp_interactive) so a bad spec is a clear 422, not a Meta 400.
+    """
+    from app.core.whatsapp_interactive import (InteractiveError, build_button, build_list)
+
+    override, refusal = await _resolve_sending_identity(
+        request, body.tenant or "", body.sending_identity)
+    if refusal is not None:
+        return refusal
+    try:
+        if body.type == "button":
+            interactive = build_button(body=body.body, header=body.header, footer=body.footer,
+                                       buttons=[(b.id, b.title) for b in body.buttons])
+        else:
+            interactive = build_list(
+                body=body.body, header=body.header, footer=body.footer, button_text=body.button_text,
+                sections=[{"title": s.title, "rows": [r.model_dump() for r in s.rows]}
+                          for s in body.sections])
+    except InteractiveError as exc:
+        # A caller-fixable spec error (a fourth button, an over-length title). The reason is not
+        # sensitive and a machine caller needs it to correct the spec, so return it in the body —
+        # the same {ok:false, reason} shape the sending-identity refusal uses — rather than let the
+        # global handler collapse it to a bare VALIDATION_ERROR.
+        from starlette.responses import JSONResponse
+        return JSONResponse({"ok": False, "reason": str(exc)}, status_code=422)
+    notifier = await build_notifier(request, body.tenant or "")
+    return await notifier.send_interactive(
+        recipient=body.recipient, tenant=body.tenant or "", interactive=interactive, kind=body.type,
+        biz_opaque=body.biz_opaque_callback_data or "", idempotency_key=body.idempotency_key,
+        whatsapp_override=override)
 
 
 class EmbeddedSignupInternalIn(BaseModel):

@@ -221,6 +221,45 @@ class NotificationService:
         return await rec(recipient, "whatsapp", template_key, "failed", provider=provider,
                                   error="send failed")
 
+    async def send_interactive(self, *, recipient: str, tenant: str, interactive: dict, kind: str,
+                               biz_opaque: str = "", idempotency_key: str | None = None,
+                               whatsapp_override=None) -> dict:
+        """Send an interactive (button/list) WhatsApp message and record it as a Delivery.
+
+        Interactive messages go out INSIDE the 24h customer-service window a customer's own inbound
+        message opens, so no template and no consent gate apply — a reply within an open conversation
+        is a service message under contract, not a business-initiated one. Everything else is the
+        SAME shared plumbing every WhatsApp send uses: idempotent dedupe, per-tenant (or per-branch)
+        provider resolution, the tenant-scoped Delivery record that carries the wamid so a button
+        reply's webhook still matches, and the audit. This is the seam that lets a caller stop
+        calling Cloud API directly — one audited, rate-limited peer for interactive sends too.
+        """
+        if idempotency_key:
+            prior = await self._deliveries.idempotent_get(
+                idempotency_key, now=time.time(), ttl=self._dedupe_ttl)
+            if prior is not None:
+                return {**prior, "duplicate": True}
+        wa = whatsapp_override if whatsapp_override is not None else self._whatsapp
+        tk = f"interactive:{kind}"           # the Delivery's template_key slot names the message type
+        if wa is None:
+            return await self._finish(idempotency_key, await self._record(
+                recipient, "whatsapp", tk, "failed", tenant=tenant,
+                error="whatsapp channel not configured"))
+        try:
+            ok, provider, mid = await asyncio.to_thread(
+                wa.send_interactive, recipient, interactive, biz_opaque)
+        except Exception as exc:  # noqa: BLE001
+            return await self._finish(idempotency_key, await self._record(
+                recipient, "whatsapp", tk, "failed", tenant=tenant,
+                error=f"{type(exc).__name__}: {exc}"))
+        if ok:
+            return await self._finish(idempotency_key, await self._record(
+                recipient, "whatsapp", tk, SENT, tenant=tenant, provider=provider, attempts=1,
+                provider_message_id=mid))
+        return await self._finish(idempotency_key, await self._record(
+            recipient, "whatsapp", tk, "failed", tenant=tenant, provider=provider,
+            error="send failed"))
+
     async def _deliver(self, channel: str, recipient: str, subject: str, body: str,
                        user_id: str | None) -> tuple[bool, str, str]:
         """Hand the message to the provider.

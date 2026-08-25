@@ -25,3 +25,13 @@ class WhatsAppProvider(Protocol):
 
     def send(self, to: str, template_name: str, language: str, variables: list[str],
              biz_opaque_callback_data: str = "") -> str: ...
+
+    def send_interactive(self, to: str, interactive: dict,
+                         biz_opaque_callback_data: str = "") -> str:
+        """Send an interactive (reply-buttons / list) message, INSIDE the 24h customer-service window
+        a customer's own inbound message opens — so no template is required. `interactive` is the
+        fully-built Meta `interactive` object (see core/whatsapp_interactive.build_button/build_list);
+        the provider only transmits it. Returns the wamid on success, "" on failure, exactly like
+        send(). The wamid remains the join key to the reply/receipt that arrives later by webhook.
+        """
+        ...

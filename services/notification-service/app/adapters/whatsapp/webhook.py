@@ -27,3 +27,10 @@ class WebhookWhatsApp:
         # A relay gateway is not Cloud API and returns no wamid, so there is no receipt to match. A
         # non-empty marker keeps success TRUTHY without inventing a wamid that can never resolve.
         return "webhook:sent" if ok(status) else ""
+
+    def send_interactive(self, to: str, interactive: dict,
+                         biz_opaque_callback_data: str = "") -> str:
+        # Forwarded as-is to the relay: {to, interactive} mirrors Cloud API's own field so a gateway
+        # proxying to Meta can pass it straight through. No wamid comes back from a relay.
+        status, _ = post_json(self._url, {"to": to, "interactive": interactive}, self._headers)
+        return "webhook:sent" if ok(status) else ""

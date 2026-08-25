@@ -222,6 +222,117 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "InteractiveNotifyIn": {
+        "properties": {
+          "biz_opaque_callback_data": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Biz Opaque Callback Data"
+          },
+          "body": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Body",
+            "type": "string"
+          },
+          "button_text": {
+            "default": "",
+            "maxLength": 256,
+            "title": "Button Text",
+            "type": "string"
+          },
+          "buttons": {
+            "items": {
+              "$ref": "#/components/schemas/_ButtonIn"
+            },
+            "title": "Buttons",
+            "type": "array"
+          },
+          "footer": {
+            "default": "",
+            "maxLength": 1024,
+            "title": "Footer",
+            "type": "string"
+          },
+          "header": {
+            "default": "",
+            "maxLength": 1024,
+            "title": "Header",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "recipient": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Recipient",
+            "type": "string"
+          },
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/_SectionIn"
+            },
+            "title": "Sections",
+            "type": "array"
+          },
+          "sending_identity": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sending Identity"
+          },
+          "tenant": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant"
+          },
+          "type": {
+            "enum": [
+              "button",
+              "list"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "recipient",
+          "type",
+          "body"
+        ],
+        "title": "InteractiveNotifyIn",
+        "type": "object"
+      },
       "NotifyIn": {
         "properties": {
           "biz_opaque_callback_data": {
@@ -626,6 +737,79 @@
           "category"
         ],
         "title": "WaTemplateInternalIn",
+        "type": "object"
+      },
+      "_ButtonIn": {
+        "properties": {
+          "id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title"
+        ],
+        "title": "_ButtonIn",
+        "type": "object"
+      },
+      "_RowIn": {
+        "properties": {
+          "description": {
+            "default": "",
+            "maxLength": 256,
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title"
+        ],
+        "title": "_RowIn",
+        "type": "object"
+      },
+      "_SectionIn": {
+        "properties": {
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/_RowIn"
+            },
+            "minItems": 1,
+            "title": "Rows",
+            "type": "array"
+          },
+          "title": {
+            "default": "",
+            "maxLength": 256,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rows"
+        ],
+        "title": "_SectionIn",
         "type": "object"
       }
     }
@@ -1832,6 +2016,68 @@
           }
         },
         "summary": "Internal Notify",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/notify/whatsapp/interactive": {
+      "post": {
+        "description": "Send an interactive (reply-buttons / list) WhatsApp message \u2014 the state-change-safe path.\n\nAn interactive message drives an action by the customer TAPPING a button/list row, whose id\nreturns in a webhook \u2014 never a free-text or LLM-inferred action. It is sent inside the 24h\ncustomer-service window (no template needed), and goes through the SAME audited, rate-limited,\nceiling-aware plumbing as every other WhatsApp send (a tenant-scoped Delivery carrying the wamid),\nso a caller need not reach the Cloud API directly. The interactive object is built and\nlimit-checked here (core/whatsapp_interactive) so a bad spec is a clear 422, not a Meta 400.",
+        "operationId": "internal_notify_interactive_internal_notify_whatsapp_interactive_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InteractiveNotifyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Internal Notify Interactive Internal Notify Whatsapp Interactive Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Internal Notify Interactive",
         "tags": [
           "internal"
         ]
