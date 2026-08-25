@@ -116,6 +116,7 @@ def build_manifest(
             # The catch-up read: delivery/read receipts forward from a cursor (the bus is at-most-once),
             # each carrying delivery_id — so a receipt is matched to the send it belongs to.
             {"path": "/internal/notifications/receipts", "tier": "internal", "method": "GET"},
+            {"path": "/internal/whatsapp/inbound", "tier": "internal", "method": "GET"},
             # Inbound Meta webhook (public — auth is the signature / verify token, not a token gate):
             # GET verifies the subscription, POST verifies X-Hub-Signature-256 and fans out every event.
             {"path": "/webhooks/whatsapp", "tier": "public", "method": "GET"},

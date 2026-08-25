@@ -2293,6 +2293,78 @@
         ]
       }
     },
+    "/internal/whatsapp/inbound": {
+      "get": {
+        "description": "The catch-up read for INBOUND WhatsApp messages \u2014 the same shape as /notifications/receipts.\n\nInbound `whatsapp.message` events go on the bus best-effort (at-most-once), so a pod that restarts\nthrough one hears it never and a customer's reply is silently never answered. This is how a\nconsumer reconciles that gap: read forward from a cursor, persist the returned `cursor` as its\nwatermark, repeat. Each row carries the wamid, sender, tenant (resolved from the receiving number)\nand the raw Meta message; ordered by the message timestamp; a message that only lived on the bus\nis still here. Idempotent by wamid, so a re-delivered webhook is one row, never a duplicate.",
+        "operationId": "inbound_messages_internal_whatsapp_inbound_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "After",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Inbound Messages Internal Whatsapp Inbound Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Inbound Messages",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/whatsapp/messaging-limit": {
       "get": {
         "description": "This tenant's WhatsApp messaging limit (unique customers / 24h) + quality rating, read live\nfrom Meta and briefly cached. The one number a sending service needs BEFORE the send to reserve\nthe day's capacity, tell the owner where he stands, and size a campaign \u2014 instead of learning the\nceiling from Meta's rejection after it is already spent.",

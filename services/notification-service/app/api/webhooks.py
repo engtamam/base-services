@@ -62,7 +62,7 @@ async def verify_subscription(
     raise HTTPException(status.HTTP_403_FORBIDDEN, "VERIFY_FAILED")
 
 
-async def _fan_out(bus, deliveries, data: dict) -> int:
+async def _fan_out(bus, deliveries, data: dict, inbound=None, number_index=None) -> int:
     """Publish every change to the bus, NOTHING filtered. Returns how many events were emitted.
 
     Meta's shape: {object, entry:[{id: <waba id>, changes:[{field, value}]}]}. Each change's `field`
@@ -100,6 +100,21 @@ async def _fan_out(bus, deliveries, data: dict) -> int:
                     type=f"{_TOPIC}.status", payload={**base, "delivery_id": delivery_id, "status": st}))
                 emitted += 1
             for msg in value.get("messages", []) or []:
+                # Durably append BEFORE the bus publish, so a missed bus event is still recoverable via
+                # the catch-up read. Best-effort and idempotent (keyed by wamid): a store hiccup must
+                # still let the event fan out, and Meta's retry re-records the same row, not a duplicate.
+                if inbound is not None:
+                    try:
+                        tenant = ""
+                        if number_index is not None and phone_id:
+                            tenant = await number_index.tenant_of(phone_id) or ""
+                        await inbound.record(
+                            wamid=str(msg.get("id", "")), sender=str(msg.get("from", "")),
+                            timestamp=float(msg.get("timestamp", 0) or 0),
+                            msg_type=str(msg.get("type", "")), tenant=tenant,
+                            phone_number_id=phone_id, waba_id=waba_id, message=msg)
+                    except Exception:  # noqa: BLE001 — a message we cannot record must still fan out
+                        pass
                 await bus.publish(f"{_TOPIC}.message",
                                   Event(type=f"{_TOPIC}.message", payload={**base, "message": msg}))
                 emitted += 1
@@ -118,10 +133,12 @@ async def receive(request: Request) -> dict:
         data = _json.loads(raw or b"{}")
     except ValueError:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "BAD_JSON")
-    from app.core.stores import DeliveryStore
+    from app.core.stores import DeliveryStore, InboundStore, WhatsAppNumberIndex
     bus = request.app.state.container.event_bus
-    deliveries = DeliveryStore(request.app.state.container.datastore)
-    emitted = await _fan_out(bus, deliveries, data if isinstance(data, dict) else {})
+    ds = request.app.state.container.datastore
+    deliveries = DeliveryStore(ds)
+    emitted = await _fan_out(bus, deliveries, data if isinstance(data, dict) else {},
+                             inbound=InboundStore(ds), number_index=WhatsAppNumberIndex(ds))
     # Meta retries on any non-2xx and treats the retries as duplicates, so acknowledge fast once the
     # events are on the bus. The count is for our observability, not for Meta.
     return {"received": True, "events": emitted}

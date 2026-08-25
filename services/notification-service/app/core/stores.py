@@ -12,6 +12,8 @@ _IDEMPO = "notify_idempo"    # idempotency_key -> {result, ts}
 _WA_NUMBER_INDEX = "wa_number_index"   # phone_number_id -> {tenant} (routing map, not a secret)
 _RECEIPTS = "notify_receipts"  # append-only receipt-event log, ordered by receipt_ts (catch-up read)
 _RECEIPT_KIND = "receipt"      # constant partition key so the ordered read is a filtered query, not a scan
+_INBOUND = "wa_inbound"        # append-only inbound-message log, ordered by timestamp (catch-up read)
+_INBOUND_KIND = "inbound"      # constant partition key — same reason as _RECEIPT_KIND
 
 
 class TemplateStore:
@@ -148,6 +150,45 @@ class DeliveryStore:
 
     async def remember_idempotent(self, key: str, result: dict, now: float) -> None:
         await self._store.put(_IDEMPO, key, {"result": result, "ts": now})
+
+
+class InboundStore:
+    """A durable, replayable log of INBOUND WhatsApp messages — the missed-delivery counterpart to
+    the receipt catch-up log.
+
+    Inbound `whatsapp.message` events are published to the bus, but the bus is at-most-once: a pod
+    that restarts through one hears it never, and a missed inbound message is a customer whose reply
+    is silently never answered, with no symptom anywhere. So every inbound message is ALSO appended
+    here and read forward from a watermark, exactly like receipts — reconciliation, not a second
+    delivery path.
+
+    Keyed by the wamid (Meta's message id), so it is idempotent: Meta re-delivers a webhook on any
+    non-2xx, and a re-delivery overwrites the same row rather than appending a duplicate — closing the
+    duplicate-delivery half of the risk here too. Ordered by the message timestamp (stored numeric so
+    the forward read orders correctly), with the wamid as the keyset tiebreaker for same-second
+    messages, so the catch-up read returns every message exactly once behind the cursor.
+    """
+
+    def __init__(self, store: DataStore) -> None:
+        self._store = store
+
+    async def record(self, *, wamid: str, sender: str, timestamp: float, msg_type: str,
+                     tenant: str, phone_number_id: str, waba_id: str, message: dict) -> bool:
+        """Append (idempotently, by wamid) one inbound message. Returns False for a message with no
+        wamid — nothing to key or dedupe on — rather than storing an unaddressable row."""
+        if not wamid:
+            return False
+        await self._store.put(_INBOUND, wamid, {
+            "id": wamid, "kind": _INBOUND_KIND, "wamid": wamid, "from": sender,
+            "timestamp": timestamp, "type": msg_type, "tenant": tenant,
+            "phone_number_id": phone_number_id, "waba_id": waba_id, "message": message})
+        return True
+
+    async def changed_since(self, *, after: str | None, limit: int) -> tuple[list[dict], str | None]:
+        """Inbound messages forward from a cursor, oldest first, bounded — the catch-up read. Filtered
+        on a constant kind (never an empty where), so it stays an indexed, ordered read, not a scan."""
+        return await self._store.find(_INBOUND, {"kind": _INBOUND_KIND}, limit=limit, after=after,
+                                      sort=("timestamp", "asc"))
 
 
 class WhatsAppNumberIndex:

@@ -260,6 +260,22 @@ async def delivery_receipts(request: Request, after: str = "", limit: int = 200)
     return {"receipts": rows, "cursor": cursor}
 
 
+@router.get("/whatsapp/inbound", dependencies=[Depends(require_internal_token)])
+async def inbound_messages(request: Request, after: str = "", limit: int = 200) -> dict:
+    """The catch-up read for INBOUND WhatsApp messages — the same shape as /notifications/receipts.
+
+    Inbound `whatsapp.message` events go on the bus best-effort (at-most-once), so a pod that restarts
+    through one hears it never and a customer's reply is silently never answered. This is how a
+    consumer reconciles that gap: read forward from a cursor, persist the returned `cursor` as its
+    watermark, repeat. Each row carries the wamid, sender, tenant (resolved from the receiving number)
+    and the raw Meta message; ordered by the message timestamp; a message that only lived on the bus
+    is still here. Idempotent by wamid, so a re-delivered webhook is one row, never a duplicate."""
+    from app.core.stores import InboundStore
+    store = InboundStore(request.app.state.container.datastore)
+    rows, cursor = await store.changed_since(after=after or None, limit=max(1, min(1000, limit)))
+    return {"messages": rows, "cursor": cursor}
+
+
 @router.post("/notifications/drain", dependencies=[Depends(require_internal_token)])
 async def drain_queue(request: Request) -> dict:
     """Re-attempt every queued delivery whose backoff has expired.
