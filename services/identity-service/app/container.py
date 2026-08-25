@@ -99,7 +99,8 @@ _TOKEN: dict[str, Builder] = {
 _RATELIMITER: dict[str, Builder] = {
     "memory": lambda s: MemoryRateLimiter(s.RATELIMIT_MAX, s.RATELIMIT_WINDOW_SECONDS),
     "redis": lambda s: RedisRateLimiter(s.RATELIMIT_URL, s.RATELIMIT_MAX, s.RATELIMIT_WINDOW_SECONDS,
-                                        degrade=s.RATELIMIT_DEGRADE),
+                                        degrade=s.RATELIMIT_DEGRADE,
+                                        command_timeout_s=s.RATELIMIT_COMMAND_TIMEOUT_S),
 }
 # Where privileged actions are witnessed. `null` records nothing and SAYS so — the boot guard
 # refuses it in production, because a chain that verifies perfectly while empty is a control that

@@ -208,6 +208,11 @@ class Settings(BaseSettings):
     # limiter with the same policy — coarser, but alive and still limiting. `closed` denies all
     # (the limiter becomes the outage); `open` allows all (the limit is gone). See phase-32 T4.
     RATELIMIT_DEGRADE: str = "local"            # local | closed | open
+    # Socket connect/read timeout for the redis limiter, in seconds. Bounds how long a single GCRA
+    # call waits on the Redis SOCKET before raising — which is what lets an unreachable Redis hit the
+    # degrade path above instead of hanging the request past the gateway's upstream timeout (a 504).
+    # Deliberately SHORT: this path exists to fail FAST into the fallback, not to wait.
+    RATELIMIT_COMMAND_TIMEOUT_S: float = 1.0
     # How a request becomes a key. Composite: each present part contributes, so an authenticated
     # request buckets per subject (fair) and an anonymous one falls through to the IP. Behind a NAT,
     # `ip` alone is one bucket for a whole office — add `subject`/`tenant` to split it. See T7.

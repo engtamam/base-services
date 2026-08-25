@@ -83,7 +83,7 @@ class RedisRateLimiter:
 
     def __init__(self, url: str, max_requests: int, window_seconds: int,
                  *, degrade: str = "local", max_connections: int = 64,
-                 pool_timeout_s: float = 3.0) -> None:
+                 pool_timeout_s: float = 3.0, command_timeout_s: float = 1.0) -> None:
         if not url:
             raise ConfigError("RATELIMIT_URL is required for the redis driver")
         redis = load("redis.asyncio", "redis")
@@ -94,8 +94,17 @@ class RedisRateLimiter:
         # the precise failure a rate limiter must never have). A blocking pool makes the surplus
         # requests QUEUE for a connection instead, so they still hit the one shared counter. Redis
         # being merely busy is backpressure, not an outage.
+        #
+        # `pool_timeout_s` only bounds the WAIT FOR A FREE CONNECTION out of the pool — not the socket.
+        # Without `socket_timeout`/`socket_connect_timeout` the underlying connection blocks FOREVER on
+        # a connect or read, so when Redis is unreachable (not merely busy) the GCRA call in check()
+        # hangs indefinitely and the `except`-guarded degrade path below never runs — the request
+        # instead dies at the gateway's upstream timeout as a 504, the exact failure this design's
+        # "degrade, don't fail" fallback exists to prevent. So bound the socket too, and keep it SHORT:
+        # the point of the fallback is to fail fast into it, not to wait as long as possible.
         pool = redis.BlockingConnectionPool.from_url(
-            url, decode_responses=True, max_connections=max_connections, timeout=pool_timeout_s)
+            url, decode_responses=True, max_connections=max_connections, timeout=pool_timeout_s,
+            socket_timeout=command_timeout_s, socket_connect_timeout=command_timeout_s)
         self._client: Any = redis.Redis(connection_pool=pool)
         self._max = max(1, max_requests)
         self._window_ms = max(1, window_seconds) * 1000
