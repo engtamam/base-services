@@ -77,8 +77,16 @@ spec:
               value: postgres
             - name: DB_PORT
               value: "5432"
+            # WILDCARD database. The edoburu entrypoint emits `${DB_NAME:-*} = host=… auth_user=…`, so
+            # "*" is PgBouncer's FALLBACK database: a client asking for ANY dbname it hasn't been told
+            # about connects to DB_HOST forwarding that ORIGINAL name. One Postgres instance holds
+            # several logical databases (base_services + per-product ones: bookings, campaigns, insights,
+            # loyalty, operations, reminders, …); "*" proxies all of them and stays correct as databases
+            # are added — never an enumerated list to keep in sync. auth_user (below) means client auth
+            # is by auth_query against Postgres, so it works for every db and user without a per-db entry.
+            # MAX_DB_CONNECTIONS still caps the TOTAL server connections across all these pools.
             - name: DB_NAME
-              value: base_services
+              value: "*"
             - name: DB_USER
               valueFrom: { secretKeyRef: { name: platform-secrets, key: POSTGRES_USER } }
             - name: DB_PASSWORD
