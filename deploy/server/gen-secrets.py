@@ -46,7 +46,13 @@ SCHEMA = HERE / "secrets.schema.json"
 
 PRODUCT_NAME = os.environ.get("PRODUCT_NAME", "base-services")
 NS = os.environ.get("NS", os.environ.get("NAMESPACE", "base-services"))
-PG_HOST = os.environ.get("PG_HOST", "postgres:5432")
+# A fresh install routes the DB through PgBouncer by DEFAULT (deploy/k3s/platform/pgbouncer.yaml,
+# applied by bootstrap alongside Postgres): services keep a generous local pool while PgBouncer
+# multiplexes onto a small, bounded server-connection count, so the fleet does not silently ship the
+# unpooled 5-slot-per-service bottleneck that a manual cutover would be needed to undo. Set
+# PG_HOST=postgres:5432 to bring up DIRECT to Postgres instead (no pooler). The generated DSN carries
+# no sslmode, matching today's plaintext in-cluster hop; PgBouncer accepts plaintext clients by default.
+PG_HOST = os.environ.get("PG_HOST", "pgbouncer:6432")
 PG_DB = os.environ.get("PG_DB", "base_services")
 POSTGRES_USER = os.environ.get("POSTGRES_USER", "base_services")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
