@@ -62,7 +62,8 @@ class PostgresDataStore:
     driver = "postgres"
 
     def __init__(self, dsn: str, *, pool_min: int = 1, pool_max: int = 5,
-                 pool_timeout: float = 10.0, pool_max_inactive_lifetime: float = 300.0) -> None:
+                 pool_timeout: float = 10.0, pool_max_inactive_lifetime: float = 300.0,
+                 statement_cache_size: int = 0) -> None:
         if not dsn:
             raise ConfigError("DATASTORE_DSN is required for the postgres driver")
         self._asyncpg = load("asyncpg", "postgres")
@@ -78,6 +79,9 @@ class PostgresDataStore:
         self._pool_max = max(self._pool_min, int(pool_max), 1)
         self._pool_timeout = float(pool_timeout)
         self._pool_max_inactive = float(pool_max_inactive_lifetime)
+        # PgBouncer transaction mode drops per-session state; disabling asyncpg's prepared-
+        # statement cache (0) is the documented fix. Default 0 = fleet is PgBouncer-safe.
+        self._statement_cache_size = max(0, int(statement_cache_size))
 
     async def _ensure(self) -> Any:
         if self._pool is None:
@@ -86,7 +90,8 @@ class PostgresDataStore:
                 min_size=self._pool_min,
                 max_size=self._pool_max,
                 timeout=self._pool_timeout,                        # wait this long for a slot, then fail cleanly
-                max_inactive_connection_lifetime=self._pool_max_inactive,  # return idle connections to the server
+                max_inactive_connection_lifetime=self._pool_max_inactive,
+                statement_cache_size=self._statement_cache_size,  # return idle connections to the server
             )
             async with self._pool.acquire() as con:
                 await con.execute(

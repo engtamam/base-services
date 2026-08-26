@@ -63,7 +63,8 @@ class PostgresDataStore:
     driver = "postgres"
 
     def __init__(self, dsn: str, *, pool_min: int = 1, pool_max: int = 5,
-                 pool_timeout: float = 10.0, pool_max_inactive_lifetime: float = 300.0) -> None:
+                 pool_timeout: float = 10.0, pool_max_inactive_lifetime: float = 300.0,
+                 statement_cache_size: int = 0) -> None:
         if not dsn:
             raise ConfigError("DATASTORE_DSN is required for the postgres driver")
         self._asyncpg = load("asyncpg", "postgres")
@@ -79,6 +80,15 @@ class PostgresDataStore:
         self._pool_max = max(self._pool_min, int(pool_max), 1)
         self._pool_timeout = float(pool_timeout)
         self._pool_max_inactive = float(pool_max_inactive_lifetime)
+        # PGBOUNCER COMPATIBILITY. In transaction pooling mode a server connection is handed to a
+        # client only for one transaction, so per-session state — asyncpg's PREPARED STATEMENTS —
+        # does not survive: a statement prepared on one backend is gone on the next, and the query
+        # fails ("prepared statement does not exist"). Disabling the statement cache (0) is the
+        # documented, standard asyncpg+PgBouncer fix — asyncpg then uses unnamed statements that live
+        # only within the transaction. Default 0 so the fleet is PgBouncer-safe out of the box (the
+        # small cost of re-preparing is the accepted trade for many services sharing one Postgres); a
+        # deployment talking DIRECTLY to Postgres may set it higher to get the cache back.
+        self._statement_cache_size = max(0, int(statement_cache_size))
 
     async def _ensure(self) -> Any:
         if self._pool is None:
@@ -88,6 +98,7 @@ class PostgresDataStore:
                 max_size=self._pool_max,
                 timeout=self._pool_timeout,                        # wait this long for a slot, then fail cleanly
                 max_inactive_connection_lifetime=self._pool_max_inactive,  # return idle connections to the server
+                statement_cache_size=self._statement_cache_size,   # 0 => PgBouncer transaction-mode safe
             )
             async with self._pool.acquire() as con:
                 await con.execute(

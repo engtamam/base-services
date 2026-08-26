@@ -70,6 +70,7 @@ _DATASTORE: dict[str, Builder] = {
         pool_max=s.DATASTORE_POOL_MAX,
         pool_timeout=s.DATASTORE_POOL_TIMEOUT_SECONDS,
         pool_max_inactive_lifetime=s.DATASTORE_POOL_MAX_INACTIVE_LIFETIME_SECONDS,
+        statement_cache_size=s.DATASTORE_STATEMENT_CACHE_SIZE,
     ),
 }
 _CACHE: dict[str, Builder] = {

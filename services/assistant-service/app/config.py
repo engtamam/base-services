@@ -311,6 +311,7 @@ class Settings(BaseSettings):
     DATASTORE_POOL_MAX: int = 5
     DATASTORE_POOL_TIMEOUT_SECONDS: float = 10.0            # wait for a free slot, then fail cleanly
     DATASTORE_POOL_MAX_INACTIVE_LIFETIME_SECONDS: float = 300.0  # return idle connections to postgres
+    DATASTORE_STATEMENT_CACHE_SIZE: int = 0   # 0 => PgBouncer transaction-mode safe (no asyncpg prepared-statement cache)
 
     CACHE_DRIVER: str = "memory"
     CACHE_URL: str = ""  # e.g. redis://host:6379/0  (redis driver)
