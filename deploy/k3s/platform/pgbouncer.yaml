@@ -126,3 +126,15 @@ spec:
           resources:
             requests: { cpu: 50m, memory: 32Mi }   # pgbouncer is famously light (single-threaded, C)
             limits: { memory: 128Mi }
+          volumeMounts:
+            # readOnlyRootFilesystem stays TRUE (below), but the edoburu entrypoint GENERATES its
+            # config — pgbouncer.ini + userlist.txt — into /etc/pgbouncer at startup from the env
+            # above, so that ONE directory must be writable or the container crash-loops on
+            # "Read-only file system". A tmpfs-backed emptyDir gives it exactly that and nothing else;
+            # the config is derived from env every start, so it is disposable, never state to persist.
+            - name: pgbouncer-conf
+              mountPath: /etc/pgbouncer
+      volumes:
+        - name: pgbouncer-conf
+          emptyDir:
+            medium: Memory

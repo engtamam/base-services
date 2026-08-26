@@ -81,15 +81,21 @@ spec:
           protocol: TCP
     {{- end }}
     {{- if .Values.networkPolicy.egress.datastore }}
-    # Postgres / Redis in this namespace, by label. Nothing else.
+    # Postgres / Redis / PgBouncer in this namespace, by label. Nothing else. All three carry
+    # base-services/role: datastore, so ONE rule covers them — but each listens on its own port, and
+    # the port list is the actual allow: a datastore-role pod on a port not listed here is silently
+    # DROPPED (a SYN black-hole -> timeout, not a refusal). PgBouncer (6432) MUST be here or every
+    # service that repoints its DSN at it stalls exactly as api-gateway's /readyz did.
     - to:
         - podSelector:
             matchLabels:
               base-services/role: datastore
       ports:
-        - port: 5432
+        - port: 5432        # postgres (direct)
           protocol: TCP
-        - port: 6379
+        - port: 6432        # pgbouncer (the pooled path)
+          protocol: TCP
+        - port: 6379        # redis
           protocol: TCP
     {{- end }}
     {{- with .Values.networkPolicy.egress.objectStore }}
