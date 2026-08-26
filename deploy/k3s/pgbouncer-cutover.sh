@@ -8,6 +8,11 @@
 #   deploy/k3s/pgbouncer-cutover.sh rollback <service>     # revert one service
 #   deploy/k3s/pgbouncer-cutover.sh rollback --all         # revert everything
 #   deploy/k3s/pgbouncer-cutover.sh status                 # who is on pgbouncer vs direct
+#   deploy/k3s/pgbouncer-cutover.sh pg-conns               # live Postgres client-backend count
+#
+# Add `--wait-under N` to canary/rollout to GATE each cutover on Postgres headroom — it blocks until
+# client backends < N before repointing the next service, so a rollout never piles onto a saturated
+# server during the transition window (when direct + pooled connections coexist). E.g. --wait-under 85.
 #
 # Env: NAMESPACE (default base-services). The cutover rewrites each service's own <svc>-secrets
 # DATASTORE_DSN: host postgres:5432 -> pgbouncer:6432 and sslmode=require -> disable (the pod->pgbouncer
@@ -37,6 +42,34 @@ _dsn() { kubectl -n "$NS" get secret "$1" -o jsonpath='{.data.DATASTORE_DSN}' | 
 
 _on_pgbouncer() { case "$(_dsn "$1")" in *"$TO_HOST"*) return 0;; *) return 1;; esac; }
 
+# Live count of CLIENT backends on Postgres — the number that must stay under the ~100 ceiling. During
+# a partial rollout BOTH the still-direct services and pgbouncer's climbing server pool count here, so
+# this is what the --wait-under gate watches (the end state, all behind pgbouncer, is bounded; only the
+# coexistence window is tight). Run against the postgres pod over its local trust socket.
+_pg_pod() { kubectl -n "$NS" get pod -l app=postgres -o jsonpath='{.items[0].metadata.name}' 2>/dev/null; }
+pg_conns() {
+  local user pod
+  user="$(kubectl -n "$NS" get secret platform-secrets -o jsonpath='{.data.POSTGRES_USER}' | _b64d)"
+  pod="$(_pg_pod)"; [ -n "$pod" ] || die "no postgres pod found (label app=postgres) in $NS"
+  kubectl -n "$NS" exec "$pod" -- psql -U "$user" -d base_services -tAc \
+    "select count(*) from pg_stat_activity where backend_type='client backend'" | tr -d '[:space:]'
+}
+
+# Block until Postgres client backends are UNDER the ceiling before repointing the next service, so a
+# cutover never piles onto an already-saturated server. Bounded wait (~2min) then fail loudly.
+WAIT_UNDER=""
+_gate() {
+  [ -n "$WAIT_UNDER" ] || return 0
+  local n tries=0
+  while :; do
+    n="$(pg_conns)"; [ -n "$n" ] || die "could not read pg_stat_activity"
+    if [ "$n" -lt "$WAIT_UNDER" ]; then echo "   [gate] pg client backends=$n (< $WAIT_UNDER) — go"; return 0; fi
+    tries=$((tries + 1))
+    [ "$tries" -le 60 ] || die "pg client backends stuck at $n (>= $WAIT_UNDER) after ~2min — investigate the ceiling before continuing the rollout"
+    echo "   [gate] pg client backends=$n (>= $WAIT_UNDER) — waiting for headroom..."; sleep 2
+  done
+}
+
 verify() {
   echo "==> checking pgbouncer is Ready..."
   kubectl -n "$NS" rollout status deployment/pgbouncer --timeout=60s
@@ -58,6 +91,7 @@ _repoint() {  # <secret> — rewrite its DSN to go through pgbouncer, stashing t
   local secret="$1" dsn new
   dsn="$(_dsn "$secret")"
   case "$dsn" in *"$TO_HOST"*) echo "   $secret already on pgbouncer — skipped"; return 0;; esac
+  _gate                                   # wait for Postgres headroom before adding another migration
   new="$(printf '%s' "$dsn" | sed -E "s#@${FROM_HOST}#@${TO_HOST}#g; s#sslmode=require#sslmode=disable#g")"
   [ "$new" != "$dsn" ] || die "$secret DSN did not match '$FROM_HOST' — refusing a no-op rewrite (is it already migrated, or a different host?)"
   kubectl -n "$NS" annotate secret "$secret" "$ANNOT=$dsn" --overwrite >/dev/null
@@ -78,8 +112,19 @@ _revert() {  # <secret> — restore the stashed pre-cutover DSN
   echo "   $(_svc_of "$secret") -> postgres (reverted, restarting)"
 }
 
+# Pull an optional `--wait-under N` out of the args (applies to canary/rollout); the rest stays positional.
+_args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --wait-under) WAIT_UNDER="${2:?--wait-under needs a number}"; shift 2 ;;
+    *) _args+=("$1"); shift ;;
+  esac
+done
+set -- "${_args[@]:-}"
+
 case "${1:-}" in
   verify) verify ;;
+  pg-conns) echo "postgres client backends: $(pg_conns)" ;;
   canary)
     [ -n "${2:-}" ] || die "usage: canary <service>"
     verify
@@ -101,5 +146,5 @@ case "${1:-}" in
     for s in $(_db_secrets); do
       if _on_pgbouncer "$s"; then echo "  pgbouncer  $(_svc_of "$s")"; else echo "  direct     $(_svc_of "$s")"; fi
     done ;;
-  *) die "usage: $0 {verify|canary <svc>|rollout|rollback <svc>|--all|status}" ;;
+  *) die "usage: $0 {verify | canary <svc> | rollout | rollback <svc>|--all | status | pg-conns} [--wait-under N]" ;;
 esac
