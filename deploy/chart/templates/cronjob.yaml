@@ -57,6 +57,15 @@ spec:
           labels: {{- include "base-service.selectorLabels" $root | nindent 12 }}
         spec:
           restartPolicy: OnFailure
+          {{- /* Every generated CronJob pod defaults to the BATCH (low) priority class when the
+                 classes are enabled, so a seconds-lived job pod is the first thing the scheduler
+                 preempts under node contention — never an always-on service missing its health probe.
+                 A single job may override with its own `priorityClassName`; an always-on Deployment
+                 opts into the critical class through .Values.priorityClassName instead. */}}
+          {{- $pc := .priorityClassName | default (ternary $root.Values.priorityClasses.batchClassName "" $root.Values.priorityClasses.enabled) }}
+          {{- if $pc }}
+          priorityClassName: {{ $pc }}
+          {{- end }}
           serviceAccountName: {{ include "base-service.fullname" $root }}
           automountServiceAccountToken: false
           {{- /* The cronJob pulls the SAME image as the Deployment, so it needs the same pull

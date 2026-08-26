@@ -1,0 +1,35 @@
+# Cluster-scoped scheduling priority for the fleet. Applied ONCE at bootstrap — NOT from the
+# per-service Helm chart, because each service is its own release and a cluster-scoped object may
+# have exactly one owner: 23 releases each rendering these would collide. This is infra, like the
+# datastores, so it lives here with them.
+#
+# Why it exists: every service is a single-worker uvicorn (one event loop shared by real traffic and
+# the /healthz probe). Sized at ~20m CPU and packed onto a 2-vCPU node with 15+ CronJobs churning a
+# fresh pod every minute, an always-on pod can lose the CFS scheduling race and miss its liveness
+# deadline — kubelet then restarts a container that was doing nothing wrong (observed: 4 services
+# crash-looping ~every 90s for hours). These classes let the scheduler tell the two apart: a
+# seconds-lived CronJob pod yields to an always-on service, never the reverse.
+#
+#   - base-services-critical : always-on services opt in via the chart's priorityClassName.
+#   - base-services-batch    : every generated CronJob pod defaults to it (chart cronjob.yaml).
+#
+# globalDefault is false on both — a globalDefault silently re-weights every pod in the cluster,
+# including ones outside this fleet. Names are fixed (cluster-scoped, shared) and match the chart's
+# priorityClasses.batchClassName default and the priorityClassName services set.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: base-services-critical
+value: 1000000                 # well above the default (0): work the node must keep scheduled
+globalDefault: false
+description: "Always-on base-services workloads the node must keep scheduled under contention."
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: base-services-batch
+value: -10                     # below the default (0): cron pods are preempted/starved FIRST
+globalDefault: false
+# A batch pod must never EVICT an always-on one to schedule itself — it waits its turn instead.
+preemptionPolicy: Never
+description: "Seconds-lived CronJob pods: yield to always-on services, never preempt them."

@@ -490,6 +490,10 @@ MUTATIONS = [
     ("podAntiAffinity", [], "hard"),
     ("topologySpread", [], "false"),
     ("priorityClassName", [], "high"),
+    # priorityClasses: enabling it stamps the batch class name on every generated CronJob pod (the
+    # class OBJECTS live in deploy/k3s, not the chart); batchClassName is the name so stamped.
+    ("priorityClasses.enabled", _CRON, "true"),
+    ("priorityClasses.batchClassName", _CRON + ["--set", "priorityClasses.enabled=true"], "batch-renamed"),
     ("nameOverride", [], "renamed"),
     ("fullnameOverride", [], "renamed-full"),
     ("cronJobs[0].schedule", _CRON, "5 5 * * *"),

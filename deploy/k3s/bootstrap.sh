@@ -115,6 +115,12 @@ install_platform() {
   kubectl apply -n "$NAMESPACE" -f "$(dirname "$0")/platform/"
   ok "platform applied"
 
+  # Cluster-scoped scheduling priorities — NO -n: a PriorityClass is not namespaced. Applied here,
+  # once, rather than from the per-service chart (23 releases cannot each own the same cluster object).
+  # Idempotent: re-running bootstrap re-applies the same two classes. See priorityclasses.yaml.
+  kubectl apply -f "$(dirname "$0")/priorityclasses.yaml"
+  ok "priority classes applied"
+
   # OPTIONAL in-cluster object store (SeaweedFS, Apache-2.0), for OBJECTSTORE_DRIVER=s3. Off by
   # default — most deployments bring their own S3. It needs the `objectstore-secrets` Secret
   # (s3.json); see deploy/k3s/objectstore.yaml. Bring-your-own S3? Leave this off.

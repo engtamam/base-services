@@ -68,7 +68,13 @@ probes:
   startupFailureThreshold: 90   # x periodSeconds = first-boot budget (migrations, cold caches)
   periodSeconds: 5
   timeoutSeconds: 5             # NOT the 1s default: probes on a busy node exceed 1s
-  livenessFailureThreshold: 6
+  # x periodSeconds = grace before a liveness kill. 10 x 5s = 50s. Raised from 6 (30s) for headroom
+  # against SCHEDULING JITTER on a contended node: a single-worker uvicorn shares one event loop
+  # between real traffic and /healthz, so a burst (a dashboard's ~15 concurrent calls, or CronJob pod
+  # churn) can delay the probe past a tight threshold and cost a full restart — even though /healthz
+  # is a dependency-free trivial handler and the process is doing nothing wrong. This is tolerance to
+  # jitter, NOT hiding a hang; the CPU-request sizing per service is what actually fixes the cause.
+  livenessFailureThreshold: 10
 
 # Endpoint removal is asynchronous: without a preStop pause the pod stops accepting
 # connections while the Service still routes to it — 502s on every single deploy.
@@ -168,6 +174,16 @@ topologySpread: true
 nodeSelector: {}
 tolerations: []
 priorityClassName: ""
+
+# Scheduling priority for generated CronJob pods. The PriorityClass OBJECTS are cluster-scoped and
+# created once at bootstrap (deploy/k3s/priorityclasses.yaml), NOT here — each service is its own
+# Helm release and a cluster object may have only one owner. This only REFERENCES the batch class:
+# enabled, every CronJob pod is stamped with it, so under node contention the scheduler starves a
+# seconds-lived cron pod before an always-on service. An always-on service opts into the CRITICAL
+# class through `priorityClassName` above; the classes must exist on the cluster first.
+priorityClasses:
+  enabled: false
+  batchClassName: base-services-batch   # must match the name in deploy/k3s/priorityclasses.yaml
 
 podAnnotations: {}
 podLabels: {}

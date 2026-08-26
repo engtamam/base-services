@@ -200,6 +200,14 @@
     "nodeSelector": { "type": "object" },
     "tolerations": { "type": "array" },
     "priorityClassName": { "type": "string" },
+    "priorityClasses": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "batchClassName": { "type": "string" }
+      }
+    },
     "podAnnotations": { "type": "object" },
     "podLabels": { "type": "object" }
   }
