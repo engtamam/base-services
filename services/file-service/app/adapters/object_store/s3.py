@@ -52,8 +52,13 @@ class S3ObjectStore:
         # wrong: head_bucket answered a bare 403 and /readyz reported the store "down" with no log line
         # to tell it from a real outage. Request it outright — virtual-hosted is the explicit default
         # (AWS and Alibaba OSS serve it), path-style is THE MinIO / on-prem knob.
+        # Bound the client so an unreachable/slow store fails FAST (a clean quick "down") instead of
+        # hanging on botocore's ~60s default and blowing a caller/probe deadline. Honoured on every
+        # botocore version, so they live on the base cfg passed to both Config branches below.
         cfg: dict[str, Any] = {"signature_version": "s3v4",
-                               "s3": {"addressing_style": "path" if force_path_style else "virtual"}}
+                               "s3": {"addressing_style": "path" if force_path_style else "virtual"},
+                               "connect_timeout": 5, "read_timeout": 15,
+                               "retries": {"max_attempts": 3, "mode": "standard"}}
         try:
             self._config = Config(request_checksum_calculation="when_required",
                                   response_checksum_validation="when_required", **cfg)

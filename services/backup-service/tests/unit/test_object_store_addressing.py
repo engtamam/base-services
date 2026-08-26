@@ -37,3 +37,13 @@ def test_upload_checksums_are_computed_only_when_required():
         pytest.skip("botocore < 1.36 has no checksum knob and no trailer default")
     assert cfg.request_checksum_calculation == "when_required"
     assert cfg.response_checksum_validation == "when_required"
+
+
+def test_client_has_bounded_connect_and_read_timeouts():
+    """An unreachable/slow store must FAIL FAST, not hang on botocore's ~60s-per-attempt default and
+    blow a health probe's deadline (the object_store /readyz check saw exactly that). The adapter
+    pins short connect/read timeouts + a bounded retry so a dead endpoint is a clean quick 'down'."""
+    cfg = S3ObjectStore("bkt", "https://oss-cn.example.com", credentials=_STATIC)._config
+    assert cfg.connect_timeout and cfg.connect_timeout <= 10, "a bounded connect timeout, not the default"
+    assert cfg.read_timeout and cfg.read_timeout <= 30
+    assert (cfg.retries or {}).get("max_attempts", 99) <= 4      # bounded, never botocore's default storm

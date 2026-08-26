@@ -49,11 +49,15 @@ class S3ObjectStore:
         # the body streams in a form those stores accept. The try/except keeps this working on
         # botocore < 1.36, which has neither knob (and no such trailer default to disable).
         _s3 = {"addressing_style": "path" if force_path_style else "virtual"}
+        # Bound the client so an unreachable/slow store fails FAST (a clean quick "down")
+        # instead of hanging on botocore's ~60s default and blowing a caller/probe deadline.
+        _net = {"connect_timeout": 5, "read_timeout": 15,
+                "retries": {"max_attempts": 3, "mode": "standard"}}
         try:
             self._config = Config(s3=_s3, request_checksum_calculation="when_required",
-                                  response_checksum_validation="when_required")
+                                  response_checksum_validation="when_required", **_net)
         except TypeError:
-            self._config = Config(s3=_s3)
+            self._config = Config(s3=_s3, **_net)
         # Empty credentials => fall back to the ambient chain (IAM role, instance profile). That is
         # the RIGHT default on AWS, where handing us static keys would be worse than not.
         self._creds: dict[str, str] = {}

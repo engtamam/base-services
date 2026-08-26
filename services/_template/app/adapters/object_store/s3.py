@@ -51,11 +51,19 @@ class S3ObjectStore:
         # the body streams in a form those stores accept. The try/except keeps this working on
         # botocore < 1.36, which has neither knob (and no such trailer default to disable).
         _s3 = {"addressing_style": "path" if force_path_style else "virtual"}
+        # Bound the client so an UNREACHABLE or slow store fails FAST — a clean, quick "down" — instead
+        # of hanging on botocore's ~60s-per-attempt default and blowing past a caller's deadline. The
+        # object_store /readyz probe saw exactly that (a 5s check reporting "timeout" while head_bucket
+        # sat on a dead cross-cloud path); a real put/get would have hung far longer. connect/read
+        # timeouts and a bounded retry are honoured on every botocore version, so they sit outside the
+        # checksum try/except below.
+        _net = {"connect_timeout": 5, "read_timeout": 15,
+                "retries": {"max_attempts": 3, "mode": "standard"}}
         try:
             self._config = Config(s3=_s3, request_checksum_calculation="when_required",
-                                  response_checksum_validation="when_required")
+                                  response_checksum_validation="when_required", **_net)
         except TypeError:
-            self._config = Config(s3=_s3)
+            self._config = Config(s3=_s3, **_net)
         # Credentials are resolved by ONE provider seam (see credentials.py): static keys, botocore's
         # ambient chain, an Alibaba ECS RAM role, or a generic STS endpoint — selected by config so the
         # cloud is a deploy-time value. A caller passing no CredentialConfig gets STATIC from the two
