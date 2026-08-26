@@ -12,6 +12,7 @@ import base64
 import json
 from urllib.parse import urlsplit
 
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
@@ -80,7 +81,10 @@ class Gateway:
         auth_header = request.headers.get("authorization", "")
         if route.auth in ("required", "optional") and auth_header.startswith("Bearer "):
             try:
-                claims = self._verifier.verify(auth_header[7:])
+                # OFFLOAD: the gateway verifies on EVERY proxied request, and verify() is synchronous
+                # blocking work on jwks/rs256 (a JWKS fetch + RSA verify). Inline on this single-worker
+                # loop it stalls every other in-flight proxy — the edge is the worst place to block.
+                claims = await run_in_threadpool(self._verifier.verify, auth_header[7:])
                 identity = self._identity_from(claims)
             except InvalidToken:
                 if route.auth == "required":

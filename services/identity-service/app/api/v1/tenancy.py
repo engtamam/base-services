@@ -15,6 +15,7 @@ to check (T8). So we do not create one.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from app.api.auth import Principal, require_cap
@@ -361,7 +362,8 @@ async def select_tenant(request: Request, body: TenantIn) -> dict:
         if scheme.lower() != "bearer" or not token:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "INVALID_CREDENTIALS")
         try:
-            claims = c.token_verifier.verify(token)
+            # offload: blocking verify (jwks/rs256) must not stall the event loop on the switch path
+            claims = await run_in_threadpool(c.token_verifier.verify, token)
         except InvalidToken:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "INVALID_CREDENTIALS")
         if claims.get("type") != "access":

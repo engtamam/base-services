@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import HTTPException, Request, status
+from starlette.concurrency import run_in_threadpool
 
 from app.ports.errors import InvalidToken
 
@@ -42,7 +43,9 @@ async def require_user(request: Request) -> Principal:
     token = auth[7:]
     verifier = request.app.state.container.token_verifier
     try:
-        claims = verifier.verify(token)
+        # OFFLOAD: verify() is synchronous and blocks the single-worker event loop — on
+        # jwks/rs256 it does a blocking JWKS fetch + CPU-bound RSA verify. See _template.
+        claims = await run_in_threadpool(verifier.verify, token)
     except InvalidToken:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="INVALID_TOKEN")
     principal = _extract_principal(claims)

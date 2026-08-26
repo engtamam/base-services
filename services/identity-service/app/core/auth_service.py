@@ -7,6 +7,7 @@ Security properties:
 """
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
 
 from app.core import caps_grant
@@ -626,7 +627,8 @@ class AuthService:
     # ── refresh (rotation) ─────────────────────────────────────────────────────
     async def refresh(self, refresh_token: str) -> dict | None:
         try:
-            claims = self._verifier.verify(refresh_token)
+            # offload: verify() is blocking on jwks/rs256 (JWKS fetch + RSA); do not stall the loop
+            claims = await asyncio.to_thread(self._verifier.verify, refresh_token)
         except InvalidToken:
             return None
         if claims.get("type") != "refresh":
@@ -675,7 +677,8 @@ class AuthService:
     # ── logout ─────────────────────────────────────────────────────────────────
     async def logout(self, refresh_token: str) -> bool:
         try:
-            claims = self._verifier.verify(refresh_token)
+            # offload: verify() is blocking on jwks/rs256 (JWKS fetch + RSA); do not stall the loop
+            claims = await asyncio.to_thread(self._verifier.verify, refresh_token)
         except InvalidToken:
             return False
         jti = claims.get("jti")
