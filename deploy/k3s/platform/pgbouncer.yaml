@@ -1,0 +1,130 @@
+# PgBouncer — transaction-pooling connection multiplexer in front of the shared Postgres.
+#
+# THE PROBLEM IT SOLVES. Each of ~24 stateless services keeps its own asyncpg pool. A pool sized for
+# burst (say 20) times 24 services is 480 connections against a Postgres whose ceiling is ~100 and
+# whose per-connection memory (~9MB) is itself a wall. Sizing per-service by hand is arithmetic that
+# has to be redone every time the box or the fleet changes. PgBouncer decouples the two: services keep
+# a GENEROUS LOCAL pool (cheap client-side sockets), and PgBouncer multiplexes them onto a SMALL,
+# BOUNDED number of real server connections (MAX_DB_CONNECTIONS). Resize the box, add services —
+# nothing here needs re-tuning; only MAX_DB_CONNECTIONS caps what Postgres actually holds.
+#
+# TRANSACTION MODE is what makes the multiplexing tight (a backend is held only for one transaction).
+# It requires the app side to not rely on per-session state — handled: the fleet sets
+# statement_cache_size=0 (DATASTORE_STATEMENT_CACHE_SIZE, default 0), and our adapters use no
+# LISTEN/NOTIFY or session GUCs (the event bus is redis).
+#
+# ── CLUSTER-SIDE FINALIZATION (this manifest is a correct starting point, validate it live) ──────────
+#   1. PIN THE IMAGE DIGEST like postgres/redis: `docker buildx imagetools inspect edoburu/pgbouncer:<tag>`
+#      then replace the tag below with tag@sha256:<digest>. (Left as a tag because a digest cannot be
+#      computed offline; do NOT ship to production on a mutable tag.)
+#   2. VALIDATE AUTH against the live Postgres. Postgres 16 uses scram-sha-256; AUTH_TYPE below matches,
+#      and edoburu builds the userlist from POSTGRES_USER/POSTGRES_PASSWORD. Confirm a service can
+#      actually connect THROUGH pgbouncer before cutting the fleet over (psql "host=pgbouncer port=6432
+#      dbname=base_services sslmode=disable user=$POSTGRES_USER").
+#   3. MIGRATE THE DSN. Point each service's DATASTORE_DSN at pgbouncer: host=pgbouncer port=6432, and
+#      sslmode=disable (the pod→pgbouncer hop is in-cluster and NetworkPolicy-restricted; pgbouncer→
+#      Postgres stays TLS via SERVER_TLS_SSLMODE=require). To keep that hop encrypted too, mint a
+#      pgbouncer TLS cert and set CLIENT_TLS_SSLMODE=require + CLIENT_TLS_{KEY,CERT}_FILE (see the
+#      commented block), then keep sslmode=require in the DSN. Cut over a canary service first.
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgbouncer
+  labels:
+    app: pgbouncer
+    base-services/role: datastore
+spec:
+  selector:
+    app: pgbouncer
+  ports:
+    - name: pgbouncer
+      port: 6432
+      targetPort: 6432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer
+spec:
+  replicas: 1
+  # RWO-free and stateless (pgbouncer holds no data), so RollingUpdate is fine — unlike the objectstore.
+  selector:
+    matchLabels:
+      app: pgbouncer
+  template:
+    metadata:
+      labels:
+        app: pgbouncer
+        base-services/role: datastore
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70                # the edoburu image's pgbouncer user
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: pgbouncer
+          # ISC-licensed PgBouncer packaged with a small MIT entrypoint. PIN THE DIGEST before prod
+          # (see finalization note above) — a mutable tag is exactly what the postgres/redis pins avoid.
+          image: edoburu/pgbouncer:v1.23.1-p3
+          ports:
+            - containerPort: 6432
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          env:
+            # ── upstream Postgres ──────────────────────────────────────────────────────────
+            - name: DB_HOST
+              value: postgres
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              value: base_services
+            - name: DB_USER
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: POSTGRES_USER } }
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: POSTGRES_PASSWORD } }
+            # pgbouncer → Postgres stays ENCRYPTED (Postgres runs ssl=on, self-signed): require, no verify.
+            - name: SERVER_TLS_SSLMODE
+              value: require
+            # ── pooling ────────────────────────────────────────────────────────────────────
+            - name: POOL_MODE
+              value: transaction        # the tight-multiplexing mode; needs statement_cache_size=0 (fleet does)
+            - name: AUTH_TYPE
+              value: scram-sha-256      # matches Postgres 16's default password_encryption
+            # Accept MANY client connections (services can pool generously)…
+            - name: MAX_CLIENT_CONN
+              value: "2000"
+            # …but hold only a SMALL, BOUNDED number of real Postgres connections. This single number
+            # is the whole fleet's Postgres budget — set it under the server ceiling (~100 minus a
+            # superuser reserve and anything else that connects directly). THIS is what you tune when
+            # you resize Postgres — not 24 per-service pools.
+            - name: MAX_DB_CONNECTIONS
+              value: "80"
+            - name: DEFAULT_POOL_SIZE
+              value: "25"               # per (user,db) steady-state server connections
+            - name: MIN_POOL_SIZE
+              value: "0"                # lazy: hold nothing when idle (mirrors the adapter's pool_min=1)
+            - name: RESERVE_POOL_SIZE
+              value: "5"                # a small burst cushion above DEFAULT_POOL_SIZE
+            - name: LISTEN_PORT
+              value: "6432"
+            # ── client → pgbouncer TLS (OPTIONAL — off here to keep the in-cluster cutover low-risk) ──
+            # To encrypt the pod→pgbouncer hop too (parity with the postgres posture), mint a
+            # pgbouncer-tls Secret (bootstrap: ensure_pgbouncer_tls) and uncomment:
+            # - { name: CLIENT_TLS_SSLMODE, value: require }
+            # - { name: CLIENT_TLS_KEY_FILE, value: /etc/pgbouncer-tls/tls.key }
+            # - { name: CLIENT_TLS_CERT_FILE, value: /etc/pgbouncer-tls/tls.crt }
+          readinessProbe:
+            tcpSocket: { port: 6432 }
+            periodSeconds: 5
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket: { port: 6432 }
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 32Mi }   # pgbouncer is famously light (single-threaded, C)
+            limits: { memory: 128Mi }
