@@ -13,19 +13,17 @@
 # statement_cache_size=0 (DATASTORE_STATEMENT_CACHE_SIZE, default 0), and our adapters use no
 # LISTEN/NOTIFY or session GUCs (the event bus is redis).
 #
-# ── CLUSTER-SIDE FINALIZATION (this manifest is a correct starting point, validate it live) ──────────
-#   1. PIN THE IMAGE DIGEST like postgres/redis: `docker buildx imagetools inspect edoburu/pgbouncer:<tag>`
-#      then replace the tag below with tag@sha256:<digest>. (Left as a tag because a digest cannot be
-#      computed offline; do NOT ship to production on a mutable tag.)
-#   2. VALIDATE AUTH against the live Postgres. Postgres 16 uses scram-sha-256; AUTH_TYPE below matches,
-#      and edoburu builds the userlist from POSTGRES_USER/POSTGRES_PASSWORD. Confirm a service can
-#      actually connect THROUGH pgbouncer before cutting the fleet over (psql "host=pgbouncer port=6432
-#      dbname=base_services sslmode=disable user=$POSTGRES_USER").
-#   3. MIGRATE THE DSN. Point each service's DATASTORE_DSN at pgbouncer: host=pgbouncer port=6432, and
-#      sslmode=disable (the pod→pgbouncer hop is in-cluster and NetworkPolicy-restricted; pgbouncer→
-#      Postgres stays TLS via SERVER_TLS_SSLMODE=require). To keep that hop encrypted too, mint a
-#      pgbouncer TLS cert and set CLIENT_TLS_SSLMODE=require + CLIENT_TLS_{KEY,CERT}_FILE (see the
-#      commented block), then keep sslmode=require in the DSN. Cut over a canary service first.
+# ── CLUSTER-SIDE CUTOVER — run deploy/k3s/pgbouncer-cutover.sh, which does these in order ────────────
+#   The image digest is PINNED (below), so what remains is live validation + the DSN switch, both
+#   scripted in deploy/k3s/pgbouncer-cutover.sh:
+#     verify  — brings up pgbouncer (this manifest is auto-applied by bootstrap) and proves a real
+#               connection THROUGH it authenticates (scram) and answers SELECT 1.
+#     canary <service> — repoints ONE service's DATASTORE_DSN at pgbouncer:6432 and restarts it, so
+#               you re-run the load test against a single service before committing the fleet.
+#     rollout — repoints the rest once the canary is proven; rollback <service|--all> reverts.
+#   pgbouncer→Postgres stays TLS (SERVER_TLS_SSLMODE=require); the pod→pgbouncer hop is in-cluster and
+#   NetworkPolicy-restricted (sslmode=disable). To encrypt that hop too, mint a pgbouncer cert and
+#   enable the commented CLIENT_TLS block, then keep sslmode=require in the DSN.
 apiVersion: v1
 kind: Service
 metadata:
@@ -64,9 +62,9 @@ spec:
           type: RuntimeDefault
       containers:
         - name: pgbouncer
-          # ISC-licensed PgBouncer packaged with a small MIT entrypoint. PIN THE DIGEST before prod
-          # (see finalization note above) — a mutable tag is exactly what the postgres/redis pins avoid.
-          image: edoburu/pgbouncer:v1.23.1-p3
+          # ISC-licensed PgBouncer packaged with a small MIT entrypoint. Digest-pinned like
+          # postgres/redis — the tag stays for legibility, the digest is what pulls.
+          image: edoburu/pgbouncer:v1.23.1-p3@sha256:377dec3c0e4a66a1077ec043e16a26ed5702a6d954011a7983a1457c2e070b1d
           ports:
             - containerPort: 6432
           securityContext:
