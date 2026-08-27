@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from app.api.auth import Principal, require_user
-from app.api.authz import require_capability
+from app.api.authz import require_any_capability, require_capability
 from app.api.deps import get_guard
 from app.api.ratelimit import rate_limit
 from app.config import get_settings
@@ -21,6 +21,11 @@ self_router = APIRouter(prefix="/api/v1/tenant", tags=["tenant-self"])
 
 _PLATFORM = require_capability("platform.tenants")
 _TENANT_ADMIN = require_capability("tenant.manage")
+# Reading the org (name, timezone, calendar) is NOT a write. tenant.manage is the WRITE capability —
+# gating a GET on it meant a manager granted tenant.read (who "runs daily operations") could not even
+# see the shop's own name. view_self accepts EITHER: tenant.read (the read grant) OR tenant.manage (an
+# owner, who can also read what they can change). The three real writes below stay on tenant.manage.
+_TENANT_VIEW = require_any_capability("tenant.read", "tenant.manage")
 
 
 def build_service(request: Request) -> TenantService:
@@ -179,7 +184,7 @@ async def _own(request: Request, principal: Principal):
     return await _load(request, principal.tenant)
 
 
-@self_router.get("", dependencies=[Depends(_TENANT_ADMIN)])
+@self_router.get("", dependencies=[Depends(_TENANT_VIEW)])
 async def my_tenant(request: Request, principal: Principal = Depends(require_user),
                     guard=Depends(get_guard)) -> dict:
     _, tenant = await _own(request, principal)

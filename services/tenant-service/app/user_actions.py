@@ -14,7 +14,10 @@ from typing import Any
 
 USER_ACTIONS: list[dict[str, Any]] = [
     {"id": "tenant.view_self", "label": "View my organization", "method": "GET",
-     "path": "/api/v1/tenant", "capability": "tenant.manage", "group": "Organization"},
+     # A read, so the READ capability — not tenant.manage (write). The route accepts tenant.read OR
+     # tenant.manage, so an owner still sees it; declaring the least-privilege cap is what lets a
+     # tenant.read manager see the org in the app catalog at all.
+     "path": "/api/v1/tenant", "capability": "tenant.read", "group": "Organization"},
     {"id": "tenant.update_config", "label": "Update my settings", "method": "PUT",
      "path": "/api/v1/tenant/config", "capability": "tenant.manage", "group": "Organization",
      "confirm": True},

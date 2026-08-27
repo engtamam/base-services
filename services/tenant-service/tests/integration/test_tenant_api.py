@@ -122,6 +122,23 @@ def test_tenant_self_scoped(client):
     assert client.get("/api/v1/tenants", headers=own).status_code == 403
 
 
+def test_read_capability_can_view_but_not_write(client):
+    # A manager holds tenant.read (distinct from tenant.manage, which only the owner holds). Viewing
+    # the org is a READ, so tenant.read must be enough to see it — the bug was that the GET required
+    # the WRITE cap, hiding the shop's own name from a manager who runs daily operations.
+    tid = client.post("/api/v1/tenants", json={"slug": "delta", "name": "Delta"},
+                      headers=_platform()).json()["id"]
+    reader = {"Authorization": "Bearer " + _tok("manager", ["tenant.read"], tenant=tid)}
+
+    me = client.get("/api/v1/tenant", headers=reader)
+    assert me.status_code == 200 and me.json()["slug"] == "delta"   # read cap can VIEW
+
+    # …but a read grant is NOT a write grant: the three mutating actions still require tenant.manage.
+    assert client.put("/api/v1/tenant/config", json={"config": {"x": 1}}, headers=reader).status_code == 403
+    assert client.put("/api/v1/tenant/branding", json={"branding": {}}, headers=reader).status_code == 403
+    assert client.post("/api/v1/tenant/close", headers=reader).status_code == 403
+
+
 def test_duplicate_slug_conflict(client):
     client.post("/api/v1/tenants", json={"slug": "dup", "name": "A"}, headers=_platform())
     r = client.post("/api/v1/tenants", json={"slug": "dup", "name": "B"}, headers=_platform())

@@ -54,7 +54,7 @@ def build_manifest(
         "name": settings.SERVICE_NAME,
         "version": settings.SERVICE_VERSION,
         "env": settings.ENV,
-        "capabilities": ["platform.tenants", "tenant.manage"],
+        "capabilities": ["platform.tenants", "tenant.manage", "tenant.read"],
         "endpoints": [
             {"path": "/healthz", "tier": "public", "method": "GET"},
             {"path": "/readyz", "tier": "public", "method": "GET"},
