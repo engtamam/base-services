@@ -14,8 +14,8 @@ class _CapturingNotifier:
     def __init__(self):
         self.last = None
 
-    async def send(self, *, to, template, tenant, variables=None):
-        self.last = {"to": to, "template": template, "variables": variables or {}}
+    async def send(self, *, to, template, tenant, variables=None, channel="email"):
+        self.last = {"to": to, "template": template, "variables": variables or {}, "channel": channel}
         return True
 
 
@@ -36,10 +36,28 @@ def test_request_then_verify_round_trip(client_and_notifier):
     c, cap = client_and_notifier
     r = c.post("/api/v1/otp/request", json={"identifier": "+966501234567"})
     assert r.status_code == 200 and r.json()["delivered"] is True
+    assert cap.last["channel"] == "email"       # default when OTP_DELIVERY_CHANNEL is unset
     assert "code" not in r.json()               # the code is NEVER in the response body
     code = cap.last["variables"]["code"]        # only delivery carries it
     ok = c.post("/api/v1/otp/verify", json={"identifier": "0501234567", "code": code})
     assert ok.status_code == 200 and ok.json()["verified"] is True   # any spelling of the phone
+
+
+def test_otp_delivery_channel_is_the_real_channel_not_just_a_template_var(monkeypatch):
+    # OTP_DELIVERY_CHANNEL was READ but only stuffed into a template variable while the channel was
+    # hardcoded "email" — so a phone OTP silently went out as email. It must now be the real channel.
+    monkeypatch.setenv("IDENTITY_LOGIN_FIELD", "phone")
+    monkeypatch.setenv("OTP_DELIVERY_CHANNEL", "whatsapp")
+    from app.config import get_settings
+    get_settings.cache_clear()
+    app = create_app()
+    get_settings.cache_clear()
+    cap = _CapturingNotifier()
+    app.state.container.notifier = cap
+    c = TestClient(app)
+    assert c.post("/api/v1/otp/request", json={"identifier": "+966501234567"}).status_code == 200
+    assert cap.last["channel"] == "whatsapp"    # the REAL channel reaches the notifier
+    assert cap.last["variables"].get("channel") == "whatsapp"   # still exposed for the template too
 
 
 def test_a_wrong_code_and_an_unknown_identifier_look_identical(client_and_notifier):

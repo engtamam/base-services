@@ -24,6 +24,13 @@ class Notifier(Protocol):
     driver: str
 
     async def send(self, *, to: str, template: str, tenant: str,
-                   variables: dict[str, Any] | None = None) -> bool:
-        """True if accepted for delivery. Never raises."""
+                   variables: dict[str, Any] | None = None,
+                   channel: str = "email") -> bool:
+        """True if accepted for delivery. Never raises.
+
+        `channel` selects HOW it reaches the human — email / sms / whatsapp — and is the real
+        selector notification-service routes on. It defaults to email so the address-verification
+        path (which only ever mails) is unchanged; the OTP path passes OTP_DELIVERY_CHANNEL so a
+        phone OTP can go over WhatsApp instead of email.
+        """
         ...

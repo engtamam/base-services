@@ -20,7 +20,8 @@ class NullNotifier:
         self.sent: list[dict[str, Any]] = []
 
     async def send(self, *, to: str, template: str, tenant: str,
-                   variables: dict[str, Any] | None = None) -> bool:
+                   variables: dict[str, Any] | None = None,
+                   channel: str = "email") -> bool:
         self.sent.append({"to": to, "template": template, "tenant": tenant,
-                          "variables": dict(variables or {})})
+                          "variables": dict(variables or {}), "channel": channel})
         return False

@@ -33,10 +33,14 @@ class HttpNotifier:
         self._timeout = timeout
 
     async def send(self, *, to: str, template: str, tenant: str,
-                   variables: dict[str, Any] | None = None) -> bool:
+                   variables: dict[str, Any] | None = None,
+                   channel: str = "email") -> bool:
         payload = {
             "recipient": to,
-            "channel": "email",
+            # The REAL channel notification-service routes on — was hardcoded "email", which quietly
+            # made OTP_DELIVERY_CHANNEL do nothing. Defaults to email so the verification path is
+            # unchanged; the OTP path passes whatsapp/sms through.
+            "channel": channel or "email",
             "template_key": template,
             "tenant": tenant,
             "variables": dict(variables or {}),

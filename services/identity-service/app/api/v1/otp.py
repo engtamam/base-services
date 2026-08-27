@@ -75,11 +75,13 @@ async def request_otp(body: OtpRequestIn, request: Request) -> dict:
     if s.OTP_TEMPLATE:
         variables = {"code": issued["code"], "expires_in": issued["expires_in"], "purpose": purpose}
         if s.OTP_DELIVERY_CHANNEL:
-            variables["channel"] = s.OTP_DELIVERY_CHANNEL
+            variables["channel"] = s.OTP_DELIVERY_CHANNEL      # still exposed for template substitution
         # Never fatal: a provider hiccup must not 500. The human can request another code.
+        # OTP_DELIVERY_CHANNEL is the REAL channel selector now (was only a template variable, so a
+        # phone OTP silently went out as email). Empty falls back to email — the prior behaviour.
         delivered = await request.app.state.container.notifier.send(
             to=body.identifier, template=s.OTP_TEMPLATE, tenant="",
-            variables=variables)
+            variables=variables, channel=s.OTP_DELIVERY_CHANNEL or "email")
     return {"requested": True, "expires_in": issued["expires_in"], "delivered": bool(delivered)}
 
 
