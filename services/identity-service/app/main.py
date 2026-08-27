@@ -228,6 +228,10 @@ def create_app() -> FastAPI:
     # ── Routers: public -> internal -> user ─────────────────────────────────
     app.include_router(health.router)
     app.include_router(metrics.router)
+    # RED metrics into the DEFAULT registry the /metrics route already serves — instrument()
+    # only, never expose(). Grouped by route template (bounded cardinality); see _template.
+    from prometheus_fastapi_instrumentator import Instrumentator
+    Instrumentator().instrument(app)
     # Public JWKS: the verify half of the signing keyring, unauthenticated by design.
     app.include_router(jwks_api.router)
     app.include_router(internal.router)

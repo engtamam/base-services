@@ -24,6 +24,7 @@ ALLOW, WARN, FORBID, UNKNOWN = "ALLOW", "WARN", "FORBID", "UNKNOWN"
 # Curated overrides for packages whose metadata is missing/ambiguous (name -> verdict).
 OVERRIDES: dict[str, str] = {
     "cryptography": ALLOW,       # Apache-2.0 OR BSD-3-Clause
+    "prometheus-fastapi-instrumentator": ALLOW,  # ISC (verified: PyPI license field + OSI classifier)
     "typing-extensions": ALLOW,  # PSF
     "pip": ALLOW,                # MIT
     "setuptools": ALLOW,         # MIT

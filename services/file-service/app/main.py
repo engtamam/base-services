@@ -152,6 +152,10 @@ def create_app() -> FastAPI:
     # ── Routers: public -> internal -> user ─────────────────────────────────
     app.include_router(health.router)
     app.include_router(metrics.router)
+    # RED metrics into the DEFAULT registry the /metrics route already serves — instrument()
+    # only, never expose(). Grouped by route template (bounded cardinality); see _template.
+    from prometheus_fastapi_instrumentator import Instrumentator
+    Instrumentator().instrument(app)
     app.include_router(internal.router)
     app.include_router(v1_router)
 

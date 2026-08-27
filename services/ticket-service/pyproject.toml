@@ -21,6 +21,7 @@ authors = [{ name = "Tamam Alahdal" }]
 #   pydantic           MIT
 #   pydantic-settings  MIT
 #   prometheus-client  Apache-2.0
+#   prometheus-fastapi-instrumentator  ISC
 #   pyjwt              MIT          (JWT verify — vetted crypto, never hand-rolled)
 #   cryptography      Apache-2.0/BSD (pulled by pyjwt[crypto], for RS256)
 # Logging uses the Python stdlib (no extra dep) to keep the attack surface minimal.
@@ -30,6 +31,7 @@ dependencies = [
     "pydantic>=2.7,<3.0",
     "pydantic-settings>=2.3,<3.0",
     "prometheus-client>=0.20,<1.0",
+    "prometheus-fastapi-instrumentator>=8.0,<9.0",
     "pyjwt[crypto]>=2.8,<3.0",
     # Direct floor over the transitive pull from pyjwt[crypto]: 49.0.0 is PYSEC-2026-3552,
     # fixed in 50.0.0. Pinned explicitly so the CVE cannot re-enter via resolution.

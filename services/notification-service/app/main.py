@@ -168,6 +168,10 @@ def create_app() -> FastAPI:
     # ── Routers: public -> internal -> user ─────────────────────────────────
     app.include_router(health.router)
     app.include_router(metrics.router)
+    # RED metrics into the DEFAULT registry the /metrics route already serves — instrument()
+    # only, never expose(). Grouped by route template (bounded cardinality); see _template.
+    from prometheus_fastapi_instrumentator import Instrumentator
+    Instrumentator().instrument(app)
     # Public, unauthenticated by a token — the inbound Meta webhook's auth IS its signature (POST) and
     # the shared verify token (GET). Mounted with the other public routers, before the internal tier.
     from app.api import webhooks

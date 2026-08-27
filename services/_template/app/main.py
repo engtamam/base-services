@@ -126,6 +126,14 @@ def create_app() -> FastAPI:
     # ── Routers: public -> internal -> user ─────────────────────────────────
     app.include_router(health.router)
     app.include_router(metrics.router)
+    # RED metrics (Rate / Errors / Duration) for every request, grouped by route TEMPLATE
+    # (/x/{id}, not /x/<real-id>) so cardinality stays bounded however much tenant data accrues, and
+    # 404/unhandled paths are excluded so scanning can't inflate the series. instrument() writes into
+    # the DEFAULT prometheus registry that the metrics.router above already serves via generate_latest(),
+    # so the existing /metrics picks these up with no second endpoint — never .expose(), which would
+    # register a competing /metrics.
+    from prometheus_fastapi_instrumentator import Instrumentator
+    Instrumentator().instrument(app)
     app.include_router(internal.router)
     app.include_router(v1_router)
     # Operator controls: credentials and policy an operator changes after launch.
