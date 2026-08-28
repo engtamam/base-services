@@ -100,14 +100,21 @@ async def _fan_out(bus, deliveries, data: dict, inbound=None, number_index=None)
                     type=f"{_TOPIC}.status", payload={**base, "delivery_id": delivery_id, "status": st}))
                 emitted += 1
             for msg in value.get("messages", []) or []:
+                # Resolve the tenant ONCE from the receiving number and put it on BOTH the durable
+                # record AND the live bus event. It used to live only on the record, so a fast-path
+                # bus subscriber saw tenant="" and had to fall back to the slower catch-up poll just to
+                # learn whose message it is — the fast path is exactly where the attribution should be.
+                tenant = ""
+                if number_index is not None and phone_id:
+                    try:
+                        tenant = await number_index.tenant_of(phone_id) or ""
+                    except Exception:  # noqa: BLE001 — a lookup miss must not stop the fan-out
+                        tenant = ""
                 # Durably append BEFORE the bus publish, so a missed bus event is still recoverable via
                 # the catch-up read. Best-effort and idempotent (keyed by wamid): a store hiccup must
                 # still let the event fan out, and Meta's retry re-records the same row, not a duplicate.
                 if inbound is not None:
                     try:
-                        tenant = ""
-                        if number_index is not None and phone_id:
-                            tenant = await number_index.tenant_of(phone_id) or ""
                         await inbound.record(
                             wamid=str(msg.get("id", "")), sender=str(msg.get("from", "")),
                             timestamp=float(msg.get("timestamp", 0) or 0),
@@ -116,7 +123,8 @@ async def _fan_out(bus, deliveries, data: dict, inbound=None, number_index=None)
                     except Exception:  # noqa: BLE001 — a message we cannot record must still fan out
                         pass
                 await bus.publish(f"{_TOPIC}.message",
-                                  Event(type=f"{_TOPIC}.message", payload={**base, "message": msg}))
+                                  Event(type=f"{_TOPIC}.message",
+                                        payload={**base, "tenant": tenant, "message": msg}))
                 emitted += 1
     return emitted
 

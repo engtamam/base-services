@@ -91,3 +91,23 @@ def test_post_fans_out_receipts_account_events_and_unknown_fields(client):
     assert seen["whatsapp.account_update"][0].payload["value"]["event"] == "PARTNER_REMOVED"
     # and the UNRECOGNISED field was fanned out, not filtered
     assert seen["whatsapp.some_future_field"], "an unknown event type must never be dropped"
+
+
+def test_inbound_message_bus_event_carries_the_resolved_tenant(client):
+    # The fast-path bus event must carry the tenant (resolved from the receiving number), not just the
+    # durable catch-up record — otherwise a subscriber sees tenant="" and is forced onto the slow poll.
+    from app.core.stores import WhatsAppNumberIndex
+    asyncio.run(WhatsAppNumberIndex(client.app.state.container.datastore).bind("PNID9", "acme"))
+    seen = _subscribe(client, "whatsapp.message")
+    payload = {"object": "whatsapp_business_account", "entry": [{"id": "WABA1", "changes": [
+        {"field": "messages", "value": {
+            "metadata": {"phone_number_id": "PNID9"},
+            "messages": [{"id": "wamid.abc", "from": "96650", "timestamp": "1700000000",
+                          "type": "text", "text": {"body": "hi"}}]}}]}]}
+    raw = json.dumps(payload).encode()
+    assert client.post("/webhooks/whatsapp", content=raw,
+                       headers={"X-Hub-Signature-256": _sign(raw)}).status_code == 200
+    assert seen["whatsapp.message"], "the inbound message must fan out on the bus"
+    ev = seen["whatsapp.message"][0]
+    assert ev.payload["tenant"] == "acme"      # the fast path now carries attribution
+    assert ev.payload["message"]["id"] == "wamid.abc"
