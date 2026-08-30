@@ -142,6 +142,7 @@ from app.adapters.sms.vonage import VonageSms
 from app.adapters.sms.webhook import WebhookSms
 from app.adapters.whatsapp.console import ConsoleWhatsApp
 from app.adapters.whatsapp.meta import MetaWhatsApp
+from app.adapters.whatsapp.threesixtydialog import ThreeSixtyDialogWhatsApp
 from app.adapters.whatsapp.webhook import WebhookWhatsApp
 from app.adapters.whatsapp_templates.console import ConsoleTemplateManager
 from app.adapters.whatsapp_templates.meta import MetaTemplateManager
@@ -169,6 +170,8 @@ _WHATSAPP_PROVIDERS: dict[str, Builder] = {
     "console": lambda s: ConsoleWhatsApp(),
     "meta": lambda s: MetaWhatsApp(s.WHATSAPP_ACCESS_TOKEN, s.WHATSAPP_PHONE_NUMBER_ID,
                                    s.WHATSAPP_GRAPH_BASE),
+    "threesixtydialog": lambda s: ThreeSixtyDialogWhatsApp(
+        s.WHATSAPP_360DIALOG_API_KEY, s.WHATSAPP_360DIALOG_BASE_URL),
     "webhook": lambda s: WebhookWhatsApp(s.WHATSAPP_WEBHOOK_URL, s.WHATSAPP_WEBHOOK_BEARER),
 }
 

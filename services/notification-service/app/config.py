@@ -357,6 +357,11 @@ class Settings(BaseSettings):
     WHATSAPP_ACCESS_TOKEN: str = ""       # per-tenant credential, resolved via the secret store
     WHATSAPP_PHONE_NUMBER_ID: str = ""    # the sending phone number's id
     WHATSAPP_GRAPH_BASE: str = "https://graph.facebook.com/v26.0"
+    # 360dialog (BSP) — the channel API key authenticates AND selects the number; base host is fixed
+    # config (allow-list waba-v2.360dialog.io at the egress layer). Sends via this driver are billed
+    # to the platform (provider-paid), so the whatsapp cost tracker records units for it.
+    WHATSAPP_360DIALOG_API_KEY: str = ""       # per-tenant credential, resolved via the secret store
+    WHATSAPP_360DIALOG_BASE_URL: str = "https://waba-v2.360dialog.io"
     # Embedded Signup (Tech Provider onboarding). These identify US as the Tech Provider — NOT the
     # shop — so they are platform-wide, from the environment, and never settable through any panel
     # (the same reasoning as SECRETS_KEK). The exchange endpoint reads them in CORE, never a route,
