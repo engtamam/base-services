@@ -105,6 +105,9 @@ def build_manifest(
             # 100/hour cap. Cron this per tenant (like sync) to upload a whole library across ticks.
             {"path": "/internal/whatsapp/templates/submit-pending", "tier": "internal", "method": "POST"},
             {"path": "/internal/whatsapp/messaging-limit", "tier": "internal", "method": "GET"},
+            # A tenant's real provider-billed WhatsApp usage for a period, as billable UNITS (never
+            # money) — the number operations-service reads to bill a shop for its WhatsApp channel.
+            {"path": "/internal/whatsapp/channel-usage", "tier": "internal", "method": "GET"},
             # Register a business phone number for Cloud API sending — the PIN-carrying step exchange
             # stops before. Without it a tenant is "connected" everywhere and cannot send. Per NUMBER
             # (a WABA holds many); the PIN is sealed so re-registration repeats without a human.

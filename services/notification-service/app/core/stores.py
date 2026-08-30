@@ -14,6 +14,8 @@ _RECEIPTS = "notify_receipts"  # append-only receipt-event log, ordered by recei
 _RECEIPT_KIND = "receipt"      # constant partition key so the ordered read is a filtered query, not a scan
 _INBOUND = "wa_inbound"        # append-only inbound-message log, ordered by timestamp (catch-up read)
 _INBOUND_KIND = "inbound"      # constant partition key — same reason as _RECEIPT_KIND
+_WA_COST = "wa_cost"           # per-message WhatsApp billable-usage unit, keyed by wamid (idempotent)
+_WA_COST_KIND = "wa_cost"      # constant kind marker (same role as the other logs)
 
 
 class TemplateStore:
@@ -204,13 +206,99 @@ class WhatsAppNumberIndex:
         # Best-effort and idempotent: a re-registration of the same number rebinds to the same tenant.
         if not phone_number_id or not tenant:
             return
-        await self._store.put(_WA_NUMBER_INDEX, phone_number_id, {"tenant": tenant})
+        # id == the key (the phone_number_id), so the row satisfies the backup key==id invariant and
+        # this routing map survives a restore rather than silently emptying (and breaking inbound
+        # attribution) until every shop happens to re-register.
+        await self._store.put(_WA_NUMBER_INDEX, phone_number_id,
+                              {"id": phone_number_id, "phone_number_id": phone_number_id,
+                               "tenant": tenant})
 
     async def tenant_of(self, phone_number_id: str) -> str | None:
         if not phone_number_id:
             return None
         row = await self._store.get(_WA_NUMBER_INDEX, phone_number_id)
         return row.get("tenant") if row else None
+
+
+def whatsapp_cost_period(ts: float) -> str:
+    """The billing PERIOD a send falls in — a UTC calendar month, YYYY-MM. A month is the unit Meta
+    and every downstream rate card meter on; deriving it from the receipt timestamp (not 'now') keeps
+    a late-arriving webhook counted in the month the message actually went out."""
+    import datetime as _dt
+    when = _dt.datetime.fromtimestamp(ts if ts and ts > 0 else _dt.datetime.now(
+        _dt.timezone.utc).timestamp(), _dt.timezone.utc)
+    return when.strftime("%Y-%m")
+
+
+class WhatsAppCostStore:
+    """Per-message billable-usage units for PROVIDER-BILLED WhatsApp sends, so operations-service can
+    read a tenant's real WhatsApp-channel usage for a period and apply its own rate card.
+
+    We record the observed UNITS, never a monetary amount: category (marketing/utility/authentication/
+    service), the recipient's country calling code, the pricing_model (PMP/CBP — surfaced verbatim so a
+    future Meta billing-model change is visible, not silently read as one model), the billable flag, and
+    the message type. The halalas conversion — Meta's per-country/per-category rate card — lives entirely
+    on the operations side; embedding it here would BE the pricing decision that must stay in one place.
+
+    Keyed by the wamid, so recording is IDEMPOTENT: a message emits several status events (sent /
+    delivered / read) and Meta retries each, but only the one carrying the pricing object records a
+    unit, and its wamid key collapses any retry to a single row — a message is counted ONCE. A send we
+    cannot tie to a provider-billed delivery is never recorded at all (a Meta-direct send is the shop's
+    own bill with Meta, not ours to meter).
+    """
+
+    def __init__(self, store: DataStore) -> None:
+        self._store = store
+
+    async def record(self, *, wamid: str, tenant: str, ts: float, category: str, country: str,
+                     pricing_model: str, billable: bool, msg_type: str) -> bool:
+        """Append (idempotently, by wamid) one usage unit. Returns False for a unit with no wamid —
+        nothing to key or dedupe on — or one already recorded (first pricing wins, retries are no-ops)."""
+        if not wamid:
+            return False
+        if await self._store.get(_WA_COST, wamid) is not None:
+            return False                       # already metered — a webhook retry, not a new message
+        await self._store.put(_WA_COST, wamid, {
+            "id": wamid, "kind": _WA_COST_KIND, "wamid": wamid, "tenant": tenant,
+            "period": whatsapp_cost_period(ts), "category": category, "country": country,
+            "pricing_model": pricing_model, "billable": bool(billable), "type": msg_type,
+            "created": ts if ts and ts > 0 else 0.0})
+        return True
+
+    async def usage_for_period(self, tenant: str, period: str, *, page: int = 500,
+                               max_rows: int = 200_000) -> dict:
+        """Aggregate ONE tenant's units for ONE period into counts by (category, country,
+        pricing_model, billable). A FILTERED read (equality on tenant + period), never a cross-tenant
+        scan — keyset-paginated so a busy month is read in bounded pages, with `truncated` set honestly
+        if it exceeds the safety cap rather than silently under-counting."""
+        empty = {"tenant": tenant, "period": period, "total_messages": 0, "billable_messages": 0,
+                 "breakdown": [], "truncated": False}
+        if not tenant or not period:
+            return empty
+        counts: dict[tuple, int] = {}
+        total = billable_total = 0
+        truncated = False
+        cursor: str | None = None
+        where = {"tenant": tenant, "period": period}
+        while True:
+            rows, cursor = await self._store.find(
+                _WA_COST, where, limit=page, after=cursor, sort=("created", "asc"))
+            for r in rows:
+                key = (r.get("category", ""), r.get("country", ""),
+                       r.get("pricing_model", ""), bool(r.get("billable")))
+                counts[key] = counts.get(key, 0) + 1
+                total += 1
+                if r.get("billable"):
+                    billable_total += 1
+                if total >= max_rows:
+                    truncated = True
+                    break
+            if truncated or not cursor or not rows:
+                break
+        breakdown = [{"category": c, "country": co, "pricing_model": pm, "billable": b, "messages": n}
+                     for (c, co, pm, b), n in sorted(counts.items())]
+        return {"tenant": tenant, "period": period, "total_messages": total,
+                "billable_messages": billable_total, "breakdown": breakdown, "truncated": truncated}
 
 
 class InAppStore:

@@ -27,6 +27,19 @@ BACKUP: dict[str, Any] = {
         # source: the status bus is at-most-once, so this ordered log is how a consumer reconciles
         # receipts it missed — losing it on a restore silently loses that history. Id-keyed.
         {"name": "notify_receipts", "tenant_scoped": False},
+        # The append-only INBOUND WhatsApp message log — the durable catch-up source a consumer
+        # reconciles a customer's replies from (the message bus is at-most-once). Same reasoning as
+        # notify_receipts: losing it on a restore silently loses inbound history. Id-keyed (id ==
+        # wamid); carries a tenant field (resolved from the receiving number).
+        {"name": "wa_inbound", "tenant_scoped": True},
+        # phone_number_id → tenant routing map — what attributes an inbound event (keyed only by a
+        # number) to a shop. Not a secret; rebindable on re-registration, but backed up so attribution
+        # is not degraded from restore until each shop re-registers. Id-keyed (id == phone_number_id).
+        {"name": "wa_number_index", "tenant_scoped": True},
+        # Per-message billable-usage units for provider-billed WhatsApp sends. Backed up because it is
+        # BILLING evidence: operations-service meters a shop's real WhatsApp cost off it, so losing it
+        # on a restore silently loses a period's usage. Id-keyed (id == wamid); carries a tenant field.
+        {"name": "wa_cost", "tenant_scoped": True},
     ],
     "excluded": [
         {"name": "notify_idempo",
