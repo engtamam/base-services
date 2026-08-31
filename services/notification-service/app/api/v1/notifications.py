@@ -168,6 +168,7 @@ async def build_notifier(request: Request, tenant: str = "") -> NotificationServ
         delivery_mode=s.NOTIFY_DELIVERY_MODE,
         consent_gate=c.consent_gate, consent_purposes=s.notify_consent_purposes,
         consent_unknown=s.NOTIFY_CONSENT_UNKNOWN,
+        whatsapp_wallet_gate=getattr(c, "whatsapp_wallet_gate", None),
         retry=RetryPolicy(
             max_attempts=s.NOTIFY_MAX_ATTEMPTS,
             base_ms=s.NOTIFY_BACKOFF_BASE_MS, max_ms=s.NOTIFY_BACKOFF_MAX_MS,

@@ -397,6 +397,20 @@ class Settings(BaseSettings):
     # Generic webhook (whatsapp) — POST {to, template, language, variables} to any gateway/QR relay
     WHATSAPP_WEBHOOK_URL: str = ""    # host must be in EGRESS_ALLOWED_HOSTS (SSRF)
     WHATSAPP_WEBHOOK_BEARER: str = ""
+    # ── WhatsApp send-time wallet gate (provider-billed template sends only) ───────────────────
+    # The base app includes N free WhatsApp messages per period; past that each draws from the shop's
+    # wallet, and a send is REFUSED once the wallet cannot cover it (fail closed, never negative). Gates
+    # send() (business-initiated templates) ONLY — never send_interactive() (the free in-window service
+    # category). INERT unless BOTH URLs below are set: an unset deployment sends exactly as before. Both
+    # calls carry INTERNAL_SERVICE_TOKEN as X-Internal-Token.
+    WALLET_SERVICE_URL: str = ""          # e.g. http://wallet:8000 — empty disables the gate
+    OPERATIONS_SERVICE_URL: str = ""      # e.g. http://operations:8000 — the channel-pricing policy
+    # Per-tenant policy {included_messages_per_period, overage_halalas_per_message} changes rarely.
+    WHATSAPP_PRICING_CACHE_TTL_SECONDS: int = 300
+    # Posture when the gate cannot REACH wallet- or operations-service (a 402 insufficient balance is
+    # always a refusal, regardless): fail_closed refuses the send (never send unpaid — the money-safe
+    # default, matching the consent gate); fail_open sends it (availability over billing precision).
+    WHATSAPP_WALLET_GATE_UNKNOWN: str = "fail_closed"   # fail_closed | fail_open
 
     # Salts the subject pseudonym written into every IMMUTABLE record (audit chain, ledgers,
     # invoices). FROZEN — see config/product.identifiers.lock.json. Change it and every pseudonym

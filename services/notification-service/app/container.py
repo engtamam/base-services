@@ -43,6 +43,7 @@ from app.adapters.token_verifier.null import NullVerifier
 from app.adapters.token_verifier.rs256 import RS256Verifier
 from app.config import Settings
 from app.ports.cache import Cache
+from app.core.whatsapp_wallet_gate import WhatsAppWalletGate
 from app.ports.datastore import DataStore
 from app.ports.errors import ConfigError
 from app.ports.event_bus import EventBus
@@ -298,6 +299,7 @@ class Container:
     sms: Any = None
     whatsapp: Any = None
     whatsapp_template_manager: Any = None
+    whatsapp_wallet_gate: Any = None
     renderer: Any = None
 
     def describe(self) -> list[dict[str, str]]:
@@ -359,8 +361,9 @@ def build_container(settings: Settings) -> Container:
     from app.adapters import notify_http
     notify_http.configure(settings.HTTP_TIMEOUT_SECONDS)  # outbound timeout from config
     event_bus = _pick(_EVENTBUS, settings.EVENTBUS_DRIVER, "event_bus", settings)
+    datastore = _pick(_DATASTORE, settings.DATASTORE_DRIVER, "datastore", settings)
     return Container(
-        datastore=_pick(_DATASTORE, settings.DATASTORE_DRIVER, "datastore", settings),
+        datastore=datastore,
         cache=_pick(_CACHE, settings.CACHE_DRIVER, "cache", settings),
         event_bus=event_bus,
         queue=_pick(_QUEUE, settings.QUEUE_DRIVER, "queue", settings),
@@ -376,8 +379,26 @@ def build_container(settings: Settings) -> Container:
         whatsapp=FailoverWhatsApp(
             _build_chain(settings.whatsapp_chain, _WHATSAPP_PROVIDERS, "whatsapp", settings)),
         whatsapp_template_manager=_build_template_manager(settings),
+        whatsapp_wallet_gate=_build_wallet_gate(settings, datastore),
         renderer=SafeRenderer(),
     )
+
+
+def _build_wallet_gate(settings, datastore):
+    """The send-time WhatsApp wallet gate, or a DISABLED one when its URLs are unset — an unconfigured
+    deployment sends exactly as before. App-level (not per-request) so the pricing cache persists."""
+    if not settings.WALLET_SERVICE_URL or not settings.OPERATIONS_SERVICE_URL:
+        return WhatsAppWalletGate()
+    from app.adapters.channel_pricing.http import HttpChannelPricing
+    from app.adapters.wallet.http import HttpWallet
+    from app.core.stores import WhatsAppSendCounter
+    token = settings.INTERNAL_SERVICE_TOKEN
+    return WhatsAppWalletGate(
+        wallet=HttpWallet(settings.WALLET_SERVICE_URL, token),
+        pricing=HttpChannelPricing(settings.OPERATIONS_SERVICE_URL, token,
+                                   ttl_seconds=settings.WHATSAPP_PRICING_CACHE_TTL_SECONDS),
+        counter=WhatsAppSendCounter(datastore),
+        unknown=settings.WHATSAPP_WALLET_GATE_UNKNOWN)
 
 
 def _build_template_manager(settings):
