@@ -6,7 +6,6 @@
 # =============================================================================
 from __future__ import annotations
 
-import hmac
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
@@ -55,20 +54,38 @@ class NotifyIn(BaseModel):
     sending_identity: str | None = Field(default=None, max_length=128)
 
 _HEADER = "X-Internal-Token"
+_ASSERTION_HEADER = "X-Internal-Assertion"
 
 
 async def require_internal_token(
+    request: Request,
     x_internal_token: str | None = Header(default=None, alias=_HEADER),
+    x_internal_assertion: str | None = Header(default=None, alias=_ASSERTION_HEADER),
     settings: Settings = Depends(get_settings),
 ) -> None:
-    """Deny unless the caller presents the exact internal token (timing-safe)."""
-    expected = settings.INTERNAL_SERVICE_TOKEN
-    provided = x_internal_token or ""
-    # hmac.compare_digest is constant-time and length-safe.
-    if not hmac.compare_digest(provided, expected):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="UNAUTHORIZED"
-        )
+    """Authenticate the internal caller, then authorise it for THIS route. The name is unchanged so
+    every existing `Depends(require_internal_token)` keeps working, but it now does two things:
+
+      1. IDENTITY — a config-resolved (cached) driver verifies the caller. `shared` (default) is
+         the timing-safe flat-token compare (today's behaviour, unnamed peer); `static`/`jwks` verify a
+         per-caller RS256 assertion. Any failure is one generic 401 — never which check failed.
+      2. POLICY — the per-route allow-list decides whether that caller may reach `request.url.path`. A
+         route with no policy admits any authenticated caller (default-open), so identity alone never
+         breaks a path; a named allow-list yields 403 for a caller not on it.
+
+    The verifier + policy are resolved from config (cached), not the container, so this seam is
+    identical in every service."""
+    from app.core.internal_caller_factory import resolve_internal_caller, resolve_internal_policy
+    from app.ports.internal_caller import InternalCallerError
+
+    audience = settings.INTERNAL_CALLER_AUDIENCE or settings.SERVICE_NAME
+    try:
+        identity = resolve_internal_caller(settings).verify(
+            token=x_internal_token or "", assertion=x_internal_assertion or "", audience=audience)
+    except InternalCallerError:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "UNAUTHORIZED")
+    if not resolve_internal_policy(settings).permits(request.url.path, identity.caller):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "FORBIDDEN")
 
 
 @router.get("/health", dependencies=[Depends(require_internal_token)])

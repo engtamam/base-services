@@ -9,7 +9,6 @@
 # =============================================================================
 from __future__ import annotations
 
-import hmac
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
@@ -27,72 +26,38 @@ from app.manifest import build_manifest
 router = APIRouter(prefix="/internal", tags=["internal"])
 
 _HEADER = "X-Internal-Token"
+_ASSERTION_HEADER = "X-Internal-Assertion"
 
 
 async def require_internal_token(
+    request: Request,
     x_internal_token: str | None = Header(default=None, alias=_HEADER),
+    x_internal_assertion: str | None = Header(default=None, alias=_ASSERTION_HEADER),
     settings: Settings = Depends(get_settings),
 ) -> None:
-    """Deny unless the caller presents the exact internal token (timing-safe)."""
-    expected = settings.INTERNAL_SERVICE_TOKEN
-    provided = x_internal_token or ""
-    # hmac.compare_digest is constant-time and length-safe.
-    if not hmac.compare_digest(provided, expected):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="UNAUTHORIZED"
-        )
+    """Authenticate the internal caller, then authorise it for THIS route. The name is unchanged so
+    every existing `Depends(require_internal_token)` keeps working, but it now does two things:
 
+      1. IDENTITY — a config-resolved (cached) driver verifies the caller. `shared` (default) is
+         the timing-safe flat-token compare (today's behaviour, unnamed peer); `static`/`jwks` verify a
+         per-caller RS256 assertion. Any failure is one generic 401 — never which check failed.
+      2. POLICY — the per-route allow-list decides whether that caller may reach `request.url.path`. A
+         route with no policy admits any authenticated caller (default-open), so identity alone never
+         breaks a path; a named allow-list yields 403 for a caller not on it.
 
-class CreditIn(BaseModel):
-    tenant: str = Field(min_length=1, max_length=200)
-    fund: str = Field(min_length=1, max_length=64)
-    amount: int = Field(ge=0)                          # integer MINOR units; never a float
-    source: str = Field(default="", max_length=200)    # idempotency key
-    reason: str = Field(default="", max_length=200)
-    expires_at: float | None = None                    # a grant: unused remainder is clawed back
+    The verifier + policy are resolved from config (cached), not the container, so this seam is
+    identical in every service."""
+    from app.core.internal_caller_factory import resolve_internal_caller, resolve_internal_policy
+    from app.ports.internal_caller import InternalCallerError
 
-
-class SpendIn(BaseModel):
-    tenant: str = Field(min_length=1, max_length=200)
-    net: int = Field(ge=0)                             # the PRE-VAT price, in minor units
-    source: str = Field(default="", max_length=200)
-    reason: str = Field(default="", max_length=200)
-
-
-class WithdrawIn(BaseModel):
-    tenant: str = Field(min_length=1, max_length=200)
-    amount: int = Field(ge=1)                          # MINOR units; a payout is never zero/negative
-    destination: str = Field(default="", max_length=256)   # opaque payout target reference
-    source: str = Field(default="", max_length=200)    # idempotency key
-    reason: str = Field(default="", max_length=200)
-
-
-class SettleWithdrawalIn(BaseModel):
-    withdrawal_id: str = Field(min_length=1, max_length=100)
-    paid: bool                                          # True = transfer settled; False = reverse it
-    source: str = Field(default="", max_length=200)
-
-
-class HoldIn(BaseModel):
-    hold_id: str = Field(min_length=1, max_length=100)
-
-
-class RefundIn(BaseModel):
-    tenant: str = Field(min_length=1, max_length=200)
-    seq: int = Field(ge=1)                             # ledger sequence of the spend to reverse
-    source: str = Field(default="", max_length=200)
-    reason: str = Field(default="", max_length=200)
-
-
-def _handle(exc: Exception) -> HTTPException:
-    """Money errors are 4xx and never leak internals; contention is a retryable 409."""
-    if isinstance(exc, _funds.InsufficientFunds):
-        return HTTPException(status_code=402, detail="INSUFFICIENT_FUNDS")
-    if isinstance(exc, Conflict):
-        return HTTPException(status_code=409, detail="WALLET_CONTENTION")
-    if isinstance(exc, (WalletError, MoneyError)):
-        return HTTPException(status_code=400, detail=str(exc))
-    raise exc
+    audience = settings.INTERNAL_CALLER_AUDIENCE or settings.SERVICE_NAME
+    try:
+        identity = resolve_internal_caller(settings).verify(
+            token=x_internal_token or "", assertion=x_internal_assertion or "", audience=audience)
+    except InternalCallerError:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "UNAUTHORIZED")
+    if not resolve_internal_policy(settings).permits(request.url.path, identity.caller):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "FORBIDDEN")
 
 
 @router.get("/wallet/{tenant}", dependencies=[Depends(require_internal_token)])

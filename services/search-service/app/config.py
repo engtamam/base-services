@@ -9,11 +9,29 @@
 # =============================================================================
 from __future__ import annotations
 
+import json as _json
+
 from functools import lru_cache
 from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _json_any_map(raw: str) -> dict:
+    """Parse a JSON object env var into a dict, tolerating empty/malformed input by returning {} —
+    a mis-set map must not crash boot; the driver it feeds simply sees no keys."""
+    if not raw or not raw.strip():
+        return {}
+    try:
+        val = _json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    return val if isinstance(val, dict) else {}
+
+
+def _json_str_map(raw: str) -> dict[str, str]:
+    return {str(k): str(v) for k, v in _json_any_map(raw).items() if k and v}
 
 
 class Settings(BaseSettings):
@@ -99,6 +117,31 @@ class Settings(BaseSettings):
     # ── Internal service-to-service auth (REQUIRED) ─────────────────────────
     # Shared token for /internal/* endpoints. Must be strong (>= 32 chars).
     INTERNAL_SERVICE_TOKEN: str = Field(min_length=32)
+    # ── Internal CALLER identity (pluggable; default preserves today's behaviour) ──────────────
+    # Who may reach THIS service's /internal tier, and how their identity is proven. `shared` = the
+    # flat token only (today). `static`/`jwks` verify a short-TTL RS256 assertion (iss=caller,
+    # aud=this service) against a provisioned public key / the caller's JWKS — verifiable per-caller
+    # identity. Default `shared` so an upgrade changes nothing; a deployment opts up when ready.
+    INTERNAL_CALLER_DRIVER: str = "shared"          # shared | static | jwks
+    # The assertion audience this service requires; empty => SERVICE_NAME (the natural identifier).
+    INTERNAL_CALLER_AUDIENCE: str = ""
+    # static driver: JSON map {caller_service: PEM_public_key}. jwks driver: JSON map
+    # {caller_service: jwks_url}. Only the one matching the driver is read.
+    INTERNAL_CALLER_PUBLIC_KEYS_JSON: str = ""
+    INTERNAL_CALLER_JWKS_JSON: str = ""
+    # During migration a request with NO assertion but the correct flat token is still accepted as an
+    # unnamed peer, so enabling static/jwks fleet-wide breaks nothing. Flip OFF once callers all sign.
+    INTERNAL_CALLER_ALLOW_TOKEN_FALLBACK: bool = True
+    # Per-route caller allow-list: JSON map {"/internal/...": ["caller-a", "caller-b"]} (or ["*"] for
+    # any authenticated caller). A route absent here admits any authenticated caller (default-open),
+    # so tightening is route-by-route and never breaks a path on upgrade. Longest-prefix match.
+    INTERNAL_ROUTE_POLICY_JSON: str = ""
+    # CALLER side: this service's own RS256 private key for signing the assertions IT presents when
+    # calling other services' /internal tiers, its kid (for jwks rotation), and the assertion TTL.
+    # Empty key => this service signs nothing and relies on the flat-token fallback (today's behaviour).
+    INTERNAL_ASSERTION_PRIVATE_KEY: str = ""
+    INTERNAL_ASSERTION_KID: str = ""
+    INTERNAL_ASSERTION_TTL_SECONDS: int = 60
 
 
     # ── audit trail (Phase 38) — where privileged actions are witnessed ───────
