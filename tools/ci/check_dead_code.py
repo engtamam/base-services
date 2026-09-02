@@ -87,14 +87,13 @@ ALLOWLIST: dict[str, str] = {
     # convention has to live in ONE place: the tests construct names with it and the pool parses
     # them, so a change to either side breaks the pair immediately. Inlining the prefix in the
     # tests instead would be the same rule written twice, which is what this gate exists to stop.
-    # mint_internal_assertion signs the RS256 assertion a service presents when CALLING another
-    # service's /internal tier. Replicated verbatim per service; live only where the deployment opts
-    # into the static/jwks caller-identity driver AND the service makes outbound internal calls —
-    # unused where a service only RECEIVES internal calls or runs the default shared-token driver.
-    # Trimming it per service would make a security primitive drift across copies.
-    "app/core/internal_assertion.py": "replicated verbatim per service; mint_internal_assertion is "
-                                      "live where the caller-identity driver is static/jwks and the "
-                                      "service signs outbound internal calls",
+    # internal_headers builds the headers for an OUTBOUND call to another service's /internal tier —
+    # the flat token always, plus a minted RS256 assertion when this service signs. Replicated verbatim
+    # per service; live only where a service makes outbound internal calls AND signs them, unused where
+    # a service only RECEIVES internal calls or runs the default shared-token driver. Trimming it per
+    # service would make a security primitive drift across copies.
+    "app/core/internal_client.py": "replicated verbatim per service; internal_headers is live where "
+                                   "the service signs its outbound internal calls",
     "app/core/inbound_credentials.py": "defines the stored-name convention; tests construct with "
                                        "it and the pool parses it, so the pair cannot drift",
 

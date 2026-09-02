@@ -117,3 +117,30 @@ def test_policy_defaults_open_and_enforces_named_lists():
     # "*" → any authenticated caller, named or unnamed
     assert p.permits("/internal/backup/export", "") is True      # longest-prefix under /internal/backup
     assert p.permits("/internal/backup/export", "anyone") is True
+
+
+# ── caller side: internal_headers (mint when configured) round-trips to verify ────
+class _Settings:
+    def __init__(self, priv):
+        self.INTERNAL_SERVICE_TOKEN = TOKEN
+        self.SERVICE_NAME = "billing-service"
+        self.INTERNAL_ASSERTION_PRIVATE_KEY = priv
+        self.INTERNAL_ASSERTION_TTL_SECONDS = 60
+        self.INTERNAL_ASSERTION_KID = ""
+
+
+def test_internal_headers_round_trip_to_the_verifier():
+    from app.core.internal_client import internal_headers
+    priv, pub = _keypair()
+    h = internal_headers(_Settings(priv), target="wallet-service")
+    assert h["X-Internal-Token"] == TOKEN and "X-Internal-Assertion" in h
+    caller = AssertionCaller(StaticKeyResolver({"billing-service": pub}), expected_token=TOKEN)
+    ident = caller.verify(token=h["X-Internal-Token"], assertion=h["X-Internal-Assertion"],
+                          audience="wallet-service")
+    assert ident.caller == "billing-service" and ident.via == "static"
+
+
+def test_internal_headers_are_token_only_when_no_signing_key():
+    from app.core.internal_client import internal_headers
+    s = _Settings("")   # no private key → signs nothing
+    assert internal_headers(s, target="wallet-service") == {"X-Internal-Token": TOKEN}
