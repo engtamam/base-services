@@ -30,7 +30,7 @@ class HttpChannelPricing:
     def _headers(self) -> dict[str, str]:
         if self._settings is None:
             return dict(self._token_headers)
-        return {**self._token_headers, **assertion_headers(self._settings, target="operations-service")}
+        return {**self._token_headers, **assertion_headers(self._settings, target="operations")}
 
     async def get(self, tenant: str) -> dict | None:
         """The tenant's {included_messages_per_period, overage_halalas_per_message}, or None if it

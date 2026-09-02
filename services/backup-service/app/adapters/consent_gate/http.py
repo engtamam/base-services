@@ -36,6 +36,10 @@ class HttpConsentGate:
         req = urllib.request.Request(f"{self._url}?{query}", method="GET")
         if self._token:
             req.add_header("X-Internal-Token", self._token)
+        # ADD-ONLY caller identity (aud=compliance-service) when this service signs; token untouched.
+        from app.core.internal_client import assertion_headers_from_env
+        for _k, _v in assertion_headers_from_env(target="compliance-service").items():
+            req.add_header(_k, _v)
 
         try:
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # nosec B310 - config-only host

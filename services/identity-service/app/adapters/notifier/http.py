@@ -54,6 +54,10 @@ class HttpNotifier:
                                      headers={"Content-Type": "application/json"})
         if self._token:
             req.add_header("X-Internal-Token", self._token)
+        # ADD-ONLY caller identity (aud=notification-service) when this service signs; token untouched.
+        from app.core.internal_client import assertion_headers_from_env
+        for _k, _v in assertion_headers_from_env(target="notification-service").items():
+            req.add_header(_k, _v)
         try:
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # nosec B310 - config-only host
                 return 200 <= resp.status < 300

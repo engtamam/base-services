@@ -6,6 +6,7 @@ loses the task. The job's `unique_key` makes a re-dispatch idempotent.
 from __future__ import annotations
 
 import json
+from app.core.internal_client import assertion_headers_from_env
 import urllib.error
 import urllib.request
 from typing import Any
@@ -49,7 +50,8 @@ class JobHttpOrchestrator:
         req = urllib.request.Request(
             f"{self._base}/internal/jobs/enqueue", data=json.dumps(payload).encode(),
             method="POST", headers={"Content-Type": "application/json",
-                                    "X-Internal-Token": token})
+                                    "X-Internal-Token": token,
+                                    **assertion_headers_from_env(target="job-service")})
         try:
             with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:  # nosec B310 - fixed config host
                 return 200 <= resp.status < 300

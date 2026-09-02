@@ -475,6 +475,7 @@ MUTATIONS = [
     ("ingress.host", _ING, "y.io"),
     ("ingress.tls.enabled", _ING, "false"),
     ("ingress.tls.secretName", _ING, "my-tls"),
+    ("serviceAccount.automountToken", [], "true"),
     ("networkPolicy.enabled", [], "false"),
     ("networkPolicy.ingressFromNamespace", [], "ingress"),
     ("networkPolicy.egress.dns", [], "false"),

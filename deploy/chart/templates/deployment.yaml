@@ -45,7 +45,7 @@ spec:
     spec:
       serviceAccountName: {{ include "base-service.fullname" . }}
       # None of these services talk to the Kubernetes API. Don't hand them a token.
-      automountServiceAccountToken: false
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountToken }}
       {{- with .Values.image.pullSecrets }}
       imagePullSecrets:
         {{- range . }}

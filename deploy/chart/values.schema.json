@@ -126,6 +126,14 @@
       }
     },
 
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "automountToken": { "type": "boolean" }
+      }
+    },
+
     "networkPolicy": {
       "type": "object",
       "additionalProperties": false,

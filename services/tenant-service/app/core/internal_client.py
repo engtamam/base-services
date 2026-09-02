@@ -56,3 +56,16 @@ def internal_headers(settings, *, target: str) -> dict[str, str]:
     assertion (when signing is configured)."""
     return {"X-Internal-Token": settings.INTERNAL_SERVICE_TOKEN,
             **assertion_headers(settings, target=target)}
+
+
+def assertion_headers_from_env(*, target: str) -> dict[str, str]:
+    """assertion_headers for a call site that has no settings handle — resolves settings from the
+    process env (get_settings is cached). Returns {} when settings can't be resolved (e.g. a unit
+    test with no env), so wiring this into an existing adapter never breaks its isolated tests and is
+    a one-line ADD at the call site: `headers.update(assertion_headers_from_env(target=...))`."""
+    try:
+        from app.config import get_settings
+        settings = get_settings()
+    except Exception:  # noqa: BLE001 — no resolvable settings => no assertion, never a crash
+        return {}
+    return assertion_headers(settings, target=target)

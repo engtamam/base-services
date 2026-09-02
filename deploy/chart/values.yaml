@@ -96,6 +96,13 @@ ingress:
     enabled: true
     secretName: ""
 
+serviceAccount:
+  # Whether the pod (and its ServiceAccount) mounts a Kubernetes API token. FALSE by default — these
+  # services never call the k8s API, so the token is pure attack surface. The one exception is a
+  # service whose JOB is the k8s API (secrets-admin rewrites other services' Secret objects): it sets
+  # this true in its own values file. Default false keeps every existing rendered manifest identical.
+  automountToken: false
+
 networkPolicy:
   enabled: true            # default-deny ingress AND egress; allows below are additive
   ingressFromNamespace: "" # e.g. "ingress" — where Traefik runs; empty = same namespace only

@@ -8,6 +8,7 @@ retry after an ambiguous failure notifies once, not twice.
 from __future__ import annotations
 
 import json
+from app.core.internal_client import assertion_headers_from_env
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -43,6 +44,7 @@ class HttpNotificationSender:
         headers = {"Content-Type": "application/json"}
         if self._token:
             headers["X-Internal-Token"] = self._token
+        headers.update(assertion_headers_from_env(target="notification-service"))
         req = urllib.request.Request(self._url, data=payload, method="POST", headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # nosec B310 - config-only host

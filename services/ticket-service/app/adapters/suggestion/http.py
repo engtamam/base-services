@@ -8,6 +8,7 @@ carries the pseudonym, never a raw identity.
 from __future__ import annotations
 
 import json
+from app.core.internal_client import assertion_headers_from_env
 import logging
 import urllib.error
 import urllib.parse
@@ -41,6 +42,7 @@ class HttpSuggestionProvider:
         headers = {"Content-Type": "application/json"}
         if self._token:
             headers["X-Internal-Token"] = self._token
+        headers.update(assertion_headers_from_env(target="assistant-service"))
         req = urllib.request.Request(self._base + path, data=body, method="POST", headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # nosec B310 - config-only host

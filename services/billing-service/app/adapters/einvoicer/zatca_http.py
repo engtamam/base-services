@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.adapters.billing_http import post_json
+from app.core.internal_client import assertion_headers_from_env
 
 
 class ZatcaHttpEInvoicer:
@@ -22,7 +23,8 @@ class ZatcaHttpEInvoicer:
             return {"status": "deferred", "reason": "zatca-service not configured"}
         code, resp = post_json(f"{self._base}/internal/zatca/finalize",
                                {"tenant": tenant, "invoice": invoice},
-                               {"X-Internal-Token": self._token})
+                               {"X-Internal-Token": self._token,
+                                **assertion_headers_from_env(target="zatca-service")})
         if not (200 <= code < 300):
             return {"status": "deferred", "code": code}
         return {"status": resp.get("status", "pending"), "invoice_id": resp.get("invoice_id"),

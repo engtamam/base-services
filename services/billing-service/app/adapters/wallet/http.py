@@ -17,6 +17,7 @@ from __future__ import annotations
 import urllib.parse
 
 from app.adapters.billing_http import post_json
+from app.core.internal_client import assertion_headers_from_env
 from app.ports.wallet import WalletRefused, WalletUnavailable
 
 
@@ -49,7 +50,7 @@ class HttpWallet:
             {"tenant": tenant, "fund": fund, "amount": int(amount_minor),
              "source": source, "reason": reason,
              **({"expires_at": expires_at} if expires_at else {})},
-            {"X-Internal-Token": token},
+            {"X-Internal-Token": token, **assertion_headers_from_env(target="wallet-service")},
             timeout=self._timeout,
         )
         if 200 <= status < 300:
@@ -67,7 +68,7 @@ class HttpWallet:
             f"{self._base}/internal/wallet/debit",
             {"tenant": tenant, "fund": fund, "amount": int(amount_minor),
              "source": source, "reason": reason, "allow_negative": bool(allow_negative)},
-            {"X-Internal-Token": token},
+            {"X-Internal-Token": token, **assertion_headers_from_env(target="wallet-service")},
             timeout=self._timeout,
         )
         if 200 <= status < 300:

@@ -8,6 +8,7 @@ from __future__ import annotations
 import urllib.parse
 
 from app.adapters.flag_http import get_json
+from app.core.internal_client import assertion_headers_from_env
 
 
 class BillingHttpEntitlement:
@@ -22,7 +23,8 @@ class BillingHttpEntitlement:
             return False                                  # fail-closed
         q = urllib.parse.urlencode({"tenant": tenant, "key": key})
         code, resp = get_json(f"{self._base}/internal/billing/entitlements/check?{q}",
-                              {"X-Internal-Token": self._token})
+                              {"X-Internal-Token": self._token,
+                               **assertion_headers_from_env(target="billing-service")})
         if not (200 <= code < 300):
             return False                                  # fail-closed
         return bool(resp.get("allowed", False))
