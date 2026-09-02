@@ -79,8 +79,14 @@ def _cron_paths(values: pathlib.Path) -> list[str]:
 
 
 def _looks_scheduled(path: str) -> bool:
+    # Match a verb as a whole hyphen-delimited WORD in the last segment, not a bare substring: a real
+    # scheduler endpoint is `sweep-lapses` / `grants-drain` / `cycle-due` (the verb is one of the
+    # hyphen parts, or the whole segment), whereas `tickets` merely CONTAINS "tick" and is a
+    # ticket-list read. Substring matching flagged `/internal/tickets` as a scheduler tick — a false
+    # positive that a word match cleans up without weakening the net for the hyphenated cases.
     seg = path.rstrip("/").rsplit("/", 1)[-1]
-    return any(verb in seg for verb in SCHEDULER_VERBS)
+    parts = seg.split("-")
+    return any(verb == seg or verb in parts for verb in SCHEDULER_VERBS)
 
 
 def check_service(svc: pathlib.Path, problems: list[str]) -> int:

@@ -364,7 +364,7 @@ async def add_member_internal(request: Request, body: InternalMemberIn) -> dict:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "CANNOT_SET_EXISTING_PERSON_CREDENTIAL")
     except TenantAccessDenied:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "TENANT_ACCESS_DENIED")
-    out = {"person_id": m.person_id, "tenant": body.tenant,
+    out = {"person_id": m.person_id, "tenant": m.tenant,   # the VERIFIED membership row, not the request
            "membership": m.public() | {"person_id": m.person_id, "roles": list(m.roles)}}
     if invite:
         # Returned EXACTLY once (invite mode), never stored in the clear — a lost invite is reissued.

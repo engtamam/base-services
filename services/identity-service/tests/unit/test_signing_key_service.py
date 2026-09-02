@@ -86,7 +86,7 @@ def test_a_second_replica_picks_up_the_rotation_via_refresh():
         rotated = await a.rotate()                          # replica A rotates
         assert rotated["rotated"] is True
         assert b.current_signing_key()[0] != a.current_signing_key()[0]   # B still on old key...
-        await b.refresh()
+        await b.reload()
         assert b.current_signing_key()[0] == a.current_signing_key()[0]   # ...until it refreshes
     asyncio.run(go())
 

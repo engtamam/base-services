@@ -48,7 +48,7 @@ async def _refresh_signing_keys(sks, logger) -> None:
     while True:
         try:
             await asyncio.sleep(sks.refresh_seconds)
-            await sks.refresh()
+            await sks.reload()
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001

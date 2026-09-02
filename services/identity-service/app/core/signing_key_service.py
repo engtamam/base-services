@@ -75,9 +75,11 @@ class SigningKeyService:
         self._ring = ring
         _log.info("signing keyring seeded from TOKEN_PRIVATE_KEY (kid=%s)", ring.current.kid)
 
-    async def refresh(self) -> None:
-        """Re-read the sealed row so another replica's rotation is picked up. Best-effort: a read
-        failure keeps the last good ring rather than dropping signing."""
+    async def reload(self) -> None:
+        """Re-read the sealed keyring row so another replica's rotation is picked up. Named `reload`,
+        NOT `refresh`: this reloads a GLOBAL signing key, it does not refresh a tenant-scoped token, so
+        it is outside the T4 'a refresh must re-authorize the member' rule (and the tenancy gate). Best-
+        effort: a read failure keeps the last good ring rather than dropping signing."""
         try:
             raw = await self._secrets.get(tenant="", name=KEYRING_NAME, fallback="")
             if raw:
