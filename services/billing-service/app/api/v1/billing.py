@@ -240,6 +240,7 @@ class CouponIn(BaseModel):
     starts_at: float | None = None
     expires_at: float | None = None
     max_redemptions: int = Field(default=0, ge=0)     # 0 = unlimited
+    plan_id: str = Field(default="", max_length=128)  # scope to ONE plan; empty = any plan
     active: bool = True
     public: bool = False                              # show to customers on the offers endpoint
     note: str = Field(default="", max_length=512)
@@ -255,6 +256,7 @@ class CouponPatchIn(BaseModel):
     starts_at: float | None = None
     expires_at: float | None = None
     max_redemptions: int | None = Field(default=None, ge=0)
+    plan_id: str | None = Field(default=None, max_length=128)   # scope to ONE plan; "" = any plan
     active: bool | None = None
     public: bool | None = None
     note: str | None = Field(default=None, max_length=512)

@@ -69,6 +69,10 @@ class Coupon:
     expires_at: float | None = None
     max_redemptions: int = 0             # 0 = unlimited
     redeemed: int = 0                    # ENFORCED — see core/coupons.py
+    # Scope the code to ONE plan (e.g. "15% off the الأساس plan"). Empty = applies to any plan, the
+    # original behaviour. Enforced in subscribe(): a code that names a plan is REFUSED for a
+    # subscription to a different plan (loud), never silently applied to nothing.
+    plan_id: str = ""
     active: bool = True
     # A campaign the CUSTOMER app may show. Default False: a targeted or partner code is private,
     # and a public read must never leak one just because it is active. Opt IN to publish.

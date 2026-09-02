@@ -417,6 +417,12 @@ class BillingService:
             #
             # Nothing incremented `redeemed` before this line existed, so the cap an operator set
             # was never enforced at all.
+            # A plan-scoped coupon is REFUSED (loud) for a subscription to a different plan, rather
+            # than silently discounting nothing and charging full price — a customer who typed a real
+            # code for the wrong plan sees why. Checked BEFORE redeem, so a mismatch never consumes a
+            # redemption. Empty plan_id = applies to any plan (unchanged behaviour).
+            if coupon is not None and coupon.plan_id and coupon.plan_id != plan_id:
+                raise ValueError("COUPON_PLAN_MISMATCH")
             reason = _coupons.status(coupon.to_dict() if coupon else None, now)
             if reason != _coupons.ACTIVE:
                 raise ValueError(f"COUPON_{reason.upper()}")

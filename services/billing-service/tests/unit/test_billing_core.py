@@ -326,6 +326,35 @@ def test_webhook_reconcile_idempotent():
     assert r2["payment_status"] == "succeeded"
 
 
+def test_plan_scoped_coupon_refuses_the_wrong_plan_without_redeeming():
+    st = MemoryDataStore()
+    b = _svc(st, MockGW(ok=True))
+    a = run(b.create_plan(name="A", prices=[{"interval": "month", "amount_minor": 10000,
+                                             "currency": "SAR", "type": "flat"}]))
+    other = run(b.create_plan(name="B", prices=[{"interval": "month", "amount_minor": 10000,
+                                                 "currency": "SAR", "type": "flat"}]))
+    run(b.upsert_coupon(code="AONLY", type="percent", value=50, plan_id=a.id))
+    # Wrong plan → REFUSED loudly, and the refusal consumes NO redemption (checked before redeem).
+    with pytest.raises(ValueError) as e:
+        run(b.subscribe(tenant="t2", plan_id=other.id, coupon_code="AONLY", payment_token="pm_1"))
+    assert "COUPON_PLAN_MISMATCH" in str(e.value)
+    assert run(b.get_coupon("AONLY"))["redeemed"] == 0
+    # Right plan → the discount applies, and now exactly one redemption is counted.
+    sub = run(b.subscribe(tenant="t1", plan_id=a.id, coupon_code="AONLY", payment_token="pm_1"))
+    assert run(b.run_cycle(sub.id)).discount_minor == 5000
+    assert run(b.get_coupon("AONLY"))["redeemed"] == 1
+
+
+def test_unscoped_coupon_still_applies_to_any_plan():
+    st = MemoryDataStore()
+    b = _svc(st, MockGW(ok=True))
+    plan = run(b.create_plan(name="X", prices=[{"interval": "month", "amount_minor": 10000,
+                                                "currency": "SAR", "type": "flat"}]))
+    run(b.upsert_coupon(code="ANY", type="percent", value=10))   # no plan_id → any plan (as before)
+    sub = run(b.subscribe(tenant="t1", plan_id=plan.id, coupon_code="ANY", payment_token="pm_1"))
+    assert run(b.run_cycle(sub.id)).discount_minor == 1000
+
+
 def test_zero_total_marks_paid_without_gateway():
     st = MemoryDataStore()
     b = _svc(st, MockGW(ok=False))                           # gateway would fail, but 100% coupon
