@@ -695,3 +695,31 @@ class AuthService:
         user.password_hash = self._hasher.hash(new_password)
         await self._users.update(user)
         return True
+
+    def ensure_password_strength(self, new_password: str) -> None:
+        """Raise WeakPassword unless the password meets the minimum length. Split out so the reset flow
+        can reject a weak password BEFORE it consumes the single-use OTP — a locked-out admin must not
+        burn their only recovery code on a typo."""
+        if len(new_password) < self._min_pw:
+            raise WeakPassword(f"password must be >= {self._min_pw} characters")
+
+    async def resolve_for_reset(self, identifier: str) -> "Person | None":
+        """The ACTIVE global person for `identifier`, or None. Same normalize + lookup as
+        authenticate_person — a reset targets the credential you log IN with. Returns None (never
+        raises) for an unknown identifier, a non-active person, or single-tenant mode, so the caller
+        answers with ONE generic error and leaks no existence/status oracle."""
+        if self._memberships is None:
+            return None
+        person = await self._memberships.person_by_identifier(self._identifier.normalize(identifier))
+        if person is None or person.status != ACTIVE:
+            return None
+        return person
+
+    async def set_password(self, person: "Person", new_password: str) -> None:
+        """Set a person's password with NO old-password check — authorised by a verified reset-OTP, not
+        the prior secret. Enforces the same WeakPassword floor as change_password and persists like
+        claim_invite. Lockout is left untouched: a brute-force lock is short-lived and keyed per source,
+        and the reset itself does not prove the source is safe."""
+        self.ensure_password_strength(new_password)
+        person.password_hash = self._hasher.hash(new_password)
+        await self._memberships.save_person(person)

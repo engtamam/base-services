@@ -57,6 +57,10 @@ UNDECLARED_ROUTES: list[dict[str, str]] = [
             "before any session exists — it belongs to the signup/login screen, not a catalog fetched with a token"},
     {"method": "POST", "path": "/api/v1/otp/verify",
      "why": "pre-auth: the other half of the same code challenge, submitted before a session exists"},
+    {"method": "POST", "path": "/api/v1/auth/reset-password",
+     "why": "pre-auth account recovery: a locked-out person who cannot log in submits a reset-OTP code "
+            "and a new password from the login screen's 'forgot password' flow, before any session "
+            "exists — it belongs to that screen, not a catalog rendered for an authenticated user"},
     {"method": "GET", "path": "/api/v1/auth/onboarding-methods",
      "why": "pre-auth: the signup screen reads which onboarding options are enabled before anyone has "
             "a session — content the screen renders, not a catalog action for a logged-in user"},

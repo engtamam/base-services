@@ -96,6 +96,15 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "why": "enrolling a new MFA factor hands someone permanent access; an unattributable "
                "enrolment is indistinguishable from an attacker locking the owner out",
     },
+    {
+        "action": "auth.password_reset",
+        "source": "auth",
+        "critical": True,
+        "resource": "user",
+        "why": "a reset sets a new password WITHOUT the old one (authorised only by a verified "
+               "reset-OTP); it is the account-recovery path an attacker who seized the channel would "
+               "use, so an unattributable reset is indistinguishable from a takeover",
+    },
 
     # ── access: who is allowed inside this tenant ────────────────────────────
     {

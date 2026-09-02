@@ -80,6 +80,12 @@ class ChangePwIn(BaseModel):
     new_password: str = Field(min_length=1, max_length=256)  # core enforces min length
 
 
+class ResetPwIn(BaseModel):
+    identifier: str = Field(min_length=1, max_length=256)
+    code: str = Field(min_length=1, max_length=32)
+    new_password: str = Field(min_length=1, max_length=256)  # core enforces min length
+
+
 class MfaVerifyIn(BaseModel):
     code: str
 
@@ -363,6 +369,61 @@ async def change_password(request: Request, body: ChangePwIn,
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "WEAK_PASSWORD")
     if not ok:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "INVALID_PASSWORD")
+    return {"status": "ok"}
+
+
+@router.post("/reset-password", dependencies=[Depends(rate_limit)])
+async def reset_password(request: Request, body: ResetPwIn) -> dict:
+    """Set a new password from a verified reset-OTP — the account-recovery path, NO old password.
+
+    The OTP (purpose=reset) is the authorisation: proving control of the phone/email is what licenses a
+    reset without the prior secret. The code is verified — and CONSUMED — here, atomically with the
+    password write, so there is no separately-callable "prove it to the browser, record nothing" step
+    (the incident that keeps /otp/verify off the gateway); callers post {identifier, code, new_password}
+    in one request and must NOT pre-call /otp/verify (that would spend the single-use code).
+
+    Errors leak NO oracle: a wrong code and an unknown/inactive identifier both collapse to
+    INVALID_RESET. WEAK_PASSWORD is distinct AND checked BEFORE the code is consumed, so a weak password
+    never burns a locked-out admin's only recovery code."""
+    from starlette.responses import JSONResponse
+
+    from app.core.otp_service import OtpError
+    from app.middleware.request_context import get_request_id
+
+    def _err(code: str, status_code: int = status.HTTP_400_BAD_REQUEST) -> JSONResponse:
+        # A NAMED code (not the status→BAD_REQUEST generic), returned directly so the console can tell a
+        # weak password from a bad code. Justified like CapsNotGrantable: neither name leaks — WEAK_
+        # PASSWORD is about the caller's OWN input, INVALID_RESET is a single bucket that never
+        # distinguishes a wrong code from an unknown identifier. Goes through the header middleware.
+        payload: dict = {"error": code}
+        rid = get_request_id()
+        if rid:
+            payload["request_id"] = rid
+        return JSONResponse(payload, status_code=status_code)
+
+    svc = _svc(request)
+    # 1) strength FIRST — before the OTP is spent (so a typo'd weak password is retryable).
+    try:
+        svc.ensure_password_strength(body.new_password)
+    except WeakPassword:
+        return _err("WEAK_PASSWORD")
+    # 2) verify + consume the reset code (same canonical key the OTP was issued under).
+    from app.api.v1.otp import _canonical
+    otp = request.app.state.container.otp_service
+    try:
+        await otp.verify(identifier=_canonical(request, body.identifier),
+                         code=body.code, purpose="reset")
+    except OtpError:
+        return _err("INVALID_RESET")
+    # 3) resolve the account — a valid code for an unknown/inactive identifier gives the SAME error.
+    person = await svc.resolve_for_reset(body.identifier)
+    if person is None:
+        return _err("INVALID_RESET")
+    # 4) write-ahead audit (the id, never the raw identifier — no PII in the log), then set.
+    await request.app.state.auditor.record(
+        "auth.password_reset", actor=person.id, tenant="",
+        resource=f"user:{person.id}", ip=request.client.host if request.client else "")
+    await svc.set_password(person, body.new_password)
     return {"status": "ok"}
 
 

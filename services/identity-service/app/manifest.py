@@ -94,6 +94,7 @@ def build_manifest(
             {"path": "/api/v1/auth/me", "tier": "user", "method": "GET"},
             {"path": "/api/v1/auth/me", "tier": "user", "method": "DELETE"},
             {"path": "/api/v1/auth/change-password", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/auth/reset-password", "tier": "user", "method": "POST"},
             {"path": "/api/v1/auth/mfa/enroll", "tier": "user", "method": "POST"},
             {"path": "/api/v1/auth/mfa/verify", "tier": "user", "method": "POST"},
             # OTP — a channel-agnostic one-time code: request delivers it, verify consumes it.
