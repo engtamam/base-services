@@ -69,3 +69,13 @@ def assertion_headers_from_env(*, target: str) -> dict[str, str]:
     except Exception:  # noqa: BLE001 — no resolvable settings => no assertion, never a crash
         return {}
     return assertion_headers(settings, target=target)
+
+
+def assertion_headers_for_url(url: str) -> dict[str, str]:
+    """assertion_headers for a DYNAMIC target addressed by URL — a fan-out (backup, privacy erase, the
+    gateway proxy) that calls MANY services by URL rather than one fixed callee. The audience is the
+    URL's hostname: each service is reached at http://<its-service-name>:port and verifies
+    aud==its own name, so the hostname IS the audience. Empty ({}) when the URL has no host."""
+    from urllib.parse import urlparse
+    host = (urlparse(url or "").hostname or "").strip()
+    return assertion_headers_from_env(target=host) if host else {}

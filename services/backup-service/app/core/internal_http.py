@@ -8,6 +8,7 @@ destination a decision an operator made rather than whatever the registry happen
 from __future__ import annotations
 
 import json as _json
+from app.core.internal_client import assertion_headers_for_url
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -41,7 +42,8 @@ def post_json(url: str, payload: dict, token: str, *, allowed_hosts: frozenset[s
     req = urllib.request.Request(
         url, data=data, method="POST",
         headers={"User-Agent": _UA, "Content-Type": "application/json",
-                 "Accept": "application/json", "X-Internal-Token": token})
+                 "Accept": "application/json", "X-Internal-Token": token,
+                 **assertion_headers_for_url(url)})
     try:
         with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:  # nosec B310 - allowlisted host
             return resp.status, _parse(resp.read())

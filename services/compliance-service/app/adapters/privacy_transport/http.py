@@ -14,6 +14,7 @@ Classification is the whole job, and it is deliberately strict:
 from __future__ import annotations
 
 import json
+from app.core.internal_client import assertion_headers_for_url
 import urllib.error
 import urllib.request
 
@@ -40,6 +41,7 @@ class HttpPrivacyTransport:
         headers = {"Content-Type": "application/json"}
         if token:
             headers["X-Internal-Token"] = token
+        headers.update(assertion_headers_for_url(url))   # aud = the target's hostname (its own name)
         req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST",
                                      headers=headers)
         try:

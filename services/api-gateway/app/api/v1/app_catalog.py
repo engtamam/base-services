@@ -17,6 +17,7 @@ from __future__ import annotations
 import time
 
 import httpx
+from app.core.internal_client import assertion_headers_for_url
 from fastapi import APIRouter, Depends, Request
 
 from app.api.auth import Principal, require_user
@@ -50,7 +51,8 @@ async def catalog(request: Request, principal: Principal = Depends(require_user)
         # redirect it).
         async with httpx.AsyncClient(timeout=timeout) as client:
             r = await client.get(f"{t.base_url}/internal/manifest",
-                                 headers={"X-Internal-Token": token})
+                                 headers={"X-Internal-Token": token,
+                                          **assertion_headers_for_url(t.base_url)})
         return r.json() if r.status_code == 200 else None
 
     result = await build_catalog(targets, caps, fetch, field="user_actions")
