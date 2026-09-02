@@ -474,6 +474,35 @@
         "title": "ResendIn",
         "type": "object"
       },
+      "ResetPwIn": {
+        "properties": {
+          "code": {
+            "maxLength": 32,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          },
+          "identifier": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Identifier",
+            "type": "string"
+          },
+          "new_password": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "New Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "identifier",
+          "code",
+          "new_password"
+        ],
+        "title": "ResetPwIn",
+        "type": "object"
+      },
       "RotateIn": {
         "properties": {
           "overlap_seconds": {
@@ -1284,6 +1313,50 @@
           }
         },
         "summary": "Resend Verification",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/reset-password": {
+      "post": {
+        "description": "Set a new password from a verified reset-OTP \u2014 the account-recovery path, NO old password.\n\nThe OTP (purpose=reset) is the authorisation: proving control of the phone/email is what licenses a\nreset without the prior secret. The code is verified \u2014 and CONSUMED \u2014 here, atomically with the\npassword write, so there is no separately-callable \"prove it to the browser, record nothing\" step\n(the incident that keeps /otp/verify off the gateway); callers post {identifier, code, new_password}\nin one request and must NOT pre-call /otp/verify (that would spend the single-use code).\n\nErrors leak NO oracle: a wrong code and an unknown/inactive identifier both collapse to\nINVALID_RESET. WEAK_PASSWORD is distinct AND checked BEFORE the code is consumed, so a weak password\nnever burns a locked-out admin's only recovery code.",
+        "operationId": "reset_password_api_v1_auth_reset_password_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResetPwIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Reset Password Api V1 Auth Reset Password Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reset Password",
         "tags": [
           "auth"
         ]
@@ -2314,6 +2387,22 @@
               ],
               "title": "X-Internal-Token"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
           }
         ],
         "requestBody": {
@@ -2375,6 +2464,22 @@
                 }
               ],
               "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
             }
           }
         ],
@@ -2438,6 +2543,22 @@
               ],
               "title": "X-Internal-Token"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
           }
         ],
         "requestBody": {
@@ -2498,6 +2619,22 @@
                 }
               ],
               "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
             }
           }
         ],
@@ -2580,6 +2717,22 @@
               ],
               "title": "X-Internal-Token"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
           }
         ],
         "responses": {
@@ -2630,6 +2783,22 @@
                 }
               ],
               "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
             }
           }
         ],
@@ -2682,6 +2851,22 @@
                 }
               ],
               "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
             }
           }
         ],
@@ -2744,6 +2929,22 @@
                 }
               ],
               "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
             }
           }
         ],
@@ -2816,6 +3017,22 @@
                 }
               ],
               "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
             }
           }
         ],
@@ -2910,6 +3127,22 @@
               ],
               "title": "X-Internal-Token"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
           }
         ],
         "responses": {
@@ -2959,6 +3192,22 @@
                 }
               ],
               "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
             }
           }
         ],
@@ -3031,6 +3280,22 @@
               ],
               "title": "X-Internal-Token"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
           }
         ],
         "responses": {
@@ -3082,6 +3347,22 @@
                 }
               ],
               "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
             }
           }
         ],

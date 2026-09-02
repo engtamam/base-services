@@ -60,6 +60,58 @@ async def require_internal_token(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "FORBIDDEN")
 
 
+class CreditIn(BaseModel):
+    tenant: str = Field(min_length=1, max_length=200)
+    fund: str = Field(min_length=1, max_length=64)
+    amount: int = Field(ge=0)                          # integer MINOR units; never a float
+    source: str = Field(default="", max_length=200)    # idempotency key
+    reason: str = Field(default="", max_length=200)
+    expires_at: float | None = None                    # a grant: unused remainder is clawed back
+
+
+class SpendIn(BaseModel):
+    tenant: str = Field(min_length=1, max_length=200)
+    net: int = Field(ge=0)                             # the PRE-VAT price, in minor units
+    source: str = Field(default="", max_length=200)
+    reason: str = Field(default="", max_length=200)
+
+
+class WithdrawIn(BaseModel):
+    tenant: str = Field(min_length=1, max_length=200)
+    amount: int = Field(ge=1)                          # MINOR units; a payout is never zero/negative
+    destination: str = Field(default="", max_length=256)   # opaque payout target reference
+    source: str = Field(default="", max_length=200)    # idempotency key
+    reason: str = Field(default="", max_length=200)
+
+
+class SettleWithdrawalIn(BaseModel):
+    withdrawal_id: str = Field(min_length=1, max_length=100)
+    paid: bool                                          # True = transfer settled; False = reverse it
+    source: str = Field(default="", max_length=200)
+
+
+class HoldIn(BaseModel):
+    hold_id: str = Field(min_length=1, max_length=100)
+
+
+class RefundIn(BaseModel):
+    tenant: str = Field(min_length=1, max_length=200)
+    seq: int = Field(ge=1)                             # ledger sequence of the spend to reverse
+    source: str = Field(default="", max_length=200)
+    reason: str = Field(default="", max_length=200)
+
+
+def _handle(exc: Exception) -> HTTPException:
+    """Money errors are 4xx and never leak internals; contention is a retryable 409."""
+    if isinstance(exc, _funds.InsufficientFunds):
+        return HTTPException(status_code=402, detail="INSUFFICIENT_FUNDS")
+    if isinstance(exc, Conflict):
+        return HTTPException(status_code=409, detail="WALLET_CONTENTION")
+    if isinstance(exc, (WalletError, MoneyError)):
+        return HTTPException(status_code=400, detail=str(exc))
+    raise exc
+
+
 @router.get("/wallet/{tenant}", dependencies=[Depends(require_internal_token)])
 async def get_balance(tenant: str, request: Request) -> dict:
     return await build_wallet(request).balance(tenant)

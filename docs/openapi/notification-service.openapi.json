@@ -1565,6 +1565,22 @@
               ],
               "title": "X-Internal-Token"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
           }
         ],
         "requestBody": {
@@ -1626,6 +1642,22 @@
                 }
               ],
               "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
             }
           }
         ],
@@ -1689,6 +1721,22 @@
               ],
               "title": "X-Internal-Token"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
           }
         ],
         "requestBody": {
@@ -1750,6 +1798,22 @@
               ],
               "title": "X-Internal-Token"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
           }
         ],
         "responses": {
@@ -1803,6 +1867,22 @@
               ],
               "title": "X-Internal-Token"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
           }
         ],
         "responses": {
@@ -1854,6 +1934,22 @@
                 }
               ],
               "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
             }
           }
         ],
@@ -1927,6 +2023,22 @@
               ],
               "title": "X-Internal-Token"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
           }
         ],
         "responses": {
@@ -1978,6 +2090,22 @@
                 }
               ],
               "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
             }
           }
         ],
@@ -2041,6 +2169,22 @@
               ],
               "title": "X-Internal-Token"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
           }
         ],
         "requestBody": {
@@ -2103,6 +2247,22 @@
               ],
               "title": "X-Internal-Token"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
           }
         ],
         "requestBody": {
@@ -2140,6 +2300,97 @@
           }
         },
         "summary": "Erase Subject",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/whatsapp/channel-usage": {
+      "get": {
+        "description": "A tenant's REAL provider-billed WhatsApp usage for a billing period \u2014 the number operations-\nservice reads to bill a shop for its WhatsApp channel.\n\nReturns billable UNITS, never money: counts by (category, country, pricing_model, billable) plus the\nperiod totals. Only PROVIDER-BILLED sends are counted (360dialog and any future BSP the platform\npays for); a Meta-direct send the establishment pays Meta for itself contributes nothing here. The\nhalalas conversion \u2014 Meta's per-country/per-category rate card \u2014 is operations-service's to own and\nversion; this endpoint never encodes a price, so a rate change is a one-place edit on their side.\n\n`period` is a UTC calendar month (YYYY-MM); omitted, it defaults to the current month. The read is\nscoped to the one tenant and pushed into the datastore (never a cross-tenant scan).",
+        "operationId": "whatsapp_channel_usage_internal_whatsapp_channel_usage_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 128,
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "period",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 7,
+              "pattern": "^(\\d{4}-\\d{2})?$",
+              "title": "Period",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Whatsapp Channel Usage Internal Whatsapp Channel Usage Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Whatsapp Channel Usage",
         "tags": [
           "internal"
         ]
@@ -2199,6 +2450,22 @@
               ],
               "title": "X-Internal-Token"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
           }
         ],
         "responses": {
@@ -2250,6 +2517,22 @@
                 }
               ],
               "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
             }
           }
         ],
@@ -2333,6 +2616,22 @@
               ],
               "title": "X-Internal-Token"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
           }
         ],
         "responses": {
@@ -2395,6 +2694,22 @@
               ],
               "title": "X-Internal-Token"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
           }
         ],
         "responses": {
@@ -2446,6 +2761,22 @@
                 }
               ],
               "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
             }
           }
         ],
@@ -2523,6 +2854,22 @@
                 }
               ],
               "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
             }
           }
         ],
@@ -2602,6 +2949,22 @@
               ],
               "title": "X-Internal-Token"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
           }
         ],
         "responses": {
@@ -2651,6 +3014,22 @@
                 }
               ],
               "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
             }
           }
         ],
@@ -2723,6 +3102,22 @@
               ],
               "title": "X-Internal-Token"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
           }
         ],
         "responses": {
@@ -2783,6 +3178,22 @@
                 }
               ],
               "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
             }
           }
         ],
@@ -2853,6 +3264,22 @@
                 }
               ],
               "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
             }
           }
         ],
