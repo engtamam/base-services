@@ -81,6 +81,14 @@ MINTABLE: dict[str, dict] = {
     "INTERNAL_SERVICE_TOKEN": {"t": "shared"}, "PII_SALT": {"t": "shared"},
     "TOKEN_HS256_SECRET": {"t": "shared"}, "TOKEN_SIGNING_SECRET": {"t": "alias", "of": "TOKEN_HS256_SECRET"},
     "SECRETS_KEK": {"t": "shared"}, "BACKUP_KEK": {"t": "shared"},
+    # Internal caller identity. Each service gets its OWN RS256 signing key (svc_rsa) + kid, the shared
+    # map of EVERY service's public key so it can verify any caller (pubkey_map), and the driver flipped
+    # to `static`. Provisioned ENABLED but non-breaking: INTERNAL_CALLER_ALLOW_TOKEN_FALLBACK defaults
+    # true, so a caller that has not yet been rolled out still authenticates with the flat token.
+    "INTERNAL_ASSERTION_PRIVATE_KEY": {"t": "svc_rsa"},
+    "INTERNAL_ASSERTION_KID": {"t": "svc_kid"},
+    "INTERNAL_CALLER_PUBLIC_KEYS_JSON": {"t": "pubkey_map"},
+    "INTERNAL_CALLER_DRIVER": {"t": "caller_driver"},
 }
 
 _FIELD = re.compile(r"^\s+([A-Z][A-Z0-9_]+)\s*:\s*(?:str|int|bool|float)", re.MULTILINE)
@@ -122,6 +130,21 @@ def _gen_ed25519() -> str:
                           capture_output=True, text=True, check=True).stdout
 
 
+def _gen_rsa() -> tuple[str, str]:
+    """A fresh RS256 keypair (PKCS#8 PEM private, SPKI PEM public) for one service's caller identity."""
+    priv = subprocess.run(["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt",
+                           "rsa_keygen_bits:2048"], capture_output=True, text=True, check=True).stdout
+    pub = subprocess.run(["openssl", "pkey", "-pubout"], input=priv,
+                         capture_output=True, text=True, check=True).stdout
+    return priv, pub
+
+
+def _svc_of(secret_name: str) -> str:
+    """The service name a secret belongs to — 'notification-service-secrets' -> 'notification-service'
+    (== its SERVICE_NAME, which is the assertion iss/aud and the pubkey-map key)."""
+    return secret_name[:-len("-secrets")] if secret_name.endswith("-secrets") else secret_name
+
+
 def _load_existing() -> tuple[dict[str, str], dict[str, str]]:
     """Recover reusable values already in the cluster, so a re-run does NOT mint fresh passwords that
     drift from persisted data. A regenerated POSTGRES_PASSWORD is the worst case: the postgres PVC
@@ -133,31 +156,57 @@ def _load_existing() -> tuple[dict[str, str], dict[str, str]]:
         return {}, {}
     shared: dict[str, str] = {}
     role_pw: dict[str, str] = {}
+    keypairs: dict[str, dict[str, str]] = {}     # secret_name -> {priv, kid} already in the cluster
     for item in json.loads(r.stdout or "{}").get("items", []):
+        sname = (item.get("metadata") or {}).get("name", "")
         for key, val in (item.get("data") or {}).items():
             dec = _b64d(val)
             if (key in SHARED or key in ED25519) and key not in shared:
                 shared[key] = dec
+            elif key == "INTERNAL_ASSERTION_PRIVATE_KEY":
+                keypairs.setdefault(sname, {})["priv"] = dec
+            elif key == "INTERNAL_ASSERTION_KID":
+                keypairs.setdefault(sname, {})["kid"] = dec
             elif key.endswith("_DSN") and "://" in dec:
                 try:
                     role, tail = dec.split("://", 1)[1].split(":", 1)
                     role_pw.setdefault(role, tail.split("@", 1)[0])
                 except (ValueError, IndexError):
                     pass
-    return shared, role_pw
+    return shared, role_pw, keypairs
 
 
 def generate_and_apply() -> None:
     schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
-    reuse_shared, reuse_role_pw = _load_existing()
-    if reuse_shared or reuse_role_pw:
-        print(f"↻ preserving {len(reuse_shared)} shared + {len(reuse_role_pw)} role secret(s) already in {NS}")
+    reuse_shared, reuse_role_pw, reuse_keypairs = _load_existing()
+    if reuse_shared or reuse_role_pw or reuse_keypairs:
+        print(f"↻ preserving {len(reuse_shared)} shared + {len(reuse_role_pw)} role + "
+              f"{len(reuse_keypairs)} keypair secret(s) already in {NS}")
     pool: dict[str, str] = dict(CONSTANTS)
     for k in SHARED:
         pool[k] = reuse_shared.get(k) or _gen_token()
     for k in ED25519:
         pool[k] = reuse_shared.get(k) or _gen_ed25519()
     role_pw: dict[str, str] = dict(reuse_role_pw)
+
+    # Per-service RS256 caller-identity keypairs. REUSED from the cluster where present (regenerating
+    # would invalidate every assertion already in flight); minted fresh otherwise. The public keys of
+    # ALL services form one map every service holds, so any service can verify any caller. Only
+    # services whose config declares INTERNAL_ASSERTION_PRIVATE_KEY get one.
+    keypairs: dict[str, tuple[str, str, str]] = {}    # svc_name -> (priv, pub, kid)
+    for name, spec in schema.items():
+        if "INTERNAL_ASSERTION_PRIVATE_KEY" not in spec.get("keys", {}):
+            continue
+        svc = _svc_of(name)
+        prior = reuse_keypairs.get(name, {})
+        if prior.get("priv"):
+            priv = prior["priv"]
+            pub = subprocess.run(["openssl", "pkey", "-pubout"], input=priv,
+                                 capture_output=True, text=True, check=True).stdout
+        else:
+            priv, pub = _gen_rsa()
+        keypairs[svc] = (priv, pub, prior.get("kid") or svc)   # kid = service name (stable id)
+    pubkey_map = json.dumps({svc: pub for svc, (_p, pub, _k) in keypairs.items()})
 
     def dsn_for(role: str) -> str:
         if role == pool["POSTGRES_USER"]:
@@ -178,6 +227,14 @@ def generate_and_apply() -> None:
                 data[key] = pool[key]
             elif t == "dsn":
                 data[key] = dsn_for(meta["role"])
+            elif t == "svc_rsa":
+                data[key] = keypairs[_svc_of(name)][0]        # this service's OWN private key
+            elif t == "svc_kid":
+                data[key] = keypairs[_svc_of(name)][2]
+            elif t == "pubkey_map":
+                data[key] = pubkey_map                        # every service's public key
+            elif t == "caller_driver":
+                data[key] = "static"                          # enabled; dual-accept keeps it non-breaking
         _apply_secret(name, data)
     print(f"✔ generated + applied {len(schema)} secrets to {NS}")
 
