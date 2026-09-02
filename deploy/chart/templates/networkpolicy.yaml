@@ -38,12 +38,25 @@ spec:
     matchLabels: {{- include "base-service.selectorLabels" . | nindent 6 }}
   policyTypes: [Ingress, Egress]
   ingress:
-    # Peer services in this namespace (the internal tier, still token-guarded).
+    # Peer services in this namespace (the internal tier, still identity/token-guarded at the app
+    # layer). NARROWABLE via networkPolicy.peers.ingress: listed => only those labelled peers may
+    # reach this pod; empty => any pod in the namespace (today's behaviour).
+    {{- if .Values.networkPolicy.peers.ingress }}
+    - from:
+        {{- range .Values.networkPolicy.peers.ingress }}
+        - podSelector:
+            matchLabels: {{- toYaml . | nindent 14 }}
+        {{- end }}
+      ports:
+        - port: http
+          protocol: TCP
+    {{- else }}
     - from:
         - podSelector: {}
       ports:
         - port: http
           protocol: TCP
+    {{- end }}
     {{- if .Values.networkPolicy.ingressFromNamespace }}
     # The ingress controller (Traefik), typically in its own namespace.
     - from:
@@ -111,12 +124,25 @@ spec:
           protocol: TCP
     {{- end }}
     {{- end }}
-    # Peer services (service-to-service calls on the internal tier).
+    # Peer services (service-to-service calls on the internal tier). NARROWABLE via
+    # networkPolicy.peers.egress: listed => this service may call only those labelled peers; empty =>
+    # any pod in the namespace (today's behaviour).
+    {{- if .Values.networkPolicy.peers.egress }}
+    {{- range .Values.networkPolicy.peers.egress }}
+    - to:
+        - podSelector:
+            matchLabels: {{- toYaml . | nindent 14 }}
+      ports:
+        - port: {{ $.Values.service.port }}
+          protocol: TCP
+    {{- end }}
+    {{- else }}
     - to:
         - podSelector: {}
       ports:
         - port: {{ .Values.service.port }}
           protocol: TCP
+    {{- end }}
     {{- if .Values.networkPolicy.egress.internet }}
     # Third-party egress: ONLY for services that must call out (webhook, connector,
     # notification, billing, zatca). Their in-app SSRF guards (DNS resolve + IP pinning,

@@ -99,6 +99,14 @@ ingress:
 networkPolicy:
   enabled: true            # default-deny ingress AND egress; allows below are additive
   ingressFromNamespace: "" # e.g. "ingress" — where Traefik runs; empty = same namespace only
+  # Narrowable peer allow-list (label selectors) — the network twin of the per-route internal caller
+  # policy. EMPTY = any pod in the namespace may reach this service on its port, and this service may
+  # reach any peer (today's behaviour, so upgrading changes nothing). Set each list to the peers a
+  # service actually talks to and ONLY those labelled pods are allowed. Each item is a matchLabels
+  # map, e.g. { app.kubernetes.io/name: billing-service }.
+  peers:
+    ingress: []            # who may CALL this service (empty = any pod in the namespace)
+    egress: []             # which peers this service may call (empty = any pod in the namespace)
   egress:
     dns: true              # kube-dns; needed by almost everything
     datastore: true        # postgres/redis in this namespace

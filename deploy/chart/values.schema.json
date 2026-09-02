@@ -132,6 +132,14 @@
       "properties": {
         "enabled": { "type": "boolean" },
         "ingressFromNamespace": { "type": "string" },
+        "peers": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ingress": { "type": "array", "items": { "type": "object" } },
+            "egress": { "type": "array", "items": { "type": "object" } }
+          }
+        },
         "egress": {
           "type": "object",
           "additionalProperties": false,
