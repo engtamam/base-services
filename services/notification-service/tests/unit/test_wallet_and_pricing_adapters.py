@@ -33,7 +33,7 @@ def test_reserve_sends_net_and_reads_the_hold_id(monkeypatch):
     r = asyncio.run(HttpWallet("http://wallet:8000", "tok").reserve(
         tenant="acme", amount=7, source="wa:acme:rid", reason="whatsapp_overage"))
     assert r.ok and r.hold_id == "H9"
-    assert sent["url"] == "http://wallet:8000/wallet/reserve"
+    assert sent["url"] == "http://wallet:8000/internal/wallet/reserve"
     assert sent["payload"] == {"tenant": "acme", "net": 7, "source": "wa:acme:rid",
                                "reason": "whatsapp_overage"}
     assert sent["headers"]["X-Internal-Token"] == "tok"
@@ -61,9 +61,9 @@ def test_reserve_2xx_without_hold_id_is_not_a_silent_success(monkeypatch):
 def test_confirm_and_release_post_the_hold_id(monkeypatch):
     sent = _capture(wallet_mod, (200, "{}"))
     assert asyncio.run(HttpWallet("http://w", "t").confirm(hold_id="H1")) is True
-    assert sent["payload"] == {"hold_id": "H1"} and sent["url"].endswith("/wallet/confirm")
+    assert sent["payload"] == {"hold_id": "H1"} and sent["url"].endswith("/internal/wallet/confirm")
     assert asyncio.run(HttpWallet("http://w", "t").release(hold_id="H1")) is True
-    assert sent["url"].endswith("/wallet/release")
+    assert sent["url"].endswith("/internal/wallet/release")
 
 
 # ── pricing ────────────────────────────────────────────────────────────────────────

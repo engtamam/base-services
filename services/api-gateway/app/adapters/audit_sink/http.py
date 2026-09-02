@@ -50,6 +50,12 @@ class HttpAuditSink:
         headers = {"Content-Type": "application/json"}
         if self._token:
             headers["X-Internal-Token"] = self._token
+        # ADD-ONLY verifiable caller identity (aud=audit-service) when this service signs its outbound
+        # internal calls; the token above is untouched. Both lookups are cached, so this is cheap even
+        # on the audit hot path.
+        from app.config import get_settings
+        from app.core.internal_client import assertion_headers
+        headers.update(assertion_headers(get_settings(), target="audit-service"))
         req = urllib.request.Request(self._url, data=body, method="POST", headers=headers)
 
         last = "audit-service unreachable"

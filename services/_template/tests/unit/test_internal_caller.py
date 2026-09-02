@@ -144,3 +144,15 @@ def test_internal_headers_are_token_only_when_no_signing_key():
     from app.core.internal_client import internal_headers
     s = _Settings("")   # no private key → signs nothing
     assert internal_headers(s, target="wallet-service") == {"X-Internal-Token": TOKEN}
+
+
+def test_assertion_headers_are_add_only_and_verify():
+    from app.core.internal_client import assertion_headers
+    priv, pub = _keypair()
+    h = assertion_headers(_Settings(priv), target="wallet-service")
+    assert set(h) == {"X-Internal-Assertion"}          # ONLY the assertion — token left to the caller
+    caller = AssertionCaller(StaticKeyResolver({"billing-service": pub}), expected_token=TOKEN)
+    assert caller.verify(token="", assertion=h["X-Internal-Assertion"],
+                         audience="wallet-service").caller == "billing-service"
+    # no signing key → nothing added, so an unsigned service's headers are unchanged
+    assert assertion_headers(_Settings(""), target="wallet-service") == {}

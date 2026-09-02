@@ -14,16 +14,23 @@ import json as _json
 import time
 
 from app.adapters.notify_http import ok, post_json
+from app.core.internal_client import assertion_headers
 
 
 class HttpChannelPricing:
     def __init__(self, base_url: str, internal_token: str, *, ttl_seconds: int = 300,
-                 clock=time.time) -> None:
+                 clock=time.time, settings=None) -> None:
         self._base = (base_url or "").rstrip("/")
-        self._headers = {"X-Internal-Token": internal_token}
+        self._token_headers = {"X-Internal-Token": internal_token}
+        self._settings = settings           # for the caller assertion; None => token-only (tests)
         self._ttl = max(0, ttl_seconds)
         self._clock = clock
         self._cache: dict[str, tuple[float, dict]] = {}   # tenant -> (expires_at, policy)
+
+    def _headers(self) -> dict[str, str]:
+        if self._settings is None:
+            return dict(self._token_headers)
+        return {**self._token_headers, **assertion_headers(self._settings, target="operations-service")}
 
     async def get(self, tenant: str) -> dict | None:
         """The tenant's {included_messages_per_period, overage_halalas_per_message}, or None if it
@@ -35,7 +42,7 @@ class HttpChannelPricing:
             return hit[1]
         status, body = await asyncio.to_thread(
             post_json, f"{self._base}/internal/operations/whatsapp-channel-pricing",
-            {"tenant": tenant}, self._headers)
+            {"tenant": tenant}, self._headers())
         if not ok(status):
             return None                          # unknown policy — the gate posture decides
         try:

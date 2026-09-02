@@ -394,9 +394,10 @@ def _build_wallet_gate(settings, datastore):
     from app.core.stores import WhatsAppSendCounter
     token = settings.INTERNAL_SERVICE_TOKEN
     return WhatsAppWalletGate(
-        wallet=HttpWallet(settings.WALLET_SERVICE_URL, token),
+        wallet=HttpWallet(settings.WALLET_SERVICE_URL, token, settings),
         pricing=HttpChannelPricing(settings.OPERATIONS_SERVICE_URL, token,
-                                   ttl_seconds=settings.WHATSAPP_PRICING_CACHE_TTL_SECONDS),
+                                   ttl_seconds=settings.WHATSAPP_PRICING_CACHE_TTL_SECONDS,
+                                   settings=settings),
         counter=WhatsAppSendCounter(datastore),
         unknown=settings.WHATSAPP_WALLET_GATE_UNKNOWN)
 
