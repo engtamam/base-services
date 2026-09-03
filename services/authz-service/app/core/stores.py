@@ -108,3 +108,20 @@ class AssignmentStore:
     async def set(self, a: Assignment) -> Assignment:
         await self._store.put(_ASSIGN, self._key(a.tenant, a.subject), a.to_dict())
         return a
+
+    async def all_for(self, tenant: str) -> list[dict]:
+        """EVERY assignment of one tenant — who holds what, for the staff/access dispute report.
+
+        Not a decision path (the PDP resolves one subject at a time via effective()); this is the
+        admin/report view. Pages to exhaustion over the indexed tenant find — never scan_all — so it
+        stays tenant-scoped and cannot walk another tenant's rows, and never silently truncates.
+        """
+        out: list[dict] = []
+        cursor = None
+        while True:
+            rows, cursor = await self._store.find(_ASSIGN, {"tenant": tenant}, limit=_PAGE,
+                                                  after=cursor, sort=("subject", "asc"))
+            out.extend(rows)
+            if not cursor:
+                break
+        return out

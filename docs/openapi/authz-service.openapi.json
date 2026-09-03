@@ -889,6 +889,85 @@
         ]
       }
     },
+    "/internal/authz/assignments": {
+      "get": {
+        "description": "Every subject's roles + direct capabilities for one tenant \u2014 for the (cross-repo) staff/access\ndispute report (\"who on this shop holds what\"). Complements /authz/effective (one subject): this\nLISTS the whole tenant. Read-only, internal-token, tenant REQUIRED and scoped; current state only\n(assignment rows carry no history). Not a decision path \u2014 the PDP still resolves per subject.",
+        "operationId": "internal_assignments_internal_authz_assignments_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Internal Assignments Internal Authz Assignments Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Internal Assignments",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/authz/check": {
       "post": {
         "description": "PDP \u2014 can `subject` do `action` on `resource`? Returns {allow, reason, matched_policy}.",

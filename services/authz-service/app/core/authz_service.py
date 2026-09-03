@@ -152,6 +152,11 @@ class AuthzService:
     async def get_assignment(self, subject: str, tenant: str) -> Assignment:
         return await self._assign.get(subject, tenant)
 
+    async def list_assignments(self, tenant: str) -> list[dict]:
+        """Every subject's roles + direct capabilities for one tenant — the staff/access report view.
+        Current state only (the rows carry no history); tenant-scoped via the store's indexed find."""
+        return await self._assign.all_for(tenant)
+
     # ── effective capabilities ──────────────────────────────────────────────────
     async def _subject_caps(self, subject: str, tenant: str) -> set[str]:
         """The stored (assignment + role) caps — cacheable, independent of per-request caps."""

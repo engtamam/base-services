@@ -107,6 +107,17 @@ async def internal_effective(request: Request, subject: str = Query(...),
     return {"subject": subject, "tenant": tenant, "capabilities": sorted(caps)}
 
 
+@router.get("/authz/assignments", dependencies=[Depends(require_internal_token)])
+async def internal_assignments(request: Request,
+                               tenant: str = Query(..., min_length=1, max_length=128)) -> dict:
+    """Every subject's roles + direct capabilities for one tenant — for the (cross-repo) staff/access
+    dispute report ("who on this shop holds what"). Complements /authz/effective (one subject): this
+    LISTS the whole tenant. Read-only, internal-token, tenant REQUIRED and scoped; current state only
+    (assignment rows carry no history). Not a decision path — the PDP still resolves per subject."""
+    rows = await build_authz(request).list_assignments(tenant)
+    return {"tenant": tenant, "assignments": rows, "count": len(rows)}
+
+
 class BootstrapRoleIn(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     capabilities: list[str] = Field(default_factory=list)

@@ -219,7 +219,10 @@ async def set_roles(request: Request, subject: str, body: AssignIn,
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
         "subject.roles_assigned", actor=principal.subject, tenant=principal.tenant, resource=f"subject:{subject}",
-        ip=request.client.host if request.client else "")
+        ip=request.client.host if request.client else "",
+        # WHAT was granted — a dispute over "who could do X, and since when" needs the grant itself,
+        # not just that some assignment happened. This is the set_roles REPLACE, so it is the new state.
+        metadata={"roles": body.roles, "capabilities": body.capabilities})
     tenant = _op_tenant(principal)
     a = await build_authz(request).set_subject_roles(subject, tenant, body.roles, body.capabilities)
     return a.to_dict()

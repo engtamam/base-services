@@ -69,6 +69,7 @@ def build_manifest(
              "erasure_category": "subject"},
             {"path": "/internal/authz/check", "tier": "internal", "method": "POST"},
             {"path": "/internal/authz/effective", "tier": "internal", "method": "GET"},
+            {"path": "/internal/authz/assignments", "tier": "internal", "method": "GET"},
             # The counterpart to POST /internal/tenants: give a new tenant its first roles + owner-admin.
             {"path": "/internal/authz/tenants/{tenant}/bootstrap", "tier": "internal", "method": "POST"},
             # Backup fan-out (backup-service orchestrates): export + verify + import the

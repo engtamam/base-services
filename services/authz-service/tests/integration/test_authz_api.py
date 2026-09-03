@@ -88,6 +88,54 @@ def test_operator_reads_a_policy_and_a_subjects_effective_caps(client):
                       headers={"Authorization": "Bearer " + _tok(["unrelated"])}).status_code == 403
 
 
+def test_internal_assignments_lists_a_tenants_subjects(client):
+    role = client.post("/api/v1/roles", json={"name": "clerk", "capabilities": ["pos.*"], "tenant": "tshop"},
+                       headers=_plat()).json()
+    client.put("/api/v1/subjects/alice/roles",
+               json={"roles": [role["id"]], "capabilities": ["extra.cap"]},
+               headers={"Authorization": "Bearer " + _tok(["platform.authz"], tenant="tshop")})
+    client.put("/api/v1/subjects/bob/roles", json={"roles": [role["id"]]},
+               headers={"Authorization": "Bearer " + _tok(["platform.authz"], tenant="tshop")})
+    # another tenant's assignment must never appear
+    client.put("/api/v1/subjects/mallory/roles", json={"roles": [role["id"]]},
+               headers={"Authorization": "Bearer " + _tok(["platform.authz"], tenant="tother")})
+
+    r = client.get("/internal/authz/assignments?tenant=tshop", headers=_internal())
+    assert r.status_code == 200
+    body = r.json()
+    subjects = {a["subject"] for a in body["assignments"]}
+    assert subjects == {"alice", "bob"} and body["count"] == 2   # tother's mallory never leaks
+    alice = next(a for a in body["assignments"] if a["subject"] == "alice")
+    assert alice["roles"] == [role["id"]] and alice["capabilities"] == ["extra.cap"]
+
+
+def test_internal_assignments_requires_token_and_tenant(client):
+    assert client.get("/internal/authz/assignments?tenant=tshop").status_code == 401
+    assert client.get("/internal/authz/assignments", headers=_internal()).status_code == 422
+
+
+def test_roles_assigned_audit_carries_what_was_granted(client):
+    role = client.post("/api/v1/roles", json={"name": "mgr", "capabilities": ["all.*"], "tenant": "taud"},
+                       headers=_plat()).json()
+    captured = {}
+    orig = client.app.state.auditor.record
+
+    async def spy(action, **kw):
+        if action == "subject.roles_assigned":
+            captured.update(kw)
+        return await orig(action, **kw)
+
+    client.app.state.auditor.record = spy
+    try:
+        client.put("/api/v1/subjects/carol/roles",
+                   json={"roles": [role["id"]], "capabilities": ["extra.cap"]},
+                   headers={"Authorization": "Bearer " + _tok(["platform.authz"], tenant="taud")})
+    finally:
+        client.app.state.auditor.record = orig
+    # the grant itself is on the record, not just that "some assignment happened"
+    assert captured["metadata"] == {"roles": [role["id"]], "capabilities": ["extra.cap"]}
+
+
 def test_abac_deny(client):
     role = client.post("/api/v1/roles", json={"name": "w", "capabilities": ["files.*"], "tenant": "t1"},
                        headers=_plat()).json()
