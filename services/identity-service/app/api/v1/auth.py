@@ -119,6 +119,12 @@ def _svc(request: Request) -> AuthService:
         require_verified_email=(s.EMAIL_VERIFICATION_ENABLED
                                 and s.LOGIN_REQUIRES_VERIFIED_EMAIL),
         legacy_email_policy=s.EMAIL_VERIFICATION_LEGACY,
+        # Legal-acceptance enforcement at the mint. off => the gate is inert.
+        legal_gate=getattr(c, "legal_gate", None),
+        legal_enforcement=s.IDENTITY_LEGAL_ENFORCEMENT,
+        legal_accept_caps=s.legal_accept_caps,
+        legal_accept_ttl=s.IDENTITY_LEGAL_ACCEPT_TTL_SECONDS,
+        legal_fail_mode=s.IDENTITY_LEGAL_GATE_FAIL_MODE,
     )
 
 
@@ -269,6 +275,10 @@ async def login(request: Request, body: LoginIn) -> dict:
         # password, so it is not a free enumeration oracle.
         await _failed("email_not_verified")
         raise HTTPException(status.HTTP_403_FORBIDDEN, "EMAIL_NOT_VERIFIED")
+    # AuthService.LegalAcceptanceRequired (block mode) and LegalGateUnavailable (fail-closed) are
+    # NOT caught here: they propagate to dedicated handlers in api/errors.py, which is the one place
+    # the structured 403 (owed docs + restricted accept token) / 503 body is built — so EVERY mint
+    # path (login, refresh, tenant select, and any future one) is handled uniformly, not per route.
     await request.app.state.auditor.record(
         "auth.login_succeeded", actor=user.id, tenant=user.tenant,
         resource=f"user:{user.id}", ip=ip)
@@ -295,6 +305,9 @@ async def refresh(request: Request, body: RefreshIn) -> dict:
         # here would be a lie: the session is fine, the capability authority is down. A client that
         # believes 401 logs the user out and sends them to a login page that will also 503.
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "CAPS_UNAVAILABLE")
+    # Refresh MINTS too, so block mode gates it as well (a session cannot outlive a newly published
+    # ToS on renewals). LegalAcceptanceRequired / LegalGateUnavailable propagate to the api/errors.py
+    # handlers — same structured 403 / 503 as login.
     if tokens is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "INVALID_REFRESH")
     sub, jti = _session_of(request, body.refresh_token)

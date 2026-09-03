@@ -128,6 +128,8 @@ _TELEMETRY: dict[str, Builder] = {
 # ── identity-service registries ─────────────────────────────────────────────
 from app.adapters.caps_resolver.authz import AuthzCaps
 from app.adapters.caps_resolver.membership import MembershipCaps
+from app.adapters.legal_gate.compliance import ComplianceLegalGate
+from app.adapters.legal_gate.off import NoLegalGate
 from app.adapters.mfa.null import NullMfa
 from app.adapters.mfa.totp import TotpMfa
 from app.adapters.password_hasher.argon2 import Argon2Hasher
@@ -167,6 +169,24 @@ _CAPS_RESOLVER: dict[str, Builder] = {
         subject_param=s.AUTHZ_SUBJECT_PARAM, tenant_param=s.AUTHZ_TENANT_PARAM,
         roles_param=s.AUTHZ_ROLES_PARAM, roles_sep=s.AUTHZ_ROLES_SEPARATOR),
 }
+_LEGAL_GATE: dict[str, Builder] = {
+    # off => the feature is inert (no compliance dependency). flag/block => consult compliance for
+    # what a subject still owes; the enforcement mode itself lives on AuthService, not the client.
+    "off": lambda s: NoLegalGate(),
+    "compliance": lambda s: ComplianceLegalGate(
+        s.COMPLIANCE_URL, s.COMPLIANCE_INTERNAL_TOKEN,
+        timeout_ms=s.IDENTITY_LEGAL_GATE_TIMEOUT_MS, ttl_seconds=s.IDENTITY_LEGAL_GATE_TTL_SECONDS,
+        path=s.IDENTITY_LEGAL_OUTSTANDING_PATH, token_header=s.IDENTITY_LEGAL_TOKEN_HEADER,
+        outstanding_field=s.IDENTITY_LEGAL_OUTSTANDING_FIELD,
+        subject_param=s.IDENTITY_LEGAL_SUBJECT_PARAM, tenant_param=s.IDENTITY_LEGAL_TENANT_PARAM),
+}
+
+
+def _build_legal_gate(settings: Settings) -> Any:
+    """off enforcement => the inert gate; flag/block => the compliance client. Keeping the driver
+    choice here (not a raw setting) means a mode with no client is impossible to wire by accident."""
+    driver = "off" if settings.IDENTITY_LEGAL_ENFORCEMENT == "off" else "compliance"
+    return _LEGAL_GATE[driver](settings)
 
 
 def _pick(registry: dict[str, Builder], driver: str, port_name: str, settings: Settings) -> Any:
@@ -197,6 +217,7 @@ class Container:
     mfa: Any = None
     login_identifier: LoginIdentifier = None  # type: ignore[assignment]
     caps_resolver: Any = None
+    legal_gate: Any = None
     otp_service: Any = None
 
     def describe(self) -> list[dict[str, str]]:
@@ -273,6 +294,7 @@ def build_container(settings: Settings) -> Container:
         token_issuer=_pick(_TOKEN_ISSUER, settings.TOKEN_ISSUER_DRIVER, "token_issuer", settings),
         mfa=_pick(_MFA, settings.MFA_DRIVER, "mfa", settings),
         caps_resolver=_pick(_CAPS_RESOLVER, settings.IDENTITY_CAPS_SOURCE, "caps_resolver", settings),
+        legal_gate=_build_legal_gate(settings),
         login_identifier=_build_login_identifier(settings),
         otp_service=_build_otp_service(settings, cache),
     )

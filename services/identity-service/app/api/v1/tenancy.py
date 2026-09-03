@@ -385,6 +385,8 @@ async def select_tenant(request: Request, body: TenantIn) -> dict:
         # those by granting caps by hand — so an outage would quietly become a permanent
         # over-grant. 503 says "come back", which is true and reversible.
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "CAPS_UNAVAILABLE")
+    # LegalAcceptanceRequired (block) and LegalGateUnavailable (fail-closed) propagate to the
+    # api/errors.py handlers — this is a mint like any other, gated by the same helper.
     except TenantAccessDenied:
         # ONE answer (T6). "No such tenant" and "you are not a member" are the same 403, because
         # telling them apart tells a competitor which of their rivals your consultant works for.

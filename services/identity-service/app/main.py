@@ -70,6 +70,7 @@ def create_app() -> FastAPI:
     # Enabling signing-key rotation without its prerequisites (rs256, a KEK, a seed key, an overlap
     # that outlives the refresh TTL) must stop the service, not degrade quietly.
     settings.assert_signing_rotation_ok()
+    settings.assert_legal_enforcement_ok()
     # A misspelled onboarding method must stop the service, not silently disable a signup path.
     from app.core.onboarding import build_onboarding_policy
     build_onboarding_policy(settings)
@@ -145,7 +146,8 @@ def create_app() -> FastAPI:
     # Without a KEK there is nothing to seal with, so the store is not built and the operator
     # surface refuses with 503 rather than storing a credential in the clear. Resolution still
     # happens — from the environment — so behaviour is exactly what it was before.
-    from app.core.operator_credentials import AUTHZ_INTERNAL_TOKEN, OperatorCredentials
+    from app.core.operator_credentials import (AUTHZ_INTERNAL_TOKEN, COMPLIANCE_INTERNAL_TOKEN,
+                                               OperatorCredentials)
     from app.core.runtime_config import RuntimeConfig
     from app.core.secret_store import SecretStore
     from app.runtime_policy import RUNTIME_POLICY
@@ -187,6 +189,13 @@ def create_app() -> FastAPI:
         fallback = settings.AUTHZ_INTERNAL_TOKEN
         caps_resolver.set_token_provider(
             lambda: creds.get(AUTHZ_INTERNAL_TOKEN, fallback=fallback))
+    # Same rotation-aware seam for the legal gate's compliance token (no-op for the `off` gate).
+    legal_gate = getattr(container, "legal_gate", None)
+    if hasattr(legal_gate, "set_token_provider"):
+        creds = app.state.operator_credentials
+        legal_fallback = settings.COMPLIANCE_INTERNAL_TOKEN
+        legal_gate.set_token_provider(
+            lambda: creds.get(COMPLIANCE_INTERNAL_TOKEN, fallback=legal_fallback))
 
     # Readiness reflects real dependency health for the wired adapters.
     for name, probe in container.health_probes().items():

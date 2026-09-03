@@ -505,6 +505,41 @@ class Settings(BaseSettings):
     AUTHZ_ROLES_PARAM: str = "roles"
     AUTHZ_ROLES_SEPARATOR: str = ","
 
+    # ── legal-acceptance enforcement (ToS / Privacy) ──────────────────────────
+    # ToS/Privacy used to be a POST-LOGIN UI nag only: a shop could register and use the API with no
+    # acceptance record. This makes acceptance a real SERVER-SIDE precondition, enforced at the mint.
+    #   off   — the default: no compliance dependency, behaves as before enforcement existed.
+    #   flag  — mint the token normally but stamp `legal_pending:[...]` (claim + login response).
+    #   block — refuse the normal token (403) with the owed docs and a RESTRICTED accept token that
+    #           can ONLY view/accept legal (caps below), so the shop can accept then re-login.
+    # Left `off` by default so enabling is an explicit, non-breaking opt-in; `block` is the strongest
+    # for a legal/dispute posture and is one env var away.
+    IDENTITY_LEGAL_ENFORCEMENT: str = "off"       # off | flag | block
+    COMPLIANCE_URL: str = ""                       # e.g. http://compliance-service:8080
+    COMPLIANCE_INTERNAL_TOKEN: str = ""            # the internal-tier token compliance requires
+    IDENTITY_LEGAL_GATE_TIMEOUT_MS: int = 3000     # mint is a hot path; do not hang on compliance
+    # TTL for the outstanding cache. DEFAULT 0 (no cache) on purpose: a cached "outstanding" would
+    # keep blocking a user for up to the TTL AFTER they accepted, re-looping them. Raise only to
+    # dedupe bursts, accepting that acceptance then takes up to TTL to be reflected.
+    IDENTITY_LEGAL_GATE_TTL_SECONDS: int = 0
+    # What identity does if compliance is unreachable. `open` (default) mints anyway and logs+audits
+    # the skip — a consent check must not be able to 503 every login on a compliance blip; a brief
+    # gap is no worse than the pre-enforcement world. `closed` refuses the mint (max legal strength).
+    IDENTITY_LEGAL_GATE_FAIL_MODE: str = "open"    # open | closed
+    # The caps the restricted block-mode accept token carries — enough to view + accept legal and
+    # nothing else. compliance's /me/legal routes require `compliance.self`.
+    IDENTITY_LEGAL_ACCEPT_CAPS: str = "compliance.self"   # comma-separated
+    IDENTITY_LEGAL_ACCEPT_TTL_SECONDS: int = 900   # short; it exists only to complete acceptance
+    IDENTITY_LEGAL_OUTSTANDING_PATH: str = "internal/compliance/legal/outstanding"
+    IDENTITY_LEGAL_TOKEN_HEADER: str = "X-Internal-Token"
+    IDENTITY_LEGAL_OUTSTANDING_FIELD: str = "outstanding"
+    IDENTITY_LEGAL_SUBJECT_PARAM: str = "subject"
+    IDENTITY_LEGAL_TENANT_PARAM: str = "tenant"
+
+    @property
+    def legal_accept_caps(self) -> list[str]:
+        return [c.strip() for c in self.IDENTITY_LEGAL_ACCEPT_CAPS.split(",") if c.strip()]
+
     # ── operator-managed credentials ──────────────────────────────────────────
     # The key that seals every operator-stored credential. It stays in the ENVIRONMENT and is never
     # settable through any API: a key that protects the secrets and is itself editable in the panel
@@ -644,6 +679,36 @@ class Settings(BaseSettings):
                 f"not exceed SECRETS_ROTATION_WINDOW_SECONDS "
                 f"({self.SECRETS_ROTATION_WINDOW_SECONDS}) — otherwise a rotation leaves a window "
                 f"where replicas authenticate with a credential authz no longer accepts")
+
+    def assert_legal_enforcement_ok(self) -> None:
+        """Boot guard for legal-acceptance enforcement. Checked in every environment.
+
+        Enforcement wired without an authority to consult is a silent no-op at best and a login
+        outage at worst — say so at boot, not at 3am. `off` needs nothing.
+        """
+        mode = self.IDENTITY_LEGAL_ENFORCEMENT
+        if mode not in ("off", "flag", "block"):
+            raise ValueError(
+                f"IDENTITY_LEGAL_ENFORCEMENT must be off|flag|block, not {mode!r}")
+        if self.IDENTITY_LEGAL_GATE_FAIL_MODE not in ("open", "closed"):
+            raise ValueError(
+                f"IDENTITY_LEGAL_GATE_FAIL_MODE must be open|closed, not "
+                f"{self.IDENTITY_LEGAL_GATE_FAIL_MODE!r}")
+        if mode == "off":
+            return
+        if not self.COMPLIANCE_URL:
+            raise ValueError(
+                f"IDENTITY_LEGAL_ENFORCEMENT={mode} requires COMPLIANCE_URL — acceptance cannot be "
+                f"enforced against an authority that is not configured")
+        if not self.COMPLIANCE_INTERNAL_TOKEN:
+            raise ValueError(
+                f"IDENTITY_LEGAL_ENFORCEMENT={mode} requires COMPLIANCE_INTERNAL_TOKEN to call "
+                f"/internal/compliance/legal/outstanding")
+        if mode == "block" and not self.legal_accept_caps:
+            raise ValueError(
+                "IDENTITY_LEGAL_ENFORCEMENT=block requires IDENTITY_LEGAL_ACCEPT_CAPS — the "
+                "restricted accept token needs at least one capability (default compliance.self) "
+                "or a blocked user could never reach the accept route to unblock themselves")
 
     def assert_signing_rotation_ok(self) -> None:
         """Boot guard for automatic signing-key rotation. Checked in every environment.

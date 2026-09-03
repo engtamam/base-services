@@ -82,6 +82,9 @@ def build_manifest(
             # declarer), same as /internal/whatsapp/channel-usage.
             {"path": "/internal/compliance/consent-history", "tier": "internal", "method": "GET"},
             {"path": "/internal/compliance/dsar", "tier": "internal", "method": "GET"},
+            # identity calls this on the mint path to ENFORCE legal acceptance (block/flag) — the
+            # user-tier /me/legal/outstanding cannot enforce (it needs the caller's own token).
+            {"path": "/internal/compliance/legal/outstanding", "tier": "internal", "method": "GET"},
             {"path": "/internal/compliance/hold-check", "tier": "internal", "method": "GET",
              "caller": "service"},
             {"path": "/internal/compliance/held-refs", "tier": "internal", "method": "GET",

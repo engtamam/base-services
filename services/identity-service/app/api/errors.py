@@ -14,7 +14,9 @@ from starlette.responses import JSONResponse
 
 from app.config import get_settings
 from app.core.audit import AuditUnavailable
+from app.core.auth_service import AuthService
 from app.core.caps_grant import CapsNotGrantable
+from app.ports.legal_gate import LegalGateUnavailable
 from app.middleware.request_context import get_request_id
 from app.middleware.security import apply_security_headers, build_security_headers
 from app.observability.logging import get_logger
@@ -78,6 +80,29 @@ def register_error_handlers(app: FastAPI) -> None:
         resp = JSONResponse(body, status_code=400 if disabled else 403)
         apply_security_headers(resp, _sec_headers)
         return resp
+
+    @app.exception_handler(AuthService.LegalAcceptanceRequired)
+    async def _legal_required(request: Request, exc: AuthService.LegalAcceptanceRequired):
+        # DELIBERATE exception to the generic-code rule, like _caps_not_grantable: block mode must
+        # tell the caller WHAT it owes and hand back the restricted accept token, or the block is a
+        # dead end (no token → cannot accept → cannot ever log in). Neither field is a leak: the
+        # outstanding docs are the tenant's own published legal, and the accept token is minted FOR
+        # this caller, who just proved their credentials, and can do nothing but accept.
+        body: dict = {"error": "LEGAL_ACCEPTANCE_REQUIRED",
+                      "outstanding": exc.outstanding, "accept_token": exc.accept_token}
+        rid = get_request_id()
+        if rid:
+            body["request_id"] = rid
+        resp = JSONResponse(body, status_code=403)
+        apply_security_headers(resp, _sec_headers)
+        return resp
+
+    @app.exception_handler(LegalGateUnavailable)
+    async def _legal_unavailable(request: Request, exc: LegalGateUnavailable):
+        # fail-closed legal mode with compliance down. 503 (retryable), a named code, and NO detail:
+        # that the authority is down is operational; who tried to log in is not for the error body.
+        _logger.error("legal_gate_unavailable", extra={"path": request.url.path})
+        return _json("LEGAL_GATE_UNAVAILABLE", 503)
 
     @app.exception_handler(RequestValidationError)
     async def _validation_exc(request: Request, exc: RequestValidationError):

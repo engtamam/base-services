@@ -36,6 +36,7 @@ import time
 _log = logging.getLogger(__name__)
 
 AUTHZ_INTERNAL_TOKEN = "AUTHZ_INTERNAL_TOKEN"
+COMPLIANCE_INTERNAL_TOKEN = "COMPLIANCE_INTERNAL_TOKEN"
 
 
 class OperatorCredentials:

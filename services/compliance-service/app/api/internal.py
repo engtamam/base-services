@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, s
 from pydantic import BaseModel, Field
 
 from app.api.v1.compliance import (build_compliance, build_consent, build_consent_sweeper,
-                                   build_dsar, build_retention, build_sweeper)
+                                   build_dsar, build_legal_gate, build_retention, build_sweeper)
 from app.backup_manifest import BACKUP
 from app.config import Settings, get_settings
 from app.core import backup as _backup
@@ -91,6 +91,21 @@ async def internal_dsar(
     rows = await build_dsar(request).list(tenant)
     subject_rows = [r for r in rows if r.get("subject") == subject]
     return {"dsars": subject_rows, "count": len(subject_rows)}
+
+
+@router.get("/compliance/legal/outstanding", dependencies=[Depends(require_internal_token)])
+async def internal_legal_outstanding(
+        request: Request,
+        tenant: str = Query(..., min_length=1, max_length=128),
+        subject: str = Query(..., min_length=1, max_length=256),
+        locale: str = Query(default="", max_length=32)) -> dict:
+    """Internal-token twin of GET /api/v1/compliance/me/legal/outstanding — which required legal
+    documents a subject must (re-)accept. identity-service calls this on the mint path to ENFORCE
+    acceptance (block/flag), which the user-tier route cannot do (it needs the subject's own token,
+    and enforcement must happen at the moment the token is minted). Same LegalGate the user route
+    reads; tenant + subject are REQUIRED and name exactly whose acceptances to report."""
+    gate = build_legal_gate(request)
+    return {"outstanding": await gate.outstanding(tenant=tenant, subject=subject, locale=locale)}
 
 
 class InternalTargetIn(BaseModel):

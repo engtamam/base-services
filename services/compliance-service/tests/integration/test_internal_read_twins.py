@@ -93,3 +93,57 @@ def test_dsar_is_filtered_to_the_one_subject(app):
     subjects = {d["subject"] for d in r.json()["dsars"]}
     assert subjects == {"alice@example.com"}  # bob's request never leaks into alice's timeline
     assert r.json()["count"] == len(r.json()["dsars"])
+
+
+# ── legal/outstanding twin (identity's enforcement source) ────────────────────
+_LEGAL_CONTENT = {"title": {"en": "Terms"}, "blocks": [{"section": {"text": {"en": "Be nice."}}}], "values": {}}
+
+
+def _publish_terms(app, tenant, doc_id, version):
+    manage = _auth(tenant, "compliance.manage")
+    assert app.put(f"/api/v1/compliance/legal/{doc_id}/versions/{version}",
+                   json={"content": _LEGAL_CONTENT, "requires_acceptance": True},
+                   headers=manage).status_code in (200, 201)
+    assert app.post(f"/api/v1/compliance/legal/{doc_id}/versions/{version}/publish",
+                    headers=manage).status_code == 200
+
+
+def test_legal_outstanding_requires_the_internal_token(app):
+    assert app.get("/internal/compliance/legal/outstanding?tenant=acme&subject=u1").status_code == 401
+    assert app.get("/internal/compliance/legal/outstanding?tenant=acme&subject=u1",
+                   headers=_auth("acme", "compliance.self")).status_code == 401
+
+
+def test_legal_outstanding_requires_tenant_and_subject(app):
+    assert app.get("/internal/compliance/legal/outstanding?subject=u1", headers=_internal()).status_code == 422
+    assert app.get("/internal/compliance/legal/outstanding?tenant=acme", headers=_internal()).status_code == 422
+
+
+def test_legal_outstanding_reports_a_required_doc(app):
+    # A REQUIRED published doc is outstanding for a subject who never accepted it.
+    _publish_terms(app, "legaltenant", "terms", "1.0")
+    r = app.get("/internal/compliance/legal/outstanding?tenant=legaltenant&subject=whoever@example.com",
+                headers=_internal())
+    assert r.status_code == 200
+    assert [o["doc_id"] for o in r.json()["outstanding"]] == ["terms"]
+
+
+def test_legal_outstanding_matches_the_subject_that_accepts(app):
+    # The load-bearing consistency test: identity gates on token `sub`; acceptance is recorded against
+    # the caller's token `sub`; the two MUST be the same subject or enforcement never clears.
+    _publish_terms(app, "tconsist", "privacy", "1.0")
+    now = dt.datetime.now(dt.timezone.utc)
+    tok = jwt.encode({"sub": "owner@shop.sa", "iss": ISS, "aud": AUD, "caps": ["compliance.self"],
+                      "tenant": "tconsist", "exp": now + dt.timedelta(minutes=5), "iat": now},
+                     TOKEN_SECRET, algorithm="HS256")
+    self_hdr = {"Authorization": f"Bearer {tok}"}
+
+    before = app.get("/internal/compliance/legal/outstanding?tenant=tconsist&subject=owner@shop.sa",
+                     headers=_internal())
+    assert [o["doc_id"] for o in before.json()["outstanding"]] == ["privacy"]
+
+    assert app.post("/api/v1/compliance/me/legal/privacy/accept", headers=self_hdr).status_code == 200
+
+    after = app.get("/internal/compliance/legal/outstanding?tenant=tconsist&subject=owner@shop.sa",
+                    headers=_internal())
+    assert after.json()["outstanding"] == []   # acceptance by the same subject clears the internal read

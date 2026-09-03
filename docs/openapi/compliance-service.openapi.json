@@ -3224,6 +3224,107 @@
         ]
       }
     },
+    "/internal/compliance/legal/outstanding": {
+      "get": {
+        "description": "Internal-token twin of GET /api/v1/compliance/me/legal/outstanding \u2014 which required legal\ndocuments a subject must (re-)accept. identity-service calls this on the mint path to ENFORCE\nacceptance (block/flag), which the user-tier route cannot do (it needs the subject's own token,\nand enforcement must happen at the moment the token is minted). Same LegalGate the user route\nreads; tenant + subject are REQUIRED and name exactly whose acceptances to report.",
+        "operationId": "internal_legal_outstanding_internal_compliance_legal_outstanding_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "subject",
+            "required": true,
+            "schema": {
+              "maxLength": 256,
+              "minLength": 1,
+              "title": "Subject",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "locale",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 32,
+              "title": "Locale",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Internal Legal Outstanding Internal Compliance Legal Outstanding Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Internal Legal Outstanding",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/compliance/retention/run": {
       "post": {
         "description": "Purge records past their declared retention period. Called by the retention CronJob.\n\nEnforces the periods for the records THIS service owns; every other service enforces its own\nand declares it in its RoPA row. A legal hold beats retention exactly as it beats erasure, and\na collection with no configured period is never purged \u2014 an undecided retention reads as KEEP.",

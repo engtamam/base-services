@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as _dt
+import logging
 
 from app.core import caps_grant
 from app.core.membership import (
@@ -24,6 +25,9 @@ from app.core.refresh_store import RefreshStore
 from app.core.tenancy import TenantAccessDenied, authorize_tenant, claims_for
 from app.core.user_repository import UserRepository
 from app.ports.errors import InvalidToken
+from app.ports.legal_gate import LegalGateUnavailable
+
+_log = logging.getLogger("app.auth")
 
 DEFAULT_MIN_PASSWORD_LEN = 8  # fallback default; real value comes from config
 
@@ -59,6 +63,13 @@ class AuthService:
     _require_verified = False
     _legacy_email = "grandfather"
     _platform_tenant = ""
+    # SAFE defaults: a directly-constructed instance (many tests) enforces NOTHING legal, so adding
+    # this gate can never silently block a login in a harness that did not opt in.
+    _legal_gate = None
+    _legal_enforcement = "off"
+    _legal_accept_caps: tuple[str, ...] = ()
+    _legal_accept_ttl = 0
+    _legal_fail_mode = "open"
 
     def __init__(self, *, users: UserRepository, refresh: RefreshStore, hasher,
                  issuer, verifier, mfa, identifier, access_ttl: int, refresh_ttl: int,
@@ -66,7 +77,10 @@ class AuthService:
                  memberships=None, invites=None, caps_resolver=None,
                  platform_tenant: str = "", verifications=None,
                  require_verified_email: bool = False,
-                 legacy_email_policy: str = "grandfather") -> None:
+                 legacy_email_policy: str = "grandfather",
+                 legal_gate=None, legal_enforcement: str = "off",
+                 legal_accept_caps=(), legal_accept_ttl: int = 0,
+                 legal_fail_mode: str = "open") -> None:
         self._platform_tenant = platform_tenant
         self._verifications = verifications
         self._require_verified = require_verified_email
@@ -87,6 +101,12 @@ class AuthService:
         self._memberships = memberships
         self._invites = invites            # InviteStore | None (invite mode)
         self._caps = caps_resolver         # CapsResolver | None (None => membership caps)
+        # Legal-acceptance enforcement. `off` (or a None gate) keeps every mint path unchanged.
+        self._legal_gate = legal_gate
+        self._legal_enforcement = legal_enforcement
+        self._legal_accept_caps = tuple(legal_accept_caps or ())
+        self._legal_accept_ttl = legal_accept_ttl
+        self._legal_fail_mode = legal_fail_mode
         # Precomputed dummy hash so a missing user costs the same as a real one.
         self._dummy_hash = hasher.hash("timing-equalizer")
 
@@ -217,6 +237,51 @@ class AuthService:
         return user
 
     # ── token issuance ────────────────────────────────────────────────────────
+    # ── legal-acceptance gate (runs at the mint, for every mint path) ────────────
+    class LegalAcceptanceRequired(Exception):
+        """block mode: the subject owes a legal acceptance, so NO normal token is minted. Carries the
+        owed documents and a RESTRICTED accept token (compliance.self only) so the caller can accept
+        and then re-login. The route turns this into 403 + {outstanding, accept_token}."""
+
+        def __init__(self, outstanding: list[dict], accept_token: str) -> None:
+            super().__init__("LEGAL_ACCEPTANCE_REQUIRED")
+            self.outstanding = outstanding
+            self.accept_token = accept_token
+
+    def _issue_legal_accept_token(self, subject: str, tenant: str) -> str:
+        """A short-lived token that can do ONE thing: view + accept legal (the configured caps, e.g.
+        compliance.self). Minted OUTSIDE the gate so it can never itself be blocked into a loop, and
+        deliberately not a refresh — it exists only to complete acceptance, then the caller re-logs in."""
+        claims = {"caps": list(self._legal_accept_caps), "roles": [], "tenant": tenant,
+                  "legal_only": True}
+        return self._issuer.issue_access(subject, claims, self._legal_accept_ttl)
+
+    async def _legal_pending(self, subject: str, tenant: str) -> list[dict]:
+        """Outstanding legal for this subject, applying the enforcement + fail modes.
+
+        Returns the owed-documents list (empty => nothing owed). In BLOCK mode a non-empty result
+        raises LegalAcceptanceRequired instead of returning. FLAG mode returns it for the caller to
+        stamp onto the token. `off`/no-gate returns []. On an unreachable authority, fail-open
+        returns [] with a loud WARN (availability first); fail-closed re-raises so the mint refuses.
+        """
+        if self._legal_gate is None or self._legal_enforcement == "off":
+            return []
+        try:
+            owed = await self._legal_gate.outstanding(subject=subject, tenant=tenant)
+        except LegalGateUnavailable as exc:
+            if self._legal_fail_mode == "closed":
+                raise
+            # fail-open: never let a compliance blip 503 every login. Loud, so the gap is visible.
+            _log.warning("legal_gate_unavailable_fail_open",
+                         extra={"tenant": tenant, "detail": exc.__class__.__name__})
+            return []
+        if not owed:
+            return []
+        if self._legal_enforcement == "block":
+            raise self.LegalAcceptanceRequired(
+                owed, self._issue_legal_accept_token(subject, tenant))
+        return owed   # flag mode
+
     async def issue_tokens(self, user: User) -> dict:
         # THE GATE, at the mint rather than in the login route. tenancy.py already argues why:
         # minting is the only moment anything is verified, and every service downstream simply
@@ -225,19 +290,26 @@ class AuthService:
         # ever on renewals.
         if self._require_verified and not self.email_is_proven(user):
             raise self.EmailNotVerified(user.username)
+        # Legal gate at the mint: block raises here (no token), flag stamps legal_pending.
+        pending = await self._legal_pending(user.id, user.tenant)
         claims = {"caps": self._safe_caps(user), "roles": user.roles, "tenant": user.tenant}
+        if pending:
+            claims["legal_pending"] = pending
         access = self._issuer.issue_access(user.id, claims, self._access_ttl)
         jti = new_id()
         refresh = self._issuer.issue_refresh(user.id, jti, self._refresh_ttl)
         exp_ts = (_dt.datetime.now(_dt.timezone.utc)
                   + _dt.timedelta(seconds=self._refresh_ttl)).timestamp()
         await self._refresh.issue(jti, user.id, exp_ts)
-        return {
+        out = {
             "token_type": "Bearer",
             "access_token": access,
             "refresh_token": refresh,
             "expires_in": self._access_ttl,
         }
+        if pending:
+            out["legal_pending"] = pending   # flag mode: the client can nag, nothing is blocked
+        return out
 
     # ── multi-tenant: authenticate the PERSON, then mint for ONE tenant ────────
     async def authenticate_person(self, identifier: str, password: str,
@@ -606,18 +678,27 @@ class AuthService:
                 roles=list(membership.roles), caps=list(membership.caps))
 
         claims = claims_for(person, membership, caps)    # raises TenantAccessDenied if not current
+        # Same legal gate as the single-tenant mint: block raises, flag stamps. Gated on the SAME
+        # subject (person.id) + tenant (membership.tenant) the token will carry, so a later accept
+        # by that subject clears exactly this gate.
+        pending = await self._legal_pending(person.id, membership.tenant)
+        if pending:
+            claims["legal_pending"] = pending
         access = self._issuer.issue_access(person.id, claims, self._access_ttl)
         jti = new_id()
         refresh = self._issuer.issue_refresh(person.id, jti, self._refresh_ttl)
         exp_ts = (_dt.datetime.now(_dt.timezone.utc)
                   + _dt.timedelta(seconds=self._refresh_ttl)).timestamp()
         await self._refresh.issue(jti, person.id, exp_ts, tenant=membership.tenant)
-        return {
+        out = {
             "token_type": "Bearer",
             "access_token": access,
             "refresh_token": refresh,
             "expires_in": self._access_ttl,
         }
+        if pending:
+            out["legal_pending"] = pending
+        return out
 
     async def select_tenant(self, person: Person, tenant: str) -> dict:
         """Login → choose a door. Raises TenantAccessDenied — uniformly, saying nothing (T6)."""
