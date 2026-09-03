@@ -79,6 +79,11 @@ MINTABLE: dict[str, dict] = {
     "CACHE_URL": {"t": "const"}, "EVENTBUS_URL": {"t": "const"},
     "QUEUE_URL": {"t": "const"}, "RATELIMIT_URL": {"t": "const"},
     "INTERNAL_SERVICE_TOKEN": {"t": "shared"}, "PII_SALT": {"t": "shared"},
+    # identity calls compliance's /internal tier to enforce legal acceptance (IDENTITY_LEGAL_ENFORCEMENT).
+    # Compliance validates the caller against the SHARED internal token, so this is that same value —
+    # minted only into services whose config.py declares the field (identity today). Alias, not a new
+    # secret, because envFrom:secretRef cannot key-remap: the pod needs the value under THIS name.
+    "COMPLIANCE_INTERNAL_TOKEN": {"t": "alias", "of": "INTERNAL_SERVICE_TOKEN"},
     "TOKEN_HS256_SECRET": {"t": "shared"}, "TOKEN_SIGNING_SECRET": {"t": "alias", "of": "TOKEN_HS256_SECRET"},
     "SECRETS_KEK": {"t": "shared"}, "BACKUP_KEK": {"t": "shared"},
     # Internal caller identity. Each service gets its OWN RS256 signing key (svc_rsa) + kid, the shared
