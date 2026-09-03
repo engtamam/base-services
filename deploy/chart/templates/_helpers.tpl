@@ -24,6 +24,13 @@ next overlay from getting them wrong. Now something does.
 {{- end -}}
 {{- end -}}
 
+{{/* The ServiceAccount name the pod uses: an explicit serviceAccount.name, else the fullname. Used by
+     the ServiceAccount object AND the pod specs, so the pod always names the SA the chart created
+     (create=true) or the existing one an operator pointed it at (create=false + name). */}}
+{{- define "base-service.serviceAccountName" -}}
+{{- .Values.serviceAccount.name | default (include "base-service.fullname" .) -}}
+{{- end -}}
+
 {{- define "base-service.labels" -}}
 app.kubernetes.io/name: {{ include "base-service.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}

@@ -130,6 +130,8 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "create": { "type": "boolean" },
+        "name": { "type": "string" },
         "automountToken": { "type": "boolean" }
       }
     },

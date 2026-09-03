@@ -43,7 +43,7 @@ spec:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
         {{- with .Values.podAnnotations }}{{- toYaml . | nindent 8 }}{{- end }}
     spec:
-      serviceAccountName: {{ include "base-service.fullname" . }}
+      serviceAccountName: {{ include "base-service.serviceAccountName" . }}
       # None of these services talk to the Kubernetes API. Don't hand them a token.
       automountServiceAccountToken: {{ .Values.serviceAccount.automountToken }}
       {{- with .Values.image.pullSecrets }}

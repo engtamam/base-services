@@ -97,6 +97,14 @@ ingress:
     secretName: ""
 
 serviceAccount:
+  # Whether the chart CREATES the ServiceAccount. Default true (today's behaviour). Set false when a
+  # deployment manages the SA out-of-band (e.g. a hand-applied one that pre-exists) — the chart then
+  # references it by `name` instead of creating its own, avoiding the silent Helm ownership collision
+  # that a same-named unmanaged SA causes.
+  create: true
+  # The SA name the pod uses. Empty => the release fullname (today's behaviour); set it to point the
+  # pod at an existing SA (usually alongside create=false).
+  name: ""
   # Whether the pod (and its ServiceAccount) mounts a Kubernetes API token. FALSE by default — these
   # services never call the k8s API, so the token is pure attack surface. The one exception is a
   # service whose JOB is the k8s API (secrets-admin rewrites other services' Secret objects): it sets

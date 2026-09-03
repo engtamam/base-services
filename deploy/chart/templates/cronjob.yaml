@@ -66,7 +66,7 @@ spec:
           {{- if $pc }}
           priorityClassName: {{ $pc }}
           {{- end }}
-          serviceAccountName: {{ include "base-service.fullname" $root }}
+          serviceAccountName: {{ include "base-service.serviceAccountName" $root }}
           automountServiceAccountToken: {{ $root.Values.serviceAccount.automountToken }}
           {{- /* The cronJob pulls the SAME image as the Deployment, so it needs the same pull
                  secret. Omitting it works perfectly on a public registry and fails on every
