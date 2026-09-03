@@ -2101,6 +2101,96 @@
         ]
       }
     },
+    "/internal/backup/tenant-coverage": {
+      "get": {
+        "description": "Was this tenant's data included AND test-restored in a backup run? (approach a \u2014 the\ndispute-defense answer, for the case-timeline tool.) Reads the per-target `tenants_covered` a\nnormal whole-service run already records; no per-tenant archive.\n\n`run` selects a specific run id; empty = the latest run. `fully_verified` means every target that\nREPORTED covering this tenant also verified its restore. IMPORTANT: a target that was MISSED\n(unreachable) this run reports no coverage, so check `run_incomplete` \u2014 a green answer on an\nincomplete run is \"of what we could reach\", not \"everything that holds this shop\".",
+        "operationId": "tenant_coverage_internal_backup_tenant_coverage_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "run",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 128,
+              "title": "Run",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Tenant Coverage Internal Backup Tenant Coverage Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Tenant Coverage",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/backup/verify": {
       "post": {
         "description": "Prove an archive restores, by test-restoring it into a throwaway namespace and comparing.\n\nbackup-service calls this after it stores an archive (passing back the bytes it read FROM the\nstore, so corruption at rest is caught too). This service is the only party that can unseal its\nown archive and knows its own schema, so verification lives here; the orchestrator only records\nthe verdict. The throwaway namespace is torn down before this returns \u2014 nothing is left behind,\nand live data is never touched.",

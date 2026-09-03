@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 
 from app.config import Settings, get_settings
 from app.core.erasure import TemplateErasure
@@ -277,6 +277,47 @@ async def run_backup(request: Request, body: _RunIn | None = None,
 @router.get("/backup/runs", dependencies=[Depends(require_internal_token)])
 async def list_runs(request: Request, settings: Settings = Depends(get_settings)) -> dict:
     return {"runs": await RunStore(request.app.state.container.datastore).recent(settings.BACKUP_RUN_HISTORY)}
+
+
+@router.get("/backup/tenant-coverage", dependencies=[Depends(require_internal_token)])
+async def tenant_coverage(request: Request,
+                          tenant: str = Query(..., min_length=1, max_length=128),
+                          run: str = Query(default="", max_length=128)) -> dict:
+    """Was this tenant's data included AND test-restored in a backup run? (approach a — the
+    dispute-defense answer, for the case-timeline tool.) Reads the per-target `tenants_covered` a
+    normal whole-service run already records; no per-tenant archive.
+
+    `run` selects a specific run id; empty = the latest run. `fully_verified` means every target that
+    REPORTED covering this tenant also verified its restore. IMPORTANT: a target that was MISSED
+    (unreachable) this run reports no coverage, so check `run_incomplete` — a green answer on an
+    incomplete run is "of what we could reach", not "everything that holds this shop"."""
+    store = RunStore(request.app.state.container.datastore)
+    rec = await store.get(run) if run else next(iter(await store.recent(1)), None)
+    if rec is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NO_SUCH_RUN")
+    covered: list[str] = []
+    verified: list[str] = []
+    unverified: list[str] = []
+    for r in rec.get("results", []):
+        if tenant in (r.get("tenants_covered") or []):
+            svc = r.get("service", "")
+            covered.append(svc)
+            (verified if r.get("verified") else unverified).append(svc)
+    return {
+        "tenant": tenant,
+        "run": rec.get("id", ""),
+        "started_at": rec.get("started_at", ""),
+        "covered": bool(covered),
+        "covered_by": sorted(covered),
+        "verified_by": sorted(verified),
+        "unverified_by": sorted(unverified),
+        # The dispute answer: this tenant's data was test-restored at every service that reported it.
+        "fully_verified": bool(covered) and not unverified,
+        # A MISSED target may silently hold this tenant, so a "verified" answer on an incomplete run
+        # is only "of what we could reach". Surfaced, never hidden.
+        "run_incomplete": bool(rec.get("missed")),
+        "run_status": rec.get("status", ""),
+    }
 
 
 # ── health, alerting & retention (46.6) ────────────────────────────────────────

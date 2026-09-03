@@ -57,6 +57,10 @@ class TargetResult:
     row_counts: dict[str, int] = field(default_factory=dict)
     verified: bool = False        # the archive was test-restored and compared equal
     checked: int = 0              # rows the target actually restored-and-compared
+    # The distinct tenants this target's archive covered (approach a): reported by the target's
+    # export in the clear, so a whole-service run can answer "was tenant X in run Y" per service —
+    # and, combined with `verified`, "was X's data at this service test-restored in run Y".
+    tenants_covered: list[str] = field(default_factory=list)
     error: str = ""
 
 
@@ -101,6 +105,9 @@ class Orchestrator:
             return TargetResult(target.service, FAILED,
                                 error="archive checksum failed — corrupt or truncated export")
 
+        # Coverage from the (integrity-checked) archive. A list, so an old target that does not yet
+        # report it simply covers nothing here — never a crash, just no per-tenant answer for it.
+        tcov = [str(t) for t in (archive.get("tenants_covered") or [])]
         key = f"{run_id}/{target.service}.json"
         try:
             await self._objects.put(key, json.dumps(archive).encode("utf-8"), "application/json")
@@ -109,14 +116,16 @@ class Orchestrator:
             # their backup, and nothing existing is deleted, so the previous good backup is retained.
             # (Storing was the last write; a failure here means simply nothing new landed for it.)
             return TargetResult(target.service, FAILED, row_counts=archive.get("row_counts", {}),
+                                tenants_covered=tcov,
                                 error=f"could not store archive (storage full or unreachable?): "
                                       f"{type(exc).__name__}")
 
         # Prove the STORED archive restores. Read it back from the store (not the in-memory copy),
         # so corruption the store introduced at rest is caught, then let the target test-restore it.
-        return await self._verify_one(target, key, archive.get("row_counts", {}))
+        return await self._verify_one(target, key, archive.get("row_counts", {}), tcov)
 
-    async def _verify_one(self, target, key: str, row_counts: dict[str, int]) -> TargetResult:
+    async def _verify_one(self, target, key: str, row_counts: dict[str, int],
+                          tenants_covered: list[str]) -> TargetResult:
         """Ask the target to test-restore the stored archive. Never raises: a failure is a verdict."""
         base = target.base_url.rstrip("/")
         allowed = self._cfg["egress_allowed_hosts"]
@@ -125,6 +134,7 @@ class Orchestrator:
             stored = json.loads((await self._objects.get(key)).decode("utf-8"))
         except Exception as exc:  # noqa: BLE001 — the archive we just wrote will not read back
             return TargetResult(target.service, FAILED, archive_key=key, row_counts=row_counts,
+                                tenants_covered=tenants_covered,
                                 error=f"stored archive could not be read back for verification: "
                                       f"{type(exc).__name__}")
         try:
@@ -135,23 +145,28 @@ class Orchestrator:
             # The archive is stored, but we could not PROVE it restores this run. Not OK, not lost:
             # UNVERIFIED, retried next run rather than reported as a good backup.
             return TargetResult(target.service, UNVERIFIED, archive_key=key, row_counts=row_counts,
+                                tenants_covered=tenants_covered,
                                 error=f"verify unreachable: {exc}")
         if status == 400:
             # The target refused the archive as unrestorable — bad checksum after storage, or a key
             # that no longer opens it. We KNOW it is bad.
             return TargetResult(target.service, FAILED, archive_key=key, row_counts=row_counts,
+                                tenants_covered=tenants_covered,
                                 error=f"verify rejected the archive: {body.get('detail', '400')}")
         if not (200 <= status < 300):
             return TargetResult(target.service, UNVERIFIED, archive_key=key, row_counts=row_counts,
+                                tenants_covered=tenants_covered,
                                 error=f"verify returned {status}")
         if not body.get("verified"):
             # It restored, but not to an identical copy — the archive is not a faithful backup.
             miss = body.get("mismatches") or []
             return TargetResult(target.service, FAILED, archive_key=key, row_counts=row_counts,
+                                tenants_covered=tenants_covered,
                                 checked=int(body.get("checked", 0)),
                                 error="verify found the archive restores incorrectly"
                                       + (f": {miss[0]}" if miss else ""))
         return TargetResult(target.service, OK, archive_key=key, row_counts=row_counts,
+                            tenants_covered=tenants_covered,
                             verified=True, checked=int(body.get("checked", 0)))
 
     async def run(self, *, tenant: str = "") -> dict[str, Any]:

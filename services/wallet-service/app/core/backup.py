@@ -115,6 +115,18 @@ async def export(datastore, declaration: dict[str, Any], *, service: str, versio
         payload[name] = await _read_collection(
             datastore, name, bool(entry.get("tenant_scoped")), tenant, scan_cap)
 
+    # Which tenants this archive actually covers — the DISTINCT tenant of every row in a
+    # tenant-scoped collection. Derived from rows already read (near-zero cost) and reported in the
+    # CLEAR like row_counts, so backup-service can record per-run per-tenant coverage from a normal
+    # whole-service run — no separate per-tenant archive, no extra read. Global collections have no
+    # tenant and contribute nothing here.
+    tenants_covered = sorted({
+        str(row.get("tenant", ""))
+        for entry in declaration.get("collections", [])
+        if entry.get("tenant_scoped")
+        for row in payload.get(entry.get("name"), [])
+        if row.get("tenant")
+    })
     sealed = seal(json.dumps({"service": service, "version": version, "taken_at": taken_at,
                               "tenant": tenant, "collections": payload},
                              separators=(",", ":"), sort_keys=True))
@@ -126,6 +138,9 @@ async def export(datastore, declaration: dict[str, Any], *, service: str, versio
         # Counts in the CLEAR so an operator can see what an archive holds without unsealing it —
         # useful, and no more disclosure than the manifest already makes.
         "row_counts": {name: len(rows) for name, rows in payload.items()},
+        # The distinct tenants present in this archive (empty for a purely global service). Lets a
+        # whole-service run answer "was tenant X included in run Y" without a per-tenant archive.
+        "tenants_covered": tenants_covered,
         "sealed": sealed,
         # LAST. A truncated write loses this or the JSON's closing brace, and either way the
         # archive is refused rather than half-restored.

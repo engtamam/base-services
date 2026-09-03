@@ -74,6 +74,7 @@ def build_manifest(
             {"path": "/internal/backup/targets/{}", "tier": "internal", "method": "DELETE"},
             {"path": "/internal/backup/run", "tier": "internal", "method": "POST"},
             {"path": "/internal/backup/runs", "tier": "internal", "method": "GET"},
+            {"path": "/internal/backup/tenant-coverage", "tier": "internal", "method": "GET"},
             {"path": "/internal/backup/health", "tier": "internal", "method": "GET"},
             {"path": "/internal/backup/health/check", "tier": "internal", "method": "POST"},
             {"path": "/internal/backup/prune", "tier": "internal", "method": "POST"},

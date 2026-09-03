@@ -44,6 +44,31 @@ def _export(st, tenant="", kek="backup-key"):
 
 
 # ── roundtrip ─────────────────────────────────────────────────────────────────
+def test_tenants_covered_lists_the_distinct_tenants_in_the_archive():
+    # approach (a): a whole-service export reports the distinct tenants its tenant-scoped rows hold,
+    # in the clear, so a run can answer "was tenant X in run Y" with no per-tenant archive.
+    st = MemoryDataStore()
+    _seed(st, tenant="acme")
+    _seed(st, tenant="globex")
+    archive = _export(st)                              # whole service
+    assert archive["tenants_covered"] == ["acme", "globex"]   # sorted, distinct
+
+
+def test_tenants_covered_is_empty_for_a_purely_global_service():
+    st = MemoryDataStore()
+    run(st.put("catalog", "c1", {"id": "c1", "name": "Basic"}))   # only the GLOBAL collection
+    archive = _export(st)
+    assert archive["tenants_covered"] == []            # global rows have no tenant to cover
+
+
+def test_tenants_covered_of_a_per_tenant_export_is_just_that_tenant():
+    st = MemoryDataStore()
+    _seed(st, tenant="acme")
+    _seed(st, tenant="globex")
+    archive = _export(st, tenant="acme")               # one customer's export
+    assert archive["tenants_covered"] == ["acme"]      # never leaks globex
+
+
 def test_a_backup_restores_into_an_empty_store():
     src = _seed(MemoryDataStore())
     archive = _export(src)

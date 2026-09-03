@@ -38,11 +38,14 @@ class _Objects:
         return self.blobs[key]
 
 
-def _sealed_archive(service="svc", counts=None):
+def _sealed_archive(service="svc", counts=None, tenants=None):
     sealed = "v1:gcm:" + service
-    return {"format": "base-backup/v1", "service": service, "taken_at": "2026-07-22T00:00:00Z",
-            "tenant": "", "row_counts": counts or {"widgets": 3}, "sealed": sealed,
-            "checksum": "sha256:" + hashlib.sha256(sealed.encode()).hexdigest()}
+    d = {"format": "base-backup/v1", "service": service, "taken_at": "2026-07-22T00:00:00Z",
+         "tenant": "", "row_counts": counts or {"widgets": 3}, "sealed": sealed,
+         "checksum": "sha256:" + hashlib.sha256(sealed.encode()).hexdigest()}
+    if tenants is not None:
+        d["tenants_covered"] = tenants
+    return d
 
 
 def _fleet(export, *, verify=None):
@@ -97,6 +100,37 @@ def test_a_run_captures_every_target_and_stores_its_archive():
     assert result["ok"] == 2
     assert result["verified"] == 2          # not just stored — proven to restore
     assert len(objects.blobs) == 2
+
+
+# ── approach (a): per-tenant coverage flows from the archive into the run record ──
+def test_tenants_covered_flows_from_the_archive_into_the_run_record():
+    st, objects = MemoryDataStore(), _Objects()
+    _register(st, "billing", "wallet")
+
+    def export(url, p):
+        if "billing" in url:
+            return (200, _sealed_archive("billing", tenants=["acme", "globex"]))
+        return (200, _sealed_archive("wallet", tenants=["acme"]))
+
+    result = run(_orch(st, objects, _fleet(export)).run())
+    by = {r["service"]: r for r in result["results"]}
+    assert by["billing"]["tenants_covered"] == ["acme", "globex"]
+    assert by["wallet"]["tenants_covered"] == ["acme"]
+    # coverage rides ONLY on a verified target here — the dispute answer needs both
+    assert by["billing"]["verified"] is True and by["wallet"]["verified"] is True
+
+
+def test_coverage_is_kept_even_when_verify_fails():
+    # A target that covered a tenant but whose archive did NOT verify must still record coverage —
+    # so the dispute query can say "covered but NOT verified", never silently drop it.
+    st, objects = MemoryDataStore(), _Objects()
+    _register(st, "billing")
+    fleet = _fleet(lambda u, p: (200, _sealed_archive("billing", tenants=["acme"])),
+                   verify=lambda u, p: (200, {"verified": False, "mismatches": ["widgets/w1"]}))
+    result = run(_orch(st, objects, fleet).run())
+    r = result["results"][0]
+    assert r["status"] == FAILED and r["verified"] is False
+    assert r["tenants_covered"] == ["acme"]           # coverage kept despite the failed verify
 
 
 # ── the rule that makes a run honest ──────────────────────────────────────────
