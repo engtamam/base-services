@@ -69,12 +69,12 @@ def build_manifest(
              # that did not happen.
              "erasure_category": "subject"},
             # The operator surface: credentials and policy an operator changes after launch.
-            {"path": "/api/v1/operator/secrets", "tier": "user", "method": "GET"},
-            {"path": "/api/v1/operator/secrets", "tier": "user", "method": "PUT"},
-            {"path": "/api/v1/operator/secrets/{}", "tier": "user", "method": "DELETE"},
-            {"path": "/api/v1/operator/config", "tier": "user", "method": "GET"},
-            {"path": "/api/v1/operator/config", "tier": "user", "method": "PUT"},
-            {"path": "/api/v1/operator/config/{}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/sources/operator/secrets", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/sources/operator/secrets", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/sources/operator/secrets/{}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/sources/operator/config", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/sources/operator/config", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/sources/operator/config/{}", "tier": "user", "method": "DELETE"},
             {"path": "/internal/stream/sweep", "tier": "internal", "method": "POST"},
             {"path": "/internal/stream/retention", "tier": "internal", "method": "POST"},
             {"path": "/internal/stream/exports/run", "tier": "internal", "method": "POST"},

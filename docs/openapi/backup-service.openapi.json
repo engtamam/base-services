@@ -425,17 +425,17 @@
         ]
       }
     },
-    "/api/v1/operator/backup/drill/run": {
+    "/api/v1/backup/operator/backup/drill/run": {
       "post": {
         "description": "Run a restore drill on demand \u2014 prove, right now, that every service still restores from its\nbest backup. Read-only against live data. Alerts if it fails.",
-        "operationId": "run_drill_now_api_v1_operator_backup_drill_run_post",
+        "operationId": "run_drill_now_api_v1_backup_operator_backup_drill_run_post",
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Run Drill Now Api V1 Operator Backup Drill Run Post",
+                  "title": "Response Run Drill Now Api V1 Backup Operator Backup Drill Run Post",
                   "type": "object"
                 }
               }
@@ -449,17 +449,17 @@
         ]
       }
     },
-    "/api/v1/operator/backup/drills": {
+    "/api/v1/backup/operator/backup/drills": {
       "get": {
         "description": "The restore-drill history \u2014 the standing evidence that DR actually works, newest first.\nAnswers 'when did we last PROVE we could restore everything?'.",
-        "operationId": "list_drills_api_v1_operator_backup_drills_get",
+        "operationId": "list_drills_api_v1_backup_operator_backup_drills_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response List Drills Api V1 Operator Backup Drills Get",
+                  "title": "Response List Drills Api V1 Backup Operator Backup Drills Get",
                   "type": "object"
                 }
               }
@@ -473,17 +473,17 @@
         ]
       }
     },
-    "/api/v1/operator/backup/health": {
+    "/api/v1/backup/operator/backup/health": {
       "get": {
         "description": "The panel's backup-health view: is every service protected by a recent verified backup, and\nwhich are not. Read-only; the same truth the monitor scrapes and the alerter pushes.",
-        "operationId": "backup_health_api_v1_operator_backup_health_get",
+        "operationId": "backup_health_api_v1_backup_operator_backup_health_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Backup Health Api V1 Operator Backup Health Get",
+                  "title": "Response Backup Health Api V1 Backup Operator Backup Health Get",
                   "type": "object"
                 }
               }
@@ -497,10 +497,10 @@
         ]
       }
     },
-    "/api/v1/operator/backup/prune": {
+    "/api/v1/backup/operator/backup/prune": {
       "post": {
         "description": "Prune old backups to the retention limits now \u2014 never a target's last verified backup.\nEcho-confirmed ('prune') and audited: it deletes archives.",
-        "operationId": "prune_backups_now_api_v1_operator_backup_prune_post",
+        "operationId": "prune_backups_now_api_v1_backup_operator_backup_prune_post",
         "parameters": [
           {
             "in": "query",
@@ -519,7 +519,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Prune Backups Now Api V1 Operator Backup Prune Post",
+                  "title": "Response Prune Backups Now Api V1 Backup Operator Backup Prune Post",
                   "type": "object"
                 }
               }
@@ -543,10 +543,10 @@
         ]
       }
     },
-    "/api/v1/operator/backup/run": {
+    "/api/v1/backup/operator/backup/run": {
       "post": {
         "description": "Capture an out-of-band backup now. The scheduled runs happen without this; it is for the\nbefore-a-risky-change snapshot. The run's status is the worst target's; a miss is never dropped.",
-        "operationId": "run_backup_now_api_v1_operator_backup_run_post",
+        "operationId": "run_backup_now_api_v1_backup_operator_backup_run_post",
         "requestBody": {
           "content": {
             "application/json": {
@@ -563,7 +563,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Run Backup Now Api V1 Operator Backup Run Post",
+                  "title": "Response Run Backup Now Api V1 Backup Operator Backup Run Post",
                   "type": "object"
                 }
               }
@@ -587,17 +587,17 @@
         ]
       }
     },
-    "/api/v1/operator/backup/runs": {
+    "/api/v1/backup/operator/backup/runs": {
       "get": {
         "description": "The backup run history \u2014 the record that proves backups actually happened, newest first.",
-        "operationId": "list_backup_runs_api_v1_operator_backup_runs_get",
+        "operationId": "list_backup_runs_api_v1_backup_operator_backup_runs_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response List Backup Runs Api V1 Operator Backup Runs Get",
+                  "title": "Response List Backup Runs Api V1 Backup Operator Backup Runs Get",
                   "type": "object"
                 }
               }
@@ -611,17 +611,17 @@
         ]
       }
     },
-    "/api/v1/operator/backup/targets": {
+    "/api/v1/backup/operator/backup/targets": {
       "get": {
         "description": "The services backup-service protects. `token_ref` is a secret NAME; no token is ever shown.",
-        "operationId": "list_backup_targets_api_v1_operator_backup_targets_get",
+        "operationId": "list_backup_targets_api_v1_backup_operator_backup_targets_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response List Backup Targets Api V1 Operator Backup Targets Get",
+                  "title": "Response List Backup Targets Api V1 Backup Operator Backup Targets Get",
                   "type": "object"
                 }
               }
@@ -636,7 +636,7 @@
       },
       "put": {
         "description": "Register or repoint a protected service. Audited: a wrong base_url silently stops a service\nbeing backed up, so who changed what it points at must be on the record.",
-        "operationId": "register_backup_target_api_v1_operator_backup_targets_put",
+        "operationId": "register_backup_target_api_v1_backup_operator_backup_targets_put",
         "requestBody": {
           "content": {
             "application/json": {
@@ -653,7 +653,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Register Backup Target Api V1 Operator Backup Targets Put",
+                  "title": "Response Register Backup Target Api V1 Backup Operator Backup Targets Put",
                   "type": "object"
                 }
               }
@@ -677,10 +677,10 @@
         ]
       }
     },
-    "/api/v1/operator/backup/targets/{service}": {
+    "/api/v1/backup/operator/backup/targets/{service}": {
       "delete": {
         "description": "Stop protecting a service. Echo-confirmed and audited \u2014 removing a target means it is no\nlonger backed up, which must never be a mis-click.",
-        "operationId": "remove_backup_target_api_v1_operator_backup_targets__service__delete",
+        "operationId": "remove_backup_target_api_v1_backup_operator_backup_targets__service__delete",
         "parameters": [
           {
             "in": "path",
@@ -708,7 +708,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Remove Backup Target Api V1 Operator Backup Targets  Service  Delete",
+                  "title": "Response Remove Backup Target Api V1 Backup Operator Backup Targets  Service  Delete",
                   "type": "object"
                 }
               }
@@ -732,10 +732,10 @@
         ]
       }
     },
-    "/api/v1/operator/config": {
+    "/api/v1/backup/operator/config": {
       "get": {
         "description": "Every knob an operator may change, with its current effective value.\n\nBuilt from the settable set, so a credential, a DSN or a frozen identifier cannot appear here\neven by accident \u2014 the filter is in one place rather than repeated per field.",
-        "operationId": "effective_config_api_v1_operator_config_get",
+        "operationId": "effective_config_api_v1_backup_operator_config_get",
         "parameters": [
           {
             "in": "query",
@@ -754,7 +754,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Effective Config Api V1 Operator Config Get",
+                  "title": "Response Effective Config Api V1 Backup Operator Config Get",
                   "type": "object"
                 }
               }
@@ -779,7 +779,7 @@
       },
       "put": {
         "description": "Override one policy value. Refused if the boot guard would refuse it.",
-        "operationId": "set_config_api_v1_operator_config_put",
+        "operationId": "set_config_api_v1_backup_operator_config_put",
         "requestBody": {
           "content": {
             "application/json": {
@@ -796,7 +796,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Set Config Api V1 Operator Config Put",
+                  "title": "Response Set Config Api V1 Backup Operator Config Put",
                   "type": "object"
                 }
               }
@@ -820,10 +820,10 @@
         ]
       }
     },
-    "/api/v1/operator/config/{key}": {
+    "/api/v1/backup/operator/config/{key}": {
       "delete": {
         "description": "Drop an override so the configured default applies again.",
-        "operationId": "clear_config_api_v1_operator_config__key__delete",
+        "operationId": "clear_config_api_v1_backup_operator_config__key__delete",
         "parameters": [
           {
             "in": "path",
@@ -851,7 +851,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Clear Config Api V1 Operator Config  Key  Delete",
+                  "title": "Response Clear Config Api V1 Backup Operator Config  Key  Delete",
                   "type": "object"
                 }
               }
@@ -875,10 +875,10 @@
         ]
       }
     },
-    "/api/v1/operator/restore": {
+    "/api/v1/backup/operator/restore": {
       "post": {
         "description": "Restore a backup run. Overwrites live data, so: capability-gated, echo-confirmed, audited\nwrite-ahead, snapshot-before-overwrite, and never aborting the whole restore on one target.\n\nAudited BEFORE it runs and as CRITICAL: a bulk overwrite of live data that cannot be recorded\nmust not happen \u2014 'who restored the platform, from which backup, into which tenant' is exactly\nwhat an incident review will need, and it is unreconstructable after the fact.",
-        "operationId": "run_restore_api_v1_operator_restore_post",
+        "operationId": "run_restore_api_v1_backup_operator_restore_post",
         "requestBody": {
           "content": {
             "application/json": {
@@ -895,7 +895,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Run Restore Api V1 Operator Restore Post",
+                  "title": "Response Run Restore Api V1 Backup Operator Restore Post",
                   "type": "object"
                 }
               }
@@ -919,10 +919,10 @@
         ]
       }
     },
-    "/api/v1/operator/restore/plan": {
+    "/api/v1/backup/operator/restore/plan": {
       "post": {
         "description": "Preview what a restore WOULD do \u2014 which targets are eligible, which are blocked and why, and\nhow many rows each holds. Writes nothing; this is the screen an operator confirms against.",
-        "operationId": "restore_plan_api_v1_operator_restore_plan_post",
+        "operationId": "restore_plan_api_v1_backup_operator_restore_plan_post",
         "requestBody": {
           "content": {
             "application/json": {
@@ -939,7 +939,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Restore Plan Api V1 Operator Restore Plan Post",
+                  "title": "Response Restore Plan Api V1 Backup Operator Restore Plan Post",
                   "type": "object"
                 }
               }
@@ -963,10 +963,10 @@
         ]
       }
     },
-    "/api/v1/operator/restore/{restore_id}/undo": {
+    "/api/v1/backup/operator/restore/{restore_id}/undo": {
       "post": {
         "description": "Roll a restore back by re-applying each target's pre-restore snapshot. Audited, critical.",
-        "operationId": "undo_restore_api_v1_operator_restore__restore_id__undo_post",
+        "operationId": "undo_restore_api_v1_backup_operator_restore__restore_id__undo_post",
         "parameters": [
           {
             "in": "path",
@@ -996,7 +996,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Undo Restore Api V1 Operator Restore  Restore Id  Undo Post",
+                  "title": "Response Undo Restore Api V1 Backup Operator Restore  Restore Id  Undo Post",
                   "type": "object"
                 }
               }
@@ -1020,17 +1020,17 @@
         ]
       }
     },
-    "/api/v1/operator/restores": {
+    "/api/v1/backup/operator/restores": {
       "get": {
         "description": "The restore history \u2014 every restore and undo, newest first.",
-        "operationId": "list_restores_api_v1_operator_restores_get",
+        "operationId": "list_restores_api_v1_backup_operator_restores_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response List Restores Api V1 Operator Restores Get",
+                  "title": "Response List Restores Api V1 Backup Operator Restores Get",
                   "type": "object"
                 }
               }
@@ -1044,10 +1044,10 @@
         ]
       }
     },
-    "/api/v1/operator/secrets": {
+    "/api/v1/backup/operator/secrets": {
       "get": {
         "description": "Which credentials are set, and a four-character hint for each.\n\nThere is no value in this response and no route that would return one. The hint exists so an\noperator can tell which key is loaded before replacing it \u2014 replacing the wrong one is the\nmistake this prevents.",
-        "operationId": "list_secrets_api_v1_operator_secrets_get",
+        "operationId": "list_secrets_api_v1_backup_operator_secrets_get",
         "parameters": [
           {
             "in": "query",
@@ -1066,7 +1066,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response List Secrets Api V1 Operator Secrets Get",
+                  "title": "Response List Secrets Api V1 Backup Operator Secrets Get",
                   "type": "object"
                 }
               }
@@ -1091,7 +1091,7 @@
       },
       "put": {
         "description": "Set or rotate a credential. The previous one stays valid for a bounded window.\n\nAudited BEFORE the write: a change the log cannot take must not happen, and here the old value\nis overwritten by the action itself, so an unrecorded rotation is unreconstructable.",
-        "operationId": "set_secret_api_v1_operator_secrets_put",
+        "operationId": "set_secret_api_v1_backup_operator_secrets_put",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1108,7 +1108,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Set Secret Api V1 Operator Secrets Put",
+                  "title": "Response Set Secret Api V1 Backup Operator Secrets Put",
                   "type": "object"
                 }
               }
@@ -1132,10 +1132,10 @@
         ]
       }
     },
-    "/api/v1/operator/secrets/{name}": {
+    "/api/v1/backup/operator/secrets/{name}": {
       "delete": {
         "description": "Remove a credential so the configured environment value applies again.",
-        "operationId": "clear_secret_api_v1_operator_secrets__name__delete",
+        "operationId": "clear_secret_api_v1_backup_operator_secrets__name__delete",
         "parameters": [
           {
             "in": "path",
@@ -1163,7 +1163,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Clear Secret Api V1 Operator Secrets  Name  Delete",
+                  "title": "Response Clear Secret Api V1 Backup Operator Secrets  Name  Delete",
                   "type": "object"
                 }
               }

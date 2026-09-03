@@ -29,7 +29,7 @@ from app.core.secret_store import SecretError, SecretStore
 from app.core.whatsapp_onboarding import OnboardingError, WhatsAppOnboarding
 from app.ports.errors import ConfigError
 
-router = APIRouter(prefix="/api/v1/operator", tags=["operator"])
+router = APIRouter(prefix="/api/v1/notifications/operator", tags=["operator"])
 
 
 def _refuse(reason: str, *, status_code: int = status.HTTP_400_BAD_REQUEST,

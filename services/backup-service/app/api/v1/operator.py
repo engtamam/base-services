@@ -37,7 +37,7 @@ from app.core.drills import DrillStore
 from app.core import alerts as _alerts
 from app.core import health as _health
 
-router = APIRouter(prefix="/api/v1/operator", tags=["operator"])
+router = APIRouter(prefix="/api/v1/backup/operator", tags=["operator"])
 
 
 def _refuse(reason: str, *, status_code: int = status.HTTP_400_BAD_REQUEST,

@@ -94,7 +94,7 @@ def build_manifest(
             {"path": "/api/v1/tickets/{ticket_id}/replies", "tier": "user", "method": "POST"},
             {"path": "/api/v1/tickets/{ticket_id}/rate", "tier": "user", "method": "POST"},
             # ── tickets: operator ───────────────────────────────────────────────
-            {"path": "/api/v1/operator/tickets", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/tickets/operator/tickets", "tier": "user", "method": "GET"},
             {"path": "/api/v1/tickets/{ticket_id}/status", "tier": "user", "method": "POST"},
             {"path": "/api/v1/tickets/{ticket_id}/escalate", "tier": "user", "method": "POST"},
             {"path": "/api/v1/tickets/{ticket_id}/assign", "tier": "user", "method": "POST"},
@@ -104,12 +104,12 @@ def build_manifest(
             # Declared like anything else — a route table built from manifests that omits the
             # place credentials are set is a route table that hides the highest-privilege
             # surface the service has.
-            {"path": "/api/v1/operator/secrets", "tier": "user", "method": "GET"},
-            {"path": "/api/v1/operator/secrets", "tier": "user", "method": "PUT"},
-            {"path": "/api/v1/operator/secrets/{}", "tier": "user", "method": "DELETE"},
-            {"path": "/api/v1/operator/config", "tier": "user", "method": "GET"},
-            {"path": "/api/v1/operator/config", "tier": "user", "method": "PUT"},
-            {"path": "/api/v1/operator/config/{}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/tickets/operator/secrets", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/tickets/operator/secrets", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/tickets/operator/secrets/{}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/tickets/operator/config", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/tickets/operator/config", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/tickets/operator/config/{}", "tier": "user", "method": "DELETE"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         # FILL THIS too, or leave it empty deliberately. Same trap as capabilities: an empty

@@ -87,12 +87,12 @@ def build_manifest(
             {"path": "/api/v1/zatca/chain/verify", "tier": "user", "method": "GET"},
             {"path": "/api/v1/zatca/sweep", "tier": "user", "method": "POST"},
             # The operator surface: credentials and policy, changeable after launch.
-            {"path": "/api/v1/operator/secrets", "tier": "user", "method": "GET"},
-            {"path": "/api/v1/operator/secrets", "tier": "user", "method": "PUT"},
-            {"path": "/api/v1/operator/secrets/{}", "tier": "user", "method": "DELETE"},
-            {"path": "/api/v1/operator/config", "tier": "user", "method": "GET"},
-            {"path": "/api/v1/operator/config", "tier": "user", "method": "PUT"},
-            {"path": "/api/v1/operator/config/{}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/zatca/operator/secrets", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/zatca/operator/secrets", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/zatca/operator/secrets/{}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/zatca/operator/config", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/zatca/operator/config", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/zatca/operator/config/{}", "tier": "user", "method": "DELETE"},
         ],
         # Which ZATCA this pod talks to. An operator must be able to see this without
         # reading env vars off a running container.

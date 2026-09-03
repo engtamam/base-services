@@ -108,7 +108,7 @@ def test_the_workflow_is_enforced_over_http(app):
 
 def test_operator_sees_the_tenant_wide_inbox_and_can_filter(app):
     _open(app, _customer(sub="dave@x.com"))
-    r = app.get("/api/v1/operator/tickets?status=new", headers=_operator())
+    r = app.get("/api/v1/tickets/operator/tickets?status=new", headers=_operator())
     assert r.status_code == 200 and len(r.json()["tickets"]) >= 1
 
 
@@ -118,7 +118,7 @@ def test_operator_list_embeds_per_ticket_kpis(app):
     tid = _open(app, _customer(sub="kpi@x.com")).json()["id"]
     # an operator's first reply is the first real response → first_response_seconds becomes computable
     app.post(f"/api/v1/tickets/{tid}/replies", headers=_operator(), json={"body": "on it"})
-    rows = app.get("/api/v1/operator/tickets", headers=_operator()).json()["tickets"]
+    rows = app.get("/api/v1/tickets/operator/tickets", headers=_operator()).json()["tickets"]
     row = next(r for r in rows if r["id"] == tid)
     assert "kpis" in row, "each operator-list row embeds ticket_kpis"
     k = row["kpis"]
@@ -128,7 +128,7 @@ def test_operator_list_embeds_per_ticket_kpis(app):
     assert k["status"] == row["status"]                 # kpis.status mirrors the row it rode in on
     # a ticket with no operator reply yet has an OPEN (None) first-response, not a fabricated zero
     tid2 = _open(app, _customer(sub="kpi2@x.com")).json()["id"]
-    rows2 = app.get("/api/v1/operator/tickets", headers=_operator()).json()["tickets"]
+    rows2 = app.get("/api/v1/tickets/operator/tickets", headers=_operator()).json()["tickets"]
     row2 = next(r for r in rows2 if r["id"] == tid2)
     assert row2["kpis"]["first_response_seconds"] is None
     assert row2["kpis"]["resolution_seconds"] is None

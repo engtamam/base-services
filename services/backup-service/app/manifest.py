@@ -92,28 +92,28 @@ def build_manifest(
             # Declared like anything else — a route table built from manifests that omits the
             # place credentials are set is a route table that hides the highest-privilege
             # surface the service has.
-            {"path": "/api/v1/operator/secrets", "tier": "user", "method": "GET"},
-            {"path": "/api/v1/operator/secrets", "tier": "user", "method": "PUT"},
-            {"path": "/api/v1/operator/secrets/{}", "tier": "user", "method": "DELETE"},
-            {"path": "/api/v1/operator/config", "tier": "user", "method": "GET"},
-            {"path": "/api/v1/operator/config", "tier": "user", "method": "PUT"},
-            {"path": "/api/v1/operator/config/{}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/backup/operator/secrets", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/backup/operator/secrets", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/backup/operator/secrets/{}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/backup/operator/config", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/backup/operator/config", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/backup/operator/config/{}", "tier": "user", "method": "DELETE"},
             # Restore: preview, execute, undo, and the history. The one action that overwrites live
             # data — declared like anything else, under its own platform.restore capability.
-            {"path": "/api/v1/operator/restore/plan", "tier": "user", "method": "POST"},
-            {"path": "/api/v1/operator/restore", "tier": "user", "method": "POST"},
-            {"path": "/api/v1/operator/restore/{}/undo", "tier": "user", "method": "POST"},
-            {"path": "/api/v1/operator/restores", "tier": "user", "method": "GET"},
-            {"path": "/api/v1/operator/backup/health", "tier": "user", "method": "GET"},
-            {"path": "/api/v1/operator/backup/drills", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/backup/operator/restore/plan", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/backup/operator/restore", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/backup/operator/restore/{}/undo", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/backup/operator/restores", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/backup/operator/backup/health", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/backup/operator/backup/drills", "tier": "user", "method": "GET"},
             # Backup management — the full lifecycle a panel drives (platform.backup).
-            {"path": "/api/v1/operator/backup/targets", "tier": "user", "method": "GET"},
-            {"path": "/api/v1/operator/backup/targets", "tier": "user", "method": "PUT"},
-            {"path": "/api/v1/operator/backup/targets/{}", "tier": "user", "method": "DELETE"},
-            {"path": "/api/v1/operator/backup/runs", "tier": "user", "method": "GET"},
-            {"path": "/api/v1/operator/backup/run", "tier": "user", "method": "POST"},
-            {"path": "/api/v1/operator/backup/drill/run", "tier": "user", "method": "POST"},
-            {"path": "/api/v1/operator/backup/prune", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/backup/operator/backup/targets", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/backup/operator/backup/targets", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/backup/operator/backup/targets/{}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/backup/operator/backup/runs", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/backup/operator/backup/run", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/backup/operator/backup/drill/run", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/backup/operator/backup/prune", "tier": "user", "method": "POST"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         # FILL THIS too, or leave it empty deliberately. Same trap as capabilities: an empty

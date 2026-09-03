@@ -47,7 +47,7 @@ def _cfg_admin(tenant="t1"):
 
 
 def _put(client, key, value, tenant=""):
-    return client.put("/api/v1/operator/config",
+    return client.put("/api/v1/billing/operator/config",
                       json={"key": key, "value": value, "tenant": tenant}, headers=_cfg_admin())
 
 
@@ -95,6 +95,6 @@ def test_nulling_the_einvoicer_under_tax_mode_is_refused(client):
 def test_clearing_the_seller_vat_under_tax_mode_is_refused(client):
     _put(client, "INVOICE_SELLER_VAT", "300000000000003")
     assert _put(client, "BILLING_DOCUMENT_MODE", "tax_invoice").status_code == 200
-    r = client.delete("/api/v1/operator/config/INVOICE_SELLER_VAT", headers=_cfg_admin())
+    r = client.delete("/api/v1/billing/operator/config/INVOICE_SELLER_VAT", headers=_cfg_admin())
     assert r.status_code == 400
     assert r.json()["error"] == "TAX_PROFILE_INCOMPLETE" and r.json()["missing_key"] == "INVOICE_SELLER_VAT"

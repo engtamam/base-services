@@ -219,7 +219,7 @@ class EmbeddedSignupInternalIn(BaseModel):
 
 @router.post("/whatsapp/embedded-signup", dependencies=[Depends(require_internal_token)])
 async def internal_embedded_signup(request: Request, body: EmbeddedSignupInternalIn) -> dict:
-    """The internal twin of POST /api/v1/operator/whatsapp/embedded-signup.
+    """The internal twin of POST /api/v1/notifications/operator/whatsapp/embedded-signup.
 
     WHY IT EXISTS: the exchange needs platform.secrets, which a SHOP OWNER must never hold — it reads
     and writes every establishment's credentials. But only the owner's browser ever sees the ~30s

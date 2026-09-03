@@ -651,10 +651,10 @@
         ]
       }
     },
-    "/api/v1/operator/config": {
+    "/api/v1/assistant/operator/config": {
       "get": {
         "description": "Every knob an operator may change, with its current effective value.\n\nBuilt from the settable set, so a credential, a DSN or a frozen identifier cannot appear here\neven by accident \u2014 the filter is in one place rather than repeated per field.",
-        "operationId": "effective_config_api_v1_operator_config_get",
+        "operationId": "effective_config_api_v1_assistant_operator_config_get",
         "parameters": [
           {
             "in": "query",
@@ -673,7 +673,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Effective Config Api V1 Operator Config Get",
+                  "title": "Response Effective Config Api V1 Assistant Operator Config Get",
                   "type": "object"
                 }
               }
@@ -698,7 +698,7 @@
       },
       "put": {
         "description": "Override one policy value. Refused if the boot guard would refuse it.",
-        "operationId": "set_config_api_v1_operator_config_put",
+        "operationId": "set_config_api_v1_assistant_operator_config_put",
         "requestBody": {
           "content": {
             "application/json": {
@@ -715,7 +715,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Set Config Api V1 Operator Config Put",
+                  "title": "Response Set Config Api V1 Assistant Operator Config Put",
                   "type": "object"
                 }
               }
@@ -739,10 +739,10 @@
         ]
       }
     },
-    "/api/v1/operator/config/{key}": {
+    "/api/v1/assistant/operator/config/{key}": {
       "delete": {
         "description": "Drop an override so the configured default applies again.",
-        "operationId": "clear_config_api_v1_operator_config__key__delete",
+        "operationId": "clear_config_api_v1_assistant_operator_config__key__delete",
         "parameters": [
           {
             "in": "path",
@@ -770,7 +770,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Clear Config Api V1 Operator Config  Key  Delete",
+                  "title": "Response Clear Config Api V1 Assistant Operator Config  Key  Delete",
                   "type": "object"
                 }
               }
@@ -794,10 +794,10 @@
         ]
       }
     },
-    "/api/v1/operator/secrets": {
+    "/api/v1/assistant/operator/secrets": {
       "get": {
         "description": "Which credentials are set, and a four-character hint for each.\n\nThere is no value in this response and no route that would return one. The hint exists so an\noperator can tell which key is loaded before replacing it \u2014 replacing the wrong one is the\nmistake this prevents.",
-        "operationId": "list_secrets_api_v1_operator_secrets_get",
+        "operationId": "list_secrets_api_v1_assistant_operator_secrets_get",
         "parameters": [
           {
             "in": "query",
@@ -816,7 +816,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response List Secrets Api V1 Operator Secrets Get",
+                  "title": "Response List Secrets Api V1 Assistant Operator Secrets Get",
                   "type": "object"
                 }
               }
@@ -841,7 +841,7 @@
       },
       "put": {
         "description": "Set or rotate a credential. The previous one stays valid for a bounded window.\n\nAudited BEFORE the write: a change the log cannot take must not happen, and here the old value\nis overwritten by the action itself, so an unrecorded rotation is unreconstructable.",
-        "operationId": "set_secret_api_v1_operator_secrets_put",
+        "operationId": "set_secret_api_v1_assistant_operator_secrets_put",
         "requestBody": {
           "content": {
             "application/json": {
@@ -858,7 +858,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Set Secret Api V1 Operator Secrets Put",
+                  "title": "Response Set Secret Api V1 Assistant Operator Secrets Put",
                   "type": "object"
                 }
               }
@@ -882,10 +882,10 @@
         ]
       }
     },
-    "/api/v1/operator/secrets/{name}": {
+    "/api/v1/assistant/operator/secrets/{name}": {
       "delete": {
         "description": "Remove a credential so the configured environment value applies again.",
-        "operationId": "clear_secret_api_v1_operator_secrets__name__delete",
+        "operationId": "clear_secret_api_v1_assistant_operator_secrets__name__delete",
         "parameters": [
           {
             "in": "path",
@@ -913,7 +913,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Clear Secret Api V1 Operator Secrets  Name  Delete",
+                  "title": "Response Clear Secret Api V1 Assistant Operator Secrets  Name  Delete",
                   "type": "object"
                 }
               }

@@ -82,13 +82,13 @@ def reader_auth() -> dict:
 def test_no_route_returns_a_stored_credential(client, operator_auth):
     """The whole point. A panel that can read a key back is a panel breach away from every
     tenant's provider account."""
-    put = client.put("/api/v1/operator/secrets",
+    put = client.put("/api/v1/backup/operator/secrets",
                      json={"name": "sms_api_key", "value": SECRET}, headers=operator_auth)
     assert put.status_code == 200, put.text
 
     bodies = [put.text,
-              client.get("/api/v1/operator/secrets", headers=operator_auth).text,
-              client.get("/api/v1/operator/config", headers=operator_auth).text]
+              client.get("/api/v1/backup/operator/secrets", headers=operator_auth).text,
+              client.get("/api/v1/backup/operator/config", headers=operator_auth).text]
     for body in bodies:
         assert SECRET not in body
         # Not even a long prefix: a hint is four characters, and anything more starts being a
@@ -99,9 +99,9 @@ def test_no_route_returns_a_stored_credential(client, operator_auth):
 def test_the_panel_gets_a_hint_it_can_act_on(client, operator_auth):
     # Enough to tell which key is loaded before replacing it — replacing the wrong one is the
     # mistake the hint prevents.
-    client.put("/api/v1/operator/secrets",
+    client.put("/api/v1/backup/operator/secrets",
                json={"name": "sms_api_key", "value": SECRET}, headers=operator_auth)
-    got = client.get("/api/v1/operator/secrets", headers=operator_auth).json()["secrets"]
+    got = client.get("/api/v1/backup/operator/secrets", headers=operator_auth).json()["secrets"]
     entry = next(s for s in got if s["name"] == "sms_api_key")
     assert entry["hint"].endswith(SECRET[-4:])
     assert entry["hint"].count("•") == 4
@@ -110,36 +110,36 @@ def test_the_panel_gets_a_hint_it_can_act_on(client, operator_auth):
 # ── authorisation ─────────────────────────────────────────────────────────────
 def test_credentials_need_their_own_capability(client, reader_auth):
     """Setting a payment key and reading a report are not the same privilege."""
-    for method, url in [("get", "/api/v1/operator/secrets"),
-                        ("delete", "/api/v1/operator/secrets/sms_api_key")]:
+    for method, url in [("get", "/api/v1/backup/operator/secrets"),
+                        ("delete", "/api/v1/backup/operator/secrets/sms_api_key")]:
         assert getattr(client, method)(url, headers=reader_auth).status_code == 403
-    assert client.put("/api/v1/operator/secrets",
+    assert client.put("/api/v1/backup/operator/secrets",
                       json={"name": "k", "value": "v"}, headers=reader_auth).status_code == 403
 
 
 def test_unauthenticated_is_refused(client):
-    assert client.get("/api/v1/operator/secrets").status_code == 401
+    assert client.get("/api/v1/backup/operator/secrets").status_code == 401
 
 
 # ── rotation ──────────────────────────────────────────────────────────────────
 def test_a_rotation_keeps_the_previous_value_accepted(client, operator_auth):
     """A request in flight when a key changes must not fail."""
     h = {"headers": operator_auth}
-    client.put("/api/v1/operator/secrets", json={"name": "k", "value": "old-value-1111"}, **h)
-    second = client.put("/api/v1/operator/secrets",
+    client.put("/api/v1/backup/operator/secrets", json={"name": "k", "value": "old-value-1111"}, **h)
+    second = client.put("/api/v1/backup/operator/secrets",
                         json={"name": "k", "value": "new-value-2222"}, **h)
     assert second.json()["rotating"] is True, "the previous value was dropped immediately"
 
-    listed = next(s for s in client.get("/api/v1/operator/secrets", **h).json()["secrets"]
+    listed = next(s for s in client.get("/api/v1/backup/operator/secrets", **h).json()["secrets"]
                   if s["name"] == "k")
     assert listed["rotating"] is True
 
 
 def test_clearing_a_credential_removes_it(client, operator_auth):
     h = {"headers": operator_auth}
-    client.put("/api/v1/operator/secrets", json={"name": "k", "value": "v-1234"}, **h)
-    assert client.delete("/api/v1/operator/secrets/k", **h).json()["cleared"] is True
-    assert not [s for s in client.get("/api/v1/operator/secrets", **h).json()["secrets"]
+    client.put("/api/v1/backup/operator/secrets", json={"name": "k", "value": "v-1234"}, **h)
+    assert client.delete("/api/v1/backup/operator/secrets/k", **h).json()["cleared"] is True
+    assert not [s for s in client.get("/api/v1/backup/operator/secrets", **h).json()["secrets"]
                 if s["name"] == "k"]
 
 
@@ -147,13 +147,13 @@ def test_clearing_a_credential_removes_it(client, operator_auth):
 def test_a_deploy_time_knob_is_refused(client, operator_auth):
     """Wiring changed under a live request is a class of bug nobody can reproduce."""
     for key in ("DATASTORE_DRIVER", "SECRETS_KEK", "PII_SALT", "INTERNAL_SERVICE_TOKEN"):
-        r = client.put("/api/v1/operator/config",
+        r = client.put("/api/v1/backup/operator/config",
                        json={"key": key, "value": "anything"}, headers=operator_auth)
         assert r.status_code == 400, f"{key} was accepted at runtime"
 
 
 def test_the_config_view_never_carries_a_credential(client, operator_auth):
-    view = client.get("/api/v1/operator/config", headers=operator_auth).json()["config"]
+    view = client.get("/api/v1/backup/operator/config", headers=operator_auth).json()["config"]
     for banned in ("SECRETS_KEK", "INTERNAL_SERVICE_TOKEN", "PII_SALT", "DATASTORE_DSN"):
         assert banned not in view
 
@@ -163,30 +163,30 @@ def test_only_declared_runtime_knobs_are_offered_and_others_refused(client, oper
     a real read at its point of use. The surface offers those and refuses anything else — an
     advertised knob nothing consults reports a change that never happened."""
     h = {"headers": operator_auth}
-    config = client.get("/api/v1/operator/config", **h).json()["config"]
+    config = client.get("/api/v1/backup/operator/config", **h).json()["config"]
     assert set(config) == {"BACKUP_STALE_AFTER_SECONDS", "BACKUP_RETENTION_RUNS",
                            "BACKUP_RETENTION_MAX_AGE_SECONDS"}
     # A real settable knob is accepted…
-    ok = client.put("/api/v1/operator/config",
+    ok = client.put("/api/v1/backup/operator/config",
                     json={"key": "BACKUP_STALE_AFTER_SECONDS", "value": 86_400}, **h)
     assert ok.status_code == 200, ok.text
     # …and an undeclared one is refused rather than accepted-and-inert.
-    r = client.put("/api/v1/operator/config", json={"key": "RATELIMIT_MAX", "value": 250}, **h)
+    r = client.put("/api/v1/backup/operator/config", json={"key": "RATELIMIT_MAX", "value": 250}, **h)
     assert r.status_code == 400, "an undeclared knob was accepted and would have been inert"
 
 
 def test_backup_health_read_needs_the_restore_capability(client):
     """Seeing whether the platform is protected is part of the DR operator's job, gated the same."""
-    assert client.get("/api/v1/operator/backup/health",
+    assert client.get("/api/v1/backup/operator/backup/health",
                       headers=_auth("platform.config")).status_code == 403
-    ok = client.get("/api/v1/operator/backup/health", headers=_auth("platform.restore"))
+    ok = client.get("/api/v1/backup/operator/backup/health", headers=_auth("platform.restore"))
     assert ok.status_code == 200 and "status" in ok.json()
 
 
 def test_drill_history_read_needs_the_restore_capability(client):
-    assert client.get("/api/v1/operator/backup/drills",
+    assert client.get("/api/v1/backup/operator/backup/drills",
                       headers=_auth("platform.config")).status_code == 403
-    ok = client.get("/api/v1/operator/backup/drills", headers=_auth("platform.restore"))
+    ok = client.get("/api/v1/backup/operator/backup/drills", headers=_auth("platform.restore"))
     assert ok.status_code == 200 and "drills" in ok.json()
 
 
@@ -195,21 +195,21 @@ def test_backup_management_needs_its_own_capability(client):
     """Managing the backup system is distinct from restoring; a restore operator does not
     automatically get it, nor a config operator."""
     h = _auth("platform.restore", "platform.config")   # everything except platform.backup
-    for method, url in [("get", "/api/v1/operator/backup/targets"),
-                        ("get", "/api/v1/operator/backup/runs")]:
+    for method, url in [("get", "/api/v1/backup/operator/backup/targets"),
+                        ("get", "/api/v1/backup/operator/backup/runs")]:
         assert getattr(client, method)(url, headers=h).status_code == 403
-    assert client.post("/api/v1/operator/backup/run", json={}, headers=h).status_code == 403
+    assert client.post("/api/v1/backup/operator/backup/run", json={}, headers=h).status_code == 403
 
 
 def test_a_target_can_be_registered_listed_and_never_leaks_its_token(client):
     h = _auth("platform.backup")
-    reg = client.put("/api/v1/operator/backup/targets",
+    reg = client.put("/api/v1/backup/operator/backup/targets",
                      json={"service": "billing-service", "base_url": "https://billing.internal",
                            "token_ref": "billing_internal_token"}, headers=h)
     assert reg.status_code == 200, reg.text
     body = reg.text
     assert "token" not in reg.json() or reg.json().get("token") is None
-    listed = client.get("/api/v1/operator/backup/targets", headers=h).json()["targets"]
+    listed = client.get("/api/v1/backup/operator/backup/targets", headers=h).json()["targets"]
     entry = next(t for t in listed if t["service"] == "billing-service")
     assert entry["token_ref"] == "billing_internal_token"  # the NAME, not a token
     assert "token" not in entry or entry.get("token") is None
@@ -217,22 +217,22 @@ def test_a_target_can_be_registered_listed_and_never_leaks_its_token(client):
 
 def test_removing_a_target_is_echo_confirmed(client):
     h = _auth("platform.backup")
-    client.put("/api/v1/operator/backup/targets",
+    client.put("/api/v1/backup/operator/backup/targets",
                json={"service": "temp-svc", "base_url": "https://t.internal"}, headers=h)
-    assert client.delete("/api/v1/operator/backup/targets/temp-svc?confirm=wrong",
+    assert client.delete("/api/v1/backup/operator/backup/targets/temp-svc?confirm=wrong",
                          headers=h).status_code == 400
-    ok = client.delete("/api/v1/operator/backup/targets/temp-svc?confirm=temp-svc", headers=h)
+    ok = client.delete("/api/v1/backup/operator/backup/targets/temp-svc?confirm=temp-svc", headers=h)
     assert ok.status_code == 200 and ok.json()["removed"] is True
 
 
 def test_prune_and_run_and_drill_are_reachable_with_the_capability(client):
     h = _auth("platform.backup")
     # With no targets, a run completes cleanly (nothing to capture) — proves the route is wired.
-    assert client.post("/api/v1/operator/backup/run", json={}, headers=h).status_code == 200
-    assert client.post("/api/v1/operator/backup/drill/run", headers=h).status_code == 200
+    assert client.post("/api/v1/backup/operator/backup/run", json={}, headers=h).status_code == 200
+    assert client.post("/api/v1/backup/operator/backup/drill/run", headers=h).status_code == 200
     # Prune is echo-confirmed.
-    assert client.post("/api/v1/operator/backup/prune?confirm=nope", headers=h).status_code == 400
-    assert client.post("/api/v1/operator/backup/prune?confirm=prune", headers=h).status_code == 200
+    assert client.post("/api/v1/backup/operator/backup/prune?confirm=nope", headers=h).status_code == 400
+    assert client.post("/api/v1/backup/operator/backup/prune?confirm=prune", headers=h).status_code == 200
 
 
 # ── restore: the dangerous action, gated and confirmed ────────────────────────
@@ -240,25 +240,25 @@ def test_restore_needs_its_own_capability(client):
     """Restoring overwrites live data — an operator with secrets or config caps must not, by that
     fact alone, be able to overwrite the platform."""
     h = _auth("platform.secrets", "platform.config")   # everything EXCEPT platform.restore
-    assert client.post("/api/v1/operator/restore/plan",
+    assert client.post("/api/v1/backup/operator/restore/plan",
                        json={"run_id": "run_1"}, headers=h).status_code == 403
-    assert client.post("/api/v1/operator/restore",
+    assert client.post("/api/v1/backup/operator/restore",
                        json={"run_id": "run_1", "confirm": "run_1"}, headers=h).status_code == 403
-    assert client.get("/api/v1/operator/restores", headers=h).status_code == 403
+    assert client.get("/api/v1/backup/operator/restores", headers=h).status_code == 403
 
 
 def test_a_restore_without_the_matching_confirm_is_refused(client):
     """Echo-to-confirm: a mis-click or a replayed request must not trigger a restore. Checked before
     anything is audited or touched."""
     h = _auth("platform.restore")
-    r = client.post("/api/v1/operator/restore",
+    r = client.post("/api/v1/backup/operator/restore",
                     json={"run_id": "run_9", "confirm": "not-run_9"}, headers=h)
     assert r.status_code == 400
 
 
 def test_plan_of_an_unknown_run_reports_not_found_not_an_error(client):
     h = _auth("platform.restore")
-    r = client.post("/api/v1/operator/restore/plan", json={"run_id": "no_such_run"}, headers=h)
+    r = client.post("/api/v1/backup/operator/restore/plan", json={"run_id": "no_such_run"}, headers=h)
     assert r.status_code == 200 and r.json()["found"] is False
 
 
@@ -267,7 +267,7 @@ def test_without_a_kek_the_surface_refuses_rather_than_storing_in_the_clear(env_
     """No KEK means nothing to seal with. Storing the credential anyway — in the clear, while
     every check reports 'encrypted' — is the one outcome that must never happen."""
     c = _make_app(SECRETS_KEK="")
-    r = c.put("/api/v1/operator/secrets", json={"name": "k", "value": "v"},
+    r = c.put("/api/v1/backup/operator/secrets", json={"name": "k", "value": "v"},
               headers=_auth("platform.secrets"))
     assert r.status_code == 503, "a credential was accepted with nothing to seal it with"
     # The reason is not echoed: the error middleware generalises every 5xx, deliberately. The
@@ -275,4 +275,4 @@ def test_without_a_kek_the_surface_refuses_rather_than_storing_in_the_clear(env_
     assert "v" not in r.json().get("error", "")
     # And the read side refuses identically, rather than reporting an empty credential set —
     # "no secrets configured" and "secrets unreadable" must not look the same to an operator.
-    assert c.get("/api/v1/operator/secrets", headers=_auth("platform.secrets")).status_code == 503
+    assert c.get("/api/v1/backup/operator/secrets", headers=_auth("platform.secrets")).status_code == 503

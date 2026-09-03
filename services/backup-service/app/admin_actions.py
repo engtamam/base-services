@@ -37,12 +37,12 @@ ADMIN_ACTIONS = [
     # ever changes.
     {
         "id": "operator.list_secrets", "label": "Provider credentials", "method": "GET",
-        "path": "/api/v1/operator/secrets", "capability": "platform.secrets",
+        "path": "/api/v1/backup/operator/secrets", "capability": "platform.secrets",
         "group": "Credentials",
     },
     {
         "id": "operator.set_secret", "label": "Set / rotate a provider credential", "method": "PUT",
-        "path": "/api/v1/operator/secrets", "capability": "platform.secrets",
+        "path": "/api/v1/backup/operator/secrets", "capability": "platform.secrets",
         "group": "Credentials", "confirm": True,
         "params": [
             {"name": "name", "in": "body", "type": "string", "required": True,
@@ -55,17 +55,17 @@ ADMIN_ACTIONS = [
     },
     {
         "id": "operator.clear_secret", "label": "Remove a provider credential", "method": "DELETE",
-        "path": "/api/v1/operator/secrets/{name}", "capability": "platform.secrets",
+        "path": "/api/v1/backup/operator/secrets/{name}", "capability": "platform.secrets",
         "group": "Credentials", "confirm": True,
         "params": [{"name": "name", "in": "path", "type": "string", "required": True}],
     },
     {
         "id": "operator.get_config", "label": "Runtime settings", "method": "GET",
-        "path": "/api/v1/operator/config", "capability": "platform.config", "group": "Settings",
+        "path": "/api/v1/backup/operator/config", "capability": "platform.config", "group": "Settings",
     },
     {
         "id": "operator.set_config", "label": "Change a runtime setting", "method": "PUT",
-        "path": "/api/v1/operator/config", "capability": "platform.config",
+        "path": "/api/v1/backup/operator/config", "capability": "platform.config",
         "group": "Settings", "confirm": True,
         "params": [
             {"name": "key", "in": "body", "type": "string", "required": True,
@@ -76,7 +76,7 @@ ADMIN_ACTIONS = [
     },
     {
         "id": "operator.clear_config", "label": "Reset a setting to its default", "method": "DELETE",
-        "path": "/api/v1/operator/config/{key}", "capability": "platform.config",
+        "path": "/api/v1/backup/operator/config/{key}", "capability": "platform.config",
         "group": "Settings", "confirm": True,
         "params": [{"name": "key", "in": "path", "type": "string", "required": True}],
     },
@@ -86,7 +86,7 @@ ADMIN_ACTIONS = [
     # thing. The restore itself is danger + confirm, and echoes the run id to fire.
     {
         "id": "restore.plan", "label": "Preview a restore", "method": "POST",
-        "path": "/api/v1/operator/restore/plan", "capability": "platform.restore",
+        "path": "/api/v1/backup/operator/restore/plan", "capability": "platform.restore",
         "group": "Restore",
         "params": [
             {"name": "run_id", "in": "body", "type": "string", "required": True,
@@ -101,7 +101,7 @@ ADMIN_ACTIONS = [
     },
     {
         "id": "restore.run", "label": "Restore from a backup", "method": "POST",
-        "path": "/api/v1/operator/restore", "capability": "platform.restore",
+        "path": "/api/v1/backup/operator/restore", "capability": "platform.restore",
         "group": "Restore", "confirm": True, "danger": True,
         "params": [
             {"name": "run_id", "in": "body", "type": "string", "required": True},
@@ -120,7 +120,7 @@ ADMIN_ACTIONS = [
     },
     {
         "id": "restore.undo", "label": "Undo a restore", "method": "POST",
-        "path": "/api/v1/operator/restore/{restore_id}/undo", "capability": "platform.restore",
+        "path": "/api/v1/backup/operator/restore/{restore_id}/undo", "capability": "platform.restore",
         "group": "Restore", "confirm": True, "danger": True,
         "params": [
             {"name": "restore_id", "in": "path", "type": "string", "required": True},
@@ -129,16 +129,16 @@ ADMIN_ACTIONS = [
     },
     {
         "id": "restore.list", "label": "Restore history", "method": "GET",
-        "path": "/api/v1/operator/restores", "capability": "platform.restore", "group": "Restore",
+        "path": "/api/v1/backup/operator/restores", "capability": "platform.restore", "group": "Restore",
     },
     {
         "id": "backup.health", "label": "Backup health", "method": "GET",
-        "path": "/api/v1/operator/backup/health", "capability": "platform.restore",
+        "path": "/api/v1/backup/operator/backup/health", "capability": "platform.restore",
         "group": "Restore",
     },
     {
         "id": "backup.drills", "label": "Restore-drill history", "method": "GET",
-        "path": "/api/v1/operator/backup/drills", "capability": "platform.restore",
+        "path": "/api/v1/backup/operator/backup/drills", "capability": "platform.restore",
         "group": "Restore",
     },
     # ── Backup management — the full lifecycle a panel drives (platform.backup) ─
@@ -146,12 +146,12 @@ ADMIN_ACTIONS = [
     # an operator can see what is protected before changing it.
     {
         "id": "backup.targets_list", "label": "Protected services", "method": "GET",
-        "path": "/api/v1/operator/backup/targets", "capability": "platform.backup",
+        "path": "/api/v1/backup/operator/backup/targets", "capability": "platform.backup",
         "group": "Backup",
     },
     {
         "id": "backup.target_register", "label": "Register / repoint a service", "method": "PUT",
-        "path": "/api/v1/operator/backup/targets", "capability": "platform.backup",
+        "path": "/api/v1/backup/operator/backup/targets", "capability": "platform.backup",
         "group": "Backup", "confirm": True,
         "params": [
             {"name": "service", "in": "body", "type": "string", "required": True,
@@ -168,7 +168,7 @@ ADMIN_ACTIONS = [
     },
     {
         "id": "backup.target_remove", "label": "Stop protecting a service", "method": "DELETE",
-        "path": "/api/v1/operator/backup/targets/{service}", "capability": "platform.backup",
+        "path": "/api/v1/backup/operator/backup/targets/{service}", "capability": "platform.backup",
         "group": "Backup", "confirm": True, "danger": True,
         "params": [
             {"name": "service", "in": "path", "type": "string", "required": True},
@@ -178,11 +178,11 @@ ADMIN_ACTIONS = [
     },
     {
         "id": "backup.runs_list", "label": "Backup run history", "method": "GET",
-        "path": "/api/v1/operator/backup/runs", "capability": "platform.backup", "group": "Backup",
+        "path": "/api/v1/backup/operator/backup/runs", "capability": "platform.backup", "group": "Backup",
     },
     {
         "id": "backup.run_now", "label": "Back up now", "method": "POST",
-        "path": "/api/v1/operator/backup/run", "capability": "platform.backup",
+        "path": "/api/v1/backup/operator/backup/run", "capability": "platform.backup",
         "group": "Backup", "confirm": True,
         "params": [
             {"name": "tenant", "in": "body", "type": "string", "required": False,
@@ -191,12 +191,12 @@ ADMIN_ACTIONS = [
     },
     {
         "id": "backup.drill_now", "label": "Run a restore drill now", "method": "POST",
-        "path": "/api/v1/operator/backup/drill/run", "capability": "platform.backup",
+        "path": "/api/v1/backup/operator/backup/drill/run", "capability": "platform.backup",
         "group": "Backup", "confirm": True,
     },
     {
         "id": "backup.prune_now", "label": "Prune old backups now", "method": "POST",
-        "path": "/api/v1/operator/backup/prune", "capability": "platform.backup",
+        "path": "/api/v1/backup/operator/backup/prune", "capability": "platform.backup",
         "group": "Backup", "confirm": True, "danger": True,
         "params": [
             {"name": "confirm", "in": "query", "type": "string", "required": True,

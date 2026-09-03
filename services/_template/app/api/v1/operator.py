@@ -27,7 +27,7 @@ from app.core.pii import subject_ref
 from app.core.runtime_config import RuntimeConfig, RuntimeConfigError
 from app.core.secret_store import SecretError, SecretStore
 
-router = APIRouter(prefix="/api/v1/operator", tags=["operator"])
+router = APIRouter(prefix="/api/v1/app/operator", tags=["operator"])
 
 _SECRETS = require_capability("platform.secrets")
 _CONFIG = require_capability("platform.config")

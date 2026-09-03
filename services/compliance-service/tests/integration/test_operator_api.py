@@ -82,14 +82,14 @@ def reader_auth() -> dict:
 def test_no_route_returns_a_stored_credential(operator_client, operator_auth):
     """The whole point. A panel that can read a key back is a panel breach away from every
     third party's erasure endpoint."""
-    put = operator_client.put("/api/v1/operator/secrets",
+    put = operator_client.put("/api/v1/compliance/operator/secrets",
                               json={"name": "ACME_CRM_ERASE_TOKEN", "value": SECRET},
                               headers=operator_auth)
     assert put.status_code == 200, put.text
 
     bodies = [put.text,
-              operator_client.get("/api/v1/operator/secrets", headers=operator_auth).text,
-              operator_client.get("/api/v1/operator/config", headers=operator_auth).text]
+              operator_client.get("/api/v1/compliance/operator/secrets", headers=operator_auth).text,
+              operator_client.get("/api/v1/compliance/operator/config", headers=operator_auth).text]
     for body in bodies:
         assert SECRET not in body
         # Not even a long prefix: a hint is four characters, and anything more starts being a
@@ -100,10 +100,10 @@ def test_no_route_returns_a_stored_credential(operator_client, operator_auth):
 def test_the_panel_gets_a_hint_it_can_act_on(operator_client, operator_auth):
     # Enough to tell which key is loaded before replacing it — replacing the wrong one is the
     # mistake the hint prevents.
-    operator_client.put("/api/v1/operator/secrets",
+    operator_client.put("/api/v1/compliance/operator/secrets",
                         json={"name": "ACME_CRM_ERASE_TOKEN", "value": SECRET},
                         headers=operator_auth)
-    got = operator_client.get("/api/v1/operator/secrets", headers=operator_auth).json()["secrets"]
+    got = operator_client.get("/api/v1/compliance/operator/secrets", headers=operator_auth).json()["secrets"]
     entry = next(s for s in got if s["name"] == "ACME_CRM_ERASE_TOKEN")
     assert entry["hint"].endswith(SECRET[-4:])
     assert entry["hint"].count("•") == 4
@@ -111,43 +111,43 @@ def test_the_panel_gets_a_hint_it_can_act_on(operator_client, operator_auth):
 
 # ── authorisation ─────────────────────────────────────────────────────────────
 def test_credentials_need_their_own_capability(operator_client, reader_auth):
-    for method, url in [("get", "/api/v1/operator/secrets"),
-                        ("delete", "/api/v1/operator/secrets/ACME_CRM_ERASE_TOKEN")]:
+    for method, url in [("get", "/api/v1/compliance/operator/secrets"),
+                        ("delete", "/api/v1/compliance/operator/secrets/ACME_CRM_ERASE_TOKEN")]:
         assert getattr(operator_client, method)(url, headers=reader_auth).status_code == 403
-    assert operator_client.put("/api/v1/operator/secrets",
+    assert operator_client.put("/api/v1/compliance/operator/secrets",
                                json={"name": "k", "value": "v"},
                                headers=reader_auth).status_code == 403
 
 
 def test_config_needs_its_own_capability(operator_client, reader_auth):
-    assert operator_client.get("/api/v1/operator/config",
+    assert operator_client.get("/api/v1/compliance/operator/config",
                                headers=reader_auth).status_code == 403
 
 
 def test_unauthenticated_is_refused(operator_client):
-    assert operator_client.get("/api/v1/operator/secrets").status_code == 401
+    assert operator_client.get("/api/v1/compliance/operator/secrets").status_code == 401
 
 
 # ── rotation ──────────────────────────────────────────────────────────────────
 def test_a_rotation_keeps_the_previous_value_accepted(operator_client, operator_auth):
     """A dispatch in flight when a token changes must not fail."""
     h = {"headers": operator_auth}
-    operator_client.put("/api/v1/operator/secrets",
+    operator_client.put("/api/v1/compliance/operator/secrets",
                         json={"name": "k", "value": "old-value-1111"}, **h)
-    second = operator_client.put("/api/v1/operator/secrets",
+    second = operator_client.put("/api/v1/compliance/operator/secrets",
                                  json={"name": "k", "value": "new-value-2222"}, **h)
     assert second.json()["rotating"] is True, "the previous value was dropped immediately"
 
-    listed = next(s for s in operator_client.get("/api/v1/operator/secrets", **h).json()["secrets"]
+    listed = next(s for s in operator_client.get("/api/v1/compliance/operator/secrets", **h).json()["secrets"]
                   if s["name"] == "k")
     assert listed["rotating"] is True
 
 
 def test_clearing_a_credential_removes_it(operator_client, operator_auth):
     h = {"headers": operator_auth}
-    operator_client.put("/api/v1/operator/secrets", json={"name": "k", "value": "v-1234"}, **h)
-    assert operator_client.delete("/api/v1/operator/secrets/k", **h).json()["cleared"] is True
-    assert not [s for s in operator_client.get("/api/v1/operator/secrets", **h).json()["secrets"]
+    operator_client.put("/api/v1/compliance/operator/secrets", json={"name": "k", "value": "v-1234"}, **h)
+    assert operator_client.delete("/api/v1/compliance/operator/secrets/k", **h).json()["cleared"] is True
+    assert not [s for s in operator_client.get("/api/v1/compliance/operator/secrets", **h).json()["secrets"]
                 if s["name"] == "k"]
 
 
@@ -156,13 +156,13 @@ def test_a_deploy_time_knob_is_refused(operator_client, operator_auth):
     """Wiring changed under a live request is a class of bug nobody can reproduce."""
     for key in ("DATASTORE_DRIVER", "SECRETS_KEK", "PII_SALT", "INTERNAL_SERVICE_TOKEN",
                 "VAULT_TOKEN", "JOB_SERVICE_TOKEN", "CACHE_URL"):
-        r = operator_client.put("/api/v1/operator/config",
+        r = operator_client.put("/api/v1/compliance/operator/config",
                                 json={"key": key, "value": "anything"}, headers=operator_auth)
         assert r.status_code == 400, f"{key} was accepted at runtime"
 
 
 def test_the_config_view_never_carries_a_credential(operator_client, operator_auth):
-    view = operator_client.get("/api/v1/operator/config", headers=operator_auth).json()["config"]
+    view = operator_client.get("/api/v1/compliance/operator/config", headers=operator_auth).json()["config"]
     for banned in ("SECRETS_KEK", "INTERNAL_SERVICE_TOKEN", "PII_SALT", "VAULT_TOKEN",
                    "JOB_SERVICE_TOKEN"):
         assert banned not in view
@@ -175,8 +175,8 @@ def test_an_undeclared_knob_is_refused_rather_than_offered_inert(operator_client
     the change and the audit log records it, while behaviour does not move.
     """
     h = {"headers": operator_auth}
-    assert operator_client.get("/api/v1/operator/config", **h).json()["config"] == {}
-    r = operator_client.put("/api/v1/operator/config", json={"key": "DSAR_SLA_DAYS", "value": 20}, **h)
+    assert operator_client.get("/api/v1/compliance/operator/config", **h).json()["config"] == {}
+    r = operator_client.put("/api/v1/compliance/operator/config", json={"key": "DSAR_SLA_DAYS", "value": 20}, **h)
     assert r.status_code == 400, "an undeclared knob was accepted and would have been inert"
 
 
@@ -185,12 +185,12 @@ def test_without_a_kek_the_surface_refuses_rather_than_storing_in_the_clear(env_
     """No KEK means nothing to seal with. Storing the credential anyway — in the clear, while
     every check reports 'encrypted' — is the one outcome that must never happen."""
     c = _make_app(SECRETS_KEK="")
-    r = c.put("/api/v1/operator/secrets", json={"name": "k", "value": "v"},
+    r = c.put("/api/v1/compliance/operator/secrets", json={"name": "k", "value": "v"},
               headers=_auth("platform.secrets"))
     assert r.status_code == 503, "a credential was accepted with nothing to seal it with"
     # And the read side refuses identically, rather than reporting an empty credential set —
     # "no secrets configured" and "secrets unreadable" must not look the same to an operator.
-    assert c.get("/api/v1/operator/secrets", headers=_auth("platform.secrets")).status_code == 503
+    assert c.get("/api/v1/compliance/operator/secrets", headers=_auth("platform.secrets")).status_code == 503
 
 
 def test_a_refresh_longer_than_the_rotation_window_is_refused_at_boot(env_guard):

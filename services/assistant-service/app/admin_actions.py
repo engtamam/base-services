@@ -57,12 +57,12 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
     # ever changes.
     {
         "id": "operator.list_secrets", "label": "Provider credentials", "method": "GET",
-        "path": "/api/v1/operator/secrets", "capability": "platform.secrets",
+        "path": "/api/v1/assistant/operator/secrets", "capability": "platform.secrets",
         "group": "Credentials",
     },
     {
         "id": "operator.set_secret", "label": "Set / rotate a provider credential", "method": "PUT",
-        "path": "/api/v1/operator/secrets", "capability": "platform.secrets",
+        "path": "/api/v1/assistant/operator/secrets", "capability": "platform.secrets",
         "group": "Credentials", "confirm": True,
         "params": [
             {"name": "name", "in": "body", "type": "string", "required": True,
@@ -75,17 +75,17 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
     },
     {
         "id": "operator.clear_secret", "label": "Remove a provider credential", "method": "DELETE",
-        "path": "/api/v1/operator/secrets/{name}", "capability": "platform.secrets",
+        "path": "/api/v1/assistant/operator/secrets/{name}", "capability": "platform.secrets",
         "group": "Credentials", "confirm": True,
         "params": [{"name": "name", "in": "path", "type": "string", "required": True}],
     },
     {
         "id": "operator.get_config", "label": "Runtime settings", "method": "GET",
-        "path": "/api/v1/operator/config", "capability": "platform.config", "group": "Settings",
+        "path": "/api/v1/assistant/operator/config", "capability": "platform.config", "group": "Settings",
     },
     {
         "id": "operator.set_config", "label": "Change a runtime setting", "method": "PUT",
-        "path": "/api/v1/operator/config", "capability": "platform.config",
+        "path": "/api/v1/assistant/operator/config", "capability": "platform.config",
         "group": "Settings", "confirm": True,
         "params": [
             {"name": "key", "in": "body", "type": "string", "required": True,
@@ -96,7 +96,7 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
     },
     {
         "id": "operator.clear_config", "label": "Reset a setting to its default", "method": "DELETE",
-        "path": "/api/v1/operator/config/{key}", "capability": "platform.config",
+        "path": "/api/v1/assistant/operator/config/{key}", "capability": "platform.config",
         "group": "Settings", "confirm": True,
         "params": [{"name": "key", "in": "path", "type": "string", "required": True}],
     },

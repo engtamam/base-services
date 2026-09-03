@@ -130,12 +130,12 @@ def build_manifest(
             {"path": "/internal/compliance/dsar/run", "tier": "internal", "method": "POST"},
             {"path": "/internal/compliance/retention/run", "tier": "internal", "method": "POST"},
             # The operator surface: credentials and policy an operator changes after launch.
-            {"path": "/api/v1/operator/secrets", "tier": "user", "method": "GET"},
-            {"path": "/api/v1/operator/secrets", "tier": "user", "method": "PUT"},
-            {"path": "/api/v1/operator/secrets/{}", "tier": "user", "method": "DELETE"},
-            {"path": "/api/v1/operator/config", "tier": "user", "method": "GET"},
-            {"path": "/api/v1/operator/config", "tier": "user", "method": "PUT"},
-            {"path": "/api/v1/operator/config/{}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/compliance/operator/secrets", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/compliance/operator/secrets", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/compliance/operator/secrets/{}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/compliance/operator/config", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/compliance/operator/config", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/compliance/operator/config/{}", "tier": "user", "method": "DELETE"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         "events": {"emitted": [], "consumed": []},

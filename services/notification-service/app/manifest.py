@@ -86,13 +86,13 @@ def build_manifest(
             # The operator surface: credentials and policy an operator changes after launch.
             # A route table built from manifests that omits where credentials are set hides the
             # highest-privilege surface this service has.
-            {"path": "/api/v1/operator/secrets", "tier": "user", "method": "GET"},
-            {"path": "/api/v1/operator/secrets", "tier": "user", "method": "PUT"},
-            {"path": "/api/v1/operator/secrets/{}", "tier": "user", "method": "DELETE"},
-            {"path": "/api/v1/operator/whatsapp/embedded-signup", "tier": "user", "method": "POST"},
-            {"path": "/api/v1/operator/config", "tier": "user", "method": "GET"},
-            {"path": "/api/v1/operator/config", "tier": "user", "method": "PUT"},
-            {"path": "/api/v1/operator/config/{}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/notifications/operator/secrets", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/notifications/operator/secrets", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/notifications/operator/secrets/{}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/notifications/operator/whatsapp/embedded-signup", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/notifications/operator/config", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/notifications/operator/config", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/notifications/operator/config/{}", "tier": "user", "method": "DELETE"},
             {"path": "/internal/whatsapp/embedded-signup", "tier": "internal", "method": "POST"},
             {"path": "/internal/notifications/drain", "tier": "internal", "method": "POST"},
             {"path": "/internal/whatsapp/templates/sync", "tier": "internal", "method": "POST"},

@@ -65,7 +65,7 @@ def _auth(tok: str) -> dict:
 
 # A user-tier route (needs tickets.self) and an operator-tier route (needs tickets.manage).
 USER_ROUTE = "/api/v1/workflows"
-OPERATOR_ROUTE = "/api/v1/operator/tickets"
+OPERATOR_ROUTE = "/api/v1/tickets/operator/tickets"
 
 
 # ── Authentication ──────────────────────────────────────────────────────────

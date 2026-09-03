@@ -67,21 +67,21 @@ CAPS = ["platform.secrets", "platform.config"]
 
 # ── the negative guarantee ────────────────────────────────────────────────────
 def test_no_route_returns_the_stored_credential(client):
-    assert client.put("/api/v1/operator/secrets", headers=_tok(CAPS),
+    assert client.put("/api/v1/assistant/operator/secrets", headers=_tok(CAPS),
                       json={"name": "MODEL_API_KEY", "value": STORED}).status_code == 200
 
-    for resp in (client.put("/api/v1/operator/secrets", headers=_tok(CAPS),
+    for resp in (client.put("/api/v1/assistant/operator/secrets", headers=_tok(CAPS),
                             json={"name": "MODEL_API_KEY", "value": STORED}),
-                 client.get("/api/v1/operator/secrets", headers=_tok(CAPS)),
-                 client.get("/api/v1/operator/config", headers=_tok(CAPS))):
+                 client.get("/api/v1/assistant/operator/secrets", headers=_tok(CAPS)),
+                 client.get("/api/v1/assistant/operator/config", headers=_tok(CAPS))):
         assert resp.status_code == 200
         assert STORED not in resp.text, f"{resp.request.url} handed back the credential"
 
 
 def test_the_listing_shows_a_hint_only(client):
-    client.put("/api/v1/operator/secrets", headers=_tok(CAPS),
+    client.put("/api/v1/assistant/operator/secrets", headers=_tok(CAPS),
                json={"name": "MODEL_API_KEY", "value": STORED})
-    body = client.get("/api/v1/operator/secrets", headers=_tok(CAPS)).json()
+    body = client.get("/api/v1/assistant/operator/secrets", headers=_tok(CAPS)).json()
     row = next(s for s in body["secrets"] if s["name"] == "MODEL_API_KEY")
     # Four characters identify WHICH key is loaded — enough to avoid replacing the wrong one, and
     # useless to anyone who steals the response.
@@ -90,12 +90,12 @@ def test_the_listing_shows_a_hint_only(client):
 
 # ── authorisation ─────────────────────────────────────────────────────────────
 @pytest.mark.parametrize("path,method", [
-    ("/api/v1/operator/secrets", "get"),
-    ("/api/v1/operator/secrets", "put"),
-    ("/api/v1/operator/secrets/MODEL_API_KEY", "delete"),
-    ("/api/v1/operator/config", "get"),
-    ("/api/v1/operator/config", "put"),
-    ("/api/v1/operator/config/MODEL_NAME", "delete"),
+    ("/api/v1/assistant/operator/secrets", "get"),
+    ("/api/v1/assistant/operator/secrets", "put"),
+    ("/api/v1/assistant/operator/secrets/MODEL_API_KEY", "delete"),
+    ("/api/v1/assistant/operator/config", "get"),
+    ("/api/v1/assistant/operator/config", "put"),
+    ("/api/v1/assistant/operator/config/MODEL_NAME", "delete"),
 ])
 def test_the_capability_is_required(client, path, method):
     """Holding every OTHER capability this service grants must not open the operator surface."""
@@ -112,10 +112,10 @@ def test_the_capability_is_required(client, path, method):
 def test_deploy_time_knobs_are_refused(client, key):
     """Wiring, identity and credentials are deploy-time. Storing one here would be worse than
     refusing: it would be accepted, never read, and believed."""
-    r = client.put("/api/v1/operator/config", headers=_tok(CAPS),
+    r = client.put("/api/v1/assistant/operator/config", headers=_tok(CAPS),
                    json={"key": key, "value": "memory"})
     assert r.status_code == 400
-    cfg = client.get("/api/v1/operator/config", headers=_tok(CAPS)).json()["config"]
+    cfg = client.get("/api/v1/assistant/operator/config", headers=_tok(CAPS)).json()["config"]
     assert key not in cfg
 
 
@@ -128,8 +128,8 @@ def test_this_service_declares_no_runtime_policy_so_it_offers_none(client):
     wires the read.
     """
     h = {"headers": _tok(CAPS)}
-    assert client.get("/api/v1/operator/config", **h).json()["config"] == {}
-    r = client.put("/api/v1/operator/config", json={"key": "KNOB", "value": 9}, **h)
+    assert client.get("/api/v1/assistant/operator/config", **h).json()["config"] == {}
+    r = client.put("/api/v1/assistant/operator/config", json={"key": "KNOB", "value": 9}, **h)
     assert r.status_code == 400, "an undeclared knob was accepted and would have been inert"
 
 
@@ -137,10 +137,10 @@ def test_this_service_declares_no_runtime_policy_so_it_offers_none(client):
 def test_without_a_kek_the_surface_refuses(keyless_client):
     """503, not a successful write. There is nothing to seal with, and storing it anyway is the
     one outcome that must never happen."""
-    r = keyless_client.put("/api/v1/operator/secrets", headers=_tok(CAPS),
+    r = keyless_client.put("/api/v1/assistant/operator/secrets", headers=_tok(CAPS),
                            json={"name": "MODEL_API_KEY", "value": STORED})
     assert r.status_code == 503
-    assert keyless_client.get("/api/v1/operator/secrets",
+    assert keyless_client.get("/api/v1/assistant/operator/secrets",
                               headers=_tok(CAPS)).status_code == 503
 
 
@@ -153,15 +153,15 @@ def test_a_stored_key_beats_the_environment_one_and_rotates(client):
     creds = client.app.state.model_credentials
     assert asyncio.run(creds.get()) == "from-the-environment"
 
-    client.put("/api/v1/operator/secrets", headers=_tok(CAPS),
+    client.put("/api/v1/assistant/operator/secrets", headers=_tok(CAPS),
                json={"name": "MODEL_API_KEY", "value": STORED})
     assert asyncio.run(creds.get()) == STORED, "the write did not invalidate this replica's cache"
 
-    client.put("/api/v1/operator/secrets", headers=_tok(CAPS),
+    client.put("/api/v1/assistant/operator/secrets", headers=_tok(CAPS),
                json={"name": "MODEL_API_KEY", "value": "sk-rotated-3a1b"})
     assert asyncio.run(creds.get()) == "sk-rotated-3a1b"
 
-    client.delete("/api/v1/operator/secrets/MODEL_API_KEY", headers=_tok(CAPS))
+    client.delete("/api/v1/assistant/operator/secrets/MODEL_API_KEY", headers=_tok(CAPS))
     assert asyncio.run(creds.get()) == "from-the-environment"
 
 
@@ -177,10 +177,10 @@ def test_every_mutation_is_audited(client):
 
     auditor.record = spy
     try:
-        client.put("/api/v1/operator/secrets", headers=_tok(CAPS),
+        client.put("/api/v1/assistant/operator/secrets", headers=_tok(CAPS),
                    json={"name": "MODEL_API_KEY", "value": STORED})
-        client.delete("/api/v1/operator/secrets/MODEL_API_KEY", headers=_tok(CAPS))
-        client.put("/api/v1/operator/config", headers=_tok(CAPS),
+        client.delete("/api/v1/assistant/operator/secrets/MODEL_API_KEY", headers=_tok(CAPS))
+        client.put("/api/v1/assistant/operator/config", headers=_tok(CAPS),
                    json={"key": "MODEL_MAX_ANSWER_TOKENS", "value": "256"})
     finally:
         auditor.record = real

@@ -59,7 +59,7 @@ def test_verify_runs_off_the_event_loop_thread(app):
 
     # Any authenticated route runs require_user (which verifies BEFORE the capability check), so even a
     # 403 proves verify ran. Hit an operator route with a valid-signature token.
-    app.get("/api/v1/operator/secrets", headers=_bearer(caps=("platform.operator",)))
+    app.get("/api/v1/identity/operator/secrets", headers=_bearer(caps=("platform.operator",)))
 
     assert "thread" in seen, "verify() was never called on the request path"
     assert seen["thread"] != threading.main_thread().name, (

@@ -130,7 +130,7 @@ async def list_tickets(request: Request, principal: Principal = Depends(_SELF),
                        type: str = Query(default=""), status_: str = Query(default="", alias="status"),
                        limit: int = Query(default=50, ge=1, le=200),
                        cursor: str = Query(default="")) -> dict:
-    """A customer's OWN tickets. Operators use /operator/tickets for the tenant-wide view."""
+    """A customer's OWN tickets. Operators use /tickets/operator/tickets for the tenant-wide view."""
     tenant = _tenant(principal)
     svc = build_tickets(request)
     rows, nxt = await svc._tickets.find(
@@ -207,7 +207,7 @@ async def rate_ticket(request: Request, ticket_id: str, body: RateIn,
 
 
 # ── operator: tenant-wide view + workflow moves ───────────────────────────────
-@router.get("/operator/tickets", dependencies=[Depends(rate_limit)])
+@router.get("/tickets/operator/tickets", dependencies=[Depends(rate_limit)])
 async def operator_list(request: Request, principal: Principal = Depends(_MANAGE),
                         type: str = Query(default=""), status_: str = Query(default="", alias="status"),
                         assignee: str = Query(default=""), priority: str = Query(default=""),

@@ -89,12 +89,12 @@ def build_manifest(
             # The operator surface: credentials and policy an operator changes after launch.
             # A route table built from manifests that omits where credentials are set hides the
             # highest-privilege surface this service has.
-            {"path": "/api/v1/operator/secrets", "tier": "admin", "method": "GET"},
-            {"path": "/api/v1/operator/secrets", "tier": "admin", "method": "PUT"},
-            {"path": "/api/v1/operator/secrets/{name}", "tier": "admin", "method": "DELETE"},
-            {"path": "/api/v1/operator/config", "tier": "admin", "method": "GET"},
-            {"path": "/api/v1/operator/config", "tier": "admin", "method": "PUT"},
-            {"path": "/api/v1/operator/config/{key}", "tier": "admin", "method": "DELETE"},
+            {"path": "/api/v1/assistant/operator/secrets", "tier": "admin", "method": "GET"},
+            {"path": "/api/v1/assistant/operator/secrets", "tier": "admin", "method": "PUT"},
+            {"path": "/api/v1/assistant/operator/secrets/{name}", "tier": "admin", "method": "DELETE"},
+            {"path": "/api/v1/assistant/operator/config", "tier": "admin", "method": "GET"},
+            {"path": "/api/v1/assistant/operator/config", "tier": "admin", "method": "PUT"},
+            {"path": "/api/v1/assistant/operator/config/{key}", "tier": "admin", "method": "DELETE"},
             {"path": "/internal/assistant/retention", "tier": "internal", "method": "POST"},
             # Customer-service AI (advisory, opt-in via a real MODEL_DRIVER): triage a new ticket and
             # draft a reply. ticket-service's SUGGEST_DRIVER=http points here.
