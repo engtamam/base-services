@@ -29,6 +29,14 @@ import uuid
 from app.ports.audit_sink import ACCEPTED, FAILED, AuditEvent, AuditReceipt
 
 
+def _fetch(req, timeout) -> tuple[int, bytes]:
+    """The BLOCKING part (urlopen + read), isolated so emit() can run it off the event loop via
+    asyncio.to_thread. Run inline on the loop it froze /healthz for the whole round-trip on every
+    audited action — the crash-loop this fixes."""
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310 - config-only host
+        return resp.status, resp.read()
+
+
 class HttpAuditSink:
     driver = "http"
 
@@ -62,8 +70,9 @@ class HttpAuditSink:
         for attempt in range(self._max_attempts):
             retryable = False
             try:
-                with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # nosec B310 - config-only host
-                    status, raw = resp.status, resp.read()
+                # OFF the event loop: a blocking urlopen here froze /healthz for the whole HTTP
+                # round-trip on every audited action, failing the liveness probe under normal load.
+                status, raw = await asyncio.to_thread(_fetch, req, self._timeout)
             except urllib.error.HTTPError as exc:
                 # A definitive HTTP response. 503 (audit busy / a reservation in flight) is worth
                 # another attempt with the same key; a 4xx is the caller's fault and is not.

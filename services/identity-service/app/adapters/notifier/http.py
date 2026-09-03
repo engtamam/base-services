@@ -17,10 +17,17 @@ another mail. Turning a provider hiccup into a failed registration would be the 
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import urllib.error
 import urllib.request
 from typing import Any
+
+
+def _send(req, timeout) -> int:
+    """The BLOCKING urlopen, isolated so send() can run it off the event loop via asyncio.to_thread."""
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310 - config-only host
+        return resp.status
 
 
 class HttpNotifier:
@@ -59,7 +66,9 @@ class HttpNotifier:
         for _k, _v in assertion_headers_from_env(target="notification-service").items():
             req.add_header(_k, _v)
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # nosec B310 - config-only host
-                return 200 <= resp.status < 300
+            # OFF the event loop: a synchronous urlopen here blocked the loop (and /healthz) for the
+            # whole notification round-trip on every OTP/verification send.
+            status = await asyncio.to_thread(_send, req, self._timeout)
+            return 200 <= status < 300
         except (urllib.error.HTTPError, urllib.error.URLError, OSError):
             return False
