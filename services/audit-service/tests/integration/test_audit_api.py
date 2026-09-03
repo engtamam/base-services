@@ -79,6 +79,40 @@ def test_export_csv(client):
     assert r.status_code == 200 and "text/csv" in r.headers["content-type"]
 
 
+def test_internal_query_requires_the_internal_token(client):
+    # no token -> 401; a user Bearer is not an internal token
+    assert client.get("/internal/audit?tenant=t1").status_code == 401
+    assert client.get("/internal/audit?tenant=t1", headers=_platform()).status_code == 401
+
+
+def test_internal_query_requires_tenant(client):
+    assert client.get("/internal/audit", headers=_internal()).status_code == 422
+
+
+def test_internal_query_is_tenant_scoped(client):
+    tenant_admin = _make_app(AUDIT_PARTITION="tenant")
+    tenant_admin.post("/internal/audit", json={"service": "s", "action": "a", "tenant": "t1"}, headers=_internal())
+    tenant_admin.post("/internal/audit", json={"service": "s", "action": "b", "tenant": "t2"}, headers=_internal())
+    r = tenant_admin.get("/internal/audit?tenant=t1", headers=_internal())
+    assert r.status_code == 200
+    tenants = {e["tenant"] for e in r.json()["events"]}
+    assert tenants == {"t1"}  # the internal caller's tenant scope holds; t2 never leaks
+
+
+def test_internal_query_honours_filters(client):
+    # A fresh tenant-partitioned app so the actor filter is measured in isolation. The stored actor
+    # is pseudonymised (symmetric fold), so we assert on counts, not the raw actor string.
+    app = _make_app(AUDIT_PARTITION="tenant")
+    app.post("/internal/audit", json={"service": "identity", "action": "login", "actor": "alice", "tenant": "acme"},
+             headers=_internal())
+    app.post("/internal/audit", json={"service": "identity", "action": "logout", "actor": "bob", "tenant": "acme"},
+             headers=_internal())
+    both = app.get("/internal/audit?tenant=acme", headers=_internal())
+    only_alice = app.get("/internal/audit?tenant=acme&actor=alice", headers=_internal())
+    assert both.json()["count"] == 2
+    assert only_alice.json()["count"] == 1  # the actor filter narrows; bob's event is excluded
+
+
 def test_query_needs_a_capability(client):
     # a token with neither platform.audit nor audit.view -> 403
     assert client.get("/api/v1/audit", headers={"Authorization": "Bearer " + _tok([])}).status_code == 403

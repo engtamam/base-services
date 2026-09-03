@@ -77,6 +77,11 @@ def build_manifest(
             {"path": "/internal/compliance/consent-check", "tier": "internal", "method": "GET",
              # Another SERVICE must call this. safety:contract-callers fails if none declares it.
              "caller": "service"},
+            # Read twins for the (cross-repo) case-timeline investigation tool — like consent-check
+            # but LISTING for one subject. Consumed cross-repo, so NOT caller:service (no in-repo
+            # declarer), same as /internal/whatsapp/channel-usage.
+            {"path": "/internal/compliance/consent-history", "tier": "internal", "method": "GET"},
+            {"path": "/internal/compliance/dsar", "tier": "internal", "method": "GET"},
             {"path": "/internal/compliance/hold-check", "tier": "internal", "method": "GET",
              "caller": "service"},
             {"path": "/internal/compliance/held-refs", "tier": "internal", "method": "GET",

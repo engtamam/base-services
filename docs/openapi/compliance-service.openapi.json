@@ -2435,6 +2435,96 @@
         ]
       }
     },
+    "/internal/compliance/consent-history": {
+      "get": {
+        "description": "Internal-token twin of GET /api/v1/compliance/consent/history \u2014 one subject's consent history\nfor the case-timeline investigation tool. Same ConsentService.history() the user route reads;\ntenant is REQUIRED (the internal caller names the tenant it is investigating) and scopes it.",
+        "operationId": "internal_consent_history_internal_compliance_consent_history_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "subject",
+            "required": true,
+            "schema": {
+              "maxLength": 256,
+              "minLength": 1,
+              "title": "Subject",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Internal Consent History Internal Compliance Consent History Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Internal Consent History",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/compliance/consent/migrate-purpose-keys": {
       "post": {
         "description": "One-shot: rewrite pre-normalisation consent rows under their normalised key.\n\nDeliberately an operator action rather than something that runs at boot. It edits the records\nthat decide what the platform may lawfully do, and a migration that happens automatically on\nevery deploy is one nobody is watching when it goes wrong.\n\nIdempotent \u2014 a second run finds nothing left to convert. The response reports CONFLICTS, where\nboth spellings existed: those are resolved deny-beats-allow rather than merged, and naming\nthem is the point, because a resolution nobody chose should at least be one somebody can see.",
@@ -2644,6 +2734,96 @@
           }
         },
         "summary": "Internal Register Target",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/compliance/dsar": {
+      "get": {
+        "description": "Internal-token twin of GET /api/v1/compliance/dsar, FILTERED to one subject \u2014 the DSARs a\ncustomer has opened, for the case-timeline tool. Reads the same DsarStore the user route lists;\ntenant is REQUIRED and scopes the read; the subject filter keeps it to the one person investigated.",
+        "operationId": "internal_dsar_internal_compliance_dsar_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "subject",
+            "required": true,
+            "schema": {
+              "maxLength": 256,
+              "minLength": 1,
+              "title": "Subject",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Internal Dsar Internal Compliance Dsar Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Internal Dsar",
         "tags": [
           "internal"
         ]

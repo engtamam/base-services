@@ -68,6 +68,7 @@ def build_manifest(
              # that did not happen.
              "erasure_category": "subject"},
             {"path": "/internal/audit", "tier": "internal", "method": "POST"},
+            {"path": "/internal/audit", "tier": "internal", "method": "GET"},
             {"path": "/api/v1/audit", "tier": "user", "method": "GET"},
             {"path": "/api/v1/audit/verify", "tier": "user", "method": "GET"},
             {"path": "/api/v1/audit/export", "tier": "user", "method": "GET"},

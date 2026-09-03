@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from app.api.v1.compliance import (build_compliance, build_consent, build_consent_sweeper,
@@ -67,6 +67,30 @@ async def require_internal_token(
 @router.get("/health", dependencies=[Depends(require_internal_token)])
 async def internal_health(settings: Settings = Depends(get_settings)) -> dict[str, str]:
     return {"status": "ok", "service": settings.SERVICE_NAME}
+
+
+@router.get("/compliance/consent-history", dependencies=[Depends(require_internal_token)])
+async def internal_consent_history(
+        request: Request,
+        tenant: str = Query(..., min_length=1, max_length=128),
+        subject: str = Query(..., min_length=1, max_length=256)) -> dict:
+    """Internal-token twin of GET /api/v1/compliance/consent/history — one subject's consent history
+    for the case-timeline investigation tool. Same ConsentService.history() the user route reads;
+    tenant is REQUIRED (the internal caller names the tenant it is investigating) and scopes it."""
+    return await build_consent(request).history(tenant, subject)
+
+
+@router.get("/compliance/dsar", dependencies=[Depends(require_internal_token)])
+async def internal_dsar(
+        request: Request,
+        tenant: str = Query(..., min_length=1, max_length=128),
+        subject: str = Query(..., min_length=1, max_length=256)) -> dict:
+    """Internal-token twin of GET /api/v1/compliance/dsar, FILTERED to one subject — the DSARs a
+    customer has opened, for the case-timeline tool. Reads the same DsarStore the user route lists;
+    tenant is REQUIRED and scopes the read; the subject filter keeps it to the one person investigated."""
+    rows = await build_dsar(request).list(tenant)
+    subject_rows = [r for r in rows if r.get("subject") == subject]
+    return {"dsars": subject_rows, "count": len(subject_rows)}
 
 
 class InternalTargetIn(BaseModel):

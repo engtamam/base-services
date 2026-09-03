@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field, model_validator
 
 from app.api.v1.audit import build_audit
@@ -131,6 +131,35 @@ async def verify_all(request: Request) -> dict:
 @router.get("/health", dependencies=[Depends(require_internal_token)])
 async def internal_health(settings: Settings = Depends(get_settings)) -> dict[str, str]:
     return {"status": "ok", "service": settings.SERVICE_NAME}
+
+
+@router.get("/audit", dependencies=[Depends(require_internal_token)])
+async def internal_query(request: Request,
+                         tenant: str = Query(..., min_length=1, max_length=128),
+                         limit: int | None = Query(default=None, le=1000),
+                         service: str | None = Query(default=None, max_length=128),
+                         actor: str | None = Query(default=None, max_length=256),
+                         action: str | None = Query(default=None, max_length=128),
+                         resource: str | None = Query(default=None, max_length=256),
+                         since: str | None = Query(default=None, max_length=64),
+                         until: str | None = Query(default=None, max_length=64)) -> dict:
+    """Internal-token twin of GET /api/v1/audit — a service (the case-timeline investigation tool)
+    reading a customer's audit trail across services. Same query() logic and filter set as the
+    user-tier route; tenant is REQUIRED here (an internal caller names the tenant it is investigating,
+    like every other /internal route) and scopes every read, so this is never a cross-tenant dump."""
+    filters: dict = {"tenant": tenant}
+    for key, val in (("service", service), ("actor", actor), ("action", action),
+                     ("resource", resource), ("since", since), ("until", until)):
+        if val:
+            filters[key] = val
+    events = await build_audit(request).query(filters, limit)
+    # The access trail is only worth having if reading it is also on it (same rationale as the
+    # user-tier route). Internal caller ⇒ actor is empty; the tenant is the one being investigated.
+    await request.app.state.auditor.record(
+        "audit.queried", actor="", tenant=tenant, resource="audit_log",
+        ip=request.client.host if request.client else "",
+        metadata={"returned": str(len(events))})
+    return {"events": events, "count": len(events)}
 
 
 @router.post("/audit", dependencies=[Depends(require_internal_token)])
