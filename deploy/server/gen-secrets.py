@@ -131,9 +131,14 @@ def _gen_ed25519() -> str:
 
 
 def _gen_rsa() -> tuple[str, str]:
-    """A fresh RS256 keypair (PKCS#8 PEM private, SPKI PEM public) for one service's caller identity."""
+    """A fresh RS256 keypair (PKCS#8 PEM private, SPKI PEM public) for one service's caller identity.
+
+    Key size is ASSERTION_KEY_BITS (default 2048) — a deployment with a stronger key-length policy
+    sets it higher (e.g. 4096) at install without editing this script."""
+    bits = os.environ.get("ASSERTION_KEY_BITS", "2048")
     priv = subprocess.run(["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt",
-                           "rsa_keygen_bits:2048"], capture_output=True, text=True, check=True).stdout
+                           f"rsa_keygen_bits:{int(bits)}"], capture_output=True, text=True,
+                          check=True).stdout
     pub = subprocess.run(["openssl", "pkey", "-pubout"], input=priv,
                          capture_output=True, text=True, check=True).stdout
     return priv, pub

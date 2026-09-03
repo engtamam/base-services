@@ -200,6 +200,9 @@ cronJobs: []
 #  - name: prune-raw
 #    schedule: "17 3 * * *"
 #    path: /internal/analytics/prune-raw
+#    timeoutSeconds: 300              # optional; must exceed the endpoint's worst-case work
+#    jitterSeconds: 0                 # optional; random 0..N start delay to STAGGER same-minute jobs
+#                                     # across services (default 0 = fire on the tick). Keep < interval.
 #    timeZone: "Asia/Riyadh"          # optional per-job override of the deployment default above
 
 # ── Scheduling ──────────────────────────────────────────────────────────────

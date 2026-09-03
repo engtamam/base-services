@@ -99,6 +99,12 @@ spec:
                   # Per-cronJob; must exceed the endpoint's own worst-case work (a fan-out sweep sums
                   # its targets). Default 300 keeps every short maintenance call exactly as it was.
                   value: {{ .timeoutSeconds | default 300 | quote }}
+                - name: JITTER_SECONDS
+                  # Per-cronJob random start delay (0..JITTER_SECONDS) before the POST — STAGGERS
+                  # every-minute jobs across services that otherwise all fire on :00 and stampede a
+                  # single-worker box (the api-gateway crash-loop incident). Default 0 = fire
+                  # immediately, exactly as before. Keep it well under the schedule interval.
+                  value: {{ .jitterSeconds | default 0 | quote }}
                 - name: INTERNAL_SERVICE_TOKEN
                   valueFrom:
                     secretKeyRef:
@@ -107,7 +113,13 @@ spec:
               command: ["python", "-c"]
               args:
                 - |
-                  import os, sys, urllib.request
+                  import os, sys, time, random, urllib.request
+                  # Jitter: sleep a RANDOM 0..JITTER_SECONDS before firing, so jobs scheduled on the
+                  # same minute across services don't all hit at :00 (a fixed delay would just shift
+                  # the stampede). 0 => no wait.
+                  _jitter = float(os.environ.get("JITTER_SECONDS", "0") or 0)
+                  if _jitter > 0:
+                      time.sleep(random.uniform(0, _jitter))
                   req = urllib.request.Request(
                       os.environ["TARGET_URL"], method="POST", data=b"",
                       headers={"X-Internal-Token": os.environ["INTERNAL_SERVICE_TOKEN"],

@@ -208,6 +208,7 @@
           "schedule": { "type": "string", "minLength": 1 },
           "path": { "type": "string", "pattern": "^/internal/" },
           "timeoutSeconds": { "type": "integer", "minimum": 1 },
+          "jitterSeconds": { "type": "integer", "minimum": 0 },
           "timeZone": { "type": "string" }
         }
       }
