@@ -1404,6 +1404,7 @@ class BillingService:
                 # record the whole total as returned and void the invoice.
                 inv.refunded_minor = inv.total_minor
                 inv.status = "void"
+                inv.voided_at = iso()           # WHEN the money was fully returned — for dispute timelines
                 await self._invoices.save(inv)
                 await self._claw_back(inv)      # same reversal as a manual refund / a settlement recall
             changed = True
@@ -1495,6 +1496,7 @@ class BillingService:
                 inv.credit_note = True
                 if inv.refunded_minor >= inv.total_minor:
                     inv.status = "void"
+                    inv.voided_at = iso()       # WHEN it fully voided — for dispute timelines
                 await self._invoices.save(inv)
                 await self._ledger.record(tenant=inv.tenant, kind="refund",
                                           amount_minor=-refund_amt,

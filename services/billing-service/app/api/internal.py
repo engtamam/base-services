@@ -195,7 +195,10 @@ async def list_invoices_internal(request: Request, tenant: str, status: str = "p
             "subscription_id": sub,
             "status": r.get("status", ""),
             "paid_at": r.get("paid_at", "") or "",
+            "voided_at": r.get("voided_at", "") or "",      # WHEN it voided (full/accumulated refund), "" if never
             "amount_minor": int(r.get("total_minor", 0) or 0),
+            "subtotal_minor": int(r.get("subtotal_minor", 0) or 0),  # the VAT split, for a dispute report (ح-2)
+            "tax_minor": int(r.get("tax_minor", 0) or 0),
             "refunded_minor": int(r.get("refunded_minor", 0) or 0),
             "currency": r.get("currency", "") or "",
             "paid_sequence": i,                             # tenant-wide; 1 = the conversion

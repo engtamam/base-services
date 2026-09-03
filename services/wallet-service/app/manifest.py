@@ -69,6 +69,7 @@ def build_manifest(
              # that did not happen.
              "erasure_category": "subject"},
             {"path": "/internal/wallet/{tenant}", "tier": "internal", "method": "GET"},
+            {"path": "/internal/wallet/{tenant}/ledger", "tier": "internal", "method": "GET"},
             {"path": "/internal/wallet/{tenant}/reconcile", "tier": "internal", "method": "GET"},
             {"path": "/internal/wallet/credit", "tier": "internal", "method": "POST"},
             {"path": "/internal/wallet/spend", "tier": "internal", "method": "POST"},

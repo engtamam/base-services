@@ -92,6 +92,21 @@ def test_status_void_is_allowed_for_clawback(seeded):
     assert [i["id"] for i in inv] == ["v1"]
 
 
+def test_vat_split_and_void_timestamp_surface_for_a_dispute_report(client):
+    # ح-2: the VAT split (subtotal/tax) and WHEN a void happened must be reconstructable per row.
+    _put_invoice(client, id="disp_paid", tenant="tdisp", paid_at="2026-04-01T00:00:00+00:00",
+                 total_minor=11500, subtotal_minor=10000, tax_minor=1500)
+    _put_invoice(client, id="disp_void", tenant="tdisp", status="void",
+                 paid_at="2026-04-02T00:00:00+00:00", voided_at="2026-05-10T09:30:00+00:00",
+                 total_minor=11500, subtotal_minor=10000, tax_minor=1500, refunded_minor=11500)
+    paid = client.get("/internal/billing/invoices?tenant=tdisp", headers=IT).json()["invoices"][0]
+    assert paid["subtotal_minor"] == 10000 and paid["tax_minor"] == 1500
+    assert paid["voided_at"] == ""                                   # never voided
+    void = client.get("/internal/billing/invoices?tenant=tdisp&status=void", headers=IT).json()["invoices"][0]
+    assert void["voided_at"] == "2026-05-10T09:30:00+00:00"          # WHEN it voided, for the timeline
+    assert void["subtotal_minor"] == 10000 and void["tax_minor"] == 1500
+
+
 def test_a_non_money_status_is_refused_not_a_probe_of_working_state(seeded):
     assert seeded.get("/internal/billing/invoices?tenant=t1&status=draft", headers=IT).status_code == 400
     assert seeded.get("/internal/billing/invoices?tenant=t1&status=open", headers=IT).status_code == 400

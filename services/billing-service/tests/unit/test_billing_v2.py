@@ -82,6 +82,7 @@ def test_partial_refund_records_refunded_minor_and_keeps_the_invoice_paid():
     assert run(b.refund(f"pay_inv_1", amount_minor=15000))["ok"]
     got = run(InvoiceStore(st).fetch("inv_1"))
     assert got.refunded_minor == 15000 and got.status == "paid"
+    assert got.voided_at == ""                                  # a partial refund does not void, so no stamp
 
 
 def test_full_refund_voids_and_records_the_whole_total():
@@ -90,6 +91,7 @@ def test_full_refund_voids_and_records_the_whole_total():
     run(b.refund("pay_inv_2"))                                  # no amount == full
     got = run(InvoiceStore(st).fetch("inv_2"))
     assert got.refunded_minor == 29900 and got.status == "void"
+    assert got.voided_at != ""                                  # the full-refund void is timestamped
 
 
 def test_two_partial_refunds_accumulate_and_then_void():
@@ -103,6 +105,7 @@ def test_two_partial_refunds_accumulate_and_then_void():
     run(b.refund("pay_inv_3", amount_minor=12000))             # now fully refunded
     got = run(InvoiceStore(st).fetch("inv_3"))
     assert got.refunded_minor == 20000 and got.status == "void"
+    assert got.voided_at != ""                                  # stamped when the accumulated refunds reach the total
 
 
 # ── currency ──────────────────────────────────────────────────────────────────

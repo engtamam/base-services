@@ -1893,6 +1893,112 @@
         ]
       }
     },
+    "/internal/wallet/{tenant}/ledger": {
+      "get": {
+        "description": "Internal-token twin of GET /wallet/admin/ledger \u2014 a tenant's individual ledger rows for the\n(cross-repo) dispute-defense report. Same bounded ledger() the self/admin routes read (the\nservice clamps `limit` to LEDGER_LIST_LIMIT); read-only, money never moves. Audited: an internal\ncaller reading a customer's money is exactly the access a review asks about.",
+        "operationId": "get_ledger_internal_wallet__tenant__ledger_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before_seq",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before Seq"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Ledger Internal Wallet  Tenant  Ledger Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Ledger",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/wallet/{tenant}/reconcile": {
       "get": {
         "description": "Prove the materialized balance equals sum(ledger). Two writes, one truth.",

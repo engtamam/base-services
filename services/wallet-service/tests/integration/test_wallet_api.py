@@ -121,6 +121,26 @@ def test_operator_reconcile_proves_consistency_without_moving_money(client):
     assert client.get("/internal/wallet/cust_r", headers=IT).json()["balance"] == before
 
 
+def test_internal_ledger_lists_a_tenants_rows_read_only(client):
+    # The internal-token twin of /admin/ledger, for the cross-repo dispute-defense report.
+    credit(client, "cust_led", "cash", 9_000, "topup")
+    client.post("/internal/wallet/spend", json={"tenant": "cust_led", "net": 200, "source": "sms"},
+                headers=IT)
+    before = client.get("/internal/wallet/cust_led", headers=IT).json()["balance"]
+    r = client.get("/internal/wallet/cust_led/ledger", headers=IT)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["tenant"] == "cust_led" and body["count"] == len(body["entries"])
+    kinds = {e["type"] for e in body["entries"]}
+    assert kinds == {"credit", "spend"}                        # both rows, full detail per row
+    # Reading the statement moved nothing.
+    assert client.get("/internal/wallet/cust_led", headers=IT).json()["balance"] == before
+
+
+def test_internal_ledger_requires_the_internal_token(client):
+    assert client.get("/internal/wallet/anyone/ledger").status_code == 401
+
+
 # ── money ───────────────────────────────────────────────────────────────────
 def test_credit_then_spend_applies_promo_before_vat(client):
     credit(client, "t_spend", "cash", 10_000, "c1")

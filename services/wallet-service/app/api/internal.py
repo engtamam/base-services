@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from app.api.v1.wallet import build_wallet
@@ -115,6 +115,22 @@ def _handle(exc: Exception) -> HTTPException:
 @router.get("/wallet/{tenant}", dependencies=[Depends(require_internal_token)])
 async def get_balance(tenant: str, request: Request) -> dict:
     return await build_wallet(request).balance(tenant)
+
+
+@router.get("/wallet/{tenant}/ledger", dependencies=[Depends(require_internal_token)])
+async def get_ledger(tenant: str, request: Request,
+                     limit: int = Query(default=50, ge=1, le=500),
+                     before_seq: int | None = Query(default=None, ge=1)) -> dict:
+    """Internal-token twin of GET /wallet/admin/ledger — a tenant's individual ledger rows for the
+    (cross-repo) dispute-defense report. Same bounded ledger() the self/admin routes read (the
+    service clamps `limit` to LEDGER_LIST_LIMIT); read-only, money never moves. Audited: an internal
+    caller reading a customer's money is exactly the access a review asks about."""
+    await request.app.state.auditor.record(
+        "wallet.inspected", actor="", tenant=tenant, resource="wallet",
+        ip=request.client.host if request.client else "", metadata={"view": "ledger"})
+    rows = await build_wallet(request).ledger(tenant, limit=limit, before_seq=before_seq)
+    return {"tenant": tenant, "entries": rows, "count": len(rows),
+            "next_before_seq": rows[-1]["seq"] if rows else None}
 
 
 @router.get("/wallet/{tenant}/reconcile", dependencies=[Depends(require_internal_token)])

@@ -177,6 +177,10 @@ class Invoice:
     meta: dict[str, Any] = field(default_factory=dict)
     created: str = ""
     paid_at: str = ""
+    # When this invoice was VOIDED (a full refund, or accumulated partial refunds reaching the
+    # total). ISO string like paid_at, "" while never voided. Status alone records THAT it voided;
+    # a dispute timeline also needs WHEN — the exact instant the money was fully returned.
+    voided_at: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
