@@ -101,6 +101,18 @@ serviceAccount:
   # deployment manages the SA out-of-band (e.g. a hand-applied one that pre-exists) — the chart then
   # references it by `name` instead of creating its own, avoiding the silent Helm ownership collision
   # that a same-named unmanaged SA causes.
+  #
+  # ⚠️  DANGER — create:false PRUNES a Helm-OWNED ServiceAccount. Only ever set create:false on an SA
+  # that has NEVER carried Helm's ownership annotations (meta.helm.sh/release-name, managed-by:Helm).
+  # If you previously "adopted" a colliding SA by patching those annotations onto it (the standard
+  # Helm-3 fix, and the workaround for the create-less v0.18.0 collision), then flipping create:false
+  # makes the next `helm upgrade` see an owned resource the templates no longer render and PRUNE it —
+  # deleting the SA out from under the running Deployment (pods fail: "serviceaccount not found"), a
+  # LIVE OUTAGE. Safe path for a pre-adopted SA: first STRIP all Helm annotations from it (so it is
+  # genuinely outside the release), THEN set create:false + name:<it>. A never-adopted SA is fine.
+  # RECOVERY if it already bit you: recreating the SA alone may not be enough — the ReplicaSet can sit
+  # in its FailedCreate backoff; nudge reconciliation (e.g. a trivial pod-template annotation patch)
+  # to bring pods back immediately instead of waiting the backoff out.
   create: true
   # The SA name the pod uses. Empty => the release fullname (today's behaviour); set it to point the
   # pod at an existing SA (usually alongside create=false).
