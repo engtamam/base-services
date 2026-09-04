@@ -9,6 +9,8 @@
 # =============================================================================
 from __future__ import annotations
 
+import json as _json
+
 from functools import lru_cache
 from typing import Literal
 
