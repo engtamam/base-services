@@ -178,6 +178,26 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         "params": [{"name": "key", "in": "path", "type": "string", "required": True}],
     },
     {
+        # The read side of the legal-pages surface: the console's markdown editor lists then opens a
+        # page. The routes exist (GET /legal, GET /legal/{doc_id}, gated by _VIEW) but were never
+        # declared, so the panel had no way to reach them — draft/publish with nothing to open first.
+        "id": "compliance.legal_list", "label": "List legal pages", "method": "GET",
+        "path": "/api/v1/compliance/legal",
+        "capability": "platform.compliance", "group": "Legal pages",
+    },
+    {
+        "id": "compliance.legal_view", "label": "View a legal page", "method": "GET",
+        "path": "/api/v1/compliance/legal/{doc_id}",
+        "capability": "platform.compliance", "group": "Legal pages",
+        "params": [
+            {"name": "doc_id", "in": "path", "type": "string", "required": True,
+             "help": "slug: privacy-policy, terms-of-service, …"},
+            {"name": "locale", "in": "query", "type": "string", "required": False},
+            {"name": "version", "in": "query", "type": "string", "required": False,
+             "help": "a specific version; omit for the current published one"},
+        ],
+    },
+    {
         "id": "compliance.legal_draft", "label": "Draft a legal page version", "method": "PUT",
         "path": "/api/v1/compliance/legal/{doc_id}/versions/{version}",
         "capability": "platform.compliance", "group": "Legal pages",
