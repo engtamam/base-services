@@ -34,3 +34,10 @@ class WebhookWhatsApp:
         # proxying to Meta can pass it straight through. No wamid comes back from a relay.
         status, _ = post_json(self._url, {"to": to, "interactive": interactive}, self._headers)
         return "webhook:sent" if ok(status) else ""
+
+    def send_text(self, to: str, body: str,
+                  biz_opaque_callback_data: str = "") -> str:
+        # Forwarded as-is to the relay: {to, text:{body}} mirrors Cloud API's own field so a gateway
+        # proxying to Meta can pass it straight through. No wamid comes back from a relay.
+        status, _ = post_json(self._url, {"to": to, "text": {"body": body}}, self._headers)
+        return "webhook:sent" if ok(status) else ""

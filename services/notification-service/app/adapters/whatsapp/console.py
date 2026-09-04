@@ -23,3 +23,8 @@ class ConsoleWhatsApp:
         _log.info("whatsapp_sent", extra={"provider": "console", "to": to,
                                           "interactive": interactive.get("type", "")})
         return f"console:{uuid.uuid4().hex}"
+
+    def send_text(self, to: str, body: str,
+                  biz_opaque_callback_data: str = "") -> str:
+        _log.info("whatsapp_sent", extra={"provider": "console", "to": to, "type": "text"})
+        return f"console:{uuid.uuid4().hex}"

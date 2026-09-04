@@ -53,6 +53,16 @@ class MetaWhatsApp:
             payload["biz_opaque_callback_data"] = biz_opaque_callback_data[:512]
         return self._post(payload)
 
+    def send_text(self, to: str, body: str, biz_opaque_callback_data: str = "") -> str:
+        """A plain free-text reply — no template, valid ONLY inside the 24h customer-service window
+        (a real user must have messaged us first; outside it, Meta rejects a non-template send). Same
+        envelope and response handling as send()/send_interactive(), just a text body."""
+        payload: dict = {"messaging_product": "whatsapp", "to": to, "type": "text",
+                         "text": {"body": body}}
+        if biz_opaque_callback_data:
+            payload["biz_opaque_callback_data"] = biz_opaque_callback_data[:512]
+        return self._post(payload)
+
     def _post(self, payload: dict) -> str:
         status, body = post_json(f"{self._base}/{self._phone_id}/messages", payload, self._headers)
         if not ok(status):

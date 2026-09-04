@@ -64,3 +64,50 @@ def test_a_raising_provider_is_skipped_not_fatal():
 
     ok, provider, mid = FailoverWhatsApp([_Boom(), _P("console", True)]).send("+966", "t", "en", [])
     assert ok is True and provider == "console"
+
+
+# ── Meta payload-shape tests (54.x): the envelope each send builds, without a real HTTP call ──
+def _capture_meta(monkeypatch):
+    """Patch the module-level post_json meta.py imported; capture (url, payload) and return a wamid."""
+    import app.adapters.whatsapp.meta as meta
+    calls = []
+    def fake_post(url, payload, headers):
+        calls.append((url, payload))
+        return 200, '{"messages":[{"id":"wamid.TEST"}]}'
+    monkeypatch.setattr(meta, "post_json", fake_post)
+    return calls
+
+
+def test_meta_send_text_builds_a_plain_text_envelope(monkeypatch):
+    calls = _capture_meta(monkeypatch)
+    mid = MetaWhatsApp("tok", "pnid").send_text("+96650", "hi there", biz_opaque_callback_data="cb-1")
+    assert mid == "wamid.TEST"
+    url, p = calls[-1]
+    assert url.endswith("/pnid/messages")
+    assert p["messaging_product"] == "whatsapp" and p["to"] == "+96650"
+    assert p["type"] == "text" and p["text"] == {"body": "hi there"}
+    assert p["biz_opaque_callback_data"] == "cb-1"
+
+
+def test_meta_send_text_truncates_the_callback_data_to_512(monkeypatch):
+    calls = _capture_meta(monkeypatch)
+    MetaWhatsApp("tok", "pnid").send_text("+96650", "hi", biz_opaque_callback_data="x" * 600)
+    assert len(calls[-1][1]["biz_opaque_callback_data"]) == 512
+
+
+def test_meta_send_text_omits_callback_data_when_absent(monkeypatch):
+    calls = _capture_meta(monkeypatch)
+    MetaWhatsApp("tok", "pnid").send_text("+96650", "hi")
+    assert "biz_opaque_callback_data" not in calls[-1][1]
+
+
+def test_meta_template_and_interactive_envelope_shapes(monkeypatch):
+    calls = _capture_meta(monkeypatch)
+    wa = MetaWhatsApp("tok", "pnid")
+    wa.send("+96650", "otp", "en", ["123456"])
+    p = calls[-1][1]
+    assert p["type"] == "template" and p["template"]["name"] == "otp"
+    assert p["template"]["components"][0]["parameters"][0]["text"] == "123456"
+    wa.send_interactive("+96650", {"type": "button", "body": {"text": "hi"}})
+    p2 = calls[-1][1]
+    assert p2["type"] == "interactive" and p2["interactive"] == {"type": "button", "body": {"text": "hi"}}

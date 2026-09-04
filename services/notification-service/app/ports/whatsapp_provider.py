@@ -35,3 +35,11 @@ class WhatsAppProvider(Protocol):
         send(). The wamid remains the join key to the reply/receipt that arrives later by webhook.
         """
         ...
+
+    def send_text(self, to: str, body: str,
+                  biz_opaque_callback_data: str = "") -> str:
+        """Send a plain free-text message, INSIDE the 24h customer-service window a customer's own
+        inbound message opens — so no template is required (outside the window Meta rejects it). For
+        replies to a user who has just messaged us. Returns the wamid on success, "" on failure,
+        exactly like send()/send_interactive()."""
+        ...

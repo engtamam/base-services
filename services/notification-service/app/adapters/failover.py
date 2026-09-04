@@ -69,3 +69,15 @@ class FailoverWhatsApp:
             except Exception:
                 _log.warning("whatsapp_provider_error", extra={"provider": p.driver})
         return False, self.driver, ""
+
+    def send_text(self, to: str, body: str,
+                  biz_opaque_callback_data: str = "") -> tuple[bool, str, str]:
+        """Same failover contract as send(), for a plain free-text (24h-window) reply."""
+        for p in self._providers:
+            try:
+                mid = p.send_text(to, body, biz_opaque_callback_data)
+                if mid:
+                    return True, p.driver, mid
+            except Exception:
+                _log.warning("whatsapp_provider_error", extra={"provider": p.driver})
+        return False, self.driver, ""
