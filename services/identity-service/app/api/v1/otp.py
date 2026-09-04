@@ -80,7 +80,7 @@ async def request_otp(body: OtpRequestIn, request: Request) -> dict:
         # OTP_DELIVERY_CHANNEL is the REAL channel selector now (was only a template variable, so a
         # phone OTP silently went out as email). Empty falls back to email — the prior behaviour.
         delivered = await request.app.state.container.notifier.send(
-            to=body.identifier, template=s.OTP_TEMPLATE, tenant="",
+            to=body.identifier, template=s.OTP_TEMPLATE, tenant=s.OTP_NOTIFY_TENANT,
             variables=variables, channel=s.OTP_DELIVERY_CHANNEL or "email")
     return {"requested": True, "expires_in": issued["expires_in"], "delivered": bool(delivered)}
 

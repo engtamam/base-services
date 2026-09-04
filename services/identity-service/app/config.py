@@ -372,6 +372,12 @@ class Settings(BaseSettings):
     # to a trusted internal caller, e.g. a test harness or a bring-your-own-sender).
     OTP_TEMPLATE: str = "auth.otp"
     OTP_DELIVERY_CHANNEL: str = ""               # "", sms, whatsapp, email — "" lets notification pick
+    # Which tenant the OTP send resolves its template + provider credentials under, at
+    # notification-service. Default "" = today's behavior. A PLATFORM deployment whose admin console
+    # registers its WhatsApp templates/credentials under a reserved tenant (e.g. "_platform") sets
+    # this to THAT tenant, or the OTP send looks up under "" and never finds them. Config, not a
+    # literal, so an operator can change it without a code change.
+    OTP_NOTIFY_TENANT: str = ""
     # NOTE: recycled-number policy (a reused phone is a DIFFERENT person) is enforced at person-bind
     # time, which lives in the onboarding release — the knob lands there with the code that reads it,
     # not here as an advertised-but-unread setting.
