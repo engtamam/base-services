@@ -1193,6 +1193,53 @@
         ]
       }
     },
+    "/api/v1/billing/admin/usage": {
+      "get": {
+        "description": "A NAMED tenant's usage/limits ('18 of 25 seats') \u2014 the platform-admin twin of /usage, for a\nplatform console showing another tenant's entitlements. Same safety as /admin/invoices +\n/admin/subscriptions: platform.billing only (a tenant admin gets 403, never another tenant's\nnumbers silently); `tenant` is MANDATORY and names exactly whose usage to read; audited\nwrite-ahead (who looked across the wall, and when); a read-only entitlement projection, no PII;\na DISTINCT route, so it reads as the privileged one, not a magic parameter on /usage. Returns\nexactly what summary()/resolve() already return (limits + detail + provenance).",
+        "operationId": "usage_summary_platform_api_v1_billing_admin_usage_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Tenant",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Usage Summary Platform Api V1 Billing Admin Usage Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Usage Summary Platform",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
     "/api/v1/billing/checkouts": {
       "post": {
         "description": "Server-create a payment checkout/session for the customer's widget or redirect.\n\nWe never proxy a provider key: the client gets the session/checkout id (and, for a widget, the\nprovider's own script URL), never our credentials. A provider with no server-side session says\nso (`supported: false`). Completion reconciles through the existing webhook / GET-status path\ninto _mark_paid, so a completed checkout is the SAME paid invoice as a direct charge.",

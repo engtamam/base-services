@@ -174,6 +174,15 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "all tenants and when is a privileged read worth recording",
     },
     {
+        "action": "billing.platform_usage_viewed",
+        "source": "admin",
+        "critical": False,
+        "resource": "usage",
+        "why": "reading a NAMED tenant's usage/limits crosses the tenancy wall (a platform admin "
+               "seeing another customer's entitlements); it changes nothing, but who looked at whose "
+               "seats/branches and when is a privileged read worth recording",
+    },
+    {
         "action": "payment.reconciled",
         "source": "admin",
         "critical": True,

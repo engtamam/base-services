@@ -58,6 +58,14 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         ],
     },
     {
+        "id": "billing.platform_usage", "label": "Usage & limits (any tenant)", "method": "GET",
+        "path": "/api/v1/billing/admin/usage", "capability": "platform.billing", "group": "Usage",
+        "params": [
+            {"name": "tenant", "in": "query", "type": "string", "required": True,
+             "help": "platform.billing only: the customer whose seats/branches limits to read"},
+        ],
+    },
+    {
         "id": "billing.list_invoices", "label": "Invoices", "method": "GET",
         "path": "/api/v1/billing/invoices", "capability": "billing.manage", "group": "Invoices",
         "params": [

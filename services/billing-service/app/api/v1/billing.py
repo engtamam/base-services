@@ -942,6 +942,24 @@ async def usage_summary(request: Request, principal: Principal = Depends(_SELF))
     return await (await build_usage(request)).summary(_tenant(principal))
 
 
+@router.get("/admin/usage", dependencies=[Depends(_PLATFORM), Depends(rate_limit)])
+async def usage_summary_platform(request: Request,
+                                 tenant: str = Query(..., min_length=1, max_length=128),
+                                 principal: Principal = Depends(require_user)) -> dict:
+    """A NAMED tenant's usage/limits ('18 of 25 seats') — the platform-admin twin of /usage, for a
+    platform console showing another tenant's entitlements. Same safety as /admin/invoices +
+    /admin/subscriptions: platform.billing only (a tenant admin gets 403, never another tenant's
+    numbers silently); `tenant` is MANDATORY and names exactly whose usage to read; audited
+    write-ahead (who looked across the wall, and when); a read-only entitlement projection, no PII;
+    a DISTINCT route, so it reads as the privileged one, not a magic parameter on /usage. Returns
+    exactly what summary()/resolve() already return (limits + detail + provenance)."""
+    await request.app.state.auditor.record(
+        "billing.platform_usage_viewed", actor=principal.subject, tenant=principal.tenant,
+        resource=f"usage:{tenant}", ip=request.client.host if request.client else "",
+        metadata={"tenant": tenant})
+    return await (await build_usage(request)).summary(tenant)
+
+
 @router.get("/ledger", dependencies=[Depends(_ADMIN)])
 async def ledger(request: Request, principal: Principal = Depends(_ADMIN)) -> dict:
     return {"ledger": await (await build_billing(request))._ledger.list(_tenant(principal),

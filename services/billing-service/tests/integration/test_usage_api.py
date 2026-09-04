@@ -143,6 +143,30 @@ def test_usage_summary_shows_remaining(client, subscribed):
     assert ents["seats"]["current"] == 2 and ents["seats"]["remaining"] == 1
 
 
+def test_admin_usage_reads_a_named_tenants_limits(client, subscribed):
+    # The platform-admin twin: a platform.billing admin from ANOTHER tenant reads t1's usage/limits.
+    client.post("/internal/billing/usage/set",
+                json={"tenant": "t1", "key": "seats", "value": 2}, headers=IT)
+    r = client.get("/api/v1/billing/admin/usage?tenant=t1", headers=tok(ADMIN, tenant="ops"))
+    assert r.status_code == 200
+    assert r.json()["tenant"] == "t1"
+    assert r.json()["entitlements"]["seats"]["current"] == 2      # the NAMED tenant's usage
+    # identical to what t1 sees for itself via /usage
+    own = client.get("/api/v1/billing/usage", headers=tok(SELF, tenant="t1")).json()
+    assert r.json()["entitlements"]["seats"]["remaining"] == own["entitlements"]["seats"]["remaining"]
+
+
+def test_admin_usage_requires_platform_billing_not_a_tenant_cap(client, subscribed):
+    # A tenant admin cannot read ANOTHER tenant's usage — platform.billing only (never silently
+    # their own rows, never someone else's): 403.
+    r = client.get("/api/v1/billing/admin/usage?tenant=t1", headers=tok(SELF, tenant="attacker"))
+    assert r.status_code == 403
+
+
+def test_admin_usage_requires_a_tenant(client):
+    assert client.get("/api/v1/billing/admin/usage", headers=tok(ADMIN)).status_code == 422
+
+
 def test_usage_endpoints_require_the_internal_token(client):
     for path in ("/internal/billing/usage/consume", "/internal/billing/usage/release",
                  "/internal/billing/usage/set"):
