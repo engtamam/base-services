@@ -50,6 +50,11 @@ def _operator(sub="op1", tenant="acme"):
     return _tok(sub, ["tickets.manage"], tenant)
 
 
+def _platform(sub="padmin", tenant="ops"):
+    # platform.tickets, from a DIFFERENT tenant than the data — the cross-tenant support admin.
+    return _tok(sub, ["platform.tickets"], tenant)
+
+
 def _open(app, headers, **over):
     body = {"type": "feedback", "subject": "Header overlaps",
             "body": "the header overlaps on mobile", "ref": {"kind": "document", "id": "tpl_1"}}
@@ -140,3 +145,34 @@ def test_history_records_who_did_what(app):
     app.post(f"/api/v1/tickets/{tid}/status", headers=_operator(), json={"to": "triaged"})
     ev = app.get(f"/api/v1/tickets/{tid}/history", headers=_operator()).json()["events"]
     assert [e["kind"] for e in ev] == ["created", "replied", "status_changed"]
+
+
+# ── platform-admin cross-tenant support view (platform.tickets, named tenant, audited) ────────────
+def test_platform_admin_reads_a_named_tenants_tickets_cross_tenant(app):
+    opened = _open(app, _customer(tenant="acme"), subject="Cross-tenant subj",
+                   body="the actual support content")
+    tid = opened.json()["id"]
+    # a platform admin FROM ANOTHER TENANT ("ops") reads acme's tickets — no consent grant involved
+    lst = app.get("/api/v1/tickets/admin/tickets?tenant=acme", headers=_platform())
+    assert lst.status_code == 200 and lst.json()["tenant"] == "acme"
+    assert any(t["id"] == tid for t in lst.json()["tickets"])
+    # detail returns FULL content (subject) + the event thread
+    d = app.get(f"/api/v1/tickets/admin/tickets/{tid}?tenant=acme", headers=_platform())
+    assert d.status_code == 200
+    assert d.json()["ticket"]["subject"] == "Cross-tenant subj"
+    assert "events" in d.json()
+
+
+def test_platform_ticket_admin_requires_platform_tickets_not_a_tenant_cap(app):
+    # A tenant operator (tickets.manage) must NOT reach the cross-tenant admin route — 403.
+    assert app.get("/api/v1/tickets/admin/tickets?tenant=acme", headers=_operator()).status_code == 403
+
+
+def test_platform_ticket_admin_requires_a_tenant(app):
+    assert app.get("/api/v1/tickets/admin/tickets", headers=_platform()).status_code == 422
+
+
+def test_platform_ticket_admin_path_is_not_shadowed_by_ticket_id(app):
+    # /tickets/admin/tickets must route to the admin list, NOT to GET /tickets/{ticket_id="admin"}.
+    r = app.get("/api/v1/tickets/admin/tickets?tenant=acme", headers=_platform())
+    assert r.status_code == 200 and "tickets" in r.json()   # the list shape, not a single ticket/404

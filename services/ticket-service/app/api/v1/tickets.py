@@ -28,6 +28,11 @@ router = APIRouter(prefix="/api/v1", tags=["tickets"])
 # Customer self-service, and operator. platform.tickets is the cross-tenant operator override.
 _SELF = require_any_capability("tickets.self", "tickets.manage", "platform.tickets")
 _MANAGE = require_any_capability("tickets.manage", "platform.tickets")
+# platform.tickets ALONE — the platform's own support operators reading a NAMED tenant's tickets
+# across the tenancy boundary. Distinct from _MANAGE (which resolves the operator's OWN tenant) and
+# from the ShareGrant reads (which require the TENANT's consent for an OUTSIDE party). This platform
+# IS the support provider, so a consent-gate would be the wrong model here; every access is audited.
+_PLATFORM = require_any_capability("platform.tickets")
 
 
 def build_tickets(request: Request) -> TicketService:
@@ -233,6 +238,54 @@ async def operator_list(request: Request, principal: Principal = Depends(_MANAGE
 
     enriched = await asyncio.gather(*(_with_kpis(r) for r in rows))
     return {"tickets": enriched, "cursor": nxt}
+
+
+# ── platform admin: CROSS-TENANT support view (named tenant, no consent, always audited) ───────────
+# The platform serves its customers directly, so its support operators must see a given tenant's
+# tickets. This reads across the tenancy boundary on PLATFORM authority — NOT on the tenant's consent
+# (that is ShareGrant, for OUTSIDE parties). Two hard rules make it safe: platform.tickets ONLY (a
+# tenant/operator cap gets 403), and EVERY access is audited (audit is fail-closed in this service, so
+# an unrecordable read does not happen). Path is /tickets/admin/tickets (not /tickets/admin) so it can
+# never be shadowed by /tickets/{ticket_id}.
+@router.get("/tickets/admin/tickets", dependencies=[Depends(rate_limit)])
+async def platform_list_tickets(request: Request, principal: Principal = Depends(_PLATFORM),
+                                tenant: str = Query(..., min_length=1, max_length=128),
+                                type: str = Query(default=""), status_: str = Query(default="", alias="status"),
+                                assignee: str = Query(default=""), priority: str = Query(default=""),
+                                limit: int = Query(default=50, ge=1, le=200),
+                                cursor: str = Query(default="")) -> dict:
+    """A NAMED tenant's tickets (metadata) for a platform support operator. platform.tickets only;
+    tenant MANDATORY; audited. Full content is the detail route."""
+    await request.app.state.auditor.record(
+        "ticket.platform_viewed", actor=principal.subject, tenant=principal.tenant or "",
+        resource=f"tickets:{tenant}", ip=request.client.host if request.client else "",
+        metadata={"tenant": tenant, "view": "list"})
+    rows, nxt = await build_tickets(request)._tickets.find(
+        tenant=tenant, filters={"type": type, "status": status_, "assignee": assignee,
+                                "priority": priority}, limit=limit, after=cursor or None)
+    return {"tenant": tenant, "tickets": rows, "cursor": nxt}
+
+
+@router.get("/tickets/admin/tickets/{ticket_id}", dependencies=[Depends(rate_limit)])
+async def platform_get_ticket(request: Request, ticket_id: str,
+                              principal: Principal = Depends(_PLATFORM),
+                              tenant: str = Query(..., min_length=1, max_length=128),
+                              limit: int = Query(default=200, ge=1, le=500),
+                              cursor: str = Query(default="")) -> dict:
+    """A NAMED tenant's ticket in FULL — subject, body and the reply thread — for a human support
+    operator. platform.tickets only; tenant MANDATORY; audited on every access. Crosses the tenancy
+    boundary on platform authority; ShareGrant remains the consented path for outside parties."""
+    await request.app.state.auditor.record(
+        "ticket.platform_viewed", actor=principal.subject, tenant=principal.tenant or "",
+        resource=f"ticket:{tenant}:{ticket_id}", ip=request.client.host if request.client else "",
+        metadata={"tenant": tenant, "view": "detail"})
+    svc = build_tickets(request)
+    try:
+        t = await svc.get(tenant, ticket_id)
+    except TicketNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    events, nxt = await svc.history(tenant, ticket_id, limit=limit, after=cursor or None)
+    return {"tenant": tenant, "ticket": t.public(), "events": events, "cursor": nxt}
 
 
 @router.post("/tickets/{ticket_id}/status", dependencies=[Depends(rate_limit)])

@@ -167,6 +167,17 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "nothing and takes support offline",
     },
     {
+        "action": "ticket.platform_viewed",
+        "source": "admin",
+        "critical": True,
+        "resource": "ticket",
+        "why": "a platform admin reading a NAMED tenant's tickets crosses the tenancy boundary "
+               "WITHOUT that tenant's consent, on platform authority alone (ShareGrant is the "
+               "consented path for outside parties). Reading customer support content across tenants "
+               "MUST be attributable and reviewable — so this is critical: if the audit log is down, "
+               "the read does not happen, rather than an unrecorded cross-tenant PII access",
+    },
+    {
         "action": "ticket.assigned",
         "source": "admin",
         "critical": False,

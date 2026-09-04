@@ -4,8 +4,11 @@ subset of its tickets, and nothing more.
 This is the primitive between two capabilities that were both wrong for the job:
 
   * `tickets.self`     — the raiser's own tickets. Too narrow: an outside party is not the raiser.
-  * `platform.tickets` — every tenant's tickets, for an operator. Far too broad: a marketer helping
-    one shop must never gain a cross-tenant reach over all of them.
+  * `platform.tickets` — every tenant's tickets, for an operator. Far too broad for an OUTSIDE
+    party: a marketer helping one shop must never gain a cross-tenant reach over all of them. (It IS
+    the right authority for the PLATFORM'S OWN support operators, who serve the customers directly —
+    that is the audited, consent-free /api/v1/tickets/admin/tickets surface; ShareGrant remains the
+    only path for anyone who is not the platform.)
 
 A `ShareGrant` is the middle a shop actually consents to (spec §13): (tenant, grantee) with a scope.
 `grantee` is a STABLE, OPAQUE reference to the one outside party — a pseudonym or an audience id, never

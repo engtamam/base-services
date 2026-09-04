@@ -95,6 +95,9 @@ def build_manifest(
             {"path": "/api/v1/tickets/{ticket_id}/rate", "tier": "user", "method": "POST"},
             # ── tickets: operator ───────────────────────────────────────────────
             {"path": "/api/v1/tickets/operator/tickets", "tier": "user", "method": "GET"},
+            # Platform-admin CROSS-TENANT support view (platform.tickets only, named tenant, audited).
+            {"path": "/api/v1/tickets/admin/tickets", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/tickets/admin/tickets/{ticket_id}", "tier": "user", "method": "GET"},
             {"path": "/api/v1/tickets/{ticket_id}/status", "tier": "user", "method": "POST"},
             {"path": "/api/v1/tickets/{ticket_id}/escalate", "tier": "user", "method": "POST"},
             {"path": "/api/v1/tickets/{ticket_id}/assign", "tier": "user", "method": "POST"},
