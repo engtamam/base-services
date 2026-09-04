@@ -11,7 +11,8 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, s
 from pydantic import BaseModel, Field
 
 from app.api.v1.compliance import (build_compliance, build_consent, build_consent_sweeper,
-                                   build_dsar, build_legal_gate, build_retention, build_sweeper)
+                                   build_dsar, build_legal, build_legal_gate, build_retention,
+                                   build_sweeper)
 from app.backup_manifest import BACKUP
 from app.config import Settings, get_settings
 from app.core import backup as _backup
@@ -106,6 +107,24 @@ async def internal_legal_outstanding(
     reads; tenant + subject are REQUIRED and name exactly whose acceptances to report."""
     gate = build_legal_gate(request)
     return {"outstanding": await gate.outstanding(tenant=tenant, subject=subject, locale=locale)}
+
+
+@router.get("/compliance/legal", dependencies=[Depends(require_internal_token)])
+async def internal_legal_list(request: Request,
+                              tenant: str = Query(..., min_length=1, max_length=128)) -> dict:
+    """Internal-token twin of GET /api/v1/compliance/legal — each legal document's current version,
+    for a backend service (the dispute-defense report generator) that cannot mint a user JWT. Same
+    LegalPageService.list_documents the user route reads; tenant is REQUIRED and scopes it."""
+    return {"documents": await build_legal(request).list_documents(tenant=tenant)}
+
+
+@router.get("/compliance/legal/{doc_id}/history", dependencies=[Depends(require_internal_token)])
+async def internal_legal_history(request: Request, doc_id: str,
+                                 tenant: str = Query(..., min_length=1, max_length=128)) -> dict:
+    """Internal-token twin of GET /api/v1/compliance/legal/{doc_id}/history — one document's version
+    history for the report generator. Same LegalPageService.history the user route reads; tenant is
+    REQUIRED and scopes it."""
+    return {"versions": await build_legal(request).history(tenant=tenant, doc_id=doc_id)}
 
 
 class InternalTargetIn(BaseModel):

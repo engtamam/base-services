@@ -3224,6 +3224,85 @@
         ]
       }
     },
+    "/internal/compliance/legal": {
+      "get": {
+        "description": "Internal-token twin of GET /api/v1/compliance/legal \u2014 each legal document's current version,\nfor a backend service (the dispute-defense report generator) that cannot mint a user JWT. Same\nLegalPageService.list_documents the user route reads; tenant is REQUIRED and scopes it.",
+        "operationId": "internal_legal_list_internal_compliance_legal_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Internal Legal List Internal Compliance Legal Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Internal Legal List",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/compliance/legal/outstanding": {
       "get": {
         "description": "Internal-token twin of GET /api/v1/compliance/me/legal/outstanding \u2014 which required legal\ndocuments a subject must (re-)accept. identity-service calls this on the mint path to ENFORCE\nacceptance (block/flag), which the user-tier route cannot do (it needs the subject's own token,\nand enforcement must happen at the moment the token is minted). Same LegalGate the user route\nreads; tenant + subject are REQUIRED and name exactly whose acceptances to report.",
@@ -3320,6 +3399,94 @@
           }
         },
         "summary": "Internal Legal Outstanding",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/compliance/legal/{doc_id}/history": {
+      "get": {
+        "description": "Internal-token twin of GET /api/v1/compliance/legal/{doc_id}/history \u2014 one document's version\nhistory for the report generator. Same LegalPageService.history the user route reads; tenant is\nREQUIRED and scopes it.",
+        "operationId": "internal_legal_history_internal_compliance_legal__doc_id__history_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "doc_id",
+            "required": true,
+            "schema": {
+              "title": "Doc Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Internal Legal History Internal Compliance Legal  Doc Id  History Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Internal Legal History",
         "tags": [
           "internal"
         ]

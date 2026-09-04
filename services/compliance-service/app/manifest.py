@@ -85,6 +85,10 @@ def build_manifest(
             # identity calls this on the mint path to ENFORCE legal acceptance (block/flag) — the
             # user-tier /me/legal/outstanding cannot enforce (it needs the caller's own token).
             {"path": "/internal/compliance/legal/outstanding", "tier": "internal", "method": "GET"},
+            # Read twins for the (cross-repo) dispute-defense report generator — a backend service
+            # that cannot mint a user JWT. Consumed cross-repo, so NOT caller:service.
+            {"path": "/internal/compliance/legal", "tier": "internal", "method": "GET"},
+            {"path": "/internal/compliance/legal/{doc_id}/history", "tier": "internal", "method": "GET"},
             {"path": "/internal/compliance/hold-check", "tier": "internal", "method": "GET",
              "caller": "service"},
             {"path": "/internal/compliance/held-refs", "tier": "internal", "method": "GET",

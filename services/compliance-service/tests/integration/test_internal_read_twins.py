@@ -147,3 +147,35 @@ def test_legal_outstanding_matches_the_subject_that_accepts(app):
     after = app.get("/internal/compliance/legal/outstanding?tenant=tconsist&subject=owner@shop.sa",
                     headers=_internal())
     assert after.json()["outstanding"] == []   # acceptance by the same subject clears the internal read
+
+
+# ── legal list + history twins (dispute-report generator's backend source) ────
+def test_legal_list_and_history_twins_require_token_and_tenant(app):
+    assert app.get("/internal/compliance/legal").status_code == 401
+    assert app.get("/internal/compliance/legal", headers=_internal()).status_code == 422
+    assert app.get("/internal/compliance/legal/terms/history").status_code == 401
+    assert app.get("/internal/compliance/legal/terms/history", headers=_internal()).status_code == 422
+
+
+def test_legal_list_and_history_twins_match_the_user_tier(app):
+    _publish_terms(app, "treport", "terms", "1.0")
+    _publish_terms(app, "treport", "terms", "2.0")   # a second version -> history has two
+
+    r = app.get("/internal/compliance/legal?tenant=treport", headers=_internal())
+    assert r.status_code == 200
+    user = app.get("/api/v1/compliance/legal", headers=_auth("treport", "compliance.read"))
+    assert r.json() == user.json()                    # same shape/content as the user-tier read
+    assert any(d.get("doc_id") == "terms" for d in r.json()["documents"])
+
+    h = app.get("/internal/compliance/legal/terms/history?tenant=treport", headers=_internal())
+    assert h.status_code == 200
+    uh = app.get("/api/v1/compliance/legal/terms/history", headers=_auth("treport", "compliance.read"))
+    assert h.json() == uh.json()
+    assert len(h.json()["versions"]) == 2             # both published versions
+
+
+def test_legal_history_twin_is_tenant_scoped(app):
+    _publish_terms(app, "tenantA", "terms", "1.0")
+    # a different tenant asking for the same doc_id sees its OWN (empty) history, never tenantA's
+    other = app.get("/internal/compliance/legal/terms/history?tenant=tenantB", headers=_internal())
+    assert other.status_code == 200 and other.json()["versions"] == []
