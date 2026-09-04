@@ -380,6 +380,20 @@ class LegalPageStore:
                                          limit=limit, sort=("doc_id", "asc"))
         return rows
 
+    async def all_doc_ids(self, tenant: str, limit: int = 2000) -> list[str]:
+        """Every doc_id with AT LEAST ONE version, published or not. documents() only sees a doc once
+        it has a current (published) pointer — a freshly-drafted, never-published type is invisible to
+        it — so an authoring panel that shows work in progress reads this instead, over the raw
+        version rows (_LEGAL) rather than the pointer table."""
+        rows, _ = await self._store.find(_LEGAL, {"tenant": tenant},
+                                         limit=limit, sort=("doc_id", "asc"))
+        seen: list[str] = []
+        for row in rows:
+            doc_id = row.get("doc_id")
+            if doc_id and doc_id not in seen:
+                seen.append(doc_id)
+        return sorted(seen)
+
 
 class BreachStore:
     def __init__(self, store: DataStore) -> None:

@@ -83,8 +83,17 @@ class LegalPageService:
         return doc.view(locale) if doc else None
 
     async def list_documents(self, *, tenant: str) -> list[dict]:
-        """Each doc's current version + whether it needs acceptance — what the panel and gate read."""
-        return await self._store.documents(tenant)
+        """Each doc's current version + whether it needs acceptance — what an authoring panel reads.
+        A type that only has drafts (never published) still appears, with `version: None` and
+        `status: "draft"`, so a panel can resume work in progress, not just what is already live.
+        The GATE never calls this — LegalGate.outstanding() reads store.documents() directly, which
+        stays published-only on purpose: a draft is not yet an obligation to accept."""
+        published = [{**row, "status": "published"} for row in await self._store.documents(tenant)]
+        known = {row["doc_id"] for row in published}
+        draft_only = [d for d in await self._store.all_doc_ids(tenant) if d not in known]
+        extra = [{"doc_id": d, "version": None, "status": "draft", "requires_acceptance": False}
+                 for d in draft_only]
+        return published + extra
 
     async def history(self, *, tenant: str, doc_id: str, limit: int = 100) -> list[dict]:
         """Every version of one document, newest first — the audit trail of what was in force when."""

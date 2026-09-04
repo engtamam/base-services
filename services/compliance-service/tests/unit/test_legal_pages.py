@@ -111,8 +111,47 @@ def test_list_and_history_reflect_current_and_all_versions():
 
     docs = run(svc.list_documents(tenant="t"))
     assert len(docs) == 1 and docs[0]["version"] == "2.0" and docs[0]["requires_acceptance"] is True
+    assert docs[0]["status"] == "published"
     hist = run(svc.history(tenant="t", doc_id="terms"))
     assert {h["version"] for h in hist} == {"1.0", "2.0"}
+
+
+def test_a_drafted_but_never_published_type_still_shows_up_in_list():
+    # A new document type, mid-authoring, must be findable BEFORE it ever goes live — otherwise a
+    # panel that only reads list_documents() cannot resume or even see the work in progress.
+    svc = _svc()
+    run(svc.draft(tenant="t", doc_id="published-one", version="1.0", content=_AR_EN))
+    run(svc.publish(tenant="t", doc_id="published-one", version="1.0"))
+    run(svc.draft(tenant="t", doc_id="brand-new-type", version="1.0", content=_AR_EN))
+
+    docs = {d["doc_id"]: d for d in run(svc.list_documents(tenant="t"))}
+    assert docs["published-one"]["status"] == "published"
+    assert docs["brand-new-type"]["status"] == "draft" and docs["brand-new-type"]["version"] is None
+
+
+def test_a_draft_only_type_is_never_an_acceptance_obligation():
+    # The load-bearing guard: making drafts VISIBLE in the authoring list must not make them ENFORCED.
+    # The gate reads store.documents() (published pointers), never list_documents(), so a draft-only
+    # type that requires_acceptance still owes nothing until it is actually published.
+    from app.core.capacity import CapacityPolicy
+    from app.core.consent_service import ConsentService
+    from app.core.legal_gate import LegalGate
+    from app.core.stores import ConsentStore
+
+    ds = MemoryDataStore()
+    clock = ManualClock(1_000.0)
+    legal_store = LegalPageStore(ds)
+    svc = LegalPageService(store=legal_store, clock=clock)
+    consents = ConsentService(store=ConsentStore(ds), clock=clock, cache=None,
+                              capacity=CapacityPolicy())
+    gate = LegalGate(legal_store=legal_store, consents=consents, clock=clock)
+
+    run(svc.draft(tenant="t", doc_id="draft-terms", version="1.0", content=_AR_EN,
+                  requires_acceptance=True))
+    # it shows up in the authoring list...
+    assert any(d["doc_id"] == "draft-terms" for d in run(svc.list_documents(tenant="t")))
+    # ...but is NOT outstanding for anyone (never published => not an obligation to accept)
+    assert run(gate.outstanding(tenant="t", subject="u1")) == []
 
 
 def test_tenants_are_isolated():
