@@ -249,11 +249,17 @@ def test_internal_whatsapp_messaging_limit_is_token_authed_and_tenant_scoped(cli
     # test default driver is console → reports unlimited/green (dev has no Meta portfolio)
     assert body["ok"] and body["tier"] == "TIER_UNLIMITED" and body["limit"] == -1
     assert body["quality_rating"] == "GREEN"
-
-
 # ── WhatsApp admin diagnostic test-send (bypasses the notify chain) ────────────
-class _FakeWaProvider:
-    driver = "fake"
+# whatsapp_for_identity returns a FailoverWhatsApp (the (ok, driver, message_id) TUPLE contract),
+# NOT a bare driver — so these tests wrap the fake DRIVER in a REAL FailoverWhatsApp, exactly as the
+# composition root does. A fake that returned a bare string is what let the v0.18.17 bug (route
+# treating the tuple as a scalar, 200-ing a Meta reject) ship unnoticed.
+from app.adapters.failover import FailoverWhatsApp
+
+
+class _FakeWaDriver:
+    """A single WhatsApp DRIVER (like MetaWhatsApp): returns a scalar wamid; "" == send failure."""
+    driver = "meta"
 
     def __init__(self, mid="wamid.OK"):
         self._mid = mid
@@ -270,38 +276,41 @@ class _FakeWaProvider:
 
 class _TestSendPool:
     def __init__(self, provider):
-        self._p = provider
+        self._p = provider   # a FailoverWhatsApp (what whatsapp_for_identity really returns) or None
 
     async def whatsapp_for_identity(self, tenant, phone_number_id):
-        # None == the number is not this tenant's (or no creds) — the route must refuse (409).
         return self._p
 
 
 _TS = "/api/v1/whatsapp/templates/test-send"
 
 
+def _pool_with(driver):
+    return _TestSendPool(FailoverWhatsApp([driver]))
+
+
 def test_wa_test_send_text_ok(client):
-    prov = _FakeWaProvider("wamid.OK")
-    client.app.state.provider_pool = _TestSendPool(prov)
+    drv = _FakeWaDriver("wamid.OK")
+    client.app.state.provider_pool = _pool_with(drv)
     r = client.post(_TS, json={"to": "+966500001234", "phone_number_id": "pid",
                                "mode": "text", "body": "hi there"},
                     headers=_user("op", caps=["notifications.templates"], tenant="acme"))
     assert r.status_code == 200, r.text
-    assert r.json()["ok"] is True and r.json()["message_id"] == "wamid.OK"
-    assert prov.calls[-1] == ("text", "+966500001234", "hi there")
+    assert r.json()["ok"] is True and r.json()["message_id"] == "wamid.OK"   # the real wamid, unpacked
+    assert drv.calls[-1] == ("text", "+966500001234", "hi there")
 
 
 def test_wa_test_send_template_mode_ok(client):
-    prov = _FakeWaProvider("wamid.T")
-    client.app.state.provider_pool = _TestSendPool(prov)
+    drv = _FakeWaDriver("wamid.T")
+    client.app.state.provider_pool = _pool_with(drv)
     r = client.post(_TS, json={"to": "+966500001234", "phone_number_id": "pid", "mode": "template",
                                "template_name": "auth_otp", "language": "en", "variables": ["123456"]},
                     headers=_user("op", caps=["notifications.templates"], tenant="acme"))
-    assert r.status_code == 200 and prov.calls[-1] == ("template", "+966500001234", "auth_otp")
+    assert r.status_code == 200 and r.json()["message_id"] == "wamid.T"
+    assert drv.calls[-1] == ("template", "+966500001234", "auth_otp")
 
 
 def test_wa_test_send_not_connected_is_409(client):
-    # whatsapp_for_identity returns None => the number is not this tenant's => refuse, never fall back.
     client.app.state.provider_pool = _TestSendPool(None)
     r = client.post(_TS, json={"to": "+966500001234", "phone_number_id": "not-mine",
                                "mode": "text", "body": "hi"},
@@ -309,8 +318,11 @@ def test_wa_test_send_not_connected_is_409(client):
     assert r.status_code == 409 and r.json()["reason"] == "NOT_CONNECTED"
 
 
-def test_wa_test_send_failed_is_502(client):
-    client.app.state.provider_pool = _TestSendPool(_FakeWaProvider(""))   # "" == send failure
+def test_wa_test_send_reject_is_502_not_a_false_success(client):
+    # THE v0.18.17 BUG: a real Meta reject (e.g. an unapproved template) comes back from the failover
+    # as (False, "meta", "") — a NON-EMPTY tuple. The route must read `ok`, not the tuple's truthiness,
+    # or it reports 200 with a non-wamid id for a message that never went out.
+    client.app.state.provider_pool = _pool_with(_FakeWaDriver(""))
     r = client.post(_TS, json={"to": "+966500001234", "phone_number_id": "pid",
                                "mode": "text", "body": "hi"},
                     headers=_user("op", caps=["notifications.templates"], tenant="acme"))
@@ -318,14 +330,14 @@ def test_wa_test_send_failed_is_502(client):
 
 
 def test_wa_test_send_missing_body_is_422(client):
-    client.app.state.provider_pool = _TestSendPool(_FakeWaProvider())
+    client.app.state.provider_pool = _pool_with(_FakeWaDriver())
     r = client.post(_TS, json={"to": "+966500001234", "phone_number_id": "pid", "mode": "text"},
                     headers=_user("op", caps=["notifications.templates"], tenant="acme"))
     assert r.status_code == 422
 
 
 def test_wa_test_send_requires_the_capability(client):
-    client.app.state.provider_pool = _TestSendPool(_FakeWaProvider())
+    client.app.state.provider_pool = _pool_with(_FakeWaDriver())
     r = client.post(_TS, json={"to": "+966500001234", "phone_number_id": "pid",
                                "mode": "text", "body": "hi"},
                     headers=_user("u", caps=[], tenant="acme"))

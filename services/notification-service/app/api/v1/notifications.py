@@ -182,17 +182,22 @@ async def test_send_wa(request: Request, body: WaTestSendIn,
         # shape as the sibling /whatsapp/register, which the console already special-cases.
         return JSONResponse({"ok": False, "reason": "NOT_CONNECTED"}, status_code=status.HTTP_409_CONFLICT)
 
-    # The provider send is a blocking Graph POST — off the event loop (see notification's send wrap).
+    # whatsapp_for_identity returns a FailoverWhatsApp, whose send/send_text return the
+    # (ok, driver, message_id) TUPLE the notifier contract uses — NOT a bare wamid. Unpack it and
+    # trust `ok`: a real Meta reject (e.g. an unapproved template) comes back ok=False, mid="", and
+    # must surface as SEND_FAILED — never a 200 with a non-wamid id. (The provider send is a blocking
+    # Graph POST — off the event loop, see the notifier's own send wrap.)
     if body.mode == "template":
         if not body.template_name:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "template_name required for mode=template")
-        mid = await asyncio.to_thread(provider.send, to, body.template_name, body.language, body.variables)
+        ok, _driver, mid = await asyncio.to_thread(
+            provider.send, to, body.template_name, body.language, body.variables)
     else:
         if not body.body:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "body required for mode=text")
-        mid = await asyncio.to_thread(provider.send_text, to, body.body)
+        ok, _driver, mid = await asyncio.to_thread(provider.send_text, to, body.body)
 
-    if not mid:
+    if not ok or not mid:
         return JSONResponse({"ok": False, "reason": "SEND_FAILED"}, status_code=status.HTTP_502_BAD_GATEWAY)
     return {"ok": True, "message_id": mid, "mode": body.mode}
 
