@@ -370,7 +370,7 @@ class Settings(BaseSettings):
     # a channel THERE; the channel hint travels as a variable so one template can fan to sms|whatsapp
     # |email by the recipient's shape. Empty template ⇒ delivery disabled (issue still returns a code
     # to a trusted internal caller, e.g. a test harness or a bring-your-own-sender).
-    OTP_TEMPLATE: str = "auth.otp"
+    OTP_TEMPLATE: str = "auth_otp"               # Meta template names: lowercase + digits + underscore ONLY (no dots)
     OTP_DELIVERY_CHANNEL: str = ""               # "", sms, whatsapp, email — "" lets notification pick
     # Which tenant the OTP send resolves its template + provider credentials under, at
     # notification-service. Default "" = today's behavior. A PLATFORM deployment whose admin console

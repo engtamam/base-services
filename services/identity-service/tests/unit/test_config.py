@@ -31,3 +31,11 @@ def test_valid_config_ok():
     s = _make(INTERNAL_SERVICE_TOKEN="a" * 40, ENV="test")
     assert s.is_test is True
     assert s.is_production is False
+
+
+def test_otp_template_default_is_a_valid_meta_template_name():
+    # Meta WhatsApp template names are lowercase + digits + underscore ONLY — a dot ("auth.otp") is
+    # rejected at registration, so OTP-over-WhatsApp could never go live. Guard the default.
+    import re
+    s = _make(INTERNAL_SERVICE_TOKEN="a" * 40, ENV="test")
+    assert re.fullmatch(r"[a-z0-9_]+", s.OTP_TEMPLATE), s.OTP_TEMPLATE
