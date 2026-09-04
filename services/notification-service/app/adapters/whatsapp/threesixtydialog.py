@@ -65,6 +65,16 @@ class ThreeSixtyDialogWhatsApp:
             payload["biz_opaque_callback_data"] = biz_opaque_callback_data[:512]
         return self._post(payload)
 
+    def send_text(self, to: str, body: str,
+                  biz_opaque_callback_data: str = "") -> str:
+        """A plain free-text reply — no template, valid ONLY inside the 24h customer-service window.
+        Same envelope/response handling as send()/send_interactive(), just a text body."""
+        payload: dict = {"messaging_product": "whatsapp", "to": to, "type": "text",
+                         "text": {"body": body}}
+        if biz_opaque_callback_data:
+            payload["biz_opaque_callback_data"] = biz_opaque_callback_data[:512]
+        return self._post(payload)
+
     def _post(self, payload: dict) -> str:
         # No phone_number_id in the path: the D360-API-KEY already binds the request to one channel.
         status, body = post_json(f"{self._base}/messages", payload, self._headers)

@@ -49,6 +49,15 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "resource": "wa_template",
     },
     {
+        # An admin-triggered manual WhatsApp send (the diagnostic test-send). A privileged manual
+        # send from a customer's number is exactly what a review asks about — who sent what, from
+        # where — so it is recorded (last-4 of the recipient only, never the full number/body).
+        "action": "whatsapp.test_send",
+        "source": "admin",
+        "critical": False,
+        "resource": "whatsapp",
+    },
+    {
         "action": "preferences.updated",
         "source": "user",
         "critical": True,

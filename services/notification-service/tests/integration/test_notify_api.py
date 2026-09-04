@@ -249,3 +249,84 @@ def test_internal_whatsapp_messaging_limit_is_token_authed_and_tenant_scoped(cli
     # test default driver is console → reports unlimited/green (dev has no Meta portfolio)
     assert body["ok"] and body["tier"] == "TIER_UNLIMITED" and body["limit"] == -1
     assert body["quality_rating"] == "GREEN"
+
+
+# ── WhatsApp admin diagnostic test-send (bypasses the notify chain) ────────────
+class _FakeWaProvider:
+    driver = "fake"
+
+    def __init__(self, mid="wamid.OK"):
+        self._mid = mid
+        self.calls = []
+
+    def send_text(self, to, body, biz_opaque_callback_data=""):
+        self.calls.append(("text", to, body))
+        return self._mid
+
+    def send(self, to, template_name, language, variables, biz_opaque_callback_data=""):
+        self.calls.append(("template", to, template_name))
+        return self._mid
+
+
+class _TestSendPool:
+    def __init__(self, provider):
+        self._p = provider
+
+    async def whatsapp_for_identity(self, tenant, phone_number_id):
+        # None == the number is not this tenant's (or no creds) — the route must refuse (409).
+        return self._p
+
+
+_TS = "/api/v1/whatsapp/templates/test-send"
+
+
+def test_wa_test_send_text_ok(client):
+    prov = _FakeWaProvider("wamid.OK")
+    client.app.state.provider_pool = _TestSendPool(prov)
+    r = client.post(_TS, json={"to": "+966500001234", "phone_number_id": "pid",
+                               "mode": "text", "body": "hi there"},
+                    headers=_user("op", caps=["notifications.templates"], tenant="acme"))
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"] is True and r.json()["message_id"] == "wamid.OK"
+    assert prov.calls[-1] == ("text", "+966500001234", "hi there")
+
+
+def test_wa_test_send_template_mode_ok(client):
+    prov = _FakeWaProvider("wamid.T")
+    client.app.state.provider_pool = _TestSendPool(prov)
+    r = client.post(_TS, json={"to": "+966500001234", "phone_number_id": "pid", "mode": "template",
+                               "template_name": "auth_otp", "language": "en", "variables": ["123456"]},
+                    headers=_user("op", caps=["notifications.templates"], tenant="acme"))
+    assert r.status_code == 200 and prov.calls[-1] == ("template", "+966500001234", "auth_otp")
+
+
+def test_wa_test_send_not_connected_is_409(client):
+    # whatsapp_for_identity returns None => the number is not this tenant's => refuse, never fall back.
+    client.app.state.provider_pool = _TestSendPool(None)
+    r = client.post(_TS, json={"to": "+966500001234", "phone_number_id": "not-mine",
+                               "mode": "text", "body": "hi"},
+                    headers=_user("op", caps=["notifications.templates"], tenant="acme"))
+    assert r.status_code == 409 and r.json()["reason"] == "NOT_CONNECTED"
+
+
+def test_wa_test_send_failed_is_502(client):
+    client.app.state.provider_pool = _TestSendPool(_FakeWaProvider(""))   # "" == send failure
+    r = client.post(_TS, json={"to": "+966500001234", "phone_number_id": "pid",
+                               "mode": "text", "body": "hi"},
+                    headers=_user("op", caps=["notifications.templates"], tenant="acme"))
+    assert r.status_code == 502 and r.json()["reason"] == "SEND_FAILED"
+
+
+def test_wa_test_send_missing_body_is_422(client):
+    client.app.state.provider_pool = _TestSendPool(_FakeWaProvider())
+    r = client.post(_TS, json={"to": "+966500001234", "phone_number_id": "pid", "mode": "text"},
+                    headers=_user("op", caps=["notifications.templates"], tenant="acme"))
+    assert r.status_code == 422
+
+
+def test_wa_test_send_requires_the_capability(client):
+    client.app.state.provider_pool = _TestSendPool(_FakeWaProvider())
+    r = client.post(_TS, json={"to": "+966500001234", "phone_number_id": "pid",
+                               "mode": "text", "body": "hi"},
+                    headers=_user("u", caps=[], tenant="acme"))
+    assert r.status_code == 403

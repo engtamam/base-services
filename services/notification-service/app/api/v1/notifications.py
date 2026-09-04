@@ -139,6 +139,64 @@ async def list_wa_templates(request: Request, principal: Principal = Depends(req
     return {"templates": rows, "cursor": cursor}
 
 
+class WaTestSendIn(BaseModel):
+    to: str = Field(min_length=3, max_length=32)                 # recipient MSISDN
+    phone_number_id: str = Field(min_length=1, max_length=64)    # which of the tenant's numbers to send FROM
+    mode: str = Field(default="text")                            # "text" | "template"
+    body: str = Field(default="", max_length=4_000)             # mode=text
+    template_name: str = Field(default="", max_length=512)       # mode=template
+    language: str = Field(default="en", max_length=16)
+    variables: list[str] = Field(default_factory=list)
+
+
+@wa_templates_router.post("/test-send", dependencies=[Depends(_WA_CAP)])
+async def test_send_wa(request: Request, body: WaTestSendIn,
+                       principal: Principal = Depends(require_user)) -> dict:
+    """Admin DIAGNOSTIC: send exactly one WhatsApp message to confirm a live connection. Deliberately
+    bypasses WHATSAPP_CHAIN + build_notifier (the chain stays `console` until a real activation, so it
+    cannot answer "is my connection working") — it resolves the provider straight from the pool by the
+    named sending number, the SAME entitlement check /register and /status use: a number that is not
+    this tenant's is refused (409), never sent from. No queue, no TemplateStore, no dedupe. Audited
+    with only the last 4 digits of `to`. mode=text needs `body`; mode=template needs `template_name`."""
+    import asyncio
+
+    from starlette.responses import JSONResponse
+
+    if body.mode not in ("text", "template"):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "mode must be text or template")
+    tenant = principal.tenant or ""
+    to = body.to.strip()
+    # Write-ahead audit (last-4 only): a privileged manual send is exactly the action a review asks
+    # about, and it must be on the record before the message can leave.
+    await request.app.state.auditor.record(
+        "whatsapp.test_send", actor=principal.subject, tenant=tenant, resource="whatsapp",
+        ip=request.client.host if request.client else "",
+        metadata={"to_last4": to[-4:], "mode": body.mode})
+
+    pool = getattr(request.app.state, "provider_pool", None)
+    provider = (await pool.whatsapp_for_identity(tenant, body.phone_number_id)
+                if pool is not None else None)
+    if provider is None:
+        # Not entitled to this number, or no credentials — refuse, never fall back to another sender.
+        # JSONResponse (not raise) so the machine-readable reason survives — same 409 {"reason":...}
+        # shape as the sibling /whatsapp/register, which the console already special-cases.
+        return JSONResponse({"ok": False, "reason": "NOT_CONNECTED"}, status_code=status.HTTP_409_CONFLICT)
+
+    # The provider send is a blocking Graph POST — off the event loop (see notification's send wrap).
+    if body.mode == "template":
+        if not body.template_name:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "template_name required for mode=template")
+        mid = await asyncio.to_thread(provider.send, to, body.template_name, body.language, body.variables)
+    else:
+        if not body.body:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "body required for mode=text")
+        mid = await asyncio.to_thread(provider.send_text, to, body.body)
+
+    if not mid:
+        return JSONResponse({"ok": False, "reason": "SEND_FAILED"}, status_code=status.HTTP_502_BAD_GATEWAY)
+    return {"ok": True, "message_id": mid, "mode": body.mode}
+
+
 async def build_notifier(request: Request, tenant: str = "") -> NotificationService:
     """Assemble the service for this request.
 

@@ -739,6 +739,58 @@
         "title": "WaTemplateInternalIn",
         "type": "object"
       },
+      "WaTestSendIn": {
+        "properties": {
+          "body": {
+            "default": "",
+            "maxLength": 4000,
+            "title": "Body",
+            "type": "string"
+          },
+          "language": {
+            "default": "en",
+            "maxLength": 16,
+            "title": "Language",
+            "type": "string"
+          },
+          "mode": {
+            "default": "text",
+            "title": "Mode",
+            "type": "string"
+          },
+          "phone_number_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Phone Number Id",
+            "type": "string"
+          },
+          "template_name": {
+            "default": "",
+            "maxLength": 512,
+            "title": "Template Name",
+            "type": "string"
+          },
+          "to": {
+            "maxLength": 32,
+            "minLength": 3,
+            "title": "To",
+            "type": "string"
+          },
+          "variables": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Variables",
+            "type": "array"
+          }
+        },
+        "required": [
+          "to",
+          "phone_number_id"
+        ],
+        "title": "WaTestSendIn",
+        "type": "object"
+      },
       "_ButtonIn": {
         "properties": {
           "id": {
@@ -1461,6 +1513,50 @@
           }
         },
         "summary": "Register Wa Template",
+        "tags": [
+          "whatsapp-templates"
+        ]
+      }
+    },
+    "/api/v1/whatsapp/templates/test-send": {
+      "post": {
+        "description": "Admin DIAGNOSTIC: send exactly one WhatsApp message to confirm a live connection. Deliberately\nbypasses WHATSAPP_CHAIN + build_notifier (the chain stays `console` until a real activation, so it\ncannot answer \"is my connection working\") \u2014 it resolves the provider straight from the pool by the\nnamed sending number, the SAME entitlement check /register and /status use: a number that is not\nthis tenant's is refused (409), never sent from. No queue, no TemplateStore, no dedupe. Audited\nwith only the last 4 digits of `to`. mode=text needs `body`; mode=template needs `template_name`.",
+        "operationId": "test_send_wa_api_v1_whatsapp_templates_test_send_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaTestSendIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Test Send Wa Api V1 Whatsapp Templates Test Send Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Test Send Wa",
         "tags": [
           "whatsapp-templates"
         ]

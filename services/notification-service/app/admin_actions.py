@@ -67,6 +67,24 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         "params": [{"name": "name", "in": "path", "type": "string", "required": True},
                    {"name": "language", "in": "path", "type": "string", "required": True}],
     },
+    {
+        "id": "notifications.test_send_wa", "label": "Send a test WhatsApp message",
+        "method": "POST", "path": "/api/v1/whatsapp/templates/test-send",
+        "capability": "notifications.templates", "group": "WhatsApp", "confirm": True,
+        "params": [
+            {"name": "to", "in": "body", "type": "string", "required": True,
+             "help": "recipient number; for a text send they must have messaged you within 24h"},
+            {"name": "phone_number_id", "in": "body", "type": "string", "required": True,
+             "help": "which of your numbers to send FROM — must be entitled to this tenant"},
+            {"name": "mode", "in": "body", "type": "string", "required": False,
+             "help": "text (default, 24h window) | template"},
+            {"name": "body", "in": "body", "type": "string", "required": False, "help": "mode=text"},
+            {"name": "template_name", "in": "body", "type": "string", "required": False,
+             "help": "mode=template"},
+            {"name": "language", "in": "body", "type": "string", "required": False},
+            {"name": "variables", "in": "body", "type": "array", "required": False},
+        ],
+    },
 
     # ── Operator controls: credentials and policy, changeable after launch ────
     # A panel that can only ACT is half a panel: the reads are declared too, so an operator can

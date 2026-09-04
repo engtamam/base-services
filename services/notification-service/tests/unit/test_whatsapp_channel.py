@@ -4,13 +4,18 @@ from __future__ import annotations
 from app.adapters.failover import FailoverWhatsApp
 from app.adapters.whatsapp.console import ConsoleWhatsApp
 from app.adapters.whatsapp.meta import MetaWhatsApp
+from app.adapters.whatsapp.threesixtydialog import ThreeSixtyDialogWhatsApp
 from app.adapters.whatsapp.webhook import WebhookWhatsApp
 from app.ports.whatsapp_provider import WhatsAppProvider
 
 
 def test_the_drivers_satisfy_the_port():
+    # EVERY driver, so adding a port method (e.g. send_text) and missing one driver is caught here —
+    # runtime_checkable isinstance fails the moment a declared method is absent. (360dialog was the
+    # one missed when send_text landed; this line is why it can't happen silently again.)
     assert isinstance(ConsoleWhatsApp(), WhatsAppProvider)
     assert isinstance(MetaWhatsApp("tok", "pnid"), WhatsAppProvider)
+    assert isinstance(ThreeSixtyDialogWhatsApp("apikey"), WhatsAppProvider)
     assert isinstance(WebhookWhatsApp("https://relay.example.com/wa"), WhatsAppProvider)
 
 
