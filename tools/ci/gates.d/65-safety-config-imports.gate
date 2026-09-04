@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+gate_name="safety:config-imports"
+gate_desc="no config.py drops a shared module-level import the template establishes"
+gate_protects="Three services' config.py dropped the module-level 'import json as _json' the other 21
+carry; the only one left sat inside two other functions, invisible to the module-level
+_json_any_map that calls _json.loads. Parsing a non-empty INTERNAL_CALLER_PUBLIC_KEYS_JSON
+then NameError'd, breaking require_internal_token — every internal-token route — on those
+services (v0.18.12 live incident). No unit test imports-and-exercises config.py with the
+triggering env, so nothing caught it. This gate compares each config.py's module-level
+imports against the template's shared preamble: a service may add, never drop one."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_config_imports.py"
+gate_units=0
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_config_imports.py; }
