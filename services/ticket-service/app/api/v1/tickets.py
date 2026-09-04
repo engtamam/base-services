@@ -249,21 +249,40 @@ async def operator_list(request: Request, principal: Principal = Depends(_MANAGE
 # never be shadowed by /tickets/{ticket_id}.
 @router.get("/tickets/admin/tickets", dependencies=[Depends(rate_limit)])
 async def platform_list_tickets(request: Request, principal: Principal = Depends(_PLATFORM),
-                                tenant: str = Query(..., min_length=1, max_length=128),
+                                tenant: str = Query(default="", max_length=128),
                                 type: str = Query(default=""), status_: str = Query(default="", alias="status"),
                                 assignee: str = Query(default=""), priority: str = Query(default=""),
                                 limit: int = Query(default=50, ge=1, le=200),
                                 cursor: str = Query(default="")) -> dict:
-    """A NAMED tenant's tickets (metadata) for a platform support operator. platform.tickets only;
-    tenant MANDATORY; audited. Full content is the detail route."""
+    """Ticket METADATA for a platform support operator. platform.tickets only; audited; full content
+    is the per-ticket detail route (a deliberate tenant+id open).
+
+    Two modes on one route:
+      * tenant GIVEN  → that one tenant's tickets (created-desc), audited ticket.platform_viewed.
+      * tenant OMITTED → a CROSS-TENANT sweep for the unified inbox (updated-desc), audited distinctly
+        as ticket.platform_swept. A filter (status/type/priority/assignee) is REQUIRED here — the
+        datastore forbids an empty-`where` read and scan_all is banned on request paths, so an
+        UNFILTERED all-tenants list is impossible by design (same rule billing's /admin/invoices
+        enforces). Each row carries its own `tenant` so the console groups by shop."""
+    ip = request.client.host if request.client else ""
+    filters = {"type": type, "status": status_, "assignee": assignee, "priority": priority}
+    store = build_tickets(request)._tickets
+
+    if tenant:
+        await request.app.state.auditor.record(
+            "ticket.platform_viewed", actor=principal.subject, tenant=principal.tenant or "",
+            resource=f"tickets:{tenant}", ip=ip, metadata={"tenant": tenant, "view": "list"})
+        rows, nxt = await store.find(tenant=tenant, filters=filters, limit=limit, after=cursor or None)
+        return {"tenant": tenant, "tickets": rows, "cursor": nxt}
+
+    # Cross-tenant sweep. A filter is mandatory (see docstring) — refuse BEFORE auditing/reading.
+    if not any(filters.values()):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "PLATFORM_SWEEP_NEEDS_A_FILTER")
     await request.app.state.auditor.record(
-        "ticket.platform_viewed", actor=principal.subject, tenant=principal.tenant or "",
-        resource=f"tickets:{tenant}", ip=request.client.host if request.client else "",
-        metadata={"tenant": tenant, "view": "list"})
-    rows, nxt = await build_tickets(request)._tickets.find(
-        tenant=tenant, filters={"type": type, "status": status_, "assignee": assignee,
-                                "priority": priority}, limit=limit, after=cursor or None)
-    return {"tenant": tenant, "tickets": rows, "cursor": nxt}
+        "ticket.platform_swept", actor=principal.subject, tenant=principal.tenant or "",
+        resource="tickets:all-tenants", ip=ip, metadata={"view": "sweep", **{k: v for k, v in filters.items() if v}})
+    rows, nxt = await store.find_across_tenants(filters=filters, limit=limit, after=cursor or None)
+    return {"tenant": None, "tickets": rows, "cursor": nxt}
 
 
 @router.get("/tickets/admin/tickets/{ticket_id}", dependencies=[Depends(rate_limit)])

@@ -43,6 +43,25 @@ class TicketStore:
         return await self._s.find(self.collection, where, limit=limit, after=after,
                                   sort=("created", "desc"))
 
+    async def find_across_tenants(self, *, filters: dict[str, Any] | None = None,
+                                  limit: int = 50, after: str | None = None) -> tuple[list[dict], str | None]:
+        """A page of tickets ACROSS ALL TENANTS — the platform support sweep. A NON-tenant filter is
+        MANDATORY: the datastore forbids find({}) ('a cross-tenant leak one typo away') and scan_all
+        is banned on request paths (safety:scans), so an UNFILTERED all-tenants list is impossible by
+        design. This is the same non-empty-`where` cross-tenant read billing's /admin/invoices uses.
+        Newest-UPDATED first (the active-work order a unified inbox wants); keyset-paginated, and the
+        caller caps `limit`. Each row still carries its own `tenant`, so a console can group by shop."""
+        where: dict[str, Any] = {}
+        for k in ("type", "status", "assignee", "priority"):
+            v = (filters or {}).get(k)
+            if v:
+                where[k] = v
+        if not where:
+            raise ValueError("a cross-tenant ticket sweep needs at least one filter "
+                             "(status/type/priority/assignee) — an unfiltered all-tenants read is a scan")
+        return await self._s.find(self.collection, where, limit=limit, after=after,
+                                  sort=("updated", "desc"))
+
 
 class EventStore:
     collection = "ticket_events"

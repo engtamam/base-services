@@ -178,6 +178,17 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "the read does not happen, rather than an unrecorded cross-tenant PII access",
     },
     {
+        "action": "ticket.platform_swept",
+        "source": "admin",
+        "critical": True,
+        "resource": "ticket",
+        "why": "a CROSS-TENANT sweep (the unified inbox) reads ticket metadata across EVERY tenant at "
+               "once — the broadest cross-tenant read the platform has. Logged distinctly from a "
+               "one-tenant view so 'who swept all shops, and on what filter' is separable in review; "
+               "critical (fail-closed) for the same reason — an unrecordable all-tenants read does "
+               "not happen",
+    },
+    {
         "action": "ticket.assigned",
         "source": "admin",
         "critical": False,

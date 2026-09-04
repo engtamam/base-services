@@ -168,8 +168,26 @@ def test_platform_ticket_admin_requires_platform_tickets_not_a_tenant_cap(app):
     assert app.get("/api/v1/tickets/admin/tickets?tenant=acme", headers=_operator()).status_code == 403
 
 
-def test_platform_ticket_admin_requires_a_tenant(app):
-    assert app.get("/api/v1/tickets/admin/tickets", headers=_platform()).status_code == 422
+def test_platform_sweep_across_all_tenants_with_a_filter(app):
+    # tenant OMITTED + a filter => a cross-tenant unified-inbox sweep. Both tenants' tickets come
+    # back, each labeled with its own tenant so the console can group by shop.
+    a = _open(app, _customer(sub="sw1@x.com", tenant="acme"), subject="acme sweep").json()["id"]
+    b = _open(app, _customer(sub="sw2@x.com", tenant="beta"), subject="beta sweep").json()["id"]
+    r = app.get("/api/v1/tickets/admin/tickets?status=new", headers=_platform())
+    assert r.status_code == 200 and r.json()["tenant"] is None
+    got = {t["id"]: t["tenant"] for t in r.json()["tickets"]}
+    assert got.get(a) == "acme" and got.get(b) == "beta"   # cross-tenant, each row carries its tenant
+
+
+def test_platform_sweep_without_a_filter_is_refused(app):
+    # tenant OMITTED and NO filter => an unfiltered all-tenants read = a scan. Refused by design
+    # (the datastore forbids find({}); scan_all is banned on request paths).
+    assert app.get("/api/v1/tickets/admin/tickets", headers=_platform()).status_code == 400
+
+
+def test_platform_sweep_still_requires_platform_tickets(app):
+    # even the cross-tenant sweep is platform.tickets only — a tenant cap is 403.
+    assert app.get("/api/v1/tickets/admin/tickets?status=new", headers=_operator()).status_code == 403
 
 
 def test_platform_ticket_admin_path_is_not_shadowed_by_ticket_id(app):

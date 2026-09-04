@@ -625,16 +625,16 @@
     },
     "/api/v1/tickets/admin/tickets": {
       "get": {
-        "description": "A NAMED tenant's tickets (metadata) for a platform support operator. platform.tickets only;\ntenant MANDATORY; audited. Full content is the detail route.",
+        "description": "Ticket METADATA for a platform support operator. platform.tickets only; audited; full content\nis the per-ticket detail route (a deliberate tenant+id open).\n\nTwo modes on one route:\n  * tenant GIVEN  \u2192 that one tenant's tickets (created-desc), audited ticket.platform_viewed.\n  * tenant OMITTED \u2192 a CROSS-TENANT sweep for the unified inbox (updated-desc), audited distinctly\n    as ticket.platform_swept. A filter (status/type/priority/assignee) is REQUIRED here \u2014 the\n    datastore forbids an empty-`where` read and scan_all is banned on request paths, so an\n    UNFILTERED all-tenants list is impossible by design (same rule billing's /admin/invoices\n    enforces). Each row carries its own `tenant` so the console groups by shop.",
         "operationId": "platform_list_tickets_api_v1_tickets_admin_tickets_get",
         "parameters": [
           {
             "in": "query",
             "name": "tenant",
-            "required": true,
+            "required": false,
             "schema": {
+              "default": "",
               "maxLength": 128,
-              "minLength": 1,
               "title": "Tenant",
               "type": "string"
             }
