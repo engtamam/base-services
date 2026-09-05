@@ -64,7 +64,7 @@ class ProviderPool:
 
     def __init__(self, settings, secret_store, runtime_config, *,
                  build_email, build_sms, build_whatsapp, build_template_manager=None,
-                 build_whatsapp_identity=None,
+                 build_flow_manager=None, build_whatsapp_identity=None,
                  ttl_s: int = 30, now=time.monotonic) -> None:
         self._s = settings
         self._secrets = secret_store          # None when no KEK is configured
@@ -80,6 +80,9 @@ class ProviderPool:
         # so it belongs here in core, not in a route (the API layer may not read credential
         # plaintext). Returns None to mean "no per-tenant identity — use the boot-built manager".
         self._build_template_manager = build_template_manager
+        # Resolves the WhatsApp FLOW manager per tenant — same WABA + secret-read rule as the template
+        # manager (a Flow, like a template, belongs to exactly one WABA). None → use the boot manager.
+        self._build_flow_manager = build_flow_manager
         self._ttl = ttl_s
         self._now = now
         self._cache: dict[str, tuple[float, object, object, object]] = {}
@@ -141,6 +144,19 @@ class ProviderPool:
         token = await self._credential(tenant, "WHATSAPP_ACCESS_TOKEN")
         waba = await self._credential(tenant, "WHATSAPP_BUSINESS_ACCOUNT_ID")
         return self._build_template_manager(token, waba)
+
+    async def flow_manager(self, tenant: str = ""):
+        """The WhatsApp Flow manager scoped to this tenant's WABA, or None to use the boot one.
+
+        A Flow belongs to exactly one WABA (Meta's multi-WABA path is a name-matched clone with a new
+        id), so a tenant with its own WABA provisions Flows under it. Token + WABA id resolve from the
+        same credential store the send chains and template manager use — a read that must live in core,
+        never a route. `None` means fall back to the configured, boot-built manager (single-brand)."""
+        if self._build_flow_manager is None:
+            return None
+        token = await self._credential(tenant, "WHATSAPP_ACCESS_TOKEN")
+        waba = await self._credential(tenant, "WHATSAPP_BUSINESS_ACCOUNT_ID")
+        return self._build_flow_manager(token, waba)
 
     async def whatsapp_phone_number_id(self, tenant: str = "") -> str:
         """The tenant's WhatsApp phone-number id, resolved from the same store the send creds use

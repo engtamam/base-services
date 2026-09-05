@@ -143,6 +143,8 @@ from app.adapters.sms.webhook import WebhookSms
 from app.adapters.whatsapp.console import ConsoleWhatsApp
 from app.adapters.whatsapp.meta import MetaWhatsApp
 from app.adapters.whatsapp.webhook import WebhookWhatsApp
+from app.adapters.whatsapp_flows.console import ConsoleFlowManager
+from app.adapters.whatsapp_flows.meta import MetaFlowManager
 from app.adapters.whatsapp_templates.console import ConsoleTemplateManager
 from app.adapters.whatsapp_templates.meta import MetaTemplateManager
 
@@ -251,6 +253,7 @@ def make_provider_pool(settings, secret_store, runtime_config):
         build_whatsapp_identity=lambda token, phone_id: FailoverWhatsApp(
             [MetaWhatsApp(token, phone_id, settings.WHATSAPP_GRAPH_BASE)]),
         build_template_manager=lambda token, waba: _tenant_template_manager(settings, token, waba),
+        build_flow_manager=lambda token, waba: _tenant_flow_manager(settings, token, waba),
         ttl_s=settings.PROVIDER_REFRESH_SECONDS,
     )
 
@@ -266,6 +269,17 @@ def _tenant_template_manager(settings, token: str, waba: str):
     if token == settings.WHATSAPP_ACCESS_TOKEN and waba == settings.WHATSAPP_BUSINESS_ACCOUNT_ID:
         return None
     return MetaTemplateManager(token, waba, settings.WHATSAPP_GRAPH_BASE)
+
+
+def _tenant_flow_manager(settings, token: str, waba: str):
+    """A per-tenant Meta Flow manager, or None to fall back to the boot-built one — the same rule as
+    the per-tenant template manager: a Flow belongs to exactly one WABA, so a tenant with its own WABA
+    provisions Flows under it, and a single-brand deployment (or the configured creds) reuses boot."""
+    if settings.WHATSAPP_TEMPLATE_MANAGER != "meta" or not token or not waba:
+        return None
+    if token == settings.WHATSAPP_ACCESS_TOKEN and waba == settings.WHATSAPP_BUSINESS_ACCOUNT_ID:
+        return None
+    return MetaFlowManager(token, waba, settings.WHATSAPP_GRAPH_BASE)
 
 
 def _pick(registry: dict[str, Builder], driver: str, port_name: str, settings: Settings) -> Any:
@@ -295,6 +309,7 @@ class Container:
     sms: Any = None
     whatsapp: Any = None
     whatsapp_template_manager: Any = None
+    whatsapp_flow_manager: Any = None
     renderer: Any = None
 
     def describe(self) -> list[dict[str, str]]:
@@ -374,6 +389,7 @@ def build_container(settings: Settings) -> Container:
         whatsapp=FailoverWhatsApp(
             _build_chain(settings.whatsapp_chain, _WHATSAPP_PROVIDERS, "whatsapp", settings)),
         whatsapp_template_manager=_build_template_manager(settings),
+        whatsapp_flow_manager=_build_flow_manager(settings),
         renderer=SafeRenderer(),
     )
 
@@ -384,3 +400,13 @@ def _build_template_manager(settings):
         return MetaTemplateManager(settings.WHATSAPP_ACCESS_TOKEN,
                                    settings.WHATSAPP_BUSINESS_ACCOUNT_ID, settings.WHATSAPP_GRAPH_BASE)
     return ConsoleTemplateManager()
+
+
+def _build_flow_manager(settings):
+    """The WhatsApp Flow lifecycle manager (create/clone/publish). Same WABA + driver decision as the
+    template manager — Flows and templates are two faces of one Business Account — so it follows
+    WHATSAPP_TEMPLATE_MANAGER rather than introducing a second knob for the same choice."""
+    if settings.WHATSAPP_TEMPLATE_MANAGER == "meta":
+        return MetaFlowManager(settings.WHATSAPP_ACCESS_TOKEN,
+                               settings.WHATSAPP_BUSINESS_ACCOUNT_ID, settings.WHATSAPP_GRAPH_BASE)
+    return ConsoleFlowManager()

@@ -50,6 +50,19 @@ async def build_template_manager(request: Request, tenant: str = ""):
     return c.whatsapp_template_manager
 
 
+async def build_flow_manager(request: Request, tenant: str = ""):
+    """The WhatsApp Flow manager scoped to THIS tenant's WABA, or the boot one for the single-brand
+    case. Same resolution as build_template_manager — a Flow, like a template, is WABA-scoped and its
+    token/WABA read must happen in core (the pool), never in a route."""
+    c = request.app.state.container
+    pool = getattr(request.app.state, "provider_pool", None)
+    if pool is not None:
+        mgr = await pool.flow_manager(tenant)
+        if mgr is not None:
+            return mgr
+    return c.whatsapp_flow_manager
+
+
 async def whatsapp_messaging_limit(request: Request, tenant: str = "") -> dict:
     """This tenant's WhatsApp messaging limit + quality rating, read live from Meta with a short
     cache. The phone-number id is resolved in the pool (core), so the credential read never happens

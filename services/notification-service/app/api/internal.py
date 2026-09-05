@@ -508,6 +508,54 @@ async def submit_pending_whatsapp_templates_internal(
     return result
 
 
+class WaFlowProvisionIn(BaseModel):
+    tenant: str = Field(min_length=1, max_length=128)
+    name: str = Field(min_length=1, max_length=256)          # the flow_NAME templates reference
+    categories: list[str] = Field(min_length=1)              # Meta's fixed set; ≥1
+    # Exactly one source: author-from-json OR clone-from-master. The provisioner enforces the XOR.
+    flow_json: str = Field(default="", max_length=200_000)   # stringified Flow JSON (create-from-scratch)
+    clone_flow_id: str = Field(default="", max_length=128)   # a master Flow id to copy (per-shop clone)
+    endpoint_uri: str = Field(default="", max_length=2_048)  # required by Meta for Flow JSON v3.0+
+    publish: bool = True                                     # publish so templates can reference it live
+
+
+@router.post("/whatsapp/flows/provision", dependencies=[Depends(require_internal_token)])
+async def provision_whatsapp_flow_internal(request: Request, body: WaFlowProvisionIn) -> dict:
+    """Ensure a PUBLISHED WhatsApp Flow named `name` exists on this tenant's WABA — create/clone +
+    publish it if absent, or find it if already there. IDEMPOTENT BY NAME.
+
+    WHY IT EXISTS: a Flow is WABA-scoped (Meta's multi-WABA path is a name-matched CLONE with a new
+    id), so in a model where every tenant connects its own WABA, each tenant needs its own Flow —
+    provisioned at connect time, right where the template library is registered. This is the callable
+    primitive for that step: the adopter's connect job calls it (create-from-scratch with `flow_json`,
+    or the recommended clone-from-master with `clone_flow_id`), then registers templates whose
+    flow_button references the Flow by flow_NAME — stable across every shop's clone, unlike the id.
+
+    Idempotent because a PUBLISHED Flow is immutable and cannot be deleted: a re-run finds the existing
+    Flow by name and returns it (publishing it only if it is still a draft), never a second copy."""
+    import asyncio
+
+    from app.api.v1.notifications import build_flow_manager
+    from app.core.whatsapp_flows import FlowError, ensure_flow
+
+    manager = await build_flow_manager(request, body.tenant)
+    try:
+        # The whole ensure — list + create/clone + publish — is blocking Graph I/O, so it runs off the
+        # event loop. Validation errors (bad category, both/neither source) surface as a clean 422.
+        result = await asyncio.to_thread(
+            ensure_flow, manager=manager, name=body.name, categories=body.categories,
+            flow_json=body.flow_json, clone_flow_id=body.clone_flow_id,
+            endpoint_uri=body.endpoint_uri, publish=body.publish)
+    except FlowError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    await request.app.state.auditor.record(
+        "whatsapp_flow.provisioned", actor="", tenant=body.tenant,
+        resource=f"wa_flow:{body.name}", ip=request.client.host if request.client else "",
+        metadata={"created": str(result.created), "published": str(result.published),
+                  "status": result.status})
+    return result.public()
+
+
 class WaRegisterIn(BaseModel):
     tenant: str = Field(min_length=1, max_length=128)
     # PER NUMBER, not per tenant: a WABA can hold many numbers (a number per branch for a chain) and

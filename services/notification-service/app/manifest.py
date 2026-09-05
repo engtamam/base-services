@@ -105,6 +105,10 @@ def build_manifest(
             # Rate-limited drain: submit the next batch of never-submitted templates within Meta's
             # 100/hour cap. Cron this per tenant (like sync) to upload a whole library across ticks.
             {"path": "/internal/whatsapp/templates/submit-pending", "tier": "internal", "method": "POST"},
+            # Provision a WABA-scoped Flow (create/clone + publish, idempotent by name) so a template's
+            # flow-button can reference it. Called at connect time alongside template registration; a
+            # Flow is per-WABA (multi-WABA reuse is a name-matched clone), referenced by flow_NAME.
+            {"path": "/internal/whatsapp/flows/provision", "tier": "internal", "method": "POST"},
             {"path": "/internal/whatsapp/messaging-limit", "tier": "internal", "method": "GET"},
             # Register a business phone number for Cloud API sending — the PIN-carrying step exchange
             # stops before. Without it a tenant is "connected" everywhere and cannot send. Per NUMBER

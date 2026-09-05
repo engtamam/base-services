@@ -634,6 +634,60 @@
         "title": "ValidationError",
         "type": "object"
       },
+      "WaFlowProvisionIn": {
+        "properties": {
+          "categories": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Categories",
+            "type": "array"
+          },
+          "clone_flow_id": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Clone Flow Id",
+            "type": "string"
+          },
+          "endpoint_uri": {
+            "default": "",
+            "maxLength": 2048,
+            "title": "Endpoint Uri",
+            "type": "string"
+          },
+          "flow_json": {
+            "default": "",
+            "maxLength": 200000,
+            "title": "Flow Json",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "publish": {
+            "default": true,
+            "title": "Publish",
+            "type": "boolean"
+          },
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant",
+          "name",
+          "categories"
+        ],
+        "title": "WaFlowProvisionIn",
+        "type": "object"
+      },
       "WaRegisterIn": {
         "properties": {
           "phone_number_id": {
@@ -2641,6 +2695,84 @@
           }
         },
         "summary": "Internal Embedded Signup",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/whatsapp/flows/provision": {
+      "post": {
+        "description": "Ensure a PUBLISHED WhatsApp Flow named `name` exists on this tenant's WABA \u2014 create/clone +\npublish it if absent, or find it if already there. IDEMPOTENT BY NAME.\n\nWHY IT EXISTS: a Flow is WABA-scoped (Meta's multi-WABA path is a name-matched CLONE with a new\nid), so in a model where every tenant connects its own WABA, each tenant needs its own Flow \u2014\nprovisioned at connect time, right where the template library is registered. This is the callable\nprimitive for that step: the adopter's connect job calls it (create-from-scratch with `flow_json`,\nor the recommended clone-from-master with `clone_flow_id`), then registers templates whose\nflow_button references the Flow by flow_NAME \u2014 stable across every shop's clone, unlike the id.\n\nIdempotent because a PUBLISHED Flow is immutable and cannot be deleted: a re-run finds the existing\nFlow by name and returns it (publishing it only if it is still a draft), never a second copy.",
+        "operationId": "provision_whatsapp_flow_internal_internal_whatsapp_flows_provision_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaFlowProvisionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Provision Whatsapp Flow Internal Internal Whatsapp Flows Provision Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Provision Whatsapp Flow Internal",
         "tags": [
           "internal"
         ]

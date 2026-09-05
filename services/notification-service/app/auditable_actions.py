@@ -49,6 +49,16 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "resource": "wa_template",
     },
     {
+        # A WABA-scoped Flow provisioned (created/cloned + published) at connect time. Not critical —
+        # a Flow that failed to provision is retried, and refusing because the log blinked helps no
+        # one — but worth a durable row: it names whether this call created the Flow or found it, and
+        # its published state, so a shop whose Flow silently never went live is provable after the fact.
+        "action": "whatsapp_flow.provisioned",
+        "source": "admin",
+        "critical": False,
+        "resource": "wa_flow",
+    },
+    {
         # An admin-triggered manual WhatsApp send (the diagnostic test-send). A privileged manual
         # send from a customer's number is exactly what a review asks about — who sent what, from
         # where — so it is recorded (last-4 of the recipient only, never the full number/body).
