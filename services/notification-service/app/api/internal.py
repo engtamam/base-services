@@ -6,6 +6,7 @@
 # =============================================================================
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
@@ -422,6 +423,9 @@ class WaTemplateInternalIn(BaseModel):
     # Optional Flow BUTTON to declare on this template (approved by Meta at creation), so a later send
     # can carry a per-send flow action. {"flow_id"|"flow_name", "flow_action", "navigate_screen", "text"}.
     flow_button: dict = Field(default_factory=dict)
+    # Optional CAROUSEL: {"cards": [{"header_format":"IMAGE"|"VIDEO", "header_example_handle", "body"?,
+    # "body_examples"?, "buttons":[…]}]}. 2–10 cards, all the same shape. Validated by the registry.
+    carousel: dict = Field(default_factory=dict)
 
 
 class WaSubmitInternalIn(BaseModel):
@@ -448,7 +452,8 @@ async def register_whatsapp_template_internal(request: Request, body: WaTemplate
     try:
         t = await reg.register(tenant=body.tenant, name=body.name, language=body.language,
                                category=body.category, body=body.body, variables=body.variables,
-                               examples=body.examples, flow_button=body.flow_button)
+                               examples=body.examples, flow_button=body.flow_button,
+                               carousel=body.carousel)
     except TemplateError as exc:
         raise HTTPException(422, str(exc)) from exc
     return t.public()
@@ -557,6 +562,62 @@ async def provision_whatsapp_flow_internal(request: Request, body: WaFlowProvisi
         metadata={"created": str(result.created), "published": str(result.published),
                   "status": result.status})
     return result.public()
+
+
+_MEDIA_TYPES = {"image/jpeg", "image/jpg", "image/png", "video/mp4"}
+
+
+class WaMediaUploadIn(BaseModel):
+    tenant: str = Field(min_length=1, max_length=128)
+    file_type: str = Field(min_length=1, max_length=64)     # MIME: image/jpeg|image/png|video/mp4
+    file_name: str = Field(default="upload.bin", max_length=256)
+    # The media bytes, base64-encoded. JSON (not multipart) keeps the contract consistent with every
+    # other internal route and needs no extra dependency; a connect-time upload of a header image is
+    # small enough that the ~33% base64 overhead is a non-issue.
+    data_base64: str = Field(min_length=1)
+
+
+@router.post("/whatsapp/media/upload-handle", dependencies=[Depends(require_internal_token)])
+async def upload_whatsapp_media_handle_internal(
+        request: Request, body: WaMediaUploadIn,
+        settings: Settings = Depends(get_settings)) -> dict:
+    """Upload a media file via Meta's Resumable Upload API and return the reusable HANDLE.
+
+    WHY IT EXISTS: a carousel template must be created with an example media handle per card, and Meta
+    only accepts a handle its upload API produced — not a URL, not raw bytes. So the platform owns the
+    upload→handle step (the adopter should never hunt for a handle by hand): upload the card's image/
+    video here, drop the returned handle into that card's header_example_handle, then register the
+    carousel template. App-scoped upload, authenticated with the tenant's own token (resolved in core).
+    """
+    import base64
+    import binascii
+
+    from app.api.v1.notifications import build_media_uploader
+
+    ctype = body.file_type.lower()
+    if ctype not in _MEDIA_TYPES:
+        raise HTTPException(422, f"file_type must be one of {sorted(_MEDIA_TYPES)}, got {ctype!r}")
+    try:
+        data = base64.b64decode(body.data_base64, validate=True)
+    except (ValueError, binascii.Error):  # malformed base64 is a caller error, not a 500
+        raise HTTPException(422, "data_base64 is not valid base64")
+    if not data:
+        raise HTTPException(422, "the uploaded file is empty")
+    if len(data) > settings.WHATSAPP_MEDIA_MAX_BYTES:
+        raise HTTPException(413, f"file exceeds {settings.WHATSAPP_MEDIA_MAX_BYTES} bytes")
+    uploader = await build_media_uploader(request, body.tenant)
+    # The two-step upload is blocking Graph I/O; keep the loop free while Meta receives the bytes.
+    res = await asyncio.to_thread(uploader.upload_handle, file_bytes=data, file_type=ctype,
+                                  file_name=body.file_name or "upload.bin")
+    if not res.ok:
+        # A Meta-side failure is a clean {ok:false, reason}, not a 5xx — the caller can retry the upload.
+        from starlette.responses import JSONResponse
+        return JSONResponse({"ok": False, "reason": res.reason}, status_code=502)
+    await request.app.state.auditor.record(
+        "whatsapp_media.uploaded", actor="", tenant=body.tenant, resource="wa_media",
+        ip=request.client.host if request.client else "",
+        metadata={"file_type": ctype, "bytes": str(len(data))})
+    return {"ok": True, "handle": res.handle}
 
 
 class WaRegisterIn(BaseModel):

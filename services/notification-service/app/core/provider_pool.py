@@ -64,7 +64,7 @@ class ProviderPool:
 
     def __init__(self, settings, secret_store, runtime_config, *,
                  build_email, build_sms, build_whatsapp, build_template_manager=None,
-                 build_flow_manager=None, build_whatsapp_identity=None,
+                 build_flow_manager=None, build_media_uploader=None, build_whatsapp_identity=None,
                  ttl_s: int = 30, now=time.monotonic) -> None:
         self._s = settings
         self._secrets = secret_store          # None when no KEK is configured
@@ -83,6 +83,8 @@ class ProviderPool:
         # Resolves the WhatsApp FLOW manager per tenant — same WABA + secret-read rule as the template
         # manager (a Flow, like a template, belongs to exactly one WABA). None → use the boot manager.
         self._build_flow_manager = build_flow_manager
+        # Resolves the media uploader per tenant (App-scoped upload, tenant-token authed). None → boot.
+        self._build_media_uploader = build_media_uploader
         self._ttl = ttl_s
         self._now = now
         self._cache: dict[str, tuple[float, object, object, object]] = {}
@@ -157,6 +159,17 @@ class ProviderPool:
         token = await self._credential(tenant, "WHATSAPP_ACCESS_TOKEN")
         waba = await self._credential(tenant, "WHATSAPP_BUSINESS_ACCOUNT_ID")
         return self._build_flow_manager(token, waba)
+
+    async def media_uploader(self, tenant: str = ""):
+        """The WhatsApp media uploader scoped to this tenant's token, or None to use the boot one.
+
+        The Resumable Upload is App-scoped (one META_APP_ID per deployment) but authenticates with the
+        tenant's access token, so a tenant with its own token uploads under its own identity. Reading
+        the token is a core act (never a route). None → the configured, boot-built uploader."""
+        if self._build_media_uploader is None:
+            return None
+        token = await self._credential(tenant, "WHATSAPP_ACCESS_TOKEN")
+        return self._build_media_uploader(token)
 
     async def whatsapp_phone_number_id(self, tenant: str = "") -> str:
         """The tenant's WhatsApp phone-number id, resolved from the same store the send creds use

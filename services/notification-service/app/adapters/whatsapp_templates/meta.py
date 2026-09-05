@@ -105,6 +105,44 @@ def _flow_button_component(flow_button: dict | None) -> dict | None:
     return {"type": "BUTTONS", "buttons": [button]}
 
 
+def _carousel_component(carousel: dict | None) -> dict | None:
+    """Meta's CAROUSEL component from a validated carousel spec, or None when there is no carousel.
+
+    Verified against Meta's carousel-template creation shape (Sep 2026): a {"type":"carousel","cards":
+    [{"components":[…]}]} where each card carries a HEADER (format IMAGE/VIDEO + example.header_handle),
+    an optional BODY (with example.body_text like the top-level body), and a BUTTONS component. The
+    registry already validated the cards (2–10, uniform shape, an example handle each), so this only
+    shapes them into Meta's component tree."""
+    cards = list((carousel or {}).get("cards") or [])
+    if not cards:
+        return None
+    out_cards: list[dict] = []
+    for card in cards:
+        comps: list[dict] = [{
+            "type": "HEADER",
+            "format": str(card.get("header_format", "")).upper(),
+            "example": {"header_handle": [str(card.get("header_example_handle", ""))]},
+        }]
+        if card.get("body"):
+            body_comp: dict = {"type": "BODY", "text": str(card["body"])}
+            exs = [str(e) for e in (card.get("body_examples") or [])]
+            if exs:
+                body_comp["example"] = {"body_text": [exs]}
+            comps.append(body_comp)
+        buttons: list[dict] = []
+        for b in card.get("buttons") or []:
+            bt = str(b.get("type", "")).upper()
+            btn: dict = {"type": bt, "text": str(b.get("text", ""))}
+            if bt == "URL":
+                btn["url"] = str(b.get("url", ""))
+                if b.get("url_example"):
+                    btn["example"] = [str(e) for e in b["url_example"]]
+            buttons.append(btn)
+        comps.append({"type": "BUTTONS", "buttons": buttons})
+        out_cards.append({"components": comps})
+    return {"type": "CAROUSEL", "cards": out_cards}
+
+
 class MetaTemplateManager:
     driver = "meta"
 
@@ -118,7 +156,7 @@ class MetaTemplateManager:
         self._headers = bearer(access_token)
 
     def submit(self, *, name, language, category, body, variables, examples=None,
-               flow_button=None) -> SubmitResult:
+               flow_button=None, carousel=None) -> SubmitResult:
         components = []
         if body:
             comp = {"type": "BODY", "text": body}
@@ -131,6 +169,9 @@ class MetaTemplateManager:
         flow_comp = _flow_button_component(flow_button)
         if flow_comp:
             components.append(flow_comp)
+        carousel_comp = _carousel_component(carousel)
+        if carousel_comp:
+            components.append(carousel_comp)
         payload = {"name": name, "language": language, "category": category,
                    "components": components}
         status, raw = post_json(f"{self._base}/{self._waba}/message_templates", payload,

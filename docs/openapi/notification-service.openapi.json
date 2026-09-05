@@ -694,6 +694,40 @@
         "title": "WaFlowProvisionIn",
         "type": "object"
       },
+      "WaMediaUploadIn": {
+        "properties": {
+          "data_base64": {
+            "minLength": 1,
+            "title": "Data Base64",
+            "type": "string"
+          },
+          "file_name": {
+            "default": "upload.bin",
+            "maxLength": 256,
+            "title": "File Name",
+            "type": "string"
+          },
+          "file_type": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "File Type",
+            "type": "string"
+          },
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant",
+          "file_type",
+          "data_base64"
+        ],
+        "title": "WaMediaUploadIn",
+        "type": "object"
+      },
       "WaRegisterIn": {
         "properties": {
           "phone_number_id": {
@@ -756,6 +790,11 @@
             "title": "Body",
             "type": "string"
           },
+          "carousel": {
+            "additionalProperties": true,
+            "title": "Carousel",
+            "type": "object"
+          },
           "category": {
             "maxLength": 32,
             "minLength": 1,
@@ -810,6 +849,11 @@
             "maxLength": 4000,
             "title": "Body",
             "type": "string"
+          },
+          "carousel": {
+            "additionalProperties": true,
+            "title": "Carousel",
+            "type": "object"
           },
           "category": {
             "maxLength": 32,
@@ -2867,6 +2911,84 @@
           }
         },
         "summary": "Inbound Messages",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/whatsapp/media/upload-handle": {
+      "post": {
+        "description": "Upload a media file via Meta's Resumable Upload API and return the reusable HANDLE.\n\nWHY IT EXISTS: a carousel template must be created with an example media handle per card, and Meta\nonly accepts a handle its upload API produced \u2014 not a URL, not raw bytes. So the platform owns the\nupload\u2192handle step (the adopter should never hunt for a handle by hand): upload the card's image/\nvideo here, drop the returned handle into that card's header_example_handle, then register the\ncarousel template. App-scoped upload, authenticated with the tenant's own token (resolved in core).",
+        "operationId": "upload_whatsapp_media_handle_internal_internal_whatsapp_media_upload_handle_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaMediaUploadIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Upload Whatsapp Media Handle Internal Internal Whatsapp Media Upload Handle Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Whatsapp Media Handle Internal",
         "tags": [
           "internal"
         ]

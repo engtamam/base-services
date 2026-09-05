@@ -63,6 +63,18 @@ async def build_flow_manager(request: Request, tenant: str = ""):
     return c.whatsapp_flow_manager
 
 
+async def build_media_uploader(request: Request, tenant: str = ""):
+    """The WhatsApp media uploader scoped to THIS tenant's token, or the boot one. Same resolution as
+    the template/flow managers — the token read happens in core (the pool), never in a route."""
+    c = request.app.state.container
+    pool = getattr(request.app.state, "provider_pool", None)
+    if pool is not None:
+        up = await pool.media_uploader(tenant)
+        if up is not None:
+            return up
+    return c.whatsapp_media_uploader
+
+
 async def whatsapp_messaging_limit(request: Request, tenant: str = "") -> dict:
     """This tenant's WhatsApp messaging limit + quality rating, read live from Meta with a short
     cache. The phone-number id is resolved in the pool (core), so the credential read never happens
@@ -109,6 +121,8 @@ class WaTemplateIn(BaseModel):
     examples: list[str] = Field(default_factory=list)    # ordered example values Meta needs at review
     # Optional Flow BUTTON to declare on this template (approved at creation) — see build docs.
     flow_button: dict = Field(default_factory=dict)
+    # Optional CAROUSEL: {"cards":[…]} — 2–10 media cards, uniform shape. Validated by the registry.
+    carousel: dict = Field(default_factory=dict)
 
 
 @wa_templates_router.post("", status_code=201, dependencies=[Depends(_WA_CAP)])
@@ -124,7 +138,7 @@ async def register_wa_template(request: Request, body: WaTemplateIn,
         t = await _wa_registry(request).register(
             tenant=principal.tenant or "", name=body.name, language=body.language,
             category=body.category, body=body.body, variables=body.variables,
-            examples=body.examples, flow_button=body.flow_button)
+            examples=body.examples, flow_button=body.flow_button, carousel=body.carousel)
     except TemplateError as exc:
         raise HTTPException(422, str(exc))
     return t.public()

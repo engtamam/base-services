@@ -109,6 +109,9 @@ def build_manifest(
             # flow-button can reference it. Called at connect time alongside template registration; a
             # Flow is per-WABA (multi-WABA reuse is a name-matched clone), referenced by flow_NAME.
             {"path": "/internal/whatsapp/flows/provision", "tier": "internal", "method": "POST"},
+            # Upload carousel/header media via Meta's Resumable Upload API and return the handle a
+            # carousel template needs at creation — so the caller never runs Meta's two-step upload.
+            {"path": "/internal/whatsapp/media/upload-handle", "tier": "internal", "method": "POST"},
             {"path": "/internal/whatsapp/messaging-limit", "tier": "internal", "method": "GET"},
             # Register a business phone number for Cloud API sending — the PIN-carrying step exchange
             # stops before. Without it a tenant is "connected" everywhere and cannot send. Per NUMBER

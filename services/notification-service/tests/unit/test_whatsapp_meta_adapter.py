@@ -95,6 +95,33 @@ def test_submit_without_a_flow_button_sends_no_buttons_component(monkeypatch):
     assert all(c["type"] != "BUTTONS" for c in sent["payload"]["components"])
 
 
+def test_submit_builds_a_carousel_component(monkeypatch):
+    # Meta's carousel-template creation shape (verified Sep 2026): a CAROUSEL component of cards, each
+    # card a HEADER (format + example.header_handle), optional BODY, and a BUTTONS component.
+    sent = _capture(monkeypatch)
+    carousel = {"cards": [
+        {"header_format": "IMAGE", "header_example_handle": "h0", "body": "Card {{1}}",
+         "body_examples": ["Pizza"],
+         "buttons": [{"type": "QUICK_REPLY", "text": "Order"},
+                     {"type": "URL", "text": "Menu", "url": "https://x/{{1}}", "url_example": ["a"]}]},
+        {"header_format": "IMAGE", "header_example_handle": "h1", "body": "Card {{1}}",
+         "body_examples": ["Burger"],
+         "buttons": [{"type": "QUICK_REPLY", "text": "Order"},
+                     {"type": "URL", "text": "Menu", "url": "https://x/{{1}}", "url_example": ["b"]}]}]}
+    _mgr().submit(name="menu", language="en", category="MARKETING", body="Offers", variables=[],
+                  examples=[], carousel=carousel)
+    car = next(c for c in sent["payload"]["components"] if c["type"] == "CAROUSEL")
+    assert len(car["cards"]) == 2
+    c0 = car["cards"][0]["components"]
+    hdr = next(c for c in c0 if c["type"] == "HEADER")
+    assert hdr == {"type": "HEADER", "format": "IMAGE", "example": {"header_handle": ["h0"]}}
+    body = next(c for c in c0 if c["type"] == "BODY")
+    assert body["example"] == {"body_text": [["Pizza"]]}
+    btns = next(c for c in c0 if c["type"] == "BUTTONS")["buttons"]
+    assert btns[0] == {"type": "QUICK_REPLY", "text": "Order"}
+    assert btns[1] == {"type": "URL", "text": "Menu", "url": "https://x/{{1}}", "example": ["a"]}
+
+
 def test_paused_and_disabled_are_distinct_statuses_not_pending(monkeypatch):
     # The single failure a messaging product most needs to surface: a live template Meta has muted.
     for meta_status, ours in (("PAUSED", "paused"), ("DISABLED", "disabled"),

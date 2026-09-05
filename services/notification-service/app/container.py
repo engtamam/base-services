@@ -145,6 +145,8 @@ from app.adapters.whatsapp.meta import MetaWhatsApp
 from app.adapters.whatsapp.webhook import WebhookWhatsApp
 from app.adapters.whatsapp_flows.console import ConsoleFlowManager
 from app.adapters.whatsapp_flows.meta import MetaFlowManager
+from app.adapters.whatsapp_media.console import ConsoleMediaUploader
+from app.adapters.whatsapp_media.meta import MetaMediaUploader
 from app.adapters.whatsapp_templates.console import ConsoleTemplateManager
 from app.adapters.whatsapp_templates.meta import MetaTemplateManager
 
@@ -254,6 +256,7 @@ def make_provider_pool(settings, secret_store, runtime_config):
             [MetaWhatsApp(token, phone_id, settings.WHATSAPP_GRAPH_BASE)]),
         build_template_manager=lambda token, waba: _tenant_template_manager(settings, token, waba),
         build_flow_manager=lambda token, waba: _tenant_flow_manager(settings, token, waba),
+        build_media_uploader=lambda token: _tenant_media_uploader(settings, token),
         ttl_s=settings.PROVIDER_REFRESH_SECONDS,
     )
 
@@ -280,6 +283,17 @@ def _tenant_flow_manager(settings, token: str, waba: str):
     if token == settings.WHATSAPP_ACCESS_TOKEN and waba == settings.WHATSAPP_BUSINESS_ACCOUNT_ID:
         return None
     return MetaFlowManager(token, waba, settings.WHATSAPP_GRAPH_BASE)
+
+
+def _tenant_media_uploader(settings, token: str):
+    """A per-tenant Meta media uploader, or None to fall back to the boot one. The upload is App-scoped
+    (META_APP_ID, one per deployment) but authenticates with the TENANT's token, so a tenant with its
+    own token uploads under its own identity; the configured token reuses the boot uploader."""
+    if settings.WHATSAPP_TEMPLATE_MANAGER != "meta" or not token or not settings.META_APP_ID:
+        return None
+    if token == settings.WHATSAPP_ACCESS_TOKEN:
+        return None
+    return MetaMediaUploader(token, settings.META_APP_ID, settings.WHATSAPP_GRAPH_BASE)
 
 
 def _pick(registry: dict[str, Builder], driver: str, port_name: str, settings: Settings) -> Any:
@@ -310,6 +324,7 @@ class Container:
     whatsapp: Any = None
     whatsapp_template_manager: Any = None
     whatsapp_flow_manager: Any = None
+    whatsapp_media_uploader: Any = None
     renderer: Any = None
 
     def describe(self) -> list[dict[str, str]]:
@@ -390,6 +405,7 @@ def build_container(settings: Settings) -> Container:
             _build_chain(settings.whatsapp_chain, _WHATSAPP_PROVIDERS, "whatsapp", settings)),
         whatsapp_template_manager=_build_template_manager(settings),
         whatsapp_flow_manager=_build_flow_manager(settings),
+        whatsapp_media_uploader=_build_media_uploader(settings),
         renderer=SafeRenderer(),
     )
 
@@ -410,3 +426,13 @@ def _build_flow_manager(settings):
         return MetaFlowManager(settings.WHATSAPP_ACCESS_TOKEN,
                                settings.WHATSAPP_BUSINESS_ACCOUNT_ID, settings.WHATSAPP_GRAPH_BASE)
     return ConsoleFlowManager()
+
+
+def _build_media_uploader(settings):
+    """The WhatsApp media uploader (Resumable Upload → template media handle). Same driver decision as
+    the template/flow managers; the upload is App-scoped (META_APP_ID) rather than WABA-scoped, but
+    the credential + console-in-dev shape is the same, so it follows WHATSAPP_TEMPLATE_MANAGER."""
+    if settings.WHATSAPP_TEMPLATE_MANAGER == "meta":
+        return MetaMediaUploader(settings.WHATSAPP_ACCESS_TOKEN, settings.META_APP_ID,
+                                 settings.WHATSAPP_GRAPH_BASE)
+    return ConsoleMediaUploader()

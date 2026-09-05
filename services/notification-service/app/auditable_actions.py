@@ -59,6 +59,15 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "resource": "wa_flow",
     },
     {
+        # A media file uploaded to Meta (Resumable Upload) to get a carousel template's media handle.
+        # Not critical — a failed upload is retried — but recorded: it names the type + size so a
+        # template that shipped the wrong asset, or a burst of uploads, is provable after the fact.
+        "action": "whatsapp_media.uploaded",
+        "source": "admin",
+        "critical": False,
+        "resource": "wa_media",
+    },
+    {
         # An admin-triggered manual WhatsApp send (the diagnostic test-send). A privileged manual
         # send from a customer's number is exactly what a review asks about — who sent what, from
         # where — so it is recorded (last-4 of the recipient only, never the full number/body).

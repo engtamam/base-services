@@ -400,6 +400,10 @@ class Settings(BaseSettings):
     WHATSAPP_ACCESS_TOKEN: str = ""       # per-tenant credential, resolved via the secret store
     WHATSAPP_PHONE_NUMBER_ID: str = ""    # the sending phone number's id
     WHATSAPP_GRAPH_BASE: str = "https://graph.facebook.com/v26.0"
+    # Ceiling for a carousel media upload (resumable-upload handle). Meta caps carousel header media at
+    # ~5MB image / ~16MB video; this bounds the in-memory read so a huge upload cannot exhaust memory,
+    # and is config so a deployment can tighten it. Default 16MB covers Meta's largest allowed header.
+    WHATSAPP_MEDIA_MAX_BYTES: int = 16 * 1024 * 1024
     # Embedded Signup (Tech Provider onboarding). These identify US as the Tech Provider — NOT the
     # shop — so they are platform-wide, from the environment, and never settable through any panel
     # (the same reasoning as SECRETS_KEK). The exchange endpoint reads them in CORE, never a route,

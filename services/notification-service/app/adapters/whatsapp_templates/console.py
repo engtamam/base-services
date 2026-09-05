@@ -15,7 +15,7 @@ class ConsoleTemplateManager:
     driver = "console"
 
     def submit(self, *, name, language, category, body, variables, examples=None,
-               flow_button=None) -> SubmitResult:
+               flow_button=None, carousel=None) -> SubmitResult:
         # `name` is a RESERVED LogRecord attribute — putting it in `extra` makes Python's logging
         # raise KeyError the moment the record is built (i.e. whenever this logger is at INFO), which
         # is how a console submit crashed in a real deployment while the tests, sitting above INFO,

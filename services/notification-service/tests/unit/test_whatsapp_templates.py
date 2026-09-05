@@ -107,6 +107,73 @@ def test_changing_the_flow_button_resets_an_approved_template_to_pending():
     assert changed.status == PENDING          # different flow id → re-review
 
 
+def _carousel(n=2, header="IMAGE", body=None):
+    card = lambda i: {   # noqa: E731 — terse test factory
+        "header_format": header, "header_example_handle": f"h{i}",
+        "buttons": [{"type": "QUICK_REPLY", "text": "Book"}],
+        **({"body": body} if body else {})}
+    return {"cards": [card(i) for i in range(n)]}
+
+
+def test_register_stores_and_normalises_a_carousel():
+    reg = _reg()
+    t = run(reg.register(tenant="acme", name="menu", language="en", category="MARKETING",
+                         body="Our offers", carousel=_carousel(3)))
+    assert len(t.carousel["cards"]) == 3
+    assert t.carousel["cards"][0]["header_format"] == "IMAGE"
+    assert t.carousel["cards"][0]["buttons"] == [{"type": "QUICK_REPLY", "text": "Book"}]
+
+
+def test_carousel_card_count_is_bounded():
+    reg = _reg()
+    with pytest.raises(TemplateError):
+        run(reg.register(tenant="acme", name="x", language="en", category="MARKETING",
+                         carousel=_carousel(1)))                     # <2
+    with pytest.raises(TemplateError):
+        run(reg.register(tenant="acme", name="x", language="en", category="MARKETING",
+                         carousel=_carousel(11)))                    # >10
+
+
+def test_carousel_cards_must_share_the_same_shape():
+    reg = _reg()
+    mixed = {"cards": [
+        {"header_format": "IMAGE", "header_example_handle": "h0",
+         "buttons": [{"type": "QUICK_REPLY", "text": "A"}]},
+        {"header_format": "VIDEO", "header_example_handle": "h1",   # different header format
+         "buttons": [{"type": "QUICK_REPLY", "text": "A"}]}]}
+    with pytest.raises(TemplateError):
+        run(reg.register(tenant="acme", name="x", language="en", category="MARKETING", carousel=mixed))
+
+
+def test_carousel_card_requires_a_header_handle_and_a_button():
+    reg = _reg()
+    no_handle = {"cards": [{"header_format": "IMAGE", "buttons": [{"type": "QUICK_REPLY", "text": "A"}]}] * 2}
+    with pytest.raises(TemplateError):
+        run(reg.register(tenant="acme", name="x", language="en", category="MARKETING", carousel=no_handle))
+
+
+def test_url_carousel_button_needs_a_url():
+    reg = _reg()
+    bad = {"cards": [{"header_format": "IMAGE", "header_example_handle": "h",
+                      "buttons": [{"type": "URL", "text": "Open"}]}] * 2}   # no url
+    with pytest.raises(TemplateError):
+        run(reg.register(tenant="acme", name="x", language="en", category="MARKETING", carousel=bad))
+
+
+def test_changing_the_carousel_resets_an_approved_template_to_pending():
+    st = WhatsAppTemplateStore(MemoryDataStore())
+    reg = WhatsAppTemplateRegistry(st)
+    run(reg.register(tenant="acme", name="menu", language="en", category="MARKETING",
+                     carousel=_carousel(2)))
+    t = run(reg.get("acme", "menu", "en")); t.status = APPROVED; run(st.save(t))
+    same = run(reg.register(tenant="acme", name="menu", language="en", category="MARKETING",
+                            carousel=_carousel(2)))
+    assert same.status == APPROVED                                   # identical → stays approved
+    changed = run(reg.register(tenant="acme", name="menu", language="en", category="MARKETING",
+                               carousel=_carousel(3)))
+    assert changed.status == PENDING                                 # card count changed → re-review
+
+
 def test_get_resolves_by_identity():
     reg = _reg()
     run(reg.register(tenant="acme", name="otp", language="ar", category="UTILITY"))

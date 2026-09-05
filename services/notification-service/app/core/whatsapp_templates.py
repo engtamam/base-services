@@ -58,6 +58,13 @@ class WhatsAppTemplate:
     # an ordinary template. Shape: {"flow_id"|"flow_name", "flow_action", "navigate_screen", "text"}.
     # The button + its flow must be approved before a send can carry the per-send flow action.
     flow_button: dict[str, Any] = field(default_factory=dict)
+    # Optional CAROUSEL — a horizontally-swipeable strip of 2–10 cards, each with a media header and
+    # its own buttons. Empty for an ordinary template. Shape: {"cards": [<card>, …]} where a card is
+    # {"header_format": "IMAGE"|"VIDEO", "header_example_handle", "body"?, "body_examples"?,
+    # "buttons": [{"type":"QUICK_REPLY","text"} | {"type":"URL","text","url","url_example"?}]}. All
+    # cards must share the same component shape (Meta's rule); the send supplies each card's media +
+    # variable values. Reviewed as one template — the whole carousel is approved together.
+    carousel: dict[str, Any] = field(default_factory=dict)
     created: str = field(default_factory=_now)
     updated: str = field(default_factory=_now)
 
@@ -65,6 +72,7 @@ class WhatsAppTemplate:
         return {"id": self.id, "tenant": self.tenant, "name": self.name, "language": self.language,
                 "category": self.category, "body": self.body, "variables": self.variables,
                 "examples": self.examples, "flow_button": self.flow_button,
+                "carousel": self.carousel,
                 "status": self.status, "provider_template_id": self.provider_template_id,
                 "rejection_reason": self.rejection_reason, "created": self.created,
                 "updated": self.updated}
@@ -76,6 +84,7 @@ class WhatsAppTemplate:
                    body=d.get("body", ""), variables=list(d.get("variables") or []),
                    examples=list(d.get("examples") or []),
                    flow_button=dict(d.get("flow_button") or {}),
+                   carousel=dict(d.get("carousel") or {}),
                    status=d.get("status", PENDING),
                    provider_template_id=d.get("provider_template_id", ""),
                    rejection_reason=d.get("rejection_reason", ""),
@@ -83,6 +92,73 @@ class WhatsAppTemplate:
 
     def public(self) -> dict[str, Any]:
         return self.to_dict()
+
+
+_CAROUSEL_MIN, _CAROUSEL_MAX = 2, 10
+_CARD_HEADER_FORMATS = ("IMAGE", "VIDEO")
+_CARD_BUTTON_TYPES = ("QUICK_REPLY", "URL")
+
+
+def _card_shape(card: dict[str, Any]) -> tuple:
+    """The structural signature Meta requires to be IDENTICAL across every card: header format, whether
+    a body is present, and the ordered button (type, text) pairs. Values (the media, the variables)
+    differ per card and per send; the SHAPE may not."""
+    buttons = tuple((str(b.get("type", "")).upper(), str(b.get("text", "")))
+                    for b in (card.get("buttons") or []))
+    return (str(card.get("header_format", "")).upper(), bool(card.get("body")), buttons)
+
+
+def _validate_carousel(carousel: dict[str, Any]) -> dict[str, Any]:
+    """Normalise + validate a carousel spec, or raise TemplateError. Returns {} for no carousel.
+
+    Enforces Meta's own creation rules locally so a bad spec is a clear error, not an opaque 400 that
+    burns the template name: 2–10 cards; every card the SAME component shape (same header format,
+    same body-or-not, same ordered buttons); each card a media header with an example handle Meta
+    needs at review; each button a valid type with the fields that type requires."""
+    cards = list(carousel.get("cards") or [])
+    if not cards:
+        return {}
+    if not (_CAROUSEL_MIN <= len(cards) <= _CAROUSEL_MAX):
+        raise TemplateError(f"a carousel needs {_CAROUSEL_MIN}–{_CAROUSEL_MAX} cards ({len(cards)} given)")
+    shape0 = _card_shape(cards[0])
+    out_cards: list[dict[str, Any]] = []
+    for i, card in enumerate(cards):
+        if _card_shape(card) != shape0:
+            raise TemplateError("all carousel cards must have the same component shape "
+                                "(header format, body presence, and buttons)")
+        fmt = str(card.get("header_format", "")).upper()
+        if fmt not in _CARD_HEADER_FORMATS:
+            raise TemplateError(f"card {i}: header_format must be one of {_CARD_HEADER_FORMATS}")
+        if not card.get("header_example_handle"):
+            raise TemplateError(f"card {i}: a header_example_handle is required at creation "
+                                "(upload the media first to get a resumable-upload handle)")
+        buttons = list(card.get("buttons") or [])
+        if not buttons:
+            raise TemplateError(f"card {i}: a carousel card needs at least one button")
+        norm_buttons: list[dict[str, Any]] = []
+        for b in buttons:
+            bt = str(b.get("type", "")).upper()
+            if bt not in _CARD_BUTTON_TYPES:
+                raise TemplateError(f"card {i}: button type must be one of {_CARD_BUTTON_TYPES}")
+            if not b.get("text"):
+                raise TemplateError(f"card {i}: each button needs text")
+            nb: dict[str, Any] = {"type": bt, "text": str(b["text"])}
+            if bt == "URL":
+                if not b.get("url"):
+                    raise TemplateError(f"card {i}: a URL button needs a url")
+                nb["url"] = str(b["url"])
+                if b.get("url_example"):
+                    nb["url_example"] = [str(e) for e in b["url_example"]]
+            norm_buttons.append(nb)
+        nc: dict[str, Any] = {"header_format": fmt,
+                              "header_example_handle": str(card["header_example_handle"]),
+                              "buttons": norm_buttons}
+        if card.get("body"):
+            nc["body"] = str(card["body"])
+            if card.get("body_examples"):
+                nc["body_examples"] = [str(e) for e in card["body_examples"]]
+        out_cards.append(nc)
+    return {"cards": out_cards}
 
 
 class WhatsAppTemplateStore:
@@ -119,7 +195,8 @@ class WhatsAppTemplateRegistry:
     async def register(self, *, tenant: str, name: str, language: str, category: str,
                        body: str = "", variables: list[str] | None = None,
                        examples: list[str] | None = None,
-                       flow_button: dict[str, Any] | None = None) -> WhatsAppTemplate:
+                       flow_button: dict[str, Any] | None = None,
+                       carousel: dict[str, Any] | None = None) -> WhatsAppTemplate:
         if not tenant or not name or not language:
             raise TemplateError("tenant, name and language are required")
         cat = (category or "").strip().upper()
@@ -130,6 +207,7 @@ class WhatsAppTemplateRegistry:
         fb = dict(flow_button or {})
         if fb and not (fb.get("flow_id") or fb.get("flow_name")):
             raise TemplateError("a flow_button needs flow_id or flow_name")
+        car = _validate_carousel(dict(carousel or {}))
         existing = await self._store.get(tenant, name, language)
         # register() is an upsert, and it is the natural home of "make sure this tenant has the
         # library" — run over the whole set whenever one template is added. So it must NOT move an
@@ -139,12 +217,12 @@ class WhatsAppTemplateRegistry:
         # not on a no-op re-register.
         unchanged = (existing is not None and existing.body == body and existing.variables == vs
                      and existing.examples == exs and existing.category == cat
-                     and existing.flow_button == fb)
+                     and existing.flow_button == fb and existing.carousel == car)
         status = existing.status if unchanged else PENDING
         t = WhatsAppTemplate(
             id=existing.id if existing else uuid.uuid4().hex,
             tenant=tenant, name=name, language=language, category=cat, body=body, variables=vs,
-            examples=exs, flow_button=fb, status=status,
+            examples=exs, flow_button=fb, carousel=car, status=status,
             provider_template_id=existing.provider_template_id if existing else "",
             rejection_reason=existing.rejection_reason if (unchanged and existing) else "",
             created=existing.created if existing else _now())
@@ -165,7 +243,8 @@ class WhatsAppTemplateRegistry:
         if t is None:
             raise TemplateError("no such template to submit")
         res = manager.submit(name=t.name, language=t.language, category=t.category, body=t.body,
-                             variables=t.variables, examples=t.examples, flow_button=t.flow_button)
+                             variables=t.variables, examples=t.examples, flow_button=t.flow_button,
+                             carousel=t.carousel)
         if res.provider_template_id:
             t.provider_template_id = res.provider_template_id
         t.status = res.status or PENDING
