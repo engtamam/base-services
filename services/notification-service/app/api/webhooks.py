@@ -27,8 +27,6 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from starlette.responses import PlainTextResponse
 
 from app.config import get_settings
-from app.core.e164_country_codes import country_calling_code
-from app.core.provider_billing import is_provider_billed
 from app.ports.event_bus import Event
 
 router = APIRouter(tags=["webhooks"])
@@ -64,7 +62,7 @@ async def verify_subscription(
     raise HTTPException(status.HTTP_403_FORBIDDEN, "VERIFY_FAILED")
 
 
-async def _fan_out(bus, deliveries, data: dict, inbound=None, number_index=None, costs=None) -> int:
+async def _fan_out(bus, deliveries, data: dict, inbound=None, number_index=None) -> int:
     """Publish every change to the bus, NOTHING filtered. Returns how many events were emitted.
 
     Meta's shape: {object, entry:[{id: <waba id>, changes:[{field, value}]}]}. Each change's `field`
@@ -101,28 +99,6 @@ async def _fan_out(bus, deliveries, data: dict, inbound=None, number_index=None,
                 await bus.publish(f"{_TOPIC}.status", Event(
                     type=f"{_TOPIC}.status", payload={**base, "delivery_id": delivery_id, "status": st}))
                 emitted += 1
-                # Meter the REAL cost of a provider-billed send. Meta attaches the pricing object to the
-                # billing-determining status event (once per message); we resolve the send it belongs to
-                # and record a usage unit ONLY when that send went through a driver WE are billed for
-                # (360dialog), never for a Meta-direct send the shop pays for itself. Best-effort and
-                # idempotent (keyed by wamid): a metering hiccup, or a webhook retry, must not disturb the
-                # fan-out or double-count. The country is derived from the delivery's recipient, since the
-                # pricing object carries the category but not the market.
-                pricing = st.get("pricing") if isinstance(st, dict) else None
-                if costs is not None and deliveries is not None and pricing:
-                    try:
-                        d = await deliveries.by_provider_message_id(str(st.get("id", "")))
-                        if d is not None and is_provider_billed(d.provider):
-                            await costs.record(
-                                wamid=str(st.get("id", "")), tenant=d.tenant,
-                                ts=float(st.get("timestamp", 0) or 0),
-                                category=str(pricing.get("category", "")),
-                                country=country_calling_code(d.recipient),
-                                pricing_model=str(pricing.get("pricing_model", "")),
-                                billable=bool(pricing.get("billable", False)),
-                                msg_type=str(pricing.get("type", "")))
-                    except Exception:  # noqa: BLE001 — metering must never break the receipt fan-out
-                        pass
             for msg in value.get("messages", []) or []:
                 # Resolve the tenant ONCE from the receiving number and put it on BOTH the durable
                 # record AND the live bus event. It used to live only on the record, so a fast-path
@@ -165,14 +141,12 @@ async def receive(request: Request) -> dict:
         data = _json.loads(raw or b"{}")
     except ValueError:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "BAD_JSON")
-    from app.core.stores import (DeliveryStore, InboundStore, WhatsAppCostStore,
-                                  WhatsAppNumberIndex)
+    from app.core.stores import DeliveryStore, InboundStore, WhatsAppNumberIndex
     bus = request.app.state.container.event_bus
     ds = request.app.state.container.datastore
     deliveries = DeliveryStore(ds)
     emitted = await _fan_out(bus, deliveries, data if isinstance(data, dict) else {},
-                             inbound=InboundStore(ds), number_index=WhatsAppNumberIndex(ds),
-                             costs=WhatsAppCostStore(ds))
+                             inbound=InboundStore(ds), number_index=WhatsAppNumberIndex(ds))
     # Meta retries on any non-2xx and treats the retries as duplicates, so acknowledge fast once the
     # events are on the bus. The count is for our observability, not for Meta.
     return {"received": True, "events": emitted}

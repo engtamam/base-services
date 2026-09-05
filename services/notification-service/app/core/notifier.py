@@ -21,7 +21,6 @@ from app.core.retry import (
     RetryPolicy,
 )
 from app.core.stores import DeliveryStore, InAppStore, PreferenceStore, TemplateStore
-from app.core.whatsapp_wallet_gate import WhatsAppWalletGate
 
 CHANNELS = ("email", "sms", "whatsapp", "inapp")
 
@@ -49,7 +48,6 @@ class NotificationService:
                  retry: RetryPolicy | None = None,
                  consent_gate=None, consent_purposes: dict[str, str] | None = None,
                  consent_unknown: str = FAIL_CLOSED,
-                 whatsapp_wallet_gate=None,
                  delivery_mode: str = INLINE, clock=time.time, auditor=None) -> None:
         self._templates = templates
         self._prefs = prefs
@@ -77,9 +75,6 @@ class NotificationService:
         self._consent = consent_gate or NullConsentGate()
         self._consent_purposes = dict(consent_purposes or {})
         self._consent_unknown = consent_unknown
-        # A no-arg gate is DISABLED (skips every send), so _deliver_whatsapp can always call it and an
-        # unconfigured deployment behaves exactly as before the gate existed.
-        self._wallet_gate = whatsapp_wallet_gate or WhatsAppWalletGate()
         # Recorded in _record(), the single funnel, so an inline send and a drained retry are
         # witnessed the same way. Optional so tests build the service without one.
         self._auditor = auditor
@@ -213,26 +208,12 @@ class NotificationService:
                 return await rec(recipient, "whatsapp", template_key, "failed",
                                           error=f"missing variables: {','.join(missing)}")
             ordered = [str(variables[v]) for v in tmpl.variables]
-        # WALLET GATE (send() only — never send_interactive). For a provider-billed send past the base
-        # allowance, reserve the overage before sending and REFUSE if the wallet cannot cover it. Skips
-        # entirely when disabled or the chain is not provider-billed. `wa.driver` is the resolved chain.
-        decision = await self._wallet_gate.before_send(
-            tenant=tenant, drivers=(wa.driver or "").split(","))
-        if decision.action == "refuse":
-            return await rec(recipient, "whatsapp", template_key, decision.status,
-                                      error=decision.reason)
         try:
             ok, provider, message_id = await asyncio.to_thread(
                 wa.send, recipient, template_key, language, ordered, biz_opaque)
         except Exception as exc:  # noqa: BLE001
-            # Settle the hold (release) before surfacing the failure — a crash must not strand a reserve.
-            await self._wallet_gate.after_send(decision, tenant=tenant, sent_ok=False, winning_driver="")
             return await rec(recipient, "whatsapp", template_key, "failed",
                                       error=f"{type(exc).__name__}: {exc}")
-        # Confirm the hold iff the send actually went out on a provider-billed driver (else release),
-        # and count a confirmed billed send toward the period allowance.
-        await self._wallet_gate.after_send(
-            decision, tenant=tenant, sent_ok=ok, winning_driver=provider)
         if ok:
             # Capture the wamid: it is the ONLY key a later receipt can be matched back to this send by.
             return await rec(recipient, "whatsapp", template_key, SENT, provider=provider,

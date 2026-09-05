@@ -36,14 +36,6 @@ BACKUP: dict[str, Any] = {
         # number) to a shop. Not a secret; rebindable on re-registration, but backed up so attribution
         # is not degraded from restore until each shop re-registers. Id-keyed (id == phone_number_id).
         {"name": "wa_number_index", "tenant_scoped": True},
-        # Per-message billable-usage units for provider-billed WhatsApp sends. Backed up because it is
-        # BILLING evidence: operations-service meters a shop's real WhatsApp cost off it, so losing it
-        # on a restore silently loses a period's usage. Id-keyed (id == wamid); carries a tenant field.
-        {"name": "wa_cost", "tenant_scoped": True},
-        # Per-(tenant, period) provider-billed send tally the wallet gate reads to place a send within
-        # the base app's included-messages allowance. Backed up so a restore doesn't reset a shop's
-        # free-tier consumption mid-period (handing back the allowance). Id-keyed (id == "{tenant}|{period}").
-        {"name": "wa_send_count", "tenant_scoped": True},
     ],
     "excluded": [
         {"name": "notify_idempo",

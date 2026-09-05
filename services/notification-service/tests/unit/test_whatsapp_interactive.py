@@ -81,9 +81,12 @@ def test_flow_shape_matches_the_cloud_api():
     assert params["flow_action_payload"] == {"screen": "RATING", "data": {"customer_name": "Ahmed"}}
 
 
-def test_flow_data_defaults_to_an_empty_dict_never_omitted():
+def test_flow_data_is_omitted_when_empty_never_sent_as_empty_object():
+    # Meta: flow_action_payload.data is optional but MUST be non-empty if present — so it is omitted
+    # entirely when there is no seed data (sending an empty {} is rejected). Verified vs Meta's own
+    # send-a-flow guide, Sep 2026.
     obj = build_flow(body="x", flow_token="t1", flow_id="f1", flow_cta="Go", screen="S1")
-    assert obj["action"]["parameters"]["flow_action_payload"]["data"] == {}
+    assert "data" not in obj["action"]["parameters"]["flow_action_payload"]
 
 
 def test_flow_requires_every_one_of_its_own_fields():

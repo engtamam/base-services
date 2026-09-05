@@ -647,30 +647,6 @@ async def whatsapp_deliveries(request: Request, tenant: str = Query(default="", 
     return {"tenant": resolved, "deliveries": [_delivery_diag(r) for r in rows]}
 
 
-@router.get("/whatsapp/channel-usage", dependencies=[Depends(require_internal_token)])
-async def whatsapp_channel_usage(
-        request: Request, tenant: str = Query(default="", max_length=128),
-        period: str = Query(default="", max_length=7, pattern=r"^(\d{4}-\d{2})?$")) -> dict:
-    """A tenant's REAL provider-billed WhatsApp usage for a billing period — the number operations-
-    service reads to bill a shop for its WhatsApp channel.
-
-    Returns billable UNITS, never money: counts by (category, country, pricing_model, billable) plus the
-    period totals. Only PROVIDER-BILLED sends are counted (360dialog and any future BSP the platform
-    pays for); a Meta-direct send the establishment pays Meta for itself contributes nothing here. The
-    halalas conversion — Meta's per-country/per-category rate card — is operations-service's to own and
-    version; this endpoint never encodes a price, so a rate change is a one-place edit on their side.
-
-    `period` is a UTC calendar month (YYYY-MM); omitted, it defaults to the current month. The read is
-    scoped to the one tenant and pushed into the datastore (never a cross-tenant scan)."""
-    if not tenant:
-        raise HTTPException(400, "tenant is required")
-    import time
-
-    from app.core.stores import WhatsAppCostStore, whatsapp_cost_period
-    store = WhatsAppCostStore(request.app.state.container.datastore)
-    return await store.usage_for_period(tenant, period or whatsapp_cost_period(time.time()))
-
-
 @router.get("/whatsapp/messaging-limit", dependencies=[Depends(require_internal_token)])
 async def whatsapp_messaging_limit_internal(request: Request, tenant: str = "") -> dict:
     """This tenant's WhatsApp messaging limit (unique customers / 24h) + quality rating, read live

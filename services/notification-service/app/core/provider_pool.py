@@ -53,7 +53,6 @@ SMS_CREDENTIALS = {
 }
 WHATSAPP_CREDENTIALS = {
     "meta": ("WHATSAPP_ACCESS_TOKEN", "WHATSAPP_PHONE_NUMBER_ID"),
-    "threesixtydialog": ("WHATSAPP_360DIALOG_API_KEY",),
     "webhook": ("WHATSAPP_WEBHOOK_BEARER",),
 }
 # console has no credential, and must never be dropped for lacking one.

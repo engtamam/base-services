@@ -132,7 +132,12 @@ def build_flow(*, body: str, flow_token: str, flow_id: str, flow_cta: str,
     be unique per send the same way a button id must be, and carries no meaning to Meta; only the
     caller reads it. `data` seeds the flow's first screen (e.g. a known customer name) — optional, and
     never a substitute for validating what actually comes back: a caller must not trust a value here
-    as if the customer had confirmed it."""
+    as if the customer had confirmed it.
+
+    Verified against Meta's own WhatsApp Cloud API "Sending a Flow" guide (Sep 2026): flow_message_
+    version must be exactly "3"; flow_id (or flow_name), flow_cta, flow_action_payload.screen are the
+    required parameters; flow_action defaults to "navigate"; and flow_action_payload.data is optional
+    but MUST be non-empty if present — hence omitted here when empty rather than sent as {}."""
     if not flow_token:
         raise InteractiveError("a flow message needs a flow_token — it is the reply's only anchor")
     if not flow_id:
@@ -141,6 +146,11 @@ def build_flow(*, body: str, flow_token: str, flow_id: str, flow_cta: str,
         raise InteractiveError("a flow message needs a call-to-action label")
     if not screen:
         raise InteractiveError("a flow message needs the first screen's name")
+    # flow_action_payload.data is OPTIONAL but "must be NON-EMPTY if provided" (Meta spec) — so it is
+    # OMITTED entirely when there is no seed data, never sent as an empty {} (which Meta rejects).
+    payload: dict[str, Any] = {"screen": _capped("screen", screen, _FLOW_SCREEN_MAX)}
+    if data:
+        payload["data"] = dict(data)
     return {
         "type": "flow", **_envelope(body, header, footer),
         "action": {
@@ -151,10 +161,7 @@ def build_flow(*, body: str, flow_token: str, flow_id: str, flow_cta: str,
                 "flow_id": _capped("flow_id", flow_id, _FLOW_ID_MAX),
                 "flow_cta": _capped("flow_cta", flow_cta, _FLOW_CTA_MAX),
                 "flow_action": "navigate",
-                "flow_action_payload": {
-                    "screen": _capped("screen", screen, _FLOW_SCREEN_MAX),
-                    "data": dict(data or {}),
-                },
+                "flow_action_payload": payload,
             },
         },
     }
