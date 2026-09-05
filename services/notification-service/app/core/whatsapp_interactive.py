@@ -22,6 +22,10 @@ _BTN_TITLE_MAX, _BTN_ID_MAX, _BTN_MAX = 20, 256, 3
 _LIST_BUTTON_MAX = 20
 _SECTION_TITLE_MAX, _SECTIONS_MAX = 24, 10
 _ROW_TITLE_MAX, _ROW_DESC_MAX, _ROW_ID_MAX, _ROWS_MAX = 24, 72, 200, 10
+# A Flow message's own call-to-action button — same 20-char cap Meta applies to a reply button's
+# title, because it renders the same way on the customer's screen.
+_FLOW_CTA_MAX = 20
+_FLOW_TOKEN_MAX, _FLOW_ID_MAX, _FLOW_SCREEN_MAX = 256, 128, 128
 
 
 class InteractiveError(ValueError):
@@ -113,3 +117,44 @@ def build_list(*, body: str, button_text: str, sections: list[dict[str, Any]],
     return {"type": "list", **_envelope(body, header, footer),
             "action": {"button": _capped("list button", button_text, _LIST_BUTTON_MAX),
                        "sections": out}}
+
+
+def build_flow(*, body: str, flow_token: str, flow_id: str, flow_cta: str,
+               screen: str, data: dict[str, Any] | None = None,
+               header: str = "", footer: str = "") -> dict[str, Any]:
+    """A WhatsApp Flow interactive object — a form that opens INSIDE WhatsApp and returns its answers
+    in one structured reply, rather than a free-text message the customer might send about something
+    else entirely (a post-visit rating's reason for using a Flow: one screen, stars AND a comment,
+    delivered together and unambiguous).
+
+    `flow_token` IS THE ANCHOR, exactly like a button's `id` — it is what the completion webhook
+    echoes back, so the caller can tell which of ITS OWN pending questions this answer is for. It must
+    be unique per send the same way a button id must be, and carries no meaning to Meta; only the
+    caller reads it. `data` seeds the flow's first screen (e.g. a known customer name) — optional, and
+    never a substitute for validating what actually comes back: a caller must not trust a value here
+    as if the customer had confirmed it."""
+    if not flow_token:
+        raise InteractiveError("a flow message needs a flow_token — it is the reply's only anchor")
+    if not flow_id:
+        raise InteractiveError("a flow message needs a flow_id")
+    if not flow_cta:
+        raise InteractiveError("a flow message needs a call-to-action label")
+    if not screen:
+        raise InteractiveError("a flow message needs the first screen's name")
+    return {
+        "type": "flow", **_envelope(body, header, footer),
+        "action": {
+            "name": "flow",
+            "parameters": {
+                "flow_message_version": "3",
+                "flow_token": _capped("flow_token", flow_token, _FLOW_TOKEN_MAX),
+                "flow_id": _capped("flow_id", flow_id, _FLOW_ID_MAX),
+                "flow_cta": _capped("flow_cta", flow_cta, _FLOW_CTA_MAX),
+                "flow_action": "navigate",
+                "flow_action_payload": {
+                    "screen": _capped("screen", screen, _FLOW_SCREEN_MAX),
+                    "data": dict(data or {}),
+                },
+            },
+        },
+    }

@@ -255,6 +255,35 @@
             "title": "Buttons",
             "type": "array"
           },
+          "flow_cta": {
+            "default": "",
+            "maxLength": 20,
+            "title": "Flow Cta",
+            "type": "string"
+          },
+          "flow_data": {
+            "additionalProperties": true,
+            "title": "Flow Data",
+            "type": "object"
+          },
+          "flow_id": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Flow Id",
+            "type": "string"
+          },
+          "flow_screen": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Flow Screen",
+            "type": "string"
+          },
+          "flow_token": {
+            "default": "",
+            "maxLength": 256,
+            "title": "Flow Token",
+            "type": "string"
+          },
           "footer": {
             "default": "",
             "maxLength": 1024,
@@ -319,7 +348,8 @@
           "type": {
             "enum": [
               "button",
-              "list"
+              "list",
+              "flow"
             ],
             "title": "Type",
             "type": "string"

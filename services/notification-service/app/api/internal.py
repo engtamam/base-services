@@ -6,7 +6,7 @@
 # =============================================================================
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
@@ -150,7 +150,7 @@ class _SectionIn(BaseModel):
 class InteractiveNotifyIn(BaseModel):
     recipient: str = Field(min_length=1, max_length=256)
     tenant: str | None = Field(default=None, max_length=128)
-    type: Literal["button", "list"]
+    type: Literal["button", "list", "flow"]
     body: str = Field(min_length=1, max_length=1024)
     header: str = Field(default="", max_length=1024)
     footer: str = Field(default="", max_length=1024)
@@ -159,6 +159,13 @@ class InteractiveNotifyIn(BaseModel):
     # list messages:
     button_text: str = Field(default="", max_length=256)
     sections: list[_SectionIn] = Field(default_factory=list)
+    # flow messages — a form that opens inside WhatsApp (see core/whatsapp_interactive.build_flow).
+    # `flow_token` is the reply anchor, same role as a button's own `id`.
+    flow_token: str = Field(default="", max_length=256)
+    flow_id: str = Field(default="", max_length=128)
+    flow_cta: str = Field(default="", max_length=20)
+    flow_screen: str = Field(default="", max_length=128)
+    flow_data: dict[str, Any] = Field(default_factory=dict)
     biz_opaque_callback_data: str | None = Field(default=None, max_length=512)
     sending_identity: str | None = Field(default=None, max_length=128)
     idempotency_key: str | None = Field(default=None, max_length=256)
@@ -175,7 +182,8 @@ async def internal_notify_interactive(request: Request, body: InteractiveNotifyI
     so a caller need not reach the Cloud API directly. The interactive object is built and
     limit-checked here (core/whatsapp_interactive) so a bad spec is a clear 422, not a Meta 400.
     """
-    from app.core.whatsapp_interactive import (InteractiveError, build_button, build_list)
+    from app.core.whatsapp_interactive import (InteractiveError, build_button, build_flow,
+                                               build_list)
 
     override, refusal = await _resolve_sending_identity(
         request, body.tenant or "", body.sending_identity)
@@ -185,6 +193,11 @@ async def internal_notify_interactive(request: Request, body: InteractiveNotifyI
         if body.type == "button":
             interactive = build_button(body=body.body, header=body.header, footer=body.footer,
                                        buttons=[(b.id, b.title) for b in body.buttons])
+        elif body.type == "flow":
+            interactive = build_flow(
+                body=body.body, header=body.header, footer=body.footer,
+                flow_token=body.flow_token, flow_id=body.flow_id, flow_cta=body.flow_cta,
+                screen=body.flow_screen, data=body.flow_data)
         else:
             interactive = build_list(
                 body=body.body, header=body.header, footer=body.footer, button_text=body.button_text,

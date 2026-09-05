@@ -79,3 +79,39 @@ def test_idempotency_key_dedupes_a_resend(client):
     first = client.post("/internal/notify/whatsapp/interactive", headers=_tok(), json=payload).json()
     second = client.post("/internal/notify/whatsapp/interactive", headers=_tok(), json=payload).json()
     assert second.get("duplicate") is True and second["delivery_id"] == first["delivery_id"]
+
+
+# ── flow — the post-visit rating app's own message shape ──────────────────────
+def test_flow_send_is_recorded_as_a_tenant_scoped_delivery(client):
+    r = client.post("/internal/notify/whatsapp/interactive", headers=_tok(),
+                    json={"recipient": "+966500000002", "tenant": "acme", "type": "flow",
+                          "body": "How was your visit?", "flow_token": "rate:vis_1",
+                          "flow_id": "123456789", "flow_cta": "Rate us", "flow_screen": "RATING"})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "sent" and r.json()["provider"] == "console"
+    rows = client.get("/internal/whatsapp/deliveries?tenant=acme", headers=_tok()).json()["deliveries"]
+    assert any(d["template_key"] == "interactive:flow" and d["status"] == "sent" for d in rows)
+
+
+def test_flow_missing_its_own_required_field_is_a_clear_422(client):
+    r = client.post("/internal/notify/whatsapp/interactive", headers=_tok(),
+                    json={"recipient": "+966", "type": "flow", "body": "x",
+                          "flow_token": "", "flow_id": "f1", "flow_cta": "Go", "flow_screen": "S1"})
+    assert r.status_code == 422 and "flow_token" in r.json()["reason"]
+
+
+def test_flow_idempotency_key_dedupes_a_resend(client):
+    payload = {"recipient": "+966", "tenant": "acme", "type": "flow", "body": "How was your visit?",
+               "flow_token": "rate:vis_2", "flow_id": "f1", "flow_cta": "Rate us",
+               "flow_screen": "RATING", "idempotency_key": "rate-vis-2"}
+    first = client.post("/internal/notify/whatsapp/interactive", headers=_tok(), json=payload).json()
+    second = client.post("/internal/notify/whatsapp/interactive", headers=_tok(), json=payload).json()
+    assert second.get("duplicate") is True and second["delivery_id"] == first["delivery_id"]
+
+
+def test_flow_data_seeds_the_first_screen_without_being_echoed_in_the_response(client):
+    r = client.post("/internal/notify/whatsapp/interactive", headers=_tok(),
+                    json={"recipient": "+966", "tenant": "acme", "type": "flow", "body": "x",
+                          "flow_token": "rate:vis_3", "flow_id": "f1", "flow_cta": "Go",
+                          "flow_screen": "RATING", "flow_data": {"customer_name": "Ahmed"}})
+    assert r.status_code == 200 and r.json()["status"] == "sent"

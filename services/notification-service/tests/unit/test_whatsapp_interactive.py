@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.whatsapp_interactive import (InteractiveError, build_button, build_list)
+from app.core.whatsapp_interactive import (InteractiveError, build_button, build_flow, build_list)
 
 
 def test_button_shape_matches_the_cloud_api():
@@ -60,3 +60,56 @@ def test_list_limits_and_uniqueness():
     with pytest.raises(InteractiveError):                                                  # row title >24
         build_list(body="x", button_text="Go",
                    sections=[{"rows": [{"id": "a", "title": "t" * 25}]}])
+
+
+# ── flow — the post-visit rating app's own message shape ──────────────────────
+def test_flow_shape_matches_the_cloud_api():
+    obj = build_flow(body="How was your visit?", flow_token="rate:vis_1:abc",
+                     flow_id="123456789", flow_cta="Rate us", screen="RATING",
+                     data={"customer_name": "Ahmed"}, footer="Raje3")
+    assert obj["type"] == "flow"
+    assert obj["body"] == {"text": "How was your visit?"}
+    assert obj["footer"] == {"text": "Raje3"}
+    assert "header" not in obj                                    # omitted when not given
+    params = obj["action"]["parameters"]
+    assert obj["action"]["name"] == "flow"
+    assert params["flow_message_version"] == "3"
+    assert params["flow_token"] == "rate:vis_1:abc"
+    assert params["flow_id"] == "123456789"
+    assert params["flow_cta"] == "Rate us"
+    assert params["flow_action"] == "navigate"
+    assert params["flow_action_payload"] == {"screen": "RATING", "data": {"customer_name": "Ahmed"}}
+
+
+def test_flow_data_defaults_to_an_empty_dict_never_omitted():
+    obj = build_flow(body="x", flow_token="t1", flow_id="f1", flow_cta="Go", screen="S1")
+    assert obj["action"]["parameters"]["flow_action_payload"]["data"] == {}
+
+
+def test_flow_requires_every_one_of_its_own_fields():
+    with pytest.raises(InteractiveError):
+        build_flow(body="x", flow_token="", flow_id="f1", flow_cta="Go", screen="S1")
+    with pytest.raises(InteractiveError):
+        build_flow(body="x", flow_token="t1", flow_id="", flow_cta="Go", screen="S1")
+    with pytest.raises(InteractiveError):
+        build_flow(body="x", flow_token="t1", flow_id="f1", flow_cta="", screen="S1")
+    with pytest.raises(InteractiveError):
+        build_flow(body="x", flow_token="t1", flow_id="f1", flow_cta="Go", screen="")
+    with pytest.raises(InteractiveError):
+        build_flow(body="", flow_token="t1", flow_id="f1", flow_cta="Go", screen="S1")
+
+
+def test_flow_cta_over_twenty_characters_is_refused():
+    with pytest.raises(InteractiveError):
+        build_flow(body="x", flow_token="t1", flow_id="f1", flow_cta="a" * 21, screen="S1")
+
+
+def test_flow_token_over_the_cap_is_refused():
+    with pytest.raises(InteractiveError):
+        build_flow(body="x", flow_token="t" * 257, flow_id="f1", flow_cta="Go", screen="S1")
+
+
+def test_two_flow_sends_with_different_tokens_are_distinguishable():
+    a = build_flow(body="x", flow_token="rate:vis_1", flow_id="f1", flow_cta="Go", screen="S1")
+    b = build_flow(body="x", flow_token="rate:vis_2", flow_id="f1", flow_cta="Go", screen="S1")
+    assert a["action"]["parameters"]["flow_token"] != b["action"]["parameters"]["flow_token"]
