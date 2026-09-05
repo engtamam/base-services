@@ -93,6 +93,17 @@ def test_flow_send_is_recorded_as_a_tenant_scoped_delivery(client):
     assert any(d["template_key"] == "interactive:flow" and d["status"] == "sent" for d in rows)
 
 
+def test_location_request_send_is_recorded_as_a_tenant_scoped_delivery(client):
+    r = client.post("/internal/notify/whatsapp/interactive", headers=_tok(),
+                    json={"recipient": "+966500000003", "tenant": "acme", "type": "location_request",
+                          "body": "Share your location to find the nearest branch"})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "sent" and r.json()["provider"] == "console"
+    rows = client.get("/internal/whatsapp/deliveries?tenant=acme", headers=_tok()).json()["deliveries"]
+    assert any(d["template_key"] == "interactive:location_request" and d["status"] == "sent"
+               for d in rows)
+
+
 def test_flow_missing_its_own_required_field_is_a_clear_422(client):
     r = client.post("/internal/notify/whatsapp/interactive", headers=_tok(),
                     json={"recipient": "+966", "type": "flow", "body": "x",

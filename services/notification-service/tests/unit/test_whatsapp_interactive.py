@@ -5,7 +5,25 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.whatsapp_interactive import (InteractiveError, build_button, build_flow, build_list)
+from app.core.whatsapp_interactive import (InteractiveError, build_button, build_flow, build_list,
+                                           build_location_request)
+
+
+def test_location_request_shape_matches_the_cloud_api():
+    obj = build_location_request(body="Share your location so we can find the nearest branch")
+    assert obj == {
+        "type": "location_request_message",
+        "body": {"text": "Share your location so we can find the nearest branch"},
+        "action": {"name": "send_location"}}
+
+
+def test_location_request_needs_body_and_caps_it():
+    with pytest.raises(InteractiveError):
+        build_location_request(body="")
+    with pytest.raises(InteractiveError):
+        build_location_request(body="   ")
+    with pytest.raises(InteractiveError):
+        build_location_request(body="x" * 1025)   # body ≤1024
 
 
 def test_button_shape_matches_the_cloud_api():

@@ -119,6 +119,25 @@ def build_list(*, body: str, button_text: str, sections: list[dict[str, Any]],
                        "sections": out}}
 
 
+def build_location_request(*, body: str) -> dict[str, Any]:
+    """A location-request interactive object — body text plus a single 'Send location' button that
+    opens WhatsApp's own location-sharing screen. The customer's shared pin arrives back as an
+    ordinary `location` message webhook (latitude/longitude, and optionally name/address), so there
+    is no reply id to anchor here the way a button or flow has: the NEXT inbound location IS the
+    answer, and the caller correlates it by the conversation, not by an echoed token.
+
+    Verified against Meta's WhatsApp Cloud API "Location request messages" (Sep 2026): interactive
+    type is exactly "location_request_message", the only content is body.text (≤1024), and the action
+    is the fixed {"name": "send_location"} — no header, footer, or other action fields are accepted."""
+    if not body or not body.strip():
+        raise InteractiveError("a location request needs body text")
+    return {
+        "type": "location_request_message",
+        "body": {"text": _capped("body", body, _BODY_MAX)},
+        "action": {"name": "send_location"},
+    }
+
+
 def build_flow(*, body: str, flow_token: str, flow_id: str, flow_cta: str,
                screen: str, data: dict[str, Any] | None = None,
                header: str = "", footer: str = "") -> dict[str, Any]:

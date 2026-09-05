@@ -349,7 +349,8 @@
             "enum": [
               "button",
               "list",
-              "flow"
+              "flow",
+              "location_request"
             ],
             "title": "Type",
             "type": "string"

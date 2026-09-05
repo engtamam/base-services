@@ -156,7 +156,7 @@ class _SectionIn(BaseModel):
 class InteractiveNotifyIn(BaseModel):
     recipient: str = Field(min_length=1, max_length=256)
     tenant: str | None = Field(default=None, max_length=128)
-    type: Literal["button", "list", "flow"]
+    type: Literal["button", "list", "flow", "location_request"]
     body: str = Field(min_length=1, max_length=1024)
     header: str = Field(default="", max_length=1024)
     footer: str = Field(default="", max_length=1024)
@@ -189,7 +189,7 @@ async def internal_notify_interactive(request: Request, body: InteractiveNotifyI
     limit-checked here (core/whatsapp_interactive) so a bad spec is a clear 422, not a Meta 400.
     """
     from app.core.whatsapp_interactive import (InteractiveError, build_button, build_flow,
-                                               build_list)
+                                               build_list, build_location_request)
 
     override, refusal = await _resolve_sending_identity(
         request, body.tenant or "", body.sending_identity)
@@ -204,6 +204,10 @@ async def internal_notify_interactive(request: Request, body: InteractiveNotifyI
                 body=body.body, header=body.header, footer=body.footer,
                 flow_token=body.flow_token, flow_id=body.flow_id, flow_cta=body.flow_cta,
                 screen=body.flow_screen, data=body.flow_data)
+        elif body.type == "location_request":
+            # A location-request carries only body text; header/footer/action fields are not accepted
+            # by Meta for this interactive type, so they are ignored rather than forwarded.
+            interactive = build_location_request(body=body.body)
         else:
             interactive = build_list(
                 body=body.body, header=body.header, footer=body.footer, button_text=body.button_text,
