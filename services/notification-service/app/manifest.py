@@ -73,6 +73,9 @@ def build_manifest(
              "erasure_category": "subject"},
             {"path": "/internal/notify", "tier": "internal", "method": "POST"},
             {"path": "/internal/notify/whatsapp/interactive", "tier": "internal", "method": "POST"},
+            # Send an approved CAROUSEL template with per-card runtime values (media id, body + button
+            # params). Business-initiated, consent-gated, through the shared delivery plumbing.
+            {"path": "/internal/notify/whatsapp/carousel", "tier": "internal", "method": "POST"},
             {"path": "/api/v1/notifications", "tier": "user", "method": "GET"},
             {"path": "/api/v1/notifications/{id}/read", "tier": "user", "method": "POST"},
             {"path": "/api/v1/notifications/preferences", "tier": "user", "method": "GET"},
@@ -112,6 +115,9 @@ def build_manifest(
             # Upload carousel/header media via Meta's Resumable Upload API and return the handle a
             # carousel template needs at creation — so the caller never runs Meta's two-step upload.
             {"path": "/internal/whatsapp/media/upload-handle", "tier": "internal", "method": "POST"},
+            # Send-time twin: upload to /{phone_number_id}/media → the media id a carousel card header
+            # references at send (distinct from the creation handle above).
+            {"path": "/internal/whatsapp/media/upload-id", "tier": "internal", "method": "POST"},
             {"path": "/internal/whatsapp/messaging-limit", "tier": "internal", "method": "GET"},
             # Register a business phone number for Cloud API sending — the PIN-carrying step exchange
             # stops before. Without it a tenant is "connected" everywhere and cannot send. Per NUMBER

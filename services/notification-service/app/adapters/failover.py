@@ -72,6 +72,19 @@ class FailoverWhatsApp:
                 _log.warning("whatsapp_provider_error", extra={"provider": p.driver})
         return False, self.driver, ""
 
+    def send_template_components(self, to: str, template_name: str, language: str,
+                                 components: list, biz_opaque_callback_data: str = "") -> tuple[bool, str, str]:
+        """Same failover contract as send(), for a template with a pre-built components list (carousel)."""
+        for p in self._providers:
+            try:
+                mid = p.send_template_components(to, template_name, language, components,
+                                                biz_opaque_callback_data)
+                if mid:
+                    return True, p.driver, mid
+            except Exception:
+                _log.warning("whatsapp_provider_error", extra={"provider": p.driver})
+        return False, self.driver, ""
+
     def send_text(self, to: str, body: str,
                   biz_opaque_callback_data: str = "") -> tuple[bool, str, str]:
         """Same failover contract as send(), for a plain free-text (24h-window) reply."""

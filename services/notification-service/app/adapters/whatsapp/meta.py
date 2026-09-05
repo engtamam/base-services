@@ -59,6 +59,20 @@ class MetaWhatsApp:
             payload["biz_opaque_callback_data"] = biz_opaque_callback_data[:512]
         return self._post(payload)
 
+    def send_template_components(self, to: str, template_name: str, language: str,
+                                 components: list[dict], biz_opaque_callback_data: str = "") -> str:
+        """Send an approved template with a PRE-BUILT components list — the rich-template path (a
+        carousel's per-card component tree, built + validated upstream in core/whatsapp_carousel). The
+        components are Meta's own shape and posted verbatim; same envelope + wamid handling as send()."""
+        template: dict = {"name": template_name, "language": {"code": language or "en"}}
+        if components:
+            template["components"] = components
+        payload: dict = {"messaging_product": "whatsapp", "to": to, "type": "template",
+                         "template": template}
+        if biz_opaque_callback_data:
+            payload["biz_opaque_callback_data"] = biz_opaque_callback_data[:512]
+        return self._post(payload)
+
     def send_interactive(self, to: str, interactive: dict,
                          biz_opaque_callback_data: str = "") -> str:
         """An interactive (button/list) message — no template, sent inside the 24h window. The

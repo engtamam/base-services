@@ -231,6 +231,60 @@ async def internal_notify_interactive(request: Request, body: InteractiveNotifyI
         whatsapp_override=override)
 
 
+class _CarouselCardIn(BaseModel):
+    media_id: str = Field(min_length=1, max_length=256)         # from /whatsapp/media/upload-id
+    media_type: Literal["image", "video"] = "image"
+    body_params: list[str] = Field(default_factory=list)       # values for the card body's {{n}}
+    # buttons: [{sub_type: quick_reply, payload} | {sub_type: url, text}] — order matches the template
+    buttons: list[dict] = Field(default_factory=list)
+
+
+class CarouselNotifyIn(BaseModel):
+    recipient: str = Field(min_length=1, max_length=256)
+    tenant: str | None = Field(default=None, max_length=128)
+    template_name: str = Field(min_length=1, max_length=512)   # the approved carousel template
+    language: str = Field(default="en", min_length=2, max_length=16)
+    variables: list[str] = Field(default_factory=list)         # top-level (non-card) body params
+    cards: list[_CarouselCardIn] = Field(min_length=1)
+    user_id: str | None = Field(default=None, max_length=256)  # subject for the consent gate
+    event: str | None = Field(default=None, max_length=128)    # maps to a consent purpose, if any
+    biz_opaque_callback_data: str | None = Field(default=None, max_length=512)
+    sending_identity: str | None = Field(default=None, max_length=128)
+    idempotency_key: str | None = Field(default=None, max_length=256)
+
+
+@router.post("/notify/whatsapp/carousel", dependencies=[Depends(require_internal_token)])
+async def internal_notify_carousel(request: Request, body: CarouselNotifyIn) -> dict:
+    """Send an approved CAROUSEL template with per-card runtime values.
+
+    Business-initiated (a template, not a 24h-window reply), so it goes through the SAME audited,
+    idempotent, tenant-scoped, CONSENT-GATED plumbing as any other template send — a carousel mapped
+    to a marketing purpose is not sent to a subject who has not consented. Each card's media is
+    referenced by the media id from /whatsapp/media/upload-id; the component tree is built + validated
+    here (a bad spec is a clean 422, not a Meta 400)."""
+    from app.core.whatsapp_carousel import CarouselSendError, build_carousel_send
+
+    override, refusal = await _resolve_sending_identity(
+        request, body.tenant or "", body.sending_identity)
+    if refusal is not None:
+        return refusal
+    try:
+        components: list[dict] = []
+        if body.variables:
+            components.append({"type": "body",
+                               "parameters": [{"type": "text", "text": str(v)} for v in body.variables]})
+        components.append(build_carousel_send([c.model_dump() for c in body.cards]))
+    except CarouselSendError as exc:
+        from starlette.responses import JSONResponse
+        return JSONResponse({"ok": False, "reason": str(exc)}, status_code=422)
+    notifier = await build_notifier(request, body.tenant or "")
+    return await notifier.send_carousel(
+        recipient=body.recipient, tenant=body.tenant or "", template_name=body.template_name,
+        language=body.language, components=components, user_id=body.user_id, event=body.event or "",
+        biz_opaque=body.biz_opaque_callback_data or "", idempotency_key=body.idempotency_key,
+        whatsapp_override=override)
+
+
 class EmbeddedSignupInternalIn(BaseModel):
     """Same shape as the operator route, but the TENANT rides in the body — the internal caller is a
     product service acting FOR a shop, not a human whose token carries a tenant."""
@@ -616,8 +670,50 @@ async def upload_whatsapp_media_handle_internal(
     await request.app.state.auditor.record(
         "whatsapp_media.uploaded", actor="", tenant=body.tenant, resource="wa_media",
         ip=request.client.host if request.client else "",
-        metadata={"file_type": ctype, "bytes": str(len(data))})
+        metadata={"file_type": ctype, "bytes": str(len(data)), "kind": "handle"})
     return {"ok": True, "handle": res.handle}
+
+
+@router.post("/whatsapp/media/upload-id", dependencies=[Depends(require_internal_token)])
+async def upload_whatsapp_media_id_internal(
+        request: Request, body: WaMediaUploadIn,
+        settings: Settings = Depends(get_settings)) -> dict:
+    """Upload media to /{phone_number_id}/media and return the MEDIA ID used at SEND time.
+
+    The send-time twin of /upload-handle: a carousel is CREATED with a resumable-upload handle but
+    SENT with a phone-number-scoped media id (image.id / video.id per card). Same file, two Meta
+    endpoints — so the platform owns both, and a caller never touches Meta's upload APIs directly.
+    """
+    import base64
+    import binascii
+
+    from app.api.v1.notifications import build_media_uploader
+
+    ctype = body.file_type.lower()
+    if ctype not in _MEDIA_TYPES:
+        raise HTTPException(422, f"file_type must be one of {sorted(_MEDIA_TYPES)}, got {ctype!r}")
+    try:
+        data = base64.b64decode(body.data_base64, validate=True)
+    except (ValueError, binascii.Error):
+        raise HTTPException(422, "data_base64 is not valid base64")
+    if not data:
+        raise HTTPException(422, "the uploaded file is empty")
+    if len(data) > settings.WHATSAPP_MEDIA_MAX_BYTES:
+        raise HTTPException(413, f"file exceeds {settings.WHATSAPP_MEDIA_MAX_BYTES} bytes")
+    pool = getattr(request.app.state, "provider_pool", None)
+    phone_id = (await pool.whatsapp_phone_number_id(body.tenant)) if pool is not None \
+        else settings.WHATSAPP_PHONE_NUMBER_ID
+    uploader = await build_media_uploader(request, body.tenant)
+    res = await asyncio.to_thread(uploader.upload_media_id, file_bytes=data, file_type=ctype,
+                                  phone_number_id=phone_id, file_name=body.file_name or "upload.bin")
+    if not res.ok:
+        from starlette.responses import JSONResponse
+        return JSONResponse({"ok": False, "reason": res.reason}, status_code=502)
+    await request.app.state.auditor.record(
+        "whatsapp_media.uploaded", actor="", tenant=body.tenant, resource="wa_media",
+        ip=request.client.host if request.client else "",
+        metadata={"file_type": ctype, "bytes": str(len(data)), "kind": "media_id"})
+    return {"ok": True, "media_id": res.media_id}
 
 
 class WaRegisterIn(BaseModel):

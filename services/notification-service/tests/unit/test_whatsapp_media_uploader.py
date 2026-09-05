@@ -63,3 +63,32 @@ def test_console_uploader_returns_a_stable_handle():
     a = up.upload_handle(file_bytes=b"same", file_type="image/png")
     b = up.upload_handle(file_bytes=b"same", file_type="image/png")
     assert a.ok and a.handle == b.handle and a.handle.startswith("console-handle:")
+
+
+def test_meta_upload_media_id_posts_multipart_to_the_phone_number(monkeypatch):
+    seen = {}
+
+    def fake_request(url, data, headers, method="POST"):
+        seen["url"], seen["ctype"], seen["data"] = url, headers.get("Content-Type"), data
+        return (200, json.dumps({"id": "MEDIA_9"}))
+
+    monkeypatch.setattr(meta_mod, "_request", fake_request)
+    r = MetaMediaUploader("tok", "APP1", _BASE).upload_media_id(
+        file_bytes=b"imgbytes", file_type="image/png", phone_number_id="PN1", file_name="a.png")
+    assert r.ok and r.media_id == "MEDIA_9"
+    assert seen["url"] == f"{_BASE}/PN1/media"
+    assert seen["ctype"].startswith("multipart/form-data; boundary=")
+    # the multipart body carries messaging_product + the file bytes
+    assert b"messaging_product" in seen["data"] and b"imgbytes" in seen["data"]
+
+
+def test_meta_upload_media_id_needs_a_phone_number():
+    r = MetaMediaUploader("tok", "APP1", _BASE).upload_media_id(
+        file_bytes=b"x", file_type="image/png", phone_number_id="")
+    assert r.ok is False
+
+
+def test_console_upload_media_id_returns_a_stable_id():
+    r = ConsoleMediaUploader().upload_media_id(file_bytes=b"x", file_type="image/png",
+                                               phone_number_id="PN1")
+    assert r.ok and r.media_id.startswith("console-media:")

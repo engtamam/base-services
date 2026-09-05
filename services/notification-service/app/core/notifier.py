@@ -264,6 +264,57 @@ class NotificationService:
             recipient, "whatsapp", tk, "failed", tenant=tenant, provider=provider,
             error="send failed"))
 
+    async def send_carousel(self, *, recipient: str, tenant: str, template_name: str, language: str,
+                            components: list[dict], user_id: str | None = None, event: str = "",
+                            biz_opaque: str = "", idempotency_key: str | None = None,
+                            whatsapp_override=None) -> dict:
+        """Send an approved CAROUSEL template with its pre-built send-time components, as a Delivery.
+
+        UNLIKE send_interactive, a carousel is BUSINESS-INITIATED (a template, not a 24h-window reply),
+        so it is subject to the SAME consent gate as any other business-initiated template: a carousel
+        mapped to a marketing purpose is not sent to a subject who has not consented. Otherwise the same
+        shared plumbing — idempotent dedupe, per-tenant/branch provider, the tenant-scoped Delivery
+        carrying the wamid, the audit. The components are built + validated upstream (whatsapp_carousel).
+        """
+        if idempotency_key:
+            prior = await self._deliveries.idempotent_get(
+                idempotency_key, now=time.time(), ttl=self._dedupe_ttl)
+            if prior is not None:
+                return {**prior, "duplicate": True}
+        tk = template_name           # the Delivery's template_key names the Meta template, as sends do
+        # Consent — same rule as notify(): only a template MAPPED to a purpose is gated, and only with a
+        # subject to key on. A carousel to a consented (or contract-basis) audience passes untouched.
+        purpose = self._consent_purposes.get(event or "") or self._consent_purposes.get(template_name)
+        if purpose and user_id:
+            if not tenant:
+                return await self._finish(idempotency_key, await self._record(
+                    recipient, "whatsapp", tk, "consent_no_tenant", tenant=tenant or "",
+                    error=f"{purpose}: a consent-gated send requires a tenant"))
+            verdict = await self._consent.check(tenant=tenant, subject=user_id, purpose=purpose)
+            if not verdict.permits(self._consent_unknown):
+                return await self._finish(idempotency_key, await self._record(
+                    recipient, "whatsapp", tk, "consent_denied", tenant=tenant or "",
+                    error=f"{purpose}: {verdict.reason or verdict.status}"))
+        wa = whatsapp_override if whatsapp_override is not None else self._whatsapp
+        if wa is None:
+            return await self._finish(idempotency_key, await self._record(
+                recipient, "whatsapp", tk, "failed", tenant=tenant,
+                error="whatsapp channel not configured"))
+        try:
+            ok, provider, mid = await asyncio.to_thread(
+                wa.send_template_components, recipient, template_name, language, components, biz_opaque)
+        except Exception as exc:  # noqa: BLE001
+            return await self._finish(idempotency_key, await self._record(
+                recipient, "whatsapp", tk, "failed", tenant=tenant,
+                error=f"{type(exc).__name__}: {exc}"))
+        if ok:
+            return await self._finish(idempotency_key, await self._record(
+                recipient, "whatsapp", tk, SENT, tenant=tenant, provider=provider, attempts=1,
+                provider_message_id=mid))
+        return await self._finish(idempotency_key, await self._record(
+            recipient, "whatsapp", tk, "failed", tenant=tenant, provider=provider,
+            error="send failed"))
+
     async def _deliver(self, channel: str, recipient: str, subject: str, body: str,
                        user_id: str | None) -> tuple[bool, str, str]:
         """Hand the message to the provider.

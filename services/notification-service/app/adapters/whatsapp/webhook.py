@@ -30,6 +30,15 @@ class WebhookWhatsApp:
         # non-empty marker keeps success TRUTHY without inventing a wamid that can never resolve.
         return "webhook:sent" if ok(status) else ""
 
+    def send_template_components(self, to: str, template_name: str, language: str,
+                                 components: list[dict], biz_opaque_callback_data: str = "") -> str:
+        # Forwarded as-is: {to, template:{name, language, components}} mirrors Cloud API so a relay can
+        # pass it straight to Meta. No wamid from a relay.
+        body = {"to": to, "template": {"name": template_name, "language": {"code": language or "en"},
+                                       "components": components}}
+        status, _ = post_json(self._url, body, self._headers)
+        return "webhook:sent" if ok(status) else ""
+
     def send_interactive(self, to: str, interactive: dict,
                          biz_opaque_callback_data: str = "") -> str:
         # Forwarded as-is to the relay: {to, interactive} mirrors Cloud API's own field so a gateway

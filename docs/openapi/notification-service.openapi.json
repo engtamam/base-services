@@ -50,6 +50,123 @@
         "title": "BackupVerifyIn",
         "type": "object"
       },
+      "CarouselNotifyIn": {
+        "properties": {
+          "biz_opaque_callback_data": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Biz Opaque Callback Data"
+          },
+          "cards": {
+            "items": {
+              "$ref": "#/components/schemas/_CarouselCardIn"
+            },
+            "minItems": 1,
+            "title": "Cards",
+            "type": "array"
+          },
+          "event": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "language": {
+            "default": "en",
+            "maxLength": 16,
+            "minLength": 2,
+            "title": "Language",
+            "type": "string"
+          },
+          "recipient": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Recipient",
+            "type": "string"
+          },
+          "sending_identity": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sending Identity"
+          },
+          "template_name": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Template Name",
+            "type": "string"
+          },
+          "tenant": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant"
+          },
+          "user_id": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id"
+          },
+          "variables": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Variables",
+            "type": "array"
+          }
+        },
+        "required": [
+          "recipient",
+          "template_name",
+          "cards"
+        ],
+        "title": "CarouselNotifyIn",
+        "type": "object"
+      },
       "ConfigIn": {
         "properties": {
           "key": {
@@ -980,6 +1097,45 @@
           "title"
         ],
         "title": "_ButtonIn",
+        "type": "object"
+      },
+      "_CarouselCardIn": {
+        "properties": {
+          "body_params": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Body Params",
+            "type": "array"
+          },
+          "buttons": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Buttons",
+            "type": "array"
+          },
+          "media_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Media Id",
+            "type": "string"
+          },
+          "media_type": {
+            "default": "image",
+            "enum": [
+              "image",
+              "video"
+            ],
+            "title": "Media Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "media_id"
+        ],
+        "title": "_CarouselCardIn",
         "type": "object"
       },
       "_RowIn": {
@@ -2414,6 +2570,84 @@
         ]
       }
     },
+    "/internal/notify/whatsapp/carousel": {
+      "post": {
+        "description": "Send an approved CAROUSEL template with per-card runtime values.\n\nBusiness-initiated (a template, not a 24h-window reply), so it goes through the SAME audited,\nidempotent, tenant-scoped, CONSENT-GATED plumbing as any other template send \u2014 a carousel mapped\nto a marketing purpose is not sent to a subject who has not consented. Each card's media is\nreferenced by the media id from /whatsapp/media/upload-id; the component tree is built + validated\nhere (a bad spec is a clean 422, not a Meta 400).",
+        "operationId": "internal_notify_carousel_internal_notify_whatsapp_carousel_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CarouselNotifyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Internal Notify Carousel Internal Notify Whatsapp Carousel Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Internal Notify Carousel",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/notify/whatsapp/interactive": {
       "post": {
         "description": "Send an interactive (reply-buttons / list) WhatsApp message \u2014 the state-change-safe path.\n\nAn interactive message drives an action by the customer TAPPING a button/list row, whose id\nreturns in a webhook \u2014 never a free-text or LLM-inferred action. It is sent inside the 24h\ncustomer-service window (no template needed), and goes through the SAME audited, rate-limited,\nceiling-aware plumbing as every other WhatsApp send (a tenant-scoped Delivery carrying the wamid),\nso a caller need not reach the Cloud API directly. The interactive object is built and\nlimit-checked here (core/whatsapp_interactive) so a bad spec is a clear 422, not a Meta 400.",
@@ -2989,6 +3223,84 @@
           }
         },
         "summary": "Upload Whatsapp Media Handle Internal",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/whatsapp/media/upload-id": {
+      "post": {
+        "description": "Upload media to /{phone_number_id}/media and return the MEDIA ID used at SEND time.\n\nThe send-time twin of /upload-handle: a carousel is CREATED with a resumable-upload handle but\nSENT with a phone-number-scoped media id (image.id / video.id per card). Same file, two Meta\nendpoints \u2014 so the platform owns both, and a caller never touches Meta's upload APIs directly.",
+        "operationId": "upload_whatsapp_media_id_internal_internal_whatsapp_media_upload_id_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaMediaUploadIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Upload Whatsapp Media Id Internal Internal Whatsapp Media Upload Id Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Whatsapp Media Id Internal",
         "tags": [
           "internal"
         ]

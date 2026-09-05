@@ -32,6 +32,13 @@ class WhatsAppProvider(Protocol):
         them sends an ordinary template, unchanged. flow_action_data is omitted when empty."""
         ...
 
+    def send_template_components(self, to: str, template_name: str, language: str,
+                                 components: list[dict], biz_opaque_callback_data: str = "") -> str:
+        """Send an approved TEMPLATE with a pre-built components list — the rich-template path for a
+        carousel (its per-card component tree is built + validated in core/whatsapp_carousel). Business-
+        initiated (no 24h window needed). Returns the wamid on success, "" on failure, like send()."""
+        ...
+
     def send_interactive(self, to: str, interactive: dict,
                          biz_opaque_callback_data: str = "") -> str:
         """Send an interactive (reply-buttons / list) message, INSIDE the 24h customer-service window

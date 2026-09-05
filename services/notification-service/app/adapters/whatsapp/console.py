@@ -19,6 +19,12 @@ class ConsoleWhatsApp:
         # A synthetic id so the dev/console path exercises the same wamid→delivery plumbing as Meta.
         return f"console:{uuid.uuid4().hex}"
 
+    def send_template_components(self, to: str, template_name: str, language: str,
+                                 components: list[dict], biz_opaque_callback_data: str = "") -> str:
+        _log.info("whatsapp_sent", extra={"provider": "console", "to": to,
+                                          "template": template_name, "components": len(components)})
+        return f"console:{uuid.uuid4().hex}"
+
     def send_interactive(self, to: str, interactive: dict,
                          biz_opaque_callback_data: str = "") -> str:
         _log.info("whatsapp_sent", extra={"provider": "console", "to": to,

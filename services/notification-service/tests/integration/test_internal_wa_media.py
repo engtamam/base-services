@@ -62,3 +62,18 @@ def test_upload_rejects_over_the_size_ceiling(client):
     r = client.post("/internal/whatsapp/media/upload-handle", headers=_tok(),
                     json={"tenant": "acme", "file_type": "image/png", "data_base64": big})
     assert r.status_code == 413
+
+
+def test_upload_id_returns_a_media_id(client):
+    r = client.post("/internal/whatsapp/media/upload-id", headers=_tok(),
+                    json={"tenant": "acme", "file_type": "image/png",
+                          "data_base64": _b64(b"\x89PNG image data")})
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"] and r.json()["media_id"].startswith("console-media:")
+
+
+def test_upload_id_requires_the_internal_token():
+    c = TestClient(create_app())
+    assert c.post("/internal/whatsapp/media/upload-id",
+                  json={"tenant": "acme", "file_type": "image/png",
+                        "data_base64": _b64(b"x")}).status_code == 401

@@ -26,11 +26,30 @@ class UploadResult:
     reason: str = ""
 
 
+@dataclass(frozen=True)
+class MediaIdResult:
+    ok: bool
+    media_id: str = ""    # the media id — referenced at SEND time in a card header (image.id / video.id)
+    reason: str = ""
+
+
 @runtime_checkable
 class WhatsAppMediaUploader(Protocol):
     driver: str
 
     def upload_handle(self, *, file_bytes: bytes, file_type: str,
                       file_name: str = "") -> UploadResult:
-        """Upload the bytes via Meta's Resumable Upload API and return the reusable file HANDLE."""
+        """Upload the bytes via Meta's Resumable Upload API and return the reusable file HANDLE.
+
+        The handle is for TEMPLATE CREATION (a card's header_example_handle). It is NOT a send-time
+        media id — sending references media by the id from upload_media_id() instead."""
+        ...
+
+    def upload_media_id(self, *, file_bytes: bytes, file_type: str, phone_number_id: str,
+                        file_name: str = "") -> MediaIdResult:
+        """Upload the bytes to /{phone_number_id}/media and return the MEDIA ID used at SEND time.
+
+        Distinct from upload_handle: creation needs an App-scoped resumable-upload handle; a send needs
+        a phone-number-scoped media id. Same file, two different Meta endpoints and two different
+        identifiers — so a carousel that is created AND sent uploads its media through both."""
         ...
