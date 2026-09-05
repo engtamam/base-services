@@ -45,9 +45,9 @@ def _world(**over):
 
 
 def _sub(store, sub_id, *, limits=None, status="active", created="2024-01-01",
-         period_end=NOW + DAY, plan_id="", stacking=None, tenant="acme"):
+         period_end=NOW + DAY, plan_id="", stacking=None, tenant="acme", quantity=1):
     row = {"id": sub_id, "tenant": tenant, "status": status, "created": created,
-           "plan_id": plan_id, "limits_snapshot": limits or {},
+           "plan_id": plan_id, "limits_snapshot": limits or {}, "quantity": quantity,
            "current_period_start": NOW - DAY, "current_period_end": period_end}
     if stacking:
         row["stacking"] = stacking
@@ -72,6 +72,47 @@ def test_seat_packs_SUM():
     _sub(store, "sub_a", limits={"seats": 20}, created="2024-01-01")
     _sub(store, "sub_b", limits={"seats": 5}, created="2024-01-02")
     assert run(r.resolve("acme", NOW))["limits"]["seats"] == 25
+
+
+# ── quantity scales a row's OWN numeric limits (one seat/branch pack row of quantity N) ────────────
+def test_quantity_scales_a_single_rows_numeric_limit():
+    store, r = _world()
+    _sub(store, "sub_a", limits={"staff.seats": 10}, quantity=3)   # one pack row, quantity 3
+    assert run(r.resolve("acme", NOW))["limits"]["staff.seats"] == 30   # 10 × 3, not 10
+
+
+def test_quantity_scales_per_row_then_sums():
+    store, r = _world()
+    _sub(store, "sub_a", limits={"staff.seats": 10}, quantity=3, created="2024-01-01")  # 30
+    _sub(store, "sub_b", limits={"staff.seats": 5}, quantity=1, created="2024-01-02")   # 5
+    assert run(r.resolve("acme", NOW))["limits"]["staff.seats"] == 35   # multiply-then-sum
+
+
+def test_quantity_never_multiplies_UNLIMITED():
+    store, r = _world()
+    _sub(store, "sub_a", limits={"staff.seats": UNLIMITED}, quantity=5)
+    assert run(r.resolve("acme", NOW))["limits"]["staff.seats"] == UNLIMITED   # stays unlimited
+
+
+def test_quantity_never_multiplies_a_boolean_flag():
+    store, r = _world()
+    _sub(store, "sub_a", limits={"sso": True}, quantity=4)
+    assert run(r.resolve("acme", NOW))["limits"]["sso"] is True   # a flag is not a quantity
+
+
+def test_quantity_one_is_an_exact_noop():
+    # every EXISTING row defaults to quantity 1 — resolution must be byte-identical to pre-change.
+    store, r = _world()
+    _sub(store, "sub_a", limits={"staff.seats": 10, "sso": True}, quantity=1)
+    out = run(r.resolve("acme", NOW))["limits"]
+    assert out["staff.seats"] == 10 and out["sso"] is True
+
+
+def test_a_bad_quantity_never_zeroes_a_grant():
+    # a missing / 0 quantity coerces to a no-op, never 0 seats (which would lock a customer out).
+    store, r = _world()
+    _sub(store, "sub_a", limits={"staff.seats": 10}, quantity=0)
+    assert run(r.resolve("acme", NOW))["limits"]["staff.seats"] == 10
 
 
 def test_a_boolean_is_granted_by_ANY_subscription():

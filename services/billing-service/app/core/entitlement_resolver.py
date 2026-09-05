@@ -45,6 +45,29 @@ from __future__ import annotations
 from typing import Any
 
 from app.core import entitlement_merge as _merge
+
+
+def _scale_limits(limits: dict[str, Any], quantity: Any) -> dict[str, Any]:
+    """Scale a subscription row's OWN numeric limits by its quantity — a seat/branch pack of quantity
+    N grants N× (the grant follows the price, which already bills unit × quantity). quantity 1 (every
+    existing row's default) is an EXACT no-op, so no current customer's total changes.
+
+    NEVER scaled: the UNLIMITED sentinel (a string — multiplying it would produce a number smaller
+    than unlimited and quietly CAP a customer who bought no cap; same guardrail as the merge), bool
+    feature flags (a flag is not a quantity), and rich/structured limit dicts (a counter pack's
+    inner shape is not scaled here). A missing / 0 / None / bad quantity coerces to a no-op — a bad
+    quantity must NEVER zero a customer's entitlements.
+    """
+    q = int(quantity or 1)
+    if q <= 1:
+        return limits
+    out: dict[str, Any] = {}
+    for key, value in limits.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            out[key] = value          # flag, UNLIMITED string, or rich dict — untouched
+        else:
+            out[key] = value * q      # a real numeric gauge — scaled by this row's quantity
+    return out
 from app.observability.logging import get_logger
 
 _log = get_logger("app.entitlements")
@@ -145,9 +168,13 @@ class EntitlementResolver:
         out: list[tuple[str, dict[str, Any]]] = []
         for sub in live:
             if self._cfg["grandfather"] and sub.get("limits_snapshot"):
-                out.append((sub.get("id", ""), dict(sub["limits_snapshot"])))
+                base = dict(sub["limits_snapshot"])
             else:
-                out.append((sub.get("id", ""), dict(plans.get(sub.get("plan_id", ""), {}))))
+                base = dict(plans.get(sub.get("plan_id", ""), {}))
+            # A seat/branch pack sold as ONE row of quantity N contributes N× its own limits — the
+            # grant follows the price (billing already charges unit × quantity). Per-row, BEFORE the
+            # merge, so each row's quantity scales only its own contribution and the union still SUMs.
+            out.append((sub.get("id", ""), _scale_limits(base, sub.get("quantity"))))
         return out
 
     # ── the merge ─────────────────────────────────────────────────────────────
