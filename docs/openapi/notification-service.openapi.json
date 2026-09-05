@@ -393,6 +393,30 @@
             ],
             "title": "Event"
           },
+          "flow_action_data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Flow Action Data"
+          },
+          "flow_token": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Flow Token"
+          },
           "idempotency_key": {
             "anyOf": [
               {
@@ -684,6 +708,11 @@
             "title": "Examples",
             "type": "array"
           },
+          "flow_button": {
+            "additionalProperties": true,
+            "title": "Flow Button",
+            "type": "object"
+          },
           "language": {
             "maxLength": 16,
             "minLength": 2,
@@ -733,6 +762,11 @@
             },
             "title": "Examples",
             "type": "array"
+          },
+          "flow_button": {
+            "additionalProperties": true,
+            "title": "Flow Button",
+            "type": "object"
           },
           "language": {
             "maxLength": 16,

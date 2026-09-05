@@ -20,7 +20,8 @@ def run(c):
 class _WA:
     driver = "fake"
 
-    def send(self, to, template_name, language, variables, biz_opaque_callback_data=""):
+    def send(self, to, template_name, language, variables, biz_opaque_callback_data="",
+             flow_token="", flow_action_data=None):
         return True, "fake", "wamid.fake"
 
 

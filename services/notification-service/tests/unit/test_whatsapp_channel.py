@@ -35,7 +35,8 @@ class _P:
         self._mid = f"{driver}:wamid" if ok else ""   # "" == failure, non-empty == the wamid
         self.calls = []
 
-    def send(self, to, template_name, language, variables, biz_opaque_callback_data=""):
+    def send(self, to, template_name, language, variables, biz_opaque_callback_data="",
+             flow_token="", flow_action_data=None):
         self.calls.append((to, template_name, language, tuple(variables)))
         return self._mid
 
@@ -113,3 +114,24 @@ def test_meta_template_and_interactive_envelope_shapes(monkeypatch):
     wa.send_interactive("+96650", {"type": "button", "body": {"text": "hi"}})
     p2 = calls[-1][1]
     assert p2["type"] == "interactive" and p2["interactive"] == {"type": "button", "body": {"text": "hi"}}
+
+
+def test_meta_send_with_a_flow_token_adds_a_flow_button_component(monkeypatch):
+    # A send against a template whose approved Flow button carries a per-send flow action. Meta's
+    # shape (verified Sep 2026): a components[] "button"/sub_type "flow" carrying the flow_token.
+    calls = _capture_meta(monkeypatch)
+    MetaWhatsApp("tok", "pnid").send("+96650", "book", "en", ["Ahmed"],
+                                     flow_token="rate:vis_1", flow_action_data={"customer": "Ahmed"})
+    comps = calls[-1][1]["template"]["components"]
+    btn = next(c for c in comps if c.get("type") == "button")
+    assert btn["sub_type"] == "flow" and btn["index"] == "0"
+    action = btn["parameters"][0]["action"]
+    assert action["flow_token"] == "rate:vis_1" and action["flow_action_data"] == {"customer": "Ahmed"}
+
+
+def test_meta_send_flow_omits_action_data_when_empty(monkeypatch):
+    # Meta: flow_action_data is optional but must be NON-EMPTY if present, so an empty dict is omitted.
+    calls = _capture_meta(monkeypatch)
+    MetaWhatsApp("tok", "pnid").send("+96650", "book", "en", [], flow_token="t1", flow_action_data={})
+    btn = next(c for c in calls[-1][1]["template"]["components"] if c.get("type") == "button")
+    assert "flow_action_data" not in btn["parameters"][0]["action"]

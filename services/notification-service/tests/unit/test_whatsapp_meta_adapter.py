@@ -64,6 +64,37 @@ def test_submit_omits_the_example_when_the_body_has_no_parameters(monkeypatch):
     assert "example" not in body_comp        # a template with no {{n}} needs no example
 
 
+def test_submit_declares_a_flow_button_in_a_buttons_component(monkeypatch):
+    # A Flow button must be APPROVED as part of the template before any send can carry a flow action.
+    # Meta's shape (verified Sep 2026): a BUTTONS component with a {"type":"FLOW"} button.
+    sent = _capture(monkeypatch)
+    _mgr().submit(name="book", language="en", category="MARKETING", body="Tap to book.",
+                  variables=[], examples=[],
+                  flow_button={"flow_id": "1234", "text": "Book now",
+                               "flow_action": "navigate", "navigate_screen": "WELCOME"})
+    btns = next(c for c in sent["payload"]["components"] if c["type"] == "BUTTONS")
+    assert btns["buttons"] == [{"type": "FLOW", "text": "Book now", "flow_id": "1234",
+                                "flow_action": "navigate", "navigate_screen": "WELCOME"}]
+
+
+def test_submit_data_exchange_flow_omits_navigate_screen(monkeypatch):
+    # navigate_screen is a navigate-only field; a data_exchange flow must not carry a screen id.
+    sent = _capture(monkeypatch)
+    _mgr().submit(name="dyn", language="en", category="UTILITY", body="Hi", variables=[], examples=[],
+                  flow_button={"flow_name": "survey", "flow_action": "data_exchange",
+                               "navigate_screen": "IGNORED"})
+    btn = next(c for c in sent["payload"]["components"] if c["type"] == "BUTTONS")["buttons"][0]
+    assert btn == {"type": "FLOW", "text": "Open", "flow_name": "survey",
+                   "flow_action": "data_exchange"}
+
+
+def test_submit_without_a_flow_button_sends_no_buttons_component(monkeypatch):
+    sent = _capture(monkeypatch)
+    _mgr().submit(name="plain", language="en", category="UTILITY", body="Hi {{1}}",
+                  variables=["n"], examples=["Sam"])
+    assert all(c["type"] != "BUTTONS" for c in sent["payload"]["components"])
+
+
 def test_paused_and_disabled_are_distinct_statuses_not_pending(monkeypatch):
     # The single failure a messaging product most needs to surface: a live template Meta has muted.
     for meta_status, ours in (("PAUSED", "paused"), ("DISABLED", "disabled"),

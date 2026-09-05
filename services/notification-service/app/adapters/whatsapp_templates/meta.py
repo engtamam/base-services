@@ -77,6 +77,34 @@ def _body_example(variables: list[str], examples: list[str]) -> list[str]:
     return out
 
 
+def _flow_button_component(flow_button: dict | None) -> dict | None:
+    """Meta's BUTTONS component carrying a single FLOW button, or None when no flow is declared.
+
+    Verified against Meta's "Create a message template with a Flow" (Sep 2026): a BUTTONS component
+    whose button is `{"type":"FLOW", "text", <flow identifier>, "flow_action", "navigate_screen"?}`.
+    Only the text and ONE flow identifier (flow_id | flow_name | flow_json) are required; flow_action
+    defaults to "navigate", and navigate_screen is required only for a navigate action — so it is sent
+    only when both are present. The registry already guarantees an identifier before we get here."""
+    fb = dict(flow_button or {})
+    if not fb:
+        return None
+    button: dict = {"type": "FLOW", "text": str(fb.get("text") or "Open")}
+    if fb.get("flow_id"):
+        button["flow_id"] = str(fb["flow_id"])
+    elif fb.get("flow_name"):
+        button["flow_name"] = str(fb["flow_name"])
+    elif fb.get("flow_json"):
+        button["flow_json"] = fb["flow_json"]
+    action = str(fb.get("flow_action") or "").strip()
+    if action:
+        button["flow_action"] = action
+    # navigate_screen is meaningful (and required) only for the navigate action; omit it otherwise so
+    # a data_exchange flow is not sent a screen id it must not carry.
+    if fb.get("navigate_screen") and action != "data_exchange":
+        button["navigate_screen"] = str(fb["navigate_screen"])
+    return {"type": "BUTTONS", "buttons": [button]}
+
+
 class MetaTemplateManager:
     driver = "meta"
 
@@ -89,7 +117,8 @@ class MetaTemplateManager:
         self._waba = waba_id
         self._headers = bearer(access_token)
 
-    def submit(self, *, name, language, category, body, variables, examples=None) -> SubmitResult:
+    def submit(self, *, name, language, category, body, variables, examples=None,
+               flow_button=None) -> SubmitResult:
         components = []
         if body:
             comp = {"type": "BODY", "text": body}
@@ -99,6 +128,9 @@ class MetaTemplateManager:
                 # set one value per {{n}}. One set is enough for a single-language body.
                 comp["example"] = {"body_text": [ex]}
             components.append(comp)
+        flow_comp = _flow_button_component(flow_button)
+        if flow_comp:
+            components.append(flow_comp)
         payload = {"name": name, "language": language, "category": category,
                    "components": components}
         status, raw = post_json(f"{self._base}/{self._waba}/message_templates", payload,

@@ -54,13 +54,17 @@ class WhatsAppTemplate:
     status: str = PENDING
     provider_template_id: str = ""       # Meta's id, set on submit
     rejection_reason: str = ""
+    # Optional Flow BUTTON declared as part of THIS template (approved by Meta at creation). Empty for
+    # an ordinary template. Shape: {"flow_id"|"flow_name", "flow_action", "navigate_screen", "text"}.
+    # The button + its flow must be approved before a send can carry the per-send flow action.
+    flow_button: dict[str, Any] = field(default_factory=dict)
     created: str = field(default_factory=_now)
     updated: str = field(default_factory=_now)
 
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "tenant": self.tenant, "name": self.name, "language": self.language,
                 "category": self.category, "body": self.body, "variables": self.variables,
-                "examples": self.examples,
+                "examples": self.examples, "flow_button": self.flow_button,
                 "status": self.status, "provider_template_id": self.provider_template_id,
                 "rejection_reason": self.rejection_reason, "created": self.created,
                 "updated": self.updated}
@@ -71,6 +75,7 @@ class WhatsAppTemplate:
                    language=d.get("language", ""), category=d.get("category", ""),
                    body=d.get("body", ""), variables=list(d.get("variables") or []),
                    examples=list(d.get("examples") or []),
+                   flow_button=dict(d.get("flow_button") or {}),
                    status=d.get("status", PENDING),
                    provider_template_id=d.get("provider_template_id", ""),
                    rejection_reason=d.get("rejection_reason", ""),
@@ -113,7 +118,8 @@ class WhatsAppTemplateRegistry:
 
     async def register(self, *, tenant: str, name: str, language: str, category: str,
                        body: str = "", variables: list[str] | None = None,
-                       examples: list[str] | None = None) -> WhatsAppTemplate:
+                       examples: list[str] | None = None,
+                       flow_button: dict[str, Any] | None = None) -> WhatsAppTemplate:
         if not tenant or not name or not language:
             raise TemplateError("tenant, name and language are required")
         cat = (category or "").strip().upper()
@@ -121,6 +127,9 @@ class WhatsAppTemplateRegistry:
             raise TemplateError(f"category must be one of {CATEGORIES}, got {category!r}")
         vs = [str(v) for v in (variables or [])]
         exs = [str(e) for e in (examples or [])]
+        fb = dict(flow_button or {})
+        if fb and not (fb.get("flow_id") or fb.get("flow_name")):
+            raise TemplateError("a flow_button needs flow_id or flow_name")
         existing = await self._store.get(tenant, name, language)
         # register() is an upsert, and it is the natural home of "make sure this tenant has the
         # library" — run over the whole set whenever one template is added. So it must NOT move an
@@ -129,12 +138,13 @@ class WhatsAppTemplateRegistry:
         # pending ONLY when the reviewable content actually changed; Meta re-opens review on an edit,
         # not on a no-op re-register.
         unchanged = (existing is not None and existing.body == body and existing.variables == vs
-                     and existing.examples == exs and existing.category == cat)
+                     and existing.examples == exs and existing.category == cat
+                     and existing.flow_button == fb)
         status = existing.status if unchanged else PENDING
         t = WhatsAppTemplate(
             id=existing.id if existing else uuid.uuid4().hex,
             tenant=tenant, name=name, language=language, category=cat, body=body, variables=vs,
-            examples=exs, status=status,
+            examples=exs, flow_button=fb, status=status,
             provider_template_id=existing.provider_template_id if existing else "",
             rejection_reason=existing.rejection_reason if (unchanged and existing) else "",
             created=existing.created if existing else _now())
@@ -155,7 +165,7 @@ class WhatsAppTemplateRegistry:
         if t is None:
             raise TemplateError("no such template to submit")
         res = manager.submit(name=t.name, language=t.language, category=t.category, body=t.body,
-                             variables=t.variables, examples=t.examples)
+                             variables=t.variables, examples=t.examples, flow_button=t.flow_button)
         if res.provider_template_id:
             t.provider_template_id = res.provider_template_id
         t.status = res.status or PENDING

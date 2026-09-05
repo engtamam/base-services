@@ -47,6 +47,11 @@ class NotifyIn(BaseModel):
     # WhatsApp only: an arbitrary caller string (≤512) Meta echoes verbatim in the status webhook, so a
     # caller can correlate a receipt against its OWN send id with no join and no extra read.
     biz_opaque_callback_data: str | None = Field(default=None, max_length=512)
+    # WhatsApp TEMPLATE-with-Flow-button only: when the approved template carries a Flow button, these
+    # supply the per-send action. flow_token is the reply anchor (echoed in the completion webhook);
+    # flow_action_data seeds the first screen (omitted when empty). Both ignored for ordinary templates.
+    flow_token: str | None = Field(default=None, max_length=256)
+    flow_action_data: dict | None = Field(default=None)
     # WhatsApp only: which of the tenant's NUMBERS to send from — a WABA holds many (one per branch).
     # It is the branch's phone-number-id. Resolved to a number this tenant is entitled to send from;
     # an UNKNOWN identity is REFUSED (a message from another branch's number is worse than none sent),
@@ -128,6 +133,7 @@ async def internal_notify(request: Request, body: NotifyIn) -> dict:
         tenant=body.tenant, locale=body.locale, variables=body.variables,
         user_id=body.user_id, event=body.event, idempotency_key=body.idempotency_key,
         biz_opaque_callback_data=body.biz_opaque_callback_data, whatsapp_override=whatsapp_override,
+        flow_token=body.flow_token, flow_action_data=body.flow_action_data,
     )
 
 
@@ -406,6 +412,9 @@ class WaTemplateInternalIn(BaseModel):
     body: str = Field(default="", max_length=4_000)
     variables: list[str] = Field(default_factory=list)   # ordered parameter names (send-time keys)
     examples: list[str] = Field(default_factory=list)     # ordered example values Meta needs at review
+    # Optional Flow BUTTON to declare on this template (approved by Meta at creation), so a later send
+    # can carry a per-send flow action. {"flow_id"|"flow_name", "flow_action", "navigate_screen", "text"}.
+    flow_button: dict = Field(default_factory=dict)
 
 
 class WaSubmitInternalIn(BaseModel):
@@ -432,7 +441,7 @@ async def register_whatsapp_template_internal(request: Request, body: WaTemplate
     try:
         t = await reg.register(tenant=body.tenant, name=body.name, language=body.language,
                                category=body.category, body=body.body, variables=body.variables,
-                               examples=body.examples)
+                               examples=body.examples, flow_button=body.flow_button)
     except TemplateError as exc:
         raise HTTPException(422, str(exc)) from exc
     return t.public()

@@ -269,7 +269,8 @@ class _FakeWaDriver:
         self.calls.append(("text", to, body))
         return self._mid
 
-    def send(self, to, template_name, language, variables, biz_opaque_callback_data=""):
+    def send(self, to, template_name, language, variables, biz_opaque_callback_data="",
+             flow_token="", flow_action_data=None):
         self.calls.append(("template", to, template_name))
         return self._mid
 

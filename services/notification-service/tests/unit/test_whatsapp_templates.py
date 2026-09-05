@@ -82,6 +82,31 @@ def test_re_registering_changed_content_resets_to_pending():
     assert again.status == PENDING
 
 
+def test_register_stores_a_flow_button_and_needs_an_identifier():
+    reg = _reg()
+    t = run(reg.register(tenant="acme", name="book", language="en", category="MARKETING",
+                         body="Tap to book", flow_button={"flow_id": "1", "text": "Book"}))
+    assert t.flow_button == {"flow_id": "1", "text": "Book"}
+    with pytest.raises(TemplateError):   # a flow button with neither flow_id nor flow_name is refused
+        run(reg.register(tenant="acme", name="bad", language="en", category="MARKETING",
+                         flow_button={"text": "no id"}))
+
+
+def test_changing_the_flow_button_resets_an_approved_template_to_pending():
+    # The flow button is part of what Meta reviews — changing it must re-open review, like a body edit.
+    st = WhatsAppTemplateStore(MemoryDataStore())
+    reg = WhatsAppTemplateRegistry(st)
+    run(reg.register(tenant="acme", name="book", language="en", category="MARKETING",
+                     body="Tap", flow_button={"flow_id": "1", "text": "Book"}))
+    t = run(reg.get("acme", "book", "en")); t.status = APPROVED; run(st.save(t))
+    same = run(reg.register(tenant="acme", name="book", language="en", category="MARKETING",
+                            body="Tap", flow_button={"flow_id": "1", "text": "Book"}))
+    assert same.status == APPROVED            # identical flow button is a no-op, stays approved
+    changed = run(reg.register(tenant="acme", name="book", language="en", category="MARKETING",
+                               body="Tap", flow_button={"flow_id": "2", "text": "Book"}))
+    assert changed.status == PENDING          # different flow id → re-review
+
+
 def test_get_resolves_by_identity():
     reg = _reg()
     run(reg.register(tenant="acme", name="otp", language="ar", category="UTILITY"))

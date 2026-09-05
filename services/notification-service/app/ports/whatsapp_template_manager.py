@@ -25,7 +25,7 @@ would tell an operator to wait for a verdict that will never change.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -75,7 +75,8 @@ class WhatsAppTemplateManager(Protocol):
     driver: str
 
     def submit(self, *, name: str, language: str, category: str, body: str,
-               variables: list[str], examples: list[str]) -> SubmitResult: ...
+               variables: list[str], examples: list[str],
+               flow_button: dict[str, Any] | None = None) -> SubmitResult: ...
 
     def status(self, *, provider_template_id: str, name: str, language: str) -> StatusResult: ...
 

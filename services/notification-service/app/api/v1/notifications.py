@@ -94,6 +94,8 @@ class WaTemplateIn(BaseModel):
     body: str = Field(default="", max_length=4_000)
     variables: list[str] = Field(default_factory=list)   # ordered parameter names (send-time keys)
     examples: list[str] = Field(default_factory=list)    # ordered example values Meta needs at review
+    # Optional Flow BUTTON to declare on this template (approved at creation) — see build docs.
+    flow_button: dict = Field(default_factory=dict)
 
 
 @wa_templates_router.post("", status_code=201, dependencies=[Depends(_WA_CAP)])
@@ -109,7 +111,7 @@ async def register_wa_template(request: Request, body: WaTemplateIn,
         t = await _wa_registry(request).register(
             tenant=principal.tenant or "", name=body.name, language=body.language,
             category=body.category, body=body.body, variables=body.variables,
-            examples=body.examples)
+            examples=body.examples, flow_button=body.flow_button)
     except TemplateError as exc:
         raise HTTPException(422, str(exc))
     return t.public()

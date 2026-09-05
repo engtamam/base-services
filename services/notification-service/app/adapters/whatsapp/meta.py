@@ -27,13 +27,30 @@ class MetaWhatsApp:
         self._headers = bearer(access_token)
 
     def send(self, to: str, template_name: str, language: str, variables: list[str],
-             biz_opaque_callback_data: str = "") -> str:
+             biz_opaque_callback_data: str = "", flow_token: str = "",
+             flow_action_data: dict | None = None) -> str:
         template: dict = {"name": template_name, "language": {"code": language or "en"}}
+        components: list[dict] = []
         if variables:
-            template["components"] = [{
+            components.append({
                 "type": "body",
                 "parameters": [{"type": "text", "text": str(v)} for v in variables],
-            }]
+            })
+        if flow_token:
+            # A Flow button that is a component OF THE APPROVED TEMPLATE (business-initiated, no 24h
+            # window needed) — distinct from the interactive-message Flow (build_flow), which needs the
+            # window. The button + its flow are declared and APPROVED at template creation; here we only
+            # supply the per-send action. Verified against Meta's "Sending a Flow" guide (Sep 2026):
+            # type "button", sub_type "flow", index "0" (single button), one parameter of type "action"
+            # whose `action` carries flow_token and flow_action_data. flow_action_data seeds the first
+            # screen and MUST be non-empty if present — so it is OMITTED when empty, never sent as {}.
+            action: dict = {"flow_token": flow_token}
+            if flow_action_data:
+                action["flow_action_data"] = dict(flow_action_data)
+            components.append({"type": "button", "sub_type": "flow", "index": "0",
+                               "parameters": [{"type": "action", "action": action}]})
+        if components:
+            template["components"] = components
         payload: dict = {"messaging_product": "whatsapp", "to": to, "type": "template",
                          "template": template}
         if biz_opaque_callback_data:

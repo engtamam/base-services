@@ -24,7 +24,13 @@ class WhatsAppProvider(Protocol):
     driver: str
 
     def send(self, to: str, template_name: str, language: str, variables: list[str],
-             biz_opaque_callback_data: str = "") -> str: ...
+             biz_opaque_callback_data: str = "", flow_token: str = "",
+             flow_action_data: dict | None = None) -> str:
+        """Send an approved TEMPLATE. `flow_token`/`flow_action_data` are OPTIONAL: when flow_token is
+        given, the template carries a Flow button (declared + approved AT TEMPLATE CREATION) and this
+        supplies the per-send action — for a business-initiated Flow with no open 24h window. Omitting
+        them sends an ordinary template, unchanged. flow_action_data is omitted when empty."""
+        ...
 
     def send_interactive(self, to: str, interactive: dict,
                          biz_opaque_callback_data: str = "") -> str:
