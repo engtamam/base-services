@@ -168,7 +168,10 @@ class InteractiveNotifyIn(BaseModel):
     # flow messages — a form that opens inside WhatsApp (see core/whatsapp_interactive.build_flow).
     # `flow_token` is the reply anchor, same role as a button's own `id`.
     flow_token: str = Field(default="", max_length=256)
+    # Identify the flow by EITHER flow_id OR flow_name (exactly one). flow_name is the WABA-portable
+    # id: a Flow cloned per tenant keeps its name but gets a new id, so name works across every tenant.
     flow_id: str = Field(default="", max_length=128)
+    flow_name: str = Field(default="", max_length=128)
     flow_cta: str = Field(default="", max_length=20)
     flow_screen: str = Field(default="", max_length=128)
     flow_data: dict[str, Any] = Field(default_factory=dict)
@@ -202,8 +205,8 @@ async def internal_notify_interactive(request: Request, body: InteractiveNotifyI
         elif body.type == "flow":
             interactive = build_flow(
                 body=body.body, header=body.header, footer=body.footer,
-                flow_token=body.flow_token, flow_id=body.flow_id, flow_cta=body.flow_cta,
-                screen=body.flow_screen, data=body.flow_data)
+                flow_token=body.flow_token, flow_id=body.flow_id, flow_name=body.flow_name,
+                flow_cta=body.flow_cta, screen=body.flow_screen, data=body.flow_data)
         elif body.type == "location_request":
             # A location-request carries only body text; header/footer/action fields are not accepted
             # by Meta for this interactive type, so they are ignored rather than forwarded.

@@ -99,6 +99,22 @@ def test_flow_shape_matches_the_cloud_api():
     assert params["flow_action_payload"] == {"screen": "RATING", "data": {"customer_name": "Ahmed"}}
 
 
+def test_flow_can_be_identified_by_name_the_waba_portable_id():
+    # A Flow cloned into each tenant's WABA keeps its name but gets a new id, so flow_name is what a
+    # single send definition can use across every tenant. Meta: flow_id/flow_name are mutually
+    # exclusive, exactly one required (verified vs the send-a-flow guide, Sep 2026).
+    obj = build_flow(body="x", flow_token="t1", flow_name="rating_flow", flow_cta="Go", screen="S1")
+    params = obj["action"]["parameters"]
+    assert params["flow_name"] == "rating_flow" and "flow_id" not in params
+
+
+def test_flow_requires_exactly_one_of_id_or_name():
+    with pytest.raises(InteractiveError):    # neither
+        build_flow(body="x", flow_token="t1", flow_cta="Go", screen="S1")
+    with pytest.raises(InteractiveError):    # both
+        build_flow(body="x", flow_token="t1", flow_id="f1", flow_name="n1", flow_cta="Go", screen="S1")
+
+
 def test_flow_data_is_omitted_when_empty_never_sent_as_empty_object():
     # Meta: flow_action_payload.data is optional but MUST be non-empty if present — so it is omitted
     # entirely when there is no seed data (sending an empty {} is rejected). Verified vs Meta's own

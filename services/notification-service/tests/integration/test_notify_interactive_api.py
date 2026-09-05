@@ -104,6 +104,17 @@ def test_location_request_send_is_recorded_as_a_tenant_scoped_delivery(client):
                for d in rows)
 
 
+def test_flow_send_by_name_succeeds(client):
+    # The WABA-portable identifier: a per-tenant clone keeps its name, so a send can reference it by
+    # flow_name instead of a per-clone flow_id.
+    r = client.post("/internal/notify/whatsapp/interactive", headers=_tok(),
+                    json={"recipient": "+966500000004", "tenant": "acme", "type": "flow",
+                          "body": "How was your visit?", "flow_token": "rate:vis_9",
+                          "flow_name": "rating_flow", "flow_cta": "Rate us", "flow_screen": "RATING"})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "sent"
+
+
 def test_flow_missing_its_own_required_field_is_a_clear_422(client):
     r = client.post("/internal/notify/whatsapp/interactive", headers=_tok(),
                     json={"recipient": "+966", "type": "flow", "body": "x",

@@ -272,6 +272,12 @@
             "title": "Flow Id",
             "type": "string"
           },
+          "flow_name": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Flow Name",
+            "type": "string"
+          },
           "flow_screen": {
             "default": "",
             "maxLength": 128,

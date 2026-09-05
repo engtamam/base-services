@@ -138,8 +138,9 @@ def build_location_request(*, body: str) -> dict[str, Any]:
     }
 
 
-def build_flow(*, body: str, flow_token: str, flow_id: str, flow_cta: str,
-               screen: str, data: dict[str, Any] | None = None,
+def build_flow(*, body: str, flow_token: str, flow_cta: str, screen: str,
+               flow_id: str = "", flow_name: str = "",
+               data: dict[str, Any] | None = None,
                header: str = "", footer: str = "") -> dict[str, Any]:
     """A WhatsApp Flow interactive object — a form that opens INSIDE WhatsApp and returns its answers
     in one structured reply, rather than a free-text message the customer might send about something
@@ -153,14 +154,20 @@ def build_flow(*, body: str, flow_token: str, flow_id: str, flow_cta: str,
     never a substitute for validating what actually comes back: a caller must not trust a value here
     as if the customer had confirmed it.
 
+    A flow is identified by EITHER flow_id OR flow_name, never both — Meta requires exactly one, and
+    flow_name is the WABA-portable identifier: a Flow cloned into each tenant's own WABA keeps its name
+    but gets a new id per clone, so referencing by name lets one send definition work across every
+    tenant (the same reasoning that makes templates reference a flow-button by name).
+
     Verified against Meta's own WhatsApp Cloud API "Sending a Flow" guide (Sep 2026): flow_message_
-    version must be exactly "3"; flow_id (or flow_name), flow_cta, flow_action_payload.screen are the
-    required parameters; flow_action defaults to "navigate"; and flow_action_payload.data is optional
-    but MUST be non-empty if present — hence omitted here when empty rather than sent as {}."""
+    version must be exactly "3"; exactly one of flow_id / flow_name identifies the flow; flow_cta and
+    flow_action_payload.screen are required; flow_action defaults to "navigate"; and flow_action_
+    payload.data is optional but MUST be non-empty if present — hence omitted here when empty rather
+    than sent as {}."""
     if not flow_token:
         raise InteractiveError("a flow message needs a flow_token — it is the reply's only anchor")
-    if not flow_id:
-        raise InteractiveError("a flow message needs a flow_id")
+    if bool(flow_id) == bool(flow_name):
+        raise InteractiveError("a flow message needs exactly one of flow_id or flow_name")
     if not flow_cta:
         raise InteractiveError("a flow message needs a call-to-action label")
     if not screen:
@@ -170,17 +177,19 @@ def build_flow(*, body: str, flow_token: str, flow_id: str, flow_cta: str,
     payload: dict[str, Any] = {"screen": _capped("screen", screen, _FLOW_SCREEN_MAX)}
     if data:
         payload["data"] = dict(data)
+    parameters: dict[str, Any] = {
+        "flow_message_version": "3",
+        "flow_token": _capped("flow_token", flow_token, _FLOW_TOKEN_MAX),
+        "flow_cta": _capped("flow_cta", flow_cta, _FLOW_CTA_MAX),
+        "flow_action": "navigate",
+        "flow_action_payload": payload,
+    }
+    # Exactly one identifier (enforced above). flow_name is the clone-portable one; flow_id the direct.
+    if flow_id:
+        parameters["flow_id"] = _capped("flow_id", flow_id, _FLOW_ID_MAX)
+    else:
+        parameters["flow_name"] = _capped("flow_name", flow_name, _FLOW_ID_MAX)
     return {
         "type": "flow", **_envelope(body, header, footer),
-        "action": {
-            "name": "flow",
-            "parameters": {
-                "flow_message_version": "3",
-                "flow_token": _capped("flow_token", flow_token, _FLOW_TOKEN_MAX),
-                "flow_id": _capped("flow_id", flow_id, _FLOW_ID_MAX),
-                "flow_cta": _capped("flow_cta", flow_cta, _FLOW_CTA_MAX),
-                "flow_action": "navigate",
-                "flow_action_payload": payload,
-            },
-        },
+        "action": {"name": "flow", "parameters": parameters},
     }
