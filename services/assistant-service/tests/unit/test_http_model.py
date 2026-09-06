@@ -70,6 +70,35 @@ def test_the_generate_payload_carries_contents_and_system_instruction():
     assert cap["payload"]["systemInstruction"]["parts"][0]["text"]
 
 
+# ── prompt caching (phase 2, cost) ──────────────────────────────────────────────
+def test_default_sends_a_plain_system_string_no_cache_marker():
+    cap = {}
+    _ask(_model(_chat_body("x [1]"), capture=cap))
+    assert isinstance(cap["payload"]["messages"][0]["content"], str)   # unchanged for every provider
+
+
+def test_ephemeral_marks_the_system_block_for_anthropic_caching():
+    cap = {}
+    _ask(_model(_chat_body("x [1]"), capture=cap, prompt_cache="ephemeral"))
+    block = cap["payload"]["messages"][0]["content"]
+    assert isinstance(block, list) and block[0]["cache_control"] == {"type": "ephemeral"}
+    # only the STABLE system block is marked; the variable user block is a plain string
+    assert isinstance(cap["payload"]["messages"][1]["content"], str)
+
+
+def test_generate_passes_an_explicit_cached_content_reference():
+    cap = {}
+    _ask(_model(_gen_body("x [1]"), shape=GENERATE, capture=cap,
+                gemini_cached_content="projects/p/locations/me-central2/cachedContents/c1"))
+    assert cap["payload"]["cachedContent"] == "projects/p/locations/me-central2/cachedContents/c1"
+
+
+def test_generate_without_a_cache_ref_sends_no_cached_content_field():
+    cap = {}
+    _ask(_model(_gen_body("x [1]"), shape=GENERATE, capture=cap))
+    assert "cachedContent" not in cap["payload"]
+
+
 def test_an_unknown_shape_is_refused_at_construction():
     # Guessing a shape means an odd payload reads as "no answer" — an abstention that sends
     # somebody hunting a thin KB when the fault is a schema mismatch.

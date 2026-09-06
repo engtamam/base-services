@@ -177,6 +177,13 @@ class Settings(BaseSettings):
     # (Workload Identity) is used instead — the no-key posture when running on GCP.
     MODEL_GCP_SA_JSON: str = ""
     MODEL_GCP_SCOPE: str = "https://www.googleapis.com/auth/cloud-platform"
+    # Prompt caching (cost). Gemini + OpenAI cache the stable prefix implicitly (free — this adapter
+    # already sends the constant system block first, the variable question last), so nothing is needed
+    # for them. `ephemeral` adds Anthropic's explicit cache_control marker (its 90% cached-read
+    # discount requires the opt-in) — set it ONLY for an Anthropic-style endpoint. off = today.
+    MODEL_PROMPT_CACHE: str = "off"          # off | ephemeral
+    # Optional pre-created Vertex/Gemini context cache resource name, passed as `cachedContent`.
+    MODEL_GEMINI_CACHED_CONTENT: str = ""
     # CONFIGURED, never auto-detected. Guessing a response shape means an unexpected payload reads
     # as "no answer", which surfaces as an abstention and sends someone hunting a thin knowledge
     # base when the real fault is a schema mismatch.

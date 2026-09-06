@@ -51,7 +51,8 @@ class HttpModel:
     def __init__(self, url: str, api_key: str = "", *, model: str = "", shape: str = CHAT,
                  timeout: float = 20.0, temperature: float = 0.2,
                  transport: Transport | None = None,
-                 key_resolver: KeyResolver | None = None) -> None:
+                 key_resolver: KeyResolver | None = None,
+                 prompt_cache: str = "off", gemini_cached_content: str = "") -> None:
         if not url:
             raise ConfigError("MODEL_URL is required for the http model driver")
         if shape not in (CHAT, GENERATE):
@@ -64,6 +65,14 @@ class HttpModel:
         self._temperature = temperature
         self._transport = transport or self._httpx_transport
         self._key_resolver = key_resolver
+        # PROMPT CACHING (cost). Gemini + OpenAI cache the stable PREFIX implicitly (system block first,
+        # variable question last — the ordering this adapter already uses), so those are free and need
+        # nothing sent. `prompt_cache="ephemeral"` adds Anthropic's explicit cache_control marker on the
+        # (stable) system block — the one provider that requires an opt-in flag for its 90% discount;
+        # only set it for an Anthropic-style endpoint. `gemini_cached_content` passes an explicit Vertex/
+        # Gemini CachedContent resource name through on the generate shape, for a pre-created cache.
+        self._prompt_cache = prompt_cache
+        self._gemini_cached_content = gemini_cached_content
 
     def use_key_resolver(self, resolver: KeyResolver) -> None:
         """Take the credential from the operator store instead of the boot-time config value.
@@ -97,8 +106,17 @@ class HttpModel:
 
     def _payload(self, system: str, user: str, max_tokens: int) -> dict:
         if self._shape == CHAT:
+            # The stable system block is the cache prefix. For Anthropic, mark it explicitly so its
+            # 90% cached-read discount applies; for OpenAI/OpenRouter the marker is unnecessary (they
+            # cache automatically) and is only sent when the operator has opted in for an Anthropic
+            # endpoint. A plain string otherwise, unchanged for every existing provider.
+            if self._prompt_cache == "ephemeral":
+                system_content: Any = [{"type": "text", "text": system,
+                                        "cache_control": {"type": "ephemeral"}}]
+            else:
+                system_content = system
             body: dict[str, Any] = {
-                "messages": [{"role": "system", "content": system},
+                "messages": [{"role": "system", "content": system_content},
                              {"role": "user", "content": user}],
                 "temperature": self._temperature,
             }
@@ -114,6 +132,10 @@ class HttpModel:
         }
         if max_tokens:
             body["generationConfig"]["maxOutputTokens"] = max_tokens
+        # An explicit, pre-created Vertex/Gemini context cache (implicit caching still applies with
+        # no field; this is only for a cache the operator created and pinned by resource name).
+        if self._gemini_cached_content:
+            body["cachedContent"] = self._gemini_cached_content
         return body
 
     @staticmethod

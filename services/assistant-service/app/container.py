@@ -192,7 +192,9 @@ _MODEL: dict[str, Builder] = {
     "extractive": lambda s: ExtractiveModel(max_passages=s.MODEL_EXTRACTIVE_MAX_PASSAGES),
     "http": lambda s: HttpModel(s.MODEL_URL, s.MODEL_API_KEY, model=s.MODEL_NAME,
                                 shape=s.MODEL_SHAPE, timeout=s.MODEL_TIMEOUT_SECONDS,
-                                temperature=s.MODEL_TEMPERATURE),
+                                temperature=s.MODEL_TEMPERATURE,
+                                prompt_cache=s.MODEL_PROMPT_CACHE,
+                                gemini_cached_content=s.MODEL_GEMINI_CACHED_CONTENT),
 }
 
 
