@@ -160,6 +160,8 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
         # pinned-mode: resolve a subscription's OWN gateway by (tenant, driver) at charge time, with
         # that tenant's stored credentials, fail-closed. None-safe (active mode never calls it).
         gateway_resolver=_make_gateway_resolver(request, s),
+        # The wallet used for RENEWAL-BY-DEBIT (same instance the grant outbox delivers through).
+        wallet=getattr(request.app.state, "wallet", None),
         cache=c.cache, settlements=SettlementStore(c.datastore),
         config={"currency": s.CURRENCY, "trial_days": s.TRIAL_DAYS, "vat_rate": vat_rate,
                 # The tax profile, resolved together — completeness (tax_profile.py) is judged from
@@ -184,6 +186,10 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
                 # How a renewal picks its gateway (active | pinned) — deployment-level, so a platform
                 # chooses one behaviour. Read from settings, not per-tenant: the mode is the platform's.
                 "renewal_gateway_mode": s.PAYMENT_RENEWAL_GATEWAY_MODE,
+                # Renewal by wallet debit (for gateways with no recurring, e.g. TuwaiqPay). Off by
+                # default; the platform names the fund to draw from — billing never guesses one.
+                "wallet_renewal_enabled": s.BILLING_WALLET_RENEWAL_ENABLED,
+                "wallet_renewal_fund": s.WALLET_RENEWAL_FUND,
                 # Entitlement resolution (Phase 42). Required by EntitlementResolver —
                 # every default lives in config.py, never inline at a call site.
                 "billable_statuses": s.billable_statuses,

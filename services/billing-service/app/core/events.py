@@ -39,10 +39,16 @@ PAYMENT_REFUNDED = "payment.refunded"
 SUBSCRIPTION_RENEWED = "subscription.renewed"
 SUBSCRIPTION_CANCELLED = "subscription.cancelled"
 INVOICE_PAID = "invoice.paid"
+# A wallet-renewal debit was refused because the customer's fund could not cover the invoice. The
+# subscription is suspended IMMEDIATELY (no dunning retry — a prepaid balance does not grow back on
+# its own), so a consumer sends a "top up your wallet" prompt. Distinct from payment.failed, which
+# is a card decline that WILL be retried.
+SUBSCRIPTION_RENEWAL_WALLET_INSUFFICIENT = "subscription.renewal_wallet_insufficient"
 
 EMITTED = (
     PAYMENT_SUCCEEDED, PAYMENT_FAILED, PAYMENT_REFUNDED,
     SUBSCRIPTION_RENEWED, SUBSCRIPTION_CANCELLED, INVOICE_PAID,
+    SUBSCRIPTION_RENEWAL_WALLET_INSUFFICIENT,
 )
 
 

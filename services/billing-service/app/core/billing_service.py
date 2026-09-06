@@ -28,6 +28,7 @@ from app.core.stores import (CouponStore, IdempotencyStore, InvoiceStore, Ledger
                              UsageStore)
 from app.observability.logging import get_logger
 from app.ports.payment_gateway import GatewayUnavailable
+from app.ports.wallet import WalletRefused, WalletUnavailable
 
 _log = get_logger("app.billing")
 
@@ -60,7 +61,7 @@ class BillingService:
                  ledger: LedgerStore, idempo: IdempotencyStore,
                  gateway, tax, einvoicer, pdf, config: dict[str, Any], cache=None,
                  settlements: SettlementStore | None = None, clock=now_ts,
-                 emitter=None, grants=None, gateway_resolver=None) -> None:
+                 emitter=None, grants=None, gateway_resolver=None, wallet=None) -> None:
         self._plans, self._coupons, self._subs = plans, coupons, subs
         self._invoices, self._payments, self._usage = invoices, payments, usage
         self._ledger, self._idempo = ledger, idempo
@@ -79,6 +80,11 @@ class BillingService:
         # The durable path from "they paid" to "they got what they paid for". None means no wallet
         # is wired and nothing is recorded — see core/grants.py for why this is not an event.
         self._grants = grants
+        # The wallet for RENEWAL-BY-DEBIT (distinct from the grant outbox's use of it): a
+        # subscription pinned to payment_gateway=="wallet" renews by debiting a configured fund
+        # instead of charging a card. None ⇒ no wallet wired ⇒ the feature is simply unavailable and
+        # a wallet-pinned sub fails its charge loudly rather than silently taking free service.
+        self._wallet = wallet
         # The union resolver. Config is passed WHOLE and required — see EntitlementResolver's
         # REQUIRED_CFG: a missing key fails at construction rather than silently resolving a
         # tenant against a default nobody chose.
@@ -939,6 +945,13 @@ class BillingService:
             await self._payments.save(pay)
             await self._mark_paid(inv)
             return
+        # RENEWAL BY WALLET DEBIT — a subscription pinned to the "wallet" gateway collects from the
+        # customer's prepaid balance instead of a card (for gateways with no recurring, e.g.
+        # TuwaiqPay). Decided before gateway resolution: there is no "wallet" payment adapter to
+        # build. Returns True when it handled the invoice (paid or suspended); False to fall through
+        # to the normal gateway path.
+        if await self._charge_from_wallet(inv, pay, sub):
+            return
         # pinned mode: charge the subscription's OWN gateway (fail-closed if it cannot build), so a
         # renewal after a driver switch still reaches the gateway that issued the token.
         gw = await self._gw_for_sub(sub) if sub is not None else self._gw
@@ -961,6 +974,82 @@ class BillingService:
             pay.error = charge.error
             await self._dunning(pay)
             await self._payments.save(pay)
+
+    # ── renewal by wallet debit ─────────────────────────────────────────────────
+    def _wallet_renewal_fund(self, sub) -> str | None:
+        """The fund a wallet renewal debits for THIS subscription, or None to use the normal gateway.
+
+        Reusable infrastructure: the platform turns the feature on and names the fund; a subscription
+        OPTS IN by being pinned to payment_gateway == "wallet". The wallet may hold many funds for
+        many purposes — billing does not decide their number or meaning, it only debits the one the
+        platform named. An enabled, opted-in sub with NO fund configured is a misconfiguration and
+        returns "" so the caller fails the charge loudly (it must never guess a fund)."""
+        if not self._cfg.get("wallet_renewal_enabled") or self._wallet is None or sub is None:
+            return None
+        if (getattr(sub, "payment_gateway", "") or "").strip().lower() != "wallet":
+            return None
+        return self._cfg.get("wallet_renewal_fund", "") or ""
+
+    async def _charge_from_wallet(self, inv: Invoice, pay: Payment, sub) -> bool:
+        """Collect a renewal by debiting the customer's wallet. Returns True when it OWNED the
+        outcome (paid, suspended, or queued for retry), False to fall through to the gateway.
+
+        The debit is the invoice total EXACTLY — VAT is already inside it (billing computed the tax
+        invoice). It is a fund-scoped debit, never a re-priced spend: a spend would re-apply VAT and
+        double-tax the customer. `source=inv.id` makes it idempotent (the outbox/sweep may re-offer
+        the same invoice), and it is scoped to the tenant by the wallet. allow_negative is False —
+        a renewal must never push a prepaid balance below zero."""
+        fund = self._wallet_renewal_fund(sub)
+        if fund is None:
+            return False
+        if not fund:
+            # Opted in but no fund named. Fail LOUD and observable — never silently take free service
+            # and never guess a fund. The sweep records this per-sub; an operator sees the misconfig.
+            _log.error("wallet_renewal_unconfigured tenant=%s subscription=%s invoice=%s",
+                       inv.tenant, getattr(sub, "id", ""), inv.id)
+            raise WalletUnavailable("BILLING_WALLET_RENEWAL_FUND is not configured")
+        pay.provider = "wallet"
+        pay.provider_id = inv.id
+        try:
+            await self._wallet.debit(tenant=inv.tenant, fund=fund, amount_minor=inv.total_minor,
+                                     source=inv.id, reason=inv.number, allow_negative=False)
+        except WalletRefused:
+            # The balance cannot cover it (or the fund is mis-set) — permanent for this renewal: a
+            # prepaid balance does not grow back on its own, so retrying for ever hides it. Suspend
+            # IMMEDIATELY and signal a top-up, rather than entering the card-decline dunning loop.
+            pay.status = "failed"
+            pay.error = "WALLET_INSUFFICIENT"
+            pay.next_retry_at = None
+            await self._payments.save(pay)
+            await self._suspend_wallet_insufficient(inv, sub)
+            return True
+        except WalletUnavailable as ex:
+            # The wallet was unreachable — genuinely retryable (unlike an empty balance). Dunning
+            # will re-offer the invoice; a transient outage must not suspend a paying customer.
+            pay.status = "failed"
+            pay.error = str(ex)
+            await self._dunning(pay)
+            await self._payments.save(pay)
+            return True
+        pay.status = "succeeded"
+        await self._payments.save(pay)
+        await self._mark_paid(inv)
+        return True
+
+    async def _suspend_wallet_insufficient(self, inv: Invoice, sub) -> None:
+        """Suspend on an insufficient wallet balance, OBSERVABLY. A wallet renewal that quietly
+        failed would look like free service; a WARN spike and a distinct event are the signal that
+        customers need to top up (and that a mis-set fund would refuse EVERY renewal at once)."""
+        if sub is not None:
+            sub.status = "past_due"
+            await self._subs.save(sub)
+        _log.warning("wallet_renewal_insufficient tenant=%s subscription=%s invoice=%s amount=%s %s",
+                     inv.tenant, getattr(sub, "id", ""), inv.id, inv.total_minor, inv.currency)
+        if self._events is not None:
+            await self._events.emit(_events.SUBSCRIPTION_RENEWAL_WALLET_INSUFFICIENT, {
+                "tenant": inv.tenant, "subscription_id": getattr(sub, "id", ""),
+                "invoice_id": inv.id, "amount_minor": inv.total_minor, "currency": inv.currency,
+            })
 
     async def _mark_paid(self, inv: Invoice, *, paid_at: str = "", source: str = "") -> None:
         """The ONE place an invoice becomes paid.
@@ -1380,6 +1469,17 @@ class BillingService:
                 continue
             sub = await self._subs.fetch(inv.subscription_id)
             token = sub.payment_token if sub else ""
+            # A wallet-renewal sub retries through the WALLET, not the gateway — there is no "wallet"
+            # payment adapter to charge, and a transient wallet outage should be re-offered to the
+            # wallet. _charge_from_wallet reactivates on success and re-suspends/re-dunns on failure.
+            if self._wallet_renewal_fund(sub) is not None:
+                pay.status = "pending"
+                if await self._charge_from_wallet(inv, pay, sub):
+                    if pay.status == "succeeded" and sub and sub.status == "past_due":
+                        sub.status = "active"
+                        await self._subs.save(sub)
+                    retried += 1
+                    continue
             gw = await self._gw_for_sub(sub) if sub is not None else self._gw   # pinned: sub's gateway
             try:
                 charge = gw.charge(amount_minor=inv.total_minor, currency=inv.currency,

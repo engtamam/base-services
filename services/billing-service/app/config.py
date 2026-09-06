@@ -476,6 +476,17 @@ class Settings(BaseSettings):
     WALLET_TIMEOUT_SECONDS: int = 10
     # Which wallet fund a plan's included credits land in.
     WALLET_GRANT_FUND: str = "credits"
+    # ── renewal by wallet debit (for gateways with no recurring/token, e.g. TuwaiqPay) ──────
+    # OFF by default: a platform turns this on when it wants a subscription to renew by DEBITING
+    # the customer's prepaid wallet instead of charging a card. Reusable infrastructure — the
+    # platform decides WHICH fund the debit draws from (the wallet may hold many); billing only
+    # names it. A subscription opts in by being pinned to payment_gateway == "wallet".
+    BILLING_WALLET_RENEWAL_ENABLED: bool = False
+    # The fund a wallet-renewal debit draws from. REQUIRED when a "wallet"-pinned sub renews and the
+    # feature is on — an empty name is a misconfiguration that fails the charge LOUDLY (never guesses
+    # a fund, never silently drains another purpose's balance). The debit is the invoice total
+    # (VAT already included by billing) — never a re-priced spend, which would double-tax.
+    WALLET_RENEWAL_FUND: str = ""
     # Where the grant amount comes from on a plan: plan.limits[<this key>], in minor units.
     PLAN_CREDIT_LIMIT_KEY: str = "credits"
     # Do unused included credits carry over at renewal, or start fresh?
