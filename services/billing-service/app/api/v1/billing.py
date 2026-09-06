@@ -53,6 +53,20 @@ def build_grants(request: Request, s) -> GrantOutbox:
                         fail_closed=s.EVENT_PUBLISH_FAILURE == "fail_closed"))
 
 
+def _make_gateway_resolver(request: Request, settings):
+    """A callable (tenant, driver) -> a gateway built for THAT driver with the tenant's credentials.
+
+    Used only in pinned mode, to charge a subscription's own gateway. Fail-closed per driver (an
+    unbuildable one comes back as an _UnconfiguredGateway whose charge raises), so a pinned renewal
+    never lands on a different gateway than the one that issued its token."""
+    async def _resolve(tenant: str, driver: str):
+        from app.container import build_named_gateway
+        r = getattr(request.app.state, "credentials", None)
+        resolved = await r.resolve(tenant) if r is not None else {}
+        return build_named_gateway(settings, driver, resolved)
+    return _resolve
+
+
 async def build_billing(request: Request, tenant: str = "") -> BillingService:
     """Assemble the service for this request.
 
@@ -143,6 +157,9 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
                         fail_closed=s.EVENT_PUBLISH_FAILURE == "fail_closed"),
         grants=build_grants(request, s),
         gateway=gateway, tax=c.tax_calculator, einvoicer=c.einvoicer, pdf=c.pdf_renderer,
+        # pinned-mode: resolve a subscription's OWN gateway by (tenant, driver) at charge time, with
+        # that tenant's stored credentials, fail-closed. None-safe (active mode never calls it).
+        gateway_resolver=_make_gateway_resolver(request, s),
         cache=c.cache, settlements=SettlementStore(c.datastore),
         config={"currency": s.CURRENCY, "trial_days": s.TRIAL_DAYS, "vat_rate": vat_rate,
                 # The tax profile, resolved together — completeness (tax_profile.py) is judged from
@@ -164,6 +181,9 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
                 "clawback_on_partial": s.BILLING_CLAWBACK_ON_PARTIAL,
                 "clawback_skip_expired": s.BILLING_CLAWBACK_SKIP_EXPIRED,
                 "auto_reactivate": auto_reactivate,
+                # How a renewal picks its gateway (active | pinned) — deployment-level, so a platform
+                # chooses one behaviour. Read from settings, not per-tenant: the mode is the platform's.
+                "renewal_gateway_mode": s.PAYMENT_RENEWAL_GATEWAY_MODE,
                 # Entitlement resolution (Phase 42). Required by EntitlementResolver —
                 # every default lives in config.py, never inline at a call site.
                 "billable_statuses": s.billable_statuses,
@@ -765,6 +785,7 @@ async def list_subscriptions_platform(request: Request,
                                       status_: str = Query(default="", alias="status", max_length=32),
                                       plan_id: str = Query(default="", max_length=64),
                                       tenant: str = Query(default="", max_length=128),
+                                      payment_gateway: str = Query(default="", max_length=64),
                                       since: str = Query(default="", max_length=32),
                                       until: str = Query(default="", max_length=32),
                                       limit: int | None = Query(default=None, ge=1, le=1000),
@@ -779,7 +800,7 @@ async def list_subscriptions_platform(request: Request,
     privileged one rather than a magic parameter on the tenant-scoped list. Answers "how many
     new / active / canceled subscriptions this month" (created / status / canceled_at).
     """
-    if not (status_ or plan_id or tenant or since or until):
+    if not (status_ or plan_id or tenant or payment_gateway or since or until):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "PLATFORM_LISTING_NEEDS_A_FILTER")
     # `since`/`until` bound an ISO-8601 CREATION date, compared AS TEXT against the stored ISO
     # `created`. An epoch bound would lexicographically compare "2026-…" vs "178…" and read EVERY
@@ -799,14 +820,38 @@ async def list_subscriptions_platform(request: Request,
         "billing.platform_subscriptions_viewed", actor=principal.subject, tenant=principal.tenant,
         resource="subscriptions:all-tenants", ip=request.client.host if request.client else "",
         metadata={"status": status_, "plan_id": plan_id, "tenant": tenant,
-                  "since": since, "until": until})
+                  "payment_gateway": payment_gateway, "since": since, "until": until})
     s = get_settings()
     try:
         return await (await build_billing(request)).list_subscriptions_platform(
-            status=status_, plan_id=plan_id, tenant=tenant,
+            status=status_, plan_id=plan_id, tenant=tenant, payment_gateway=payment_gateway,
             since=since, until=until, limit=_page(limit, s), cursor=cursor)
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+
+@router.post("/admin/subscriptions/{sub_id}/force-suspend", dependencies=[Depends(_PLATFORM)])
+async def force_suspend_subscription(request: Request, sub_id: str, reason: str = Query(default="", max_length=500),
+                                     principal: Principal = Depends(require_user)) -> dict:
+    """Deliberately stop ONE subscription's renewals — the operator override for a subscriber stranded
+    on an old gateway who has not re-entered payment. Platform-only, one at a time, and AUDITED
+    write-ahead as a critical action (it stops someone's paid service; the row must exist even if the
+    mutation then fails). Distinct from self-service pause; reactivate() resumes it once they update
+    payment. The automatic behaviour stays 'keep renewing on the original gateway' — this is the
+    manual exception, never a sweep."""
+    svc = await build_billing(request)
+    sub = await svc._subs.fetch(sub_id)
+    if sub is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    await request.app.state.auditor.record(
+        "subscription.force_suspended", actor=principal.subject, tenant=sub.tenant,
+        resource=f"subscription:{sub_id}", ip=request.client.host if request.client else "",
+        metadata={"reason": reason, "gateway": sub.payment_gateway})
+    try:
+        updated = await svc.force_suspend(sub_id)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e))
+    return updated.to_dict()
 
 
 def _pdf_response(rendered, filename: str) -> Response:

@@ -114,3 +114,46 @@ def test_preview_counts_affected_subscribers_on_a_real_switch(client):
 def test_preview_shows_zero_affected_when_not_actually_switching(client):
     # current driver is null; previewing null is not a switch, so nothing breaks.
     assert _preview(client, "null").json()["affected_subscribers"] == 0
+
+
+# ── admin: list-by-gateway + force-suspend ──────────────────────────────────
+def _seed_sub(client, sub_id, gateway, status="active"):
+    import asyncio
+    from app.core.models import Subscription
+    from app.core.stores import SubscriptionStore
+    store = SubscriptionStore(client.app.state.container.datastore)
+    asyncio.run(store.save(Subscription(id=sub_id, tenant="t1", plan_id="p", status=status,
+                                        payment_token="tok", payment_gateway=gateway)))
+
+
+def test_admin_can_list_subscriptions_pinned_to_a_gateway(client):
+    _seed_sub(client, "s_moy", "moyasar")
+    _seed_sub(client, "s_str", "stripe")
+    r = client.get("/api/v1/billing/admin/subscriptions?payment_gateway=moyasar",
+                   headers=_admin(["platform.billing"]))
+    assert r.status_code == 200, r.text
+    ids = {s["id"] for s in r.json()["subscriptions"]}
+    assert ids == {"s_moy"}                       # only the moyasar-pinned sub, not the stripe one
+
+
+def test_force_suspend_stops_one_subscription_and_is_audited(client, monkeypatch):
+    _seed_sub(client, "s_moy", "moyasar")
+    seen = []
+    real = client.app.state.auditor.record
+
+    async def spy(action, **kw):
+        seen.append(action)
+        return await real(action, **kw)
+    monkeypatch.setattr(client.app.state.auditor, "record", spy)
+
+    r = client.post("/api/v1/billing/admin/subscriptions/s_moy/force-suspend?reason=stranded",
+                    headers=_admin(["platform.billing"]))
+    assert r.status_code == 200 and r.json()["status"] == "paused"
+    assert "subscription.force_suspended" in seen
+
+
+def test_force_suspend_requires_platform_billing(client):
+    _seed_sub(client, "s_moy", "moyasar")
+    r = client.post("/api/v1/billing/admin/subscriptions/s_moy/force-suspend",
+                    headers=_admin(["billing.self"]))       # not platform.billing
+    assert r.status_code == 403

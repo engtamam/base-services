@@ -98,6 +98,11 @@ class Subscription:
     quantity: int = 1
     coupon_code: str = ""
     payment_token: str = ""              # provider token for the saved payment method
+    # The gateway this subscription is PINNED to (the driver active when it was created / last had its
+    # payment method updated). Empty on legacy subs. In PAYMENT_RENEWAL_GATEWAY_MODE=pinned its
+    # renewals + refunds route here — a token belongs to the gateway that issued it, and another
+    # gateway cannot charge it. Ignored in the default `active` mode.
+    payment_gateway: str = ""
     buyer_name: str = ""                 # buyer identity for the tax invoice
     buyer_vat: str = ""                  # buyer VAT number (B2B → standard/clearance, reverse-charge)
     buyer_cr: str = ""                   # commercial registration

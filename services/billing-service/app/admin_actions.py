@@ -293,6 +293,26 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         "params": [{"name": "key", "in": "path", "type": "string", "required": True}],
     },
     {
+        "id": "operator.payment_activation_preview", "label": "Preview a gateway switch",
+        "method": "GET", "path": "/api/v1/billing/operator/payment/activation-preview",
+        "capability": "platform.config", "group": "Settings",
+        "params": [
+            {"name": "driver", "in": "query", "type": "string", "required": True,
+             "help": "the gateway to preview activating (e.g. moyasar, stripe)"},
+            {"name": "tenant", "in": "query", "type": "string", "required": False},
+        ],
+    },
+    {
+        "id": "billing.force_suspend_subscription", "label": "Force-suspend a subscription",
+        "method": "POST", "path": "/api/v1/billing/admin/subscriptions/{sub_id}/force-suspend",
+        "capability": "platform.billing", "group": "Subscriptions", "confirm": True, "danger": True,
+        "params": [
+            {"name": "sub_id", "in": "path", "type": "string", "required": True},
+            {"name": "reason", "in": "query", "type": "string", "required": False,
+             "help": "why this subscriber is being stopped (recorded in the audit trail)"},
+        ],
+    },
+    {
         "id": "billing.update_plan", "label": "Edit a plan", "method": "PATCH",
         "path": "/api/v1/billing/plans/{plan_id}", "capability": "billing.manage",
         "group": "Catalogue", "confirm": True,

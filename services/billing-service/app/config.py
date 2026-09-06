@@ -253,6 +253,17 @@ class Settings(BaseSettings):
 
     # ── billing-service (Phase 14) — all config-driven, zero-hardcoded ─────
     PAYMENT_GATEWAY_DRIVER: str = "null"     # null|stripe|moyasar|tap|hyperpay|paytabs|paypal|checkout
+    # How a renewal chooses its gateway when the active driver is switched — a ports/adapters MODE so
+    # each deployment picks (zero-hardcoded):
+    #   active (default, today's behaviour): renewals charge the CURRENTLY-active gateway. Switching
+    #          the driver breaks existing subscribers whose saved token belongs to the old gateway —
+    #          use the activation preview to see how many before switching.
+    #   pinned: each subscription remembers the gateway it was created on (Subscription.payment_gateway)
+    #          and its renewals/refunds route THERE, not to whatever is active now; switching the driver
+    #          only affects NEW subscriptions; a subscriber moves only when they update their payment
+    #          method. Parallel-safe, no manual transition. A pinned gateway that cannot build fails
+    #          CLOSED (retryable by dunning) — it never silently charges a different gateway.
+    PAYMENT_RENEWAL_GATEWAY_MODE: str = "active"    # active | pinned
     PAYMENT_API_KEY: str = ""                # gateway secret/API key (Bearer/Basic)
     PAYMENT_API_BASE: str = ""              # override gateway base URL (host egress-allowlisted)
     PAYMENT_EXTRA_ID: str = ""               # HyperPay entityId / PayTabs profile_id / APS merchant_identifier

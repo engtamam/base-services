@@ -60,11 +60,14 @@ class BillingService:
                  ledger: LedgerStore, idempo: IdempotencyStore,
                  gateway, tax, einvoicer, pdf, config: dict[str, Any], cache=None,
                  settlements: SettlementStore | None = None, clock=now_ts,
-                 emitter=None, grants=None) -> None:
+                 emitter=None, grants=None, gateway_resolver=None) -> None:
         self._plans, self._coupons, self._subs = plans, coupons, subs
         self._invoices, self._payments, self._usage = invoices, payments, usage
         self._ledger, self._idempo = ledger, idempo
         self._gw, self._tax, self._einv, self._pdf = gateway, tax, einvoicer, pdf
+        # Resolves a gateway by (tenant, driver) for PINNED mode — async, injected so core imports no
+        # adapter/container. None ⇒ pinning falls back to the active gateway (i.e. behaves as `active`).
+        self._gw_resolver = gateway_resolver
         self._cfg = config
         self._cache = cache
         self._settlements = settlements
@@ -80,6 +83,36 @@ class BillingService:
         # REQUIRED_CFG: a missing key fails at construction rather than silently resolving a
         # tenant against a default nobody chose.
         self._entitlements = EntitlementResolver(subs=subs, plans=plans, cfg=config)
+
+    # ── gateway selection (renewal mode: active | pinned) ───────────────────────
+    def _pinned_mode(self) -> bool:
+        return self._cfg.get("renewal_gateway_mode") == "pinned" and self._gw_resolver is not None
+
+    async def _gw_for_sub(self, sub) -> Any:
+        """The gateway a subscription's charges route to.
+
+        `active` mode → the currently-active gateway (today's behaviour). `pinned` mode → the sub's
+        OWN gateway (Subscription.payment_gateway). A pinned gateway that will not build comes back as
+        a fail-closed _UnconfiguredGateway whose charge raises GatewayUnavailable → the charge is
+        retried by dunning, NEVER silently routed to a different gateway (charging a token on a gateway
+        that did not issue it is exactly what pinning prevents). A legacy sub with no pin uses the
+        active gateway — the best available answer for a row that predates pinning."""
+        if not self._pinned_mode():
+            return self._gw
+        driver = (getattr(sub, "payment_gateway", "") or "").strip()
+        if not driver:
+            return self._gw
+        return await self._gw_resolver(sub.tenant, driver)
+
+    async def _gw_for_refund(self, pay) -> Any:
+        """Refund through the gateway that CHARGED (Payment.provider) — in pinned mode a refund must
+        reach the same gateway the money went to, or the provider id matches nothing."""
+        if not self._pinned_mode():
+            return self._gw
+        driver = (getattr(pay, "provider", "") or "").strip()
+        if not driver:
+            return self._gw
+        return await self._gw_resolver(pay.tenant, driver)
 
     # ── entitlements (general limit enforcement) ────────────────────────────────
     async def _generation(self, tenant: str) -> str:
@@ -320,10 +353,12 @@ class BillingService:
     # tenant list. A lifecycle projection — plan, status, and the two timestamps — never buyer PII,
     # for the same reason the invoice view is a money projection: a platform operator counting churn
     # has no need for a thousand buyers' names, and a whitelist keeps a field added later from leaking.
-    PLATFORM_SUBSCRIPTION_FIELDS = ("id", "tenant", "plan_id", "status", "created", "canceled_at")
+    PLATFORM_SUBSCRIPTION_FIELDS = ("id", "tenant", "plan_id", "status", "payment_gateway",
+                                    "created", "canceled_at")
 
     async def list_subscriptions_platform(self, *, status: str = "", plan_id: str = "",
-                                          tenant: str = "", since: str = "", until: str = "",
+                                          tenant: str = "", payment_gateway: str = "",
+                                          since: str = "", until: str = "",
                                           limit: int = 100, cursor: str | None = None) -> dict:
         """Subscriptions ACROSS ALL TENANTS, newest first, for a platform lifecycle view.
 
@@ -339,7 +374,8 @@ class BillingService:
         nxt = cursor
         for _ in range(self._cfg["platform_max_pages"]):
             rows, nxt = await self._subs.browse_platform(
-                where={"status": status, "plan_id": plan_id, "tenant": tenant},
+                where={"status": status, "plan_id": plan_id, "tenant": tenant,
+                       "payment_gateway": payment_gateway},
                 limit=limit, after=nxt)
             below_since = False
             for r in rows:
@@ -485,6 +521,9 @@ class BillingService:
         sub = Subscription(
             id=new_id("sub_"), tenant=tenant, plan_id=plan_id, interval=interval, quantity=quantity,
             coupon_code=coupon_code, payment_token=payment_token, buyer_name=buyer_name,
+            # Pin the gateway this subscription is born on, so pinned-mode renewals charge HERE even
+            # after the active driver is switched. Harmless (unused) in active mode.
+            payment_gateway=getattr(self._gw, "driver", ""),
             buyer_vat=buyer_vat, buyer_cr=buyer_cr,
             price_snapshot=price_snap, limits_snapshot=limits_snap, terms_version=iso(),
             status=status, current_period_start=now, current_period_end=period_end,
@@ -561,9 +600,10 @@ class BillingService:
             delta, price.get("includes_tax", False),
             reverse_charge=bool(sub.buyer_vat) and self._cfg.get("reverse_charge", False))
         idem = f"upgrade:{sub.id}:{int(sub.current_period_end)}:{new_plan.id}:{total}"
+        gw = await self._gw_for_sub(sub)     # pinned mode: the sub's own gateway, not the active one
         try:
-            charge = self._gw.charge(amount_minor=total, currency=currency, token=sub.payment_token,
-                                     idempotency_key=idem, description="Plan change — upgrade")
+            charge = gw.charge(amount_minor=total, currency=currency, token=sub.payment_token,
+                               idempotency_key=idem, description="Plan change — upgrade")
         except GatewayUnavailable as ex:
             raise UpgradeChargeUnavailable(str(ex)) from ex
         if not charge.ok:
@@ -650,6 +690,10 @@ class BillingService:
         if sub is None:
             return None
         sub.payment_token = payment_token
+        # Re-tokenising moves the subscriber onto the CURRENTLY-active gateway (the token was minted
+        # there). Re-pin so pinned-mode renewals follow — this is the one path by which a subscriber
+        # migrates to a newly-activated gateway, and it is their own deliberate action.
+        sub.payment_gateway = getattr(self._gw, "driver", "")
         return await self._subs.save(sub)
 
     async def pause(self, sub_id: str) -> Subscription | None:
@@ -660,6 +704,16 @@ class BillingService:
         it out of the terminal state, and the pair below is worse.
         """
         return await self._set_status(sub_id, "paused", allowed_from=("active",))
+
+    async def force_suspend(self, sub_id: str) -> Subscription | None:
+        """A deliberate ADMIN stop of one subscription → paused, from any live state.
+
+        Distinct from pause() (self-service, active→paused only): this is the operator override for a
+        subscriber stranded on an old gateway who has not re-entered payment — stopping their renewals
+        one at a time, on purpose. Refuses only a terminal `canceled` sub (nothing to suspend);
+        idempotent on an already-paused one. reactivate() is the reverse once they update payment."""
+        return await self._set_status(sub_id, "paused",
+                                      allowed_from=("active", "trialing", "past_due", "paused"))
 
     async def reactivate(self, sub_id: str) -> Subscription | None:
         """Paused → active. Only from paused, and that restriction is the point.
@@ -815,7 +869,7 @@ class BillingService:
         if sub.status == "trialing":
             sub.status = "active"
         await self._subs.save(sub)
-        await self._charge_invoice(inv, sub.payment_token)
+        await self._charge_invoice(inv, sub.payment_token, sub)
         await self._idempo.mark(key, {"invoice_id": inv.id})
         if self._events is not None:
             # Emitted for the RENEWAL, whether or not the charge succeeded — the period rolled
@@ -873,11 +927,11 @@ class BillingService:
                       subtotal_minor=net, tax_minor=tax, total_minor=total,
                       currency=price.get("currency", self._cfg["currency"]), status="open", created=iso())
         await self._invoices.save(inv)
-        await self._charge_invoice(inv, sub.payment_token)
+        await self._charge_invoice(inv, sub.payment_token, sub)
         await self._idempo.mark(key, {"invoice_id": inv.id, "overage": over})
         return await self._invoices.fetch(inv.id) or inv
 
-    async def _charge_invoice(self, inv: Invoice, token: str) -> None:
+    async def _charge_invoice(self, inv: Invoice, token: str, sub=None) -> None:
         pay = Payment(id=new_id("pay_"), tenant=inv.tenant, invoice_id=inv.id,
                       amount_minor=inv.total_minor, currency=inv.currency, created=iso())
         if inv.total_minor <= 0:                            # nothing to charge (100% coupon / trial)
@@ -885,9 +939,12 @@ class BillingService:
             await self._payments.save(pay)
             await self._mark_paid(inv)
             return
+        # pinned mode: charge the subscription's OWN gateway (fail-closed if it cannot build), so a
+        # renewal after a driver switch still reaches the gateway that issued the token.
+        gw = await self._gw_for_sub(sub) if sub is not None else self._gw
         try:
-            charge = self._gw.charge(amount_minor=inv.total_minor, currency=inv.currency,
-                                     token=token, idempotency_key=inv.id, description=inv.number)
+            charge = gw.charge(amount_minor=inv.total_minor, currency=inv.currency,
+                               token=token, idempotency_key=inv.id, description=inv.number)
         except GatewayUnavailable as ex:
             pay.status = "failed"
             pay.error = str(ex)
@@ -1323,9 +1380,10 @@ class BillingService:
                 continue
             sub = await self._subs.fetch(inv.subscription_id)
             token = sub.payment_token if sub else ""
+            gw = await self._gw_for_sub(sub) if sub is not None else self._gw   # pinned: sub's gateway
             try:
-                charge = self._gw.charge(amount_minor=inv.total_minor, currency=inv.currency,
-                                         token=token, idempotency_key=inv.id, description=inv.number)
+                charge = gw.charge(amount_minor=inv.total_minor, currency=inv.currency,
+                                   token=token, idempotency_key=inv.id, description=inv.number)
             except GatewayUnavailable:
                 await self._dunning(pay)
                 await self._payments.save(pay)
@@ -1479,8 +1537,9 @@ class BillingService:
         pay = await self._payments.fetch(payment_id)
         if pay is None:
             return {"ok": False, "reason": "NOT_FOUND"}
-        charge = self._gw.refund(provider_id=pay.provider_id, amount_minor=amount_minor,
-                                 currency=pay.currency)
+        gw = await self._gw_for_refund(pay)     # pinned: refund via the gateway that CHARGED it
+        charge = gw.refund(provider_id=pay.provider_id, amount_minor=amount_minor,
+                           currency=pay.currency)
         if charge.ok:
             pay.status = "refunded"
             await self._payments.save(pay)

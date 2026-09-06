@@ -1107,6 +1107,17 @@
           },
           {
             "in": "query",
+            "name": "payment_gateway",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 64,
+              "title": "Payment Gateway",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
             "name": "since",
             "required": false,
             "schema": {
@@ -1188,6 +1199,62 @@
           }
         },
         "summary": "List Subscriptions Platform",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/admin/subscriptions/{sub_id}/force-suspend": {
+      "post": {
+        "description": "Deliberately stop ONE subscription's renewals \u2014 the operator override for a subscriber stranded\non an old gateway who has not re-entered payment. Platform-only, one at a time, and AUDITED\nwrite-ahead as a critical action (it stops someone's paid service; the row must exist even if the\nmutation then fails). Distinct from self-service pause; reactivate() resumes it once they update\npayment. The automatic behaviour stays 'keep renewing on the original gateway' \u2014 this is the\nmanual exception, never a sweep.",
+        "operationId": "force_suspend_subscription_api_v1_billing_admin_subscriptions__sub_id__force_suspend_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sub_id",
+            "required": true,
+            "schema": {
+              "title": "Sub Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "reason",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 500,
+              "title": "Reason",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Force Suspend Subscription Api V1 Billing Admin Subscriptions  Sub Id  Force Suspend Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Force Suspend Subscription",
         "tags": [
           "billing"
         ]

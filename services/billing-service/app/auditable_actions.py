@@ -60,6 +60,14 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "critical": False,
     },
     {
+        "action": "subscription.force_suspended",
+        "source": "admin",
+        "critical": True,
+        "why": "a deliberate operator stop halts paid service for a specific customer; who did it, to "
+               "whom, and why must be provable — an unattributable suspension is indistinguishable "
+               "from an attacker cutting off a competitor's tenant, and the state before is gone",
+    },
+    {
         "action": "usage.recorded",
         "source": "internal",
         "critical": False,

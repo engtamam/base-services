@@ -208,8 +208,9 @@ class CouponStore(_Repo):
 
 class SubscriptionStore(_Repo):
     filterable = ("status", "plan_id")
-    # The platform (all-tenants) view may additionally narrow to one tenant — same as InvoiceStore.
-    platform_filterable = ("tenant",)
+    # The platform (all-tenants) view may narrow to one tenant, and to the gateway a subscription is
+    # pinned to — so an admin can list "who is still on gateway X" to reach out before/after a switch.
+    platform_filterable = ("tenant", "payment_gateway")
     collection = "subscriptions"
 
     def __init__(self, store: DataStore, cache=None) -> None:

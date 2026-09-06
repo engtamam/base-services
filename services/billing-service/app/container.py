@@ -200,6 +200,26 @@ def rebuild_gateway(settings, resolved: dict, current, *, driver: str = ""):
         return _UnconfiguredGateway(driver) if switched else current
 
 
+def build_named_gateway(settings, driver: str, resolved: dict):
+    """Build a SPECIFIC gateway by name with a tenant's resolved credentials — for pinned-mode renewals
+    that must charge the subscription's OWN gateway, not whatever is active now.
+
+    Always FAIL-CLOSED to _UnconfiguredGateway for that driver when it is unknown or its credentials
+    will not build: a pinned charge that cannot reach its own gateway must become a retryable
+    GatewayUnavailable (dunning), NEVER a charge routed to a different gateway. Unlike rebuild_gateway
+    there is no boot-fallback branch — the named gateway is the only acceptable answer."""
+    from app.core.credentials import Overlay
+
+    builder = _PAYMENT.get((driver or "").strip())
+    if builder is None:
+        return _UnconfiguredGateway(driver or "unconfigured")
+    try:
+        return builder(Overlay(settings, resolved))
+    except Exception:  # noqa: BLE001 — a missing key (GatewayUnavailable) or any builder error
+        _log.warning("named_gateway_build_failed", extra={"driver": driver})
+        return _UnconfiguredGateway(driver or "unconfigured")
+
+
 def _pay(cls):
     return lambda s: cls(api_key=s.PAYMENT_API_KEY, base=s.PAYMENT_API_BASE,
                          extra_id=s.PAYMENT_EXTRA_ID, extra_secret=s.PAYMENT_EXTRA_SECRET,
