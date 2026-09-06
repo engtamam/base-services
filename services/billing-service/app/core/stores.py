@@ -387,6 +387,14 @@ class PaymentStore(_Repo):
             self.collection, {"invoice_id": invoice_id, "status": "succeeded"}, limit=1)
         return Payment.from_dict(rows[0]) if rows else None
 
+    async def pending(self, *, limit: int = 100,
+                      after: str | None = None) -> tuple[list[dict], str | None]:
+        """One page of PENDING payments, oldest first — the queue a reconcile poller walks (e.g. a
+        hosted-checkout top-up awaiting the customer's payment). Raw rows so the caller can join the
+        invoice; cursor for paging."""
+        return await self._store.find(self.collection, {"status": "pending"}, limit=limit,
+                                      after=after, sort=("created", "asc"))
+
     async def due(self, now: float, limit: int = 100) -> list[Payment]:
         """Failed payments ready for another attempt. The dunning sweeper's queue.
 

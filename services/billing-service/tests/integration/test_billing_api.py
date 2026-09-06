@@ -318,3 +318,11 @@ def test_wallet_topup_checkout_route_is_wired_and_capability_gated(client):
     r = client.post("/api/v1/billing/wallet-topups/checkout",
                     json={"amount_minor": 5000, "fund": "topup"}, headers=_self())
     assert r.status_code == 502
+
+
+def test_pending_topups_listing_is_platform_only(client):
+    # tenant self-capability is not enough — platform.billing required
+    assert client.get("/api/v1/billing/admin/wallet-topups/pending",
+                      headers=_self()).status_code == 403
+    r = client.get("/api/v1/billing/admin/wallet-topups/pending", headers=_adm())
+    assert r.status_code == 200 and "payments" in r.json()

@@ -60,6 +60,17 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         ],
     },
     {
+        "id": "billing.pending_topups", "label": "Pending wallet top-ups", "method": "GET",
+        "path": "/api/v1/billing/admin/wallet-topups/pending", "capability": "platform.billing",
+        "group": "Wallet",
+        "params": [
+            {"name": "limit", "in": "query", "type": "integer", "required": False},
+            {"name": "older_than_seconds", "in": "query", "type": "integer", "required": False,
+             "help": "skip sessions opened in the last N seconds — give the gateway time before the first poll"},
+            {"name": "cursor", "in": "query", "type": "string", "required": False},
+        ],
+    },
+    {
         "id": "billing.platform_usage", "label": "Usage & limits (any tenant)", "method": "GET",
         "path": "/api/v1/billing/admin/usage", "capability": "platform.billing", "group": "Usage",
         "params": [

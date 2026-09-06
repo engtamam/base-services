@@ -128,6 +128,7 @@ def build_manifest(
             {"path": "/api/v1/billing/invoices", "tier": "user", "method": "GET"},
             {"path": "/api/v1/billing/admin/invoices", "tier": "user", "method": "GET"},
             {"path": "/api/v1/billing/admin/subscriptions", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/billing/admin/wallet-topups/pending", "tier": "user", "method": "GET"},
             # Deliberate operator stop of one subscription (a subscriber stranded on an old gateway).
             {"path": "/api/v1/billing/admin/subscriptions/{}/force-suspend", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/admin/usage", "tier": "user", "method": "GET"},

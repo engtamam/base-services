@@ -34,6 +34,17 @@ _log = get_logger("app.billing")
 
 _INTERVAL = {"month": 30 * 86400, "year": 365 * 86400, "once": 0}
 
+
+def _epoch(iso_str: str) -> float:
+    """An ISO-8601 timestamp (as produced by models.iso()) to epoch seconds; 0.0 if unparseable, so
+    an age filter fails OPEN (includes the row) rather than hiding a pending payment on a bad string."""
+    if not iso_str:
+        return 0.0
+    try:
+        return _dt.datetime.fromisoformat(iso_str.replace("Z", "+00:00")).timestamp()
+    except (ValueError, TypeError):
+        return 0.0
+
 # Statuses the billing cycle refuses to invoice. A DENYLIST is wrong here and an allowlist is
 # right: a status added later (suspended, delinquent, closed) must default to NOT being charged.
 # Listing what may be billed means the unknown case declines money; listing what may not means
@@ -1821,6 +1832,41 @@ class BillingService:
         return {"invoice_id": inv.id, "invoice_number": inv.number, "payment_id": pay.id,
                 "amount_minor": total, "fund": fund, "currency": currency, "doc_type": force_doc or "",
                 "status": "pending", "checkout": {"supported": True, **session.to_dict()}}
+
+    async def list_pending_topups(self, *, limit: int = 50, older_than_seconds: int = 0,
+                                  after: str | None = None) -> dict[str, Any]:
+        """PENDING wallet-topup payments awaiting a reconcile poll — the queue an operations poller
+        walks, then calls reconcile_payment per row (hosted-checkout gateways have no signed webhook).
+
+        Only top-up payments are returned (the invoice's meta.topup), never ordinary pending charges.
+        `older_than_seconds` skips payments opened moments ago, giving the gateway time before the
+        first poll. Bounded and paged: scans at most a few pages, returns a cursor to continue."""
+        lim = max(1, min(int(limit), 200))
+        skip_newer_than = None
+        if older_than_seconds and older_than_seconds > 0:
+            skip_newer_than = self._clock() - int(older_than_seconds)
+        out: list[dict[str, Any]] = []
+        cursor = after
+        pages = 0
+        while len(out) < lim and pages < 20:
+            pages += 1
+            rows, cursor = await self._payments.pending(limit=100, after=cursor)
+            for r in rows:
+                if skip_newer_than is not None and _epoch(r.get("created", "")) > skip_newer_than:
+                    continue
+                inv = await self._invoices.fetch(r.get("invoice_id", ""))
+                if inv is None or not (inv.meta or {}).get("topup"):
+                    continue
+                out.append({"payment_id": r["id"], "tenant": r.get("tenant", ""),
+                            "amount_minor": r.get("amount_minor", 0),
+                            "fund": (inv.meta or {}).get("grant_fund", ""),
+                            "currency": r.get("currency", ""), "created": r.get("created", ""),
+                            "provider_id": r.get("provider_id", "")})
+                if len(out) >= lim:
+                    break
+            if not cursor:
+                break
+        return {"payments": out, "next_cursor": cursor}
 
     async def render_pdf(self, inv: Invoice) -> tuple[str, bytes] | None:
         # BILL TO must be a real party, not a database key. The buyer's legal identity lives on the

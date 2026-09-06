@@ -1020,6 +1020,20 @@ async def reconcile_payment(request: Request, payment_id: str,
     return res
 
 
+@router.get("/admin/wallet-topups/pending", dependencies=[Depends(_PLATFORM), Depends(rate_limit)])
+async def list_pending_topups(request: Request,
+                              limit: int | None = Query(default=None, ge=1, le=200),
+                              older_than_seconds: int = Query(default=0, ge=0, le=86400),
+                              cursor: str | None = Query(default=None, max_length=512),
+                              principal: Principal = Depends(require_user)) -> dict:
+    """PENDING wallet-topup payments awaiting a reconcile poll — the queue an operations poller walks,
+    then calls POST /payments/{id}/reconcile per row (hosted-checkout gateways like TuwaiqPay have no
+    signed webhook). platform.billing only. `older_than_seconds` skips just-opened sessions so the
+    first poll gives the gateway a moment. Returns only top-up payments, never ordinary charges."""
+    return await (await build_billing(request)).list_pending_topups(
+        limit=limit or 50, older_than_seconds=older_than_seconds, after=cursor)
+
+
 @router.post("/dunning/run")
 async def dunning(request: Request, principal: Principal = Depends(_ADMIN)) -> dict:
     result = await (await build_billing(request)).dunning_sweep()

@@ -213,3 +213,42 @@ def test_a_gateway_that_cannot_open_a_session_leaves_no_orphan_invoice():
     with pytest.raises(UpgradeChargeFailed):
         run(b.wallet_topup_checkout(tenant="acme", amount_minor=30_000, fund="topup"))
     assert run(st.scan_all("invoices", 50)) == [] and run(st.scan_all("payments", 50)) == []
+
+
+# ── operator listing of pending top-ups (drives the reconcile poller) ────────
+
+def test_pending_topups_lists_only_pending_topup_payments():
+    st = MemoryDataStore()
+    b = _svc(st, _HostedGW())
+    # two pending checkout top-ups
+    a = run(b.wallet_topup_checkout(tenant="t1", amount_minor=10_000, fund="topup"))
+    c = run(b.wallet_topup_checkout(tenant="t2", amount_minor=20_000, fund="topup"))
+    # an ordinary (non-topup) pending payment must NOT appear
+    from app.core.models import Invoice
+    run(InvoiceStore(st).save(Invoice(id="inv_plain", tenant="t3", number="P-1", status="open",
+                                      total_minor=999, currency="SAR", meta={})))
+    run(PaymentStore(st).save(Payment(id="pay_plain", tenant="t3", invoice_id="inv_plain",
+                                      status="pending", currency="SAR", amount_minor=999)))
+    out = run(b.list_pending_topups())
+    ids = {p["payment_id"] for p in out["payments"]}
+    assert ids == {a["payment_id"], c["payment_id"]}          # topups only, not pay_plain
+    row = next(p for p in out["payments"] if p["payment_id"] == a["payment_id"])
+    assert row["tenant"] == "t1" and row["amount_minor"] == 10_000 and row["fund"] == "topup"
+    assert row["provider_id"].startswith("bill_")
+
+
+def test_pending_topups_drops_a_completed_one():
+    st = MemoryDataStore()
+    b = _svc(st, _HostedGW(status="succeeded"))
+    a = run(b.wallet_topup_checkout(tenant="t1", amount_minor=10_000, fund="topup"))
+    run(b.reconcile_payment(a["payment_id"]))                 # now succeeded, no longer pending
+    assert run(b.list_pending_topups())["payments"] == []
+
+
+def test_older_than_seconds_skips_a_just_opened_topup():
+    st = MemoryDataStore()
+    b = _svc(st, _HostedGW())
+    run(b.wallet_topup_checkout(tenant="t1", amount_minor=10_000, fund="topup"))
+    # created just now → a 3600s floor excludes it; a 0 floor includes it
+    assert run(b.list_pending_topups(older_than_seconds=3600))["payments"] == []
+    assert len(run(b.list_pending_topups(older_than_seconds=0))["payments"]) == 1

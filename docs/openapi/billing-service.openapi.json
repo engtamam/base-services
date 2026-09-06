@@ -1394,6 +1394,89 @@
         ]
       }
     },
+    "/api/v1/billing/admin/wallet-topups/pending": {
+      "get": {
+        "description": "PENDING wallet-topup payments awaiting a reconcile poll \u2014 the queue an operations poller walks,\nthen calls POST /payments/{id}/reconcile per row (hosted-checkout gateways like TuwaiqPay have no\nsigned webhook). platform.billing only. `older_than_seconds` skips just-opened sessions so the\nfirst poll gives the gateway a moment. Returns only top-up payments, never ordinary charges.",
+        "operationId": "list_pending_topups_api_v1_billing_admin_wallet_topups_pending_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 200,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
+          {
+            "in": "query",
+            "name": "older_than_seconds",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 86400,
+              "minimum": 0,
+              "title": "Older Than Seconds",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Pending Topups Api V1 Billing Admin Wallet Topups Pending Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Pending Topups",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
     "/api/v1/billing/checkouts": {
       "post": {
         "description": "Server-create a payment checkout/session for the customer's widget or redirect.\n\nWe never proxy a provider key: the client gets the session/checkout id (and, for a widget, the\nprovider's own script URL), never our credentials. A provider with no server-side session says\nso (`supported: false`). Completion reconciles through the existing webhook / GET-status path\ninto _mark_paid, so a completed checkout is the SAME paid invoice as a direct charge.",
