@@ -81,6 +81,13 @@ probes:
 terminationGracePeriodSeconds: 30
 preStopSleepSeconds: 5
 
+# ── Extra volumes (generic, off by default) ───────────────────────────────────
+# A service that needs read-only content on disk — e.g. a ConfigMap of knowledge-base files at
+# KB_FILE_PATH — sets these in its OWN values.yaml. Empty here, so every other service is untouched.
+# The two lists are standard Kubernetes volume / volumeMount entries and must be used together.
+extraVolumes: []
+extraVolumeMounts: []
+
 # ── Networking ──────────────────────────────────────────────────────────────
 ingress:
   enabled: false

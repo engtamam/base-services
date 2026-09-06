@@ -136,6 +136,12 @@ spec:
             # readOnlyRootFilesystem without a writable /tmp crash-loops on first write.
             - name: tmp
               mountPath: /tmp
+            # Generic mount hook — empty by default, so every service is untouched. A service that
+            # needs read-only content on disk (e.g. a ConfigMap of KB files at KB_FILE_PATH) sets
+            # extraVolumeMounts in its own values.yaml; pair with extraVolumes below.
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           # A slow first boot (schema migration, cold cache) must not be killed by liveness.
           # startupProbe holds liveness off for startupFailureThreshold x periodSeconds.
           startupProbe:
@@ -178,3 +184,9 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+        # Generic volume hook — empty by default. A service mounts its own sources (a ConfigMap,
+        # a secret, a projected volume) via extraVolumes in its values.yaml; pair with the
+        # extraVolumeMounts hook above. No default value means no change to any other service.
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}

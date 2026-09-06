@@ -105,6 +105,10 @@
 
     "terminationGracePeriodSeconds": { "type": "integer", "minimum": 0 },
     "preStopSleepSeconds": { "type": "integer", "minimum": 0 },
+    "extraVolumes": { "type": "array", "items": { "type": "object" },
+      "description": "Extra pod volumes (generic, empty by default); pair with extraVolumeMounts." },
+    "extraVolumeMounts": { "type": "array", "items": { "type": "object" },
+      "description": "Extra container volumeMounts (generic, empty by default); pair with extraVolumes." },
 
     "ingress": {
       "type": "object",
