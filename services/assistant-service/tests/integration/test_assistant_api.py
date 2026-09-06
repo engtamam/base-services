@@ -115,6 +115,99 @@ def _ask(client, question, caps=None, **body):
                        json={"question": question, **body}, headers=_tok(caps))
 
 
+def _capture_audit(client, monkeypatch):
+    """Wrap the real auditor.record so a test can see which actions were recorded, with metadata."""
+    calls = []
+    real = client.app.state.auditor.record
+
+    async def spy(action, **kw):
+        calls.append({"action": action, **kw})
+        return await real(action, **kw)
+
+    monkeypatch.setattr(client.app.state.auditor, "record", spy)
+    return calls
+
+
+# ── message attribution (gap 3) ─────────────────────────────────────────────────
+def test_ask_writes_a_pseudonymous_attribution_line_and_returns_a_message_id(client, monkeypatch):
+    calls = _capture_audit(client, monkeypatch)
+    b = _ask(client, "what is a vat number").json()
+    assert b["message_id"] and len(b["message_id"]) >= 16       # a real turn anchor is returned
+    attr = [c for c in calls if c["action"] == "assistant.message_attributed"]
+    assert len(attr) == 1
+    # actor is the PSEUDONYM, never the raw subject "u1"; carries no content, only the surface + id
+    assert attr[0]["actor"] != "u1" and attr[0]["actor"]
+    assert f"message:{b['message_id']}" == attr[0]["resource"]
+    assert "vat" not in json.dumps(attr[0])                     # the question never enters the record
+
+
+def test_attribution_is_written_for_an_abstention_too(client, monkeypatch):
+    calls = _capture_audit(client, monkeypatch)
+    _ask(client, "zzzq nothing matches this")
+    assert any(c["action"] == "assistant.message_attributed" for c in calls)
+
+
+@pytest.fixture()
+def conv_client(kb_file):
+    """A client with conversation history ENABLED — the mode a real deployment keeping shop-owner
+    chats runs in, and the only mode where erasure + retention have anything to act on."""
+    from app.config import get_settings
+
+    saved = dict(os.environ)
+    os.environ.update({
+        "ENV": "test", "INTERNAL_SERVICE_TOKEN": "t" * 40,
+        "TOKEN_VERIFIER_DRIVER": "hs256", "TOKEN_HS256_SECRET": SECRET,
+        "TOKEN_ISSUER": ISS, "TOKEN_AUDIENCE": AUD, "RATELIMIT_MAX": "1000",
+        "KB_SOURCE_DRIVER": "file", "KB_FILE_PATH": kb_file,
+        "RETRIEVAL_MIN_SCORE": "0.0", "PII_SALT": "s" * 32,
+        "CONVERSATIONS_ENABLED": "true", "CONVERSATION_RETENTION_DAYS": "90",
+        "MESSAGE_KEY": "m" * 40,       # required once history is on (content is stored encrypted)
+    })
+    get_settings.cache_clear()
+    from app.main import create_app
+    yield TestClient(create_app(), raise_server_exceptions=False)
+    os.environ.clear(); os.environ.update(saved); get_settings.cache_clear()
+
+
+# ── DSAR erasure (gap 1) ────────────────────────────────────────────────────────
+def test_privacy_erase_deletes_the_subjects_conversations_and_accounts_for_them(conv_client):
+    import asyncio
+    store = conv_client.app.state.container.conversations
+    conv = asyncio.run(store.start(tenant="acme", subject="shopper1", title="help"))
+    asyncio.run(store.add(conversation_id=conv.id, tenant="acme", subject="shopper1",
+                          role="user", content="how do I refund"))
+    ack = conv_client.post("/internal/privacy/erase",
+                           json={"tenant": "acme", "subject": "shopper1"},
+                           headers={"X-Internal-Token": "t" * 40}).json()
+    assert ack["service"] == "assistant-service" and ack["category"] == "subject"
+    assert any(e.startswith("conversations:") for e in ack["erased"])
+    assert ack["already_absent"] is False
+    # a re-run is idempotent and now finds nothing
+    again = conv_client.post("/internal/privacy/erase",
+                             json={"tenant": "acme", "subject": "shopper1"},
+                             headers={"X-Internal-Token": "t" * 40}).json()
+    assert again["already_absent"] is True
+
+
+# ── retention sweep audit (gap 2) ───────────────────────────────────────────────
+def test_retention_purge_is_audited_with_a_count_and_no_content(conv_client, monkeypatch):
+    import asyncio
+
+    from app.core.conversations import _CONVERSATIONS
+    ds = conv_client.app.state.container.datastore
+    # An old conversation (well past the 90-day window) so the sweep actually purges something.
+    asyncio.run(ds.put(_CONVERSATIONS, "old1", {
+        "id": "old1", "tenant": "acme", "subject_ref": "ref1", "title": "x", "surface": "",
+        "created": "2000-01-01T00:00:00+00:00", "updated": "2000-01-01T00:00:00+00:00"}))
+    calls = _capture_audit(conv_client, monkeypatch)
+    r = conv_client.post("/internal/assistant/retention", headers={"X-Internal-Token": "t" * 40})
+    assert r.status_code == 200 and r.json()["conversations"] >= 1
+    purged = [c for c in calls if c["action"] == "assistant.retention_purged"]
+    assert len(purged) == 1 and purged[0]["metadata"]["conversations"] == str(r.json()["conversations"])
+    # counts only — no tenant, no subject, no content in the record
+    assert purged[0].get("tenant", "") == "" and "old1" not in json.dumps(purged[0])
+
+
 # ── auth ──────────────────────────────────────────────────────────────────────
 def test_both_routes_require_a_token(client):
     assert client.post("/api/v1/assistant/ask", json={"question": "x"}).status_code == 401

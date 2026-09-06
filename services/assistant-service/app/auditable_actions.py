@@ -145,6 +145,26 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "can show it happened; without a record we cannot prove we honoured the DSAR",
     },
     {
+        "action": "assistant.retention_purged",
+        "source": "internal",
+        "critical": True,
+        "resource": "conversations",
+        "why": "the retention sweep bulk-deletes conversations past their window; once they are "
+               "gone this line is the only proof a purge happened, when, and how many — the same "
+               "irreversible-deletion reasoning as subject.erased. Counts only, never content",
+    },
+    {
+        "action": "assistant.message_attributed",
+        "source": "internal",
+        "critical": False,
+        "resource": "conversation",
+        "why": "a conversation turn's own tenant+subject_ref age out with the content under "
+               "retention, so a legitimate legal/law-enforcement question arriving after a purge "
+               "has nothing left to say a subject spoke with a tenant at a time; this pseudonymous "
+               "line (no content) preserves that attribution independently of content retention. "
+               "Not critical: refusing to ANSWER because the log is unreachable is not worth it",
+    },
+    {
         "action": "operator.secret_set",
         "source": "admin",
         "critical": True,

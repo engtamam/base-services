@@ -17,6 +17,8 @@ the value.
 """
 from __future__ import annotations
 
+import uuid
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
@@ -135,8 +137,25 @@ async def ask(request: Request, body: AskIn,
         except Exception:   # noqa: BLE001 — see above: the answer outranks the record here
             pass
 
+    # ATTRIBUTION — written for EVERY processed turn (grounded or abstained), pseudonymous and
+    # content-free, so that "this subject spoke with this tenant at this time" survives independently
+    # of the conversation content's own retention window: a legitimate legal/law-enforcement question
+    # arriving after a retention purge otherwise has nothing left to attribute. Best-effort like the
+    # abstained line — a help answer must never 500 because the audit chain blinked, and a dev run
+    # with no PII_SALT (where pseudonymising raises) must still answer.
+    message_id = uuid.uuid4().hex
+    try:
+        actor = subject_ref(s.PII_SALT, principal.tenant or "", principal.subject)
+        await request.app.state.auditor.record(
+            "assistant.message_attributed", actor=actor, tenant=principal.tenant or "",
+            resource=f"message:{message_id}", ip=request.client.host if request.client else "",
+            metadata={"surface": body.surface or "default", "grounded": str(answer.grounded)})
+    except Exception:   # noqa: BLE001 — attribution is non-critical; the answer outranks the record
+        pass
+
     return {
         "answer": answer.text,
+        "message_id": message_id,     # the attribution anchor for this turn (see the audit line above)
         "grounded": answer.grounded,
         # Present and empty on an abstention, so a client never has to distinguish "no citations"
         # from "the field is missing".

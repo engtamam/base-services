@@ -93,7 +93,21 @@ async def enforce_retention(request: Request) -> dict:
         return {"conversations": 0, "messages": 0, "skipped": True}
     cutoff = (_dt.datetime.now(_dt.timezone.utc)
               - _dt.timedelta(days=s.CONVERSATION_RETENTION_DAYS)).isoformat()
-    return await store.enforce_retention(cutoff_iso=cutoff)
+    result = await store.enforce_retention(cutoff_iso=cutoff)
+    # A retention purge is irreversible bulk deletion of personal data. Once the conversations are
+    # gone, THIS audit line is the only thing that can prove a purge happened, when, and how many —
+    # the same reasoning that makes subject.erased critical. Recorded AFTER, because the COUNT (the
+    # whole point of the record) is only known once the sweep has run; the failure is NOT swallowed
+    # (unlike the best-effort abstained line) so a purge that could not be recorded surfaces to the
+    # scheduler instead of vanishing. Counts only — never a tenant, a subject, or any content.
+    if result.get("conversations") or result.get("messages"):
+        await request.app.state.auditor.record(
+            "assistant.retention_purged", actor="system", tenant="",
+            resource="conversations", ip=request.client.host if request.client else "",
+            metadata={"conversations": str(result.get("conversations", 0)),
+                      "messages": str(result.get("messages", 0)),
+                      "retention_days": str(s.CONVERSATION_RETENTION_DAYS)})
+    return result
 
 
 class TriageIn(BaseModel):
@@ -152,21 +166,11 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
         ip=request.client.host if request.client else "")
     c = request.app.state.container
     s = get_settings()
+    # Conversations are this service's own personal data; the eraser owns their deletion + accounting,
+    # so the ack it returns is complete on its own (no separate merge that could drift).
     eraser = TemplateErasure(store=c.datastore, pii_salt=s.PII_SALT,
-                             max_scan=s.ERASURE_MAX_SCAN)
-    ack = await eraser.erase(body.tenant, body.subject)
-    # Conversations are this service's own personal data, so the ack must account for them or it
-    # claims an erasure it did not perform.
-    if c.conversations is not None:
-        removed = await c.conversations.erase_subject(tenant=body.tenant, subject=body.subject)
-        erased = list(ack.get("erased") or [])
-        if removed["conversations"]:
-            erased.append(f"conversations:{removed['conversations']}")
-        if removed["messages"]:
-            erased.append(f"messages:{removed['messages']}")
-        ack["erased"] = erased
-        ack["already_absent"] = ack.get("already_absent", True) and not erased
-    return ack
+                             conversations=c.conversations, max_scan=s.ERASURE_MAX_SCAN)
+    return await eraser.erase(body.tenant, body.subject)
 
 
 # ── Backup (backup-service orchestrates; this service produces sealed archives) ──────────────

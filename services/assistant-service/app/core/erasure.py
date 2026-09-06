@@ -40,31 +40,39 @@ from app.core.pii import subject_ref
 
 class TemplateErasure:
     # Both appear in the DSAR's target list, so they must match the data-map row registered for
-    # this service. A mismatch means the DSAR waits for an ack that never arrives.
-    service = "CHANGE-ME-service"
-    category = "CHANGE-ME"
+    # this service. A mismatch means the DSAR waits for an ack that never arrives — hence these are
+    # the REAL identifiers, matching manifest.py's /internal/privacy/erase erasure_category="subject".
+    service = "assistant-service"
+    category = "subject"
 
-    def __init__(self, *, store, pii_salt: str, max_scan: int = 100_000) -> None:
+    def __init__(self, *, store, pii_salt: str, conversations=None,
+                 max_scan: int = 100_000) -> None:
         self._store = store
         self._salt = pii_salt
+        # This service's ONE store of subject personal data: the conversations (and their messages).
+        # It carries subject_ref on every row and already exposes a tenant-scoped, cursor-paged
+        # erase_subject; the DSAR simply drives it. None only in a deployment that keeps no
+        # conversations, where there is genuinely nothing to erase.
+        self._conversations = conversations
         self._max = max_scan          # a DSAR is rare, but must never be an unbounded read
 
     async def erase(self, tenant: str, subject: str) -> dict[str, Any]:
         ref = subject_ref(self._salt, tenant, subject)
 
-        # ── TODO: erase this service's subject data ──────────────────────────
-        # Scope EVERY query to `tenant`: one customer's DSAR must never touch another's rows.
-        # Page with a cursor and stop at `self._max` rather than reading an unbounded set.
+        # Conversations are this service's subject data. erase_subject deletes messages before their
+        # conversation, scoped to (tenant, subject_ref), paged — so a DSAR removes everything this
+        # person asked. Reported by COUNT, never by content or raw id.
         erased: list[str] = []
         retained: list[dict[str, str]] = []
-
-        # Example of a retention that is legally required — copy the SHAPE, not the words:
-        # retained.append({
-        #     "what": "invoices:12",
-        #     "basis": "tax_retention",
-        #     "why": "a tax invoice must survive ~10 years by law; the buyer's name is "
-        #            "pseudonymised and the financial record is untouched",
-        # })
+        if self._conversations is not None:
+            removed = await self._conversations.erase_subject(tenant=tenant, subject=subject)
+            if removed.get("conversations"):
+                erased.append(f"conversations:{removed['conversations']}")
+            if removed.get("messages"):
+                erased.append(f"messages:{removed['messages']}")
+        # Nothing is RETAINED: an assistant conversation carries no tax/legal-hold basis to keep it,
+        # so this list stays empty by design. (The pseudonymous attribution audit line is NOT subject
+        # data kept here — it is an append-only record carrying no content, exactly so it can survive.)
 
         return {
             "service": self.service,
