@@ -476,6 +476,16 @@ class Settings(BaseSettings):
     WALLET_TIMEOUT_SECONDS: int = 10
     # Which wallet fund a plan's included credits land in.
     WALLET_GRANT_FUND: str = "credits"
+    # ── one-off wallet top-up (a shop owner buys prepaid credit for a fund) ──────────────────
+    # The fund a top-up credits by default (the request may name another). The platform owns it.
+    WALLET_TOPUP_FUND: str = "topup"
+    # Tax treatment of a top-up. 'receipt' (default) = payment on account, NO VAT at top-up — the
+    # wallet applies VAT when the credit is SPENT (the fund's taxable flag), so taxing it here too
+    # double-taxes. 'tax_invoice' = add VAT and issue a tax invoice at top-up (only for a fund that
+    # is NOT taxed at spend). A platform picks per its wallet-fund tax model.
+    WALLET_TOPUP_TAX_MODE: str = "receipt"                # receipt | tax_invoice
+    # A guardrail against a fat-finger top-up. 0 = no cap.
+    WALLET_TOPUP_MAX_MINOR: int = 0
     # ── renewal by wallet debit (for gateways with no recurring/token, e.g. TuwaiqPay) ──────
     # OFF by default: a platform turns this on when it wants a subscription to renew by DEBITING
     # the customer's prepaid wallet instead of charging a card. Reusable infrastructure — the

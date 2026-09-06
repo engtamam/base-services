@@ -83,6 +83,8 @@ def build_manifest(
             {"path": "/api/v1/billing/offers", "tier": "public", "method": "GET"},
             {"path": "/api/v1/billing/coupons", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/checkouts", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/billing/wallet-topups", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/billing/wallet-topups/checkout", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/subscriptions", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/subscriptions", "tier": "user", "method": "GET"},
             {"path": "/api/v1/billing/subscriptions/{id}/change", "tier": "user", "method": "POST"},

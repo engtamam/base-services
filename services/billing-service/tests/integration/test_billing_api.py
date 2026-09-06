@@ -264,3 +264,57 @@ def test_undo_cancel_rejects_another_tenants_subscription(client):
     r = client.post(f"/api/v1/billing/subscriptions/{sub['id']}/undo-cancel",
                     headers=_adm(caps=("billing.self",), tenant="intruder"))
     assert r.status_code in (403, 404)
+
+
+# ── one-off wallet top-up route ───────────────────────────────────────────────
+
+def _self(tenant="t1"):
+    return _adm(caps=("billing.self",), tenant=tenant)
+
+
+def test_wallet_topup_charges_and_returns_a_receipt(client):
+    r = client.post("/api/v1/billing/wallet-topups",
+                    json={"amount_minor": 25000, "payment_token": "tok_x", "fund": "topup"},
+                    headers=_self())
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["fund"] == "topup" and body["amount_minor"] == 25000
+    # default is a receipt (no VAT at top-up) even though the app runs in tax_invoice document mode
+    assert body["doc_type"] == "receipt"
+
+
+def test_wallet_topup_needs_a_self_capability(client):
+    r = client.post("/api/v1/billing/wallet-topups",
+                    json={"amount_minor": 1000, "payment_token": "t", "fund": "topup"},
+                    headers=_adm(caps=("something.else",)))
+    assert r.status_code == 403
+
+
+def test_wallet_topup_rejects_a_non_positive_amount(client):
+    r = client.post("/api/v1/billing/wallet-topups",
+                    json={"amount_minor": 0, "payment_token": "t", "fund": "topup"},
+                    headers=_self())
+    assert r.status_code == 422        # pydantic gt=0
+
+
+def test_wallet_topup_is_scoped_to_the_callers_tenant(client):
+    # a non-platform caller cannot top up another tenant's wallet: _tenant() ignores body.tenant
+    r = client.post("/api/v1/billing/wallet-topups",
+                    json={"amount_minor": 1000, "payment_token": "t", "fund": "topup",
+                          "tenant": "victim"},
+                    headers=_self(tenant="attacker"))
+    assert r.status_code == 201
+    assert r.json()["invoice_id"]      # created under 'attacker', not 'victim' (see core: tenant arg)
+
+
+def test_wallet_topup_checkout_route_is_wired_and_capability_gated(client):
+    # capability required
+    assert client.post("/api/v1/billing/wallet-topups/checkout",
+                       json={"amount_minor": 1000}, headers=_adm(caps=("nope",))).status_code == 403
+    # amount must be positive (pydantic)
+    assert client.post("/api/v1/billing/wallet-topups/checkout",
+                       json={"amount_minor": 0}, headers=_self()).status_code == 422
+    # the mock gateway has no server-side checkout → a clean 502, not a 500
+    r = client.post("/api/v1/billing/wallet-topups/checkout",
+                    json={"amount_minor": 5000, "fund": "topup"}, headers=_self())
+    assert r.status_code == 502

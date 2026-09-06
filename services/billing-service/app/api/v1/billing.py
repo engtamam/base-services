@@ -190,6 +190,11 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
                 # default; the platform names the fund to draw from — billing never guesses one.
                 "wallet_renewal_enabled": s.BILLING_WALLET_RENEWAL_ENABLED,
                 "wallet_renewal_fund": s.WALLET_RENEWAL_FUND,
+                # One-off wallet top-up (buy prepaid credit). Fund + tax treatment + a fat-finger cap,
+                # all platform-owned config — never hardcoded here.
+                "wallet_topup_fund": s.WALLET_TOPUP_FUND,
+                "wallet_topup_tax_mode": s.WALLET_TOPUP_TAX_MODE,
+                "wallet_topup_max_minor": s.WALLET_TOPUP_MAX_MINOR,
                 # Entitlement resolution (Phase 42). Required by EntitlementResolver —
                 # every default lives in config.py, never inline at a call site.
                 "billable_statuses": s.billable_statuses,
@@ -502,6 +507,76 @@ async def create_checkout(request: Request, body: CheckoutIn,
     except GatewayUnavailable as exc:
         # Unreachable / unconfigured gateway — retryable, not a client error.
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+
+
+class WalletTopupIn(BaseModel):
+    amount_minor: int = Field(gt=0)
+    payment_token: str = Field(min_length=1, max_length=512)
+    fund: str = Field(default="", max_length=64)          # "" → the configured default fund
+    currency: str = Field(default="", max_length=8)
+    tenant: str | None = None
+
+
+@router.post("/wallet-topups", status_code=201, dependencies=[Depends(rate_limit)])
+async def wallet_topup(request: Request, body: WalletTopupIn,
+                       principal: Principal = Depends(_SELF)) -> dict:
+    """Charge a one-off amount and credit it to a wallet fund — a manual prepaid top-up (e.g. AI-usage
+    credit). Reuses the paid-invoice machinery: the wallet is credited through the same durable,
+    idempotent grant outbox a plan renewal uses (a redelivered webhook / a reconcile credits once; a
+    refund claws back through the same seam). No VAT at top-up by default (payment on account)."""
+    from app.core.billing_service import UpgradeChargeFailed, UpgradeChargeUnavailable
+    tenant = _tenant(principal, body.tenant)
+    try:
+        result = await (await build_billing(request, tenant)).wallet_topup(
+            tenant=tenant, amount_minor=body.amount_minor, payment_token=body.payment_token,
+            fund=body.fund, currency=body.currency)
+    except UpgradeChargeUnavailable as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "GATEWAY_UNAVAILABLE") from exc
+    except UpgradeChargeFailed as exc:
+        raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, str(exc) or "DECLINED") from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    await request.app.state.auditor.record(
+        "billing.wallet_topped_up", actor=principal.subject, tenant=tenant,
+        resource=f"invoice:{result['invoice_id']}", ip=request.client.host if request.client else "",
+        metadata={"fund": result["fund"], "amount_minor": result["amount_minor"],
+                  "currency": result["currency"]})
+    return result
+
+
+class WalletTopupCheckoutIn(BaseModel):
+    amount_minor: int = Field(gt=0)
+    fund: str = Field(default="", max_length=64)
+    currency: str = Field(default="", max_length=8)
+    return_url: str = Field(default="", max_length=1024)
+    tenant: str | None = None
+
+
+@router.post("/wallet-topups/checkout", status_code=201, dependencies=[Depends(rate_limit)])
+async def wallet_topup_checkout(request: Request, body: WalletTopupCheckoutIn,
+                                principal: Principal = Depends(_SELF)) -> dict:
+    """Start a HOSTED-CHECKOUT wallet top-up — for a gateway with no card token (e.g. TuwaiqPay:
+    bill → payment link → customer pays → poll/verify). Creates a PENDING invoice+payment carrying
+    the top-up grant; completion (a webhook or POST /payments/{id}/reconcile) credits the wallet fund
+    through the same _mark_paid seam as the token path. No VAT at top-up (payment on account)."""
+    from app.core.billing_service import UpgradeChargeFailed, UpgradeChargeUnavailable
+    tenant = _tenant(principal, body.tenant)
+    try:
+        result = await (await build_billing(request, tenant)).wallet_topup_checkout(
+            tenant=tenant, amount_minor=body.amount_minor, fund=body.fund,
+            currency=body.currency, return_url=body.return_url)
+    except UpgradeChargeUnavailable as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "GATEWAY_UNAVAILABLE") from exc
+    except UpgradeChargeFailed as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc) or "CHECKOUT_FAILED") from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    await request.app.state.auditor.record(
+        "billing.wallet_topup_started", actor=principal.subject, tenant=tenant,
+        resource=f"invoice:{result['invoice_id']}", ip=request.client.host if request.client else "",
+        metadata={"fund": result["fund"], "amount_minor": result["amount_minor"],
+                  "currency": result["currency"]})
+    return result
 
 
 @router.post("/subscriptions/{sub_id}/change")

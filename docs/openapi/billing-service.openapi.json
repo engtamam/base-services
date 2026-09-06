@@ -898,6 +898,93 @@
         "title": "ValidationError",
         "type": "object"
       },
+      "WalletTopupCheckoutIn": {
+        "properties": {
+          "amount_minor": {
+            "exclusiveMinimum": 0.0,
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "currency": {
+            "default": "",
+            "maxLength": 8,
+            "title": "Currency",
+            "type": "string"
+          },
+          "fund": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Fund",
+            "type": "string"
+          },
+          "return_url": {
+            "default": "",
+            "maxLength": 1024,
+            "title": "Return Url",
+            "type": "string"
+          },
+          "tenant": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant"
+          }
+        },
+        "required": [
+          "amount_minor"
+        ],
+        "title": "WalletTopupCheckoutIn",
+        "type": "object"
+      },
+      "WalletTopupIn": {
+        "properties": {
+          "amount_minor": {
+            "exclusiveMinimum": 0.0,
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "currency": {
+            "default": "",
+            "maxLength": 8,
+            "title": "Currency",
+            "type": "string"
+          },
+          "fund": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Fund",
+            "type": "string"
+          },
+          "payment_token": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Payment Token",
+            "type": "string"
+          },
+          "tenant": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant"
+          }
+        },
+        "required": [
+          "amount_minor",
+          "payment_token"
+        ],
+        "title": "WalletTopupIn",
+        "type": "object"
+      },
       "_BackupExportIn": {
         "properties": {
           "tenant": {
@@ -3490,6 +3577,94 @@
           }
         },
         "summary": "Record Usage",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/wallet-topups": {
+      "post": {
+        "description": "Charge a one-off amount and credit it to a wallet fund \u2014 a manual prepaid top-up (e.g. AI-usage\ncredit). Reuses the paid-invoice machinery: the wallet is credited through the same durable,\nidempotent grant outbox a plan renewal uses (a redelivered webhook / a reconcile credits once; a\nrefund claws back through the same seam). No VAT at top-up by default (payment on account).",
+        "operationId": "wallet_topup_api_v1_billing_wallet_topups_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WalletTopupIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Wallet Topup Api V1 Billing Wallet Topups Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Wallet Topup",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/wallet-topups/checkout": {
+      "post": {
+        "description": "Start a HOSTED-CHECKOUT wallet top-up \u2014 for a gateway with no card token (e.g. TuwaiqPay:\nbill \u2192 payment link \u2192 customer pays \u2192 poll/verify). Creates a PENDING invoice+payment carrying\nthe top-up grant; completion (a webhook or POST /payments/{id}/reconcile) credits the wallet fund\nthrough the same _mark_paid seam as the token path. No VAT at top-up (payment on account).",
+        "operationId": "wallet_topup_checkout_api_v1_billing_wallet_topups_checkout_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WalletTopupCheckoutIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Wallet Topup Checkout Api V1 Billing Wallet Topups Checkout Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Wallet Topup Checkout",
         "tags": [
           "billing"
         ]

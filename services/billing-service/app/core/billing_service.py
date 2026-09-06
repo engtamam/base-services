@@ -628,6 +628,72 @@ class BillingService:
         await self._mark_paid(inv)                          # doc_type, VAT, e-invoice, ledger, event
         return inv
 
+    # ── one-off wallet top-up ────────────────────────────────────────────────────
+    async def wallet_topup(self, *, tenant: str, amount_minor: int, payment_token: str,
+                           fund: str = "", currency: str = "") -> dict[str, Any]:
+        """Charge an arbitrary one-off amount and credit it to a wallet fund — a manual top-up of a
+        tenant's prepaid balance (e.g. AI-usage credit), NOT a subscription.
+
+        Reuses the whole paid-invoice machinery instead of a parallel one-off path: it raises an
+        invoice carrying `grant_minor`+`grant_fund`, charges the gateway, and lets _mark_paid credit
+        the wallet through the SAME durable, idempotent grant outbox a plan renewal uses — so a
+        redelivered webhook or a reconciliation sweep credits the fund exactly once, and a refund
+        claws it back through the same seam.
+
+        Charge-first, persist-on-success (like an upgrade): a decline burns no invoice number and
+        leaves no unpaid row. TAX: a top-up is a payment on account — no VAT is charged here by
+        default (BILLING_WALLET_TOPUP_TAX_MODE='receipt'); VAT is applied when the credit is SPENT
+        (the wallet fund's taxable flag), so charging it at top-up too would double-tax. A platform
+        that needs a tax invoice at top-up sets the mode to 'tax_invoice'."""
+        amount = int(amount_minor)
+        if amount <= 0:
+            raise ValueError("AMOUNT_MUST_BE_POSITIVE")
+        cap = int(self._cfg.get("wallet_topup_max_minor", 0) or 0)
+        if cap and amount > cap:
+            raise ValueError("AMOUNT_EXCEEDS_MAX")
+        if not (payment_token or "").strip():
+            raise UpgradeChargeFailed("NO_PAYMENT_METHOD")
+        fund = (fund or self._cfg.get("wallet_topup_fund", "") or "").strip()
+        if not fund:
+            raise ValueError("FUND_REQUIRED")
+        currency = currency or self._cfg["currency"]
+        tax_invoice = self._cfg.get("wallet_topup_tax_mode", "receipt") == "tax_invoice"
+        if tax_invoice:
+            # VAT added on top of the requested amount; the buyer pays gross, the fund is credited the
+            # gross too (the credit they bought). _mark_paid then issues a real tax invoice.
+            taxable, tax, total = self._split_tax(amount, includes_tax=False)
+            force_doc = None
+        else:
+            taxable, tax, total = amount, 0, amount
+            force_doc = "receipt"
+        meta: dict[str, Any] = {"grant_minor": total, "grant_fund": fund, "topup": True}
+        if force_doc:
+            meta["force_doc_type"] = force_doc
+        idem = f"topup:{tenant}:{payment_token}:{total}"
+        gw = self._gw                       # a top-up is a fresh charge; no per-sub gateway pinning
+        try:
+            charge = gw.charge(amount_minor=total, currency=currency, token=payment_token,
+                               idempotency_key=idem, description="Wallet top-up")
+        except GatewayUnavailable as ex:
+            raise UpgradeChargeUnavailable(str(ex)) from ex
+        if not charge.ok:
+            raise UpgradeChargeFailed(charge.error or "DECLINED")
+        inv = Invoice(id=new_id("inv_"), tenant=tenant,
+                      number=await self._invoices.next_number(tenant), subscription_id="",
+                      lines=[{"description": "Wallet top-up", "quantity": 1,
+                              "unit_minor": taxable, "amount_minor": taxable}],
+                      subtotal_minor=taxable, tax_minor=tax, total_minor=total, currency=currency,
+                      status="open", created=iso(), meta=meta)
+        await self._invoices.save(inv)
+        pay = Payment(id=new_id("pay_"), tenant=tenant, invoice_id=inv.id, amount_minor=total,
+                      currency=currency, provider=charge.provider, provider_id=charge.provider_id,
+                      status="succeeded", created=iso())
+        await self._payments.save(pay)
+        await self._mark_paid(inv)          # credits `fund` via the grant outbox; doc_type frozen
+        return {"topup_id": inv.id, "invoice_id": inv.id, "invoice_number": inv.number,
+                "status": "succeeded", "amount_minor": total, "fund": fund, "currency": currency,
+                "doc_type": inv.doc_type, "provider_id": charge.provider_id}
+
     async def cancel_scheduled_change(self, sub_id: str) -> dict[str, Any]:
         """Undo a scheduled downgrade before it takes effect — the shop stays on its current plan."""
         sub = await self._subs.fetch(sub_id)
@@ -1074,11 +1140,19 @@ class BillingService:
         # INVOICE, not whatever the setting happens to be then (a mode switched, or switched back,
         # after issue must never rewrite a document already produced). See app/core/tax_profile.py.
         seller = self._cfg.get("seller", {}) or {}
-        inv.doc_type = tax_profile.effective_doc_type(
-            self._cfg.get("document_mode", "receipt"),
-            tax_driver=self._cfg.get("tax_driver"), vat_rate=self._cfg.get("vat_rate", "0"),
-            seller_vat=seller.get("vat_number", ""),
-            einvoicer_driver=self._cfg.get("einvoicer_driver"))
+        forced = (inv.meta or {}).get("force_doc_type")
+        if forced == "receipt":
+            # A wallet top-up (and any payment-on-account) is a RECEIPT, never a tax invoice: no VAT
+            # is charged at top-up because the wallet applies VAT when the credit is SPENT (the fund's
+            # taxable flag). Charging it here too would double-tax. Forced on the invoice so the
+            # decision is frozen with the document, not re-derived from the live document_mode.
+            inv.doc_type = "receipt"
+        else:
+            inv.doc_type = tax_profile.effective_doc_type(
+                self._cfg.get("document_mode", "receipt"),
+                tax_driver=self._cfg.get("tax_driver"), vat_rate=self._cfg.get("vat_rate", "0"),
+                seller_vat=seller.get("vat_number", ""),
+                einvoicer_driver=self._cfg.get("einvoicer_driver"))
         if inv.doc_type == "tax_invoice":
             # Freeze the seller's legal identity onto the invoice, so re-rendering a delivered tax
             # invoice always shows the registration number it was ISSUED with.
@@ -1109,8 +1183,11 @@ class BillingService:
                 expires = None
                 if self._cfg["plan_credit_grant_mode"] == "reset":
                     expires = float((inv.meta or {}).get("period_end", 0) or 0) or None
+                # The fund is per-invoice-overridable (a wallet top-up credits its OWN fund, e.g.
+                # "topup", not the plan grant fund) and falls back to the configured plan grant fund.
+                fund = (inv.meta or {}).get("grant_fund") or self._cfg["grant_fund"]
                 await self._grants.record(
-                    tenant=inv.tenant, invoice_id=inv.id, fund=self._cfg["grant_fund"],
+                    tenant=inv.tenant, invoice_id=inv.id, fund=fund,
                     amount_minor=grantable, reason=f"invoice:{inv.number}", expires_at=expires)
         if self._events is not None:
             payload = _events.payment_payload(inv, source=source or inv.number)
@@ -1687,6 +1764,63 @@ class BillingService:
         session = fn(amount_minor=int(amount_minor), currency=currency or self._cfg["currency"],
                      reference=reference, return_url=return_url, metadata=metadata or {})
         return {"supported": True, **session.to_dict()}
+
+    async def wallet_topup_checkout(self, *, tenant: str, amount_minor: int, fund: str = "",
+                                    currency: str = "", return_url: str = "") -> dict[str, Any]:
+        """Start a HOSTED-CHECKOUT wallet top-up — for a gateway with no card-on-file/token (e.g.
+        TuwaiqPay: bill -> payment link -> customer pays -> poll/verify). The token path
+        (wallet_topup) cannot serve these; this one raises a PENDING invoice + payment carrying the
+        SAME grant meta, so when the payment completes — via a webhook OR a reconcile poll — the
+        existing _apply_outcome -> _mark_paid seam credits the wallet fund EXACTLY as the token path
+        does. One money path, one reconciliation, one idempotency guard.
+
+        The invoice/payment are persisted only after the gateway session is created (a gateway that
+        cannot open one leaves no orphan invoice). The payment's provider_id is the session id, so a
+        later reconcile_payment(payment_id) polls the right bill."""
+        amount = int(amount_minor)
+        if amount <= 0:
+            raise ValueError("AMOUNT_MUST_BE_POSITIVE")
+        cap = int(self._cfg.get("wallet_topup_max_minor", 0) or 0)
+        if cap and amount > cap:
+            raise ValueError("AMOUNT_EXCEEDS_MAX")
+        fund = (fund or self._cfg.get("wallet_topup_fund", "") or "").strip()
+        if not fund:
+            raise ValueError("FUND_REQUIRED")
+        currency = currency or self._cfg["currency"]
+        fn = getattr(self._gw, "prepare_checkout", None)
+        if fn is None:
+            raise UpgradeChargeFailed("CHECKOUT_UNSUPPORTED")
+        if self._cfg.get("wallet_topup_tax_mode", "receipt") == "tax_invoice":
+            taxable, tax, total = self._split_tax(amount, includes_tax=False)
+            force_doc = None
+        else:
+            taxable, tax, total = amount, 0, amount
+            force_doc = "receipt"
+        inv_id = new_id("inv_")                              # the checkout reference, before we persist
+        try:
+            session = fn(amount_minor=total, currency=currency, reference=inv_id,
+                         return_url=return_url, metadata={"topup_fund": fund, "tenant": tenant})
+        except GatewayUnavailable as ex:
+            raise UpgradeChargeUnavailable(str(ex)) from ex
+        if not getattr(session, "ok", False):
+            # The provider declined to open a session (or has none): nothing persisted, no orphan.
+            raise UpgradeChargeFailed(getattr(session, "error", "") or "CHECKOUT_FAILED")
+        meta: dict[str, Any] = {"grant_minor": total, "grant_fund": fund, "topup": True}
+        if force_doc:
+            meta["force_doc_type"] = force_doc
+        inv = Invoice(id=inv_id, tenant=tenant, number=await self._invoices.next_number(tenant),
+                      subscription_id="", lines=[{"description": "Wallet top-up", "quantity": 1,
+                                                  "unit_minor": taxable, "amount_minor": taxable}],
+                      subtotal_minor=taxable, tax_minor=tax, total_minor=total, currency=currency,
+                      status="open", created=iso(), meta=meta)
+        await self._invoices.save(inv)
+        pay = Payment(id=new_id("pay_"), tenant=tenant, invoice_id=inv.id, amount_minor=total,
+                      currency=currency, provider=getattr(session, "provider", ""),
+                      provider_id=session.id, status="pending", created=iso())
+        await self._payments.save(pay)
+        return {"invoice_id": inv.id, "invoice_number": inv.number, "payment_id": pay.id,
+                "amount_minor": total, "fund": fund, "currency": currency, "doc_type": force_doc or "",
+                "status": "pending", "checkout": {"supported": True, **session.to_dict()}}
 
     async def render_pdf(self, inv: Invoice) -> tuple[str, bytes] | None:
         # BILL TO must be a real party, not a database key. The buyer's legal identity lives on the

@@ -30,6 +30,16 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "critical": False,
     },
     {
+        "action": "billing.wallet_topped_up",
+        "source": "user",
+        "critical": False,
+    },
+    {
+        "action": "billing.wallet_topup_started",
+        "source": "user",
+        "critical": False,
+    },
+    {
         "action": "subscription.changed",
         "source": "user",
         "critical": False,
