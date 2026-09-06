@@ -94,7 +94,16 @@ MINTABLE: dict[str, dict] = {
     "INTERNAL_ASSERTION_KID": {"t": "svc_kid"},
     "INTERNAL_CALLER_PUBLIC_KEYS_JSON": {"t": "pubkey_map"},
     "INTERNAL_CALLER_DRIVER": {"t": "caller_driver"},
+    # A PER-SERVICE symmetric key (svc_secret): minted uniquely per service, NOT shared, because it
+    # seals THIS service's own data that no other service ever reads — assistant-service's
+    # MESSAGE_KEY, which encrypts stored conversation content. REUSED across re-runs like the RS256
+    # keypairs: re-minting would make every already-sealed conversation undecryptable.
+    "MESSAGE_KEY": {"t": "svc_secret"},
 }
+
+# The per-service (unshared, reused-across-runs) secret keys — used both to preserve them on re-run
+# and to mint them uniquely per service.
+_SVC_SECRET_KEYS = {k for k, m in MINTABLE.items() if m["t"] == "svc_secret"}
 
 _FIELD = re.compile(r"^\s+([A-Z][A-Z0-9_]+)\s*:\s*(?:str|int|bool|float)", re.MULTILINE)
 
@@ -159,14 +168,16 @@ def _load_existing() -> tuple[dict[str, str], dict[str, str]]:
     """Recover reusable values already in the cluster, so a re-run does NOT mint fresh passwords that
     drift from persisted data. A regenerated POSTGRES_PASSWORD is the worst case: the postgres PVC
     keeps the OLD role password, so every service then fails `password authentication failed` and sits
-    0/1. Returns (shared_values, role_passwords); empty on a fresh cluster."""
+    0/1. Returns (shared_values, role_passwords, keypairs, per_service_secrets); empty on a fresh
+    cluster."""
     r = subprocess.run(["kubectl", "-n", NS, "get", "secret", "-o", "json"],
                        capture_output=True, text=True)
     if r.returncode != 0:
-        return {}, {}
+        return {}, {}, {}, {}
     shared: dict[str, str] = {}
     role_pw: dict[str, str] = {}
     keypairs: dict[str, dict[str, str]] = {}     # secret_name -> {priv, kid} already in the cluster
+    svc_secrets: dict[str, dict[str, str]] = {}  # secret_name -> {KEY: value} for per-service secrets
     for item in json.loads(r.stdout or "{}").get("items", []):
         sname = (item.get("metadata") or {}).get("name", "")
         for key, val in (item.get("data") or {}).items():
@@ -177,21 +188,26 @@ def _load_existing() -> tuple[dict[str, str], dict[str, str]]:
                 keypairs.setdefault(sname, {})["priv"] = dec
             elif key == "INTERNAL_ASSERTION_KID":
                 keypairs.setdefault(sname, {})["kid"] = dec
+            elif key in _SVC_SECRET_KEYS:
+                # Per-service and unshared: preserve the EXACT value under its own secret, so a re-run
+                # never rotates a key that has already sealed data (e.g. conversation content).
+                svc_secrets.setdefault(sname, {})[key] = dec
             elif key.endswith("_DSN") and "://" in dec:
                 try:
                     role, tail = dec.split("://", 1)[1].split(":", 1)
                     role_pw.setdefault(role, tail.split("@", 1)[0])
                 except (ValueError, IndexError):
                     pass
-    return shared, role_pw, keypairs
+    return shared, role_pw, keypairs, svc_secrets
 
 
 def generate_and_apply() -> None:
     schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
-    reuse_shared, reuse_role_pw, reuse_keypairs = _load_existing()
-    if reuse_shared or reuse_role_pw or reuse_keypairs:
+    reuse_shared, reuse_role_pw, reuse_keypairs, reuse_svc_secrets = _load_existing()
+    if reuse_shared or reuse_role_pw or reuse_keypairs or reuse_svc_secrets:
         print(f"↻ preserving {len(reuse_shared)} shared + {len(reuse_role_pw)} role + "
-              f"{len(reuse_keypairs)} keypair secret(s) already in {NS}")
+              f"{len(reuse_keypairs)} keypair + {len(reuse_svc_secrets)} per-service secret(s) "
+              f"already in {NS}")
     pool: dict[str, str] = dict(CONSTANTS)
     for k in SHARED:
         pool[k] = reuse_shared.get(k) or _gen_token()
@@ -245,6 +261,10 @@ def generate_and_apply() -> None:
                 data[key] = pubkey_map                        # every service's public key
             elif t == "caller_driver":
                 data[key] = "static"                          # enabled; dual-accept keeps it non-breaking
+            elif t == "svc_secret":
+                # Per-service, unshared, and PRESERVED across re-runs — reuse the cluster's existing
+                # value (sealing data already exists under it) or mint a fresh one on first install.
+                data[key] = reuse_svc_secrets.get(name, {}).get(key) or _gen_token()
         _apply_secret(name, data)
     print(f"✔ generated + applied {len(schema)} secrets to {NS}")
 

@@ -31,6 +31,11 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
     # every step: no quantifier nests over another unbounded quantifier.
     ("card", re.compile(r"\b\d{4}(?:[ -]?\d{4}){2,4}\b"), "[card]"),
     ("email", re.compile(r"\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,24}\b"), "[email]"),
+    # Saudi national ID / Iqama: exactly 10 digits, 1 = citizen, 2 = resident. Bounded, and placed
+    # BEFORE the phone rule so a bare 10-digit id is labelled national_id rather than swept up as a
+    # phone (a Saudi mobile starts with 0, so it never matches this). KSA-market PII — the same
+    # identifier audit-service already treats as sensitive (national_id/iqama).
+    ("national_id", re.compile(r"\b[12]\d{9}\b"), "[national_id]"),
     # International and local mobile forms, bounded length.
     ("phone", re.compile(r"(?<![\w])\+?\d{1,4}[ -]?\(?\d{1,4}\)?(?:[ -]?\d{2,4}){2,4}(?![\w])"), "[phone]"),
     # A long opaque token: api keys, bearer secrets. Bounded upper limit so it cannot scan forever.

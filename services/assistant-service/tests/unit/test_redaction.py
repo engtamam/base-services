@@ -15,10 +15,20 @@ from app.core.redaction import redact
     ("write to ahmed@example.com", "[email]"),
     ("call +966 50 123 4567", "[phone]"),
     ("token sk-abcdefghijklmnop0123", "[secret]"),
+    ("my iqama 2012345678 expired", "[national_id]"),      # resident, starts 2
+    ("national id 1098765432", "[national_id]"),            # citizen, starts 1
 ])
 def test_identifiers_people_type_into_help_boxes_are_removed(text, marker):
     out = redact(text)
     assert marker in out.text and out.changed
+
+
+def test_national_id_removes_the_number_and_does_not_touch_a_saudi_mobile():
+    out = redact("id 1098765432 please")
+    assert "1098765432" not in out.text and "national_id" in out.hits
+    # a Saudi mobile starts with 0 -> it is a phone, never a national_id
+    m = redact("my number is 0501234567")
+    assert "national_id" not in m.hits
 
 
 def test_the_original_value_is_gone_not_merely_flagged():
