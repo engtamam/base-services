@@ -166,6 +166,17 @@ class Settings(BaseSettings):
     MODEL_URL: str = ""
     MODEL_API_KEY: str = ""
     MODEL_NAME: str = ""
+    # How the http model authenticates:
+    #   api_key (default) — the static MODEL_API_KEY, sent as a Bearer (OpenAI/OpenRouter and any
+    #                       compatible endpoint).
+    #   vertex            — Vertex AI (GCP): a SHORT-LIVED OAuth token minted + cached per call, for
+    #                       KSA data-residency (me-central2/Dammam). Point MODEL_URL at the regional
+    #                       endpoint and MODEL_SHAPE=generate. Credential source below.
+    MODEL_AUTH: str = "api_key"              # api_key | vertex
+    # Vertex service-account key JSON (a SECRET). Empty in `vertex` mode ⇒ the GCP metadata server
+    # (Workload Identity) is used instead — the no-key posture when running on GCP.
+    MODEL_GCP_SA_JSON: str = ""
+    MODEL_GCP_SCOPE: str = "https://www.googleapis.com/auth/cloud-platform"
     # CONFIGURED, never auto-detected. Guessing a response shape means an unexpected payload reads
     # as "no answer", which surfaces as an abstention and sends someone hunting a thin knowledge
     # base when the real fault is a schema mismatch.

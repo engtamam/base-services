@@ -114,7 +114,16 @@ def create_app() -> FastAPI:
     # Only the HTTP driver authenticates to anything; the extractive one has no credential and
     # must not grow a code path that pretends otherwise.
     if hasattr(container.model, "use_key_resolver"):
-        container.model.use_key_resolver(app.state.model_credentials.get)
+        if settings.MODEL_AUTH == "vertex":
+            # Vertex AI: the credential is a fresh, cached OAuth access token (from a service-account
+            # key, or the metadata server on GCP) rather than a static key — so KSA-resident Gemini
+            # on me-central2 works with no code change beyond this resolver.
+            from app.core.gcp_token import VertexTokenSource
+            app.state.vertex_token = VertexTokenSource(
+                sa_json=settings.MODEL_GCP_SA_JSON, scope=settings.MODEL_GCP_SCOPE)
+            container.model.use_key_resolver(app.state.vertex_token.token)
+        else:
+            container.model.use_key_resolver(app.state.model_credentials.get)
 
     # Readiness reflects real dependency health for the wired adapters.
     for name, probe in container.health_probes().items():
