@@ -140,6 +140,9 @@ def build_manifest(
             {"path": "/api/v1/billing/operator/config", "tier": "user", "method": "GET"},
             {"path": "/api/v1/billing/operator/config", "tier": "user", "method": "PUT"},
             {"path": "/api/v1/billing/operator/config/{}", "tier": "user", "method": "DELETE"},
+            # Preview a payment-gateway switch: whether the target is activatable (its creds present)
+            # and how many subscribers a switch would break — shown before the operator confirms.
+            {"path": "/api/v1/billing/operator/payment/activation-preview", "tier": "user", "method": "GET"},
             {"path": "/api/v1/billing/plans/{}", "tier": "user", "method": "PATCH"},
             {"path": "/api/v1/billing/plans/{}/availability", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/coupons", "tier": "user", "method": "GET"},

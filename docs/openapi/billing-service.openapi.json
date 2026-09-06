@@ -2148,6 +2148,61 @@
         ]
       }
     },
+    "/api/v1/billing/operator/payment/activation-preview": {
+      "get": {
+        "description": "What activating `driver` would do \u2014 so a switch is a deliberate, informed choice, not a silent\nbreakage found later via failed renewals.\n\nAnswers two things the admin screen shows BEFORE the confirm:\n  * activatable + reason \u2014 can this gateway even go live (its own credentials present)? Same check\n    the actual switch enforces.\n  * affected_subscribers \u2014 how many of the tenant's renewable subscriptions hold a saved payment\n    token that belongs to the CURRENT gateway and would therefore break on the switch (their\n    holders must re-enter payment via the self-service update route). 0 when there is no real\n    switch (same driver) \u2014 the common pre-launch case. null platform-wide (tenant omitted): the\n    count is per-tenant and a fleet-wide scan is not a request-path operation.",
+        "operationId": "payment_activation_preview_api_v1_billing_operator_payment_activation_preview_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "driver",
+            "required": true,
+            "schema": {
+              "title": "Driver",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Tenant",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Payment Activation Preview Api V1 Billing Operator Payment Activation Preview Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Payment Activation Preview",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
     "/api/v1/billing/operator/secrets": {
       "get": {
         "description": "Which credentials are set, and a four-character hint for each.\n\nThere is no value in this response and no route that would return one. The hint exists so an\noperator can tell which key is loaded before replacing it \u2014 replacing the wrong one is the\nmistake this prevents.",

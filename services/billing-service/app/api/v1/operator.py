@@ -67,6 +67,12 @@ def _invalidate(request: Request, tenant: str) -> None:
     pool = getattr(request.app.state, "provider_pool", None)
     if pool is not None:
         pool.invalidate(tenant or None)
+    # billing resolves payment credentials through the CredentialResolver, not a provider_pool — so a
+    # just-set gateway key/driver is otherwise stale for up to the refresh window, and the operator's
+    # "set the key then activate/test it" flow sees the OLD (missing) value. Invalidate it too.
+    creds = getattr(request.app.state, "credentials", None)
+    if creds is not None:
+        creds.invalidate(tenant or None)
 
 
 def _secret_store(request: Request) -> SecretStore:
@@ -200,6 +206,63 @@ async def clear_secret(request: Request, name: str, tenant: str = "",
     return {"cleared": cleared}
 
 
+# Subscription statuses that RENEW by charging the saved token — the ones a gateway switch breaks,
+# because the new gateway cannot charge a token it never issued.
+_RENEWABLE_STATUSES = ("active", "past_due", "trialing")
+
+
+async def _gateway_activation_error(request: Request, *, tenant: str, driver: str) -> str | None:
+    """None if the gateway can be activated, else a person-facing reason.
+
+    A gateway is activatable iff its own adapter BUILDS with the tenant's resolved credentials — every
+    adapter raises GatewayUnavailable when its required fields are missing, so this reuses the exact
+    check that guards a real charge and can never drift from what the gateway actually needs. `null`
+    (off) needs no credentials."""
+    from app.container import _PAYMENT
+    from app.core.credentials import Overlay
+    from app.ports.payment_gateway import GatewayUnavailable
+
+    name = (driver or "").strip()
+    if name not in _PAYMENT:
+        return f"unknown payment gateway {name!r}"
+    resolver = getattr(request.app.state, "credentials", None)
+    resolved = await resolver.resolve(tenant) if resolver is not None else {}
+    try:
+        _PAYMENT[name](Overlay(get_settings(), resolved))     # trial build — never charges
+    except GatewayUnavailable as exc:
+        return str(exc)
+    except Exception as exc:  # noqa: BLE001 — any builder error is a not-activatable answer, not a 500
+        return type(exc).__name__
+    return None
+
+
+async def _current_driver(request: Request, tenant: str) -> str:
+    """The tenant's currently-active gateway (runtime override, else the boot driver)."""
+    s = get_settings()
+    rc = getattr(request.app.state, "runtime_config", None)
+    if rc is None:
+        return s.PAYMENT_GATEWAY_DRIVER
+    try:
+        return str(await rc.get(tenant=tenant, key="PAYMENT_GATEWAY_DRIVER",
+                                default=s.PAYMENT_GATEWAY_DRIVER)) or s.PAYMENT_GATEWAY_DRIVER
+    except Exception:  # noqa: BLE001 — a preview read must never 500; fall to the boot driver
+        return s.PAYMENT_GATEWAY_DRIVER
+
+
+async def _tokenized_renewable_count(request: Request, tenant: str, *, cap: int = 500) -> int:
+    """How many of this tenant's renewable subscriptions hold a saved payment token — the subscribers
+    a gateway switch would break (their token belongs to the old gateway; the new one cannot charge
+    it). One indexed, bounded read (billable_for), never a scan. Capped: the count is a warning for a
+    human, not an exact ledger, so ">= cap" is a fine answer at the extreme."""
+    subs = getattr(request.app.state, "container", None)
+    if subs is None:
+        return 0
+    from app.core.stores import SubscriptionStore
+    rows = await SubscriptionStore(subs.datastore).billable_for(
+        tenant, _RENEWABLE_STATUSES, limit=cap)
+    return sum(1 for r in rows if r.get("payment_token"))
+
+
 # ── policy ────────────────────────────────────────────────────────────────────
 @router.get("/config", dependencies=[Depends(_CONFIG), Depends(rate_limit)])
 async def effective_config(request: Request, tenant: str = "",
@@ -225,6 +288,14 @@ async def set_config(request: Request, body: ConfigIn,
     # TaxProfileIncomplete, which has its own handler so the refusal reaches the operator BY NAME.
     await _guard_tax_profile(request, tenant=body.tenant, key=body.key,
                              new_value=body.value, cleared=False)
+    # A payment gateway may only be ACTIVATED if its own credentials are already set — refuse the
+    # switch outright otherwise (a real validation, not a UI hint), so the money path is never pointed
+    # at an unconfigured provider.
+    if body.key == "PAYMENT_GATEWAY_DRIVER":
+        err = await _gateway_activation_error(request, tenant=body.tenant, driver=str(body.value or ""))
+        if err is not None:
+            return _refuse(f"cannot activate {str(body.value or '')!r}: {err}",
+                           code="GATEWAY_NOT_CONFIGURED")
     try:
         o = await _runtime_config(request).set(
             tenant=body.tenant, key=body.key, value=body.value, actor_ref=_actor(principal))
@@ -237,6 +308,35 @@ async def set_config(request: Request, body: ConfigIn,
     # tenant is believed everywhere and checked in exactly one place; nothing here should look
     # like that check.
     return {"key": o.key, "value": o.value}
+
+
+@router.get("/payment/activation-preview", dependencies=[Depends(_CONFIG), Depends(rate_limit)])
+async def payment_activation_preview(request: Request, driver: str, tenant: str = "",
+                                     principal: Principal = Depends(require_user)) -> dict:
+    """What activating `driver` would do — so a switch is a deliberate, informed choice, not a silent
+    breakage found later via failed renewals.
+
+    Answers two things the admin screen shows BEFORE the confirm:
+      * activatable + reason — can this gateway even go live (its own credentials present)? Same check
+        the actual switch enforces.
+      * affected_subscribers — how many of the tenant's renewable subscriptions hold a saved payment
+        token that belongs to the CURRENT gateway and would therefore break on the switch (their
+        holders must re-enter payment via the self-service update route). 0 when there is no real
+        switch (same driver) — the common pre-launch case. null platform-wide (tenant omitted): the
+        count is per-tenant and a fleet-wide scan is not a request-path operation.
+    """
+    err = await _gateway_activation_error(request, tenant=tenant, driver=driver)
+    current = await _current_driver(request, tenant)
+    switching = (driver or "").strip() != (current or "").strip()
+    if not tenant:
+        affected: int | None = None                 # not computed platform-wide (no fleet scan)
+    elif not switching:
+        affected = 0                                 # no switch → no token is orphaned
+    else:
+        affected = await _tokenized_renewable_count(request, tenant)
+    return {"driver": driver, "current_driver": current, "switching": switching,
+            "activatable": err is None, "reason": err or "",
+            "affected_subscribers": affected}
 
 
 @router.delete("/config/{key}", dependencies=[Depends(_CONFIG), Depends(rate_limit)])

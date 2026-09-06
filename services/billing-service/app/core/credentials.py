@@ -29,8 +29,8 @@ _log = logging.getLogger(__name__)
 
 # The gateway credentials, by the settings key an operator types in the panel — one vocabulary
 # rather than two that drift.
-GATEWAY_CREDENTIALS = ("PAYMENT_API_KEY", "PAYMENT_EXTRA_SECRET", "PAYMENT_WEBHOOK_SECRET",
-                       "ZATCA_SERVICE_TOKEN", "WALLET_SERVICE_TOKEN")
+GATEWAY_CREDENTIALS = ("PAYMENT_API_KEY", "PAYMENT_EXTRA_ID", "PAYMENT_EXTRA_SECRET",
+                       "PAYMENT_WEBHOOK_SECRET", "ZATCA_SERVICE_TOKEN", "WALLET_SERVICE_TOKEN")
 WEBHOOK_SECRET = "PAYMENT_WEBHOOK_SECRET"
 
 
