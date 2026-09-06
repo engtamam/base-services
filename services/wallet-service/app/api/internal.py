@@ -74,6 +74,10 @@ class SpendIn(BaseModel):
     net: int = Field(ge=0)                             # the PRE-VAT price, in minor units
     source: str = Field(default="", max_length=200)
     reason: str = Field(default="", max_length=200)
+    # Optional fund allowlist: restrict this spend/hold to the named fund(s) so one purpose can never
+    # drain another's balance. Omit (null) for the historical all-funds behaviour. An empty list or an
+    # unknown fund name is refused (a money-path restriction is never guessed).
+    funds: list[str] | None = Field(default=None)
 
 
 class WithdrawIn(BaseModel):
@@ -160,8 +164,9 @@ async def credit(body: CreditIn, request: Request) -> dict:
 async def spend(body: SpendIn, request: Request) -> dict:
     """Direct debit. Refuses rather than overdraw, and a refusal mutates nothing."""
     try:
-        result = await build_wallet(request).spend(tenant=body.tenant, net=body.net,
-                                                   source=body.source, reason=body.reason)
+        result = await build_wallet(request).spend(
+            tenant=body.tenant, net=body.net, source=body.source, reason=body.reason,
+            funds=tuple(body.funds) if body.funds is not None else None)
     except Exception as exc:  # noqa: BLE001
         raise _handle(exc) from exc
     # Non-critical, so recorded after the debit succeeds. Internal seam: the caller holds the
@@ -211,8 +216,9 @@ async def settle_withdrawal(body: SettleWithdrawalIn, request: Request) -> dict:
 async def reserve(body: SpendIn, request: Request) -> dict:
     """Hold funds for an in-flight action. The hold EXPIRES; it cannot strand the money."""
     try:
-        result = await build_wallet(request).reserve(tenant=body.tenant, net=body.net,
-                                                     source=body.source, reason=body.reason)
+        result = await build_wallet(request).reserve(
+            tenant=body.tenant, net=body.net, source=body.source, reason=body.reason,
+            funds=tuple(body.funds) if body.funds is not None else None)
     except Exception as exc:  # noqa: BLE001
         raise _handle(exc) from exc
     await request.app.state.auditor.record(

@@ -254,17 +254,40 @@ class WalletService:
         return result
 
     # ── spend ───────────────────────────────────────────────────────────────────
-    async def _plan(self, w: Wallet, net: int) -> _funds.SpendPlan:
+    def _resolve_scope(self, funds: tuple[str, ...] | None) -> frozenset[str] | None:
+        """Validate a caller's fund allowlist. None = every fund (default). A named subset restricts
+        the spend to exactly those funds. Fail LOUD on the two footguns: an EMPTY tuple (a scope of
+        zero funds can only ever refuse — almost certainly a caller bug, not an intent to spend
+        nothing) and an UNKNOWN fund name (a typo must not silently become 'insufficient' against a
+        fund that does not exist). Money path: an ambiguous restriction is refused, never guessed."""
+        if funds is None:
+            return None
+        names = tuple(funds)
+        if not names:
+            raise WalletError("FUNDS_SCOPE_EMPTY")
+        unknown = [n for n in names if n not in self._names]
+        if unknown:
+            raise WalletError(f"UNKNOWN_FUND:{unknown[0]}")
+        return frozenset(names)
+
+    async def _plan(self, w: Wallet, net: int,
+                    allowed: frozenset[str] | None = None) -> _funds.SpendPlan:
         """Plan against AVAILABLE. Planning against the raw balance spends held money."""
-        return _funds.plan_spend(net, _funds.available(w.funds, w.held), self._funds, self._vat_bp)
+        return _funds.plan_spend(net, _funds.available(w.funds, w.held), self._funds, self._vat_bp,
+                                 allowed=allowed)
 
     async def spend(self, *, tenant: str, net: int, source: str = "",
-                    reason: str = "") -> dict[str, Any]:
-        """Direct debit, no hold. Refuses rather than overdraw; refusal mutates nothing."""
+                    reason: str = "", funds: tuple[str, ...] | None = None) -> dict[str, Any]:
+        """Direct debit, no hold. Refuses rather than overdraw; refusal mutates nothing.
+
+        `funds` restricts the debit to a named subset — a spend for one purpose (e.g. an AI-usage
+        credit) may be scoped to its OWN fund so it can never drain another purpose's balance. Omit
+        for the historical all-funds behaviour."""
+        allowed = self._resolve_scope(funds)
         prior = await self._replay(tenant, SPEND, source)
         if prior:
             return prior
-        plan = await self._plan(await self._wallet(tenant), net)
+        plan = await self._plan(await self._wallet(tenant), net, allowed)
         entry = self._entry(tenant, SPEND, plan.applied, -1, plan=plan.to_dict(),
                             source=source, reason=reason)
         out = await self._mutate(tenant, funds_delta={k: -v for k, v in plan.applied.items()},
@@ -361,12 +384,17 @@ class WalletService:
 
     # ── holds ───────────────────────────────────────────────────────────────────
     async def reserve(self, *, tenant: str, net: int, source: str = "",
-                      reason: str = "") -> dict[str, Any]:
-        """Hold funds. Money leaves the balance only on confirm; the hold expires regardless."""
+                      reason: str = "", funds: tuple[str, ...] | None = None) -> dict[str, Any]:
+        """Hold funds. Money leaves the balance only on confirm; the hold expires regardless.
+
+        `funds` scopes the hold to a named subset (same rule as spend). The hold records the exact
+        `applied` funds, so release/confirm reverse those same funds — the scope is fixed at reserve
+        time and cannot drift."""
+        allowed = self._resolve_scope(funds)
         prior = await self._replay(tenant, "reserve", source)
         if prior:
             return prior
-        plan = await self._plan(await self._wallet(tenant), net)
+        plan = await self._plan(await self._wallet(tenant), net, allowed)
 
         # The hold row is written BEFORE the funds are reserved, and only becomes `counted`
         # once the CAS lands. A crash in between leaves an uncounted row the sweeper discards,

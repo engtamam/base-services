@@ -258,3 +258,27 @@ def test_manifest_advertises_the_optional_events(client):
     # declares, or an event fires that nobody can subscribe to.
     assert set(m["events"]["emitted"]) == set(EMITTED)
     assert {"port": "clock", "driver": "system"} in m["ports"]
+
+
+def test_the_spend_route_scopes_the_debit_to_named_funds(client):
+    # promo (untaxed) would normally discount the whole net; scoping to cash forces a taxed debit
+    # and leaves promo untouched — proving `funds` is threaded through the HTTP route, not dropped.
+    credit(client, "cust_sc", "promo", 10_000)
+    credit(client, "cust_sc", "cash", 10_000)
+    r = client.post("/internal/wallet/spend",
+                    json={"tenant": "cust_sc", "net": 1_000, "source": "s1", "funds": ["cash"]},
+                    headers=IT)
+    assert r.status_code == 200, r.text
+    bal = client.get("/internal/wallet/cust_sc", headers=IT).json()["funds"]
+    assert bal["promo"] == 10_000 and bal["cash"] < 10_000
+
+
+def test_the_spend_route_rejects_an_unknown_scoped_fund(client):
+    credit(client, "cust_bad", "cash", 10_000)
+    r = client.post("/internal/wallet/spend",
+                    json={"tenant": "cust_bad", "net": 100, "source": "s1", "funds": ["nope"]},
+                    headers=IT)
+    # A caller-side scope error is a 400 (the body is a generic BAD_REQUEST — 400 detail is masked
+    # app-wide so no internals leak; INSUFFICIENT_FUNDS stays its own 402). Nothing was debited.
+    assert r.status_code == 400
+    assert client.get("/internal/wallet/cust_bad", headers=IT).json()["funds"]["cash"] == 10_000

@@ -208,6 +208,20 @@
       },
       "SpendIn": {
         "properties": {
+          "funds": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Funds"
+          },
           "net": {
             "minimum": 0.0,
             "title": "Net",
