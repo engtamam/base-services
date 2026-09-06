@@ -76,6 +76,58 @@ async def internal_manifest(
     return manifest
 
 
+@router.get("/assistant-catalog", dependencies=[Depends(require_internal_token)])
+async def assistant_catalog(request: Request, settings: Settings = Depends(get_settings)) -> dict:
+    """The UNFILTERED action catalog for a knowledge-base fetch (assistant-service's CatalogKnowledge
+    Source points KB_CATALOG_URL here).
+
+    Distinct from /api/v1/app/catalog and /api/v1/admin/catalog on purpose: those are USER-tier and
+    filter to the caller's own capabilities (right for a browser). A KB ingest instead wants EVERY
+    action, each with its `capability` preserved, and lets the assistant filter per-asking-user later
+    at answer time. So this is INTERNAL-tier (service token, no user auth) and fetches with the
+    all-caps sentinel — the SAME already-hardened build_catalog (SSRF-safe fetch, id/method/path/cap
+    validation), merging each service's user_actions AND admin_actions into one services[] document so
+    a single URL covers both. Reused, never reimplemented, so the validation cannot drift from the
+    user-facing catalogs."""
+    import httpx
+    from app.core.admin_catalog import ServiceTarget, build_catalog, parse_targets
+    from app.core.internal_client import assertion_headers_for_url
+
+    targets = parse_targets(settings.ADMIN_SERVICES)
+    token = settings.INTERNAL_SERVICE_TOKEN
+    timeout = settings.UPSTREAM_TIMEOUT_SECONDS
+
+    async def fetch(t: ServiceTarget) -> dict | None:
+        # Internal token stays server-side; the URL is the CONFIGURED base_url — no declaration can
+        # redirect it (the same anti-SSRF posture as the user-facing catalogs).
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            r = await client.get(f"{t.base_url}/internal/manifest",
+                                 headers={"X-Internal-Token": token,
+                                          **assertion_headers_for_url(t.base_url)})
+        return r.json() if r.status_code == 200 else None
+
+    all_caps = frozenset({"*"})     # unfiltered: the KB holds every action; the caller filters later
+    users = await build_catalog(targets, all_caps, fetch, field="user_actions")
+    admins = await build_catalog(targets, all_caps, fetch, field="admin_actions")
+
+    # Merge the two views: one row per service, its user + admin actions concatenated. Order is
+    # preserved (user actions first) and services with neither are simply absent.
+    merged: dict[str, list] = {}
+    order: list[str] = []
+    for view in (users, admins):
+        for svc in view["services"]:
+            name = svc["service"]
+            if name not in merged:
+                merged[name] = []
+                order.append(name)
+            merged[name].extend(svc["actions"])
+    services = [{"service": name, "actions": merged[name]} for name in order]
+    # Unreachable is the UNION across both fetches (a service down for one fetch is down for both);
+    # reported, never hidden, so a KB missing a service's actions is diagnosable.
+    unreachable = sorted(set(users["unreachable"]) | set(admins["unreachable"]))
+    return {"services": services, "unreachable": unreachable}
+
+
 class EraseIn(BaseModel):
     tenant: str
     subject: str

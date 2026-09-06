@@ -56,6 +56,9 @@ def build_manifest(
              # that did not happen.
              "erasure_category": "subject"},
             {"path": "/internal/routes", "tier": "internal", "method": "GET"},
+            # UNFILTERED action catalog (user_actions + admin_actions merged) for a KB ingest —
+            # assistant-service's KB_CATALOG_URL. Internal-tier because it is unfiltered by caller caps.
+            {"path": "/internal/assistant-catalog", "tier": "internal", "method": "GET"},
             {"path": "/{path}", "tier": "proxy", "method": "*"},
             {"path": "/api/v1/admin/catalog", "tier": "user", "method": "GET"},
             {"path": "/api/v1/app/catalog", "tier": "user", "method": "GET"},

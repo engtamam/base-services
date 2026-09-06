@@ -153,6 +153,74 @@
         ]
       }
     },
+    "/internal/assistant-catalog": {
+      "get": {
+        "description": "The UNFILTERED action catalog for a knowledge-base fetch (assistant-service's CatalogKnowledge\nSource points KB_CATALOG_URL here).\n\nDistinct from /api/v1/app/catalog and /api/v1/admin/catalog on purpose: those are USER-tier and\nfilter to the caller's own capabilities (right for a browser). A KB ingest instead wants EVERY\naction, each with its `capability` preserved, and lets the assistant filter per-asking-user later\nat answer time. So this is INTERNAL-tier (service token, no user auth) and fetches with the\nall-caps sentinel \u2014 the SAME already-hardened build_catalog (SSRF-safe fetch, id/method/path/cap\nvalidation), merging each service's user_actions AND admin_actions into one services[] document so\na single URL covers both. Reused, never reimplemented, so the validation cannot drift from the\nuser-facing catalogs.",
+        "operationId": "assistant_catalog_internal_assistant_catalog_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Assistant Catalog Internal Assistant Catalog Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Assistant Catalog",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/health": {
       "get": {
         "operationId": "internal_health_internal_health_get",
