@@ -99,7 +99,15 @@ def build_manifest(
             # Customer-service AI (advisory, opt-in via a real MODEL_DRIVER): triage a new ticket and
             # draft a reply. ticket-service's SUGGEST_DRIVER=http points here.
             {"path": "/internal/assistant/triage", "tier": "internal", "method": "POST"},
-            {"path": "/internal/assistant/draft", "tier": "internal", "method": "POST"},            # Backup fan-out (backup-service orchestrates): export + verify + import this
+            {"path": "/internal/assistant/draft", "tier": "internal", "method": "POST"},
+            # AI connections: N isolated, per-tenant LLM lines, each with its own provider/prompt/price.
+            {"path": "/internal/assistant/connections", "tier": "internal", "method": "POST"},
+            {"path": "/internal/assistant/connections", "tier": "internal", "method": "GET"},
+            {"path": "/internal/assistant/connections/{cid}", "tier": "internal", "method": "GET"},
+            {"path": "/internal/assistant/connections/{cid}", "tier": "internal", "method": "DELETE"},
+            {"path": "/internal/assistant/connections/{cid}/invoke", "tier": "internal", "method": "POST"},
+            {"path": "/internal/assistant/connections/{cid}/usage", "tier": "internal", "method": "GET"},
+            # Backup fan-out (backup-service orchestrates): export + verify + import this
             # service's data. Declared so the fan-out discovers this holder — an undeclared holder
             # is one nobody backs up.
             {"path": "/internal/backup/export", "tier": "internal", "method": "POST"},

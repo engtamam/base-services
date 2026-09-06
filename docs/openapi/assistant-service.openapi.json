@@ -116,6 +116,116 @@
         "title": "ConfigIn",
         "type": "object"
       },
+      "ConnIn": {
+        "properties": {
+          "auth": {
+            "default": "api_key",
+            "maxLength": 16,
+            "title": "Auth",
+            "type": "string"
+          },
+          "credential": {
+            "default": "",
+            "maxLength": 16000,
+            "title": "Credential",
+            "type": "string"
+          },
+          "currency": {
+            "default": "SAR",
+            "maxLength": 8,
+            "title": "Currency",
+            "type": "string"
+          },
+          "input_price_micros": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Input Price Micros",
+            "type": "integer"
+          },
+          "model": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Model",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "output_price_micros": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Output Price Micros",
+            "type": "integer"
+          },
+          "shape": {
+            "default": "chat",
+            "maxLength": 16,
+            "title": "Shape",
+            "type": "string"
+          },
+          "system_prompt": {
+            "default": "",
+            "maxLength": 20000,
+            "title": "System Prompt",
+            "type": "string"
+          },
+          "temperature": {
+            "default": 0.2,
+            "title": "Temperature",
+            "type": "number"
+          },
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          },
+          "url": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant",
+          "name",
+          "url"
+        ],
+        "title": "ConnIn",
+        "type": "object"
+      },
+      "ConnInvokeIn": {
+        "properties": {
+          "max_tokens": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Max Tokens",
+            "type": "integer"
+          },
+          "prompt": {
+            "maxLength": 100000,
+            "minLength": 1,
+            "title": "Prompt",
+            "type": "string"
+          },
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant",
+          "prompt"
+        ],
+        "title": "ConnInvokeIn",
+        "type": "object"
+      },
       "DraftIn": {
         "properties": {
           "subject": {
@@ -982,6 +1092,498 @@
         "summary": "Healthz",
         "tags": [
           "health"
+        ]
+      }
+    },
+    "/internal/assistant/connections": {
+      "get": {
+        "operationId": "list_connections_internal_assistant_connections_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Connections Internal Assistant Connections Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Connections",
+        "tags": [
+          "internal"
+        ]
+      },
+      "post": {
+        "description": "Declare a new isolated AI line for a tenant. Its credential is sealed in the secret store.",
+        "operationId": "create_connection_internal_assistant_connections_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConnIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Connection Internal Assistant Connections Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Connection",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/assistant/connections/{cid}": {
+      "delete": {
+        "operationId": "delete_connection_internal_assistant_connections__cid__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cid",
+            "required": true,
+            "schema": {
+              "title": "Cid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Connection Internal Assistant Connections  Cid  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Connection",
+        "tags": [
+          "internal"
+        ]
+      },
+      "get": {
+        "operationId": "get_connection_internal_assistant_connections__cid__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cid",
+            "required": true,
+            "schema": {
+              "title": "Cid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Connection Internal Assistant Connections  Cid  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Connection",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/assistant/connections/{cid}/invoke": {
+      "post": {
+        "description": "Run ONE connection and meter its usage. Isolated: only this connection's config, credential\nand usage ledger are touched \u2014 never another connection or the service's main model.",
+        "operationId": "invoke_connection_internal_assistant_connections__cid__invoke_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cid",
+            "required": true,
+            "schema": {
+              "title": "Cid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConnInvokeIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Invoke Connection Internal Assistant Connections  Cid  Invoke Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Invoke Connection",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/assistant/connections/{cid}/usage": {
+      "get": {
+        "operationId": "connection_usage_internal_assistant_connections__cid__usage_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cid",
+            "required": true,
+            "schema": {
+              "title": "Cid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Connection Usage Internal Assistant Connections  Cid  Usage Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Connection Usage",
+        "tags": [
+          "internal"
         ]
       }
     },

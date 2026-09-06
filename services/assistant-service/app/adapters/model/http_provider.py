@@ -172,6 +172,28 @@ class HttpModel:
                 used.append(p.ref)
         return tuple(used)
 
+    # ── raw completion (for an isolated AI connection with its OWN prompt) ────────
+    async def complete(self, *, system: str, user: str, max_tokens: int = 0) -> tuple[str, int, int]:
+        """A raw (system, user) completion — no KB framing, no citation rules. Returns
+        (text, tokens_in, tokens_out). Used by the AI-connections feature, where each connection
+        carries its own system prompt; the KB assistant path stays answer() with its grounding."""
+        headers = {"Content-Type": "application/json"}
+        key = await self._credential()
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        try:
+            status, body = await self._transport(self._url, headers,
+                                                 self._payload(system, user, max_tokens),
+                                                 self._timeout)
+        except Exception as exc:   # noqa: BLE001
+            raise ModelError(f"model transport failed: {exc}") from exc
+        if status != 200 or not isinstance(body, dict):
+            raise ModelError(f"model endpoint returned HTTP {status}")
+        text, tin, tout = self._extract(self._shape, body)
+        if not text.strip():
+            raise ModelError("model returned no text")
+        return text, tin, tout
+
     # ── the call ──────────────────────────────────────────────────────────────
     async def answer(self, *, question: str, passages: tuple[Passage, ...], lang: str,
                      persona: str = "", max_tokens: int = 0) -> ModelAnswer:

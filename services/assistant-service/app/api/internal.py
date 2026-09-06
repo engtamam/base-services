@@ -173,13 +173,144 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     return await eraser.erase(body.tenant, body.subject)
 
 
+def _now_iso() -> str:
+    import datetime as _dt
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ── AI connections (phase 3): N isolated LLM lines per tenant, each priced on its own ─────────
+def _connections(request: Request):
+    import uuid as _uuid
+    from app.core.connections import ConnectionStore
+    return ConnectionStore(request.app.state.container.datastore,
+                           now=_now_iso, new_id=lambda: _uuid.uuid4().hex)
+
+
+def _conn_secret_name(cid: str) -> str:
+    return f"AI_CONNECTION_KEY:{cid}"
+
+
+def _conn_caller(request: Request, conn):
+    """A model bound to THIS connection's endpoint + credential — the isolation boundary. Its
+    credential is the connection's own secret: an API key (Bearer), or an SA JSON minted into a
+    Vertex OAuth token when auth='vertex'."""
+    from app.adapters.model.http_provider import HttpModel
+    store = getattr(request.app.state, "secret_store", None)
+
+    async def resolver() -> str:
+        secret = await store.get(tenant=conn.tenant, name=_conn_secret_name(conn.id),
+                                 fallback="") if store is not None else ""
+        if conn.auth == "vertex":
+            from app.core.gcp_token import VertexTokenSource
+            return await VertexTokenSource(sa_json=secret).token()
+        return secret
+
+    model = HttpModel(conn.url, "", model=conn.model, shape=conn.shape,
+                      temperature=conn.temperature, key_resolver=resolver)
+
+    async def caller(system: str, user: str, max_tokens: int):
+        return await model.complete(system=system, user=user, max_tokens=max_tokens)
+    return caller
+
+
+class ConnIn(BaseModel):
+    tenant: str = Field(min_length=1, max_length=128)
+    name: str = Field(min_length=1, max_length=200)
+    url: str = Field(min_length=1, max_length=2048)
+    shape: str = Field(default="chat", max_length=16)         # chat | generate
+    model: str = Field(default="", max_length=200)
+    auth: str = Field(default="api_key", max_length=16)       # api_key | vertex
+    system_prompt: str = Field(default="", max_length=20000)
+    temperature: float = 0.2
+    input_price_micros: int = Field(default=0, ge=0)          # micros per 1000 input tokens
+    output_price_micros: int = Field(default=0, ge=0)
+    currency: str = Field(default="SAR", max_length=8)
+    # The connection's credential — an API key, or (auth=vertex) a service-account JSON. Write-only:
+    # stored in the secret store, never returned by any read route.
+    credential: str = Field(default="", max_length=16000)
+
+
+@router.post("/assistant/connections", dependencies=[Depends(require_internal_token)])
+async def create_connection(request: Request, body: ConnIn) -> dict:
+    """Declare a new isolated AI line for a tenant. Its credential is sealed in the secret store."""
+    from app.core.connections import ConnectionError
+    try:
+        conn = await _connections(request).create(
+            tenant=body.tenant, name=body.name, url=body.url, shape=body.shape, model=body.model,
+            auth=body.auth, system_prompt=body.system_prompt, temperature=body.temperature,
+            input_price_micros=body.input_price_micros, output_price_micros=body.output_price_micros,
+            currency=body.currency)
+    except ConnectionError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if body.credential:
+        store = getattr(request.app.state, "secret_store", None)
+        if store is None:
+            raise HTTPException(503, "SECRETS_UNAVAILABLE — a credential needs SECRETS_KEK set")
+        await store.set(tenant=body.tenant, name=_conn_secret_name(conn.id), value=body.credential)
+    await request.app.state.auditor.record(
+        "assistant.connection_created", actor="", tenant=body.tenant,
+        resource=f"ai_connection:{conn.id}", ip=request.client.host if request.client else "",
+        metadata={"auth": body.auth, "shape": body.shape})
+    return conn.public()
+
+
+@router.get("/assistant/connections", dependencies=[Depends(require_internal_token)])
+async def list_connections(request: Request, tenant: str) -> dict:
+    return {"connections": await _connections(request).list(tenant)}
+
+
+@router.get("/assistant/connections/{cid}", dependencies=[Depends(require_internal_token)])
+async def get_connection(request: Request, cid: str, tenant: str) -> dict:
+    conn = await _connections(request).get(tenant, cid)
+    if conn is None:
+        raise HTTPException(404, "NOT_FOUND")
+    return conn.public()
+
+
+@router.delete("/assistant/connections/{cid}", dependencies=[Depends(require_internal_token)])
+async def delete_connection(request: Request, cid: str, tenant: str) -> dict:
+    await request.app.state.auditor.record(
+        "assistant.connection_deleted", actor="", tenant=tenant,
+        resource=f"ai_connection:{cid}", ip=request.client.host if request.client else "")
+    store = getattr(request.app.state, "secret_store", None)
+    if store is not None:
+        await store.clear(tenant=tenant, name=_conn_secret_name(cid))
+    return {"deleted": await _connections(request).delete(tenant, cid)}
+
+
+class ConnInvokeIn(BaseModel):
+    tenant: str = Field(min_length=1, max_length=128)
+    prompt: str = Field(min_length=1, max_length=100000)
+    max_tokens: int = Field(default=0, ge=0)
+
+
+@router.post("/assistant/connections/{cid}/invoke", dependencies=[Depends(require_internal_token)])
+async def invoke_connection(request: Request, cid: str, body: ConnInvokeIn) -> dict:
+    """Run ONE connection and meter its usage. Isolated: only this connection's config, credential
+    and usage ledger are touched — never another connection or the service's main model."""
+    from app.core.connections import invoke as _invoke
+    from app.ports.model import ModelError
+    cstore = _connections(request)
+    conn = await cstore.get(body.tenant, cid)
+    if conn is None:
+        raise HTTPException(404, "NOT_FOUND")
+    try:
+        return await _invoke(conn, prompt=body.prompt, caller=_conn_caller(request, conn),
+                             store=cstore, max_tokens=body.max_tokens)
+    except ModelError as exc:
+        # A provider/transport failure is a clean 502 with no sensitive body, like the KB path.
+        raise HTTPException(502, "MODEL_CALL_FAILED") from exc
+
+
+@router.get("/assistant/connections/{cid}/usage", dependencies=[Depends(require_internal_token)])
+async def connection_usage(request: Request, cid: str, tenant: str) -> dict:
+    return await _connections(request).usage(tenant, cid)
+
+
 # ── Backup (backup-service orchestrates; this service produces sealed archives) ──────────────
 # What this service holds is declared in app/backup_manifest.py; how it is read lives in
 # core/backup.py. backup-service never opens this database — it calls export/verify/import over the
 # internal token and stores the sealed archive, never seeing the plaintext.
-def _now_iso() -> str:
-    import datetime as _dt
-    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _sealer(settings: Settings):

@@ -190,4 +190,23 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "started refusing — and that history is unavailable anywhere else. Not critical: "
                "refusing to change a retention period because the log is down protects nothing",
     },
+    {
+        "action": "assistant.connection_created",
+        "source": "admin",
+        "critical": True,
+        "resource": "ai_connection",
+        "why": "creating an AI connection SEALS a provider credential (an API key or a service-"
+               "account key) into the secret store and points a paid, tenant-billed LLM line at an "
+               "endpoint; who did it and against which endpoint must be provable — an unattributable "
+               "one is indistinguishable from an attacker wiring the platform's spend to their own key",
+    },
+    {
+        "action": "assistant.connection_deleted",
+        "source": "admin",
+        "critical": False,
+        "resource": "ai_connection",
+        "why": "removing a connection stops a tenant's AI line and clears its credential; recording "
+               "it explains why that line went dark later. Not critical: refusing to delete because "
+               "the log is down would strand a credential the operator is trying to revoke",
+    },
 ]
