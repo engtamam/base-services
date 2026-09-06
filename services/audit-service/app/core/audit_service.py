@@ -100,7 +100,8 @@ class AuditService:
         chain regardless). Called from the retention sweep."""
         return await self._repo.idempo_prune(time.time() - float(ttl_seconds), limit)
 
-    async def query(self, filters: dict[str, Any], limit: int | None = None) -> list[dict]:
+    async def query(self, filters: dict[str, Any], limit: int | None = None,
+                    after: str | None = None) -> tuple[list[dict], str | None]:
         """Query is scoped to a PARTITION, because that is what the datastore can index on.
 
         In tenant-partition mode a tenant's events live in its own partition, so the filter is
@@ -131,16 +132,24 @@ class AuditService:
             folded, _, _ = self._pii.apply(tenant=tenant or "", actor=actor, ip="", metadata=None)
             filters = {**filters, "actor": folded}
 
+        # SINGLE-PARTITION (the common case, and every tenant-scoped query): keyset-pageable, so a
+        # caller who needs full history pages with `after` instead of being hard-capped at `limit`.
         if self._mode != "tenant" or tenant:
-            return await self._repo.query(filters, limit, self._partition(tenant or ""))
+            return await self._repo.query(filters, limit, self._partition(tenant or ""), after=after)
 
+        # CROSS-PARTITION fan-out (a platform caller with no tenant filter, tenant-partition mode):
+        # a single keyset cursor cannot represent a position across N independent partition chains, so
+        # this path is NOT pageable — it returns the newest `limit` merged across partitions and a
+        # None cursor. A caller needing to page must narrow to one tenant (which takes the path above).
+        # An `after` here would be meaningless, so it is ignored rather than silently mis-applied.
         out: list[dict] = []
         for partition in await self._repo.partitions():
-            out.extend(await self._repo.query(filters, limit, partition))
+            events, _ = await self._repo.query(filters, limit, partition)
+            out.extend(events)
             if len(out) >= limit:
                 break
         out.sort(key=lambda r: r["seq"], reverse=True)
-        return out[:limit]
+        return out[:limit], None
 
     # ── integrity verify (tamper detection) ──────────────────────────────────
     async def verify(self, partition: str = "global") -> dict:
@@ -212,7 +221,7 @@ class AuditService:
 
     # ── export ─────────────────────────────────────────────────────────────────
     async def export(self, filters: dict[str, Any], fmt: str | None = None) -> tuple[str, bytes]:
-        events = await self.query(filters, self._export_limit)
+        events, _ = await self.query(filters, self._export_limit)
         exporter = self._exporters.get(fmt or self._default_format) or self._exporters[self._default_format]
         return exporter.export(events)
 

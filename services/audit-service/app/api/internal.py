@@ -142,24 +142,29 @@ async def internal_query(request: Request,
                          action: str | None = Query(default=None, max_length=128),
                          resource: str | None = Query(default=None, max_length=256),
                          since: str | None = Query(default=None, max_length=64),
-                         until: str | None = Query(default=None, max_length=64)) -> dict:
+                         until: str | None = Query(default=None, max_length=64),
+                         after: str | None = Query(default=None, max_length=512)) -> dict:
     """Internal-token twin of GET /api/v1/audit — a service (the case-timeline investigation tool)
     reading a customer's audit trail across services. Same query() logic and filter set as the
     user-tier route; tenant is REQUIRED here (an internal caller names the tenant it is investigating,
-    like every other /internal route) and scopes every read, so this is never a cross-tenant dump."""
+    like every other /internal route) and scopes every read, so this is never a cross-tenant dump.
+
+    PAGEABLE: tenant is always set, so this is a single-partition read — pass `next_cursor` back as
+    `after` to page through a tenant's full history (a dispute report reaching an event older than
+    one page) instead of being hard-capped at `limit`."""
     filters: dict = {"tenant": tenant}
     for key, val in (("service", service), ("actor", actor), ("action", action),
                      ("resource", resource), ("since", since), ("until", until)):
         if val:
             filters[key] = val
-    events = await build_audit(request).query(filters, limit)
+    events, next_cursor = await build_audit(request).query(filters, limit, after=after)
     # The access trail is only worth having if reading it is also on it (same rationale as the
     # user-tier route). Internal caller ⇒ actor is empty; the tenant is the one being investigated.
     await request.app.state.auditor.record(
         "audit.queried", actor="", tenant=tenant, resource="audit_log",
         ip=request.client.host if request.client else "",
         metadata={"returned": str(len(events))})
-    return {"events": events, "count": len(events)}
+    return {"events": events, "count": len(events), "next_cursor": next_cursor}
 
 
 @router.post("/audit", dependencies=[Depends(require_internal_token)])

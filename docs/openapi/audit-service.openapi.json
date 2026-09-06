@@ -350,6 +350,23 @@
               ],
               "title": "Tenant"
             }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
           }
         ],
         "responses": {
@@ -657,7 +674,7 @@
     },
     "/internal/audit": {
       "get": {
-        "description": "Internal-token twin of GET /api/v1/audit \u2014 a service (the case-timeline investigation tool)\nreading a customer's audit trail across services. Same query() logic and filter set as the\nuser-tier route; tenant is REQUIRED here (an internal caller names the tenant it is investigating,\nlike every other /internal route) and scopes every read, so this is never a cross-tenant dump.",
+        "description": "Internal-token twin of GET /api/v1/audit \u2014 a service (the case-timeline investigation tool)\nreading a customer's audit trail across services. Same query() logic and filter set as the\nuser-tier route; tenant is REQUIRED here (an internal caller names the tenant it is investigating,\nlike every other /internal route) and scopes every read, so this is never a cross-tenant dump.\n\nPAGEABLE: tenant is always set, so this is a single-partition read \u2014 pass `next_cursor` back as\n`after` to page through a tenant's full history (a dispute report reaching an event older than\none page) instead of being hard-capped at `limit`.",
         "operationId": "internal_query_internal_audit_get",
         "parameters": [
           {
@@ -788,6 +805,23 @@
                 }
               ],
               "title": "Until"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
             }
           },
           {

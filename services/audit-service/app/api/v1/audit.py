@@ -89,7 +89,8 @@ async def query(request: Request, principal: Principal = Depends(require_user),
                 resource: str | None = Query(default=None, max_length=256),
                 since: str | None = Query(default=None, max_length=64),
                 until: str | None = Query(default=None, max_length=64),
-                tenant: str | None = Query(default=None, max_length=128)) -> dict:
+                tenant: str | None = Query(default=None, max_length=128),
+                after: str | None = Query(default=None, max_length=512)) -> dict:
     # Recorded AFTER the read, not write-ahead. A read is not a mutation, so there is nothing to
     # protect by recording first — and this action is non-critical, so the auditor never refuses
     # it. Recording first would only log lookups that then failed.
@@ -97,13 +98,17 @@ async def query(request: Request, principal: Principal = Depends(require_user),
     # Yes, this means querying the audit log appends to the audit log. That is intended: an
     # access trail is only worth having if reading it is also on it. It cannot runaway — one entry
     # per request, and an entry is not itself a query.
-    events = await build_audit(request).query(_filters(request, principal), limit)
+    events, next_cursor = await build_audit(request).query(
+        _filters(request, principal), limit, after=after)
     await request.app.state.auditor.record(
         "audit.queried", actor=principal.subject, tenant=principal.tenant, resource="audit_log",
         ip=request.client.host if request.client else "",
         metadata={"returned": len(events)})
     async with guard.step("respond") as step:
-        body = {"events": events, "count": len(events)}
+        # next_cursor: pass back as `after` to page a tenant-scoped query past `limit`; null when the
+        # walk reached the end, or for the cross-partition (platform, no-tenant) path which is not
+        # pageable — narrow to a tenant to page. See AuditService.query.
+        body = {"events": events, "count": len(events), "next_cursor": next_cursor}
         step.result = body
     return body
 

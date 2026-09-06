@@ -80,8 +80,35 @@ def test_query_filters():
     svc, _ = _svc()
     run(svc.record(service="s", action="login", actor="alice"))
     run(svc.record(service="s", action="logout", actor="bob"))
-    assert len(run(svc.query({"actor": "alice"}))) == 1
-    assert len(run(svc.query({"action": "logout"}))) == 1
+    # query() now returns (events, next_cursor)
+    assert len(run(svc.query({"actor": "alice"}))[0]) == 1
+    assert len(run(svc.query({"action": "logout"}))[0]) == 1
+
+
+def test_query_pages_through_full_history_with_a_cursor():
+    svc, _ = _svc()
+    for i in range(10):
+        run(svc.record(service="s", action="a", actor="x", resource=f"r{i}"))
+    # Page in 4s; collect across pages following next_cursor. Newest-first.
+    seen, cursor, pages = [], None, 0
+    while True:
+        events, cursor = run(svc.query({"service": "s"}, 4, after=cursor))
+        seen.extend(e["resource"] for e in events)
+        pages += 1
+        if cursor is None:
+            break
+        assert pages < 20        # guard against a cursor that never terminates
+    # Every event exactly once, no skips or duplicates, newest first.
+    assert seen == [f"r{i}" for i in range(9, -1, -1)]
+    assert len(seen) == len(set(seen)) == 10
+
+
+def test_query_cursor_is_none_when_history_fits_in_one_page():
+    svc, _ = _svc()
+    for i in range(3):
+        run(svc.record(service="s", action="a", actor="x"))
+    events, cursor = run(svc.query({"service": "s"}, 100))
+    assert len(events) == 3 and cursor is None
 
 
 def test_purge_none_keeps_chain():

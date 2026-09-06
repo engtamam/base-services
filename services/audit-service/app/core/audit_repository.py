@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.adapters.datastore import cursor as _cursor
 from app.ports.datastore import DataStore
 
 _EVENTS = "audit_events"   # id -> event dict (with internal _partition, _seq_key)
@@ -125,16 +126,20 @@ class AuditRepository:
     # post-filter — but they run over PAGES, never over the whole table.
     _PUSHDOWN = ("service", "actor", "action", "resource", "tenant")
 
-    async def query(self, filters: dict[str, Any], limit: int,
-                    partition: str = "global") -> list[dict[str, Any]]:
-        """Newest first, bounded. The equality filters are pushed into the datastore."""
+    async def query(self, filters: dict[str, Any], limit: int, partition: str = "global",
+                    after: str | None = None) -> tuple[list[dict[str, Any]], str | None]:
+        """Newest first, bounded, and PAGEABLE. Returns (events, next_cursor); next_cursor is None
+        when the walk reached the end, or an opaque keyset cursor to pass back as `after` when more
+        events remain (so a caller who needs full history — a dispute report — can page past the
+        per-request limit instead of being hard-capped). The equality filters are pushed down; the
+        cursor is keyset over (_seq_key, id), so it never skips or duplicates as the log grows."""
         where: dict[str, Any] = {"_partition": partition}
         for key in self._PUSHDOWN:
             if filters.get(key):
                 where[key] = filters[key]
 
         out: list[dict[str, Any]] = []
-        cursor: str | None = None
+        cursor: str | None = after
         # Bound the walk: a range filter that matches nothing must not read the whole table.
         for _ in range(max(1, (limit // _PAGE) + 2)):
             rows, cursor = await self._store.find(
@@ -143,10 +148,14 @@ class AuditRepository:
                 if self._matches(r, filters):
                     out.append({k: v for k, v in r.items() if not k.startswith("_")})
                     if len(out) >= limit:
-                        return out
+                        # Resume AFTER this exact row on the next page — not the store's page cursor,
+                        # which points past rows we did not return.
+                        return out, _cursor.encode(r.get("_seq_key"), str(r.get("id", "")))
             if not cursor:
                 break
-        return out
+        # Loop ended: a non-None store cursor means the bounded walk stopped with rows still unread
+        # (a sparse range filter), so hand it back so the caller can continue; None means truly done.
+        return out, cursor
 
     @staticmethod
     def _matches(row: dict[str, Any], f: dict[str, Any]) -> bool:

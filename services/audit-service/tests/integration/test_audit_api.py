@@ -113,6 +113,25 @@ def test_internal_query_honours_filters(client):
     assert only_alice.json()["count"] == 1  # the actor filter narrows; bob's event is excluded
 
 
+def test_internal_query_pages_a_tenants_full_history_with_next_cursor(client):
+    app = _make_app(AUDIT_PARTITION="tenant")
+    for i in range(7):
+        app.post("/internal/audit", json={"service": "s", "action": "a", "resource": f"r{i}",
+                                           "tenant": "acme"}, headers=_internal())
+    seen, cursor, pages = [], None, 0
+    while True:
+        url = f"/internal/audit?tenant=acme&limit=3" + (f"&after={cursor}" if cursor else "")
+        body = app.get(url, headers=_internal()).json()
+        seen.extend(e["resource"] for e in body["events"])
+        cursor = body["next_cursor"]
+        pages += 1
+        if cursor is None:
+            break
+        assert pages < 20
+    assert seen == [f"r{i}" for i in range(6, -1, -1)]     # newest-first, every event once
+    assert len(set(seen)) == 7
+
+
 def test_query_needs_a_capability(client):
     # a token with neither platform.audit nor audit.view -> 403
     assert client.get("/api/v1/audit", headers={"Authorization": "Bearer " + _tok([])}).status_code == 403
