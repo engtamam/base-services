@@ -21,15 +21,23 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.core.models import SCHEDULED
+
 
 class PrivacySweeper:
     def __init__(self, *, dsars, dispatcher, page_size: int = 100,
-                 max_per_run: int = 1000, telemetry=None) -> None:
+                 max_per_run: int = 1000, telemetry=None, promote=None, clock=None) -> None:
         self._dsars = dsars
         self._dispatcher = dispatcher
         self._page = page_size
         self._max = max_per_run
         self._telemetry = telemetry
+        # `promote` = DsarService.process — used to turn a due, cooling-off erasure (status SCHEDULED,
+        # dispatch_at reached) into an actual fan-out. It re-checks the legal hold, so a hold placed
+        # during the grace window still refuses. None (or no clock) → grace is off and the sweep only
+        # re-drives already-dispatched targets, exactly as before.
+        self._promote = promote
+        self._clock = clock
 
     async def run(self) -> dict[str, Any]:
         seen = completed = errored = 0
@@ -43,6 +51,18 @@ class PrivacySweeper:
                 break
             for dsar in batch:
                 seen += 1
+                # A cooling-off erasure whose window has elapsed: promote it to an actual dispatch
+                # (process() re-checks the legal hold, then builds targets + fans out). Before the
+                # window, or with grace off, it is left untouched. Everything else re-drives normally.
+                if (self._promote is not None and self._clock is not None
+                        and getattr(dsar, "status", "") == SCHEDULED):
+                    if getattr(dsar, "dispatch_at", 0.0) and self._clock.now() >= dsar.dispatch_at:
+                        try:
+                            await self._promote(dsar.id)
+                        except Exception as exc:
+                            errored += 1
+                            self._emit("privacy.sweep.error", {"dsar": dsar.id, "error": str(exc)})
+                    continue     # not-yet-due scheduled erasures wait; nothing to drive yet
                 try:
                     result = await self._dispatcher.drive(dsar)
                 except Exception as exc:

@@ -44,7 +44,7 @@ def _cfg() -> dict[str, Any]:
     s = get_settings()
     return {"sla_days": s.DSAR_SLA_DAYS, "verification_ttl": s.DSAR_VERIFICATION_TTL_SECONDS,
             "breach_hours": s.BREACH_NOTIFY_HOURS, "residency_default": s.DATA_RESIDENCY_DEFAULT,
-            "list_limit": s.COMPLIANCE_LIST_LIMIT,
+            "list_limit": s.COMPLIANCE_LIST_LIMIT, "erasure_grace_days": s.ERASURE_GRACE_DAYS,
             # The names the dispatcher can actually reach. The data map and PRIVACY_TARGETS are
             # two halves of one fact and nothing used to compare them, so a target could be
             # registered for a service that was never deployed.
@@ -87,7 +87,11 @@ def build_sweeper(request: Request) -> PrivacySweeper:
                           dispatcher=build_dispatcher(request),
                           page_size=s.PRIVACY_SWEEP_PAGE_SIZE,
                           max_per_run=s.PRIVACY_SWEEP_MAX_PER_RUN,
-                          telemetry=request.app.state.container.telemetry)
+                          telemetry=request.app.state.container.telemetry,
+                          # Promote due cooling-off erasures (SCHEDULED → dispatch). process()
+                          # re-checks the legal hold, so a hold placed during grace still refuses.
+                          promote=build_dsar(request).process,
+                          clock=request.app.state.container.clock)
 
 
 def build_consent_sweeper(request: Request) -> ConsentSweeper:

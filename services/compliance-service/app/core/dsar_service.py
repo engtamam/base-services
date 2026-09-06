@@ -24,7 +24,7 @@ import secrets
 from typing import Any
 
 from app.core.models import (ACCESS, COMPLETED, CORRECTION, ERASURE, EXPORT, IN_PROGRESS,
-                             PENDING, REFUSED, VERIFIED, Dsar, new_id)
+                             PENDING, REFUSED, SCHEDULED, VERIFIED, Dsar, new_id)
 from app.core.stores import DsarStore, HoldStore, TargetStore
 
 
@@ -86,7 +86,8 @@ class DsarService:
         if d.type in (ACCESS, EXPORT) and not d.verified:
             return {"ok": False, "reason": "NOT_VERIFIED"}
 
-        # (1) legal hold beats erasure
+        # (1) legal hold beats erasure. Re-checked on EVERY process() — including when the sweep
+        # re-enters after the grace window — so a hold placed during the cooling-off still refuses.
         if d.type == ERASURE:
             holds = await self._holds.active_for(d.tenant, d.subject)
             if holds:
@@ -96,6 +97,26 @@ class DsarService:
                 await self._emit("dsar.refused", {"id": d.id, "reason": "legal_hold"})
                 return {"ok": False, "status": REFUSED, "reason": "LEGAL_HOLD",
                         "hold_id": holds[0].id}
+
+            # (1b) GRACE — cooling-off before any target is told to erase, so an admin can place a
+            # hold first (checked directly above). ERASURE_GRACE_DAYS=0 → off, dispatch immediately
+            # (today's behaviour). Scheduled on the first process after verification; the sweep
+            # re-enters here once due and falls through to dispatch. Erasure only — access/export/
+            # correction never reach this branch. Independent of the SLA deadline by design.
+            grace = int(self._cfg.get("erasure_grace_days", 0) or 0)
+            if grace > 0:
+                now = self._clock.now()
+                if not d.dispatch_at:
+                    d.dispatch_at = now + grace * 86400
+                    d.status = SCHEDULED
+                    await self._dsars.save(d)
+                    await self._emit("dsar.scheduled",
+                                     {"id": d.id, "dispatch_at": d.dispatch_at})
+                    return {"ok": True, "status": SCHEDULED, "dispatch_at": d.dispatch_at}
+                if now < d.dispatch_at:
+                    return {"ok": True, "status": SCHEDULED, "dispatch_at": d.dispatch_at,
+                            "reason": "GRACE_PENDING"}
+                # due → fall through to build targets + dispatch
 
         if d.type == CORRECTION:
             # correction is applied by the owning services; still fanned out like erasure

@@ -12,6 +12,10 @@ DSAR_TYPES = (ACCESS, EXPORT, ERASURE, CORRECTION)
 # DSAR lifecycle. `completed` is DERIVED from per-target acks, never set by hand.
 PENDING, VERIFIED, IN_PROGRESS, COMPLETED, REFUSED = (
     "pending", "verified", "in_progress", "completed", "refused")
+# A verified ERASURE waiting out its cooling-off window (ERASURE_GRACE_DAYS) before dispatch, so an
+# admin has a real window to place a legal hold first. Distinct from in_progress: nothing has been
+# told to erase yet, and a hold placed now still refuses it. Open (see OPEN_DSAR_STATUSES).
+SCHEDULED = "scheduled"
 
 # The statuses in which a DSAR is still OPEN, named POSITIVELY.
 #
@@ -20,7 +24,7 @@ PENDING, VERIFIED, IN_PROGRESS, COMPLETED, REFUSED = (
 # existing open request, and the new one would never be created. Listing the open states means a
 # new status is closed until someone decides otherwise. It is also the only form the datastore's
 # equality filter can push down.
-OPEN_DSAR_STATUSES = (PENDING, VERIFIED, IN_PROGRESS)
+OPEN_DSAR_STATUSES = (PENDING, VERIFIED, SCHEDULED, IN_PROGRESS)
 
 
 def new_id(prefix: str = "") -> str:
@@ -162,6 +166,10 @@ class Dsar:
     # this is the evidence and the retry schedule beside it.
     target_state: dict[str, Any] = field(default_factory=dict)
     dispatched: bool = False
+    # For a verified erasure under a grace window: the UTC time dispatch may begin. 0 = no grace (or
+    # not an erasure) → dispatch immediately, today's behaviour. Set once, when the erasure is first
+    # processed after verification; the sweep dispatches it when now >= dispatch_at.
+    dispatch_at: float = 0.0
     refusal_reason: str = ""
     payload: dict[str, Any] = field(default_factory=dict)     # correction data / export bundle
     created_at: float = 0.0

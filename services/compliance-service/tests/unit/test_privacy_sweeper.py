@@ -84,3 +84,37 @@ def test_stuck_targets_are_named_not_summarised_away():
 def test_nothing_open_is_a_clean_no_op():
     out = run(PrivacySweeper(dsars=_Dsars([]), dispatcher=_Dispatcher()).run())
     assert out == {"swept": 0, "completed": 0, "errored": 0, "stuck": [], "truncated": False}
+
+
+# ── cooling-off promotion (ERASURE_GRACE_DAYS) ────────────────────────────────
+class _Clock:
+    def __init__(self, t): self.t = t
+    def now(self): return self.t
+
+
+def _scheduled(id_, dispatch_at):
+    from app.core.models import SCHEDULED
+    return Dsar(id=id_, tenant="acme", subject="u", type="erasure", status=SCHEDULED,
+                dispatch_at=dispatch_at)
+
+
+def test_sweep_promotes_a_due_scheduled_erasure_and_not_a_pending_one():
+    from app.core.models import SCHEDULED
+    promoted = []
+
+    class _D(_Dsars):
+        def __init__(self):
+            self.open = [_scheduled("due", 1000.0), _scheduled("early", 9000.0)]
+            self.page = 10
+
+    disp = _Dispatcher()
+    swp = PrivacySweeper(dsars=_D(), dispatcher=disp, promote=lambda i: _record(promoted, i),
+                         clock=_Clock(5000.0))
+    run(swp.run())
+    assert promoted == ["due"]        # past its window
+    assert disp.driven == []          # a SCHEDULED erasure is promoted, never drive()n directly
+
+
+async def _record(bucket, dsar_id):
+    bucket.append(dsar_id)
+    return {"ok": True}

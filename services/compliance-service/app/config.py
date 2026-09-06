@@ -280,6 +280,14 @@ class Settings(BaseSettings):
     # that reaching it means something unusual is happening.
     HELD_REFS_MAX: int = 10_000
     DSAR_SLA_DAYS: int = 30                  # PDPL/GDPR data-subject request deadline
+    # Cooling-off window between a VERIFIED erasure and its actual fan-out to targets, so an admin can
+    # place a legal hold first (a hold placed during the window still refuses the erasure). 0 = OFF —
+    # dispatch immediately, the default and today's behaviour. A deployment sets N>0 only after its
+    # own counsel confirms the delay fits its "without undue delay" obligations; it is INDEPENDENT of
+    # DSAR_SLA_DAYS (the SLA deadline is a reporting flag, not a hard gate), so a large value can push
+    # a request into the overdue-report state — intended and accepted, not a block. Erasure only;
+    # access/export/correction are never delayed.
+    ERASURE_GRACE_DAYS: int = 0
     BREACH_NOTIFY_HOURS: int = 72            # GDPR/PDPL breach notification clock
     DSAR_VERIFICATION_TTL_SECONDS: int = 86_400
     DATA_RESIDENCY_DEFAULT: str = "SA"       # ISO country of primary storage

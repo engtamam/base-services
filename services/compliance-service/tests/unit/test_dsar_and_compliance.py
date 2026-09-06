@@ -10,11 +10,12 @@ from app.adapters.datastore.memory import MemoryDataStore
 from app.adapters.orchestrator.null import NullOrchestrator
 from app.core.compliance_service import ComplianceService
 from app.core.dsar_service import DsarService
-from app.core.models import COMPLETED, IN_PROGRESS, REFUSED
+from app.core.models import COMPLETED, IN_PROGRESS, REFUSED, SCHEDULED
 from app.core.stores import BreachStore, DsarStore, HoldStore, RopaStore, TargetStore
 
 CFG = dict(sla_days=30, verification_ttl=86_400, list_limit=100, breach_hours=72,
            residency_default="SA")
+CFG_GRACE = dict(CFG, erasure_grace_days=30)   # cooling-off enabled
 
 
 def run(c):
@@ -43,9 +44,72 @@ def _env(clock=None, orch=None):
     return comp, ds, clk
 
 
+def _env_grace(clock=None, orch=None):
+    """Same wiring as _env but with ERASURE_GRACE_DAYS=30 (cooling-off on)."""
+    st = MemoryDataStore()
+    clk = clock or ManualClock(1_000_000.0)
+    comp = ComplianceService(holds=HoldStore(st), ropa=RopaStore(st), breaches=BreachStore(st),
+                             targets=TargetStore(st), clock=clk, config=CFG_GRACE)
+    ds = DsarService(dsars=DsarStore(st), holds=HoldStore(st), targets=TargetStore(st),
+                     orchestrator=orch or RecordingOrch(), clock=clk, config=CFG_GRACE)
+    return comp, ds, clk
+
+
 def _targets(comp):
     run(comp.register_target(tenant="t1", service="identity", category="profile"))
     run(comp.register_target(tenant="t1", service="billing", category="invoices"))
+
+
+# ── erasure cooling-off (ERASURE_GRACE_DAYS) ──────────────────────────────────
+def test_grace_schedules_the_erasure_instead_of_dispatching():
+    comp, ds, clk = _env_grace(orch=(orch := RecordingOrch()))
+    _targets(comp)
+    d, _ = run(ds.create(tenant="t1", subject="u1", type="erasure"))
+    res = run(ds.process(d.id))
+    assert res["status"] == SCHEDULED and res["dispatch_at"] == clk.now() + 30 * 86400
+    assert run(ds.get(d.id)).status == SCHEDULED
+    assert orch.sent == []                       # NOTHING was told to erase during the window
+
+
+def test_grace_dispatches_once_the_window_elapses():
+    clk = ManualClock(1_000_000.0)
+    comp, ds, _ = _env_grace(clock=clk, orch=(orch := RecordingOrch()))
+    _targets(comp)
+    d, _ = run(ds.create(tenant="t1", subject="u1", type="erasure"))
+    run(ds.process(d.id))                        # schedules
+    clk.advance(30 * 86400 + 1)                  # window elapses
+    res = run(ds.process(d.id))                  # the sweep re-enters here
+    assert res["status"] == IN_PROGRESS and len(orch.sent) == 2   # both targets dispatched now
+
+
+def test_a_hold_placed_during_grace_still_refuses():
+    clk = ManualClock(1_000_000.0)
+    comp, ds, _ = _env_grace(clock=clk, orch=(orch := RecordingOrch()))
+    _targets(comp)
+    d, _ = run(ds.create(tenant="t1", subject="u1", type="erasure"))
+    run(ds.process(d.id))                        # SCHEDULED
+    run(comp.place_hold(tenant="t1", subject="u1", reason="litigation arrived in the window"))
+    clk.advance(30 * 86400 + 1)
+    res = run(ds.process(d.id))                  # re-entry re-checks the hold FIRST
+    assert res["reason"] == "LEGAL_HOLD" and run(ds.get(d.id)).status == REFUSED
+    assert orch.sent == []                       # never dispatched
+
+
+def test_grace_does_not_delay_access_or_export():
+    comp, ds, clk = _env_grace(orch=(orch := RecordingOrch()))
+    _targets(comp)
+    d, _ = run(ds.create(tenant="t1", subject="u1", type="access"))
+    run(ds.verify(d.id, run(ds.get(d.id)).verification_token))
+    res = run(ds.process(d.id))
+    assert res["status"] == IN_PROGRESS and len(orch.sent) == 2   # immediate, no scheduling
+
+
+def test_grace_zero_is_immediate_dispatch_todays_behaviour():
+    comp, ds, _ = _env(orch=(orch := RecordingOrch()))   # CFG has no grace -> 0
+    _targets(comp)
+    d, _ = run(ds.create(tenant="t1", subject="u1", type="erasure"))
+    res = run(ds.process(d.id))
+    assert res["status"] == IN_PROGRESS and len(orch.sent) == 2
 
 
 # ── legal hold beats erasure (THE footgun) ────────────────────────────────────
