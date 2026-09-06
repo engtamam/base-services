@@ -190,7 +190,7 @@ def _conn_secret_name(cid: str) -> str:
     return f"AI_CONNECTION_KEY:{cid}"
 
 
-def _conn_caller(request: Request, conn):
+def _conn_model(request: Request, conn):
     """A model bound to THIS connection's endpoint + credential — the isolation boundary. Its
     credential is the connection's own secret: an API key (Bearer), or an SA JSON minted into a
     Vertex OAuth token when auth='vertex'."""
@@ -205,8 +205,13 @@ def _conn_caller(request: Request, conn):
             return await VertexTokenSource(sa_json=secret).token()
         return secret
 
-    model = HttpModel(conn.url, "", model=conn.model, shape=conn.shape,
-                      temperature=conn.temperature, key_resolver=resolver)
+    return HttpModel(conn.url, "", model=conn.model, shape=conn.shape,
+                     temperature=conn.temperature, key_resolver=resolver)
+
+
+def _conn_caller(request: Request, conn):
+    """The text-completion caller for a tool-less connection (unchanged single-shot path)."""
+    model = _conn_model(request, conn)
 
     async def caller(system: str, user: str, max_tokens: int):
         return await model.complete(system=system, user=user, max_tokens=max_tokens)
@@ -225,6 +230,9 @@ class ConnIn(BaseModel):
     input_price_micros: int = Field(default=0, ge=0)          # micros per 1000 input tokens
     output_price_micros: int = Field(default=0, ge=0)
     currency: str = Field(default="SAR", max_length=8)
+    # Optional per-connection tool/function declarations ({name, description, parameters}). Empty by
+    # default → the connection is text-only exactly as before. Validated in core (a clean 422).
+    tools: list[dict] = Field(default_factory=list)
     # The connection's credential — an API key, or (auth=vertex) a service-account JSON. Write-only:
     # stored in the secret store, never returned by any read route.
     credential: str = Field(default="", max_length=16000)
@@ -239,7 +247,7 @@ async def create_connection(request: Request, body: ConnIn) -> dict:
             tenant=body.tenant, name=body.name, url=body.url, shape=body.shape, model=body.model,
             auth=body.auth, system_prompt=body.system_prompt, temperature=body.temperature,
             input_price_micros=body.input_price_micros, output_price_micros=body.output_price_micros,
-            currency=body.currency)
+            currency=body.currency, tools=body.tools)
     except ConnectionError as exc:
         raise HTTPException(422, str(exc)) from exc
     if body.credential:
@@ -267,6 +275,40 @@ async def get_connection(request: Request, cid: str, tenant: str) -> dict:
     return conn.public()
 
 
+class ConnUpdateIn(BaseModel):
+    tenant: str = Field(min_length=1, max_length=128)
+    name: str | None = Field(default=None, max_length=200)
+    url: str | None = Field(default=None, max_length=2048)
+    shape: str | None = Field(default=None, max_length=16)
+    model: str | None = Field(default=None, max_length=200)
+    auth: str | None = Field(default=None, max_length=16)
+    system_prompt: str | None = Field(default=None, max_length=20000)
+    temperature: float | None = None
+    input_price_micros: int | None = Field(default=None, ge=0)
+    output_price_micros: int | None = Field(default=None, ge=0)
+    currency: str | None = Field(default=None, max_length=8)
+    tools: list[dict] | None = None
+
+
+@router.put("/assistant/connections/{cid}", dependencies=[Depends(require_internal_token)])
+async def update_connection(request: Request, cid: str, body: ConnUpdateIn) -> dict:
+    """Patch a connection in place (tools, prompt, prices, ...). The credential is untouched — it
+    lives in the secret store; recreate the connection to rotate it."""
+    from app.core.connections import ConnectionError
+    changes = body.model_dump(exclude={"tenant"}, exclude_none=True)
+    try:
+        conn = await _connections(request).update(body.tenant, cid, changes)
+    except ConnectionError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if conn is None:
+        raise HTTPException(404, "NOT_FOUND")
+    await request.app.state.auditor.record(
+        "assistant.connection_updated", actor="", tenant=body.tenant,
+        resource=f"ai_connection:{cid}", ip=request.client.host if request.client else "",
+        metadata={"fields": sorted(changes.keys())})
+    return conn.public()
+
+
 @router.delete("/assistant/connections/{cid}", dependencies=[Depends(require_internal_token)])
 async def delete_connection(request: Request, cid: str, tenant: str) -> dict:
     await request.app.state.auditor.record(
@@ -280,23 +322,42 @@ async def delete_connection(request: Request, cid: str, tenant: str) -> dict:
 
 class ConnInvokeIn(BaseModel):
     tenant: str = Field(min_length=1, max_length=128)
-    prompt: str = Field(min_length=1, max_length=100000)
+    # A one-shot prompt (text-only), OR a running transcript for a tool-calling loop. Exactly one is
+    # used: `messages` wins when present. A tool-declaring connection uses the conversation path so
+    # the model can return a tool-call; a tool-less connection stays single-shot exactly as before.
+    prompt: str = Field(default="", max_length=100000)
+    messages: list[dict] | None = None
     max_tokens: int = Field(default=0, ge=0)
 
 
 @router.post("/assistant/connections/{cid}/invoke", dependencies=[Depends(require_internal_token)])
 async def invoke_connection(request: Request, cid: str, body: ConnInvokeIn) -> dict:
-    """Run ONE connection and meter its usage. Isolated: only this connection's config, credential
-    and usage ledger are touched — never another connection or the service's main model."""
+    """Run ONE connection and meter its usage. Isolated: only this connection's config, credential,
+    tools and usage ledger are touched — never another connection or the service's main model.
+
+    A connection that declares tools (or a call that passes `messages`) runs the conversation path and
+    may return {"kind":"tool_call","calls":[...]}; the caller executes the tool and invokes again with
+    the result appended. A tool-less connection with a bare `prompt` returns text exactly as before."""
     from app.core.connections import invoke as _invoke
+    from app.core.connections import invoke_conversation as _invoke_conv
     from app.ports.model import ModelError
     cstore = _connections(request)
     conn = await cstore.get(body.tenant, cid)
     if conn is None:
         raise HTTPException(404, "NOT_FOUND")
     try:
-        return await _invoke(conn, prompt=body.prompt, caller=_conn_caller(request, conn),
-                             store=cstore, max_tokens=body.max_tokens)
+        if conn.tools or body.messages is not None:
+            model = _conn_model(request, conn)
+            messages = body.messages if body.messages is not None else body.prompt
+            if not messages:
+                raise HTTPException(422, "prompt or messages is required")
+            return await _invoke_conv(conn, messages=messages, converse=model.converse,
+                                      store=cstore, max_tokens=body.max_tokens)
+        if not body.prompt:
+            raise HTTPException(422, "prompt or messages is required")
+        result = await _invoke(conn, prompt=body.prompt, caller=_conn_caller(request, conn),
+                               store=cstore, max_tokens=body.max_tokens)
+        return {"kind": "text", **result}      # uniform shape: kind alongside the existing text field
     except ModelError as exc:
         # A provider/transport failure is a clean 502 with no sensitive body, like the KB path.
         raise HTTPException(502, "MODEL_CALL_FAILED") from exc

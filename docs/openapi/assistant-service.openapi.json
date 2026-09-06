@@ -183,6 +183,14 @@
             "title": "Tenant",
             "type": "string"
           },
+          "tools": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Tools",
+            "type": "array"
+          },
           "url": {
             "maxLength": 2048,
             "minLength": 1,
@@ -206,9 +214,24 @@
             "title": "Max Tokens",
             "type": "integer"
           },
+          "messages": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Messages"
+          },
           "prompt": {
+            "default": "",
             "maxLength": 100000,
-            "minLength": 1,
             "title": "Prompt",
             "type": "string"
           },
@@ -220,10 +243,158 @@
           }
         },
         "required": [
-          "tenant",
-          "prompt"
+          "tenant"
         ],
         "title": "ConnInvokeIn",
+        "type": "object"
+      },
+      "ConnUpdateIn": {
+        "properties": {
+          "auth": {
+            "anyOf": [
+              {
+                "maxLength": 16,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auth"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "maxLength": 8,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "input_price_micros": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Price Micros"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "output_price_micros": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Price Micros"
+          },
+          "shape": {
+            "anyOf": [
+              {
+                "maxLength": 16,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shape"
+          },
+          "system_prompt": {
+            "anyOf": [
+              {
+                "maxLength": 20000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "System Prompt"
+          },
+          "temperature": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Temperature"
+          },
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          },
+          "tools": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tools"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "tenant"
+        ],
+        "title": "ConnUpdateIn",
         "type": "object"
       },
       "DraftIn": {
@@ -1413,11 +1584,96 @@
         "tags": [
           "internal"
         ]
+      },
+      "put": {
+        "description": "Patch a connection in place (tools, prompt, prices, ...). The credential is untouched \u2014 it\nlives in the secret store; recreate the connection to rotate it.",
+        "operationId": "update_connection_internal_assistant_connections__cid__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cid",
+            "required": true,
+            "schema": {
+              "title": "Cid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConnUpdateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Update Connection Internal Assistant Connections  Cid  Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Connection",
+        "tags": [
+          "internal"
+        ]
       }
     },
     "/internal/assistant/connections/{cid}/invoke": {
       "post": {
-        "description": "Run ONE connection and meter its usage. Isolated: only this connection's config, credential\nand usage ledger are touched \u2014 never another connection or the service's main model.",
+        "description": "Run ONE connection and meter its usage. Isolated: only this connection's config, credential,\ntools and usage ledger are touched \u2014 never another connection or the service's main model.\n\nA connection that declares tools (or a call that passes `messages`) runs the conversation path and\nmay return {\"kind\":\"tool_call\",\"calls\":[...]}; the caller executes the tool and invokes again with\nthe result appended. A tool-less connection with a bare `prompt` returns text exactly as before.",
         "operationId": "invoke_connection_internal_assistant_connections__cid__invoke_post",
         "parameters": [
           {

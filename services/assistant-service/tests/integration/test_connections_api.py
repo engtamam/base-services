@@ -82,3 +82,56 @@ def test_tenant_isolation_on_get(client):
     cid = r.json()["id"]
     # another tenant cannot fetch t1's connection
     assert client.get(f"/internal/assistant/connections/{cid}?tenant=t2", headers=_tok()).status_code == 404
+
+
+# ── tool declarations (opt-in per connection) + the update route ─────────────
+
+_TOOLS = [{"name": "book", "description": "book a slot",
+           "parameters": {"type": "object", "properties": {"day": {"type": "string"}}}}]
+
+
+def test_create_with_tools_roundtrips(client):
+    r = client.post("/internal/assistant/connections", headers=_tok(), json={
+        "tenant": "t1", "name": "booker", "url": "u", "tools": _TOOLS})
+    assert r.status_code == 200, r.text
+    cid = r.json()["id"]
+    assert r.json()["tools"][0]["name"] == "book"
+    got = client.get(f"/internal/assistant/connections/{cid}?tenant=t1", headers=_tok()).json()
+    assert got["tools"][0]["name"] == "book"
+
+
+def test_default_connection_has_no_tools(client):
+    r = client.post("/internal/assistant/connections", headers=_tok(),
+                    json={"tenant": "t1", "name": "plain", "url": "u"})
+    assert r.json()["tools"] == []          # backward compatible: text-only by default
+
+
+def test_a_bad_tool_is_a_422(client):
+    r = client.post("/internal/assistant/connections", headers=_tok(),
+                    json={"tenant": "t1", "name": "x", "url": "u",
+                          "tools": [{"description": "no name"}]})
+    assert r.status_code == 422
+
+
+def test_update_changes_tools_and_prompt(client):
+    cid = client.post("/internal/assistant/connections", headers=_tok(),
+                      json={"tenant": "t1", "name": "x", "url": "u"}).json()["id"]
+    r = client.put(f"/internal/assistant/connections/{cid}", headers=_tok(),
+                   json={"tenant": "t1", "tools": _TOOLS, "system_prompt": "be brief"})
+    assert r.status_code == 200, r.text
+    assert r.json()["tools"][0]["name"] == "book" and r.json()["system_prompt"] == "be brief"
+
+
+def test_update_a_missing_connection_is_404(client):
+    r = client.put("/internal/assistant/connections/nope", headers=_tok(),
+                   json={"tenant": "t1", "tools": _TOOLS})
+    assert r.status_code == 404
+
+
+def test_update_tenant_isolation(client):
+    cid = client.post("/internal/assistant/connections", headers=_tok(),
+                      json={"tenant": "t1", "name": "x", "url": "u"}).json()["id"]
+    # another tenant cannot update t1's connection
+    r = client.put(f"/internal/assistant/connections/{cid}", headers=_tok(),
+                   json={"tenant": "t2", "system_prompt": "hijack"})
+    assert r.status_code == 404

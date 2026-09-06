@@ -38,6 +38,33 @@ KeyResolver = Callable[[], Awaitable[str]]
 
 CHAT, GENERATE = "chat", "generate"
 
+
+def _as_text(content: Any) -> str:
+    """A transcript content coerced to a string for a text field. A dict/list (a structured tool
+    result) is JSON-encoded rather than str()'d, so the model sees valid JSON, not a Python repr."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    try:
+        return json.dumps(content, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(content)
+
+
+def _loads_args(arguments: Any) -> dict:
+    """OpenAI returns tool-call arguments as a JSON STRING. Parse to a dict; a malformed or empty
+    string yields {} rather than raising — a caller validates the arguments against its own schema."""
+    if isinstance(arguments, dict):
+        return arguments
+    if not arguments:
+        return {}
+    try:
+        parsed = json.loads(arguments)
+        return parsed if isinstance(parsed, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
 _SYSTEM = (
     "You answer questions about a product using ONLY the numbered passages provided. "
     "Cite every passage you use as [n]. If the passages do not contain the answer, say you do not "
@@ -171,6 +198,151 @@ class HttpModel:
             if f"[{i}]" in text:
                 used.append(p.ref)
         return tuple(used)
+
+    # ── tool / function calling (for an AI connection that declares tools) ───────
+    # A connection may carry tool declarations and run a multi-turn loop: the model either answers
+    # in text or asks to CALL a tool, the caller executes it and re-invokes with the result appended.
+    # Both wire shapes are supported and were verified against the providers' current first-party docs
+    # (2026-09): OpenAI Chat Completions `tools`/`tool_calls` and Gemini generateContent
+    # `functionDeclarations`/`functionCall`. The transcript this method takes is PROVIDER-NEUTRAL —
+    # the caller never speaks a vendor's wire shape — and is translated here per shape.
+    def _tools_payload(self, tools: list[dict]) -> Any:
+        """Vendor tool-declaration shape. `tools` items are {name, description, parameters}."""
+        if self._shape == CHAT:
+            return [{"type": "function",
+                     "function": {"name": t["name"], "description": t.get("description", ""),
+                                  "parameters": t.get("parameters") or {"type": "object",
+                                                                        "properties": {}}}}
+                    for t in tools]
+        # generate: a single tool object whose functionDeclarations lists every function.
+        return [{"functionDeclarations": [
+            {"name": t["name"], "description": t.get("description", ""),
+             "parameters": t.get("parameters") or {"type": "object", "properties": {}}}
+            for t in tools]}]
+
+    def _messages_payload(self, system: str, messages: list[dict], tools: list[dict],
+                          max_tokens: int) -> dict:
+        """Translate the neutral transcript into the vendor request body.
+
+        Neutral turns: {"role":"user"|"assistant","content":str},
+        {"role":"assistant","tool_calls":[{"id","name","arguments":dict}]},
+        {"role":"tool","tool_call_id":str,"name":str,"content":str}.
+        """
+        if self._shape == CHAT:
+            if self._prompt_cache == "ephemeral":
+                sys_content: Any = [{"type": "text", "text": system,
+                                     "cache_control": {"type": "ephemeral"}}]
+            else:
+                sys_content = system
+            out: list[dict] = [{"role": "system", "content": sys_content}]
+            for m in messages:
+                role = m.get("role")
+                if role == "assistant" and m.get("tool_calls"):
+                    out.append({"role": "assistant", "content": m.get("content"),
+                                "tool_calls": [
+                                    {"id": c.get("id") or f"call_{i}", "type": "function",
+                                     "function": {"name": c["name"],
+                                                  "arguments": json.dumps(c.get("arguments") or {})}}
+                                    for i, c in enumerate(m["tool_calls"])]})
+                elif role == "tool":
+                    out.append({"role": "tool", "tool_call_id": m.get("tool_call_id", ""),
+                                "content": _as_text(m.get("content"))})
+                else:
+                    out.append({"role": role or "user", "content": _as_text(m.get("content"))})
+            body: dict[str, Any] = {"messages": out, "temperature": self._temperature}
+            if self._model:
+                body["model"] = self._model
+            if max_tokens:
+                body["max_tokens"] = max_tokens
+            if tools:
+                body["tools"] = self._tools_payload(tools)
+            return body
+        # generate shape
+        contents: list[dict] = []
+        for m in messages:
+            role = m.get("role")
+            if role == "assistant" and m.get("tool_calls"):
+                contents.append({"role": "model", "parts": [
+                    {"functionCall": {"name": c["name"], "args": c.get("arguments") or {}}}
+                    for c in m["tool_calls"]]})
+            elif role == "tool":
+                resp = m.get("content")
+                resp = resp if isinstance(resp, dict) else {"result": _as_text(resp)}
+                part: dict[str, Any] = {"functionResponse": {"name": m.get("name", ""),
+                                                             "response": resp}}
+                if m.get("tool_call_id"):
+                    part["functionResponse"]["id"] = m["tool_call_id"]
+                contents.append({"role": "user", "parts": [part]})
+            else:
+                g_role = "model" if role == "assistant" else "user"
+                contents.append({"role": g_role, "parts": [{"text": _as_text(m.get("content"))}]})
+        body = {"contents": contents,
+                "systemInstruction": {"parts": [{"text": system}]},
+                "generationConfig": {"temperature": self._temperature}}
+        if max_tokens:
+            body["generationConfig"]["maxOutputTokens"] = max_tokens
+        if tools:
+            body["tools"] = self._tools_payload(tools)
+        if self._gemini_cached_content:
+            body["cachedContent"] = self._gemini_cached_content
+        return body
+
+    @staticmethod
+    def _extract_converse(shape: str, body: dict) -> dict:
+        """Discriminated result: {"kind":"text","text",...} or
+        {"kind":"tool_call","calls":[{id,name,arguments}], ...}, plus token counts."""
+        usage = body.get("usage") or body.get("usageMetadata") or {}
+        tin = int(usage.get("prompt_tokens") or usage.get("promptTokenCount") or 0)
+        tout = int(usage.get("completion_tokens") or usage.get("candidatesTokenCount") or 0)
+
+        if shape == CHAT:
+            choices = body.get("choices") or []
+            msg = (choices[0].get("message") or {}) if choices and isinstance(choices[0], dict) else {}
+            calls = msg.get("tool_calls") or []
+            if calls:
+                parsed = []
+                for c in calls:
+                    fn = c.get("function") or {}
+                    parsed.append({"id": c.get("id", ""), "name": fn.get("name", ""),
+                                   "arguments": _loads_args(fn.get("arguments"))})
+                return {"kind": "tool_call", "calls": parsed, "tokens_in": tin, "tokens_out": tout}
+            return {"kind": "text", "text": str(msg.get("content") or ""),
+                    "tokens_in": tin, "tokens_out": tout}
+
+        parsed = []
+        text = ""
+        for cand in body.get("candidates") or []:
+            for part in (cand.get("content") or {}).get("parts") or []:
+                fc = part.get("functionCall")
+                if fc:
+                    parsed.append({"id": fc.get("id", ""), "name": fc.get("name", ""),
+                                   "arguments": fc.get("args") or {}})
+                elif part.get("text") and not text:
+                    text = str(part["text"])
+        if parsed:
+            return {"kind": "tool_call", "calls": parsed, "tokens_in": tin, "tokens_out": tout}
+        return {"kind": "text", "text": text, "tokens_in": tin, "tokens_out": tout}
+
+    async def converse(self, *, system: str, messages: list[dict], tools: list[dict] | None = None,
+                       max_tokens: int = 0) -> dict:
+        """ONE round trip of a (possibly tool-calling) conversation. Returns a discriminated result
+        (text answer or tool-call request) plus token counts. The caller runs the loop: on a
+        tool_call it executes the tool and calls again with the result appended to `messages`."""
+        headers = {"Content-Type": "application/json"}
+        key = await self._credential()
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        payload = self._messages_payload(system, messages, tools or [], max_tokens)
+        try:
+            status, body = await self._transport(self._url, headers, payload, self._timeout)
+        except Exception as exc:   # noqa: BLE001
+            raise ModelError(f"model transport failed: {exc}") from exc
+        if status != 200 or not isinstance(body, dict):
+            raise ModelError(f"model endpoint returned HTTP {status}")
+        result = self._extract_converse(self._shape, body)
+        if result["kind"] == "text" and not result["text"].strip():
+            raise ModelError("model returned no text")
+        return result
 
     # ── raw completion (for an isolated AI connection with its OWN prompt) ────────
     async def complete(self, *, system: str, user: str, max_tokens: int = 0) -> tuple[str, int, int]:

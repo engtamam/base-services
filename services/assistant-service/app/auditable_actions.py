@@ -209,4 +209,15 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "it explains why that line went dark later. Not critical: refusing to delete because "
                "the log is down would strand a credential the operator is trying to revoke",
     },
+    {
+        "action": "assistant.connection_updated",
+        "source": "admin",
+        "critical": False,
+        "resource": "ai_connection",
+        "why": "changing a connection re-points a paid, tenant-billed LLM line — its endpoint, model, "
+               "per-token price or the tools it may call — so who changed which fields must be "
+               "provable (a silently re-priced or re-tooled line is how spend or behaviour drifts). "
+               "Not critical: the credential is never touched here, so a down log must not block an "
+               "operator fixing a prompt or a price",
+    },
 ]

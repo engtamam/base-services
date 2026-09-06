@@ -104,6 +104,7 @@ def build_manifest(
             {"path": "/internal/assistant/connections", "tier": "internal", "method": "POST"},
             {"path": "/internal/assistant/connections", "tier": "internal", "method": "GET"},
             {"path": "/internal/assistant/connections/{cid}", "tier": "internal", "method": "GET"},
+            {"path": "/internal/assistant/connections/{cid}", "tier": "internal", "method": "PUT"},
             {"path": "/internal/assistant/connections/{cid}", "tier": "internal", "method": "DELETE"},
             {"path": "/internal/assistant/connections/{cid}/invoke", "tier": "internal", "method": "POST"},
             {"path": "/internal/assistant/connections/{cid}/usage", "tier": "internal", "method": "GET"},
