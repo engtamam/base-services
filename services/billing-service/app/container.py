@@ -129,6 +129,7 @@ from app.adapters.payment.recording import RecordingGateway
 from app.adapters.payment.paytabs import PayTabsGateway
 from app.adapters.payment.stripe import StripeGateway
 from app.adapters.payment.tap import TapGateway
+from app.adapters.payment.tuwaiqpay import TuwaiqPayGateway
 from app.adapters.pdf.null import NullPdf
 from app.adapters.pdf.reportlab_renderer import ReportLabPdf
 from app.adapters.tax.null import NullTax
@@ -256,6 +257,7 @@ _PAYMENT: dict[str, Builder] = {
     "hyperpay": _pay(HyperPayGateway), "paytabs": _pay(PayTabsGateway),
     "geidea": _pay(GeideaGateway), "aps": _pay(ApsGateway),
     "paypal": _pay(PayPalGateway), "checkout": _pay(CheckoutGateway),
+    "tuwaiqpay": _pay(TuwaiqPayGateway),
 }
 _TAX: dict[str, Builder] = {
     "vat": lambda s: VatCalculator(s.VAT_RATE),

@@ -1,0 +1,1112 @@
+<!DOCTYPE html>
+<!-- saved from url=(0061)https://tuwaiqpay.com.sa/tuwaiqpay-docs.html?lang=EN#overview -->
+<html lang="ar" dir="rtl"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TuwaiqPay — Developer Documentation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com/">
+<link href="./css2" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0e17;
+  --bg-elevated:#111827;
+  --bg-code:#0d1117;
+  --bg-card:#151c2c;
+  --bg-sidebar:#080c14;
+  --border:#1e293b;
+  --border-subtle:#162033;
+  --text:#e2e8f0;
+  --text-secondary:#94a3b8;
+  --text-muted:#64748b;
+  --accent:#3b82f6;
+  --accent-glow:rgba(59,130,246,.15);
+  --accent-green:#10b981;
+  --accent-amber:#f59e0b;
+  --accent-red:#ef4444;
+  --accent-purple:#8b5cf6;
+  --gradient-brand:linear-gradient(135deg,#3b82f6,#8b5cf6);
+  --font-body:'IBM Plex Sans Arabic','IBM Plex Sans',sans-serif;
+  --font-mono:'IBM Plex Mono',monospace;
+  --radius:10px;
+  --sidebar-w:280px;
+  --header-h:60px;
+  --shadow-lg:0 20px 60px rgba(0,0,0,.4);
+}
+html{scroll-behavior:smooth;font-size:15px}
+body{font-family:var(--font-body);background:var(--bg);color:var(--text);line-height:1.75;overflow-x:hidden;-webkit-font-smoothing:antialiased}
+::selection{background:var(--accent);color:#fff}
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+
+/* ─── HEADER ─── */
+.site-header{position:fixed;top:0;left:0;right:0;height:var(--header-h);background:rgba(10,14,23,.85);backdrop-filter:blur(20px) saturate(1.4);border-bottom:1px solid var(--border-subtle);z-index:100;display:flex;align-items:center;padding:0 24px}
+.header-inner{max-width:1440px;width:100%;margin:0 auto;display:flex;align-items:center;justify-content:space-between}
+.logo{display:flex;align-items:center;gap:12px;text-decoration:none}
+.logo-icon{width:36px;height:36px;border-radius:8px;background:var(--gradient-brand);display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:14px;font-family:var(--font-mono);letter-spacing:-1px}
+.logo-text{font-size:1.15rem;font-weight:700;color:var(--text);letter-spacing:-.02em}
+.logo-text span{color:var(--text-muted);font-weight:400;margin-right:6px;font-size:.85rem}
+.header-actions{display:flex;align-items:center;gap:16px}
+.header-badge{font-size:.7rem;font-family:var(--font-mono);background:var(--accent-glow);color:var(--accent);padding:4px 10px;border-radius:20px;border:1px solid rgba(59,130,246,.25);font-weight:500;letter-spacing:.02em}
+.mobile-toggle{display:none;background:none;border:none;color:var(--text);font-size:1.4rem;cursor:pointer;padding:8px}
+
+/* ─── SIDEBAR ─── */
+.sidebar{position:fixed;top:var(--header-h);right:0;width:var(--sidebar-w);height:calc(100vh - var(--header-h));overflow-y:auto;padding:24px 20px 40px;background:var(--bg-sidebar);border-left:1px solid var(--border-subtle);z-index:90;transition:transform .3s ease}
+.sidebar::-webkit-scrollbar{width:3px}
+.sidebar-group{margin-bottom:28px}
+.sidebar-label{font-size:.65rem;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--text-muted);padding:0 12px;margin-bottom:10px}
+.sidebar-link{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:8px;text-decoration:none;color:var(--text-secondary);font-size:.87rem;font-weight:400;transition:all .15s;margin-bottom:2px;position:relative}
+.sidebar-link::before{content:'';position:absolute;right:-20px;top:50%;transform:translateY(-50%);width:2px;height:0;background:var(--accent);border-radius:1px;transition:height .2s}
+.sidebar-link:hover{color:var(--text);background:rgba(255,255,255,.03)}
+.sidebar-link.active{color:var(--accent);background:var(--accent-glow);font-weight:500}
+.sidebar-link.active::before{height:20px}
+.sidebar-link .link-icon{font-size:.75rem;opacity:.6;width:20px;text-align:center;flex-shrink:0}
+.sidebar-link .method-badge{font-family:var(--font-mono);font-size:.6rem;font-weight:600;padding:2px 6px;border-radius:4px;margin-right:auto;letter-spacing:.02em}
+.method-post{background:rgba(16,185,129,.12);color:var(--accent-green)}
+.method-get{background:rgba(59,130,246,.12);color:var(--accent)}
+
+/* ─── MAIN ─── */
+.main{margin-right:var(--sidebar-w);padding-top:var(--header-h)}
+.section{padding:60px 48px 60px;border-bottom:1px solid var(--border-subtle);max-width:960px}
+.section:last-child{border-bottom:none;padding-bottom:120px}
+
+/* ─── HERO ─── */
+.hero{padding:80px 48px 60px;max-width:960px;position:relative}
+.hero::after{content:'';position:absolute;top:0;left:50%;transform:translateX(-50%);width:600px;height:400px;background:radial-gradient(ellipse at center,rgba(59,130,246,.06) 0%,transparent 70%);pointer-events:none}
+.hero-overline{font-size:.72rem;font-family:var(--font-mono);color:var(--accent);letter-spacing:.12em;text-transform:uppercase;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+.hero-overline::before{content:'';width:24px;height:1px;background:var(--accent)}
+.hero h1{font-size:2.8rem;font-weight:700;line-height:1.15;letter-spacing:-.03em;margin-bottom:20px;background:linear-gradient(180deg,#fff 30%,var(--text-secondary));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.hero-desc{font-size:1.08rem;color:var(--text-secondary);max-width:540px;line-height:1.8;margin-bottom:32px}
+.hero-features{display:flex;flex-wrap:wrap;gap:10px}
+.hero-chip{font-size:.78rem;padding:6px 14px;border-radius:20px;background:var(--bg-card);border:1px solid var(--border);color:var(--text-secondary);display:flex;align-items:center;gap:6px}
+.hero-chip .chip-dot{width:6px;height:6px;border-radius:50%}
+
+/* ─── TYPOGRAPHY ─── */
+.section-label{font-size:.65rem;font-family:var(--font-mono);color:var(--accent);letter-spacing:.12em;text-transform:uppercase;margin-bottom:12px}
+h2{font-size:1.8rem;font-weight:700;letter-spacing:-.025em;margin-bottom:12px}
+h3{font-size:1.2rem;font-weight:600;margin:32px 0 12px;letter-spacing:-.01em}
+h4{font-size:1rem;font-weight:600;margin:24px 0 8px;color:var(--text)}
+p{margin-bottom:16px;color:var(--text-secondary)}
+p strong{color:var(--text);font-weight:600}
+
+/* ─── CODE BLOCKS ─── */
+.code-block{background:var(--bg-code);border:1px solid var(--border-subtle);border-radius:var(--radius);margin:20px 0;overflow:hidden;position:relative}
+.code-header{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-bottom:1px solid var(--border-subtle);background:rgba(255,255,255,.02)}
+.code-lang{font-family:var(--font-mono);font-size:.7rem;color:var(--text-muted);font-weight:500;text-transform:uppercase;letter-spacing:.06em}
+.code-copy{background:none;border:1px solid var(--border);color:var(--text-muted);font-size:.7rem;padding:4px 10px;border-radius:6px;cursor:pointer;font-family:var(--font-mono);transition:all .2s}
+.code-copy:hover{border-color:var(--accent);color:var(--accent)}
+.code-copy.copied{border-color:var(--accent-green);color:var(--accent-green)}
+.code-body{padding:16px 20px;overflow-x:auto;font-family:var(--font-mono);font-size:.82rem;line-height:1.7;color:#c9d1d9;direction:ltr;text-align:left;white-space:pre}
+.code-body .kw{color:#ff7b72}
+.code-body .str{color:#a5d6ff}
+.code-body .fn{color:#d2a8ff}
+.code-body .cm{color:#8b949e;font-style:italic}
+.code-body .num{color:#79c0ff}
+.code-body .op{color:#ff7b72}
+.code-body .var{color:#ffa657}
+.code-body .type{color:#7ee787}
+
+/* ─── INLINE CODE ─── */
+code{font-family:var(--font-mono);font-size:.85em;background:rgba(59,130,246,.08);color:var(--accent);padding:2px 7px;border-radius:5px}
+
+/* ─── ENDPOINT CARD ─── */
+.endpoint-card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:20px 24px;margin:24px 0;display:flex;align-items:center;gap:14px;direction:ltr}
+.endpoint-method{font-family:var(--font-mono);font-weight:700;font-size:.78rem;padding:6px 12px;border-radius:6px;letter-spacing:.03em;flex-shrink:0}
+.endpoint-method.post{background:rgba(16,185,129,.12);color:var(--accent-green);border:1px solid rgba(16,185,129,.2)}
+.endpoint-method.get{background:rgba(59,130,246,.12);color:var(--accent);border:1px solid rgba(59,130,246,.2)}
+.endpoint-path{font-family:var(--font-mono);font-size:.92rem;color:var(--text)}
+
+/* ─── TABLES ─── */
+.table-wrap{overflow-x:auto;margin:20px 0;border:1px solid var(--border-subtle);border-radius:var(--radius)}
+table{width:100%;border-collapse:collapse;font-size:.85rem}
+th{background:rgba(255,255,255,.03);font-weight:600;text-align:right;padding:12px 16px;border-bottom:1px solid var(--border);color:var(--text-muted);font-size:.75rem;text-transform:uppercase;letter-spacing:.06em}
+td{padding:12px 16px;border-bottom:1px solid var(--border-subtle);color:var(--text-secondary);vertical-align:top}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:rgba(255,255,255,.015)}
+td code{font-size:.78rem}
+
+/* ─── STATUS BADGES ─── */
+.status-badge{display:inline-flex;align-items:center;gap:5px;font-size:.72rem;padding:3px 10px;border-radius:20px;font-weight:500;font-family:var(--font-mono)}
+.status-success{background:rgba(16,185,129,.1);color:var(--accent-green);border:1px solid rgba(16,185,129,.2)}
+.status-warning{background:rgba(245,158,11,.1);color:var(--accent-amber);border:1px solid rgba(245,158,11,.2)}
+.status-error{background:rgba(239,68,68,.1);color:var(--accent-red);border:1px solid rgba(239,68,68,.2)}
+
+/* ─── CALLOUT BOXES ─── */
+.callout{border-radius:var(--radius);padding:16px 20px;margin:24px 0;display:flex;gap:14px;align-items:flex-start;font-size:.88rem}
+.callout-icon{font-size:1.1rem;flex-shrink:0;margin-top:2px}
+.callout-body{flex:1}
+.callout-body p{margin:0;color:inherit}
+.callout-body p strong{color:inherit}
+.callout.info{background:rgba(59,130,246,.06);border:1px solid rgba(59,130,246,.15);color:var(--accent)}
+.callout.warning{background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.15);color:var(--accent-amber)}
+.callout.success{background:rgba(16,185,129,.06);border:1px solid rgba(16,185,129,.15);color:var(--accent-green)}
+.callout.danger{background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.15);color:var(--accent-red)}
+
+/* ─── TABS ─── */
+.code-tabs{margin:24px 0}
+.tab-buttons{display:flex;gap:4px;padding:4px;background:var(--bg-card);border-radius:8px;width:fit-content;margin-bottom:0}
+.tab-btn{font-family:var(--font-mono);font-size:.75rem;padding:7px 16px;border:none;background:none;color:var(--text-muted);cursor:pointer;border-radius:6px;transition:all .15s;font-weight:500}
+.tab-btn:hover{color:var(--text-secondary)}
+.tab-btn.active{background:var(--accent-glow);color:var(--accent)}
+.tab-panel{display:none}
+.tab-panel.active{display:block}
+
+/* ─── FLOW DIAGRAM ─── */
+.flow{display:flex;align-items:center;gap:0;margin:28px 0;flex-wrap:wrap;justify-content:center;direction:ltr}
+.flow-step{display:flex;flex-direction:column;align-items:center;gap:8px;padding:16px 20px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);min-width:120px;text-align:center}
+.flow-step .step-num{font-family:var(--font-mono);font-size:.65rem;color:var(--accent);font-weight:600;padding:2px 8px;background:var(--accent-glow);border-radius:10px}
+.flow-step .step-label{font-size:.8rem;color:var(--text);font-weight:500}
+.flow-step .step-detail{font-size:.7rem;color:var(--text-muted)}
+.flow-arrow{color:var(--text-muted);font-size:1.2rem;margin:0 6px;flex-shrink:0}
+
+/* ─── PARAMS GRID ─── */
+.param-item{padding:14px 0;border-bottom:1px solid var(--border-subtle)}
+.param-item:last-child{border-bottom:none}
+.param-head{display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap}
+.param-name{font-family:var(--font-mono);font-size:.88rem;color:var(--text);font-weight:500}
+.param-type{font-family:var(--font-mono);font-size:.7rem;color:var(--text-muted);background:var(--bg-code);padding:2px 8px;border-radius:4px}
+.param-req{font-size:.65rem;font-weight:600;text-transform:uppercase;letter-spacing:.06em;padding:2px 8px;border-radius:4px}
+.param-req.required{color:var(--accent-red);background:rgba(239,68,68,.08)}
+.param-req.optional{color:var(--text-muted);background:rgba(255,255,255,.03)}
+.param-desc{font-size:.84rem;color:var(--text-secondary);padding-right:0}
+
+/* ─── RESPONSE SECTION ─── */
+.response-header{display:flex;align-items:center;gap:10px;margin:28px 0 12px}
+.response-header h4{margin:0}
+
+/* ─── FAQ ─── */
+.faq-item{border:1px solid var(--border-subtle);border-radius:var(--radius);margin-bottom:8px;overflow:hidden}
+.faq-q{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;cursor:pointer;background:var(--bg-card);font-weight:500;font-size:.9rem;transition:background .15s;gap:12px}
+.faq-q:hover{background:rgba(255,255,255,.03)}
+.faq-q .arrow{transition:transform .2s;color:var(--text-muted);font-size:.8rem;flex-shrink:0}
+.faq-q.open .arrow{transform:rotate(180deg)}
+.faq-a{padding:0 20px;max-height:0;overflow:hidden;transition:all .3s ease;font-size:.88rem;color:var(--text-secondary)}
+.faq-a.open{padding:16px 20px;max-height:500px}
+
+/* ─── FOOTER ─── */
+.site-footer{margin-right:var(--sidebar-w);padding:40px 48px;border-top:1px solid var(--border-subtle);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px}
+.footer-brand{font-size:.82rem;color:var(--text-muted)}
+.footer-links{display:flex;gap:20px}
+.footer-links a{font-size:.82rem;color:var(--text-muted);text-decoration:none;transition:color .15s}
+.footer-links a:hover{color:var(--accent)}
+
+/* ─── RESPONSIVE ─── */
+@media(max-width:900px){
+  .sidebar{transform:translateX(100%)}
+  .sidebar.open{transform:translateX(0)}
+  .main,.site-footer{margin-right:0}
+  .section,.hero{padding-left:24px;padding-right:24px}
+  .hero h1{font-size:2rem}
+  .mobile-toggle{display:block}
+  .site-footer{padding:30px 24px}
+  .flow{gap:8px}
+  .flow-arrow{display:none}
+  .flow-step{min-width:100px;padding:12px 14px}
+}
+@media(max-width:600px){
+  .hero h1{font-size:1.6rem}
+  .section{padding:40px 16px}
+  .hero{padding:60px 16px 40px}
+  .code-body{font-size:.75rem;padding:12px 14px}
+  .endpoint-card{flex-direction:column;align-items:flex-start;gap:8px}
+  table{font-size:.78rem}
+  th,td{padding:10px 12px}
+}
+
+/* ─── ANIMATIONS ─── */
+@keyframes fadeUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+.section,.hero{animation:fadeUp .5s ease both}
+.section:nth-child(2){animation-delay:.05s}
+.section:nth-child(3){animation-delay:.1s}
+</style>
+</head>
+<body>
+
+<!-- ═══════ HEADER ═══════ -->
+<header class="site-header">
+  <div class="header-inner">
+    <a href="https://tuwaiqpay.com.sa/tuwaiqpay-docs.html?lang=EN#" class="logo">
+      <div class="logo-icon">TP</div>
+      <div class="logo-text">TuwaiqPay <span>Docs</span></div>
+    </a>
+    <div class="header-actions">
+      <span class="header-badge">API v2.0</span>
+      <button class="mobile-toggle" onclick="toggleSidebar()">☰</button>
+    </div>
+  </div>
+</header>
+
+<!-- ═══════ SIDEBAR ═══════ -->
+<nav class="sidebar" id="sidebar">
+  <div class="sidebar-group">
+    <div class="sidebar-label">ابدأ هنا</div>
+    <a href="https://tuwaiqpay.com.sa/tuwaiqpay-docs.html?lang=EN#overview" class="sidebar-link"><span class="link-icon">◇</span> نظرة عامة</a>
+    <a href="https://tuwaiqpay.com.sa/tuwaiqpay-docs.html?lang=EN#account" class="sidebar-link"><span class="link-icon">◇</span> إعداد الحساب</a>
+    <a href="https://tuwaiqpay.com.sa/tuwaiqpay-docs.html?lang=EN#environments" class="sidebar-link"><span class="link-icon">◇</span> بيئات التشغيل</a>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-label">API Reference</div>
+    <a href="https://tuwaiqpay.com.sa/tuwaiqpay-docs.html?lang=EN#auth" class="sidebar-link"><span class="link-icon">🔐</span> المصادقة <span class="method-badge method-post">POST</span></a>
+    <a href="https://tuwaiqpay.com.sa/tuwaiqpay-docs.html?lang=EN#create-bill" class="sidebar-link"><span class="link-icon">💳</span> إنشاء فاتورة <span class="method-badge method-post">POST</span></a>
+    <a href="https://tuwaiqpay.com.sa/tuwaiqpay-docs.html?lang=EN#check-payment" class="sidebar-link"><span class="link-icon">✓</span> التحقق من الدفع <span class="method-badge method-get">GET</span></a>
+    <a href="https://tuwaiqpay.com.sa/tuwaiqpay-docs.html?lang=EN#webhooks" class="sidebar-link"><span class="link-icon">🔔</span> Webhooks</a>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-label">مرجع</div>
+    <a href="https://tuwaiqpay.com.sa/tuwaiqpay-docs.html?lang=EN#errors" class="sidebar-link"><span class="link-icon">⚠</span> رموز الأخطاء</a>
+    <a href="https://tuwaiqpay.com.sa/tuwaiqpay-docs.html?lang=EN#best-practices" class="sidebar-link"><span class="link-icon">★</span> Best Practices</a>
+    <a href="https://tuwaiqpay.com.sa/tuwaiqpay-docs.html?lang=EN#faq" class="sidebar-link"><span class="link-icon">?</span> الأسئلة الشائعة</a>
+    <a href="https://tuwaiqpay.com.sa/tuwaiqpay-docs.html?lang=EN#support" class="sidebar-link active"><span class="link-icon">☎</span> الدعم</a>
+  </div>
+</nav>
+
+<!-- ═══════ MAIN ═══════ -->
+<main class="main">
+
+<!-- ─── HERO ─── -->
+<section class="hero" id="overview">
+  <div class="hero-overline">Developer Documentation</div>
+  <h1>ابدأ قبول المدفوعات<br>مع TuwaiqPay</h1>
+  <p class="hero-desc">بوابة دفع سعودية آمنة. API بسيط وقوي يدعم MADA و Apple Pay و STC Pay. ابدأ التكامل في دقائق.</p>
+  <div class="hero-features">
+    <span class="hero-chip"><span class="chip-dot" style="background:var(--accent-green)"></span>MADA</span>
+    <span class="hero-chip"><span class="chip-dot" style="background:var(--accent)"></span>VISA / MC</span>
+    <span class="hero-chip"><span class="chip-dot" style="background:var(--accent-purple)"></span>Apple Pay</span>
+    <span class="hero-chip"><span class="chip-dot" style="background:var(--accent-amber)"></span>STC Pay</span>
+    <span class="hero-chip"><span class="chip-dot" style="background:var(--accent-red)"></span>Amex</span>
+    <span class="hero-chip"><span class="chip-dot" style="background:var(--accent-green)"></span>PCI DSS</span>
+  </div>
+</section>
+
+<!-- ─── ACCOUNT SETUP ─── -->
+<section class="section" id="account">
+  <div class="section-label">Getting Started</div>
+  <h2>إعداد الحساب</h2>
+  <p>للبدء بالتكامل، تحتاج حساب TuwaiqPay مفعّل مع بيانات API.</p>
+
+  <div class="flow">
+    <div class="flow-step"><span class="step-num">01</span><span class="step-label">التسجيل</span><span class="step-detail">tuwaiqpay.com.sa</span></div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><span class="step-num">02</span><span class="step-label">التحقق</span><span class="step-detail">بريد + جوال</span></div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><span class="step-num">03</span><span class="step-label">التفعيل</span><span class="step-detail">1-3 أيام</span></div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><span class="step-num">04</span><span class="step-label">بيانات API</span><span class="step-detail">Token + Merchant ID</span></div>
+  </div>
+
+  <h3>متطلبات التكامل</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>المتطلب</th><th>التفاصيل</th></tr></thead>
+      <tbody>
+        <tr><td><strong>حساب TuwaiqPay</strong></td><td>مفعّل ومعتمد</td></tr>
+        <tr><td><strong>بيانات الاعتماد</strong></td><td>رقم الهاتف + كلمة المرور</td></tr>
+        <tr><td><strong>HTTPS</strong></td><td>شهادة SSL على موقعك (إلزامي)</td></tr>
+        <tr><td><strong>اللغة</strong></td><td>PHP 7.4+ أو Python 3.7+ أو Node.js 14+</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>بيانات الدخول</h3>
+  <p>بعد التفعيل ستحصل على:</p>
+  <div class="code-block">
+    <div class="code-header"><span class="code-lang">JSON</span><button class="code-copy" onclick="copyCode(this)">نسخ</button></div>
+    <div class="code-body">{
+  <span class="str">"username"</span>: <span class="str">"+966XXXXXXXXX"</span>,
+  <span class="str">"password"</span>: <span class="str">"YourSecurePassword"</span>,
+  <span class="str">"environment"</span>: <span class="str">"uat"</span>
+}</div>
+  </div>
+</section>
+
+<!-- ─── ENVIRONMENTS ─── -->
+<section class="section" id="environments">
+  <div class="section-label">Configuration</div>
+  <h2>بيئات التشغيل</h2>
+  <p>TuwaiqPay يوفر بيئتين: <strong>UAT</strong> للاختبار و <strong>Production</strong> للإنتاج.</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>المعيار</th><th><span class="status-badge status-warning">UAT</span></th><th><span class="status-badge status-success">Production</span></th></tr></thead>
+      <tbody>
+        <tr><td><strong>Base URL</strong></td><td><code>onboarding-uat.tuwaiqpay.com.sa</code></td><td><code>onboarding-prod.tuwaiqpay.com.sa</code></td></tr>
+        <tr><td><strong>البطاقات</strong></td><td>تجريبية</td><td>حقيقية</td></tr>
+        <tr><td><strong>الأموال</strong></td><td>لا تُخصم</td><td>تُخصم فعلياً</td></tr>
+        <tr><td><strong>مدة الفاتورة</strong></td><td>3 ساعات</td><td>حسب <code>actionDateInDays</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout warning">
+    <span class="callout-icon">⚠️</span>
+    <div class="callout-body"><p><strong>UAT Timezone Bug:</strong> بيئة UAT ترسل <code>expireDate</code> بتوقيت السعودية (UTC+3). أضف +3 ساعات عند حفظه في قاعدة البيانات.</p></div>
+  </div>
+
+  <div class="code-block">
+    <div class="code-header"><span class="code-lang">Base URLs</span></div>
+    <div class="code-body"><span class="cm"># UAT (Testing)</span>
+https://onboarding-uat.tuwaiqpay.com.sa/api/v1
+
+<span class="cm"># Production</span>
+https://onboarding-prod.tuwaiqpay.com.sa/api/v1</div>
+  </div>
+</section>
+
+<!-- ─── AUTHENTICATION ─── -->
+<section class="section" id="auth">
+  <div class="section-label">API Reference</div>
+  <h2>المصادقة — Authentication</h2>
+  <p>الخطوة الأولى في أي تكامل. احصل على <code>access_token</code> باستخدام بيانات الاعتماد.</p>
+
+  <div class="endpoint-card">
+    <span class="endpoint-method post">POST</span>
+    <span class="endpoint-path">/api/v1/auth/authenticate</span>
+  </div>
+
+  <h3>Headers</h3>
+  <div class="code-block">
+    <div class="code-header"><span class="code-lang">HTTP</span></div>
+    <div class="code-body">Content-Type: application/json
+Accept: application/json
+X-Language: ar</div>
+  </div>
+
+  <h3>Request Body</h3>
+  <div class="param-item">
+    <div class="param-head">
+      <span class="param-name">username</span>
+      <span class="param-type">string</span>
+      <span class="param-req required">مطلوب</span>
+    </div>
+    <div class="param-desc">رقم الجوال (بصيغة <code>+966XXXXXXXXX</code>) أو البريد الإلكتروني</div>
+  </div>
+  <div class="param-item">
+    <div class="param-head">
+      <span class="param-name">userNameType</span>
+      <span class="param-type">enum</span>
+      <span class="param-req required">مطلوب</span>
+    </div>
+    <div class="param-desc"><code>MOBILE</code> أو <code>EMAIL</code></div>
+  </div>
+  <div class="param-item">
+    <div class="param-head">
+      <span class="param-name">password</span>
+      <span class="param-type">string</span>
+      <span class="param-req required">مطلوب</span>
+    </div>
+    <div class="param-desc">كلمة المرور الخاصة بحسابك</div>
+  </div>
+
+  <div class="callout info">
+    <span class="callout-icon">📱</span>
+    <div class="callout-body"><p><strong>تنسيق رقم الجوال:</strong> يجب أن يبدأ بـ <code>+</code> متبوعاً برمز الدولة. مثال: <code>+966543751523</code>. الصيغ المحلية مثل <code>05XXXXXXXX</code> غير مقبولة مباشرة.</p></div>
+  </div>
+
+  <!-- Code Tabs -->
+  <h3>أمثلة الكود</h3>
+  <div class="code-tabs" data-tabs="auth">
+    <div class="tab-buttons">
+      <button class="tab-btn active" onclick="switchTab(&#39;auth&#39;,&#39;php&#39;)">PHP</button>
+      <button class="tab-btn" onclick="switchTab(&#39;auth&#39;,&#39;python&#39;)">Python</button>
+      <button class="tab-btn" onclick="switchTab(&#39;auth&#39;,&#39;node&#39;)">Node.js</button>
+    </div>
+
+    <div class="tab-panel active" data-tab="auth-php">
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">PHP</span><button class="code-copy" onclick="copyCode(this)">نسخ</button></div>
+        <div class="code-body"><span class="kw">function</span> <span class="fn">authenticateTuwaiqPay</span>(<span class="var">$username</span>, <span class="var">$password</span>, <span class="var">$type</span> = <span class="str">'MOBILE'</span>) {
+    <span class="var">$baseUrl</span> = <span class="str">'https://onboarding-uat.tuwaiqpay.com.sa/api/v1'</span>;
+
+    <span class="var">$data</span> = [
+        <span class="str">'username'</span>     =&gt; <span class="var">$username</span>,
+        <span class="str">'userNameType'</span> =&gt; <span class="var">$type</span>,
+        <span class="str">'password'</span>     =&gt; <span class="var">$password</span>,
+    ];
+
+    <span class="var">$ch</span> = <span class="fn">curl_init</span>(<span class="var">$baseUrl</span> . <span class="str">'/auth/authenticate'</span>);
+    <span class="fn">curl_setopt</span>(<span class="var">$ch</span>, CURLOPT_RETURNTRANSFER, <span class="kw">true</span>);
+    <span class="fn">curl_setopt</span>(<span class="var">$ch</span>, CURLOPT_POST, <span class="kw">true</span>);
+    <span class="fn">curl_setopt</span>(<span class="var">$ch</span>, CURLOPT_POSTFIELDS, <span class="fn">json_encode</span>(<span class="var">$data</span>));
+    <span class="fn">curl_setopt</span>(<span class="var">$ch</span>, CURLOPT_HTTPHEADER, [
+        <span class="str">'Content-Type: application/json'</span>,
+        <span class="str">'Accept: application/json'</span>,
+        <span class="str">'X-Language: ar'</span>,
+    ]);
+
+    <span class="var">$response</span> = <span class="fn">curl_exec</span>(<span class="var">$ch</span>);
+    <span class="var">$httpCode</span> = <span class="fn">curl_getinfo</span>(<span class="var">$ch</span>, CURLINFO_HTTP_CODE);
+    <span class="fn">curl_close</span>(<span class="var">$ch</span>);
+
+    <span class="var">$result</span> = <span class="fn">json_decode</span>(<span class="var">$response</span>, <span class="kw">true</span>);
+
+    <span class="kw">if</span> (<span class="var">$httpCode</span> === <span class="num">200</span>) {
+        <span class="kw">return</span> <span class="var">$result</span>[<span class="str">'data'</span>][<span class="str">'access_token'</span>];
+    }
+
+    <span class="kw">throw new</span> <span class="type">Exception</span>(<span class="var">$result</span>[<span class="str">'message'</span>] ?? <span class="str">'Auth failed'</span>);
+}</div>
+      </div>
+    </div>
+
+    <div class="tab-panel" data-tab="auth-python">
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">Python</span><button class="code-copy" onclick="copyCode(this)">نسخ</button></div>
+        <div class="code-body"><span class="kw">import</span> requests
+
+<span class="kw">def</span> <span class="fn">authenticate</span>(username, password, username_type=<span class="str">"MOBILE"</span>):
+    base_url = <span class="str">"https://onboarding-uat.tuwaiqpay.com.sa/api/v1"</span>
+
+    resp = requests.post(
+        <span class="kw">f</span><span class="str">"{base_url}/auth/authenticate"</span>,
+        json={
+            <span class="str">"username"</span>: username,
+            <span class="str">"userNameType"</span>: username_type,
+            <span class="str">"password"</span>: password,
+        },
+        headers={
+            <span class="str">"Content-Type"</span>: <span class="str">"application/json"</span>,
+            <span class="str">"Accept"</span>: <span class="str">"application/json"</span>,
+            <span class="str">"X-Language"</span>: <span class="str">"ar"</span>,
+        },
+    )
+    resp.raise_for_status()
+    <span class="kw">return</span> resp.json()[<span class="str">"data"</span>][<span class="str">"access_token"</span>]</div>
+      </div>
+    </div>
+
+    <div class="tab-panel" data-tab="auth-node">
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">Node.js</span><button class="code-copy" onclick="copyCode(this)">نسخ</button></div>
+        <div class="code-body"><span class="kw">const</span> axios = <span class="fn">require</span>(<span class="str">'axios'</span>);
+
+<span class="kw">async function</span> <span class="fn">authenticate</span>(username, password, type = <span class="str">'MOBILE'</span>) {
+    <span class="kw">const</span> baseUrl = <span class="str">'https://onboarding-uat.tuwaiqpay.com.sa/api/v1'</span>;
+
+    <span class="kw">const</span> { data } = <span class="kw">await</span> axios.<span class="fn">post</span>(
+        <span class="str">`${baseUrl}/auth/authenticate`</span>,
+        { username, userNameType: type, password },
+        {
+            headers: {
+                <span class="str">'Content-Type'</span>: <span class="str">'application/json'</span>,
+                <span class="str">'Accept'</span>: <span class="str">'application/json'</span>,
+                <span class="str">'X-Language'</span>: <span class="str">'ar'</span>,
+            },
+        }
+    );
+
+    <span class="kw">return</span> data.data.access_token;
+}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="response-header">
+    <span class="status-badge status-success">200</span>
+    <h4>Success Response</h4>
+  </div>
+  <div class="code-block">
+    <div class="code-header"><span class="code-lang">JSON</span><button class="code-copy" onclick="copyCode(this)">نسخ</button></div>
+    <div class="code-body">{
+  <span class="str">"data"</span>: {
+    <span class="str">"access_token"</span>: <span class="str">"eyJhbGciOiJIUzI1NiJ9..."</span>,
+    <span class="str">"refresh_token"</span>: <span class="str">"ea334d91-d770-46fd..."</span>,
+    <span class="str">"expires_in"</span>: <span class="num">3600</span>,
+    <span class="str">"token_type"</span>: <span class="str">"Bearer"</span>
+  },
+  <span class="str">"message"</span>: <span class="str">"SUCCESS"</span>
+}</div>
+  </div>
+
+  <div class="response-header">
+    <span class="status-badge status-error">4xx</span>
+    <h4>Error Responses</h4>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>الكود</th><th>الرسالة</th><th>السبب</th></tr></thead>
+      <tbody>
+        <tr><td><code>401</code></td><td>Invalid credentials</td><td>كلمة المرور خاطئة</td></tr>
+        <tr><td><code>404</code></td><td>User not registered</td><td>اسم المستخدم غير مسجل</td></tr>
+        <tr><td><code>423</code></td><td>Account is locked</td><td>الحساب موقوف</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ─── CREATE BILL ─── -->
+<section class="section" id="create-bill">
+  <div class="section-label">API Reference</div>
+  <h2>إنشاء فاتورة — Create Bill</h2>
+  <p>بعد المصادقة، أنشئ فاتورة دفع وأرسل رابطها للعميل.</p>
+
+  <div class="endpoint-card">
+    <span class="endpoint-method post">POST</span>
+    <span class="endpoint-path">/api/v1/integration/bills</span>
+  </div>
+
+  <h3>Headers</h3>
+  <div class="code-block">
+    <div class="code-header"><span class="code-lang">HTTP</span></div>
+    <div class="code-body">Authorization: Bearer {access_token}
+Content-Type: application/json
+Accept: application/json
+X-Language: ar</div>
+  </div>
+
+  <h3>Parameters</h3>
+
+  <div class="param-item">
+    <div class="param-head"><span class="param-name">amount</span><span class="param-type">float</span><span class="param-req required">مطلوب</span></div>
+    <div class="param-desc">المبلغ بالريال السعودي. مثال: <code>150.00</code></div>
+  </div>
+  <div class="param-item">
+    <div class="param-head"><span class="param-name">actionDateInDays</span><span class="param-type">integer</span><span class="param-req required">مطلوب</span></div>
+    <div class="param-desc">عدد أيام صلاحية الفاتورة (1–365)</div>
+  </div>
+  <div class="param-item">
+    <div class="param-head"><span class="param-name">currencyId</span><span class="param-type">integer</span><span class="param-req required">مطلوب</span></div>
+    <div class="param-desc"><code>1</code> = SAR &nbsp;|&nbsp; <code>2</code> = USD &nbsp;|&nbsp; <code>3</code> = EUR</div>
+  </div>
+  <div class="param-item">
+    <div class="param-head"><span class="param-name">supportedPaymentMethods</span><span class="param-type">string[]</span><span class="param-req required">مطلوب</span></div>
+    <div class="param-desc">وسائل الدفع: <code>VISA</code> <code>MASTER</code> <code>MADA</code> <code>AMEX</code> <code>STC_PAY</code> <code>APPLE_PAY</code></div>
+  </div>
+  <div class="param-item">
+    <div class="param-head"><span class="param-name">description</span><span class="param-type">string</span><span class="param-req required">مطلوب</span></div>
+    <div class="param-desc">وصف الفاتورة. مثال: <code>"طلب #12345"</code></div>
+  </div>
+  <div class="param-item">
+    <div class="param-head"><span class="param-name">customerName</span><span class="param-type">string</span><span class="param-req required">مطلوب</span></div>
+    <div class="param-desc">اسم العميل</div>
+  </div>
+  <div class="param-item">
+    <div class="param-head"><span class="param-name">customerMobilePhone</span><span class="param-type">string</span><span class="param-req required">مطلوب</span></div>
+    <div class="param-desc">جوال العميل بصيغة <code>+966XXXXXXXXX</code></div>
+  </div>
+  <div class="param-item">
+    <div class="param-head"><span class="param-name">customerEmail</span><span class="param-type">string</span><span class="param-req optional">اختياري</span></div>
+    <div class="param-desc">بريد العميل الإلكتروني</div>
+  </div>
+  <div class="param-item">
+    <div class="param-head"><span class="param-name">includeVat</span><span class="param-type">boolean</span><span class="param-req optional">اختياري</span></div>
+    <div class="param-desc">هل يشمل ضريبة القيمة المضافة؟ الافتراضي: <code>false</code></div>
+  </div>
+
+  <h3>أمثلة الكود</h3>
+  <div class="code-tabs" data-tabs="bill">
+    <div class="tab-buttons">
+      <button class="tab-btn active" onclick="switchTab(&#39;bill&#39;,&#39;php&#39;)">PHP</button>
+      <button class="tab-btn" onclick="switchTab(&#39;bill&#39;,&#39;python&#39;)">Python</button>
+      <button class="tab-btn" onclick="switchTab(&#39;bill&#39;,&#39;node&#39;)">Node.js</button>
+    </div>
+
+    <div class="tab-panel active" data-tab="bill-php">
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">PHP</span><button class="code-copy" onclick="copyCode(this)">نسخ</button></div>
+        <div class="code-body"><span class="kw">function</span> <span class="fn">createBill</span>(<span class="var">$token</span>, <span class="var">$amount</span>, <span class="var">$desc</span>, <span class="var">$name</span>, <span class="var">$phone</span>) {
+    <span class="var">$baseUrl</span> = <span class="str">'https://onboarding-uat.tuwaiqpay.com.sa/api/v1'</span>;
+
+    <span class="var">$payload</span> = [
+        <span class="str">'actionDateInDays'</span>       =&gt; <span class="num">3</span>,
+        <span class="str">'amount'</span>                 =&gt; (<span class="kw">float</span>) <span class="var">$amount</span>,
+        <span class="str">'currencyId'</span>             =&gt; <span class="num">1</span>,
+        <span class="str">'supportedPaymentMethods'</span> =&gt; [<span class="str">'VISA'</span>,<span class="str">'MASTER'</span>,<span class="str">'MADA'</span>,<span class="str">'STC_PAY'</span>,<span class="str">'APPLE_PAY'</span>],
+        <span class="str">'description'</span>            =&gt; <span class="var">$desc</span>,
+        <span class="str">'customerName'</span>           =&gt; <span class="var">$name</span>,
+        <span class="str">'customerMobilePhone'</span>    =&gt; <span class="var">$phone</span>,
+        <span class="str">'includeVat'</span>             =&gt; <span class="kw">false</span>,
+    ];
+
+    <span class="var">$ch</span> = <span class="fn">curl_init</span>(<span class="var">$baseUrl</span> . <span class="str">'/integration/bills'</span>);
+    <span class="fn">curl_setopt</span>(<span class="var">$ch</span>, CURLOPT_RETURNTRANSFER, <span class="kw">true</span>);
+    <span class="fn">curl_setopt</span>(<span class="var">$ch</span>, CURLOPT_POST, <span class="kw">true</span>);
+    <span class="fn">curl_setopt</span>(<span class="var">$ch</span>, CURLOPT_POSTFIELDS, <span class="fn">json_encode</span>(<span class="var">$payload</span>));
+    <span class="fn">curl_setopt</span>(<span class="var">$ch</span>, CURLOPT_HTTPHEADER, [
+        <span class="str">'Authorization: Bearer '</span> . <span class="var">$token</span>,
+        <span class="str">'Content-Type: application/json'</span>,
+        <span class="str">'Accept: application/json'</span>,
+        <span class="str">'X-Language: ar'</span>,
+    ]);
+
+    <span class="var">$response</span> = <span class="fn">json_decode</span>(<span class="fn">curl_exec</span>(<span class="var">$ch</span>), <span class="kw">true</span>);
+    <span class="fn">curl_close</span>(<span class="var">$ch</span>);
+
+    <span class="kw">return</span> <span class="var">$response</span>[<span class="str">'data'</span>];
+    <span class="cm">// data.link → رابط الدفع للعميل</span>
+    <span class="cm">// data.merchantTransactionId → احفظه في DB</span>
+}</div>
+      </div>
+    </div>
+
+    <div class="tab-panel" data-tab="bill-python">
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">Python</span><button class="code-copy" onclick="copyCode(this)">نسخ</button></div>
+        <div class="code-body"><span class="kw">def</span> <span class="fn">create_bill</span>(token, amount, desc, name, phone):
+    resp = requests.post(
+        <span class="str">f"{BASE_URL}/integration/bills"</span>,
+        json={
+            <span class="str">"actionDateInDays"</span>: <span class="num">3</span>,
+            <span class="str">"amount"</span>: <span class="kw">float</span>(amount),
+            <span class="str">"currencyId"</span>: <span class="num">1</span>,
+            <span class="str">"supportedPaymentMethods"</span>: [
+                <span class="str">"VISA"</span>, <span class="str">"MASTER"</span>, <span class="str">"MADA"</span>,
+                <span class="str">"STC_PAY"</span>, <span class="str">"APPLE_PAY"</span>
+            ],
+            <span class="str">"description"</span>: desc,
+            <span class="str">"customerName"</span>: name,
+            <span class="str">"customerMobilePhone"</span>: phone,
+            <span class="str">"includeVat"</span>: <span class="kw">False</span>,
+        },
+        headers={
+            <span class="str">"Authorization"</span>: <span class="kw">f</span><span class="str">"Bearer {token}"</span>,
+            <span class="str">"Content-Type"</span>: <span class="str">"application/json"</span>,
+            <span class="str">"X-Language"</span>: <span class="str">"ar"</span>,
+        },
+    )
+    resp.raise_for_status()
+    <span class="kw">return</span> resp.json()[<span class="str">"data"</span>]</div>
+      </div>
+    </div>
+
+    <div class="tab-panel" data-tab="bill-node">
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">Node.js</span><button class="code-copy" onclick="copyCode(this)">نسخ</button></div>
+        <div class="code-body"><span class="kw">async function</span> <span class="fn">createBill</span>(token, amount, desc, name, phone) {
+    <span class="kw">const</span> { data } = <span class="kw">await</span> axios.<span class="fn">post</span>(
+        <span class="str">`${BASE_URL}/integration/bills`</span>,
+        {
+            actionDateInDays: <span class="num">3</span>,
+            amount: <span class="fn">parseFloat</span>(amount),
+            currencyId: <span class="num">1</span>,
+            supportedPaymentMethods: [
+                <span class="str">'VISA'</span>, <span class="str">'MASTER'</span>, <span class="str">'MADA'</span>,
+                <span class="str">'STC_PAY'</span>, <span class="str">'APPLE_PAY'</span>
+            ],
+            description: desc,
+            customerName: name,
+            customerMobilePhone: phone,
+            includeVat: <span class="kw">false</span>,
+        },
+        {
+            headers: {
+                <span class="str">'Authorization'</span>: <span class="str">`Bearer ${token}`</span>,
+                <span class="str">'Content-Type'</span>: <span class="str">'application/json'</span>,
+                <span class="str">'X-Language'</span>: <span class="str">'ar'</span>,
+            },
+        }
+    );
+
+    <span class="kw">return</span> data.data;
+    <span class="cm">// data.link → Payment URL for customer</span>
+    <span class="cm">// data.merchantTransactionId → Save to DB</span>
+}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="response-header">
+    <span class="status-badge status-success">200</span>
+    <h4>Success Response</h4>
+  </div>
+  <div class="code-block">
+    <div class="code-header"><span class="code-lang">JSON</span><button class="code-copy" onclick="copyCode(this)">نسخ</button></div>
+    <div class="code-body">{
+  <span class="str">"data"</span>: {
+    <span class="str">"transactionId"</span>: <span class="str">"70f056c37a8daee0c4af36adabf97614"</span>,
+    <span class="str">"merchantTransactionId"</span>: <span class="str">"HpMDa1CNKvn5_1775410290289_101550"</span>,
+    <span class="str">"billId"</span>: <span class="str">"101550"</span>,
+    <span class="str">"link"</span>: <span class="str">"https://uat-payment.tuwaiqpay.com.sa/pay/WN6q5ErU"</span>,
+    <span class="str">"qrCode"</span>: <span class="str">"https://..."</span>,
+    <span class="str">"amount"</span>: <span class="num">150.00</span>,
+    <span class="str">"currency"</span>: <span class="str">"SAR"</span>,
+    <span class="str">"expireDate"</span>: <span class="str">"2026-04-15T20:31:30"</span>,
+    <span class="str">"status"</span>: <span class="str">"PENDING"</span>
+  },
+  <span class="str">"message"</span>: <span class="str">"SUCCESS"</span>
+}</div>
+  </div>
+
+  <div class="callout danger">
+    <span class="callout-icon">⭐</span>
+    <div class="callout-body"><p><strong>merchantTransactionId</strong> — هذا أهم حقل في الاستجابة. احفظه في قاعدة البيانات وارتبطه بالطلب. يُستخدم لربط Webhook بالفاتورة.</p></div>
+  </div>
+
+  <h3>حقول الاستجابة</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>الحقل</th><th>الوصف</th><th>ملاحظة</th></tr></thead>
+      <tbody>
+        <tr><td><code>link</code></td><td>رابط الدفع</td><td>أرسله للعميل</td></tr>
+        <tr><td><code>merchantTransactionId</code></td><td>مفتاح ربط Webhook</td><td>⭐ احفظه في DB</td></tr>
+        <tr><td><code>billId</code></td><td>رقم الفاتورة</td><td>للاستعلام</td></tr>
+        <tr><td><code>qrCode</code></td><td>رمز QR</td><td>اختياري</td></tr>
+        <tr><td><code>expireDate</code></td><td>تاريخ الانتهاء</td><td>ISO 8601</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ─── CHECK PAYMENT ─── -->
+<section class="section" id="check-payment">
+  <div class="section-label">API Reference</div>
+  <h2>التحقق من الدفع — Check Payment</h2>
+  <p>استعلم عن حالة المعاملة باستخدام <code>transactionId</code>.</p>
+
+  <div class="endpoint-card">
+    <span class="endpoint-method get">GET</span>
+    <span class="endpoint-path">/api/v1/integration/bills/transaction/{transactionId}</span>
+  </div>
+
+  <h3>حالات المعاملة</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>الحالة</th><th>المعنى</th><th>الإجراء</th></tr></thead>
+      <tbody>
+        <tr><td><span class="status-badge status-warning">PENDING</span></td><td>قيد الانتظار</td><td>لم يتم الدفع بعد</td></tr>
+        <tr><td><span class="status-badge status-success">SETTLED</span></td><td>تم التسوية</td><td>✅ مدفوع بنجاح</td></tr>
+        <tr><td><span class="status-badge status-success">APPROVED</span></td><td>معتمد</td><td>✅ مدفوع بنجاح</td></tr>
+        <tr><td><span class="status-badge status-success">PENDING_SETTLEMENT</span></td><td>انتظار التسوية</td><td>✅ مدفوع بنجاح</td></tr>
+        <tr><td><span class="status-badge status-error">FAILED</span></td><td>فشل</td><td>❌ فشل الدفع</td></tr>
+        <tr><td><span class="status-badge status-error">DECLINED</span></td><td>مرفوض</td><td>❌ رُفض الدفع</td></tr>
+        <tr><td><span class="status-badge" style="background:rgba(100,116,139,.1);color:var(--text-muted);border:1px solid rgba(100,116,139,.2)">CANCELLED</span></td><td>ملغي</td><td>تم الإلغاء</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="response-header">
+    <span class="status-badge status-success">200</span>
+    <h4>Success Response</h4>
+  </div>
+  <div class="code-block">
+    <div class="code-header"><span class="code-lang">JSON</span><button class="code-copy" onclick="copyCode(this)">نسخ</button></div>
+    <div class="code-body">{
+  <span class="str">"data"</span>: {
+    <span class="str">"transactionId"</span>: <span class="str">"70f056c37a8daee0..."</span>,
+    <span class="str">"merchantTransactionId"</span>: <span class="str">"HpMDa1CNKvn5_..."</span>,
+    <span class="str">"transactionStatus"</span>: <span class="str">"SETTLED"</span>,
+    <span class="str">"bill"</span>: {
+      <span class="str">"id"</span>: <span class="num">101550</span>,
+      <span class="str">"amount"</span>: <span class="num">150.00</span>,
+      <span class="str">"currency"</span>: <span class="str">"SAR"</span>
+    },
+    <span class="str">"paymentMethod"</span>: {
+      <span class="str">"code"</span>: <span class="str">"VISA"</span>,
+      <span class="str">"nameEn"</span>: <span class="str">"VISA"</span>
+    },
+    <span class="str">"paidAt"</span>: <span class="str">"2026-04-12T18:30:00"</span>
+  }
+}</div>
+  </div>
+</section>
+
+<!-- ─── WEBHOOKS ─── -->
+<section class="section" id="webhooks">
+  <div class="section-label">Events</div>
+  <h2>Webhooks</h2>
+  <p>TuwaiqPay يرسل إشعارات تلقائية (POST) لتطبيقك عند تغيّر حالة الدفع.</p>
+
+  <div class="flow">
+    <div class="flow-step"><span class="step-num">01</span><span class="step-label">العميل يدفع</span></div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><span class="step-num">02</span><span class="step-label">TuwaiqPay يُرسل POST</span></div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><span class="step-num">03</span><span class="step-label">تطبيقك يستقبل</span></div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step"><span class="step-num">04</span><span class="step-label">تحديث الطلب</span></div>
+  </div>
+
+  <h3>الإعداد</h3>
+  <div class="callout warning">
+    <span class="callout-icon">📋</span>
+    <div class="callout-body"><p><strong>ملاحظة مهمة:</strong> لا توجد لوحة تحكم (Dashboard) للتجار حالياً — يتم إدارة الحساب عبر التطبيق فقط. لإضافة Webhook URL، يجب التواصل مع الدعم الفني وإرسال الرابط المطلوب ليتم تفعيله من طرفهم.</p></div>
+  </div>
+  <div class="code-block">
+    <div class="code-header"><span class="code-lang">خطوات الإعداد</span></div>
+    <div class="code-body"><span class="cm">// 1. جهّز Webhook URL على سيرفرك</span>
+<span class="cm">//    مثال: https://yourdomain.com/tuwaiqpay-webhook</span>
+<span class="cm"></span>
+<span class="cm">// 2. تواصل مع الدعم الفني:</span>
+<span class="cm">//    📧 support@tuwaiqpay.com.sa</span>
+<span class="cm">//    💬 wa.me/966509684000</span>
+<span class="cm"></span>
+<span class="cm">// 3. أرسل لهم:</span>
+<span class="cm">//    • Webhook URL الخاص بك</span>
+<span class="cm">//    • الأحداث المطلوبة (Payment Completed, Failed, Cancelled)</span>
+<span class="cm">//    • Merchant ID الخاص بك</span>
+<span class="cm"></span>
+<span class="cm">// 4. انتظر التأكيد من الدعم الفني بتفعيل الـ Webhook</span></div>
+  </div>
+
+  <h3>Webhook Payload</h3>
+  <div class="code-block">
+    <div class="code-header"><span class="code-lang">JSON</span><button class="code-copy" onclick="copyCode(this)">نسخ</button></div>
+    <div class="code-body">{
+  <span class="str">"transactionDetails"</span>: {
+    <span class="str">"id"</span>: <span class="num">1412</span>,
+    <span class="str">"transactionId"</span>: <span class="str">"1549e858574155fca7f5abd3e164c275"</span>,
+    <span class="str">"merchantTransactionId"</span>: <span class="str">"HpMDa1CNKvn5_1775583254771_101562"</span>,
+    <span class="str">"transactionStatus"</span>: <span class="str">"PENDING_SETTLEMENT"</span>,
+    <span class="str">"bill"</span>: {
+      <span class="str">"id"</span>: <span class="num">101562</span>,
+      <span class="str">"amount"</span>: <span class="num">150.00</span>,
+      <span class="str">"currency"</span>: { <span class="str">"nameEn"</span>: <span class="str">"SAR"</span> }
+    },
+    <span class="str">"paymentMethod"</span>: { <span class="str">"code"</span>: <span class="str">"VISA"</span> },
+    <span class="str">"paidAt"</span>: <span class="str">"2026-04-12T18:30:00"</span>
+  }
+}</div>
+  </div>
+
+  <h3>Webhook Handler</h3>
+  <div class="code-tabs" data-tabs="webhook">
+    <div class="tab-buttons">
+      <button class="tab-btn active" onclick="switchTab(&#39;webhook&#39;,&#39;php&#39;)">PHP</button>
+      <button class="tab-btn" onclick="switchTab(&#39;webhook&#39;,&#39;python&#39;)">Python</button>
+    </div>
+
+    <div class="tab-panel active" data-tab="webhook-php">
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">PHP</span><button class="code-copy" onclick="copyCode(this)">نسخ</button></div>
+        <div class="code-body"><span class="cm">// webhook.php</span>
+<span class="var">$payload</span> = <span class="fn">file_get_contents</span>(<span class="str">'php://input'</span>);
+<span class="var">$data</span>    = <span class="fn">json_decode</span>(<span class="var">$payload</span>, <span class="kw">true</span>);
+<span class="var">$tx</span>      = <span class="var">$data</span>[<span class="str">'transactionDetails'</span>] ?? [];
+
+<span class="var">$merchantTxId</span> = <span class="var">$tx</span>[<span class="str">'merchantTransactionId'</span>] ?? <span class="str">''</span>;
+<span class="var">$status</span>       = <span class="var">$tx</span>[<span class="str">'transactionStatus'</span>] ?? <span class="str">''</span>;
+<span class="var">$amount</span>       = <span class="var">$tx</span>[<span class="str">'bill'</span>][<span class="str">'amount'</span>] ?? <span class="num">0</span>;
+
+<span class="cm">// Map TuwaiqPay status → your status</span>
+<span class="var">$map</span> = [
+    <span class="str">'SETTLED'</span>            =&gt; <span class="str">'completed'</span>,
+    <span class="str">'APPROVED'</span>           =&gt; <span class="str">'completed'</span>,
+    <span class="str">'PENDING_SETTLEMENT'</span> =&gt; <span class="str">'completed'</span>,
+    <span class="str">'FAILED'</span>             =&gt; <span class="str">'failed'</span>,
+    <span class="str">'DECLINED'</span>           =&gt; <span class="str">'failed'</span>,
+    <span class="str">'CANCELLED'</span>          =&gt; <span class="str">'cancelled'</span>,
+];
+
+<span class="var">$newStatus</span> = <span class="var">$map</span>[<span class="var">$status</span>] ?? <span class="str">'pending'</span>;
+
+<span class="cm">// Update your database</span>
+<span class="var">$stmt</span> = <span class="var">$pdo</span>-&gt;<span class="fn">prepare</span>(<span class="str">"
+    UPDATE payments
+    SET status = ?, tuwaiqpay_status = ?, updated_at = NOW()
+    WHERE merchant_transaction_id = ?
+"</span>);
+<span class="var">$stmt</span>-&gt;<span class="fn">execute</span>([<span class="var">$newStatus</span>, <span class="var">$status</span>, <span class="var">$merchantTxId</span>]);
+
+<span class="fn">http_response_code</span>(<span class="num">200</span>);
+<span class="kw">echo</span> <span class="fn">json_encode</span>([<span class="str">'success'</span> =&gt; <span class="kw">true</span>]);</div>
+      </div>
+    </div>
+
+    <div class="tab-panel" data-tab="webhook-python">
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">Python — Flask</span><button class="code-copy" onclick="copyCode(this)">نسخ</button></div>
+        <div class="code-body"><span class="kw">from</span> flask <span class="kw">import</span> Flask, request, jsonify
+
+app = Flask(__name__)
+
+@app.route(<span class="str">'/webhook'</span>, methods=[<span class="str">'POST'</span>])
+<span class="kw">def</span> <span class="fn">webhook</span>():
+    data = request.json
+    tx = data.get(<span class="str">'transactionDetails'</span>, {})
+
+    merchant_tx_id = tx.get(<span class="str">'merchantTransactionId'</span>)
+    status = tx.get(<span class="str">'transactionStatus'</span>)
+    amount = tx.get(<span class="str">'bill'</span>, {}).get(<span class="str">'amount'</span>, <span class="num">0</span>)
+
+    status_map = {
+        <span class="str">'SETTLED'</span>: <span class="str">'completed'</span>,
+        <span class="str">'APPROVED'</span>: <span class="str">'completed'</span>,
+        <span class="str">'PENDING_SETTLEMENT'</span>: <span class="str">'completed'</span>,
+        <span class="str">'FAILED'</span>: <span class="str">'failed'</span>,
+        <span class="str">'DECLINED'</span>: <span class="str">'failed'</span>,
+        <span class="str">'CANCELLED'</span>: <span class="str">'cancelled'</span>,
+    }
+
+    new_status = status_map.get(status, <span class="str">'pending'</span>)
+    <span class="cm"># Update your database here...</span>
+
+    <span class="kw">return</span> jsonify({<span class="str">'success'</span>: <span class="kw">True</span>}), <span class="num">200</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── ERRORS ─── -->
+<section class="section" id="errors">
+  <div class="section-label">Reference</div>
+  <h2>رموز الأخطاء — Error Codes</h2>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>الكود</th><th>المعنى</th><th>السبب</th><th>الحل</th></tr></thead>
+      <tbody>
+        <tr><td><code>200</code></td><td><span class="status-badge status-success">نجح</span></td><td>الطلب نجح</td><td>—</td></tr>
+        <tr><td><code>400</code></td><td><span class="status-badge status-warning">طلب خاطئ</span></td><td>بيانات ناقصة أو خاطئة</td><td>تحقق من البيانات المُرسلة</td></tr>
+        <tr><td><code>401</code></td><td><span class="status-badge status-error">غير مصرّح</span></td><td>كلمة مرور خاطئة</td><td>تحقق من بيانات الاعتماد</td></tr>
+        <tr><td><code>403</code></td><td><span class="status-badge status-error">ممنوع</span></td><td>لا توجد صلاحيات API</td><td>تواصل مع TuwaiqPay لتفعيل API</td></tr>
+        <tr><td><code>404</code></td><td><span class="status-badge status-warning">غير موجود</span></td><td>المستخدم غير مسجل</td><td>تحقق من اسم المستخدم</td></tr>
+        <tr><td><code>423</code></td><td><span class="status-badge status-error">موقوف</span></td><td>الحساب موقوف</td><td>تواصل مع الدعم</td></tr>
+        <tr><td><code>500</code></td><td><span class="status-badge status-error">خطأ خادم</span></td><td>مشكلة في TuwaiqPay</td><td>انتظر وأعد المحاولة</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout info">
+    <span class="callout-icon">💡</span>
+    <div class="callout-body"><p><strong>HTTP 403</strong> هو أكثر خطأ شائع. يعني أن حسابك لا يملك صلاحيات API بعد. تواصل مع <code>support@tuwaiqpay.com.sa</code> واطلب تفعيل API Integration.</p></div>
+  </div>
+</section>
+
+<!-- ─── BEST PRACTICES ─── -->
+<section class="section" id="best-practices">
+  <div class="section-label">Guide</div>
+  <h2>Best Practices</h2>
+
+  <h3>🔒 الأمان</h3>
+  <div class="code-block">
+    <div class="code-header"><span class="code-lang">Tips</span></div>
+    <div class="code-body"><span class="cm">// ✅ استخدم HTTPS فقط — إلزامي لجميع الطلبات</span>
+<span class="cm">// ✅ شفّر بيانات الاعتماد — لا تحفظها في الكود مباشرة</span>
+<span class="cm">// ✅ تحقق من IP المصدر في Webhook</span>
+<span class="cm">// ✅ تحقق من المبلغ في Webhook (amount mismatch)</span>
+<span class="cm">// ✅ استخدم Prepared Statements في قاعدة البيانات</span></div>
+  </div>
+
+  <h3>⚡ الأداء</h3>
+  <div class="code-block">
+    <div class="code-header"><span class="code-lang">Token Caching — PHP</span><button class="code-copy" onclick="copyCode(this)">نسخ</button></div>
+    <div class="code-body"><span class="cm">// Cache the access token — don't re-authenticate on every request</span>
+<span class="var">$_SESSION</span>[<span class="str">'tp_token'</span>]   = <span class="var">$token</span>;
+<span class="var">$_SESSION</span>[<span class="str">'tp_expires'</span>] = <span class="fn">time</span>() + <span class="num">3500</span>; <span class="cm">// 3600 - 100s buffer</span>
+
+<span class="kw">if</span> (<span class="fn">isset</span>(<span class="var">$_SESSION</span>[<span class="str">'tp_token'</span>]) &amp;&amp; <span class="fn">time</span>() &lt; <span class="var">$_SESSION</span>[<span class="str">'tp_expires'</span>]) {
+    <span class="var">$token</span> = <span class="var">$_SESSION</span>[<span class="str">'tp_token'</span>];
+} <span class="kw">else</span> {
+    <span class="var">$token</span> = <span class="fn">authenticateTuwaiqPay</span>(...);
+}</div>
+  </div>
+
+  <h3>🧪 الاختبار</h3>
+  <div class="callout success">
+    <span class="callout-icon">✓</span>
+    <div class="callout-body">
+      <p><strong>اختبر دائماً في UAT أولاً</strong> — اختبر كل السيناريوهات (نجاح، فشل، إلغاء)، اختبر Webhook، وتحقق من <code>expireDate</code> مع timezone fix.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ─── FAQ ─── -->
+<section class="section" id="faq">
+  <div class="section-label">Help</div>
+  <h2>الأسئلة الشائعة</h2>
+
+  <div class="faq-item"><div class="faq-q" onclick="toggleFaq(this)">كيف أحصل على حساب TuwaiqPay؟<span class="arrow">▼</span></div><div class="faq-a">زر <a href="https://tuwaiqpay.com.sa/" style="color:var(--accent)">tuwaiqpay.com.sa</a> وسجّل كتاجر. ستحتاج بريدك ورقم جوالك ونوع النشاط.</div></div>
+
+  <div class="faq-item"><div class="faq-q" onclick="toggleFaq(this)">هل يوجد رسوم للتكامل؟<span class="arrow">▼</span></div><div class="faq-a">التكامل مجاني، لكن توجد عمولة على المعاملات حسب اتفاقيتك مع TuwaiqPay.</div></div>
+
+  <div class="faq-item"><div class="faq-q open" onclick="toggleFaq(this)">لماذا أحصل على HTTP 403؟<span class="arrow">▼</span></div><div class="faq-a open">حسابك لا يملك صلاحيات API بعد. تواصل مع <code>support@tuwaiqpay.com.sa</code> واطلب تفعيل API Integration.</div></div>
+
+  <div class="faq-item"><div class="faq-q open" onclick="toggleFaq(this)">كيف أتعامل مع expireDate في UAT؟<span class="arrow">▼</span></div><div class="faq-a open">أضف +3 ساعات عند حفظه في قاعدة البيانات. هذا بسبب مشكلة timezone في بيئة UAT.</div></div>
+
+  <div class="faq-item"><div class="faq-q open" onclick="toggleFaq(this)">هل Webhook ضروري؟<span class="arrow">▼</span></div><div class="faq-a open">نعم! بدونه لن تتحدث حالة الطلبات تلقائياً عند الدفع أو الفشل. لإضافة Webhook URL، تواصل مع الدعم الفني وأرسل لهم الرابط ليتم تفعيله (لا توجد لوحة تحكم حالياً — فقط التطبيق).</div></div>
+
+  <div class="faq-item"><div class="faq-q open" onclick="toggleFaq(this)">كيف أختبر Webhook محلياً؟<span class="arrow">▼</span></div><div class="faq-a open">استخدم <strong>ngrok</strong> أو <strong>localtunnel</strong> لإنشاء URL عام مؤقت يوجه الطلبات لجهازك المحلي.</div></div>
+
+  <div class="faq-item"><div class="faq-q open" onclick="toggleFaq(this)">ما هي وسائل الدفع المدعومة؟<span class="arrow">▼</span></div><div class="faq-a open">MADA, VISA, Mastercard, Apple Pay, STC Pay, و American Express.</div></div>
+
+  <div class="faq-item"><div class="faq-q open" onclick="toggleFaq(this)">هل يوجد حد أقصى للمبلغ؟<span class="arrow">▼</span></div><div class="faq-a open">يعتمد على إعدادات حسابك. تواصل مع TuwaiqPay لمعرفة الحدود.</div></div>
+</section>
+
+<!-- ─── SUPPORT ─── -->
+<section class="section" id="support">
+  <div class="section-label">Contact</div>
+  <h2>الدعم والتواصل</h2>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>القناة</th><th>التفاصيل</th><th>التوفر</th></tr></thead>
+      <tbody>
+        <tr><td>📧 البريد</td><td><code>support@tuwaiqpay.com.sa</code></td><td>24/7</td></tr>
+        <tr><td>📱 الهاتف</td><td><code dir="ltr">+966 50 968 4000</code></td><td>أحد–خميس ٩ص–٦م</td></tr>
+        <tr><td>💬 WhatsApp</td><td><a href="https://wa.me/966509684000" style="color:var(--accent)">wa.me/966509684000</a></td><td>24/7</td></tr>
+        <tr><td>🌐 الموقع</td><td><a href="https://tuwaiqpay.com.sa/" style="color:var(--accent)">tuwaiqpay.com.sa</a></td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+</main>
+
+<!-- ═══════ FOOTER ═══════ -->
+<footer class="site-footer">
+  <div class="footer-brand">TuwaiqPay API Docs v2.0 — © TuwaiqPay. جميع الحقوق محفوظة</div>
+  <div class="footer-links">
+    <a href="https://tuwaiqpay.com.sa/">الموقع</a>
+    <a href="https://wa.me/966509684000">الدعم</a>
+  </div>
+</footer>
+
+<!-- ═══════ SCRIPTS ═══════ -->
+<script>
+// Sidebar active state
+const sidebarLinks = document.querySelectorAll('.sidebar-link');
+const sections = document.querySelectorAll('section[id]');
+
+function updateActive() {
+  let current = '';
+  sections.forEach(s => {
+    if (window.scrollY >= s.offsetTop - 120) current = s.id;
+  });
+  sidebarLinks.forEach(l => {
+    l.classList.toggle('active', l.getAttribute('href') === '#' + current);
+  });
+}
+window.addEventListener('scroll', updateActive, { passive: true });
+
+// Sidebar toggle (mobile)
+function toggleSidebar() {
+  document.getElementById('sidebar').classList.toggle('open');
+}
+
+// Close sidebar on link click (mobile)
+sidebarLinks.forEach(l => l.addEventListener('click', () => {
+  document.getElementById('sidebar').classList.remove('open');
+}));
+
+// Tab switching
+function switchTab(group, lang) {
+  const container = document.querySelector(`[data-tabs="${group}"]`);
+  container.querySelectorAll('.tab-btn').forEach((b,i) => {
+    const langs = ['php','python','node'];
+    b.classList.toggle('active', langs[i] === lang);
+  });
+  container.querySelectorAll('.tab-panel').forEach(p => {
+    const panelLang = p.dataset.tab.split('-').pop();
+    p.classList.toggle('active', panelLang === lang);
+  });
+}
+
+// Copy code
+function copyCode(btn) {
+  const code = btn.closest('.code-block').querySelector('.code-body').textContent;
+  navigator.clipboard.writeText(code).then(() => {
+    btn.textContent = 'تم النسخ ✓';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'نسخ'; btn.classList.remove('copied'); }, 2000);
+  });
+}
+
+// FAQ toggle
+function toggleFaq(el) {
+  el.classList.toggle('open');
+  el.nextElementSibling.classList.toggle('open');
+}
+</script>
+
+
+</body></html>

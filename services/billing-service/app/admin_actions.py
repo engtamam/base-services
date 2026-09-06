@@ -50,6 +50,8 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
             {"name": "plan_id", "in": "query", "type": "string", "required": False},
             {"name": "tenant", "in": "query", "type": "string", "required": False,
              "help": "narrow to one customer"},
+            {"name": "payment_gateway", "in": "query", "type": "string", "required": False,
+             "help": "list subscriptions pinned to one gateway, e.g. moyasar | stripe | tuwaiqpay"},
             {"name": "since", "in": "query", "type": "string", "required": False,
              "help": "creation-date lower bound, e.g. 2026-07-01"},
             {"name": "until", "in": "query", "type": "string", "required": False},

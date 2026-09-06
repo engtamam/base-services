@@ -252,7 +252,7 @@ class Settings(BaseSettings):
     CWE_STEP_MAP_FILE: str = ""
 
     # ── billing-service (Phase 14) — all config-driven, zero-hardcoded ─────
-    PAYMENT_GATEWAY_DRIVER: str = "null"     # null|stripe|moyasar|tap|hyperpay|paytabs|paypal|checkout
+    PAYMENT_GATEWAY_DRIVER: str = "null"     # null|stripe|moyasar|tap|hyperpay|paytabs|geidea|aps|paypal|checkout|tuwaiqpay
     # How a renewal chooses its gateway when the active driver is switched — a ports/adapters MODE so
     # each deployment picks (zero-hardcoded):
     #   active (default, today's behaviour): renewals charge the CURRENTLY-active gateway. Switching
