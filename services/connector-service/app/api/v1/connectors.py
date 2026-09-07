@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from app.api.auth import Principal
@@ -115,13 +115,20 @@ async def create_spec(request: Request, body: SpecIn, principal: Principal = Dep
             validate_mapping(body.field_map)
     except MappingError as e:
         raise HTTPException(422, str(e))
-    if body.base_url:
+    # SSRF: every server-fetched URL on a spec is validated, not just base_url. token_url and
+    # revoke_url are fetched by the OAuth adapter (urlopen), so an unvalidated one lets an admin point
+    # the server at an internal/metadata address (e.g. http://169.254.169.254/...). All three share
+    # the same allowlist/private-IP policy.
+    for _label, _url in (("base_url", body.base_url), ("token_url", body.token_url),
+                         ("revoke_url", body.revoke_url)):
+        if not _url:
+            continue
         try:
-            _ssrf.validate(body.base_url, require_https=s.INSTANCE_REQUIRE_HTTPS,
+            _ssrf.validate(_url, require_https=s.INSTANCE_REQUIRE_HTTPS,
                            allow_private=s.INSTANCE_ALLOW_PRIVATE_IPS,
                            allowed_hosts=s.instance_allowed_hosts)
         except _ssrf.SsrfBlocked as e:
-            raise HTTPException(400, f"URL_REJECTED: {e}")
+            raise HTTPException(400, f"URL_REJECTED ({_label}): {e}")
     spec = ProviderSpec(id=new_id("spec_"), tenant=_tenant(principal), name=body.name,
                         token_url=body.token_url, base_url=body.base_url, revoke_url=body.revoke_url,
                         auth_style=body.auth_style, client_id=body.client_id,
@@ -161,7 +168,14 @@ async def connect(request: Request, body: ConnectIn, principal: Principal = Depe
         except _ssrf.SsrfBlocked as e:
             raise HTTPException(400, f"URL_REJECTED: {e}")
 
-    conn = Connection(id=new_id("cn_"), tenant=_tenant(principal), provider=body.provider,
+    # IDOR: spec_id is caller-supplied. A connection may only use a spec in the CALLER'S tenant —
+    # otherwise a shop could connect using another shop's OAuth application (its client_id/secret).
+    caller_tenant = _tenant(principal)
+    if body.spec_id:
+        spec_row = await SpecStore(c.datastore).get(body.spec_id)
+        if spec_row is None or spec_row.tenant != caller_tenant:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "SPEC_NOT_FOUND")
+    conn = Connection(id=new_id("cn_"), tenant=caller_tenant, provider=body.provider,
                       spec_id=body.spec_id, instance_url=body.instance_url, created=c.clock.now())
     await ConnectionStore(c.datastore).save(conn)
     spec = await _spec_for(request, conn)

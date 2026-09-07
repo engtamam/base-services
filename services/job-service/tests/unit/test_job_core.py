@@ -235,3 +235,20 @@ def test_non_singleton_can_overlap():
     s2 = run(sch.get(s.id))
     clk.set(s2.next_run_at + 1)
     assert run(sch.tick())["fired"] == 1                 # overlaps allowed
+
+
+# ── cross-tenant IDOR on the by-id admin actions ────────────────────────────
+def test_cancel_and_replay_reject_another_tenants_job():
+    from app.core.models import DEAD as _DEAD
+    svc, st = _svc()
+    job, _ = run(svc.enqueue(type="x", tenant="shop_a"))
+    # a tenant-scoped caller from shop_b cannot cancel shop_a's job
+    out = run(svc.cancel(job.id, tenant="shop_b", is_operator=False))
+    assert out["ok"] is False and out["reason"] == "not_found"
+    assert run(svc.get(job.id)).status != "canceled"          # untouched
+    # nor replay it (drive it to DEAD first via the store, then attempt cross-tenant replay)
+    j = run(svc.get(job.id)); j.status = _DEAD; run(st.put("jobs", j.id, j.to_dict()))
+    r = run(svc.replay(job.id, tenant="shop_b", is_operator=False))
+    assert r["ok"] is False and r["reason"] == "not_found"
+    # the owning tenant CAN
+    assert run(svc.replay(job.id, tenant="shop_a", is_operator=False))["ok"] is True

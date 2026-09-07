@@ -184,9 +184,19 @@ class JobService:
         return {"reclaimed": reclaimed, "dead_lettered": dead}
 
     # ── admin ────────────────────────────────────────────────────────────────────
-    async def cancel(self, job_id: str) -> dict:
+    @staticmethod
+    def _owns(job: "Job | None", tenant: str | None, is_operator: bool) -> bool:
+        """A tenant-scoped caller may only touch a job in its OWN tenant; a platform operator any.
+        Guards the by-id admin actions (replay/cancel) against a cross-tenant IDOR, matching the
+        tenant check the read path already applies."""
+        return job is not None and (is_operator or job.tenant == (tenant or "__none__"))
+
+    async def cancel(self, job_id: str, *, tenant: str | None = None,
+                     is_operator: bool = True) -> dict:
         job = await self._jobs.get(job_id)
-        if job is None or job.status not in ACTIVE:
+        if not self._owns(job, tenant, is_operator):
+            return {"ok": False, "reason": "not_found"}     # cross-tenant/absent: never leak, never act
+        if job.status not in ACTIVE:
             return {"ok": False, "reason": "not_cancelable"}
         job.status, job.updated = CANCELED, self._clock.now()
         await self._jobs.save(job)
@@ -195,9 +205,12 @@ class JobService:
         await self._jobs.unique_clear(job.unique_key)
         return {"ok": True, "status": CANCELED}
 
-    async def replay(self, job_id: str) -> dict:
+    async def replay(self, job_id: str, *, tenant: str | None = None,
+                     is_operator: bool = True) -> dict:
         job = await self._jobs.get(job_id)
-        if job is None or job.status != DEAD:
+        if not self._owns(job, tenant, is_operator):
+            return {"ok": False, "reason": "not_found"}     # cross-tenant/absent: never leak, never act
+        if job.status != DEAD:
             return {"ok": False, "reason": "not_dead"}
         now = self._clock.now()
         job.status, job.attempt, job.error, job.next_run_at, job.updated = QUEUED, 0, "", now, now

@@ -265,8 +265,14 @@ class WebhookService:
         await self._deliveries.save(d)
         return await self.deliver(d.id)
 
-    async def replay_event(self, event_id: str) -> dict[str, Any]:
+    async def replay_event(self, event_id: str, *, tenant: str | None = None,
+                           is_operator: bool = True) -> dict[str, Any]:
+        """Replay every delivery of an event. by_event() spans ALL tenants, so a tenant-scoped caller
+        must only ever replay its OWN deliveries — otherwise it re-fires another tenant's webhooks by
+        event id (an IDOR). A platform operator may replay across tenants."""
         deliveries = await self._deliveries.by_event(event_id, self._cfg["list_limit"])
+        if not is_operator:
+            deliveries = [d for d in deliveries if d.tenant == (tenant or "__none__")]
         results = [await self.replay(d.id) for d in deliveries]
         return {"replayed": len(results), "delivered": sum(1 for r in results if r.get("ok"))}
 

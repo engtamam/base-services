@@ -217,7 +217,10 @@ def build_container(settings: Settings) -> Container:
     """Resolve every port from config. Fail-fast on any unknown driver."""
     from app.adapters import connector_http
     connector_http.configure(timeout_seconds=settings.HTTP_TIMEOUT_SECONDS,
-                             max_response_bytes=settings.MAX_RESPONSE_BYTES)
+                             max_response_bytes=settings.MAX_RESPONSE_BYTES,
+                             require_https=settings.INSTANCE_REQUIRE_HTTPS,
+                             allow_private=settings.INSTANCE_ALLOW_PRIVATE_IPS,
+                             allowed_hosts=settings.instance_allowed_hosts)
     event_bus = _pick(_EVENTBUS, settings.EVENTBUS_DRIVER, "event_bus", settings)
     return Container(
         datastore=_pick(_DATASTORE, settings.DATASTORE_DRIVER, "datastore", settings),

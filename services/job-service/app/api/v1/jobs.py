@@ -82,7 +82,10 @@ async def list_schedules(request: Request) -> dict:
 @router.delete("/schedules/{schedule_id}")
 async def delete_schedule(request: Request, schedule_id: str,
                           principal: Principal = Depends(_ADMIN)) -> dict:
-    await build_scheduler(request).delete(schedule_id)
+    deleted = await build_scheduler(request).delete(
+        schedule_id, tenant=principal.tenant, is_operator="platform.jobs" in principal.caps)
+    if not deleted:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
     await request.app.state.auditor.record(
         "schedule.deleted", actor=principal.subject, tenant=principal.tenant or "",
         resource=f"schedule:{schedule_id}", ip=request.client.host if request.client else "")
@@ -115,7 +118,8 @@ async def replay(request: Request, job_id: str,
     await request.app.state.auditor.record(
         "job.replayed", actor=principal.subject, tenant=principal.tenant, resource=f"job:{job_id}",
         ip=request.client.host if request.client else "")
-    return await build_jobs(request).replay(job_id)
+    return await build_jobs(request).replay(
+        job_id, tenant=principal.tenant, is_operator="platform.jobs" in principal.caps)
 
 
 @router.post("/{job_id}/cancel")
@@ -127,7 +131,8 @@ async def cancel(request: Request, job_id: str,
     await request.app.state.auditor.record(
         "job.cancelled", actor=principal.subject, tenant=principal.tenant, resource=f"job:{job_id}",
         ip=request.client.host if request.client else "")
-    return await build_jobs(request).cancel(job_id)
+    return await build_jobs(request).cancel(
+        job_id, tenant=principal.tenant, is_operator="platform.jobs" in principal.caps)
 
 
 @router.get("/stats", dependencies=[Depends(_READ)])

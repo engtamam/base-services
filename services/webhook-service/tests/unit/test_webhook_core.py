@@ -327,3 +327,21 @@ def test_endpoint_health_reports_success_rate_and_circuit():
     h = run(w.health(ep.id))
     assert h["success_count"] == 1 and h["success_rate"] == 1.0 and h["circuit_state"] == "closed"
     assert run(w.health("nope")) is None
+
+
+# ── cross-tenant IDOR on replay_event ────────────────────────────────────────
+def test_replay_event_is_tenant_scoped():
+    st = MemoryDataStore()
+    tr = Transport()
+    w = _svc(st, tr)
+    _ep(w)                                                    # t1 endpoint on user.created
+    r = run(w.dispatch(tenant="t1", event_type="user.created", payload={"a": 1}))
+    event_id = r.get("event_id") or r.get("event", {}).get("id")
+    assert event_id, f"need an event id from dispatch: {r}"
+    before = len(tr.sent)
+    # a tenant-scoped caller from t2 must replay NONE of t1's deliveries
+    out = run(w.replay_event(event_id, tenant="t2", is_operator=False))
+    assert out["replayed"] == 0 and len(tr.sent) == before   # nothing re-fired
+    # the owning tenant (or a platform operator) can
+    out2 = run(w.replay_event(event_id, tenant="t1", is_operator=False))
+    assert out2["replayed"] >= 1

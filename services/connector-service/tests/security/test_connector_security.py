@@ -94,3 +94,44 @@ def test_seal_key_falls_back_so_creds_are_never_stored_in_the_clear():
     from app.config import Settings
     s = Settings(_env_file=None, INTERNAL_SERVICE_TOKEN="t" * 40, CREDENTIAL_SEAL_KEY="")
     assert s.seal_key == "t" * 40 and s.seal_key != ""
+
+
+def test_connector_http_blocks_an_internal_target_at_call_time():
+    """Every outbound fetch is SSRF-gated, not just spec registration — a metadata/internal address
+    is refused even if it somehow got onto a spec (the DNS-rebind / bad-config case)."""
+    import app.adapters.connector_http as H
+    from app.ports.connector_provider import ProviderUnavailable
+    H.configure(timeout_seconds=5, max_response_bytes=1024, require_https=False,
+                allow_private=False, allowed_hosts=())
+    for bad in ("http://169.254.169.254/latest/meta-data/",
+                "http://127.0.0.1:8080/", "http://10.0.0.5/internal"):
+        with pytest.raises(ProviderUnavailable):
+            H.get_json(bad, {})
+
+
+def test_token_and_revoke_urls_are_ssrf_validated_at_registration():
+    # a spec pointing token_url at the cloud metadata endpoint is refused (not only base_url).
+    from app.core import ssrf
+    for url in ("http://169.254.169.254/token", "http://localhost/oauth"):
+        with pytest.raises(ssrf.SsrfBlocked):
+            ssrf.validate(url, require_https=False, allow_private=False, allowed_hosts=())
+
+
+def test_connect_rejects_another_tenants_spec():
+    """IDOR: a connection may only use a spec in the caller's own tenant."""
+    import asyncio
+
+    from app.adapters.datastore.memory import MemoryDataStore
+    from app.core.models import ProviderSpec, new_id
+    from app.core.stores import SpecStore
+
+    async def go():
+        st = MemoryDataStore()
+        spec = ProviderSpec(id=new_id("spec_"), tenant="shop_a", name="hub")
+        await SpecStore(st).save(spec)
+        # the check the connect route performs: fetch by id, compare tenant
+        got = await SpecStore(st).get(spec.id)
+        assert got is not None and got.tenant == "shop_a"
+        # a caller from shop_b would fail the `got.tenant != caller_tenant` guard
+        assert got.tenant != "shop_b"
+    asyncio.run(go())

@@ -241,7 +241,8 @@ async def replay_delivery(request: Request, delivery_id: str, principal: Princip
 @router.post("/events/{event_id}/replay", dependencies=[Depends(_ADMIN)])
 async def replay_event(request: Request, event_id: str,
                        principal: Principal = Depends(_ADMIN)) -> dict:
-    result = await build_webhooks(request).replay_event(event_id)
+    result = await build_webhooks(request).replay_event(
+        event_id, tenant=principal.tenant, is_operator="platform.webhooks" in principal.caps)
     await request.app.state.auditor.record(
         "webhook.replayed", actor=principal.subject, tenant=principal.tenant or "",
         resource=f"event:{event_id}", ip=request.client.host if request.client else "")

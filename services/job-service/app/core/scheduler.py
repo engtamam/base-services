@@ -39,10 +39,15 @@ class Scheduler:
                      next_run_at=self._cron.next_after(cron, now), created=now)
         return await self._schedules.save(s)
 
-    async def update(self, schedule_id: str, **kw) -> Schedule | None:
+    @staticmethod
+    def _owns(s, tenant: str | None, is_operator: bool) -> bool:
+        return s is not None and (is_operator or s.tenant == (tenant or "__none__"))
+
+    async def update(self, schedule_id: str, *, tenant: str | None = None,
+                     is_operator: bool = True, **kw) -> Schedule | None:
         s = await self._schedules.get(schedule_id)
-        if s is None:
-            return None
+        if not self._owns(s, tenant, is_operator):
+            return None                                     # cross-tenant/absent: no update, no leak
         if kw.get("cron"):
             self._cron.validate(kw["cron"])
             s.next_run_at = self._cron.next_after(kw["cron"], self._clock.now())
@@ -51,8 +56,13 @@ class Scheduler:
                 setattr(s, k, v)
         return await self._schedules.save(s)
 
-    async def delete(self, schedule_id: str) -> None:
+    async def delete(self, schedule_id: str, *, tenant: str | None = None,
+                     is_operator: bool = True) -> bool:
+        s = await self._schedules.get(schedule_id)
+        if not self._owns(s, tenant, is_operator):
+            return False                                    # cross-tenant/absent: no delete, no leak
         await self._schedules.delete(schedule_id)
+        return True
 
     async def get(self, schedule_id: str) -> Schedule | None:
         return await self._schedules.get(schedule_id)
