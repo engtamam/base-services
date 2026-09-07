@@ -479,7 +479,12 @@ class BillingService:
             reason = _coupons.status(coupon.to_dict() if coupon else None, now)
             if reason != _coupons.ACTIVE:
                 raise ValueError(f"COUPON_{reason.upper()}")
-            await self._coupons.redeem(coupon_code)
+            # ATOMIC redeem: the cap is enforced inside a CAS, so two concurrent signups cannot both
+            # slip past max_redemptions (the status() check above races otherwise).
+            applied, _count = await self._coupons.redeem(
+                coupon_code, max_redemptions=getattr(coupon, "max_redemptions", None))
+            if not applied:
+                raise ValueError("COUPON_MAX_REDEMPTIONS")
         if coupon and coupon.type == "trial":
             trial_days += int(coupon.value)
         trial_end = now + trial_days * 86400 if trial_days else 0.0
@@ -874,9 +879,14 @@ class BillingService:
             # rather than report. The state has to be enforced where the money is made.
             raise ValueError(f"SUB_NOT_BILLABLE:{sub.status}")
         key = f"cycle:{sub.id}:{int(sub.current_period_end)}"     # deterministic → no double-charge
-        prior = await self._idempo.seen(key)
-        if prior:
-            return await self._invoices.fetch(prior["result"]["invoice_id"]) or Invoice(id="", tenant=sub.tenant)
+        # ATOMIC claim, not get-then-mark: two concurrent runs of the same cycle would each create a
+        # NEW invoice id, so the gateway idempotency key would differ and the card would be charged
+        # TWICE. The claim lets exactly one run proceed; a duplicate replays the invoice or retries.
+        proceed, prior = await self._idempo.claim(key)
+        if prior is not None:
+            return await self._invoices.fetch(prior["invoice_id"]) or Invoice(id="", tenant=sub.tenant)
+        if not proceed:
+            raise ValueError("CYCLE_IN_PROGRESS")     # a concurrent run holds it; the sweep retries
         # A SCHEDULED DOWNGRADE takes effect at THIS renewal: adopt the new plan BEFORE pricing, so the
         # invoice is the new plan at its FULL price for the new period — no proration, no credit, the
         # shop having had full value from the old plan through the period it paid for. `cancel_at_period_end`
@@ -994,8 +1004,13 @@ class BillingService:
             return None
         period = time.strftime("%Y-%m", time.gmtime(sub.current_period_start))
         key = f"overage:{sub.id}:{period}"
-        if await self._idempo.seen(key):
-            return None
+        # Atomic claim — same reasoning as run_cycle: a concurrent double run would double-charge the
+        # overage on two distinct invoice ids.
+        proceed, prior = await self._idempo.claim(key)
+        if prior is not None:
+            return None                                   # already billed this period (unchanged contract)
+        if not proceed:
+            raise ValueError("OVERAGE_IN_PROGRESS")
         units = await self._usage.aggregate(sub.id, metric, sub.current_period_start, sub.current_period_end)
         over = max(0, units - int(price.get("included_units", 0)))
         if over <= 0:

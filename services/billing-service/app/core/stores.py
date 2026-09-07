@@ -172,18 +172,26 @@ class CouponStore(_Repo):
         await self.put(code, row)
         return Coupon.from_dict(row)
 
-    async def redeem(self, code: str) -> int:
-        """Count one use. Returns the new total.
+    async def redeem(self, code: str, *, max_redemptions: int | None = None) -> tuple[bool, int]:
+        """Count one use ATOMICALLY, enforcing the cap. Returns (applied, total).
 
-        Nothing called anything like this before: `redeemed` was declared on the model and never
-        written, so `max_redemptions` was a number an operator set and the service ignored.
+        A get-then-put increment let two concurrent signups both pass a `redeemed < max` check and
+        both increment — exceeding max_redemptions. This is a compare-and-swap loop on the coupon
+        row: the cap is checked and the counter bumped in one indivisible step, so the Nth+1 redeemer
+        gets (False, N) and is refused. `max_redemptions=None`/0 = unlimited.
         """
-        row = await self.get(code)
-        if row is None:
-            return 0
-        row["redeemed"] = int(row.get("redeemed", 0) or 0) + 1
-        await self.put(code, row)
-        return row["redeemed"]
+        for _ in range(8):
+            row = await self.get(code)
+            if row is None:
+                return False, 0
+            current = int(row.get("redeemed", 0) or 0)
+            if max_redemptions and current >= int(max_redemptions):
+                return False, current                     # cap reached — refuse, change nothing
+            expected = int(row.get("version", 0))
+            if await self._store.cas(self.collection, code, expected,
+                                     {**row, "redeemed": current + 1}):
+                return True, current + 1
+        return False, 0                                    # lost the CAS race repeatedly; caller refuses
 
     async def all(self, limit: int = 100) -> list[dict]:
         """The whole coupon catalogue."""
@@ -497,7 +505,13 @@ class LedgerStore(_Repo):
 
 
 class IdempotencyStore(_Repo):
-    """Deterministic idempotency — a double-click / retry can't double-charge."""
+    """Deterministic idempotency — a double-click / retry / two replicas can't double-charge.
+
+    `seen`/`mark` alone are get-then-put: two concurrent runs of the same key both read "not seen"
+    and both proceed. For a renewal that creates a NEW invoice id each time, the gateway idempotency
+    key then differs and the CARD IS CHARGED TWICE. `claim` closes that with an atomic put-if-absent
+    (cas at version 0), so exactly one caller proceeds; the others replay or retry.
+    """
     collection = "idempo"
 
     async def seen(self, key: str) -> dict | None:
@@ -505,6 +519,21 @@ class IdempotencyStore(_Repo):
 
     async def mark(self, key: str, result: dict) -> None:
         await self.put(key, {"key": key, "result": result, "created": iso()})
+
+    async def claim(self, key: str, *, lease_seconds: int = 120) -> tuple[bool, dict | None]:
+        """Returns (proceed, prior_result). proceed=True → this caller owns the operation. A finished
+        row → (False, result) to replay. An unexpired pending claim → (False, None): another caller is
+        mid-operation, retry. A stale/absent row is (re)claimed atomically."""
+        now = now_ts()
+        row = await self._store.get(self.collection, key)
+        if row and "result" in row:
+            return False, row["result"]
+        if row and row.get("status") == "pending" and float(row.get("expires_at", 0)) > now:
+            return False, None
+        expected = int(row.get("version", 0)) if row else 0
+        won = await self._store.cas(self.collection, key, expected,
+                                    {"key": key, "status": "pending", "expires_at": now + lease_seconds})
+        return (True, None) if won else (False, None)
 
 
 class UsageStore(_Repo):

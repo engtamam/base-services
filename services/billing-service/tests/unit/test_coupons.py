@@ -121,8 +121,10 @@ def test_redeeming_counts():
     st = MemoryDataStore()
     b = _svc(st)
     run(b.upsert_coupon(code="SAVE", type="percent", value=10, max_redemptions=2))
-    assert run(CouponStore(st).redeem("SAVE")) == 1
-    assert run(CouponStore(st).redeem("SAVE")) == 2
+    assert run(CouponStore(st).redeem("SAVE")) == (True, 1)
+    assert run(CouponStore(st).redeem("SAVE")) == (True, 2)
+    # atomic cap: the 3rd redeem is refused, counter unchanged
+    assert run(CouponStore(st).redeem("SAVE", max_redemptions=2)) == (False, 2)
 
 
 def test_a_capped_coupon_is_refused_once_it_is_used_up():
