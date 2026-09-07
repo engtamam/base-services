@@ -887,7 +887,7 @@
         ]
       },
       "post": {
-        "description": "Primary ingest \u2014 a service records an audit event here (service-to-service).\n\nIdempotent when the caller supplies `idempotency_key`: a retried append (after a transient\ntimeout) returns the ORIGINAL receipt with `duplicate: true` and adds nothing to the chain.",
+        "description": "Primary ingest \u2014 a service records an audit event here (service-to-service).\n\nIdempotent when the caller supplies `idempotency_key`: a retried append (after a transient\ntimeout) returns the ORIGINAL receipt with `duplicate: true` and adds nothing to the chain.\n\nANTI-SPOOF: when the caller proved a NAMED identity (a signed per-service assertion, caller != \"\"),\nthe recorded `service` must equal that identity \u2014 a service cannot forge an audit event attributed\nto another service. Under the shared-token driver (caller == \"\", the non-breaking default) callers\nare indistinguishable by design, so the control there is the network policy + the per-route\nallow-list; this check adds no restriction until per-caller assertions are configured.",
         "operationId": "internal_audit_internal_audit_post",
         "parameters": [
           {
