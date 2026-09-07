@@ -23,7 +23,7 @@ from app.api.auth import Principal, require_user
 from app.api.authz import require_any_capability
 from app.api.ratelimit import rate_limit
 from app.config import get_settings
-from app.core.review import ReviewRefused, ReviewService
+from app.core.review import ReviewNotFound, ReviewRefused, ReviewService
 from app.core.stores import IdentityRegistry, VerificationStore
 from app.core.verification_service import UnsupportedClaim, VerificationService
 
@@ -113,14 +113,17 @@ async def review_queue(request: Request, principal: Principal = Depends(_READ)) 
     return {"queue": await build_review(request).queue(principal.tenant)}
 
 
-@router.post("/review/{verification_id}", dependencies=[Depends(_REVIEW)])
+@router.post("/review/{verification_id}", dependencies=[Depends(_REVIEW), Depends(rate_limit)])
 async def decide_review(request: Request, verification_id: str, body: DecideIn,
                         principal: Principal = Depends(_REVIEW)) -> dict:
     """Approve or refuse a claim. The most privileged operation in this service."""
     try:
         record = await build_review(request).decide(
-            verification_id, approve=body.approve, reviewer=principal.subject,
-            note=body.note, document_id=body.document_id)
+            verification_id, tenant=principal.tenant, approve=body.approve,
+            reviewer=principal.subject, note=body.note, document_id=body.document_id)
+    except ReviewNotFound as exc:
+        # A record in another tenant (or none) is a 404 — never a hint that it exists elsewhere.
+        raise HTTPException(404, "NOT_FOUND") from exc
     except ReviewRefused as exc:
         # 409: the request is fine, the verification's STATE forbids it — already settled, or the
         # reviewer is the subject. A 400 would tell the caller to fix syntax that is not wrong.

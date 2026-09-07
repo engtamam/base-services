@@ -65,6 +65,28 @@ def _guard_caps(principal: Principal, caps: list[str] | None) -> None:
             f"capabilities not assignable by a tenant admin: {', '.join(bad)}")
 
 
+def _guard_policy(principal: Principal, *, effect: str, action: str, resource: str) -> None:
+    """Refuse a tenant-scoped caller creating an ALLOW policy that escalates beyond their tenant.
+
+    The decision engine treats a matching ABAC allow-policy as equivalent to holding the capability
+    (AbacEngine matches action/resource by fnmatch, an empty condition always holds), so a policy is
+    a capability grant by another name — and `create_policy` must apply the SAME escalation guard the
+    role/assignment routes do, or an `authz.manage` holder writes {allow, action:'*', resource:'*'}
+    and grants themselves everything. A platform operator (`platform.authz`) is unrestricted.
+
+    Two checks, because `forbidden_caps` alone misses the worst case: a WILDCARD action/resource is
+    refused outright (it grants more than any single named capability, and no allowlist lists '*'),
+    and a concrete action is run through the same capability denylist/allowlist as a role capability.
+    Deny policies never escalate, so they are unrestricted.
+    """
+    if "platform.authz" in principal.caps or effect != "allow":
+        return
+    if "*" in (action or "") or "*" in (resource or ""):
+        raise HTTPException(status.HTTP_403_FORBIDDEN,
+                            "a tenant admin cannot create a wildcard allow policy")
+    _guard_caps(principal, [action])
+
+
 class RoleIn(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     capabilities: list[str] = Field(default_factory=list)
@@ -128,33 +150,32 @@ async def get_role(request: Request, role_id: str, principal: Principal = Depend
 async def update_role(request: Request, role_id: str, body: RoleUpdate,
                       principal: Principal = Depends(_ADMIN)) -> dict:
     _guard_caps(principal, body.capabilities)
-    # Write-ahead: a critical action the log cannot take must not happen at all, so this
-    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
-    # already succeeded, and leave it unrecorded.
-    await request.app.state.auditor.record(
-        "role.updated", actor=principal.subject, tenant=principal.tenant, resource=f"role:{role_id}",
-        ip=request.client.host if request.client else "")
     svc = build_authz(request)
     role = await svc.get_role(role_id)
     if role is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    # Authorize (ownership) BEFORE the write-ahead audit, so a rejected cross-tenant attempt is not
+    # recorded as a successful update. Still write-ahead of the MUTATION, which is what matters for
+    # the log-cannot-record invariant.
     _guard_tenant(principal, role.tenant)
+    await request.app.state.auditor.record(
+        "role.updated", actor=principal.subject, tenant=principal.tenant, resource=f"role:{role_id}",
+        ip=request.client.host if request.client else "")
     return (await svc.update_role(role, body.capabilities, body.description)).to_dict()
 
 
 @router.delete("/roles/{role_id}")
 async def delete_role(request: Request, role_id: str, principal: Principal = Depends(_ADMIN)) -> dict:
-    # Write-ahead: a critical action the log cannot take must not happen at all, so this
-    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
-    # already succeeded, and leave it unrecorded.
-    await request.app.state.auditor.record(
-        "role.deleted", actor=principal.subject, tenant=principal.tenant, resource=f"role:{role_id}",
-        ip=request.client.host if request.client else "")
     svc = build_authz(request)
     role = await svc.get_role(role_id)
     if role is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    # Authorize ownership BEFORE the write-ahead audit (a rejected cross-tenant delete must not log
+    # as a deletion), still ahead of the mutation itself.
     _guard_tenant(principal, role.tenant)
+    await request.app.state.auditor.record(
+        "role.deleted", actor=principal.subject, tenant=principal.tenant, resource=f"role:{role_id}",
+        ip=request.client.host if request.client else "")
     await svc.delete_role(role_id)
     return {"deleted": True}
 
@@ -165,10 +186,13 @@ async def create_policy(request: Request, body: PolicyIn, principal: Principal =
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
+    tenant = _op_tenant(principal, body.tenant)
+    # Authorize BEFORE the write-ahead audit: a rejected escalation must not be logged as a created
+    # policy. The guard closes the privilege-escalation hole (an allow policy is a capability grant).
+    _guard_policy(principal, effect=body.effect, action=body.action, resource=body.resource)
     await request.app.state.auditor.record(
         "policy.created", actor=principal.subject, tenant=principal.tenant, resource="policy",
         ip=request.client.host if request.client else "")
-    tenant = _op_tenant(principal, body.tenant)
     p = await build_authz(request).create_policy(tenant, body.effect, body.action, body.resource,
                                                  body.condition, body.priority, body.description)
     return p.to_dict()
@@ -193,17 +217,16 @@ async def view_policy(request: Request, policy_id: str,
 
 @router.delete("/policies/{policy_id}")
 async def delete_policy(request: Request, policy_id: str, principal: Principal = Depends(_ADMIN)) -> dict:
-    # Write-ahead: a critical action the log cannot take must not happen at all, so this
-    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
-    # already succeeded, and leave it unrecorded.
-    await request.app.state.auditor.record(
-        "policy.deleted", actor=principal.subject, tenant=principal.tenant, resource=f"policy:{policy_id}",
-        ip=request.client.host if request.client else "")
     svc = build_authz(request)
     p = await svc.get_policy(policy_id)
     if p is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    # Authorize ownership BEFORE the write-ahead audit (a rejected cross-tenant delete must not log
+    # as a deletion), still ahead of the mutation itself.
     _guard_tenant(principal, p.tenant)
+    await request.app.state.auditor.record(
+        "policy.deleted", actor=principal.subject, tenant=principal.tenant, resource=f"policy:{policy_id}",
+        ip=request.client.host if request.client else "")
     await svc.delete_policy(policy_id)
     return {"deleted": True}
 

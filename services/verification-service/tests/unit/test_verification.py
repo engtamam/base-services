@@ -20,7 +20,7 @@ from app.adapters.verifier.http import HttpVerifier
 from app.adapters.verifier.null import NullVerifier
 from app.core.identity_ref import claim_ref, normalise
 from app.core.models import ERROR, EXPIRED, PENDING, REFUSED, VERIFIED, Verification, new_id
-from app.core.review import ReviewRefused, ReviewService
+from app.core.review import ReviewNotFound, ReviewRefused, ReviewService
 from app.core.stores import IdentityRegistry, VerificationStore
 from app.core.verification_service import UnsupportedClaim, VerificationService
 from app.ports import verifier as vp
@@ -242,7 +242,7 @@ def test_a_reviewer_cannot_decide_their_own_claim():
     v = _pending(store, subject="sub_rev")
     r = ReviewService(store=store, clock=_Clock())
     with pytest.raises(ReviewRefused, match="own claim"):
-        run(r.decide(v.id, approve=True, reviewer="sub_rev"))
+        run(r.decide(v.id, tenant="acme", approve=True, reviewer="sub_rev"))
 
 
 def test_a_settled_verification_cannot_be_re_decided():
@@ -250,28 +250,40 @@ def test_a_settled_verification_cannot_be_re_decided():
     store = VerificationStore(MemoryDataStore())
     v = _pending(store)
     r = ReviewService(store=store, clock=_Clock())
-    run(r.decide(v.id, approve=True, reviewer="sub_a"))
+    run(r.decide(v.id, tenant="acme", approve=True, reviewer="sub_a"))
     with pytest.raises(ReviewRefused, match="already"):
-        run(r.decide(v.id, approve=False, reviewer="sub_b"))
+        run(r.decide(v.id, tenant="acme", approve=False, reviewer="sub_b"))
 
 
 def test_two_eyes_needs_two_different_reviewers():
     store = VerificationStore(MemoryDataStore())
     v = _pending(store)
     r = ReviewService(store=store, clock=_Clock(), two_eyes=True)
-    first = run(r.decide(v.id, approve=True, reviewer="sub_a"))
+    first = run(r.decide(v.id, tenant="acme", approve=True, reviewer="sub_a"))
     assert first.verdict == PENDING                 # one signature is not a decision
-    same = run(r.decide(v.id, approve=True, reviewer="sub_a"))
+    same = run(r.decide(v.id, tenant="acme", approve=True, reviewer="sub_a"))
     assert same.verdict == PENDING                  # approving twice yourself is one pair of eyes
-    second = run(r.decide(v.id, approve=True, reviewer="sub_b"))
+    second = run(r.decide(v.id, tenant="acme", approve=True, reviewer="sub_b"))
     assert second.verdict == VERIFIED
+
+
+def test_a_reviewer_cannot_decide_another_tenants_claim():
+    """Cross-tenant IDOR: a reviewer holding verification.review in tenant B must not decide a
+    record that belongs to tenant 'acme' by id — it reads as a 404, no existence leak."""
+    store = VerificationStore(MemoryDataStore())
+    v = _pending(store)                                  # tenant 'acme'
+    r = ReviewService(store=store, clock=_Clock())
+    with pytest.raises(ReviewNotFound):
+        run(r.decide(v.id, tenant="other_shop", approve=True, reviewer="rev_b"))
+    # and the record is untouched — still pending in its own tenant
+    assert run(store.get(v.id)).verdict == PENDING
 
 
 def test_a_review_records_who_decided():
     store = VerificationStore(MemoryDataStore())
     v = _pending(store)
     r = ReviewService(store=store, clock=_Clock())
-    out = run(r.decide(v.id, approve=True, reviewer="sub_rev1", note="checked CR certificate"))
+    out = run(r.decide(v.id, tenant="acme", approve=True, reviewer="sub_rev1", note="checked CR certificate"))
     assert out.evidence["reviewer"] == "sub_rev1"
     assert out.evidence["provider"] == "manual"
 

@@ -34,6 +34,11 @@ class ReviewRefused(ValueError):
     """The review cannot be recorded as given. Never downgraded to a warning."""
 
 
+class ReviewNotFound(LookupError):
+    """No such verification IN THE CALLER'S TENANT. A cross-tenant id reads identically to a missing
+    one — the existence of another tenant's record is never leaked (a 404, not a 409)."""
+
+
 class ReviewService:
     def __init__(self, *, store, clock, ttl_days: dict[str, int] | None = None,
                  two_eyes: bool = False, auditor=None) -> None:
@@ -48,16 +53,21 @@ class ReviewService:
         rows = await self._store.pending_reviews(tenant, limit=limit)
         return [r.public() for r in rows]
 
-    async def decide(self, verification_id: str, *, approve: bool, reviewer: str,
+    async def decide(self, verification_id: str, *, tenant: str, approve: bool, reviewer: str,
                      note: str = "", document_id: str = "") -> Any:
         """Record a reviewer's decision.
 
         `reviewer` is a pseudonym, like every other actor on this platform — the audit trail must
         say WHICH reviewer without the review queue becoming a staff directory.
+
+        `tenant` is the CALLER's tenant and is enforced: a decision may only be made on a record in
+        the caller's own tenant. Without this a reviewer holding `verification.review` in one tenant
+        could approve/refuse another tenant's claim by id (a cross-tenant IDOR) — the review capability
+        is tenant-scoped, so the record must be too. A cross-tenant or missing id is an identical 404.
         """
         record = await self._store.get(verification_id)
-        if record is None:
-            raise ReviewRefused("no such verification")
+        if record is None or record.tenant != tenant:
+            raise ReviewNotFound("no such verification")
         if record.verdict in (VERIFIED, REFUSED):
             # Settled. Re-deciding would rewrite a decision someone already relied on; a change of
             # mind is a NEW verification, which keeps both decisions in the history.

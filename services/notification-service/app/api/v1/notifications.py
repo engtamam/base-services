@@ -25,6 +25,12 @@ notifications_router = APIRouter(prefix="/api/v1/notifications", tags=["notifica
 templates_router = APIRouter(prefix="/api/v1/templates", tags=["templates"])
 wa_templates_router = APIRouter(prefix="/api/v1/whatsapp/templates", tags=["whatsapp-templates"])
 _WA_CAP = require_capability("notifications.templates")
+# The GLOBAL notification-template catalogue and the cross-tenant delivery log are PLATFORM surfaces
+# (one shared row per template key; deliveries span every tenant). They must NOT share the per-tenant
+# WhatsApp-template capability: a shop that can edit its own WhatsApp templates could otherwise
+# overwrite the shared 'password_reset' email every tenant renders from, or read every tenant's
+# delivery log. A distinct platform capability fences them.
+_PLATFORM_CAP = require_capability("platform.notifications")
 
 
 def _wa_registry(request: Request) -> WhatsAppTemplateRegistry:
@@ -222,6 +228,11 @@ async def test_send_wa(request: Request, body: WaTestSendIn,
         ok, _driver, mid = await asyncio.to_thread(
             provider.send, to, body.template_name, body.language, body.variables)
     else:
+        if not get_settings().NOTIFY_TEST_SEND_ALLOW_FREE_TEXT:
+            # Free-text diagnostic sends bypass consent and the approved-template catalogue — a
+            # spam vector. OFF by default; an operator opts in with NOTIFY_TEST_SEND_ALLOW_FREE_TEXT.
+            # Template mode (policy-compliant) remains available for a connection test.
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "FREE_TEXT_TEST_SEND_DISABLED")
         if not body.body:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "body required for mode=text")
         ok, _driver, mid = await asyncio.to_thread(provider.send_text, to, body.body)
@@ -330,7 +341,7 @@ async def set_preferences(request: Request, body: PreferenceIn,
 
 
 # ── Admin: template management (capability-gated) ────────────────────────────
-@templates_router.post("", dependencies=[Depends(require_capability("notifications.templates"))])
+@templates_router.post("", dependencies=[Depends(_PLATFORM_CAP)])
 async def upsert_template(request: Request, body: TemplateIn) -> dict:
     tmpl = Template(key=body.key, locale=body.locale, subject=body.subject,
                     body=body.body, version=body.version)
@@ -338,7 +349,7 @@ async def upsert_template(request: Request, body: TemplateIn) -> dict:
     return tmpl.to_dict()
 
 
-@templates_router.get("", dependencies=[Depends(require_capability("notifications.templates"))])
+@templates_router.get("", dependencies=[Depends(_PLATFORM_CAP)])
 async def list_templates(request: Request) -> dict:
     rows = await TemplateStore(request.app.state.container.datastore).list()
     return {"templates": rows}
@@ -356,7 +367,7 @@ def _mask_recipient(recipient: str) -> str:
 
 
 @notifications_router.get("/deliveries",
-                          dependencies=[Depends(require_capability("notifications.templates"))])
+                          dependencies=[Depends(_PLATFORM_CAP)])
 async def list_deliveries(request: Request,
                           principal: Principal = Depends(require_user)) -> dict:
     """Recent delivery attempts across the platform — status, channel, template, provider and the

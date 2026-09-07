@@ -41,6 +41,30 @@ class ComplianceErasure:
         ref = subject_ref(self._salt, tenant, subject)
         erased: list[str] = []
 
+        # LEGAL HOLD is checked HERE, in the erasure itself — not only in the DsarService orchestrator.
+        # This is the single seam every erase path funnels through, including the /internal/privacy/erase
+        # route that calls it directly; enforcing the hold only upstream let a direct caller delete
+        # held data. A hold an erasure could delete is not a hold: under an active hold this is a
+        # no-op that reports WHY nothing was erased, and does NOT pseudonymise the proof either
+        # (altering data under legal hold is itself a violation).
+        import time as _time
+        now = _time.time()
+        all_holds, _ = await self._store.find(_HOLDS, {"tenant": tenant, "subject": subject},
+                                              limit=100, sort=("placed_at", "asc"))
+        active_holds = [h for h in all_holds
+                        if h.get("active", True) and (not h.get("expires_at") or now < h["expires_at"])]
+        if active_holds:
+            return {
+                "service": self.service,
+                "subject_ref": ref,
+                "erased": [],
+                "retained": [{"what": f"legal_holds:{len(active_holds)}", "basis": "legal_hold",
+                              "why": "an active legal hold blocks erasure — all subject data is "
+                                     "retained unaltered until the hold is released"}],
+                "already_absent": False,
+                "blocked_by_legal_hold": True,
+            }
+
         rows, _ = await self._store.find(_CONSENT, {"tenant": tenant, "subject": subject},
                                          limit=1000, sort=("updated_at", "asc"))
         for r in rows:
@@ -61,15 +85,14 @@ class ComplianceErasure:
             if not cursor:
                 break
 
-        holds, _ = await self._store.find(_HOLDS, {"tenant": tenant, "subject": subject},
-                                          limit=100, sort=("placed_at", "asc"))
-
         retained = []
         if proofs:
             retained.append({"what": f"consent_proof:{proofs}", "basis": RETENTION_BASIS,
                              "why": "append-only evidence of what was agreed and when; subject pseudonymised"})
-        if holds:
-            retained.append({"what": f"legal_holds:{len(holds)}", "basis": "legal_hold",
+        if all_holds:
+            # No ACTIVE hold reached here (an active one returns early above); these are released or
+            # expired holds, retained as historical record.
+            retained.append({"what": f"legal_holds:{len(all_holds)}", "basis": "legal_hold",
                              "why": "a hold an erasure could delete is not a hold"})
 
         return {

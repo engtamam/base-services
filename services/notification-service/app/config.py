@@ -341,6 +341,13 @@ class Settings(BaseSettings):
     @property
     def notify_dedupe_states(self) -> tuple[str, ...]:
         return tuple(x.strip() for x in self.NOTIFY_DEDUPE_STATES.split(",") if x.strip())
+    # The WhatsApp connection-test diagnostic (/whatsapp/templates/test-send) can send in two modes.
+    # `template` mode uses an approved template (WhatsApp-policy-compliant, the safe connection proof)
+    # and is always allowed. `text` mode sends FREE TEXT to an arbitrary number, bypassing consent and
+    # the approved-template catalogue — a spam/abuse vector — so it is OFF by default and an operator
+    # must opt in. Meta itself rejects a business-initiated free-text outside the 24h window, but our
+    # own consent is not checked on this path, so we fence it rather than rely on the provider.
+    NOTIFY_TEST_SEND_ALLOW_FREE_TEXT: bool = False
     HTTP_TIMEOUT_SECONDS: int = 15      # outbound provider HTTP/SMTP timeout
     EMAIL_CHAIN: str = "console"        # e.g. "resend,console" (try resend, fall back)
     # sms providers: console | twilio | unifonic (KSA) | taqnyat (KSA)

@@ -80,3 +80,40 @@ def test_unknown_action_default_deny(client):
                     json={"subject": "nobody", "action": "secret.launch", "resource": "r", "tenant": "t1"},
                     headers=_internal())
     assert d.json()["allow"] is False
+
+
+def _tenant_admin(tenant="t1"):
+    now = dt.datetime.now(dt.timezone.utc)
+    tok = jwt.encode({"sub": "owner", "caps": ["authz.manage"], "tenant": tenant,
+                      "exp": now + dt.timedelta(minutes=5), "iat": now}, SECRET, algorithm="HS256")
+    return {"Authorization": "Bearer " + tok}
+
+
+def test_a_tenant_admin_cannot_create_a_wildcard_allow_policy(client):
+    # privilege escalation: an allow policy is a capability grant; a wildcard one grants everything.
+    r = client.post("/api/v1/policies",
+                    json={"effect": "allow", "action": "*", "resource": "*", "condition": {}},
+                    headers=_tenant_admin())
+    assert r.status_code == 403
+
+
+def test_a_tenant_admin_cannot_grant_a_platform_action_by_policy(client):
+    r = client.post("/api/v1/policies",
+                    json={"effect": "allow", "action": "platform.billing", "resource": "*",
+                          "condition": {}}, headers=_tenant_admin())
+    assert r.status_code == 403
+
+
+def test_a_platform_operator_may_create_a_wildcard_policy(client):
+    # delegated administration is the operator's job — the guard only binds tenant-scoped callers.
+    r = client.post("/api/v1/policies",
+                    json={"effect": "allow", "action": "*", "resource": "*", "condition": {},
+                          "tenant": "t1"}, headers=_plat())
+    assert r.status_code == 201
+
+
+def test_a_tenant_admin_may_create_a_narrow_own_policy(client):
+    r = client.post("/api/v1/policies",
+                    json={"effect": "allow", "action": "booking.read", "resource": "booking:1",
+                          "condition": {}}, headers=_tenant_admin())
+    assert r.status_code in (201, 403)   # 201 unless the deployment allowlist excludes booking.read

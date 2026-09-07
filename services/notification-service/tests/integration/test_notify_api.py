@@ -33,7 +33,9 @@ def client():
     from app.config import get_settings
 
     saved = dict(os.environ)
-    c = _make_app()
+    # Enable the free-text connection-test diagnostic so its send-path tests exercise a real send;
+    # the default-OFF security posture is covered separately (test_wa_test_send_free_text_off_by_default).
+    c = _make_app(NOTIFY_TEST_SEND_ALLOW_FREE_TEXT="true")
     yield c
     os.environ.clear()
     os.environ.update(saved)
@@ -59,7 +61,8 @@ def _internal():
 
 
 def _seed_template(client, key="welcome", locale="en", subject="Hi $name", body="Hello $name"):
-    admin = _user("admin", caps=["notifications.templates"])
+    # The GLOBAL template catalogue is a platform surface now (a shop cannot overwrite shared templates).
+    admin = _user("admin", caps=["platform.notifications"])
     return client.post("/api/v1/templates",
                        json={"key": key, "locale": locale, "subject": subject, "body": body},
                        headers=admin)
@@ -70,8 +73,31 @@ def test_template_admin_requires_capability(client):
     assert client.post("/api/v1/templates",
                        json={"key": "k", "locale": "en", "subject": "s", "body": "b"},
                        headers=_user("u", caps=[])).status_code == 403
-    # with cap -> 200
+    # the per-tenant WhatsApp-template cap is NOT enough for the shared global catalogue (escalation
+    # fix): a shop must not overwrite templates every tenant renders from.
+    assert client.post("/api/v1/templates",
+                       json={"key": "k", "locale": "en", "subject": "s", "body": "b"},
+                       headers=_user("u", caps=["notifications.templates"])).status_code == 403
+    # the platform capability -> 200
     assert _seed_template(client).status_code == 200
+
+
+def test_wa_test_send_free_text_off_by_default():
+    # Free-text diagnostic sends are a spam vector and OFF unless an operator opts in.
+    from app.config import get_settings
+    saved = dict(os.environ)
+    try:
+        # Explicitly false (the module `client` fixture leaves it "true" in os.environ otherwise).
+        app = _make_app(NOTIFY_TEST_SEND_ALLOW_FREE_TEXT="false")
+        app.app.state.provider_pool = _pool_with(_FakeWaDriver("wamid.X"))
+        r = app.post(_TS, json={"to": "+966500001234", "phone_number_id": "pid",
+                                "mode": "text", "body": "hi"},
+                     headers=_user("op", caps=["notifications.templates"], tenant="acme"))
+        assert r.status_code == 403      # free-text refused by default (detail masked to FORBIDDEN)
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+        get_settings.cache_clear()
 
 
 def test_internal_notify_requires_token(client):
@@ -196,9 +222,13 @@ def test_operator_delivery_log_masks_recipients_and_needs_the_cap(client):
                       "template_key": "welcome", "variables": {"name": "Sara"}},
                 headers=_internal())
 
-    op = _user("op", caps=["notifications.templates"])
+    # The cross-tenant delivery log is a platform surface (masked recipients across every tenant).
+    op = _user("op", caps=["platform.notifications"])
     r = client.get("/api/v1/notifications/deliveries", headers=op)
     assert r.status_code == 200
+    # the per-tenant WhatsApp-template cap must NOT reach the cross-tenant delivery log
+    assert client.get("/api/v1/notifications/deliveries",
+                      headers=_user("op2", caps=["notifications.templates"])).status_code == 403
     rows = r.json()["deliveries"]
     assert rows, "the delivery was recorded but the log is empty"
     # The recipient is masked — enough to correlate, never a harvestable address.

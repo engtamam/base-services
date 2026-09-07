@@ -116,7 +116,14 @@ class NotificationService:
         # password reset — is sent under contract rather than consent, and gating those would
         # break the platform while protecting nobody.
         purpose = self._consent_purposes.get(event or "") or self._consent_purposes.get(template_key)
-        if purpose and user_id:
+        if purpose:
+            if not user_id:
+                # A consent-gated purpose (e.g. marketing) with NO subject to check consent for must
+                # FAIL CLOSED, never silently send. Skipping the check here was the hole: a marketing
+                # send with no user_id went out with no lawful-basis check and no distinguishing trace.
+                return await self._finish(idempotency_key, await self._record(
+                    recipient, channel, template_key, "consent_no_subject", tenant=tenant or "",
+                    error=f"{purpose}: a consent-gated send requires a user_id to check consent for"))
             if not tenant:
                 # A gated template with NO tenant is a misconfiguration, not a refusal: consent is
                 # keyed by (tenant, subject, purpose), so an empty tenant can only ever deny. Logging
@@ -285,7 +292,12 @@ class NotificationService:
         # Consent — same rule as notify(): only a template MAPPED to a purpose is gated, and only with a
         # subject to key on. A carousel to a consented (or contract-basis) audience passes untouched.
         purpose = self._consent_purposes.get(event or "") or self._consent_purposes.get(template_name)
-        if purpose and user_id:
+        if purpose:
+            if not user_id:
+                # Fail closed: a consent-gated carousel with no subject to check must not send.
+                return await self._finish(idempotency_key, await self._record(
+                    recipient, "whatsapp", tk, "consent_no_subject", tenant=tenant or "",
+                    error=f"{purpose}: a consent-gated send requires a user_id to check consent for"))
             if not tenant:
                 return await self._finish(idempotency_key, await self._record(
                     recipient, "whatsapp", tk, "consent_no_tenant", tenant=tenant or "",
