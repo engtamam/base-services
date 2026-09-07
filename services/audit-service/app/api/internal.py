@@ -45,7 +45,7 @@ async def require_internal_token(
     x_internal_token: str | None = Header(default=None, alias=_HEADER),
     x_internal_assertion: str | None = Header(default=None, alias=_ASSERTION_HEADER),
     settings: Settings = Depends(get_settings),
-) -> None:
+):
     """Authenticate the internal caller, then authorise it for THIS route. The name is unchanged so
     every existing `Depends(require_internal_token)` keeps working, but it now does two things:
 
@@ -69,6 +69,7 @@ async def require_internal_token(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "UNAUTHORIZED")
     if not resolve_internal_policy(settings).permits(request.url.path, identity.caller):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "FORBIDDEN")
+    return identity
 
 
 @router.post("/audit/enforce-retention", dependencies=[Depends(require_internal_token)])
@@ -167,14 +168,24 @@ async def internal_query(request: Request,
     return {"events": events, "count": len(events), "next_cursor": next_cursor}
 
 
-@router.post("/audit", dependencies=[Depends(require_internal_token)])
+@router.post("/audit")
 async def internal_audit(request: Request, body: AuditIn,
+                         identity=Depends(require_internal_token),
                          settings: Settings = Depends(get_settings)) -> dict:
     """Primary ingest — a service records an audit event here (service-to-service).
 
     Idempotent when the caller supplies `idempotency_key`: a retried append (after a transient
     timeout) returns the ORIGINAL receipt with `duplicate: true` and adds nothing to the chain.
+
+    ANTI-SPOOF: when the caller proved a NAMED identity (a signed per-service assertion, caller != ""),
+    the recorded `service` must equal that identity — a service cannot forge an audit event attributed
+    to another service. Under the shared-token driver (caller == "", the non-breaking default) callers
+    are indistinguishable by design, so the control there is the network policy + the per-route
+    allow-list; this check adds no restriction until per-caller assertions are configured.
     """
+    caller = getattr(identity, "caller", "") or ""
+    if caller and body.service != caller:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "SERVICE_MISMATCH")
     try:
         receipt, duplicate = await build_audit(request).record_idempotent(
             idempotency_key=body.idempotency_key,
