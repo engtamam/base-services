@@ -395,3 +395,55 @@ def test_tenants_are_isolated():
     w = _svc()
     run(w.credit(tenant="a", fund="cash", amount=100, source="x"))
     assert run(w.balance("b"))["balance"] == 0
+
+
+# ── idempotency is ATOMIC under concurrency (not get-then-put) ────────────────
+def test_two_concurrent_same_source_spends_apply_exactly_once():
+    """The TOCTOU race: two requests carrying the SAME source (a redelivered webhook, two replicas
+    draining one queue message) must never both apply the spend. Exactly one mutates; the other
+    either replays the result or is told to retry — and the balance drops once."""
+    w = _svc()
+    run(w.credit(tenant="t", fund="cash", amount=1_000_000, source="seed"))
+    before = run(w.balance("t"))["funds"]["cash"]
+
+    async def both():
+        import asyncio
+        return await asyncio.gather(
+            w.spend(tenant="t", net=1000, source="dup"),
+            w.spend(tenant="t", net=1000, source="dup"),
+            return_exceptions=True)
+
+    results = run(both())
+    ok = [r for r in results if isinstance(r, dict)]
+    errs = [r for r in results if isinstance(r, Exception)]
+    # at least one succeeded; any non-dict is a Conflict (retryable), never a second real spend
+    assert ok, f"no spend succeeded: {results}"
+    assert all(isinstance(e, Conflict) for e in errs), f"unexpected error: {errs}"
+    after = run(w.balance("t"))["funds"]["cash"]
+    # gross of 1000 net @ 15% VAT = 1150, debited EXACTLY ONCE
+    assert before - after == 1150, f"double-spend: {before}->{after}"
+
+
+def test_a_sequential_retry_of_the_same_source_replays_not_recharges():
+    w = _svc()
+    run(w.credit(tenant="t", fund="cash", amount=1_000_000, source="seed"))
+    first = run(w.spend(tenant="t", net=1000, source="dup2"))
+    again = run(w.spend(tenant="t", net=1000, source="dup2"))
+    assert again.get("idempotent") is True and again["spent"] == first["spent"]
+    # only one debit total
+    bal = run(w.balance("t"))["funds"]["cash"]
+    assert 1_000_000 - bal == 1150
+
+
+def test_a_retry_while_the_winner_is_still_pending_is_refused_not_reapplied():
+    """A duplicate that retries WHILE the original is mid-mutation must be refused (Conflict), never
+    allowed to proceed — otherwise it double-applies before the winner finalizes."""
+    w = _svc()
+    run(w.credit(tenant="t", fund="cash", amount=1_000_000, source="seed"))
+    # simulate the winner having claimed but not yet finalized: an unexpired pending idempo row
+    run(w._store.put("wallet_idempo", "t|spend|dupP",
+                     {"status": "pending", "expires_at": w._clock.now() + 60}))
+    with pytest.raises(Conflict):
+        run(w.spend(tenant="t", net=1000, source="dupP"))
+    # nothing debited
+    assert run(w.balance("t"))["funds"]["cash"] == 1_000_000

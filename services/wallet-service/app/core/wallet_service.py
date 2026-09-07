@@ -209,18 +209,44 @@ class WalletService:
         return {"tenant": tenant, "consistent": stored == derived, "stored": stored,
                 "derived": derived, "entries": w.seq}
 
-    # ── idempotency (keyed; never a ledger scan) ────────────────────────────────
-    async def _replay(self, tenant: str, op: str, source: str) -> dict | None:
+    # ── idempotency (keyed, ATOMIC; never a ledger scan) ────────────────────────
+    # A get-then-put idempotency check has a TOCTOU race: two requests carrying the SAME source (a
+    # redelivered webhook, two replicas draining one queue message) both read "not seen", both apply
+    # the money, and the source is charged twice. The claim is therefore ATOMIC — a put-if-absent via
+    # cas(key, expected_version=0, ...) — so exactly one caller wins the right to mutate. A concurrent
+    # duplicate either replays the finished result or, while the winner is mid-flight, is told to
+    # retry (Conflict) and gets the replay on its next attempt. Same guarantee as billing's
+    # SettlementStore.claim_identity, applied to every money op here.
+    async def _claim(self, tenant: str, op: str, source: str) -> tuple[bool, dict | None]:
+        """Returns (proceed, prior_result). proceed=True → this caller owns the mutation.
+        prior_result set → a finished duplicate to replay. (False, None) → a concurrent attempt holds
+        the claim; the caller must not mutate (raise Conflict, the client retries)."""
         if not source:
-            return None
-        row = await self._store.get(_IDEMPO, f"{tenant}|{op}|{source}")
-        if row and float(row.get("expires_at", 0)) > self._clock.now():
-            return {**row["result"], "idempotent": True}
-        return None
+            return True, None                                # opt-out of idempotency
+        key = f"{tenant}|{op}|{source}"
+        now = self._clock.now()
+        row = await self._store.get(_IDEMPO, key)
+        if row and "result" in row and float(row.get("expires_at", 0)) > now:
+            return False, {**row["result"], "idempotent": True}     # finished → replay
+        if row and row.get("status") == "pending" and float(row.get("expires_at", 0)) > now:
+            # Another caller is mid-mutation (unexpired claim). The loser must NOT re-claim — that
+            # would let a retry proceed while the winner is still applying the money (double spend).
+            # It retries; by then the winner has finalized (replay) or the lease lapsed (re-claim).
+            return False, None
+        # Absent, or a STALE claim/result (winner presumably died): claim atomically. The pending
+        # claim gets a SHORT lease so a crashed winner does not block retries for the full result TTL.
+        expected = int(row.get("version", 0)) if row else 0
+        lease = int(self._cfg.get("idempotency_claim_lease_seconds", 60) or 60)
+        won = await self._store.cas(_IDEMPO, key, expected,
+                                    {"status": "pending", "expires_at": now + lease})
+        return (True, None) if won else (False, None)
 
-    async def _remember(self, tenant: str, op: str, source: str, result: dict) -> None:
+    async def _finalize(self, tenant: str, op: str, source: str, result: dict) -> None:
         if not source:
             return
+        # Only the caller that WON the claim finalizes, so there is no contention on this key — a
+        # plain put is safe. A late loser never clobbers it: _claim returns the finished result
+        # (replay) before it would ever attempt to re-claim, because the row now carries "result".
         await self._store.put(_IDEMPO, f"{tenant}|{op}|{source}",
                               {"result": result,
                                "expires_at": self._clock.now() + int(self._cfg["idempotency_ttl"])})
@@ -233,9 +259,11 @@ class WalletService:
         require_non_negative(amount, "amount")
         if fund not in self._names:
             raise WalletError(f"UNKNOWN_FUND:{fund}")
-        prior = await self._replay(tenant, CREDIT, source)
-        if prior:
+        proceed, prior = await self._claim(tenant, CREDIT, source)
+        if prior is not None:
             return prior
+        if not proceed:
+            raise Conflict("WALLET_OP_IN_PROGRESS")
 
         entry = self._entry(tenant, CREDIT, {fund: int(amount)}, +1, source=source, reason=reason)
         out = await self._mutate(tenant, funds_delta={fund: int(amount)}, entry=entry)
@@ -247,7 +275,7 @@ class WalletService:
             out["grant_id"] = grant.id
 
         result = {"credited": int(amount), "fund": fund, **out}
-        await self._remember(tenant, CREDIT, source, result)
+        await self._finalize(tenant, CREDIT, source, result)
         await self._emit(_events.WALLET_CREDITED,
                          {"tenant": tenant, "fund": fund, "amount": int(amount)})
         await self._check_low_balance(tenant, out["funds"], debit=False)
@@ -284,16 +312,18 @@ class WalletService:
         credit) may be scoped to its OWN fund so it can never drain another purpose's balance. Omit
         for the historical all-funds behaviour."""
         allowed = self._resolve_scope(funds)
-        prior = await self._replay(tenant, SPEND, source)
-        if prior:
+        proceed, prior = await self._claim(tenant, SPEND, source)
+        if prior is not None:
             return prior
+        if not proceed:
+            raise Conflict("WALLET_OP_IN_PROGRESS")
         plan = await self._plan(await self._wallet(tenant), net, allowed)
         entry = self._entry(tenant, SPEND, plan.applied, -1, plan=plan.to_dict(),
                             source=source, reason=reason)
         out = await self._mutate(tenant, funds_delta={k: -v for k, v in plan.applied.items()},
                                  entry=entry)
         result = {"spent": sum(plan.applied.values()), "plan": plan.to_dict(), **out}
-        await self._remember(tenant, SPEND, source, result)
+        await self._finalize(tenant, SPEND, source, result)
         await self._emit(_events.WALLET_SPENT,
                          {"tenant": tenant, "net": plan.net, "vat": plan.vat,
                           "currency": self._currency, "source": source})
@@ -323,9 +353,11 @@ class WalletService:
         minimum = int(self._cfg.get("withdraw_min", 0) or 0)
         if amount < minimum:
             raise WalletError(f"WITHDRAW_BELOW_MINIMUM:{minimum}")
-        prior = await self._replay(tenant, WITHDRAW, source)
-        if prior:
+        proceed, prior = await self._claim(tenant, WITHDRAW, source)
+        if prior is not None:
             return prior
+        if not proceed:
+            raise Conflict("WALLET_OP_IN_PROGRESS")
         w = await self._wallet(tenant)
         avail = _funds.available(w.funds, w.held)
         pool = sum(int(avail.get(n, 0)) for n in withdrawable)
@@ -354,7 +386,7 @@ class WalletService:
             raise
         result = {"withdrawal_id": wd.id, "amount": amount, "applied": dict(applied),
                   "state": WITHDRAW_PENDING, **out}
-        await self._remember(tenant, WITHDRAW, source, result)
+        await self._finalize(tenant, WITHDRAW, source, result)
         return result
 
     async def settle_withdrawal(self, *, withdrawal_id: str, paid: bool,
@@ -391,9 +423,11 @@ class WalletService:
         `applied` funds, so release/confirm reverse those same funds — the scope is fixed at reserve
         time and cannot drift."""
         allowed = self._resolve_scope(funds)
-        prior = await self._replay(tenant, "reserve", source)
-        if prior:
+        proceed, prior = await self._claim(tenant, "reserve", source)
+        if prior is not None:
             return prior
+        if not proceed:
+            raise Conflict("WALLET_OP_IN_PROGRESS")
         plan = await self._plan(await self._wallet(tenant), net, allowed)
 
         # The hold row is written BEFORE the funds are reserved, and only becomes `counted`
@@ -414,7 +448,7 @@ class WalletService:
 
         result = {"hold_id": hold.id, "expires_at": hold.expires_at, "plan": plan.to_dict(),
                   "amount": hold.amount}
-        await self._remember(tenant, "reserve", source, result)
+        await self._finalize(tenant, "reserve", source, result)
         return result
 
     async def _hold(self, hold_id: str) -> Hold:
@@ -472,9 +506,11 @@ class WalletService:
         gift into real money. The split is read off the original spend's ledger row — never
         guessed, never defaulted to a 'main' fund.
         """
-        prior = await self._replay(tenant, REFUND, source)
-        if prior:
+        proceed, prior = await self._claim(tenant, REFUND, source)
+        if prior is not None:
             return prior
+        if not proceed:
+            raise Conflict("WALLET_OP_IN_PROGRESS")
         row = await self._store.get(_LEDGER, _ledger_key(tenant, seq))
         if not row:
             raise WalletError("LEDGER_ENTRY_NOT_FOUND")
@@ -486,7 +522,7 @@ class WalletService:
                             ref=row["id"])
         out = await self._mutate(tenant, funds_delta=applied, entry=entry)
         result = {"refunded": sum(applied.values()), "applied": applied, **out}
-        await self._remember(tenant, REFUND, source, result)
+        await self._finalize(tenant, REFUND, source, result)
         # A refund can lift a wallet back over the line, and a customer never told they recovered
         # is one whose alerting is stuck low for ever.
         await self._check_low_balance(tenant, out["funds"], debit=False)

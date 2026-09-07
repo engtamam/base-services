@@ -112,8 +112,11 @@ def test_a_spend_is_one_cas_plus_one_append_and_never_scans():
     st.reads = st.writes = st.scans = st.cas_calls = 0
     run(w.spend(tenant="t", net=100, source="s1"))
     assert st.scans == 0, "spend scanned the datastore"
-    assert st.cas_calls == 1, f"spend used {st.cas_calls} compare-and-swaps"
-    # writes: the ledger append + the idempotency record. No ledger scan for dedupe.
+    # TWO compare-and-swaps: the ATOMIC idempotency CLAIM (put-if-absent on the source key) and the
+    # wallet-row mutate. The claim is what makes a duplicate source safe under concurrency — a
+    # get-then-put check let two same-source requests both apply the spend. Still O(1), still no scan.
+    assert st.cas_calls == 2, f"spend used {st.cas_calls} compare-and-swaps"
+    # writes: the ledger append + the finalized idempotency record. No ledger scan for dedupe.
     assert st.writes == 2, f"unexpected write amplification: {st.writes}"
 
 
