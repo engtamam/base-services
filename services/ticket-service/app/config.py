@@ -207,6 +207,19 @@ class Settings(BaseSettings):
     NOTIFY_RETRY_BASE_SECONDS: int = 30
     NOTIFY_RETRY_MAX_SECONDS: int = 3600
 
+    # INBOUND bridge (channel message -> ticket). OFF by default: a platform opts in once it wants
+    # customer WhatsApp messages to become tickets. `http` reads notification-service's durable inbound
+    # feed (config-only host, egress-checked) and a scheduler drives POST /internal/tickets/ingest-inbound;
+    # `null` reads nothing. Grouped per (tenant, channel, sender) into one open ticket; idempotent on the
+    # source message id. See app/core/inbound_bridge.py.
+    TICKET_INBOUND_ENABLED: bool = False
+    TICKET_INBOUND_DRIVER: str = "null"          # null | http
+    TICKET_INBOUND_PATH: str = "/internal/whatsapp/inbound"   # the feed on notification-service
+    TICKET_INBOUND_CHANNEL: str = "whatsapp"     # label stamped on the ticket ref + used to group
+    TICKET_INBOUND_TYPE: str = "support"         # the workflow type opened (must exist in TICKET_TYPES)
+    TICKET_INBOUND_SUBJECT: str = "New {channel} message"
+    TICKET_INBOUND_BATCH: int = 200
+
     # ── AI advisory layer (assistant-service) — OFF by default ───────────────
     # A SuggestionProvider can auto-triage a new ticket (suggest type/priority/tags) and draft a
     # reply an agent edits and sends. It is ADVISORY: it never transitions, closes or sends; every

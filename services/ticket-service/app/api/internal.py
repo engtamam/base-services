@@ -484,6 +484,51 @@ async def escalate_as_grantee(request: Request, ticket_id: str, body: GranteeEsc
     return {"id": t2.id, **_project(t2.to_dict())}
 
 
+_INBOUND_CURSOR = "inbound_cursor"     # channel -> {cursor}: the ingest watermark (id==key, backup-safe)
+
+
+@router.post("/tickets/ingest-inbound", dependencies=[Depends(require_internal_token)])
+async def ingest_inbound(request: Request, settings: Settings = Depends(get_settings)) -> dict:
+    """Pull a batch of inbound channel messages and turn each into a ticket (open or append).
+
+    Driven by the platform scheduler, not a thread in here (a restart cannot lose the only thing that
+    was polling, and the schedule is visible). Forward from a persisted watermark; the cursor advances
+    only on a clean read, so a feed error retries from the same point rather than skipping messages.
+    Idempotent end to end: the bridge dedupes on the source message id, so a re-poll is a no-op. OFF
+    unless TICKET_INBOUND_ENABLED (503), and a null source simply reads nothing."""
+    if not settings.TICKET_INBOUND_ENABLED:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "TICKET_INBOUND_DISABLED")
+    from app.core.inbound_bridge import InboundBridge
+    from app.core.notifier import NotifierOutbox, TicketNotifier
+    from app.core.stores import EventStore, TicketStore
+    from app.core.ticket_service import TicketService
+    from app.ports.inbound_source import InboundSourceUnavailable
+
+    c = request.app.state.container
+    tickets, events = TicketStore(c.datastore), EventStore(c.datastore)
+    svc = TicketService(
+        tickets=tickets, events=events, workflow=c.workflow, pii_salt=settings.PII_SALT,
+        notifier=TicketNotifier(NotifierOutbox(
+            c.datastore, c.notification_sender,
+            cfg={"retry_base_seconds": settings.NOTIFY_RETRY_BASE_SECONDS,
+                 "retry_max_seconds": settings.NOTIFY_RETRY_MAX_SECONDS})))
+    bridge = InboundBridge(service=svc, workflow=c.workflow, store=c.datastore,
+                           ticket_type=settings.TICKET_INBOUND_TYPE,
+                           subject_template=settings.TICKET_INBOUND_SUBJECT)
+
+    channel = settings.TICKET_INBOUND_CHANNEL
+    row = await c.datastore.get(_INBOUND_CURSOR, channel) or {}
+    after = str(row.get("cursor", "") or "")
+    try:
+        messages, nxt = await c.inbound_source.read(after=after, limit=settings.TICKET_INBOUND_BATCH)
+    except InboundSourceUnavailable as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+    counts = await bridge.ingest_batch(messages)
+    if nxt:                                    # advance only when the feed gave a next page
+        await c.datastore.put(_INBOUND_CURSOR, channel, {"id": channel, "cursor": nxt})
+    return {"read": len(messages), **counts, "cursor": nxt or after}
+
+
 @router.post("/tickets/notifications/drain", dependencies=[Depends(require_internal_token)])
 async def drain_notifications(request: Request,
                               settings: Settings = Depends(get_settings)) -> dict:

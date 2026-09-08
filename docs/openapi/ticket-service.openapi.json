@@ -2327,6 +2327,74 @@
         ]
       }
     },
+    "/internal/tickets/ingest-inbound": {
+      "post": {
+        "description": "Pull a batch of inbound channel messages and turn each into a ticket (open or append).\n\nDriven by the platform scheduler, not a thread in here (a restart cannot lose the only thing that\nwas polling, and the schedule is visible). Forward from a persisted watermark; the cursor advances\nonly on a clean read, so a feed error retries from the same point rather than skipping messages.\nIdempotent end to end: the bridge dedupes on the source message id, so a re-poll is a no-op. OFF\nunless TICKET_INBOUND_ENABLED (503), and a null source simply reads nothing.",
+        "operationId": "ingest_inbound_internal_tickets_ingest_inbound_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Ingest Inbound Internal Tickets Ingest Inbound Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ingest Inbound",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/tickets/notifications/drain": {
       "post": {
         "description": "Deliver every queued ticket notification to notification-service.\n\nDriven by the platform's scheduler rather than a thread in here, so a restart cannot lose the\nonly thing that was retrying, and so an operator can see the schedule. A null transport records\nbut delivers nothing; pointing NOTIFY_DRIVER at http later delivers everything accumulated.",

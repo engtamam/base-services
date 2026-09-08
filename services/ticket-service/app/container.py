@@ -149,6 +149,7 @@ class Container:
     consent_gate: Any = None
     workflow: Any = None            # WorkflowRegistry — validated at boot; a bad type aborts startup
     notification_sender: Any = None  # transport to notification-service (null default)
+    inbound_source: Any = None       # feed of inbound channel messages -> tickets (null default)
     suggestion_provider: Any = None  # advisory AI via assistant-service (null default)
 
     def describe(self) -> list[dict[str, str]]:
@@ -204,6 +205,19 @@ def _build_suggestion_provider(settings: Settings) -> Any:
     return NullSuggestionProvider()
 
 
+def _build_inbound_source(settings: Settings) -> Any:
+    """The feed the inbound bridge reads. `null` reads nothing (zero-infra default); `http` reads
+    notification-service's durable inbound feed over a config-only, egress-checked host."""
+    if settings.TICKET_INBOUND_DRIVER == "http":
+        from app.adapters.inbound_source.http import HttpWhatsAppInboundSource
+        return HttpWhatsAppInboundSource(
+            settings.NOTIFICATION_SERVICE_URL, settings.NOTIFICATION_SERVICE_TOKEN,
+            allowed_hosts=settings.egress_allowed_hosts, timeout=settings.NOTIFY_TIMEOUT_SECONDS,
+            path=settings.TICKET_INBOUND_PATH, channel=settings.TICKET_INBOUND_CHANNEL)
+    from app.adapters.inbound_source.null import NullInboundSource
+    return NullInboundSource()
+
+
 def _build_notification_sender(settings: Settings) -> Any:
     """The transport to notification-service. `null` records-only (zero-infra default); `http` posts
     to a config-only host checked against the egress allowlist at construction."""
@@ -256,4 +270,5 @@ def build_container(settings: Settings) -> Container:
         consent_gate=_pick(_CONSENT_GATE, settings.CONSENT_GATE_DRIVER, "consent_gate", settings),
         notification_sender=_build_notification_sender(settings),
         suggestion_provider=_build_suggestion_provider(settings),
+        inbound_source=_build_inbound_source(settings),
     )
