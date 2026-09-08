@@ -178,6 +178,14 @@ def create_app() -> FastAPI:
         name="delivery",
         definitions=ConfigDefinitionProvider(settings.WHATSAPP_DELIVERY_DEFINITION),
         availability=_delivery_backend, booking=_delivery_backend, sessions=_sessions))
+    # Flow #3 — order/request status (read-only). Its own config URL; null backend when unset.
+    from app.adapters.order_status.http import HttpOrderStatusBackend
+    from app.adapters.order_status.null import NullOrderStatusBackend
+    from app.core.order_status_flow import OrderStatusEngine
+    _status_backend = (HttpOrderStatusBackend(settings.WHATSAPP_ORDER_STATUS_PROVIDER_URL,
+                                              settings.WHATSAPP_ORDER_STATUS_PROVIDER_TOKEN)
+                       if settings.WHATSAPP_ORDER_STATUS_PROVIDER_URL else NullOrderStatusBackend())
+    _registry.register(OrderStatusEngine(provider=_status_backend))
     app.state.flow_registry = _registry
 
     # Readiness reflects real dependency health for the wired adapters.

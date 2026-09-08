@@ -439,6 +439,10 @@ class Settings(BaseSettings):
     WHATSAPP_DELIVERY_DEFINITION: str = ""
     WHATSAPP_DELIVERY_PROVIDER_URL: str = ""
     WHATSAPP_DELIVERY_PROVIDER_TOKEN: str = ""
+    # Order/request status tracking flow (#3) — READ-ONLY; the platform's order system answers over
+    # this config-only URL (op=status). Empty ⇒ null backend. Served at .../flow/{tenant}/order_status.
+    WHATSAPP_ORDER_STATUS_PROVIDER_URL: str = ""
+    WHATSAPP_ORDER_STATUS_PROVIDER_TOKEN: str = ""
     # Embedded Signup (Tech Provider onboarding). These identify US as the Tech Provider — NOT the
     # shop — so they are platform-wide, from the environment, and never settable through any panel
     # (the same reasoning as SECRETS_KEK). The exchange endpoint reads them in CORE, never a route,
