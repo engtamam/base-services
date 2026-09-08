@@ -25,7 +25,11 @@ class _Clock:
 
 
 class _Avail:
-    async def options(self, *, tenant, dimension, chosen):
+    def __init__(self):
+        self.seen_customer = []
+
+    async def options(self, *, tenant, dimension, chosen, customer=""):
+        self.seen_customer.append(customer)
         if dimension == "service":
             return [{"id": "cut", "title": "Haircut"}, {"id": "color", "title": "Colour"}]
         if dimension == "staff":
@@ -33,13 +37,13 @@ class _Avail:
             return [{"id": f"dr_{chosen.get('service')}", "title": "Dr. A"}]
         return []
 
-    async def calendar(self, *, tenant, chosen):
+    async def calendar(self, *, tenant, chosen, customer=""):
         # the calendar reflects the chosen staff — each resource its own schedule
         return {"min_date": "2026-09-08", "max_date": "2026-10-08",
                 "unavailable_dates": ["2026-09-10"], "include_days": ["Sun", "Mon", "Tue"],
                 "_staff": chosen.get("staff")}
 
-    async def slots(self, *, tenant, chosen, date):
+    async def slots(self, *, tenant, chosen, date, customer=""):
         return [{"id": f"{date}T10:00", "title": "10:00"}, {"id": f"{date}T11:00", "title": "11:00"}]
 
 
@@ -47,8 +51,8 @@ class _Booking:
     def __init__(self, ok=True, reason=""):
         self.ok, self.reason, self.calls = ok, reason, []
 
-    async def reserve(self, *, tenant, selection, idempotency_key):
-        self.calls.append({"selection": dict(selection), "key": idempotency_key})
+    async def reserve(self, *, tenant, selection, idempotency_key, customer=""):
+        self.calls.append({"selection": dict(selection), "key": idempotency_key, "customer": customer})
         return {"ok": self.ok, "ref": "BK123", "reason": self.reason}
 
 
@@ -126,17 +130,17 @@ class _AvailPerBooking:
     """One flow, one tenant: whether 'staff' applies is decided PER booking from the chosen service.
     'cut' needs a staff pick; 'wash' auto-assigns (options() returns empty → the engine skips it)."""
 
-    async def options(self, *, tenant, dimension, chosen):
+    async def options(self, *, tenant, dimension, chosen, customer=""):
         if dimension == "service":
             return [{"id": "cut", "title": "Haircut"}, {"id": "wash", "title": "Wash"}]
         if dimension == "staff":
             return [] if chosen.get("service") == "wash" else [{"id": "dr_a", "title": "Dr. A"}]
         return []
 
-    async def calendar(self, *, tenant, chosen):
+    async def calendar(self, *, tenant, chosen, customer=""):
         return {"min_date": "2026-09-08", "max_date": "2026-10-08"}
 
-    async def slots(self, *, tenant, chosen, date):
+    async def slots(self, *, tenant, chosen, date, customer=""):
         return [{"id": f"{date}T10:00", "title": "10:00"}]
 
 
@@ -167,6 +171,23 @@ def test_selection_step_still_renders_when_it_does_apply():
     _init(e)
     r = _submit(e, SELECT, {"selection": "cut"})               # service that DOES need a staff pick
     assert r["screen"] == SELECT and r["data"]["dimension"] == "staff"
+
+
+def test_customer_identity_from_init_seed_reaches_options_and_reserve():
+    # The sender seeds WHO is booking in the Flow data at INIT; it must ride the whole flow so a
+    # per-customer backend can scope options and attribute the reservation (parity with reschedule).
+    st = MemoryDataStore()
+    avail, bk = _Avail(), _Booking()
+    e = BookingEngine(definitions=_Defs(_defn()), availability=avail, booking=bk,
+                      sessions=SessionStore(st, clock=_Clock()))
+    run(e.handle({"action": "INIT", "flow_token": TOK, "data": {"customer": "cust_42"}}, tenant="t1"))
+    assert avail.seen_customer == ["cust_42"]                   # options() got the identity at INIT
+    _submit(e, SELECT, {"selection": "cut"})
+    _submit(e, SELECT, {"selection": "dr_cut"})
+    _submit(e, CALENDAR, {"date": "2026-09-09"})
+    _submit(e, TIME, {"time": "2026-09-09T10:00"})
+    _submit(e, CONFIRM, {})
+    assert bk.calls[0]["customer"] == "cust_42"                 # and reserve() was told who it is for
 
 
 # ── BACK ─────────────────────────────────────────────────────────────────────

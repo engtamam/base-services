@@ -31,12 +31,15 @@ def test_http_backend_maps_each_op():
         "calendar": (200, {"min_date": "2026-09-08", "unavailable_dates": ["2026-09-10"]}),
         "slots": (200, {"slots": [{"id": "s1", "title": "10:00"}]}),
         "reserve": (200, {"ok": True, "ref": "BK1"})})
-    assert run(b.options(tenant="t", dimension="service", chosen={}))[0]["id"] == "cut"
+    assert run(b.options(tenant="t", dimension="service", chosen={}, customer="c1"))[0]["id"] == "cut"
     assert run(b.calendar(tenant="t", chosen={}))["unavailable_dates"] == ["2026-09-10"]
     assert run(b.slots(tenant="t", chosen={}, date="2026-09-09"))[0]["title"] == "10:00"
-    assert run(b.reserve(tenant="t", selection={}, idempotency_key="k"))["ref"] == "BK1"
-    # the op + idempotency key reached the platform
-    assert seen[-1] == {"op": "reserve", "tenant": "t", "selection": {}, "idempotency_key": "k"}
+    assert run(b.reserve(tenant="t", selection={}, idempotency_key="k", customer="c1"))["ref"] == "BK1"
+    # the op + idempotency key + customer reached the platform
+    assert seen[-1] == {"op": "reserve", "tenant": "t", "selection": {}, "idempotency_key": "k",
+                        "customer": "c1"}
+    assert seen[0] == {"op": "options", "tenant": "t", "dimension": "service", "chosen": {},
+                       "customer": "c1"}
 
 
 def test_a_non_2xx_is_provider_unavailable_not_empty():

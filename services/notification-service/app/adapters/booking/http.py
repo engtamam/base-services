@@ -4,11 +4,14 @@ One small contract, one config-only URL (never caller-supplied, so no SSRF surfa
 JSON body carrying an `op` and let the platform answer. The platform owns "who is free when" and the
 actual reservation; we own only the WhatsApp Flow orchestration.
 
+Every body also carries `customer` — WHO is booking, from the Flow's seed data ("" if unseeded) — so a
+per-customer backend can scope options and attribute the reservation.
+
     POST {WHATSAPP_BOOKING_PROVIDER_URL}
-      {"op":"options",  "tenant","dimension","chosen"}            -> {"options":[{id,title,...}]}
-      {"op":"calendar", "tenant","chosen"}                        -> {min_date,max_date,unavailable_dates,include_days}
-      {"op":"slots",    "tenant","chosen","date"}                 -> {"slots":[{id,title}]}
-      {"op":"reserve",  "tenant","selection","idempotency_key"}   -> {"ok":bool,"ref"?,"reason"?}
+      {"op":"options",  "tenant","customer","dimension","chosen"}          -> {"options":[{id,title,...}]}
+      {"op":"calendar", "tenant","customer","chosen"}                      -> {min_date,max_date,unavailable_dates,include_days}
+      {"op":"slots",    "tenant","customer","chosen","date"}               -> {"slots":[{id,title}]}
+      {"op":"reserve",  "tenant","customer","selection","idempotency_key"} -> {"ok":bool,"ref"?,"reason"?}
 
 `reserve` MUST be idempotent on `idempotency_key` and atomic on the slot at the platform's end — a
 redelivered confirm and two racing customers must never double-book (the design's core invariant;
@@ -51,21 +54,25 @@ class HttpBookingBackend:
             raise ProviderUnavailable(f"booking provider returned HTTP {status}")
         return data
 
-    async def options(self, *, tenant: str, dimension: str, chosen: dict[str, Any]) -> list[dict]:
-        out = await self._call("options", tenant=tenant, dimension=dimension, chosen=chosen)
+    async def options(self, *, tenant: str, dimension: str, chosen: dict[str, Any],
+                      customer: str = "") -> list[dict]:
+        out = await self._call("options", tenant=tenant, dimension=dimension, chosen=chosen,
+                               customer=customer)
         return list(out.get("options", []))
 
-    async def calendar(self, *, tenant: str, chosen: dict[str, Any]) -> dict[str, Any]:
-        return await self._call("calendar", tenant=tenant, chosen=chosen)
+    async def calendar(self, *, tenant: str, chosen: dict[str, Any],
+                       customer: str = "") -> dict[str, Any]:
+        return await self._call("calendar", tenant=tenant, chosen=chosen, customer=customer)
 
-    async def slots(self, *, tenant: str, chosen: dict[str, Any], date: str) -> list[dict]:
-        out = await self._call("slots", tenant=tenant, chosen=chosen, date=date)
+    async def slots(self, *, tenant: str, chosen: dict[str, Any], date: str,
+                    customer: str = "") -> list[dict]:
+        out = await self._call("slots", tenant=tenant, chosen=chosen, date=date, customer=customer)
         return list(out.get("slots", []))
 
     async def reserve(self, *, tenant: str, selection: dict[str, Any],
-                      idempotency_key: str) -> dict[str, Any]:
+                      idempotency_key: str, customer: str = "") -> dict[str, Any]:
         return await self._call("reserve", tenant=tenant, selection=selection,
-                                idempotency_key=idempotency_key)
+                                idempotency_key=idempotency_key, customer=customer)
 
     async def _urllib_transport(self, url: str, payload: dict, headers: dict) -> tuple[int, dict]:
         # Blocking urllib off the event loop (see the blocking-sync-in-async lesson).

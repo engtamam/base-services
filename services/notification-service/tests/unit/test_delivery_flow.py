@@ -14,18 +14,18 @@ def run(c):
 
 
 class _Avail:
-    async def options(self, *, tenant, dimension, chosen):
+    async def options(self, *, tenant, dimension, chosen, customer=""):
         if dimension == "zone":
             return [{"id": "north", "title": "North district"}]
         return []
 
-    async def calendar(self, *, tenant, chosen):
+    async def calendar(self, *, tenant, chosen, customer=""):
         # delivery days depend on the chosen zone
         assert chosen.get("zone") == "north"
         return {"min_date": "2026-09-08", "max_date": "2026-09-15",
                 "unavailable_dates": [], "include_days": ["Sun", "Mon", "Tue", "Wed", "Thu"]}
 
-    async def slots(self, *, tenant, chosen, date):
+    async def slots(self, *, tenant, chosen, date, customer=""):
         # capacity-limited windows, remaining count in the title
         return [{"id": f"{date}|10-12", "title": "10:00–12:00 (3 left)"},
                 {"id": f"{date}|12-14", "title": "12:00–14:00 (1 left)"}]
@@ -35,7 +35,7 @@ class _Booking:
     def __init__(self):
         self.calls = []
 
-    async def reserve(self, *, tenant, selection, idempotency_key):
+    async def reserve(self, *, tenant, selection, idempotency_key, customer=""):
         self.calls.append((dict(selection), idempotency_key))
         return {"ok": True, "ref": "DLV-1"}
 

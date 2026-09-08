@@ -54,13 +54,16 @@ class ProviderUnavailable(Exception):
 @runtime_checkable
 class AvailabilityProvider(Protocol):
     """Implement these three (over HTTP or in-process) to feed the booking. `tenant` = the shop;
-    `chosen` = everything picked so far (e.g. {"service":"cut","staff":"dr_7"}). SCOPE every answer to
-    `chosen` — that is how each resource gets its OWN schedule (you're handed the chosen staff/branch).
-    Raise (or return non-2xx over HTTP) on failure → the customer sees a retry snackbar, never an empty
-    calendar or a fake booking. Keep it fast (WhatsApp expects ~10-15s end to end)."""
+    `customer` = WHO is booking (from the Flow's seed data — build_flow(flow_action="data_exchange",
+    data={"customer": "<id>"}); "" if the sender didn't seed one); `chosen` = everything picked so far
+    (e.g. {"service":"cut","staff":"dr_7"}). SCOPE every answer to `chosen` — that is how each resource
+    gets its OWN schedule (you're handed the chosen staff/branch) — and to `customer` when it matters
+    (a returning customer's saved branch, loyalty-gated options, ...). Raise (or return non-2xx over
+    HTTP) on failure → the customer sees a retry snackbar, never an empty calendar or a fake booking.
+    Keep it fast (WhatsApp expects ~10-15s end to end)."""
 
     async def options(self, *, tenant: str, dimension: str,
-                      chosen: dict[str, Any]) -> list[dict[str, Any]]:
+                      chosen: dict[str, Any], customer: str = "") -> list[dict[str, Any]]:
         """Choices for a selection step (dimension = "service" | "staff" | ... per your definition).
         Return only ones valid for `chosen`. -> [{"id","title","description"?}]. id comes back in chosen.
 
@@ -79,14 +82,15 @@ class AvailabilityProvider(Protocol):
         just a normal selection step — the engine stays loyalty-agnostic."""
         ...
 
-    async def calendar(self, *, tenant: str, chosen: dict[str, Any]) -> dict[str, Any]:
+    async def calendar(self, *, tenant: str, chosen: dict[str, Any],
+                       customer: str = "") -> dict[str, Any]:
         """Date constraints for the chosen resource. -> {"min_date","max_date","unavailable_dates":[...],
         "include_days":[...]}; dates "YYYY-MM-DD", include_days weekdays "Sun".."Sat". Omit what you
         don't constrain. unavailable_dates = fully-booked/closed days."""
         ...
 
     async def slots(self, *, tenant: str, chosen: dict[str, Any],
-                    date: str) -> list[dict[str, Any]]:
+                    date: str, customer: str = "") -> list[dict[str, Any]]:
         """Free times on `date` for the chosen resource. -> [{"id","title"}] (id opaque, echoed at
         reserve; title shown). Return only genuinely free slots. Not called in range mode."""
         ...
@@ -95,10 +99,11 @@ class AvailabilityProvider(Protocol):
 @runtime_checkable
 class BookingProvider(Protocol):
     async def reserve(self, *, tenant: str, selection: dict[str, Any],
-                      idempotency_key: str) -> dict[str, Any]:
-        """Commit the booking. `selection` = the full chosen set (incl. date/time). MUST be ATOMIC +
-        IDEMPOTENT on `idempotency_key` (we pass the WhatsApp flow_token): a redelivered confirm and
-        two customers racing for the last slot must never double-book — first wins, rest get ok:false.
+                      idempotency_key: str, customer: str = "") -> dict[str, Any]:
+        """Commit the booking. `customer` = WHO it is for (from the Flow seed data; "" if unseeded);
+        `selection` = the full chosen set (incl. date/time). MUST be ATOMIC + IDEMPOTENT on
+        `idempotency_key` (we pass the WhatsApp flow_token): a redelivered confirm and two customers
+        racing for the last slot must never double-book — first wins, rest get ok:false.
         -> {"ok":true,"ref":"BK-123"} (ref shown in chat) | {"ok":false,"reason":"just taken"}.
 
         LOYALTY LINK (optional, on/off by config — no engine coupling): add a `reward` selection step
@@ -229,11 +234,14 @@ class BookingEngine:
     async def _dispatch(self, defn: FlowDefinition, tenant: str, token: str, action: str,
                         data: dict[str, Any]) -> dict[str, Any]:
         if action == INIT:
-            state = {"chosen": {}, "step": 0}
+            # WHO is booking comes from the Flow's seed data at INIT and rides in session state for
+            # every later call (parity with the reschedule/loyalty flows) — a real per-customer backend
+            # needs the identity to scope options and to attribute the reservation.
+            state = {"chosen": {}, "step": 0, "customer": str(data.get("customer") or "")}
             await self._sessions.save(tenant, token, state)
             return await self._render(defn, tenant, token, state)
 
-        state = await self._sessions.load(tenant, token) or {"chosen": {}, "step": 0}
+        state = await self._sessions.load(tenant, token) or {"chosen": {}, "step": 0, "customer": ""}
 
         if action == BACK:
             state["step"] = max(0, int(state["step"]) - 1)
@@ -251,7 +259,8 @@ class BookingEngine:
 
         if dim == _CONFIRM:
             result = await self._booking.reserve(
-                tenant=tenant, selection=dict(state["chosen"]), idempotency_key=token)
+                tenant=tenant, selection=dict(state["chosen"]), idempotency_key=token,
+                customer=state.get("customer", ""))
             if not result.get("ok"):
                 return await self._confirm_screen(
                     defn, state["chosen"],
@@ -274,6 +283,7 @@ class BookingEngine:
     async def _render(self, defn: FlowDefinition, tenant: str, token: str, state: dict[str, Any],
                       *, error: str = "") -> dict[str, Any]:
         chosen = state["chosen"]
+        customer = state.get("customer", "")
         # Advance past any selection step the provider says doesn't apply to THIS booking (empty/skip
         # options) — persisting each advance so BACK and the next submission stay consistent — until we
         # land on a step to render (a real selection, date, time) or reach confirm.
@@ -284,7 +294,8 @@ class BookingEngine:
             dim = defn.steps[step_i]["dimension"]
             if not self._is_selection(dim):
                 break
-            options = await self._avail.options(tenant=tenant, dimension=dim, chosen=chosen)
+            options = await self._avail.options(tenant=tenant, dimension=dim, chosen=chosen,
+                                                customer=customer)
             if not self._is_skip(options):
                 return {"screen": SELECT, "data": {
                     "dimension": dim, "title": defn.label(f"pick_{dim}", f"Choose {dim}"),
@@ -293,7 +304,7 @@ class BookingEngine:
             await self._sessions.save(tenant, token, state)
 
         if dim == _DATE:
-            cal = await self._avail.calendar(tenant=tenant, chosen=chosen)
+            cal = await self._avail.calendar(tenant=tenant, chosen=chosen, customer=customer)
             return {"screen": CALENDAR, "data": {
                 "mode": defn.mode, "title": defn.label("pick_date", "Choose a date"),
                 "min_date": cal.get("min_date", ""), "max_date": cal.get("max_date", ""),
@@ -302,7 +313,8 @@ class BookingEngine:
                 **({"min_days": defn.min_days, "max_days": defn.max_days} if defn.mode == "range" else {}),
                 **({"error_message": error} if error else {})}}
         if dim == _TIME:
-            slots = await self._avail.slots(tenant=tenant, chosen=chosen, date=chosen.get(_DATE, ""))
+            slots = await self._avail.slots(tenant=tenant, chosen=chosen, date=chosen.get(_DATE, ""),
+                                            customer=customer)
             return {"screen": TIME, "data": {
                 "date": chosen.get(_DATE, ""), "title": defn.label("pick_time", "Choose a time"),
                 "slots": slots, **({"error_message": error} if error else {})}}

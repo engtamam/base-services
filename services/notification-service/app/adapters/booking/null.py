@@ -11,15 +11,18 @@ from typing import Any
 class NullBookingBackend:
     driver = "null"
 
-    async def options(self, *, tenant: str, dimension: str, chosen: dict[str, Any]) -> list[dict]:
+    async def options(self, *, tenant: str, dimension: str, chosen: dict[str, Any],
+                      customer: str = "") -> list[dict]:
         return []
 
-    async def calendar(self, *, tenant: str, chosen: dict[str, Any]) -> dict[str, Any]:
+    async def calendar(self, *, tenant: str, chosen: dict[str, Any],
+                       customer: str = "") -> dict[str, Any]:
         return {}
 
-    async def slots(self, *, tenant: str, chosen: dict[str, Any], date: str) -> list[dict]:
+    async def slots(self, *, tenant: str, chosen: dict[str, Any], date: str,
+                    customer: str = "") -> list[dict]:
         return []
 
     async def reserve(self, *, tenant: str, selection: dict[str, Any],
-                      idempotency_key: str) -> dict[str, Any]:
+                      idempotency_key: str, customer: str = "") -> dict[str, Any]:
         return {"ok": False, "reason": "Booking is not configured."}

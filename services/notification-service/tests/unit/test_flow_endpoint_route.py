@@ -135,15 +135,15 @@ def test_full_flow_endpoint_drives_the_booking_engine(monkeypatch):
     from app.core.booking_flow import BookingEngine, FlowDefinition, SessionStore
 
     class _Avail:
-        async def options(self, *, tenant, dimension, chosen):
+        async def options(self, *, tenant, dimension, chosen, customer=""):
             return [{"id": "cut", "title": "Haircut"}]
-        async def calendar(self, *, tenant, chosen):
+        async def calendar(self, *, tenant, chosen, customer=""):
             return {"min_date": "2026-09-08", "max_date": "2026-10-08", "unavailable_dates": []}
-        async def slots(self, *, tenant, chosen, date):
+        async def slots(self, *, tenant, chosen, date, customer=""):
             return [{"id": "s1", "title": "10:00"}]
 
     class _Booking:
-        async def reserve(self, *, tenant, selection, idempotency_key):
+        async def reserve(self, *, tenant, selection, idempotency_key, customer=""):
             return {"ok": True, "ref": "BK9"}
 
     c = _app(monkeypatch)
