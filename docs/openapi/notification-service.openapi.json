@@ -3173,6 +3173,74 @@
         ]
       }
     },
+    "/internal/whatsapp/config": {
+      "get": {
+        "description": "The non-secret Embedded-Signup client config a product console needs at runtime \u2014 the Meta App\nID, the Facebook Login config id, and the Graph version. None of these is a secret: all three reach\nMeta's JS SDK in the owner's browser on every signup popup, so a console reading them live beats\nbaking them into a JS bundle at build time. Platform-wide (not tenant-scoped) \u2014 the product side\ntenant-scopes and gates before the console sees it.\n\nReads the runtime sealed override (secret store, platform scope) first, then the config default; the\napp SECRET is NEVER returned. `configured` is true only when both app_id and config_id are present.",
+        "operationId": "whatsapp_config_internal_whatsapp_config_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Whatsapp Config Internal Whatsapp Config Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Whatsapp Config",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/whatsapp/deliveries": {
       "get": {
         "description": "Recent WhatsApp deliveries for ONE shop \u2014 the 'why is this shop's WhatsApp broken' view.\n\nAddressed by `tenant`, or by the shop's `phone_number_id` resolved through the number\u2192tenant\nindex (the operator usually has the number, not the internal tenant id). Tenant-scoped by design:\nthe query is pushed into the datastore keyed on tenant + channel, so it reads one shop's rows and\nnever becomes a cross-tenant dump. Each row carries our send status, Meta's receipt status, and\nthe failure reason \u2014 with the recipient masked to its last four digits.",

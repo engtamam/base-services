@@ -464,6 +464,11 @@ class Settings(BaseSettings):
     # hand is unaffected).
     META_APP_ID: str = ""
     META_APP_SECRET: str = ""     # also verifies the inbound webhook signature (X-Hub-Signature-256)
+    # The Facebook Login "config id" the Embedded Signup popup opens with. NOT secret — it travels to
+    # Meta's JS SDK in the owner's browser on every popup — so it is surfaced (with META_APP_ID and the
+    # Graph version) via GET /internal/whatsapp/config for a product console to read at runtime instead
+    # of baking it into a JS bundle. Sealed override lives in the secret store under the same name.
+    META_APP_CONFIG_ID: str = ""
     # The token WE choose and hand Meta when subscribing the webhook; Meta echoes it on the GET
     # verification handshake (hub.verify_token) and we compare it constant-time. Empty => the inbound
     # webhook cannot be verified, so it is refused (fail closed) rather than accepting an unverified

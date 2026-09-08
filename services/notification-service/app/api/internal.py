@@ -393,6 +393,34 @@ async def inbound_messages(request: Request, after: str = "", limit: int = 200) 
     return {"messages": rows, "cursor": cursor}
 
 
+@router.get("/whatsapp/config", dependencies=[Depends(require_internal_token)])
+async def whatsapp_config(request: Request) -> dict:
+    """The non-secret Embedded-Signup client config a product console needs at runtime — the Meta App
+    ID, the Facebook Login config id, and the Graph version. None of these is a secret: all three reach
+    Meta's JS SDK in the owner's browser on every signup popup, so a console reading them live beats
+    baking them into a JS bundle at build time. Platform-wide (not tenant-scoped) — the product side
+    tenant-scopes and gates before the console sees it.
+
+    Reads the runtime sealed override (secret store, platform scope) first, then the config default; the
+    app SECRET is NEVER returned. `configured` is true only when both app_id and config_id are present."""
+    s = get_settings()
+    store = getattr(request.app.state, "secret_store", None)
+
+    async def _val(name: str, fallback: str) -> str:
+        if store is not None:
+            try:
+                return await store.get(tenant="", name=name, fallback=fallback)
+            except Exception:  # noqa: BLE001 — a store hiccup falls back to the config value
+                return fallback
+        return fallback
+
+    app_id = (await _val("META_APP_ID", s.META_APP_ID) or "").strip()
+    config_id = (await _val("META_APP_CONFIG_ID", s.META_APP_CONFIG_ID) or "").strip()
+    graph_version = s.WHATSAPP_GRAPH_BASE.rstrip("/").rsplit("/", 1)[-1]
+    return {"app_id": app_id, "config_id": config_id, "graph_version": graph_version,
+            "configured": bool(app_id and config_id)}
+
+
 @router.get("/whatsapp/coexistence/echoes", dependencies=[Depends(require_internal_token)])
 async def coexistence_echoes(request: Request, after: str = "", limit: int = 200) -> dict:
     """Catch-up read for COEXISTENCE message echoes — messages the shop owner sent from the phone's own
