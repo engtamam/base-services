@@ -13,6 +13,9 @@ os.environ.setdefault("ENV", "test")
 os.environ.setdefault("INTERNAL_SERVICE_TOKEN", "t" * 40)
 os.environ.setdefault("BODY_LIMIT_BYTES", "2048")
 os.environ.setdefault("REQUEST_TIMEOUT_MS", "30000")
+# Audit records now pseudonymise a subject in resource= via subject_ref, which REFUSES an empty salt
+# (as production does). Tests exercise those audited paths, so they need a salt like production has.
+os.environ.setdefault("PII_SALT", "s" * 32)
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

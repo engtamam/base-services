@@ -27,6 +27,7 @@ from app.core.membership import MembershipStore
 from app.core.refresh_store import RefreshStore
 from app.ports.caps_resolver import CapsUnavailable
 from app.core.user_repository import UserExists, UserRepository
+from app.core.pii import subject_ref
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
@@ -351,7 +352,7 @@ async def delete_me(request: Request,
     # Write-ahead: a critical action the log cannot take must not happen at all.
     await request.app.state.auditor.record(
         "auth.self_deleted", actor=principal.subject, tenant=principal.tenant,
-        resource=f"user:{principal.subject}",
+        resource=f"user:{subject_ref(get_settings().PII_SALT, principal.tenant, principal.subject)}",
         ip=request.client.host if request.client else "")
     try:
         res = await _svc(request).delete_self(principal.subject, principal.tenant)
@@ -370,7 +371,7 @@ async def change_password(request: Request, body: ChangePwIn,
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
         "auth.password_changed", actor=principal.subject, tenant=principal.tenant,
-        resource=f"user:{principal.subject}",
+        resource=f"user:{subject_ref(get_settings().PII_SALT, principal.tenant, principal.subject)}",
         ip=request.client.host if request.client else "")
     repo = UserRepository(request.app.state.container.datastore, request.app.state.container.login_identifier)
     user = await repo.get(principal.subject)
@@ -447,7 +448,7 @@ async def mfa_enroll(request: Request, principal: Principal = Depends(require_us
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
         "auth.mfa_enrolled", actor=principal.subject, tenant=principal.tenant,
-        resource=f"user:{principal.subject}",
+        resource=f"user:{subject_ref(get_settings().PII_SALT, principal.tenant, principal.subject)}",
         ip=request.client.host if request.client else "")
     c = request.app.state.container
     if not c.mfa.enabled:

@@ -33,6 +33,8 @@ from typing import Any
 
 from app.core.saga import Saga, Step
 from app.ports.provisioner import ProvisionRequest
+from app.core.pii import subject_ref
+from app.config import get_settings
 
 
 class ProvisioningService:
@@ -76,7 +78,7 @@ class ProvisioningService:
 
         if not outcome.ok and self._auditor is not None:
             await self._auditor.record(
-                "provisioning.compensated", tenant=tenant, resource=f"subject:{subject}",
+                "provisioning.compensated", tenant=tenant, resource=f"subject:{subject_ref(get_settings().PII_SALT, tenant, subject)}",
                 metadata={"failed_step": outcome.failed_step,
                           "compensated": outcome.compensated,
                           "unfinished": [u["step"] for u in outcome.unfinished],

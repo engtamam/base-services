@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from app.config import Settings, get_settings
 from app.core.erasure import GatewayErasure
 from app.manifest import build_manifest
+from app.core.pii import subject_ref
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 
@@ -140,7 +141,7 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
-        "subject.erased", actor="", tenant=body.tenant, resource=f"subject:{body.subject}",
+        "subject.erased", actor="", tenant=body.tenant, resource=f"subject:{subject_ref(get_settings().PII_SALT, body.tenant, body.subject)}",
         ip=request.client.host if request.client else "")
     c = request.app.state.container
     s = get_settings()

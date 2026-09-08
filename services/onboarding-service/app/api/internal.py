@@ -16,6 +16,7 @@ from app.core import backup as _backup
 from app.config import Settings, get_settings
 from app.core.erasure import OnboardingErasure
 from app.manifest import build_manifest
+from app.core.pii import subject_ref
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 
@@ -91,7 +92,7 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     # Write-ahead: erasure is irreversible, so a record we could not write must stop the deletion
     # rather than follow it.
     await request.app.state.auditor.record(
-        "subject.erased", tenant=body.tenant, resource=f"subject:{body.subject}")
+        "subject.erased", tenant=body.tenant, resource=f"subject:{subject_ref(get_settings().PII_SALT, body.tenant, body.subject)}")
     eraser = OnboardingErasure(store=c.datastore, pii_salt=s.PII_SALT,
                                max_scan=s.ERASURE_MAX_SCAN)
     return await eraser.erase(body.tenant, body.subject)

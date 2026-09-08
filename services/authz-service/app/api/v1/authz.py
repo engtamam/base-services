@@ -14,6 +14,7 @@ from app.config import get_settings
 from app.core.authz_service import AuthzService
 from app.core.cap_policy import forbidden_caps
 from app.core.stores import AssignmentStore, PolicyStore, RoleStore
+from app.core.pii import subject_ref
 
 router = APIRouter(prefix="/api/v1", tags=["authz"])
 
@@ -241,7 +242,7 @@ async def set_roles(request: Request, subject: str, body: AssignIn,
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
-        "subject.roles_assigned", actor=principal.subject, tenant=principal.tenant, resource=f"subject:{subject}",
+        "subject.roles_assigned", actor=principal.subject, tenant=principal.tenant, resource=f"subject:{subject_ref(get_settings().PII_SALT, principal.tenant, subject)}",
         ip=request.client.host if request.client else "",
         # WHAT was granted — a dispute over "who could do X, and since when" needs the grant itself,
         # not just that some assignment happened. This is the set_roles REPLACE, so it is the new state.

@@ -26,6 +26,7 @@ from app.core.legal_pages import LegalError, LegalPageService
 from app.core.pdpl_templates import TemplateError
 from app.core.stores import (BreachStore, ConsentStore, DsarStore, HoldStore, LegalPageStore,
                              RopaStore, TargetStore)
+from app.core.pii import subject_ref
 
 router = APIRouter(prefix="/api/v1/compliance", tags=["compliance"])
 
@@ -231,7 +232,7 @@ async def withdraw(request: Request, body: ConsentIn, principal: Principal = Dep
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
-        "consent.withdrawn", actor=principal.subject, tenant=principal.tenant, resource=f"subject:{body.subject}",
+        "consent.withdrawn", actor=principal.subject, tenant=principal.tenant, resource=f"subject:{subject_ref(get_settings().PII_SALT, principal.tenant, body.subject)}",
         ip=request.client.host if request.client else "")
     c = await build_consent(request).withdraw(
         tenant=_tenant(principal), subject=body.subject, purpose=body.purpose,
@@ -328,7 +329,7 @@ async def place_hold(request: Request, body: HoldIn, principal: Principal = Depe
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
-        "legal_hold.placed", actor=principal.subject, tenant=principal.tenant, resource=f"subject:{body.subject}",
+        "legal_hold.placed", actor=principal.subject, tenant=principal.tenant, resource=f"subject:{subject_ref(get_settings().PII_SALT, principal.tenant, body.subject)}",
         ip=request.client.host if request.client else "")
     return (await build_compliance(request).place_hold(
         tenant=_tenant(principal), subject=body.subject, reason=body.reason)).to_dict()

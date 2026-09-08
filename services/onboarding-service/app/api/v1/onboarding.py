@@ -24,6 +24,7 @@ from app.core.flows import pick_flow, validate
 from app.core.grants import GrantService
 from app.core.provisioning import ProvisioningService
 from app.onboarding_flows import ONBOARDING_FLOWS
+from app.core.pii import subject_ref
 
 router = APIRouter(prefix="/onboarding", tags=["onboarding"])
 
@@ -168,7 +169,7 @@ async def force_complete(request: Request, subject: str, body: ForceIn,
     """
     await request.app.state.auditor.record(
         "flow.force_completed", actor=principal.subject, tenant=principal.tenant,
-        resource=f"subject:{subject}",
+        resource=f"subject:{subject_ref(get_settings().PII_SALT, principal.tenant, subject)}",
         metadata={"requirement": body.requirement, "reason": body.reason})
     ledger = request.app.state.container.local_facts
     await ledger.force(tenant=principal.tenant, subject=subject,
@@ -218,7 +219,7 @@ async def resume_provisioning(request: Request, subject: str,
                               auditor=request.app.state.auditor, telemetry=c.telemetry)
     await request.app.state.auditor.record(
         "provisioning.resumed", actor=principal.subject, tenant=principal.tenant,
-        resource=f"subject:{subject}")
+        resource=f"subject:{subject_ref(get_settings().PII_SALT, principal.tenant, subject)}")
     result = await svc.resume(principal.tenant, subject)
     if result is None:
         return {"subject": subject, "resumed": False, "detail": "nothing outstanding to resume"}

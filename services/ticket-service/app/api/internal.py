@@ -93,7 +93,7 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     # Write-ahead: erasure is irreversible and critical — if it cannot be recorded it must not
     # happen. Actor is empty: this is a service-to-service DSAR call, not a person.
     await request.app.state.auditor.record(
-        "subject.erased", actor="", tenant=body.tenant, resource=f"subject:{body.subject}",
+        "subject.erased", actor="", tenant=body.tenant, resource=f"subject:{subject_ref(get_settings().PII_SALT, body.tenant, body.subject)}",
         ip=request.client.host if request.client else "")
     from app.core.erasure import TicketErasure
     c = request.app.state.container

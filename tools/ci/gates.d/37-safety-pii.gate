@@ -7,7 +7,10 @@ acks, and is therefore never MISSED: the DSAR closes GREEN and the person is tol
 they were erased when they were not. The list cannot be trusted to whoever
 remembered it — it is checked against the CODE. Anything RETAINED must name a
 legal basis from a closed set: 'we kept it' is an answer with a reason, never a
-silence."
+silence. AND (point #3) an audit record()'s resource= must never carry a RAW
+person-identifier: the audit chain is permanent and cannot be erased, so a raw
+subject written there outlives the very erasure meant to remove it — it takes the
+pseudonym (subject_ref), verified by AST across every service."
 gate_needs="python"
 gate_env=""
 gate_subject="tools/ci/check_pii.py"
@@ -16,16 +19,25 @@ gate_slow=0
 
 gate_main() { "$PY" tools/ci/check_pii.py; }
 
-# A gate that cannot fail is decoration. Prove it catches a subject-holder with no erase handler.
+# A gate that cannot fail is decoration. Prove BOTH halves catch what they claim: a subject-holder
+# with no erase handler, AND a raw person-identifier written into an audit resource=.
 gate_selftest() {
   "$PY" -c "
 import sys, pathlib
 sys.path.insert(0, 'tools/ci')
 import check_pii as c
-# a service that holds a subject but has no erasure.py must be reported
-c.holds_subject = lambda svc: 'app/core/models.py'
-import types
-fake = pathlib.Path('tools')          # any dir WITHOUT app/core/erasure.py
-sys.exit(0 if not (fake / 'app' / 'core' / 'erasure.py').is_file() else 1)
+# (1) the erase-handler half: a dir without app/core/erasure.py is reported for holding a subject
+fake = pathlib.Path('tools')
+assert not (fake / 'app' / 'core' / 'erasure.py').is_file()
+# (2) point #3: raw subject in an audit resource IS caught; a pseudonymised one is NOT
+import tempfile, os
+d = pathlib.Path(tempfile.mkdtemp()); (d / 'app').mkdir()
+bad = 'x.record(action=\"a\", resource=f\"subject:{body.subject}\", tenant=t)'
+good = 'x.record(action=\"a\", resource=f\"subject:{subject_ref(s, t, body.subject)}\", tenant=t)'
+(d / 'app' / 'm.py').write_text(bad)
+assert c.raw_pii_in_audit(d), 'gate failed to catch raw subject in resource='
+(d / 'app' / 'm.py').write_text(good)
+assert not c.raw_pii_in_audit(d), 'gate false-positived on a pseudonymised resource='
+sys.exit(0)
 " >/dev/null 2>&1
 }
