@@ -160,6 +160,15 @@ def create_app() -> FastAPI:
                                         settings.WHATSAPP_BOOKING_PROVIDER_TOKEN)
                 if settings.WHATSAPP_BOOKING_PROVIDER_URL else NullReschedulingBackend())
     _registry.register(RescheduleEngine(provider=_resched, sessions=_sessions))
+    # Flow #6 — loyalty points redemption, same generic layer + booking screens. Its OWN config URL
+    # (loyalty is usually a separate system); null backend when unset.
+    from app.adapters.loyalty.http import HttpLoyaltyBackend
+    from app.adapters.loyalty.null import NullLoyaltyBackend
+    from app.core.loyalty_flow import LoyaltyEngine
+    _loyalty = (HttpLoyaltyBackend(settings.WHATSAPP_LOYALTY_PROVIDER_URL,
+                                   settings.WHATSAPP_LOYALTY_PROVIDER_TOKEN)
+                if settings.WHATSAPP_LOYALTY_PROVIDER_URL else NullLoyaltyBackend())
+    _registry.register(LoyaltyEngine(provider=_loyalty, sessions=_sessions))
     app.state.flow_registry = _registry
 
     # Readiness reflects real dependency health for the wired adapters.

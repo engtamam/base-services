@@ -428,6 +428,11 @@ class Settings(BaseSettings):
     WHATSAPP_BOOKING_PROVIDER_TOKEN: str = ""          # optional bearer/internal token for that URL
     WHATSAPP_BOOKING_DEFINITION: str = ""              # JSON: {steps:[...], mode, horizon_days, strings}
     WHATSAPP_BOOKING_SESSION_TTL_SECONDS: int = 1800
+    # Loyalty redemption flow (#6) — the platform's own loyalty program answers over this config-only
+    # URL (op=balance|rewards|redeem); empty ⇒ null backend (nothing redeemable). Reuses the booking
+    # session store + screens; a separate URL because loyalty is usually a different system.
+    WHATSAPP_LOYALTY_PROVIDER_URL: str = ""
+    WHATSAPP_LOYALTY_PROVIDER_TOKEN: str = ""
     # Embedded Signup (Tech Provider onboarding). These identify US as the Tech Provider — NOT the
     # shop — so they are platform-wide, from the environment, and never settable through any panel
     # (the same reasoning as SECRETS_KEK). The exchange endpoint reads them in CORE, never a route,

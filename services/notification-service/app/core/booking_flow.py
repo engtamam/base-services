@@ -85,7 +85,13 @@ class BookingProvider(Protocol):
         """Commit the booking. `selection` = the full chosen set (incl. date/time). MUST be ATOMIC +
         IDEMPOTENT on `idempotency_key` (we pass the WhatsApp flow_token): a redelivered confirm and
         two customers racing for the last slot must never double-book — first wins, rest get ok:false.
-        -> {"ok":true,"ref":"BK-123"} (ref shown in chat) | {"ok":false,"reason":"just taken"}."""
+        -> {"ok":true,"ref":"BK-123"} (ref shown in chat) | {"ok":false,"reason":"just taken"}.
+
+        LOYALTY LINK (optional, on/off by config — no engine coupling): add a `reward` selection step
+        to the flow definition whose options() returns the rewards applicable to `chosen` (e.g. a free
+        4th service). The chosen reward then arrives here in `selection`; reserve books AND redeems the
+        points in ONE atomic transaction on your side. Omit the step → no link. Standalone loyalty
+        (the loyalty flow) is unaffected either way."""
         ...
 
 
