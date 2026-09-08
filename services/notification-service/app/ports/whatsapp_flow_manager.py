@@ -72,3 +72,15 @@ class WhatsAppFlowManager(Protocol):
     def publish(self, *, flow_id: str) -> FlowResult:
         """Publish a DRAFT Flow (POST /{flow_id}/publish). A published Flow is immutable thereafter."""
         ...
+
+    def set_encryption_public_key(self, *, phone_number_id: str, public_key_pem: str) -> FlowResult:
+        """Register the business encryption PUBLIC key for a phone number, so Meta can encrypt the
+        Flow data-endpoint requests we then decrypt. POST /{phone_number_id}/whatsapp_business_encryption
+        with form field `business_public_key` (SPKI PEM). One active key per number — a new upload
+        replaces the previous — so a re-register of the same key is idempotent. ok/reason only."""
+        ...
+
+    def encryption_public_key_status(self, *, phone_number_id: str) -> str:
+        """Meta's signature status for the number's active key: 'VALID' | 'MISMATCH' | '' (none/unknown).
+        Read back after a set so the caller can report the key actually took. GET the same edge."""
+        ...

@@ -763,6 +763,27 @@
         "title": "ValidationError",
         "type": "object"
       },
+      "WaFlowEncryptionEnsureIn": {
+        "properties": {
+          "phone_number_id": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Phone Number Id",
+            "type": "string"
+          },
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant"
+        ],
+        "title": "WaFlowEncryptionEnsureIn",
+        "type": "object"
+      },
       "WaFlowProvisionIn": {
         "properties": {
           "categories": {
@@ -2985,6 +3006,84 @@
           }
         },
         "summary": "Internal Embedded Signup",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/whatsapp/flow-encryption/ensure": {
+      "post": {
+        "description": "Ensure this tenant's Flow data-endpoint encryption key is set up \u2014 the twin of the flow-provision\ncall, run beside it at connect time. IDEMPOTENT: if a private key is already sealed for the tenant,\nit is NOT regenerated (that would rotate and break in-flight Flows); we only (re)register the SAME\npublic key with Meta, which is itself idempotent (one active key per number, a new upload replaces).\n\nOn a first run it generates an RSA keypair, seals the private half under the KEK (secret store), and\nregisters the public half with Meta for the phone number \u2014 POST /{phone_number_id}/\nwhatsapp_business_encryption \u2014 using the tenant's OWN sealed Graph token (the same conduit as\nflow/template provisioning; never our own identity). The private key never leaves the process. See\napp/core/flow_encryption.py and docs/design/whatsapp-booking-flow.md.",
+        "operationId": "ensure_flow_encryption_internal_internal_whatsapp_flow_encryption_ensure_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaFlowEncryptionEnsureIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Ensure Flow Encryption Internal Internal Whatsapp Flow Encryption Ensure Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ensure Flow Encryption Internal",
         "tags": [
           "internal"
         ]

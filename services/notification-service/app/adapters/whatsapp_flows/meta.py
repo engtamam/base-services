@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 
-from app.adapters.notify_http import bearer, get_json, ok, post_json
+from app.adapters.notify_http import bearer, get_json, ok, post_form, post_json
 from app.ports.errors import ConfigError
 from app.ports.whatsapp_flow_manager import DRAFT, FlowResult, FlowSummary
 
@@ -99,3 +99,19 @@ class MetaFlowManager:
         if not ok(status):
             return FlowResult(ok=False, flow_id=flow_id, reason=_reason(raw) or f"HTTP {status}")
         return FlowResult(ok=True, flow_id=flow_id, status="PUBLISHED")
+
+    def set_encryption_public_key(self, *, phone_number_id, public_key_pem) -> FlowResult:
+        # Meta wants the PEM as a FORM field (not JSON) on the phone-number edge. One active key per
+        # number; a new upload replaces the previous, so re-registering the same key is idempotent.
+        status, raw = post_form(f"{self._base}/{phone_number_id}/whatsapp_business_encryption",
+                                {"business_public_key": public_key_pem}, self._headers)
+        if not ok(status):
+            return FlowResult(ok=False, reason=_reason(raw) or f"HTTP {status}")
+        return FlowResult(ok=True, status="PUBLISHED")
+
+    def encryption_public_key_status(self, *, phone_number_id) -> str:
+        status, raw = get_json(f"{self._base}/{phone_number_id}/whatsapp_business_encryption",
+                               headers=self._headers)
+        if not ok(status):
+            return ""
+        return str(_parse(raw).get("business_public_key_signature_status", "") or "")

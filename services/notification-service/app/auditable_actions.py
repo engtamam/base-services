@@ -59,6 +59,22 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "resource": "wa_flow",
     },
     {
+        # The Flow data-endpoint encryption key ensured for a tenant: a keypair generated + the private
+        # half sealed (once), and the public half registered with Meta for a phone number. Critical —
+        # it establishes the key that decrypts every dynamic Flow request; the row names whether a NEW
+        # key was created (vs. re-registered) and which number, so a rotation or a first setup is
+        # provable, and a surprise "created" on a tenant that already had one is a red flag.
+        "action": "whatsapp_flow.encryption_ensured",
+        "source": "admin",
+        "critical": True,
+        "resource": "wa_flow_encryption",
+        "why": "Establishes/re-registers the RSA key that decrypts EVERY dynamic Flow request for a "
+               "tenant. Without a durable row, a silent key change (or a first setup on a tenant that "
+               "already had one — a possible takeover of the encrypted channel) leaves no trail; who "
+               "set which number's key, and when, must be provable, so the request is refused if it "
+               "cannot be recorded.",
+    },
+    {
         # A media file uploaded to Meta (Resumable Upload) to get a carousel template's media handle.
         # Not critical — a failed upload is retried — but recorded: it names the type + size so a
         # template that shipped the wrong asset, or a burst of uploads, is provable after the fact.

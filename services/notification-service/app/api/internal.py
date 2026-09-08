@@ -637,6 +637,85 @@ async def provision_whatsapp_flow_internal(request: Request, body: WaFlowProvisi
     return result.public()
 
 
+class WaFlowEncryptionEnsureIn(BaseModel):
+    tenant: str = Field(min_length=1, max_length=128)
+    # Which of the tenant's numbers to register the key on. Optional — defaults to the tenant's resolved
+    # primary number; a tenant with several numbers calls this once per number (the key is the same).
+    phone_number_id: str = Field(default="", max_length=64)
+
+
+@router.post("/whatsapp/flow-encryption/ensure", dependencies=[Depends(require_internal_token)])
+async def ensure_flow_encryption_internal(request: Request, body: WaFlowEncryptionEnsureIn) -> dict:
+    """Ensure this tenant's Flow data-endpoint encryption key is set up — the twin of the flow-provision
+    call, run beside it at connect time. IDEMPOTENT: if a private key is already sealed for the tenant,
+    it is NOT regenerated (that would rotate and break in-flight Flows); we only (re)register the SAME
+    public key with Meta, which is itself idempotent (one active key per number, a new upload replaces).
+
+    On a first run it generates an RSA keypair, seals the private half under the KEK (secret store), and
+    registers the public half with Meta for the phone number — POST /{phone_number_id}/
+    whatsapp_business_encryption — using the tenant's OWN sealed Graph token (the same conduit as
+    flow/template provisioning; never our own identity). The private key never leaves the process. See
+    app/core/flow_encryption.py and docs/design/whatsapp-booking-flow.md."""
+    import asyncio
+
+    from app.api.v1.notifications import build_flow_manager
+    from app.core import flow_encryption as fe
+
+    s = get_settings()
+    store = getattr(request.app.state, "secret_store", None)
+    if store is None:
+        # No KEK ⇒ nothing to seal the private key with. Refuse rather than write it in the clear.
+        raise HTTPException(503, "SECRETS_KEK is not configured — cannot seal the Flow private key")
+
+    phone_id = body.phone_number_id
+    if not phone_id:
+        pool = getattr(request.app.state, "provider_pool", None)
+        phone_id = (await pool.whatsapp_phone_number_id(body.tenant)) if pool is not None \
+            else s.WHATSAPP_PHONE_NUMBER_ID
+    if not phone_id:
+        raise HTTPException(422, "no phone_number_id resolved for this tenant — pass one explicitly")
+
+    name = s.WHATSAPP_FLOW_PRIVATE_KEY_SECRET
+    info = await store.info(tenant=body.tenant, name=name)
+    created = False
+    if info is None:
+        private_pem, public_pem = fe.generate_keypair(s.WHATSAPP_FLOW_KEY_SIZE)
+        await store.set(tenant=body.tenant, name=name, value=private_pem,
+                        actor_ref="system:flow-encryption")
+        created = True
+    else:
+        # Already sealed — derive the public half and (re)register it; never regenerate (no rotation).
+        private_pem = await store.get(tenant=body.tenant, name=name, fallback="")
+        if not private_pem:
+            raise HTTPException(500, "a sealed Flow key exists but could not be read")
+        passphrase = None
+        if s.WHATSAPP_FLOW_KEY_PASSPHRASE_SECRET:
+            pp = await store.get(tenant=body.tenant, name=s.WHATSAPP_FLOW_KEY_PASSPHRASE_SECRET,
+                                 fallback="")
+            passphrase = pp.encode("utf-8") if pp else None
+        public_pem = fe.public_key_from_private(private_pem, passphrase=passphrase)
+
+    manager = await build_flow_manager(request, body.tenant)
+    # Blocking Graph I/O off the event loop, like the provision route.
+    up = await asyncio.to_thread(manager.set_encryption_public_key,
+                                 phone_number_id=phone_id, public_key_pem=public_pem)
+    status = ""
+    if up.ok:
+        try:
+            status = await asyncio.to_thread(manager.encryption_public_key_status,
+                                             phone_number_id=phone_id)
+        except Exception:  # noqa: BLE001 — a read-back failure must not fail the ensure it just did
+            status = ""
+    result = fe.EncryptionKeyResult(
+        ok=up.ok, created=created, uploaded=up.ok, phone_number_id=phone_id, status=status,
+        reason="" if up.ok else (up.reason or "public key upload failed"))
+    await request.app.state.auditor.record(
+        "whatsapp_flow.encryption_ensured", actor="system", tenant=body.tenant,
+        resource=f"wa_flow_encryption:{phone_id}", ip=request.client.host if request.client else "",
+        metadata={"created": str(created), "uploaded": str(up.ok), "status": status})
+    return result.public()
+
+
 _MEDIA_TYPES = {"image/jpeg", "image/jpg", "image/png", "video/mp4"}
 
 

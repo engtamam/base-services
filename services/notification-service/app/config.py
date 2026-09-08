@@ -420,6 +420,9 @@ class Settings(BaseSettings):
     WHATSAPP_FLOW_PRIVATE_KEY_SECRET: str = "WHATSAPP_FLOW_PRIVATE_KEY"
     # Optional passphrase for that private key (also from the secret store name below), "" = none.
     WHATSAPP_FLOW_KEY_PASSPHRASE_SECRET: str = ""
+    # RSA key size the flow-encryption ensure route generates. 2048 is Meta's standard for the business
+    # encryption endpoint; a platform that mandates larger can raise it (3072/4096). Never below 2048.
+    WHATSAPP_FLOW_KEY_SIZE: int = 2048
     # Booking engine (drives the Flow endpoint). The platform's own service answers availability +
     # reservation over ONE config-only URL (see app/adapters/booking/http.py); empty ⇒ the null
     # backend (nothing bookable) so the endpoint is inert until wired. The flow DEFINITION (steps,

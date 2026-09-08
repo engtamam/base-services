@@ -34,3 +34,12 @@ class ConsoleFlowManager:
 
     def publish(self, *, flow_id) -> FlowResult:
         return FlowResult(ok=True, flow_id=flow_id, status=PUBLISHED)
+
+    def set_encryption_public_key(self, *, phone_number_id, public_key_pem) -> FlowResult:
+        # Dev: no Meta round-trip. Auto-succeeds so the whole connect flow runs with zero infra.
+        _log.info("whatsapp_flow_encryption_set", extra={"provider": "console",
+                                                          "phone_number_id": phone_number_id})
+        return FlowResult(ok=True, status=PUBLISHED)
+
+    def encryption_public_key_status(self, *, phone_number_id) -> str:
+        return "VALID"
