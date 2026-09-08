@@ -19,7 +19,8 @@ ENV PATH="/opt/venv/bin:$PATH"
 # An image that lacks the driver its own values default to boots straight into ConfigError;
 # safety:image-runtime gates exactly that. dev/ci stay out for a lean, low-CVE image.
 COPY pyproject.toml README.md ./
-COPY app ./app
+RUN mkdir -p app && : > app/__init__.py   # stub package: the builder needs only DEPS in
+# the venv (the runtime stage copies the real source), so deps cache across code changes.
 RUN --mount=type=cache,target=/root/.cache/pip pip install ".[http,postgres,redis,s3,vault]"
 
 # ── Final: slim runtime, non-root ───────────────────────────────────────────
