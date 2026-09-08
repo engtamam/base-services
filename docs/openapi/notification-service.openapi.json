@@ -4183,7 +4183,7 @@
     },
     "/webhooks/whatsapp/flow/{tenant}": {
       "post": {
-        "description": "Per-shop Flow endpoint \u2014 the shop sets THIS URL on its Flow, so we can pick its key before\ndecrypting. The tenant is opaque here; it scopes the key, the definition and the session.",
+        "description": "Per-shop Flow endpoint (defaults to the booking handler). The shop sets THIS URL on its Flow,\nso we can pick its key before decrypting. The tenant is opaque here; it scopes the key, the\ndefinition and the session.",
         "operationId": "flow_endpoint_tenant_webhooks_whatsapp_flow__tenant__post",
         "parameters": [
           {
@@ -4217,6 +4217,56 @@
           }
         },
         "summary": "Flow Endpoint Tenant",
+        "tags": [
+          "webhooks"
+        ]
+      }
+    },
+    "/webhooks/whatsapp/flow/{tenant}/{handler}": {
+      "post": {
+        "description": "Per-shop, per-FLOW endpoint \u2014 the shop points each dynamic Flow (booking, reschedule, a survey,\n...) at its own {handler} URL, so one deployment serves many dynamic Flows off the generic layer.",
+        "operationId": "flow_endpoint_handler_webhooks_whatsapp_flow__tenant___handler__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "handler",
+            "required": true,
+            "schema": {
+              "title": "Handler",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Flow Endpoint Handler",
         "tags": [
           "webhooks"
         ]

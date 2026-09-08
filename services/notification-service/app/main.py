@@ -145,12 +145,21 @@ def create_app() -> FastAPI:
     _backend = (HttpBookingBackend(settings.WHATSAPP_BOOKING_PROVIDER_URL,
                                    settings.WHATSAPP_BOOKING_PROVIDER_TOKEN)
                 if settings.WHATSAPP_BOOKING_PROVIDER_URL else NullBookingBackend())
+    _sessions = SessionStore(container.datastore, clock=_time.time,
+                             ttl_seconds=settings.WHATSAPP_BOOKING_SESSION_TTL_SECONDS)
     _registry = FlowRegistry()
     _registry.register(BookingEngine(
         definitions=ConfigDefinitionProvider(settings.WHATSAPP_BOOKING_DEFINITION),
-        availability=_backend, booking=_backend,
-        sessions=SessionStore(container.datastore, clock=_time.time,
-                              ttl_seconds=settings.WHATSAPP_BOOKING_SESSION_TTL_SECONDS)))
+        availability=_backend, booking=_backend, sessions=_sessions))
+    # Flow #1 — reschedule/cancel, on the SAME generic layer + booking screens. Talks to the SAME
+    # platform bookings URL (op-based); null backend when unset.
+    from app.adapters.reschedule.http import HttpReschedulingBackend
+    from app.adapters.reschedule.null import NullReschedulingBackend
+    from app.core.reschedule_flow import RescheduleEngine
+    _resched = (HttpReschedulingBackend(settings.WHATSAPP_BOOKING_PROVIDER_URL,
+                                        settings.WHATSAPP_BOOKING_PROVIDER_TOKEN)
+                if settings.WHATSAPP_BOOKING_PROVIDER_URL else NullReschedulingBackend())
+    _registry.register(RescheduleEngine(provider=_resched, sessions=_sessions))
     app.state.flow_registry = _registry
 
     # Readiness reflects real dependency health for the wired adapters.

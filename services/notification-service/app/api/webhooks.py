@@ -160,7 +160,7 @@ async def _default_flow_handler(payload: dict) -> dict:
             "data": {"error_message": "Booking is not available right now."}}
 
 
-async def _handle_flow(request: Request, tenant: str):
+async def _handle_flow(request: Request, tenant: str, handler_name: str = "booking"):
     """WhatsApp Flow DATA ENDPOINT — the encrypted callback that drives a Flow's screens.
 
     Meta POSTs {encrypted_flow_data, encrypted_aes_key, initial_vector}, signed with the app secret.
@@ -201,7 +201,7 @@ async def _handle_flow(request: Request, tenant: str):
     # Resolve the dynamic-Flow handler from the registry (L3). The current routes serve the "booking"
     # flow; a future route can carry another handler name — the generic layers do not care.
     registry = getattr(request.app.state, "flow_registry", None)
-    chosen = registry.get("booking") if registry is not None else None
+    chosen = registry.get(handler_name) if registry is not None else None
 
     async def handler(payload: dict) -> dict:
         if chosen is None:
@@ -228,6 +228,14 @@ async def flow_endpoint(request: Request):
 
 @router.post("/webhooks/whatsapp/flow/{tenant}")
 async def flow_endpoint_tenant(request: Request, tenant: str):
-    """Per-shop Flow endpoint — the shop sets THIS URL on its Flow, so we can pick its key before
-    decrypting. The tenant is opaque here; it scopes the key, the definition and the session."""
+    """Per-shop Flow endpoint (defaults to the booking handler). The shop sets THIS URL on its Flow,
+    so we can pick its key before decrypting. The tenant is opaque here; it scopes the key, the
+    definition and the session."""
     return await _handle_flow(request, tenant)
+
+
+@router.post("/webhooks/whatsapp/flow/{tenant}/{handler}")
+async def flow_endpoint_handler(request: Request, tenant: str, handler: str):
+    """Per-shop, per-FLOW endpoint — the shop points each dynamic Flow (booking, reschedule, a survey,
+    ...) at its own {handler} URL, so one deployment serves many dynamic Flows off the generic layer."""
+    return await _handle_flow(request, tenant, handler)

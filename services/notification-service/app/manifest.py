@@ -138,6 +138,7 @@ def build_manifest(
             {"path": "/webhooks/whatsapp", "tier": "public", "method": "POST"},
             {"path": "/webhooks/whatsapp/flow", "tier": "public", "method": "POST"},
             {"path": "/webhooks/whatsapp/flow/{tenant}", "tier": "public", "method": "POST"},
+            {"path": "/webhooks/whatsapp/flow/{tenant}/{handler}", "tier": "public", "method": "POST"},
             # Backup fan-out (backup-service orchestrates): export + verify + import this
             # service's data. Declared so the fan-out discovers this holder — an undeclared holder
             # is one nobody backs up.
