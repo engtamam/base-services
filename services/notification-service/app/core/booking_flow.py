@@ -62,7 +62,13 @@ class AvailabilityProvider(Protocol):
     async def options(self, *, tenant: str, dimension: str,
                       chosen: dict[str, Any]) -> list[dict[str, Any]]:
         """Choices for a selection step (dimension = "service" | "staff" | ... per your definition).
-        Return only ones valid for `chosen`. -> [{"id","title","description"?}]. id comes back in chosen."""
+        Return only ones valid for `chosen`. -> [{"id","title","description"?}]. id comes back in chosen.
+
+        LOYALTY-IN-BOOKING (optional): to let a customer spend points DURING a booking (e.g. a free 4th
+        service), add a `reward` step to the definition; for dimension=="reward" return the rewards
+        applicable to `chosen` from your loyalty program. The chosen reward flows to reserve(), which
+        books + redeems atomically (see reserve's docstring). Leave the step out → no link. This is
+        just a normal selection step — the engine stays loyalty-agnostic."""
         ...
 
     async def calendar(self, *, tenant: str, chosen: dict[str, Any]) -> dict[str, Any]:
