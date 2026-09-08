@@ -1,8 +1,37 @@
 # Design — WhatsApp Booking Flow (config-driven, 100% customizable)
 
-Status: DRAFT for review. Author: assistant-service/notification-service work.
-Verified against Meta's WhatsApp Flows docs on **2026-09-08** (re-verify before implementing — Meta
-revises Flow JSON versions and the endpoint contract; cite the version you build against).
+Status: BUILT (core), OFF by default. Author: notification-service work.
+Verified against Meta's WhatsApp Flows docs on **2026-09-08** (re-verify before changes — Meta revises
+Flow JSON versions and the endpoint contract; cite the version you build against).
+
+## 0. Implementation status + boundary (updated 2026-09-08)
+
+**Boundary (firm): we ship INFRASTRUCTURE; each platform connects + designs per its own philosophy.**
+We do NOT: generate keys, upload anything to Meta, manage WABA numbers, or impose routing/topology. A
+platform generates its own keys and uploads the public key + Flow JSON to Meta ITS OWN WAY (it already
+owns Embedded Signup / tokens); a tenant may have many WhatsApp numbers (per branch) — its routing.
+Nothing we build may block even one platform's scenario.
+
+**Built as a GENERIC, opt-in ladder — any dynamic (`data_exchange`) Flow reuses it; booking is one
+handler.** Each rung is usable alone; none is required:
+- **L1 `core/flow_crypto.py`** — decrypt/encrypt only (RSA-OAEP-SHA256 + AES-128-GCM, reply IV
+  bit-inverted). Pure, no keys/state.
+- **L2 `core/flow_dispatch.py`** — `process()` one-call: decrypt → `ping` (answered here, cheap) →
+  handler → encrypt. `FlowHandler` protocol. `tenant` is optional handler context (kept out of L2 →
+  no routing imposed).
+- **L3 `core/flow_registry.py`** — name → FlowHandler; one endpoint serves several dynamic Flows.
+- **L4 `core/booking_flow.py`** — `BookingEngine` (the only calendar-specific piece) + the provider
+  **contract lives in the port docstrings** (AvailabilityProvider/BookingProvider) — the integrator
+  reads the code, not a separate doc.
+- Public routes `POST /webhooks/whatsapp/flow[/{tenant}]` — verify X-Hub-Signature-256 before decrypt,
+  resolve the shop's platform-sealed private key by tenant (tenant in the URL: the key must be picked
+  before the payload can be read), 421 on decrypt failure.
+- `build_flow(flow_action="data_exchange")` sends a dynamic Flow (generic — any flow, not booking).
+- `core/flow_json.py` + `GET /internal/whatsapp/flow/booking-json` — generates the companion Flow JSON
+  (screens/fields from the same engine constants, can't drift) for the platform to upload itself.
+- Adapters `adapters/booking/{http,null,config_defs}`; config `WHATSAPP_FLOW_*` / `WHATSAPP_BOOKING_*`.
+
+The original design below is retained for the full rationale; sections 4/7 are realised by the ladder.
 
 ## 1. Goal
 
