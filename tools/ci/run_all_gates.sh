@@ -26,7 +26,8 @@
 #   tools/ci/run_all_gates.sh --strict        # a SKIP is a FAIL (what CI runs)
 #   tools/ci/run_all_gates.sh --profile quick # fast pre-commit lane
 #   tools/ci/run_all_gates.sh --list          # every gate + what it protects
-#   tools/ci/run_all_gates.sh --only chart:guards
+#   tools/ci/run_all_gates.sh --only chart:guards           # one gate
+#   tools/ci/run_all_gates.sh --only safety:openapi,safety:dead-code   # a subset, ONE bootstrap
 #   tools/ci/run_all_gates.sh --verify        # prove each gate can FAIL
 #
 # Env:
@@ -247,7 +248,9 @@ for f in $(gate_files); do
   slow="$(meta "$f" gate_slow)"
   matrix="$(meta "$f" gate_matrix)"
 
-  if [ -n "$ONLY" ] && [ "$ONLY" != "$name" ]; then continue; fi
+  # --only accepts ONE name OR a comma-separated list, so a targeted subset runs in a SINGLE
+  # bootstrap (and in parallel) instead of one process per gate.
+  if [ -n "$ONLY" ]; then case ",$ONLY," in *",$name,"*) ;; *) continue ;; esac; fi
 
   i=$idx; idx=$((idx + 1))
   G_NAME[$i]="$name"; G_DESC[$i]="$desc"; G_FILE[$i]="$f"
