@@ -55,6 +55,14 @@ class NotificationErasure:
         if feed:
             erased.append(f"inapp:{feed}")
 
+        # Coexistence: the owner's echoes to this subject, their shared history, their contact entry are
+        # the person's data and are deleted (no delivery-proof basis to retain them). Always attempted,
+        # even if the feature was later turned off — the rows may still be stored. A no-op when absent.
+        from app.core.stores import CoexistenceStore
+        co = await CoexistenceStore(self._store).erase_subject(tenant=tenant, subject=subject)
+        if co:
+            erased.append(f"coexistence:{co}")
+
         # deliveries: keep the FACT, strip the CONTENT, replace the recipient with the pseudonym
         stripped = 0
         cursor = None

@@ -62,7 +62,18 @@ async def verify_subscription(
     raise HTTPException(status.HTTP_403_FORBIDDEN, "VERIFY_FAILED")
 
 
-async def _fan_out(bus, deliveries, data: dict, inbound=None, number_index=None) -> int:
+async def _tenant_of(number_index, phone_id: str) -> str:
+    """The tenant that owns a receiving number, or "" — a lookup miss must never stop a fan-out."""
+    if number_index is None or not phone_id:
+        return ""
+    try:
+        return await number_index.tenant_of(phone_id) or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+async def _fan_out(bus, deliveries, data: dict, inbound=None, number_index=None,
+                   coexistence=None) -> int:
     """Publish every change to the bus, NOTHING filtered. Returns how many events were emitted.
 
     Meta's shape: {object, entry:[{id: <waba id>, changes:[{field, value}]}]}. Each change's `field`
@@ -126,6 +137,59 @@ async def _fan_out(bus, deliveries, data: dict, inbound=None, number_index=None)
                                   Event(type=f"{_TOPIC}.message",
                                         payload={**base, "tenant": tenant, "message": msg}))
                 emitted += 1
+            # 3) COEXISTENCE — the owner's own-app activity on the same number. Each item is durably
+            # recorded (idempotent by its stable id) for the catch-up read, because the consumers that
+            # need it (assistant/reminders) reconcile via that log, not the at-most-once bus — exactly
+            # the reasoning behind the inbound + receipt logs. The generic whatsapp.<field> event above
+            # already puts the whole change on the bus for liveness; here we add the durable half.
+            if coexistence is not None and field == "smb_message_echoes":
+                # A message the owner sent from the phone's own WhatsApp Business app — invisible to us
+                # otherwise, so "the conversation" would have a hole. Also emitted first-class so a live
+                # consumer sees it the same way it sees an inbound message.
+                co_tenant = await _tenant_of(number_index, phone_id)
+                for echo in value.get("message_echoes", []) or []:
+                    try:
+                        await coexistence.record_echo(
+                            message_id=str(echo.get("id", "")),
+                            timestamp=float(echo.get("timestamp", 0) or 0), tenant=co_tenant,
+                            contact=str(echo.get("to", "")),
+                            phone_number_id=phone_id, waba_id=waba_id, message=echo)
+                    except Exception:  # noqa: BLE001 — an echo we cannot record must still fan out
+                        pass
+                    await bus.publish(f"{_TOPIC}.message_echo", Event(
+                        type=f"{_TOPIC}.message_echo",
+                        payload={**base, "tenant": co_tenant, "message": echo}))
+                    emitted += 1
+            elif coexistence is not None and field == "history":
+                # Up to 180 days of past messages, once. Recorded per message (idempotent by id) so the
+                # import is replayable; the generic whatsapp.history bus event carries the live signal.
+                co_tenant = await _tenant_of(number_index, phone_id)
+                for chunk in value.get("history", []) or []:
+                    for thread in chunk.get("threads", []) or []:
+                        contact = str(thread.get("id", ""))
+                        for hm in thread.get("messages", []) or []:
+                            try:
+                                await coexistence.record_history_message(
+                                    message_id=str(hm.get("id", "")),
+                                    timestamp=float(hm.get("timestamp", 0) or 0), contact=contact,
+                                    tenant=co_tenant, phone_number_id=phone_id, waba_id=waba_id,
+                                    message=hm)
+                            except Exception:  # noqa: BLE001 — best-effort per message
+                                pass
+            elif coexistence is not None and field == "smb_app_state_sync":
+                # The business's contacts, at onboarding and on every add/remove. Recorded per contact
+                # (latest state per number, per tenant).
+                co_tenant = await _tenant_of(number_index, phone_id)
+                for item in value.get("state_sync", []) or []:
+                    c = item.get("contact", {}) or {}
+                    try:
+                        await coexistence.record_contact(
+                            phone_number=str(c.get("phone_number", "")),
+                            timestamp=float((item.get("metadata", {}) or {}).get("timestamp", 0) or 0),
+                            action=str(item.get("action", "")), tenant=co_tenant,
+                            phone_number_id=phone_id, waba_id=waba_id, contact=c)
+                    except Exception:  # noqa: BLE001 — best-effort per contact
+                        pass
     return emitted
 
 
@@ -141,12 +205,21 @@ async def receive(request: Request) -> dict:
         data = _json.loads(raw or b"{}")
     except ValueError:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "BAD_JSON")
-    from app.core.stores import DeliveryStore, InboundStore, WhatsAppNumberIndex
+    from app.core.stores import (CoexistenceStore, DeliveryStore, InboundStore,
+                                 WhatsAppNumberIndex)
+    s = get_settings()
     bus = request.app.state.container.event_bus
     ds = request.app.state.container.datastore
     deliveries = DeliveryStore(ds)
+    # Coexistence is opt-in: only when the platform enabled it do we durably store the owner's own-app
+    # activity, and then only for the configured retention window. Off ⇒ None ⇒ nothing stored.
+    coexistence = None
+    if s.WHATSAPP_COEXISTENCE_ENABLED:
+        coexistence = CoexistenceStore(
+            ds, retention_seconds=max(0, s.WHATSAPP_COEXISTENCE_RETENTION_DAYS) * 86400)
     emitted = await _fan_out(bus, deliveries, data if isinstance(data, dict) else {},
-                             inbound=InboundStore(ds), number_index=WhatsAppNumberIndex(ds))
+                             inbound=InboundStore(ds), number_index=WhatsAppNumberIndex(ds),
+                             coexistence=coexistence)
     # Meta retries on any non-2xx and treats the retries as duplicates, so acknowledge fast once the
     # events are on the bus. The count is for our observability, not for Meta.
     return {"received": True, "events": emitted}

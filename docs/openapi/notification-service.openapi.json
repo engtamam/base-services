@@ -2831,6 +2831,348 @@
         ]
       }
     },
+    "/internal/whatsapp/coexistence/contacts": {
+      "get": {
+        "description": "Catch-up read for the COEXISTENCE contact sync \u2014 the business's contacts at onboarding and on\nevery add/remove. One row per contact number per tenant (latest state wins); each carries the\naction (add|remove) and the contact fields. Ordered by timestamp; page with the cursor.",
+        "operationId": "coexistence_contacts_internal_whatsapp_coexistence_contacts_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "After",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Coexistence Contacts Internal Whatsapp Coexistence Contacts Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Coexistence Contacts",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/whatsapp/coexistence/echoes": {
+      "get": {
+        "description": "Catch-up read for COEXISTENCE message echoes \u2014 messages the shop owner sent from the phone's own\nWhatsApp Business app on the connected number. Same shape/contract as /whatsapp/inbound: read\nforward from a cursor, persist it as the watermark, repeat. Without these the conversation an\nassistant/reminders consumer reconstructs has a hole (the owner's side is invisible). Idempotent by\nwamid; ordered by timestamp; a message that only lived on the bus is still here.",
+        "operationId": "coexistence_echoes_internal_whatsapp_coexistence_echoes_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "After",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Coexistence Echoes Internal Whatsapp Coexistence Echoes Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Coexistence Echoes",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/whatsapp/coexistence/history": {
+      "get": {
+        "description": "Catch-up read for the COEXISTENCE history import \u2014 up to 180 days of past messages the customer\nchose to share, once. Same shape as the others; each row carries the thread's contact + the raw Meta\nmessage. Idempotent by wamid; ordered by timestamp \u2014 page through with the cursor to import it all.",
+        "operationId": "coexistence_history_internal_whatsapp_coexistence_history_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "After",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Coexistence History Internal Whatsapp Coexistence History Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Coexistence History",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/whatsapp/coexistence/purge": {
+      "post": {
+        "description": "Reap coexistence rows past their retention window \u2014 the scheduler (job-service) calls this\nperiodically so a shop's stored conversations never live forever. Bounded per call; re-invoke until\n`removed` is 0. Recorded so the retention actually running (or silently not) is provable.",
+        "operationId": "coexistence_purge_internal_whatsapp_coexistence_purge_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 1000,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Coexistence Purge Internal Whatsapp Coexistence Purge Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Coexistence Purge",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/whatsapp/deliveries": {
       "get": {
         "description": "Recent WhatsApp deliveries for ONE shop \u2014 the 'why is this shop's WhatsApp broken' view.\n\nAddressed by `tenant`, or by the shop's `phone_number_id` resolved through the number\u2192tenant\nindex (the operator usually has the number, not the internal tenant id). Tenant-scoped by design:\nthe query is pushed into the datastore keyed on tenant + channel, so it reads one shop's rows and\nnever becomes a cross-tenant dump. Each row carries our send status, Meta's receipt status, and\nthe failure reason \u2014 with the recipient masked to its last four digits.",

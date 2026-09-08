@@ -1,6 +1,8 @@
 """Repositories over the generic DataStore port (memory today, postgres by config)."""
 from __future__ import annotations
 
+import time
+
 from app.core.models import Delivery, InAppItem, Preference, Template
 from app.ports.datastore import DataStore
 
@@ -14,6 +16,14 @@ _RECEIPTS = "notify_receipts"  # append-only receipt-event log, ordered by recei
 _RECEIPT_KIND = "receipt"      # constant partition key so the ordered read is a filtered query, not a scan
 _INBOUND = "wa_inbound"        # append-only inbound-message log, ordered by timestamp (catch-up read)
 _INBOUND_KIND = "inbound"      # constant partition key — same reason as _RECEIPT_KIND
+# WhatsApp Coexistence catch-up logs (owner's own-app activity on the same number). One collection +
+# constant kind each, exactly like _INBOUND, so every read is an indexed ordered query, never a scan.
+_ECHOES = "wa_msg_echoes"
+_ECHO_KIND = "echo"
+_HISTORY = "wa_history"
+_HISTORY_KIND = "history"
+_CONTACTS = "wa_contacts"
+_CONTACT_KIND = "contact"
 
 
 class TemplateStore:
@@ -189,6 +199,131 @@ class InboundStore:
         on a constant kind (never an empty where), so it stays an indexed, ordered read, not a scan."""
         return await self._store.find(_INBOUND, {"kind": _INBOUND_KIND}, limit=limit, after=after,
                                       sort=("timestamp", "asc"))
+
+
+class CoexistenceStore:
+    """Durable, replayable logs for WhatsApp COEXISTENCE — a shop running its own WhatsApp Business app
+    on the SAME number it connected to us. Three webhook fields carry what the owner's phone does
+    outside us, and they are exactly what an AI/reminders consumer reading "the conversation" must not
+    miss:
+      • message_echoes  — every message the owner sends from the phone's own app (invisible to us
+                          otherwise, so the conversation has a hole);
+      • history         — up to 180 days of past messages the customer chose to share, once;
+      • state_sync      — the business's contacts, at onboarding and on every change.
+
+    The bus is at-most-once (a pod that restarts through one hears it never), and these consumers
+    reconcile via a catch-up read, not the raw webhook — so each item is ALSO appended here and read
+    forward from a watermark, the same reconciliation path as InboundStore. Idempotent by the item's
+    stable id (Meta re-delivers on any non-2xx), so a re-delivery overwrites its row, never duplicates.
+
+    Verified against Meta's coexistence webhook payloads 2026-09-08: smb_message_echoes.message_echoes[]
+    ({from,to,id,timestamp,type,...}); history[].threads[].messages[] (each with a stable id);
+    smb_app_state_sync.state_sync[] ({type:'contact', contact:{phone_number,full_name,first_name},
+    action:'add'|'remove', metadata.timestamp})."""
+
+    # (collection, kind) of every coexistence log — one place, so purge/erase iterate them uniformly.
+    _LOGS = ((_ECHOES, _ECHO_KIND), (_HISTORY, _HISTORY_KIND), (_CONTACTS, _CONTACT_KIND))
+
+    def __init__(self, store: DataStore, *, clock=time.time, retention_seconds: int = 0) -> None:
+        # retention_seconds<=0 ⇒ no automatic expiry (expires_at=0). The platform sets it (default 30d)
+        # so we never store a shop's conversations forever; expires_at is stamped at RECEIPT time (not
+        # the message timestamp — a 180-day history import is kept for the retention window from now).
+        self._store = store
+        self._clock = clock
+        self._retention = int(retention_seconds)
+
+    def _expires_at(self) -> float:
+        return (self._clock() + self._retention) if self._retention > 0 else 0.0
+
+    async def record_echo(self, *, message_id: str, timestamp: float, tenant: str, contact: str,
+                          phone_number_id: str, waba_id: str, message: dict) -> bool:
+        """One echoed (owner-sent) message, idempotent by its wamid. `contact` is the WhatsApp user it
+        was sent TO (stored so an erasure can find it by subject). False when it has no id."""
+        if not message_id:
+            return False
+        await self._store.put(_ECHOES, message_id, {
+            "id": message_id, "kind": _ECHO_KIND, "wamid": message_id, "timestamp": timestamp,
+            "contact": contact, "tenant": tenant, "phone_number_id": phone_number_id,
+            "waba_id": waba_id, "message": message, "expires_at": self._expires_at()})
+        return True
+
+    async def record_history_message(self, *, message_id: str, timestamp: float, contact: str,
+                                     tenant: str, phone_number_id: str, waba_id: str,
+                                     message: dict) -> bool:
+        """One historical message (either direction), idempotent by its wamid. `contact` is the thread's
+        WhatsApp user. False when it has no id."""
+        if not message_id:
+            return False
+        await self._store.put(_HISTORY, message_id, {
+            "id": message_id, "kind": _HISTORY_KIND, "wamid": message_id, "timestamp": timestamp,
+            "contact": contact, "tenant": tenant, "phone_number_id": phone_number_id,
+            "waba_id": waba_id, "message": message, "expires_at": self._expires_at()})
+        return True
+
+    async def record_contact(self, *, phone_number: str, timestamp: float, action: str, tenant: str,
+                             phone_number_id: str, waba_id: str, contact: dict) -> bool:
+        """One contact's current state (a sync, so keyed by the contact number PER TENANT — the latest
+        add/remove wins; two shops' lists never collide on the same customer). False when no number."""
+        if not phone_number:
+            return False
+        key = f"{len(tenant)}:{tenant}|{phone_number}"
+        await self._store.put(_CONTACTS, key, {
+            "id": key, "kind": _CONTACT_KIND, "phone_number": phone_number, "timestamp": timestamp,
+            "action": action, "tenant": tenant, "phone_number_id": phone_number_id,
+            "waba_id": waba_id, "contact": contact, "expires_at": self._expires_at()})
+        return True
+
+    async def echoes_since(self, *, after: str | None, limit: int) -> tuple[list[dict], str | None]:
+        return await self._store.find(_ECHOES, {"kind": _ECHO_KIND}, limit=limit, after=after,
+                                      sort=("timestamp", "asc"))
+
+    async def history_since(self, *, after: str | None, limit: int) -> tuple[list[dict], str | None]:
+        return await self._store.find(_HISTORY, {"kind": _HISTORY_KIND}, limit=limit, after=after,
+                                      sort=("timestamp", "asc"))
+
+    async def contacts_since(self, *, after: str | None, limit: int) -> tuple[list[dict], str | None]:
+        return await self._store.find(_CONTACTS, {"kind": _CONTACT_KIND}, limit=limit, after=after,
+                                      sort=("timestamp", "asc"))
+
+    async def purge_expired(self, *, now: float | None = None, limit: int = 1000) -> int:
+        """Delete rows whose retention window has passed, across all three logs — so we never keep a
+        shop's conversations forever. Ordered by expires_at ascending and stopped at the first row still
+        in-window (0 = never-expiring, sorted last), so this is an indexed read, not a full scan. Bounded
+        per call; the scheduler re-invokes until a call deletes nothing. Returns how many it removed."""
+        cutoff = self._clock() if now is None else now
+        removed = 0
+        for coll, kind in self._LOGS:
+            rows, _ = await self._store.find(coll, {"kind": kind}, limit=limit,
+                                             sort=("expires_at", "asc"))
+            for r in rows:
+                exp = float(r.get("expires_at", 0) or 0)
+                if exp <= 0 or exp > cutoff:
+                    break                       # never-expiring or still in-window ⇒ nothing older left
+                await self._store.delete(coll, r["id"])
+                removed += 1
+        return removed
+
+    async def erase_subject(self, *, tenant: str, subject: str) -> int:
+        """Delete every coexistence row about `subject` (a customer's number) for `tenant` — echoes to
+        them, their shared history, their contact entry. For the compliance erasure flow. Returns the
+        count deleted; idempotent (a re-run finds nothing)."""
+        removed = 0
+        for coll, _kind in ((_ECHOES, _ECHO_KIND), (_HISTORY, _HISTORY_KIND)):
+            cursor = None
+            while True:
+                rows, cursor = await self._store.find(
+                    coll, {"tenant": tenant, "contact": subject}, limit=500, after=cursor,
+                    sort=("timestamp", "asc"))
+                for r in rows:
+                    await self._store.delete(coll, r["id"])
+                    removed += 1
+                if not cursor:
+                    break
+        key = f"{len(tenant)}:{tenant}|{subject}"
+        if await self._store.get(_CONTACTS, key) is not None:
+            await self._store.delete(_CONTACTS, key)
+            removed += 1
+        return removed
 
 
 class WhatsAppNumberIndex:

@@ -393,6 +393,59 @@ async def inbound_messages(request: Request, after: str = "", limit: int = 200) 
     return {"messages": rows, "cursor": cursor}
 
 
+@router.get("/whatsapp/coexistence/echoes", dependencies=[Depends(require_internal_token)])
+async def coexistence_echoes(request: Request, after: str = "", limit: int = 200) -> dict:
+    """Catch-up read for COEXISTENCE message echoes — messages the shop owner sent from the phone's own
+    WhatsApp Business app on the connected number. Same shape/contract as /whatsapp/inbound: read
+    forward from a cursor, persist it as the watermark, repeat. Without these the conversation an
+    assistant/reminders consumer reconstructs has a hole (the owner's side is invisible). Idempotent by
+    wamid; ordered by timestamp; a message that only lived on the bus is still here."""
+    from app.core.stores import CoexistenceStore
+    store = CoexistenceStore(request.app.state.container.datastore)
+    rows, cursor = await store.echoes_since(after=after or None, limit=max(1, min(1000, limit)))
+    return {"messages": rows, "cursor": cursor}
+
+
+@router.get("/whatsapp/coexistence/history", dependencies=[Depends(require_internal_token)])
+async def coexistence_history(request: Request, after: str = "", limit: int = 200) -> dict:
+    """Catch-up read for the COEXISTENCE history import — up to 180 days of past messages the customer
+    chose to share, once. Same shape as the others; each row carries the thread's contact + the raw Meta
+    message. Idempotent by wamid; ordered by timestamp — page through with the cursor to import it all."""
+    from app.core.stores import CoexistenceStore
+    store = CoexistenceStore(request.app.state.container.datastore)
+    rows, cursor = await store.history_since(after=after or None, limit=max(1, min(1000, limit)))
+    return {"messages": rows, "cursor": cursor}
+
+
+@router.get("/whatsapp/coexistence/contacts", dependencies=[Depends(require_internal_token)])
+async def coexistence_contacts(request: Request, after: str = "", limit: int = 200) -> dict:
+    """Catch-up read for the COEXISTENCE contact sync — the business's contacts at onboarding and on
+    every add/remove. One row per contact number per tenant (latest state wins); each carries the
+    action (add|remove) and the contact fields. Ordered by timestamp; page with the cursor."""
+    from app.core.stores import CoexistenceStore
+    store = CoexistenceStore(request.app.state.container.datastore)
+    rows, cursor = await store.contacts_since(after=after or None, limit=max(1, min(1000, limit)))
+    return {"contacts": rows, "cursor": cursor}
+
+
+@router.post("/whatsapp/coexistence/purge", dependencies=[Depends(require_internal_token)])
+async def coexistence_purge(request: Request, limit: int = 1000) -> dict:
+    """Reap coexistence rows past their retention window — the scheduler (job-service) calls this
+    periodically so a shop's stored conversations never live forever. Bounded per call; re-invoke until
+    `removed` is 0. Recorded so the retention actually running (or silently not) is provable."""
+    from app.core.stores import CoexistenceStore
+    s = get_settings()
+    store = CoexistenceStore(
+        request.app.state.container.datastore,
+        retention_seconds=max(0, s.WHATSAPP_COEXISTENCE_RETENTION_DAYS) * 86400)
+    removed = await store.purge_expired(limit=max(1, min(5000, limit)))
+    await request.app.state.auditor.record(
+        "whatsapp_coexistence.purged", actor="system", tenant="",
+        resource="wa_coexistence", ip=request.client.host if request.client else "",
+        metadata={"removed": str(removed), "retention_days": str(s.WHATSAPP_COEXISTENCE_RETENTION_DAYS)})
+    return {"removed": removed}
+
+
 @router.post("/notifications/drain", dependencies=[Depends(require_internal_token)])
 async def drain_queue(request: Request) -> dict:
     """Re-attempt every queued delivery whose backoff has expired.
@@ -458,8 +511,16 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
+    #
+    # The erasure receipt is a PERMANENT, hash-chained row (Art 17 accountability: proof we deleted),
+    # so it must NOT carry the raw subject — GDPR data minimisation for logs. We record the PSEUDONYM
+    # (subject_ref, same salted ref the ack returns and `actor` already uses), which proves WHOSE data
+    # was erased and answers a DPA, without turning the tamper-evident log into a PII store. Correlation
+    # to the DSAR is by compliance-service's own request id, not by a raw number here.
+    from app.core.pii import subject_ref
+    ref = subject_ref(s.PII_SALT, body.tenant, body.subject)
     await request.app.state.auditor.record(
-        "subject.erased", actor="", tenant=body.tenant, resource=f"subject:{body.subject}",
+        "subject.erased", actor="", tenant=body.tenant, resource=f"subject_ref:{ref}",
         ip=request.client.host if request.client else "")
     c = request.app.state.container
     eraser = NotificationErasure(store=c.datastore, pii_salt=s.PII_SALT)

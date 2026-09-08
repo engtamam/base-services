@@ -75,6 +75,17 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "cannot be recorded.",
     },
     {
+        # The coexistence retention reaper ran: rows past their window were deleted so a shop's stored
+        # conversations never live forever. Not critical — a purge that could not be recorded simply
+        # runs again next cycle, and blocking it would only KEEP data longer, the opposite of the goal —
+        # but the row names how many were removed and the retention period, so "retention is actually
+        # running" (not silently stalled) is provable.
+        "action": "whatsapp_coexistence.purged",
+        "source": "admin",
+        "critical": False,
+        "resource": "wa_coexistence",
+    },
+    {
         # A media file uploaded to Meta (Resumable Upload) to get a carousel template's media handle.
         # Not critical — a failed upload is retried — but recorded: it names the type + size so a
         # template that shipped the wrong asset, or a burst of uploads, is provable after the fact.

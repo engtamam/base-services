@@ -411,6 +411,16 @@ class Settings(BaseSettings):
     # ~5MB image / ~16MB video; this bounds the in-memory read so a huge upload cannot exhaust memory,
     # and is config so a deployment can tighten it. Default 16MB covers Meta's largest allowed header.
     WHATSAPP_MEDIA_MAX_BYTES: int = 16 * 1024 * 1024
+    # WhatsApp COEXISTENCE (a shop keeps using its own WhatsApp Business app on the SAME number it
+    # connected to us). OFF by default: we do NOT durably store the owner's echoes / 180-day history /
+    # contacts unless the platform opts in — a deliberate data-footprint choice. When on, every stored
+    # item expires after RETENTION_DAYS (platform-set; we never keep a shop's conversations forever),
+    # a scheduled purge reaps the expired, and the compliance erasure flow deletes a subject's rows.
+    WHATSAPP_COEXISTENCE_ENABLED: bool = False
+    # Default 2 days — coexistence logs are a reconciliation buffer (a consumer catches up within
+    # minutes), not an archive, so we keep server storage light; a platform that wants a longer window
+    # raises it. Never "forever".
+    WHATSAPP_COEXISTENCE_RETENTION_DAYS: int = 2
     # WhatsApp Flow DATA ENDPOINT (the encrypted server callback that drives a Flow's screens — e.g.
     # the booking calendar). OFF by default: a deployment opts in once it has uploaded a public key to
     # Meta and sealed the matching private key. See docs/design/whatsapp-booking-flow.md.
