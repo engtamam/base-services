@@ -420,6 +420,14 @@ class Settings(BaseSettings):
     WHATSAPP_FLOW_PRIVATE_KEY_SECRET: str = "WHATSAPP_FLOW_PRIVATE_KEY"
     # Optional passphrase for that private key (also from the secret store name below), "" = none.
     WHATSAPP_FLOW_KEY_PASSPHRASE_SECRET: str = ""
+    # Booking engine (drives the Flow endpoint). The platform's own service answers availability +
+    # reservation over ONE config-only URL (see app/adapters/booking/http.py); empty ⇒ the null
+    # backend (nothing bookable) so the endpoint is inert until wired. The flow DEFINITION (steps,
+    # calendar knobs, i18n) is JSON — see docs/design/whatsapp-booking-flow.md.
+    WHATSAPP_BOOKING_PROVIDER_URL: str = ""
+    WHATSAPP_BOOKING_PROVIDER_TOKEN: str = ""          # optional bearer/internal token for that URL
+    WHATSAPP_BOOKING_DEFINITION: str = ""              # JSON: {steps:[...], mode, horizon_days, strings}
+    WHATSAPP_BOOKING_SESSION_TTL_SECONDS: int = 1800
     # Embedded Signup (Tech Provider onboarding). These identify US as the Tech Provider — NOT the
     # shop — so they are platform-wide, from the environment, and never settable through any panel
     # (the same reasoning as SECRETS_KEK). The exchange endpoint reads them in CORE, never a route,

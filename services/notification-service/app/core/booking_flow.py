@@ -1,0 +1,250 @@
+"""Config-driven WhatsApp booking engine — the state machine behind the Flow data endpoint.
+
+See docs/design/whatsapp-booking-flow.md. This owns the GENERIC orchestration; the platform owns its
+domain behind two ports (AvailabilityProvider, BookingProvider) and a per-tenant FlowDefinition. The
+engine never names "doctor", "salon", or any business rule: a "staff" step is just one selection
+dimension, and "each doctor has their own schedule" falls out because the chosen staff id is passed
+to the provider when the calendar/slots are computed.
+
+Screens are a fixed, reusable set that a companion Flow JSON declares (provisioning generates it):
+  SELECT   — one screen reused for every selection dimension (service/staff/location/party size),
+             its list bound to ${data.options}; the submitted field name is the dimension.
+  CALENDAR — the CalendarPicker/DatePicker, constraints from ${data.*}.
+  TIME     — the slot list for the chosen date, bound to ${data.slots}.
+  CONFIRM  — a summary + a data_exchange button.
+  SUCCESS  — terminal; posts booking_ref back to chat.
+
+The engine returns bare {screen, data} dicts; flow_endpoint.process encrypts them.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Protocol, runtime_checkable
+
+INIT, BACK, DATA_EXCHANGE = "INIT", "BACK", "data_exchange"
+SELECT, CALENDAR, TIME, CONFIRM, SUCCESS = "SELECT", "CALENDAR", "TIME", "CONFIRM", "SUCCESS"
+
+# The terminal spine — every dimension NOT in here is a "selection" dimension resolved via options().
+_DATE, _TIME, _CONFIRM = "date", "time", "confirm"
+
+
+class BookingError(ValueError):
+    """A definition or request the engine refuses before touching a provider."""
+
+
+class ProviderUnavailable(Exception):
+    """The platform's availability/booking backend errored or was unreachable. Surfaced to the
+    customer as a snackbar on the same screen — never a silent empty calendar (looks like 'fully
+    booked') or a fabricated booking."""
+
+
+@runtime_checkable
+class AvailabilityProvider(Protocol):
+    async def options(self, *, tenant: str, dimension: str,
+                      chosen: dict[str, Any]) -> list[dict[str, Any]]:
+        """Options for a selection step given prior choices — e.g. doctors for the chosen service.
+        Each: {"id": str, "title": str, "description"?: str}."""
+        ...
+
+    async def calendar(self, *, tenant: str, chosen: dict[str, Any]) -> dict[str, Any]:
+        """Calendar constraints for THIS selection — {min_date, max_date, unavailable_dates,
+        include_days} in 'YYYY-MM-DD' / weekday form. This is where a resource's own schedule lives."""
+        ...
+
+    async def slots(self, *, tenant: str, chosen: dict[str, Any],
+                    date: str) -> list[dict[str, Any]]:
+        """Free time slots for the chosen date — each {"id": str, "title": str}."""
+        ...
+
+
+@runtime_checkable
+class BookingProvider(Protocol):
+    async def reserve(self, *, tenant: str, selection: dict[str, Any],
+                      idempotency_key: str) -> dict[str, Any]:
+        """Reserve the slot. {"ok": bool, "ref"?: str, "reason"?: str}. MUST be atomic/idempotent on
+        the key so a redelivered confirm and two racing customers never double-book (see the design)."""
+        ...
+
+
+@dataclass(frozen=True)
+class FlowDefinition:
+    """A tenant's booking flow: the ordered steps and the calendar knobs. Everything customer-visible
+    is in `strings` (i18n). Validated at construction so a broken definition never reaches runtime."""
+    steps: tuple[dict[str, Any], ...]          # e.g. ({"dimension":"service"},{"dimension":"date"},...)
+    horizon_days: int = 30
+    mode: str = "single"                        # single | range
+    min_days: int = 1
+    max_days: int = 14
+    default_working_days: tuple[str, ...] = ()
+    strings: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.steps:
+            raise BookingError("a booking flow needs at least one step")
+        dims = [s.get("dimension") for s in self.steps]
+        if _DATE not in dims:
+            raise BookingError("a booking flow must include a 'date' step")
+        if _CONFIRM not in dims:
+            raise BookingError("a booking flow must include a 'confirm' step")
+        if dims[-1] != _CONFIRM:
+            raise BookingError("'confirm' must be the last step")
+        if _TIME in dims and self.mode == "range":
+            raise BookingError("range mode has no single time step")
+        if dims.index(_DATE) < len([d for d in dims if d not in (_DATE, _TIME, _CONFIRM)]):
+            # date must come after every selection dimension (so calendar sees the full selection)
+            for d in dims[dims.index(_DATE):]:
+                if d not in (_DATE, _TIME, _CONFIRM):
+                    raise BookingError("selection steps must come before 'date'")
+        if self.mode not in ("single", "range"):
+            raise BookingError("mode must be single or range")
+
+    def label(self, key: str, default: str) -> str:
+        return self.strings.get(key, default)
+
+
+@runtime_checkable
+class DefinitionProvider(Protocol):
+    async def get(self, tenant: str) -> FlowDefinition | None: ...
+
+
+class SessionStore:
+    """Server-side flow session, keyed by (tenant, flow_token), short-TTL. Holds the accumulated
+    selections so the client never re-sends prior steps, and so one tenant's session can never be
+    read by another (the key is length-prefixed with the tenant — see tenant-scoped-idempotency)."""
+
+    _COLL = "flow_sessions"
+
+    def __init__(self, store, *, clock, ttl_seconds: int = 1800) -> None:
+        self._s = store
+        self._clock = clock
+        self._ttl = int(ttl_seconds)
+
+    @staticmethod
+    def _key(tenant: str, token: str) -> str:
+        return f"{len(tenant)}:{tenant}|{token}"
+
+    async def load(self, tenant: str, token: str) -> dict[str, Any] | None:
+        row = await self._s.get(self._COLL, self._key(tenant, token))
+        if not row or float(row.get("expires_at", 0)) <= self._clock():
+            return None
+        return row.get("state")
+
+    async def save(self, tenant: str, token: str, state: dict[str, Any]) -> None:
+        await self._s.put(self._COLL, self._key(tenant, token),
+                          {"state": state, "expires_at": self._clock() + self._ttl})
+
+    async def clear(self, tenant: str, token: str) -> None:
+        await self._s.delete(self._COLL, self._key(tenant, token))
+
+
+class BookingEngine:
+    """The Flow handler. Wire `engine.handle` (bound to the tenant) as app.state.flow_handler."""
+
+    def __init__(self, *, definitions: DefinitionProvider, availability: AvailabilityProvider,
+                 booking: BookingProvider, sessions: SessionStore) -> None:
+        self._defs = definitions
+        self._avail = availability
+        self._booking = booking
+        self._sessions = sessions
+
+    @staticmethod
+    def _is_selection(dim: str) -> bool:
+        return dim not in (_DATE, _TIME, _CONFIRM)
+
+    async def handle(self, payload: dict[str, Any], *, tenant: str) -> dict[str, Any]:
+        action = payload.get("action")
+        token = str(payload.get("flow_token") or "")
+        data = payload.get("data") or {}
+        defn = await self._defs.get(tenant)
+        if defn is None:
+            return {"screen": payload.get("screen") or CONFIRM,
+                    "data": {"error_message": "Booking is not configured."}}
+
+        try:
+            return await self._dispatch(defn, tenant, token, action, data)
+        except ProviderUnavailable:
+            # The backend errored — keep the customer where they are with a clear, non-fabricated
+            # message rather than an empty screen or a false booking.
+            return {"screen": payload.get("screen") or CONFIRM,
+                    "data": {"error_message": defn.label(
+                        "backend_error", "Sorry, we could not load availability. Please try again.")}}
+
+    async def _dispatch(self, defn: FlowDefinition, tenant: str, token: str, action: str,
+                        data: dict[str, Any]) -> dict[str, Any]:
+        if action == INIT:
+            state = {"chosen": {}, "step": 0}
+            await self._sessions.save(tenant, token, state)
+            return await self._render(defn, tenant, state)
+
+        state = await self._sessions.load(tenant, token) or {"chosen": {}, "step": 0}
+
+        if action == BACK:
+            state["step"] = max(0, int(state["step"]) - 1)
+            # drop what was chosen at (and after) the step we returned to, so a re-pick is clean
+            kept = {s["dimension"] for s in defn.steps[:state["step"]]}
+            state["chosen"] = {k: v for k, v in state["chosen"].items() if k in kept}
+            await self._sessions.save(tenant, token, state)
+            return await self._render(defn, tenant, state)
+
+        # data_exchange — record the current step's submission, then advance (or reserve).
+        step_i = int(state["step"])
+        if step_i >= len(defn.steps):
+            return {"screen": CONFIRM, "data": {"error_message": "This booking has already finished."}}
+        dim = defn.steps[step_i]["dimension"]
+
+        if dim == _CONFIRM:
+            result = await self._booking.reserve(
+                tenant=tenant, selection=dict(state["chosen"]), idempotency_key=token)
+            if not result.get("ok"):
+                return await self._confirm_screen(
+                    defn, state["chosen"],
+                    error=result.get("reason") or "That time was just taken. Please pick another.")
+            await self._sessions.clear(tenant, token)
+            return {"screen": SUCCESS, "data": {"extension_message_response": {"params": {
+                "flow_token": token, "booking_ref": result.get("ref", "")}}}}
+
+        # a selection / date / time submission: store it under its dimension's field name
+        value = data.get(dim)
+        if value in (None, ""):
+            return await self._render(defn, tenant, state,
+                                      error=defn.label("required", "Please make a selection."))
+        state["chosen"][dim] = value
+        state["step"] = step_i + 1
+        await self._sessions.save(tenant, token, state)
+        return await self._render(defn, tenant, state)
+
+    async def _render(self, defn: FlowDefinition, tenant: str, state: dict[str, Any],
+                      *, error: str = "") -> dict[str, Any]:
+        step_i = int(state["step"])
+        chosen = state["chosen"]
+        if step_i >= len(defn.steps):
+            return await self._confirm_screen(defn, chosen, error=error)
+        dim = defn.steps[step_i]["dimension"]
+
+        if self._is_selection(dim):
+            options = await self._avail.options(tenant=tenant, dimension=dim, chosen=chosen)
+            return {"screen": SELECT, "data": {
+                "dimension": dim, "title": defn.label(f"pick_{dim}", f"Choose {dim}"),
+                "options": options, **({"error_message": error} if error else {})}}
+        if dim == _DATE:
+            cal = await self._avail.calendar(tenant=tenant, chosen=chosen)
+            return {"screen": CALENDAR, "data": {
+                "mode": defn.mode, "title": defn.label("pick_date", "Choose a date"),
+                "min_date": cal.get("min_date", ""), "max_date": cal.get("max_date", ""),
+                "unavailable_dates": cal.get("unavailable_dates", []),
+                "include_days": cal.get("include_days", list(defn.default_working_days)),
+                **({"min_days": defn.min_days, "max_days": defn.max_days} if defn.mode == "range" else {}),
+                **({"error_message": error} if error else {})}}
+        if dim == _TIME:
+            slots = await self._avail.slots(tenant=tenant, chosen=chosen, date=chosen.get(_DATE, ""))
+            return {"screen": TIME, "data": {
+                "date": chosen.get(_DATE, ""), "title": defn.label("pick_time", "Choose a time"),
+                "slots": slots, **({"error_message": error} if error else {})}}
+        return await self._confirm_screen(defn, chosen, error=error)
+
+    async def _confirm_screen(self, defn: FlowDefinition, chosen: dict[str, Any],
+                              *, error: str = "") -> dict[str, Any]:
+        return {"screen": CONFIRM, "data": {
+            "title": defn.label("confirm", "Confirm your booking"),
+            "summary": {k: v for k, v in chosen.items()},
+            **({"error_message": error} if error else {})}}

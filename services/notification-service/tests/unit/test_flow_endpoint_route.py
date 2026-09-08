@@ -125,3 +125,47 @@ def test_a_wrong_key_returns_421_for_meta_to_refresh(monkeypatch):
     r = c.post("/webhooks/whatsapp/flow", content=raw, headers={"X-Hub-Signature-256": _sign(raw)})
     assert r.status_code == 421
     get_settings.cache_clear()
+
+
+def test_full_flow_endpoint_drives_the_booking_engine(monkeypatch):
+    """End-to-end: an encrypted INIT through the public route returns the first booking screen."""
+    import json as _json
+
+    from app.adapters.datastore.memory import MemoryDataStore
+    from app.core.booking_flow import BookingEngine, FlowDefinition, SessionStore
+
+    class _Avail:
+        async def options(self, *, tenant, dimension, chosen):
+            return [{"id": "cut", "title": "Haircut"}]
+        async def calendar(self, *, tenant, chosen):
+            return {"min_date": "2026-09-08", "max_date": "2026-10-08", "unavailable_dates": []}
+        async def slots(self, *, tenant, chosen, date):
+            return [{"id": "s1", "title": "10:00"}]
+
+    class _Booking:
+        async def reserve(self, *, tenant, selection, idempotency_key):
+            return {"ok": True, "ref": "BK9"}
+
+    c = _app(monkeypatch)
+    priv, pub = _keypair()
+    _seed_key(c, priv)
+    defn = FlowDefinition(steps=({"dimension": "service"}, {"dimension": "date"},
+                                 {"dimension": "time"}, {"dimension": "confirm"}))
+
+    class _Defs:
+        async def get(self, tenant):
+            return defn
+    engine = BookingEngine(definitions=_Defs(), availability=_Avail(), booking=_Booking(),
+                           sessions=SessionStore(MemoryDataStore(), clock=lambda: 1000.0))
+
+    async def _handler(payload):
+        return await engine.handle(payload, tenant="")
+    c.app.state.flow_handler = _handler
+
+    body, aes, iv = _meta_body({"version": "3.0", "action": "INIT", "flow_token": "tk"}, pub)
+    raw = _json.dumps(body).encode()
+    r = c.post("/webhooks/whatsapp/flow", content=raw, headers={"X-Hub-Signature-256": _sign(raw)})
+    assert r.status_code == 200, r.text
+    reply = _decrypt(r.text, aes, iv)
+    assert reply["screen"] == "SELECT" and reply["data"]["options"][0]["id"] == "cut"
+    get_settings.cache_clear()
