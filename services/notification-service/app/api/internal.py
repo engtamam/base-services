@@ -99,6 +99,20 @@ async def internal_health(settings: Settings = Depends(get_settings)) -> dict[st
     return {"status": "ok", "service": settings.SERVICE_NAME}
 
 
+@router.get("/whatsapp/flow/booking-json", dependencies=[Depends(require_internal_token)])
+async def booking_flow_json(settings: Settings = Depends(get_settings)) -> dict:
+    """The companion Flow JSON for the configured booking definition — a CONVENIENCE artifact the
+    platform uploads to Meta ITS OWN WAY (we never call Meta). 404 when no definition is configured.
+    The screens/field names are generated from the same constants the engine reads, so they cannot
+    drift; validate on upload (Meta revises the Flow JSON schema per version)."""
+    from app.adapters.booking.config_defs import parse_definition
+    from app.core.flow_json import build_booking_flow_json
+    defn = parse_definition(settings.WHATSAPP_BOOKING_DEFINITION)
+    if defn is None:
+        raise HTTPException(404, "NO_BOOKING_DEFINITION")
+    return build_booking_flow_json(defn)
+
+
 async def _resolve_sending_identity(request: Request, tenant: str, sending_identity: str | None):
     """Resolve a per-branch sending identity to the number this tenant is ENTITLED to send from.
 

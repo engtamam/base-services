@@ -92,11 +92,11 @@ def test_full_booking_walks_every_step_to_success():
     e = _engine(bk)
     r = _init(e)
     assert r["screen"] == SELECT and r["data"]["dimension"] == "service"
-    r = _submit(e, SELECT, {"service": "cut"})
+    r = _submit(e, SELECT, {"selection": "cut"})
     assert r["screen"] == SELECT and r["data"]["dimension"] == "staff"
     assert r["data"]["title"] == "اختر الطبيب"                 # i18n from strings
     assert r["data"]["options"][0]["id"] == "dr_cut"           # staff depended on the service
-    r = _submit(e, SELECT, {"staff": "dr_cut"})
+    r = _submit(e, SELECT, {"selection": "dr_cut"})
     assert r["screen"] == CALENDAR
     assert r["data"]["unavailable_dates"] == ["2026-09-10"] and r["data"]["include_days"] == ["Sun", "Mon", "Tue"]
     r = _submit(e, CALENDAR, {"date": "2026-09-09"})
@@ -118,7 +118,7 @@ def test_a_single_chair_shop_skips_staff():
         {"dimension": "service"}, {"dimension": "date"}, {"dimension": "time"},
         {"dimension": "confirm"})))
     _init(e)
-    r = _submit(e, SELECT, {"service": "cut"})
+    r = _submit(e, SELECT, {"selection": "cut"})
     assert r["screen"] == CALENDAR                              # no staff step
 
 
@@ -126,13 +126,13 @@ def test_a_single_chair_shop_skips_staff():
 def test_back_returns_to_the_prior_step_and_clears_its_choice():
     e = _engine()
     _init(e)
-    _submit(e, SELECT, {"service": "cut"})
-    r = _submit(e, SELECT, {"staff": "dr_cut"})
+    _submit(e, SELECT, {"selection": "cut"})
+    r = _submit(e, SELECT, {"selection": "dr_cut"})
     assert r["screen"] == CALENDAR
     back = run(e.handle({"action": "BACK", "flow_token": TOK}, tenant="t1"))
     assert back["screen"] == SELECT and back["data"]["dimension"] == "staff"   # back to staff pick
     # re-picking works and proceeds
-    r = _submit(e, SELECT, {"staff": "dr_cut"})
+    r = _submit(e, SELECT, {"selection": "dr_cut"})
     assert r["screen"] == CALENDAR
 
 
@@ -141,8 +141,8 @@ def test_a_failed_reserve_returns_to_confirm_with_an_error_not_success():
     bk = _Booking(ok=False, reason="Slot just taken")
     e = _engine(bk)
     _init(e)
-    _submit(e, SELECT, {"service": "cut"})
-    _submit(e, SELECT, {"staff": "dr_cut"})
+    _submit(e, SELECT, {"selection": "cut"})
+    _submit(e, SELECT, {"selection": "dr_cut"})
     _submit(e, CALENDAR, {"date": "2026-09-09"})
     _submit(e, TIME, {"time": "2026-09-09T10:00"})
     r = _submit(e, CONFIRM, {})
@@ -163,7 +163,7 @@ def test_sessions_are_tenant_scoped():
     _submit(e, SELECT, {"service": "cut"}, tenant="shop_a")
     # a different tenant with the SAME flow_token starts fresh, never sees shop_a's progress
     r = run(e.handle({"action": "data_exchange", "screen": SELECT, "flow_token": TOK,
-                      "data": {"service": "color"}}, tenant="shop_b"))
+                      "data": {"selection": "color"}}, tenant="shop_b"))
     # shop_b had no session → step 0 recorded service, advances to staff (not shop_a's calendar)
     assert r["screen"] == SELECT and r["data"]["dimension"] == "staff"
 

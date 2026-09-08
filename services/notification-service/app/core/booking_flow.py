@@ -27,6 +27,19 @@ SELECT, CALENDAR, TIME, CONFIRM, SUCCESS = "SELECT", "CALENDAR", "TIME", "CONFIR
 # The terminal spine — every dimension NOT in here is a "selection" dimension resolved via options().
 _DATE, _TIME, _CONFIRM = "date", "time", "confirm"
 
+# The CANONICAL submitted-field name per screen type — MUST match the generated Flow JSON's component
+# `name` (a single reused SELECT screen has one fixed field, not the dimension). The date/time pickers
+# carry their own name. Kept in one place so the engine and the Flow-JSON generator can never drift.
+SELECTION_FIELD = "selection"
+
+
+def _submitted_field(dimension: str) -> str:
+    if dimension == _DATE:
+        return _DATE
+    if dimension == _TIME:
+        return _TIME
+    return SELECTION_FIELD
+
 
 class BookingError(ValueError):
     """A definition or request the engine refuses before touching a provider."""
@@ -207,8 +220,9 @@ class BookingEngine:
             return {"screen": SUCCESS, "data": {"extension_message_response": {"params": {
                 "flow_token": token, "booking_ref": result.get("ref", "")}}}}
 
-        # a selection / date / time submission: store it under its dimension's field name
-        value = data.get(dim)
+        # a selection / date / time submission. The submitted field name is CANONICAL per screen type
+        # (a reused SELECT screen has one fixed component name, not the dimension) — see _submitted().
+        value = data.get(_submitted_field(dim))
         if value in (None, ""):
             return await self._render(defn, tenant, state,
                                       error=defn.label("required", "Please make a selection."))

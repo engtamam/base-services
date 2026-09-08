@@ -2990,6 +2990,74 @@
         ]
       }
     },
+    "/internal/whatsapp/flow/booking-json": {
+      "get": {
+        "description": "The companion Flow JSON for the configured booking definition \u2014 a CONVENIENCE artifact the\nplatform uploads to Meta ITS OWN WAY (we never call Meta). 404 when no definition is configured.\nThe screens/field names are generated from the same constants the engine reads, so they cannot\ndrift; validate on upload (Meta revises the Flow JSON schema per version).",
+        "operationId": "booking_flow_json_internal_whatsapp_flow_booking_json_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Booking Flow Json Internal Whatsapp Flow Booking Json Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Booking Flow Json",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/whatsapp/flows/provision": {
       "post": {
         "description": "Ensure a PUBLISHED WhatsApp Flow named `name` exists on this tenant's WABA \u2014 create/clone +\npublish it if absent, or find it if already there. IDEMPOTENT BY NAME.\n\nWHY IT EXISTS: a Flow is WABA-scoped (Meta's multi-WABA path is a name-matched CLONE with a new\nid), so in a model where every tenant connects its own WABA, each tenant needs its own Flow \u2014\nprovisioned at connect time, right where the template library is registered. This is the callable\nprimitive for that step: the adopter's connect job calls it (create-from-scratch with `flow_json`,\nor the recommended clone-from-master with `clone_flow_id`), then registers templates whose\nflow_button references the Flow by flow_NAME \u2014 stable across every shop's clone, unlike the id.\n\nIdempotent because a PUBLISHED Flow is immutable and cannot be deleted: a re-run finds the existing\nFlow by name and returns it (publishing it only if it is still a draft), never a second copy.",
