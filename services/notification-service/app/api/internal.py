@@ -174,6 +174,10 @@ class InteractiveNotifyIn(BaseModel):
     flow_id: str = Field(default="", max_length=128)
     flow_name: str = Field(default="", max_length=128)
     flow_cta: str = Field(default="", max_length=20)
+    # "navigate" (static flow, flow_screen required) or "data_exchange" (dynamic, endpoint-driven —
+    # e.g. the booking calendar; the endpoint's INIT supplies the first screen so flow_screen is
+    # optional). Defaults to navigate so existing static-flow sends are unchanged.
+    flow_action: str = Field(default="navigate", max_length=16)
     flow_screen: str = Field(default="", max_length=128)
     flow_data: dict[str, Any] = Field(default_factory=dict)
     biz_opaque_callback_data: str | None = Field(default=None, max_length=512)
@@ -207,7 +211,8 @@ async def internal_notify_interactive(request: Request, body: InteractiveNotifyI
             interactive = build_flow(
                 body=body.body, header=body.header, footer=body.footer,
                 flow_token=body.flow_token, flow_id=body.flow_id, flow_name=body.flow_name,
-                flow_cta=body.flow_cta, screen=body.flow_screen, data=body.flow_data)
+                flow_cta=body.flow_cta, screen=body.flow_screen, data=body.flow_data,
+                flow_action=body.flow_action)
         elif body.type == "location_request":
             # A location-request carries only body text; header/footer/action fields are not accepted
             # by Meta for this interactive type, so they are ignored rather than forwarded.

@@ -372,6 +372,12 @@
             "title": "Buttons",
             "type": "array"
           },
+          "flow_action": {
+            "default": "navigate",
+            "maxLength": 16,
+            "title": "Flow Action",
+            "type": "string"
+          },
           "flow_cta": {
             "default": "",
             "maxLength": 20,

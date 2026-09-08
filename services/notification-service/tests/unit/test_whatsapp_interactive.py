@@ -150,3 +150,38 @@ def test_two_flow_sends_with_different_tokens_are_distinguishable():
     a = build_flow(body="x", flow_token="rate:vis_1", flow_id="f1", flow_cta="Go", screen="S1")
     b = build_flow(body="x", flow_token="rate:vis_2", flow_id="f1", flow_cta="Go", screen="S1")
     assert a["action"]["parameters"]["flow_token"] != b["action"]["parameters"]["flow_token"]
+
+
+# ── data_exchange (dynamic, endpoint-driven) flows — e.g. the booking calendar ──
+def test_data_exchange_flow_may_omit_the_screen():
+    from app.core.whatsapp_interactive import build_flow
+    msg = build_flow(body="Book an appointment", flow_token="tk1", flow_cta="Book",
+                     flow_name="booking", flow_action="data_exchange")
+    params = msg["action"]["parameters"]
+    assert params["flow_action"] == "data_exchange"
+    # the endpoint's INIT supplies the first screen → no flow_action_payload sent at all
+    assert "flow_action_payload" not in params
+    assert params["flow_name"] == "booking" and params["flow_message_version"] == "3"
+
+
+def test_data_exchange_flow_keeps_seed_data_when_given():
+    from app.core.whatsapp_interactive import build_flow
+    msg = build_flow(body="Book", flow_token="tk", flow_cta="Book", flow_id="123",
+                     flow_action="data_exchange", data={"tenant": "shop_a"})
+    payload = msg["action"]["parameters"]["flow_action_payload"]
+    assert payload == {"data": {"tenant": "shop_a"}}          # data kept, screen omitted
+
+
+def test_navigate_still_requires_a_screen():
+    import pytest
+    from app.core.whatsapp_interactive import InteractiveError, build_flow
+    with pytest.raises(InteractiveError):
+        build_flow(body="x", flow_token="tk", flow_cta="Go", flow_name="f")   # navigate, no screen
+
+
+def test_a_bad_flow_action_is_refused():
+    import pytest
+    from app.core.whatsapp_interactive import InteractiveError, build_flow
+    with pytest.raises(InteractiveError):
+        build_flow(body="x", flow_token="tk", flow_cta="Go", flow_name="f", screen="S",
+                   flow_action="stream")

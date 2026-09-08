@@ -138,8 +138,8 @@ def build_location_request(*, body: str) -> dict[str, Any]:
     }
 
 
-def build_flow(*, body: str, flow_token: str, flow_cta: str, screen: str,
-               flow_id: str = "", flow_name: str = "",
+def build_flow(*, body: str, flow_token: str, flow_cta: str, screen: str = "",
+               flow_id: str = "", flow_name: str = "", flow_action: str = "navigate",
                data: dict[str, Any] | None = None,
                header: str = "", footer: str = "") -> dict[str, Any]:
     """A WhatsApp Flow interactive object — a form that opens INSIDE WhatsApp and returns its answers
@@ -160,30 +160,42 @@ def build_flow(*, body: str, flow_token: str, flow_cta: str, screen: str,
     tenant (the same reasoning that makes templates reference a flow-button by name).
 
     Verified against Meta's own WhatsApp Cloud API "Sending a Flow" guide (Sep 2026): flow_message_
-    version must be exactly "3"; exactly one of flow_id / flow_name identifies the flow; flow_cta and
-    flow_action_payload.screen are required; flow_action defaults to "navigate"; and flow_action_
-    payload.data is optional but MUST be non-empty if present — hence omitted here when empty rather
-    than sent as {}."""
+    version must be exactly "3"; exactly one of flow_id / flow_name identifies the flow; flow_cta is
+    required; flow_action_payload.data is optional but MUST be non-empty if present — hence omitted
+    here when empty rather than sent as {}.
+
+    `flow_action` is "navigate" (default, STATIC flow) or "data_exchange" (DYNAMIC flow driven by the
+    encrypted endpoint — the booking calendar is one). For navigate, the first `screen` is REQUIRED
+    (the client renders it directly). For data_exchange, opening the flow triggers an INIT call to the
+    endpoint which RETURNS the first screen, so `screen` is OPTIONAL — omitted here when empty, and the
+    whole flow_action_payload is omitted when neither a screen nor seed data is supplied (Meta rejects
+    an empty payload)."""
     if not flow_token:
         raise InteractiveError("a flow message needs a flow_token — it is the reply's only anchor")
     if bool(flow_id) == bool(flow_name):
         raise InteractiveError("a flow message needs exactly one of flow_id or flow_name")
     if not flow_cta:
         raise InteractiveError("a flow message needs a call-to-action label")
-    if not screen:
-        raise InteractiveError("a flow message needs the first screen's name")
-    # flow_action_payload.data is OPTIONAL but "must be NON-EMPTY if provided" (Meta spec) — so it is
-    # OMITTED entirely when there is no seed data, never sent as an empty {} (which Meta rejects).
-    payload: dict[str, Any] = {"screen": _capped("screen", screen, _FLOW_SCREEN_MAX)}
+    if flow_action not in ("navigate", "data_exchange"):
+        raise InteractiveError("flow_action must be 'navigate' or 'data_exchange'")
+    if flow_action == "navigate" and not screen:
+        raise InteractiveError("a navigate flow needs the first screen's name")
+    # flow_action_payload.data is OPTIONAL but "must be NON-EMPTY if provided" (Meta spec), so it is
+    # OMITTED when empty. For data_exchange the endpoint's INIT supplies the first screen, so screen
+    # may be absent; the payload is then omitted entirely rather than sent as an empty {}.
+    payload: dict[str, Any] = {}
+    if screen:
+        payload["screen"] = _capped("screen", screen, _FLOW_SCREEN_MAX)
     if data:
         payload["data"] = dict(data)
     parameters: dict[str, Any] = {
         "flow_message_version": "3",
         "flow_token": _capped("flow_token", flow_token, _FLOW_TOKEN_MAX),
         "flow_cta": _capped("flow_cta", flow_cta, _FLOW_CTA_MAX),
-        "flow_action": "navigate",
-        "flow_action_payload": payload,
+        "flow_action": flow_action,
     }
+    if payload:
+        parameters["flow_action_payload"] = payload
     # Exactly one identifier (enforced above). flow_name is the clone-portable one; flow_id the direct.
     if flow_id:
         parameters["flow_id"] = _capped("flow_id", flow_id, _FLOW_ID_MAX)
