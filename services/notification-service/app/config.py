@@ -433,6 +433,12 @@ class Settings(BaseSettings):
     # session store + screens; a separate URL because loyalty is usually a different system.
     WHATSAPP_LOYALTY_PROVIDER_URL: str = ""
     WHATSAPP_LOYALTY_PROVIDER_TOKEN: str = ""
+    # Delivery-slot flow (#2) — IS the slot engine (options=zone, calendar=delivery days,
+    # slots=capacity-limited windows, reserve=book the delivery). Same op contract as booking, its own
+    # definition + URL (usually a separate system); empty ⇒ null backend. Served at .../flow/{tenant}/delivery.
+    WHATSAPP_DELIVERY_DEFINITION: str = ""
+    WHATSAPP_DELIVERY_PROVIDER_URL: str = ""
+    WHATSAPP_DELIVERY_PROVIDER_TOKEN: str = ""
     # Embedded Signup (Tech Provider onboarding). These identify US as the Tech Provider — NOT the
     # shop — so they are platform-wide, from the environment, and never settable through any panel
     # (the same reasoning as SECRETS_KEK). The exchange endpoint reads them in CORE, never a route,

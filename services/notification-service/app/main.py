@@ -169,6 +169,15 @@ def create_app() -> FastAPI:
                                    settings.WHATSAPP_LOYALTY_PROVIDER_TOKEN)
                 if settings.WHATSAPP_LOYALTY_PROVIDER_URL else NullLoyaltyBackend())
     _registry.register(LoyaltyEngine(provider=_loyalty, sessions=_sessions))
+    # Flow #2 — delivery slots IS the slot engine (a second BookingEngine, name "delivery"), its own
+    # definition + provider URL. options=zone, calendar=delivery days, slots=capacity-limited windows.
+    _delivery_backend = (HttpBookingBackend(settings.WHATSAPP_DELIVERY_PROVIDER_URL,
+                                            settings.WHATSAPP_DELIVERY_PROVIDER_TOKEN)
+                         if settings.WHATSAPP_DELIVERY_PROVIDER_URL else NullBookingBackend())
+    _registry.register(BookingEngine(
+        name="delivery",
+        definitions=ConfigDefinitionProvider(settings.WHATSAPP_DELIVERY_DEFINITION),
+        availability=_delivery_backend, booking=_delivery_backend, sessions=_sessions))
     app.state.flow_registry = _registry
 
     # Readiness reflects real dependency health for the wired adapters.

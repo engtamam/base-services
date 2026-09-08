@@ -173,14 +173,15 @@ class SessionStore:
 
 
 class BookingEngine:
-    """L4 — the booking dynamic-Flow handler (implements flow_dispatch.FlowHandler). The only
-    calendar-specific piece; it rides on the generic L1-L3 layers. Register it in a FlowRegistry, or
-    call `handle` directly."""
-
-    name = "booking"
+    """L4 — the SLOT-RESERVATION dynamic-Flow handler (implements flow_dispatch.FlowHandler). It is
+    generic: "reserve a capacity-limited slot after some selections" describes appointments, DELIVERY
+    WINDOWS, table reservations, rentals — all the same engine, differing only by definition +
+    provider. So `name` is per-instance: register one as "booking", another as "delivery", etc., each
+    with its own definition and backend. Rides on the generic L1-L3 layers."""
 
     def __init__(self, *, definitions: DefinitionProvider, availability: AvailabilityProvider,
-                 booking: BookingProvider, sessions: SessionStore) -> None:
+                 booking: BookingProvider, sessions: SessionStore, name: str = "booking") -> None:
+        self.name = name
         self._defs = definitions
         self._avail = availability
         self._booking = booking
