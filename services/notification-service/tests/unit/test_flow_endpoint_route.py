@@ -10,7 +10,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from app.config import get_settings
-from app.core import flow_endpoint as fe
+from app.core import flow_crypto, flow_dispatch as fd
 
 SECRET = "app-secret-xyz"
 
@@ -157,10 +157,10 @@ def test_full_flow_endpoint_drives_the_booking_engine(monkeypatch):
             return defn
     engine = BookingEngine(definitions=_Defs(), availability=_Avail(), booking=_Booking(),
                            sessions=SessionStore(MemoryDataStore(), clock=lambda: 1000.0))
-
-    async def _handler(payload):
-        return await engine.handle(payload, tenant="")
-    c.app.state.flow_handler = _handler
+    from app.core.flow_registry import FlowRegistry
+    reg = FlowRegistry()
+    reg.register(engine)
+    c.app.state.flow_registry = reg
 
     body, aes, iv = _meta_body({"version": "3.0", "action": "INIT", "flow_token": "tk"}, pub)
     raw = _json.dumps(body).encode()

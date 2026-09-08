@@ -138,7 +138,11 @@ class SessionStore:
 
 
 class BookingEngine:
-    """The Flow handler. Wire `engine.handle` (bound to the tenant) as app.state.flow_handler."""
+    """L4 — the booking dynamic-Flow handler (implements flow_dispatch.FlowHandler). The only
+    calendar-specific piece; it rides on the generic L1-L3 layers. Register it in a FlowRegistry, or
+    call `handle` directly."""
+
+    name = "booking"
 
     def __init__(self, *, definitions: DefinitionProvider, availability: AvailabilityProvider,
                  booking: BookingProvider, sessions: SessionStore) -> None:
@@ -151,7 +155,7 @@ class BookingEngine:
     def _is_selection(dim: str) -> bool:
         return dim not in (_DATE, _TIME, _CONFIRM)
 
-    async def handle(self, payload: dict[str, Any], *, tenant: str) -> dict[str, Any]:
+    async def handle(self, payload: dict[str, Any], *, tenant: str = "") -> dict[str, Any]:
         action = payload.get("action")
         token = str(payload.get("flow_token") or "")
         data = payload.get("data") or {}

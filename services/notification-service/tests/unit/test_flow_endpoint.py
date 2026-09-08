@@ -15,7 +15,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from app.core import flow_endpoint as fe
+from app.core import flow_crypto, flow_dispatch as fd
 
 
 
@@ -63,7 +63,7 @@ def test_ping_is_answered_without_the_handler():
     async def _boom(payload):
         raise AssertionError("handler must not be called for ping")
 
-    reply = run(fe.process(encrypted_flow_data=efd, encrypted_aes_key=eak, initial_vector=iv_b64,
+    reply = run(fd.process(encrypted_flow_data=efd, encrypted_aes_key=eak, initial_vector=iv_b64,
                            private_key_pem=priv, handler=_boom))
     assert _decrypt_reply(reply, aes, iv) == {"data": {"status": "active"}}
 
@@ -73,7 +73,7 @@ def test_data_exchange_round_trips_through_the_handler():
     payload = {"version": "3.0", "action": "data_exchange", "screen": "DATE",
                "flow_token": "tok_1", "data": {"date": "2026-09-10"}}
     efd, eak, iv_b64, aes, iv = _encrypt_like_meta(payload, pub)
-    reply = run(fe.process(encrypted_flow_data=efd, encrypted_aes_key=eak, initial_vector=iv_b64,
+    reply = run(fd.process(encrypted_flow_data=efd, encrypted_aes_key=eak, initial_vector=iv_b64,
                            private_key_pem=priv, handler=_echo_handler))
     assert _decrypt_reply(reply, aes, iv) == {"screen": "NEXT", "data": {"saw_action": "data_exchange"}}
 
@@ -81,7 +81,7 @@ def test_data_exchange_round_trips_through_the_handler():
 def test_the_reply_uses_the_flipped_iv():
     priv, pub = _keypair()
     efd, eak, iv_b64, aes, iv = _encrypt_like_meta({"action": "ping"}, pub)
-    reply = run(fe.process(encrypted_flow_data=efd, encrypted_aes_key=eak, initial_vector=iv_b64,
+    reply = run(fd.process(encrypted_flow_data=efd, encrypted_aes_key=eak, initial_vector=iv_b64,
                            private_key_pem=priv, handler=_echo_handler))
     ct = base64.b64decode(reply)
     # decrypting with the UNFLIPPED iv must fail — proves we flipped it
@@ -95,8 +95,8 @@ def test_a_tampered_payload_is_a_clean_crypto_error():
     priv, pub = _keypair()
     efd, eak, iv_b64, aes, iv = _encrypt_like_meta({"action": "ping"}, pub)
     bad = base64.b64encode(base64.b64decode(efd)[:-1] + b"\x00").decode()   # corrupt the tag
-    with pytest.raises(fe.FlowCryptoError):
-        run(fe.process(encrypted_flow_data=bad, encrypted_aes_key=eak, initial_vector=iv_b64,
+    with pytest.raises(flow_crypto.FlowCryptoError):
+        run(fd.process(encrypted_flow_data=bad, encrypted_aes_key=eak, initial_vector=iv_b64,
                        private_key_pem=priv, handler=_echo_handler))
 
 
@@ -105,14 +105,14 @@ def test_the_wrong_key_is_a_clean_crypto_error():
     _, pub = _keypair()
     other_priv, _ = _keypair()
     efd, eak, iv_b64, aes, iv = _encrypt_like_meta({"action": "ping"}, pub)
-    with pytest.raises(fe.FlowCryptoError):
-        run(fe.process(encrypted_flow_data=efd, encrypted_aes_key=eak, initial_vector=iv_b64,
+    with pytest.raises(flow_crypto.FlowCryptoError):
+        run(fd.process(encrypted_flow_data=efd, encrypted_aes_key=eak, initial_vector=iv_b64,
                        private_key_pem=other_priv, handler=_echo_handler))
 
 
 def test_encrypted_private_key_with_passphrase():
     priv, pub = _keypair(passphrase=b"s3cret")
     efd, eak, iv_b64, aes, iv = _encrypt_like_meta({"action": "ping"}, pub)
-    reply = run(fe.process(encrypted_flow_data=efd, encrypted_aes_key=eak, initial_vector=iv_b64,
+    reply = run(fd.process(encrypted_flow_data=efd, encrypted_aes_key=eak, initial_vector=iv_b64,
                            private_key_pem=priv, handler=_echo_handler, passphrase=b"s3cret"))
     assert _decrypt_reply(reply, aes, iv) == {"data": {"status": "active"}}

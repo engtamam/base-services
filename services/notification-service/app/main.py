@@ -141,19 +141,17 @@ def create_app() -> FastAPI:
     from app.adapters.booking.http import HttpBookingBackend
     from app.adapters.booking.null import NullBookingBackend
     from app.core.booking_flow import BookingEngine, SessionStore
+    from app.core.flow_registry import FlowRegistry
     _backend = (HttpBookingBackend(settings.WHATSAPP_BOOKING_PROVIDER_URL,
                                    settings.WHATSAPP_BOOKING_PROVIDER_TOKEN)
                 if settings.WHATSAPP_BOOKING_PROVIDER_URL else NullBookingBackend())
-    _engine = BookingEngine(
+    _registry = FlowRegistry()
+    _registry.register(BookingEngine(
         definitions=ConfigDefinitionProvider(settings.WHATSAPP_BOOKING_DEFINITION),
         availability=_backend, booking=_backend,
         sessions=SessionStore(container.datastore, clock=_time.time,
-                              ttl_seconds=settings.WHATSAPP_BOOKING_SESSION_TTL_SECONDS))
-
-    async def _flow_handler(payload: dict) -> dict:
-        # Single-brand tenant resolution; per-WABA resolution lands with provisioning.
-        return await _engine.handle(payload, tenant="")
-    app.state.flow_handler = _flow_handler
+                              ttl_seconds=settings.WHATSAPP_BOOKING_SESSION_TTL_SECONDS)))
+    app.state.flow_registry = _registry
 
     # Readiness reflects real dependency health for the wired adapters.
     for name, probe in container.health_probes().items():
