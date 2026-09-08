@@ -411,6 +411,15 @@ class Settings(BaseSettings):
     # ~5MB image / ~16MB video; this bounds the in-memory read so a huge upload cannot exhaust memory,
     # and is config so a deployment can tighten it. Default 16MB covers Meta's largest allowed header.
     WHATSAPP_MEDIA_MAX_BYTES: int = 16 * 1024 * 1024
+    # WhatsApp Flow DATA ENDPOINT (the encrypted server callback that drives a Flow's screens — e.g.
+    # the booking calendar). OFF by default: a deployment opts in once it has uploaded a public key to
+    # Meta and sealed the matching private key. See docs/design/whatsapp-booking-flow.md.
+    WHATSAPP_FLOW_ENDPOINT_ENABLED: bool = False
+    # Secret-store name of the RSA private key (PEM) that decrypts Flow requests. Sealed at rest; the
+    # route resolves it in CORE, never inline. Per-tenant keying (per WABA) comes with provisioning.
+    WHATSAPP_FLOW_PRIVATE_KEY_SECRET: str = "WHATSAPP_FLOW_PRIVATE_KEY"
+    # Optional passphrase for that private key (also from the secret store name below), "" = none.
+    WHATSAPP_FLOW_KEY_PASSPHRASE_SECRET: str = ""
     # Embedded Signup (Tech Provider onboarding). These identify US as the Tech Provider — NOT the
     # shop — so they are platform-wide, from the environment, and never settable through any panel
     # (the same reasoning as SECRETS_KEK). The exchange endpoint reads them in CORE, never a route,

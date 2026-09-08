@@ -4086,6 +4086,26 @@
           "webhooks"
         ]
       }
+    },
+    "/webhooks/whatsapp/flow": {
+      "post": {
+        "description": "WhatsApp Flow DATA ENDPOINT \u2014 the encrypted callback that drives a Flow's screens.\n\nMeta POSTs {encrypted_flow_data, encrypted_aes_key, initial_vector}, signed with the app secret.\nWe verify the signature, decrypt with THIS deployment's sealed private key, dispatch (ping here,\neverything else to the booking handler), and return the AES-GCM reply as a raw base64 body.\n\nA decryption failure returns HTTP 421 \u2014 Meta's signal to refresh the public key \u2014 and never says\nwhich step failed. The feature is OFF until a key is configured (503), so the path is inert by\ndefault. See docs/design/whatsapp-booking-flow.md.",
+        "operationId": "flow_endpoint_webhooks_whatsapp_flow_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Flow Endpoint",
+        "tags": [
+          "webhooks"
+        ]
+      }
     }
   }
 }

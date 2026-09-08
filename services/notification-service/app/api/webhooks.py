@@ -150,3 +150,59 @@ async def receive(request: Request) -> dict:
     # Meta retries on any non-2xx and treats the retries as duplicates, so acknowledge fast once the
     # events are on the bus. The count is for our observability, not for Meta.
     return {"received": True, "events": emitted}
+
+
+async def _default_flow_handler(payload: dict) -> dict:
+    """Until a booking engine is wired (app.state.flow_handler), a non-ping request gets a clean,
+    encrypted 'unavailable' snackbar rather than a broken screen. Never raises — the route already
+    handled `ping` and decryption; the reply must still be encryptable."""
+    return {"screen": payload.get("screen") or "SUCCESS",
+            "data": {"error_message": "Booking is not available right now."}}
+
+
+@router.post("/webhooks/whatsapp/flow")
+async def flow_endpoint(request: Request):
+    """WhatsApp Flow DATA ENDPOINT — the encrypted callback that drives a Flow's screens.
+
+    Meta POSTs {encrypted_flow_data, encrypted_aes_key, initial_vector}, signed with the app secret.
+    We verify the signature, decrypt with THIS deployment's sealed private key, dispatch (ping here,
+    everything else to the booking handler), and return the AES-GCM reply as a raw base64 body.
+
+    A decryption failure returns HTTP 421 — Meta's signal to refresh the public key — and never says
+    which step failed. The feature is OFF until a key is configured (503), so the path is inert by
+    default. See docs/design/whatsapp-booking-flow.md."""
+    from app.core import flow_endpoint as fe
+
+    s = get_settings()
+    if not s.WHATSAPP_FLOW_ENDPOINT_ENABLED:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "FLOW_ENDPOINT_DISABLED")
+    raw = await request.body()
+    if not _valid_signature(raw, request.headers.get("X-Hub-Signature-256", ""), s.META_APP_SECRET):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "BAD_SIGNATURE")
+    try:
+        body = _json.loads(raw or b"{}")
+        efd, eak, iv = body["encrypted_flow_data"], body["encrypted_aes_key"], body["initial_vector"]
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "BAD_REQUEST")
+
+    store = getattr(request.app.state, "secret_store", None)
+    private_pem = await store.get(tenant="", name=s.WHATSAPP_FLOW_PRIVATE_KEY_SECRET,
+                                  fallback="") if store is not None else ""
+    if not private_pem:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "FLOW_KEY_UNCONFIGURED")
+    passphrase = None
+    if s.WHATSAPP_FLOW_KEY_PASSPHRASE_SECRET and store is not None:
+        pp = await store.get(tenant="", name=s.WHATSAPP_FLOW_KEY_PASSPHRASE_SECRET, fallback="")
+        passphrase = pp.encode("utf-8") if pp else None
+
+    handler = getattr(request.app.state, "flow_handler", None) or _default_flow_handler
+    try:
+        reply = await fe.process(
+            encrypted_flow_data=efd, encrypted_aes_key=eak, initial_vector=iv,
+            private_key_pem=private_pem.encode("utf-8") if isinstance(private_pem, str) else private_pem,
+            handler=handler, passphrase=passphrase)
+    except fe.FlowCryptoError:
+        # Meta refreshes its cached public key on a 421 and retries — the recovery path for a rotated
+        # or mismatched key. The body is deliberately empty (no hint which step failed).
+        return PlainTextResponse("", status_code=421)
+    return PlainTextResponse(reply, status_code=200)
