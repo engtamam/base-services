@@ -79,7 +79,14 @@ echo "==> changed since ${PREV:-<all>}: ${CHANGED:-<none>}"
 FAIL_MARK="$(mktemp)"; rm -f "$FAIL_MARK"
 build_push() {   # build+push one service by digest; log to /tmp/pl_$1.log
   s="$1"; img="$2"
+  # LAYER CACHE (speed): pull cache metadata from the last published :latest and embed inline cache in
+  # the new push (BUILDKIT_INLINE_CACHE=1), so an unchanged dependency layer is reused instead of
+  # reinstalled. Paired with the pip cache-mount in each Dockerfile, a code-only change builds in
+  # seconds. --cache-from silently no-ops when there is no prior :latest (a first release). Correctness
+  # is unaffected — the digest verify after the push is the single source of truth.
   docker buildx build --platform linux/amd64 \
+    --cache-from "type=registry,ref=$REG/$s:latest" \
+    --build-arg BUILDKIT_INLINE_CACHE=1 \
     --label "org.opencontainers.image.source=https://github.com/$OWNER/$(basename "$ROOT")" \
     --label "org.opencontainers.image.revision=$SHA" \
     --label "org.opencontainers.image.version=$VERSION" \

@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # =============================================================================
 # ticket-service — hardened production image
 # Multi-stage · python:3.12-slim · non-root · runtime deps only · read-only-friendly
@@ -19,7 +20,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 # safety:image-runtime gates exactly that. dev/ci stay out for a lean, low-CVE image.
 COPY pyproject.toml README.md ./
 COPY app ./app
-RUN pip install ".[postgres,redis,s3,vault]"
+RUN --mount=type=cache,target=/root/.cache/pip pip install ".[postgres,redis,s3,vault]"
 
 # ── Final: slim runtime, non-root ───────────────────────────────────────────
 FROM python:3.12-slim AS runtime
