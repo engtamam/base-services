@@ -53,20 +53,28 @@ class ProviderUnavailable(Exception):
 
 @runtime_checkable
 class AvailabilityProvider(Protocol):
+    """Implement these three (over HTTP or in-process) to feed the booking. `tenant` = the shop;
+    `chosen` = everything picked so far (e.g. {"service":"cut","staff":"dr_7"}). SCOPE every answer to
+    `chosen` — that is how each resource gets its OWN schedule (you're handed the chosen staff/branch).
+    Raise (or return non-2xx over HTTP) on failure → the customer sees a retry snackbar, never an empty
+    calendar or a fake booking. Keep it fast (WhatsApp expects ~10-15s end to end)."""
+
     async def options(self, *, tenant: str, dimension: str,
                       chosen: dict[str, Any]) -> list[dict[str, Any]]:
-        """Options for a selection step given prior choices — e.g. doctors for the chosen service.
-        Each: {"id": str, "title": str, "description"?: str}."""
+        """Choices for a selection step (dimension = "service" | "staff" | ... per your definition).
+        Return only ones valid for `chosen`. -> [{"id","title","description"?}]. id comes back in chosen."""
         ...
 
     async def calendar(self, *, tenant: str, chosen: dict[str, Any]) -> dict[str, Any]:
-        """Calendar constraints for THIS selection — {min_date, max_date, unavailable_dates,
-        include_days} in 'YYYY-MM-DD' / weekday form. This is where a resource's own schedule lives."""
+        """Date constraints for the chosen resource. -> {"min_date","max_date","unavailable_dates":[...],
+        "include_days":[...]}; dates "YYYY-MM-DD", include_days weekdays "Sun".."Sat". Omit what you
+        don't constrain. unavailable_dates = fully-booked/closed days."""
         ...
 
     async def slots(self, *, tenant: str, chosen: dict[str, Any],
                     date: str) -> list[dict[str, Any]]:
-        """Free time slots for the chosen date — each {"id": str, "title": str}."""
+        """Free times on `date` for the chosen resource. -> [{"id","title"}] (id opaque, echoed at
+        reserve; title shown). Return only genuinely free slots. Not called in range mode."""
         ...
 
 
@@ -74,8 +82,10 @@ class AvailabilityProvider(Protocol):
 class BookingProvider(Protocol):
     async def reserve(self, *, tenant: str, selection: dict[str, Any],
                       idempotency_key: str) -> dict[str, Any]:
-        """Reserve the slot. {"ok": bool, "ref"?: str, "reason"?: str}. MUST be atomic/idempotent on
-        the key so a redelivered confirm and two racing customers never double-book (see the design)."""
+        """Commit the booking. `selection` = the full chosen set (incl. date/time). MUST be ATOMIC +
+        IDEMPOTENT on `idempotency_key` (we pass the WhatsApp flow_token): a redelivered confirm and
+        two customers racing for the last slot must never double-book — first wins, rest get ok:false.
+        -> {"ok":true,"ref":"BK-123"} (ref shown in chat) | {"ok":false,"reason":"just taken"}."""
         ...
 
 
