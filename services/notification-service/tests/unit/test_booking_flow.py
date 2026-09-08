@@ -122,6 +122,53 @@ def test_a_single_chair_shop_skips_staff():
     assert r["screen"] == CALENDAR                              # no staff step
 
 
+class _AvailPerBooking:
+    """One flow, one tenant: whether 'staff' applies is decided PER booking from the chosen service.
+    'cut' needs a staff pick; 'wash' auto-assigns (options() returns empty → the engine skips it)."""
+
+    async def options(self, *, tenant, dimension, chosen):
+        if dimension == "service":
+            return [{"id": "cut", "title": "Haircut"}, {"id": "wash", "title": "Wash"}]
+        if dimension == "staff":
+            return [] if chosen.get("service") == "wash" else [{"id": "dr_a", "title": "Dr. A"}]
+        return []
+
+    async def calendar(self, *, tenant, chosen):
+        return {"min_date": "2026-09-08", "max_date": "2026-10-08"}
+
+    async def slots(self, *, tenant, chosen, date):
+        return [{"id": f"{date}T10:00", "title": "10:00"}]
+
+
+def _perbooking_engine(bk):
+    st = MemoryDataStore()
+    return BookingEngine(definitions=_Defs(_defn()), availability=_AvailPerBooking(),
+                         booking=bk, sessions=SessionStore(st, clock=_Clock()))
+
+
+def test_selection_step_is_skipped_when_it_does_not_apply_to_this_booking():
+    # SAME flow/tenant: 'cut' renders the staff pick; 'wash' skips it silently (empty options) and the
+    # dimension never lands in `chosen` — the provider auto-assigns at reserve time.
+    bk = _Booking()
+    e = _perbooking_engine(bk)
+    _init(e)
+    r = _submit(e, SELECT, {"selection": "wash"})              # service that doesn't need a staff pick
+    assert r["screen"] == CALENDAR                              # staff step skipped, no empty SELECT
+    r = _submit(e, CALENDAR, {"date": "2026-09-09"})
+    r = _submit(e, TIME, {"time": "2026-09-09T10:00"})
+    assert r["screen"] == CONFIRM and "staff" not in r["data"]["summary"]
+    _submit(e, CONFIRM, {})
+    assert "staff" not in bk.calls[0]["selection"]             # left for the provider to auto-assign
+
+
+def test_selection_step_still_renders_when_it_does_apply():
+    bk = _Booking()
+    e = _perbooking_engine(bk)
+    _init(e)
+    r = _submit(e, SELECT, {"selection": "cut"})               # service that DOES need a staff pick
+    assert r["screen"] == SELECT and r["data"]["dimension"] == "staff"
+
+
 # ── BACK ─────────────────────────────────────────────────────────────────────
 def test_back_returns_to_the_prior_step_and_clears_its_choice():
     e = _engine()

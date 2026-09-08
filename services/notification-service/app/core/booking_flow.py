@@ -64,6 +64,14 @@ class AvailabilityProvider(Protocol):
         """Choices for a selection step (dimension = "service" | "staff" | ... per your definition).
         Return only ones valid for `chosen`. -> [{"id","title","description"?}]. id comes back in chosen.
 
+        CONDITIONAL / SKIPPABLE STEP: return an EMPTY list (or the sentinel [{"skip": true}]) to tell
+        the engine this step does NOT apply to THIS booking — it advances past it silently instead of
+        rendering an empty SELECT, and the dimension is simply absent from `chosen`. Use it when a prior
+        choice makes a selection pointless (e.g. a service that doesn't need "who does it": you then
+        auto-assign at reserve/calendar time). Same tenant, same flow, decided per booking from prior
+        selections — no second FlowDefinition or engine instance needed. Returning real options renders
+        the step as usual.
+
         LOYALTY-IN-BOOKING (optional): to let a customer spend points DURING a booking (e.g. a free 4th
         service), add a `reward` step to the definition; for dimension=="reward" return the rewards
         applicable to `chosen` from your loyalty program. The chosen reward flows to reserve(), which
@@ -191,6 +199,15 @@ class BookingEngine:
     def _is_selection(dim: str) -> bool:
         return dim not in (_DATE, _TIME, _CONFIRM)
 
+    @staticmethod
+    def _is_skip(options: list[dict[str, Any]]) -> bool:
+        """The provider says this selection step doesn't apply to this booking: an empty list, or the
+        explicit sentinel [{"skip": true}]. The engine advances past the step (no render, no chosen
+        entry); the provider auto-assigns later."""
+        if not options:
+            return True
+        return len(options) == 1 and isinstance(options[0], dict) and bool(options[0].get("skip"))
+
     async def handle(self, payload: dict[str, Any], *, tenant: str = "") -> dict[str, Any]:
         action = payload.get("action")
         token = str(payload.get("flow_token") or "")
@@ -214,7 +231,7 @@ class BookingEngine:
         if action == INIT:
             state = {"chosen": {}, "step": 0}
             await self._sessions.save(tenant, token, state)
-            return await self._render(defn, tenant, state)
+            return await self._render(defn, tenant, token, state)
 
         state = await self._sessions.load(tenant, token) or {"chosen": {}, "step": 0}
 
@@ -224,7 +241,7 @@ class BookingEngine:
             kept = {s["dimension"] for s in defn.steps[:state["step"]]}
             state["chosen"] = {k: v for k, v in state["chosen"].items() if k in kept}
             await self._sessions.save(tenant, token, state)
-            return await self._render(defn, tenant, state)
+            return await self._render(defn, tenant, token, state)
 
         # data_exchange — record the current step's submission, then advance (or reserve).
         step_i = int(state["step"])
@@ -247,26 +264,34 @@ class BookingEngine:
         # (a reused SELECT screen has one fixed component name, not the dimension) — see _submitted().
         value = data.get(_submitted_field(dim))
         if value in (None, ""):
-            return await self._render(defn, tenant, state,
+            return await self._render(defn, tenant, token, state,
                                       error=defn.label("required", "Please make a selection."))
         state["chosen"][dim] = value
         state["step"] = step_i + 1
         await self._sessions.save(tenant, token, state)
-        return await self._render(defn, tenant, state)
+        return await self._render(defn, tenant, token, state)
 
-    async def _render(self, defn: FlowDefinition, tenant: str, state: dict[str, Any],
+    async def _render(self, defn: FlowDefinition, tenant: str, token: str, state: dict[str, Any],
                       *, error: str = "") -> dict[str, Any]:
-        step_i = int(state["step"])
         chosen = state["chosen"]
-        if step_i >= len(defn.steps):
-            return await self._confirm_screen(defn, chosen, error=error)
-        dim = defn.steps[step_i]["dimension"]
-
-        if self._is_selection(dim):
+        # Advance past any selection step the provider says doesn't apply to THIS booking (empty/skip
+        # options) — persisting each advance so BACK and the next submission stay consistent — until we
+        # land on a step to render (a real selection, date, time) or reach confirm.
+        while True:
+            step_i = int(state["step"])
+            if step_i >= len(defn.steps):
+                return await self._confirm_screen(defn, chosen, error=error)
+            dim = defn.steps[step_i]["dimension"]
+            if not self._is_selection(dim):
+                break
             options = await self._avail.options(tenant=tenant, dimension=dim, chosen=chosen)
-            return {"screen": SELECT, "data": {
-                "dimension": dim, "title": defn.label(f"pick_{dim}", f"Choose {dim}"),
-                "options": options, **({"error_message": error} if error else {})}}
+            if not self._is_skip(options):
+                return {"screen": SELECT, "data": {
+                    "dimension": dim, "title": defn.label(f"pick_{dim}", f"Choose {dim}"),
+                    "options": options, **({"error_message": error} if error else {})}}
+            state["step"] = step_i + 1
+            await self._sessions.save(tenant, token, state)
+
         if dim == _DATE:
             cal = await self._avail.calendar(tenant=tenant, chosen=chosen)
             return {"screen": CALENDAR, "data": {
