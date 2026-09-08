@@ -24,6 +24,18 @@ def test_generates_the_five_screens_and_versions():
     assert _screen(js, SUCCESS)["terminal"] is True
 
 
+def test_version_supports_calendarpicker_and_terminal_has_footer():
+    # CalendarPicker requires Flow JSON >=6.1 and Meta no longer publishes <=5.0, so an obsolete
+    # version would make Meta reject the upload. And every terminal screen MUST carry a Footer.
+    js = build_booking_flow_json(_full_defn())
+    major = float(js["version"])
+    assert major >= 6.1, "Flow JSON version must support CalendarPicker (>=6.1)"
+    success = _screen(js, SUCCESS)
+    footer = next((c for c in success["layout"]["children"] if c["type"] == "Footer"), None)
+    assert footer is not None, "terminal screens must have a Footer"
+    assert footer["on-click-action"]["name"] == "complete"
+
+
 def test_select_field_name_matches_the_engine():
     js = build_booking_flow_json(_full_defn())
     radio = next(c for c in _screen(js, SELECT)["layout"]["children"]

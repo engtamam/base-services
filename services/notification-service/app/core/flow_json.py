@@ -4,8 +4,10 @@ its own way (we never call Meta). See docs/design/whatsapp-booking-flow.md.
 
 The screens + field names MUST match core/booking_flow (SELECTION_FIELD, screen names, the data keys
 the engine returns) — they are generated from the same constants so they cannot drift. Targets Flow
-JSON version 3.1 / data_api_version 3.0 (verified against Meta 2026-09-08); validate on upload, since
-Meta revises the schema and component props per version.
+JSON version 7.3 / data_api_version 3.0 (verified against Meta 2026-09-08): CalendarPicker requires
+v6.1+ and Meta no longer publishes flows on <=5.0, so 7.3 is the current recommended schema; the
+data endpoint API is a separate axis, still 3.0. Validate on upload, since Meta revises the schema and
+component props per version. Override _VERSION if a platform pins a different (>=6.1) schema.
 
 The engine drives navigation via data_exchange responses, so every non-terminal screen submits to the
 endpoint; routing_model declares the transitions the engine uses.
@@ -17,7 +19,7 @@ from typing import Any
 from app.core.booking_flow import (CALENDAR, CONFIRM, SELECT, SELECTION_FIELD, SUCCESS, TIME,
                                    FlowDefinition)
 
-_VERSION = "3.1"
+_VERSION = "7.3"        # Flow JSON schema; must be >=6.1 for CalendarPicker (see module docstring)
 _DATA_API_VERSION = "3.0"
 
 
@@ -88,12 +90,18 @@ def _confirm_screen(defn: FlowDefinition) -> dict[str, Any]:
             _footer(defn.label("confirm_cta", "Confirm"), {"action": "confirm"})]}}
 
 
-def _success_screen() -> dict[str, Any]:
+def _success_screen(defn: FlowDefinition) -> dict[str, Any]:
+    # Terminal screens MUST carry a Footer (Meta rejects the upload otherwise). The engine finishes the
+    # flow via the endpoint's extension_message_response, so this screen rarely renders; the Footer's
+    # `complete` action is the schema-mandated close and the fallback if it ever shows.
     return {
-        "id": SUCCESS, "title": "Done", "terminal": True, "success": True,
+        "id": SUCCESS, "title": defn.label("success_title", "Done"), "terminal": True, "success": True,
         "data": {},
         "layout": {"type": "SingleColumnLayout", "children": [
-            {"type": "TextHeading", "text": "Your booking is confirmed."}]}}
+            {"type": "TextHeading",
+             "text": defn.label("success_body", "Your booking is confirmed.")},
+            {"type": "Footer", "label": defn.label("done", "Done"),
+             "on-click-action": {"name": "complete", "payload": {}}}]}}
 
 
 def build_booking_flow_json(defn: FlowDefinition) -> dict[str, Any]:
@@ -115,7 +123,7 @@ def build_booking_flow_json(defn: FlowDefinition) -> dict[str, Any]:
         routing[TIME] = [CONFIRM]
     screens.append(_confirm_screen(defn))
     routing[CONFIRM] = [SUCCESS]
-    screens.append(_success_screen())
+    screens.append(_success_screen(defn))
 
     return {"version": _VERSION, "data_api_version": _DATA_API_VERSION,
             "routing_model": routing, "screens": screens}
