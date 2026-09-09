@@ -146,6 +146,16 @@ class WalletService:
                     new_held[name] = 0                    # releasing more than held: clamp
             new_held = {k: v for k, v in new_held.items() if v}
 
+            # ATOMIC available-invariant: funds must never fall below what is HELD (reserved), or a
+            # concurrent debit that planned against available OUTSIDE this CAS would raid reserved money
+            # (funds>=0 alone is not enough — it lets a spend eat a live hold). Enforced INSIDE the CAS,
+            # before the write, so two racing ops cannot both pass. Re-read-and-retry handles the loser.
+            for name in set(new_funds) | set(new_held):
+                avail = int(new_funds.get(name, 0)) - int(new_held.get(name, 0))
+                if avail < 0:
+                    raise _funds.InsufficientFunds(
+                        needed=int(new_held.get(name, 0)), available=int(new_funds.get(name, 0)))
+
             seq = w.seq
             staged = None
             if entry is not None:
@@ -419,6 +429,17 @@ class WalletService:
         wd = Withdrawal.from_dict(row)
         if wd.state != WITHDRAW_PENDING:
             return {"withdrawal_id": wd.id, "state": wd.state, "idempotent": True}
+        # ATOMIC dedup keyed by the withdrawal: the state read above is not enough — two concurrent
+        # paid=false callbacks both see PENDING and each REVERSE the debit (double credit). The claim
+        # lets exactly one proceed; a duplicate replays or retries.
+        proceed, prior = await self._claim(wd.tenant, "settle", withdrawal_id)
+        if prior is not None:
+            return prior
+        if not proceed:
+            raise Conflict("WALLET_OP_IN_PROGRESS")
+        wd = Withdrawal.from_dict(await self._store.get(_WITHDRAWALS, withdrawal_id))  # re-read
+        if wd.state != WITHDRAW_PENDING:
+            return {"withdrawal_id": wd.id, "state": wd.state, "idempotent": True}
         if paid:
             wd.state = WITHDRAW_PAID
         else:
@@ -430,7 +451,9 @@ class WalletService:
             wd.state = WITHDRAW_FAILED
         wd.settled_at = self._clock.now()
         await self._store.put(_WITHDRAWALS, wd.id, wd.to_dict())
-        return {"withdrawal_id": wd.id, "state": wd.state}
+        result = {"withdrawal_id": wd.id, "state": wd.state}
+        await self._finalize(wd.tenant, "settle", withdrawal_id, result)
+        return result
 
     # ── holds ───────────────────────────────────────────────────────────────────
     async def reserve(self, *, tenant: str, net: int, source: str = "",
@@ -480,6 +503,17 @@ class WalletService:
         hold = await self._hold(hold_id)
         if hold.state == HOLD_CONFIRMED:
             return {"hold_id": hold_id, "state": HOLD_CONFIRMED, "idempotent": True}
+        # ATOMIC dedup keyed by the hold: the state read above is not enough — two concurrent confirms
+        # both see ACTIVE and each debit (double-charge). The claim lets exactly one proceed; the other
+        # replays the finished result or is told to retry.
+        proceed, prior = await self._claim(hold.tenant, "confirm", hold_id)
+        if prior is not None:
+            return prior
+        if not proceed:
+            raise Conflict("WALLET_OP_IN_PROGRESS")
+        hold = await self._hold(hold_id)                    # re-read under the claim
+        if hold.state == HOLD_CONFIRMED:
+            return {"hold_id": hold_id, "state": HOLD_CONFIRMED, "idempotent": True}
         if hold.state != HOLD_ACTIVE:
             raise WalletError(f"HOLD_{hold.state.upper()}")
         if hold.expires_at <= self._clock.now():
@@ -495,12 +529,14 @@ class WalletService:
                                  entry=entry)
         hold.state = HOLD_CONFIRMED
         await self._store.put(_HOLDS, hold.id, hold.to_dict())
+        result = {"hold_id": hold.id, "state": HOLD_CONFIRMED, **out}
+        await self._finalize(hold.tenant, "confirm", hold_id, result)
         await self._emit(_events.WALLET_SPENT,
                          {"tenant": hold.tenant, "net": hold.plan.get("net", 0),
                           "vat": hold.plan.get("vat", 0),
                           "currency": self._currency, "source": hold.source})
         await self._check_low_balance(hold.tenant, out["funds"], debit=True)
-        return {"hold_id": hold.id, "state": HOLD_CONFIRMED, **out}
+        return result
 
     async def release(self, *, hold_id: str) -> dict[str, Any]:
         """Cancel a hold. Nothing was debited, so nothing is refunded — the money is freed."""
@@ -524,7 +560,12 @@ class WalletService:
         gift into real money. The split is read off the original spend's ledger row — never
         guessed, never defaulted to a 'main' fund.
         """
-        proceed, prior = await self._claim(tenant, REFUND, source)
+        # Idempotency keyed by the SPEND itself (this refund reverses the whole spend), NOT the
+        # caller's `source` — an empty/omitted source opts out of dedup, which let one spend be refunded
+        # again and again to MINT balance. Keying on seq caps it at exactly one refund per spend
+        # regardless of source; a repeat replays the finished result.
+        claim_key = f"spend:{seq}"
+        proceed, prior = await self._claim(tenant, REFUND, claim_key)
         if prior is not None:
             return prior
         if not proceed:
@@ -536,11 +577,11 @@ class WalletService:
             raise WalletError("ONLY_A_SPEND_CAN_BE_REFUNDED")
 
         applied = {k: int(v) for k, v in row["applied"].items()}
-        entry = self._entry(tenant, REFUND, applied, +1, source=source, reason=reason,
+        entry = self._entry(tenant, REFUND, applied, +1, source=source or claim_key, reason=reason,
                             ref=row["id"])
         out = await self._mutate(tenant, funds_delta=applied, entry=entry)
         result = {"refunded": sum(applied.values()), "applied": applied, **out}
-        await self._finalize(tenant, REFUND, source, result)
+        await self._finalize(tenant, REFUND, claim_key, result)
         # A refund can lift a wallet back over the line, and a customer never told they recovered
         # is one whose alerting is stuck low for ever.
         await self._check_low_balance(tenant, out["funds"], debit=False)
