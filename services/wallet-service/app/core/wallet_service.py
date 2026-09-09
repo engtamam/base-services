@@ -274,16 +274,21 @@ class WalletService:
         entry = self._entry(tenant, CREDIT, {fund: int(amount)}, +1, source=source, reason=reason)
         out = await self._mutate(tenant, funds_delta={fund: int(amount)}, entry=entry)
 
-        # No explicit expiry from the caller? Take the fund's configured TTL, FROZEN on the grant now —
-        # a later policy change never touches this grant. ttl_days=0 (or no policy) ⇒ never expires.
+        # Freeze the fund's ENTIRE expiry policy onto the grant at credit time — expiry AND behaviour —
+        # so a later config change (or a deleted policy) can never retroactively forfeit a grant that
+        # was issued as preserved/reclaimable. ttl_days=0 (or no policy) ⇒ never expires.
+        pol = self._policy(fund) or {}
         if expires_at is None:
-            pol = self._policy(fund)
-            ttl_days = int((pol or {}).get("ttl_days", 0))
+            ttl_days = int(pol.get("ttl_days", 0))
             if ttl_days > 0:
                 expires_at = self._clock.now() + ttl_days * 86400
         if expires_at:
             grant = Grant(id=new_id("grt_"), tenant=tenant, fund=fund, amount=int(amount),
-                          expires_at=float(expires_at), created=self._clock.now())
+                          expires_at=float(expires_at),
+                          idle_behavior=str(pol.get("idle_behavior", "")),
+                          ttl_days=int(pol.get("ttl_days", 0)),
+                          notice_days=int(pol.get("notice_days", 0)),
+                          created=self._clock.now())
             await self._store.put(_GRANTS, grant.id, grant.to_dict())
             out["grant_id"] = grant.id
 
@@ -604,11 +609,15 @@ class WalletService:
             if not row.get("expires_at") or float(row["expires_at"]) > now:
                 continue
             grant = Grant.from_dict(row)
-            pol = self._policy(grant.fund) or {}
-            behavior = str(pol.get("idle_behavior", "forfeit"))
+            # Prefer the policy FROZEN on the grant at credit time; fall back to the live policy only
+            # for a legacy grant issued before freezing existed. Default forfeit (historical).
+            if grant.idle_behavior:
+                behavior, ttl_days = grant.idle_behavior, int(grant.ttl_days)
+            else:
+                pol = self._policy(grant.fund) or {}
+                behavior, ttl_days = str(pol.get("idle_behavior", "forfeit")), int(pol.get("ttl_days", 0))
 
             if behavior == "extend":
-                ttl_days = int(pol.get("ttl_days", 0))
                 if ttl_days > 0:                      # a 0-ttl extend would busy-loop the sweep
                     grant.expires_at = now + ttl_days * 86400
                     grant.noticed = 0                 # re-arm the pre-expiry notice for the new window
@@ -656,7 +665,9 @@ class WalletService:
             if int(row.get("noticed", 0)) or not row.get("expires_at"):
                 continue
             grant = Grant.from_dict(row)
-            notice_days = int((self._policy(grant.fund) or {}).get("notice_days", 0))
+            # Frozen notice window (falls back to live policy only for a legacy grant).
+            notice_days = int(grant.notice_days) if grant.idle_behavior \
+                else int((self._policy(grant.fund) or {}).get("notice_days", 0))
             if notice_days <= 0 or float(grant.expires_at) > now + notice_days * 86400:
                 continue
             grant.noticed = 1

@@ -129,9 +129,30 @@ def test_no_policy_keeps_the_historical_forfeit_default():
 def test_policy_change_never_touches_an_already_issued_grant():
     clk = Clock()
     svc = _svc(clk, {"promo": {"ttl_days": 10, "idle_behavior": "forfeit"}})
-    r = run(svc.credit(tenant="t1", fund="promo", amount=1000, source="c1"))
+    run(svc.credit(tenant="t1", fund="promo", amount=1000, source="c1"))
     # the grant's expiry is frozen at credit time (now + 10d); a later, longer policy cannot rescue it
-    import app.core.wallet_service as _ws  # noqa
     svc._policies = {"promo": {"ttl_days": 999, "idle_behavior": "forfeit"}}
     clk.t += 11 * DAY
     assert run(svc.sweep_grants())["expired"] == 1            # frozen 10-day expiry still applied
+
+
+def test_idle_behavior_is_frozen_so_a_later_change_cannot_forfeit_a_dormant_grant():
+    # The exact scenario the design must prevent: credit under dormant, later flip the fund to forfeit
+    # (or delete the policy). The already-issued grant MUST still be preserved/reclaimable, not forfeited.
+    clk = Clock()
+    svc = _svc(clk, {"cash": {"ttl_days": 30, "idle_behavior": "dormant"}})
+    gid = run(svc.credit(tenant="t1", fund="cash", amount=1000, source="c1"))["grant_id"]
+    svc._policies = {"cash": {"ttl_days": 30, "idle_behavior": "forfeit"}}  # policy flipped after credit
+    clk.t += 31 * DAY
+    out = run(svc.sweep_grants())
+    assert out["dormant"] == 1000 and out["clawed"] == 0     # honoured the FROZEN dormant, not the new forfeit
+    rec = run(svc.reclaim(grant_id=gid, source="rc1"))       # still reclaimable
+    assert rec["reclaimed"] == 1000
+
+    # and the same holds when the fund's policy is DELETED entirely after credit
+    svc2 = _svc(clk, {"cash": {"ttl_days": 30, "idle_behavior": "dormant", "notice_days": 5}})
+    g2 = run(svc2.credit(tenant="t2", fund="cash", amount=500, source="c2"))["grant_id"]
+    svc2._policies = {}                                       # policy gone
+    clk.t += 31 * DAY
+    assert run(svc2.sweep_grants())["dormant"] == 500        # frozen dormant survives a deleted policy
+    assert run(svc2.reclaim(grant_id=g2, source="rc2"))["reclaimed"] == 500

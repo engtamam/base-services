@@ -44,9 +44,10 @@ class ComplianceService:
         await self._emit("legal_hold.placed", {"subject": subject, "hold_id": h.id})
         return h
 
-    async def release_hold(self, hold_id: str) -> LegalHold | None:
+    async def release_hold(self, hold_id: str, tenant: str = "") -> LegalHold | None:
         h = await self._holds.get(hold_id)
-        if h is None:
+        # API-supplied tenant scopes ownership — no releasing another tenant's legal hold (spoliation).
+        if h is None or (tenant and h.tenant != tenant):
             return None
         h.active = False
         h.released_at = self._clock.now()
@@ -276,9 +277,10 @@ class ComplianceService:
         await self._emit("breach.registered", {"breach_id": b.id, "deadline": b.notify_deadline_at})
         return b
 
-    async def notify_breach(self, breach_id: str) -> dict[str, Any]:
+    async def notify_breach(self, breach_id: str, tenant: str = "") -> dict[str, Any]:
         b = await self._breaches.get(breach_id)
-        if b is None:
+        # API-supplied tenant scopes ownership — no closing another tenant's 72h breach clock.
+        if b is None or (tenant and b.tenant != tenant):
             return {"ok": False, "reason": "NOT_FOUND"}
         if b.notified():
             return {"ok": True, "already_notified_at": b.notified_at}

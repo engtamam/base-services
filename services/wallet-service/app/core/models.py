@@ -142,6 +142,13 @@ class Grant:
     state: str = "active"                                  # active|expired|dormant|reclaimed
     swept: int = 0                                         # amount removed from spendable at expiry
     noticed: int = 0                                       # 1 once a pre-expiry notice was emitted
+    # The fund's expiry policy FROZEN at credit time — the whole point of the reclaimable model is that
+    # a later config change (or a deleted policy) can NEVER retroactively turn a preserved (dormant)
+    # grant into a forfeited one. A non-empty idle_behavior marks a grant as frozen; a legacy grant
+    # (created before this field existed) has "" and falls back to the live policy at sweep time.
+    idle_behavior: str = ""                               # frozen: ""|forfeit|dormant|extend
+    ttl_days: int = 0                                     # frozen: the extension length for `extend`
+    notice_days: int = 0                                  # frozen: pre-expiry notice window
     created: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:

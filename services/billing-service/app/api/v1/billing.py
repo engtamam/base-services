@@ -370,7 +370,7 @@ async def list_plans(request: Request, include_hidden: bool = False,
     return {"plans": await (await build_billing(request)).list_plans(include_hidden=include_hidden)}
 
 
-@router.patch("/plans/{plan_id}", dependencies=[Depends(_ADMIN)])
+@router.patch("/plans/{plan_id}", dependencies=[Depends(_PLATFORM)])
 async def update_plan(request: Request, plan_id: str, body: PlanUpdateIn,
                       principal: Principal = Depends(require_user)) -> dict:
     """Correct a live plan. Existing subscribers keep the terms they were sold."""
@@ -386,7 +386,7 @@ async def update_plan(request: Request, plan_id: str, body: PlanUpdateIn,
     return plan.to_dict()
 
 
-@router.post("/plans/{plan_id}/availability", dependencies=[Depends(_ADMIN)])
+@router.post("/plans/{plan_id}/availability", dependencies=[Depends(_PLATFORM)])
 async def plan_availability(request: Request, plan_id: str, body: PlanAvailabilityIn,
                             principal: Principal = Depends(require_user)) -> dict:
     """Retire or hide a plan. Nobody already on it is affected."""
@@ -722,10 +722,15 @@ async def cancel(request: Request, sub_id: str, at_period_end: bool = True,
     return result
 
 
-@router.post("/subscriptions/{sub_id}/run", dependencies=[Depends(_ADMIN)])
-async def run_cycle(request: Request, sub_id: str) -> dict:
+@router.post("/subscriptions/{sub_id}/run")
+async def run_cycle(request: Request, sub_id: str, principal: Principal = Depends(_ADMIN)) -> dict:
+    svc = await build_billing(request)
+    sub = await svc._subs.fetch(sub_id)
+    if sub is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    _guard(principal, sub.tenant)                      # no forcing a charge on another tenant's sub
     try:
-        return (await (await build_billing(request)).run_cycle(sub_id)).to_dict()
+        return (await svc.run_cycle(sub_id)).to_dict()
     except ValueError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
 
@@ -992,14 +997,20 @@ async def invoice_document(request: Request, invoice_id: str, principal: Princip
 @router.post("/payments/{payment_id}/refund")
 async def refund(request: Request, payment_id: str, amount_minor: int | None = None,
                  principal: Principal = Depends(_ADMIN)) -> dict:
+    # Resolve the payment and guard tenant OWNERSHIP before touching it — a tenant-scoped billing.manage
+    # admin must never refund another tenant's payment (IDOR). platform.billing crosses tenants by design.
+    svc = await build_billing(request)
+    pay = await svc._payments.fetch(payment_id)
+    if pay is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    _guard(principal, pay.tenant)
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
-    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
-    # already succeeded, and leave it unrecorded.
+    # runs BEFORE the mutation. Recorded under the PAYMENT's tenant (not the caller's).
     await request.app.state.auditor.record(
-        "payment.refunded", actor=principal.subject, tenant=principal.tenant,
+        "payment.refunded", actor=principal.subject, tenant=pay.tenant,
         resource=f"payment:{payment_id}",
         ip=request.client.host if request.client else "")
-    res = await (await build_billing(request)).refund(payment_id, amount_minor)
+    res = await svc.refund(payment_id, amount_minor)
     if not res.get("ok") and res.get("reason") == "NOT_FOUND":
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
     return res
@@ -1011,10 +1022,15 @@ async def reconcile_payment(request: Request, payment_id: str,
     """Pull a payment's CURRENT status from the gateway and apply it — the recovery path when a
     webhook was missed or failed verification, leaving an invoice unpaid though the money moved.
     Idempotent (same seam as the webhook); never invents a status."""
+    svc = await build_billing(request)
+    pay = await svc._payments.fetch(payment_id)
+    if pay is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    _guard(principal, pay.tenant)                      # tenant ownership — no cross-tenant reconcile
     await request.app.state.auditor.record(
-        "payment.reconciled", actor=principal.subject, tenant=principal.tenant,
+        "payment.reconciled", actor=principal.subject, tenant=pay.tenant,
         resource=f"payment:{payment_id}", ip=request.client.host if request.client else "")
-    res = await (await build_billing(request)).reconcile_payment(payment_id)
+    res = await svc.reconcile_payment(payment_id)
     if not res.get("ok") and res.get("reason") == "NOT_FOUND":
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
     return res
@@ -1047,19 +1063,29 @@ async def dunning(request: Request, principal: Principal = Depends(_ADMIN)) -> d
 async def migrate_terms(request: Request, sub_id: str,
                         principal: Principal = Depends(_ADMIN)) -> dict:
     """Explicitly move a grandfathered subscription onto the CURRENT plan terms."""
+    svc = await build_billing(request)
+    sub = await svc._subs.fetch(sub_id)
+    if sub is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    _guard(principal, sub.tenant)                      # no repricing another tenant's grandfathered sub
     try:
-        result = await (await build_billing(request)).migrate_terms(sub_id)
+        result = await svc.migrate_terms(sub_id)
     except ValueError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
     await request.app.state.auditor.record(
-        "subscription.migrated", actor=principal.subject, tenant=principal.tenant,
+        "subscription.migrated", actor=principal.subject, tenant=sub.tenant,
         resource=f"subscription:{sub_id}", ip=request.client.host if request.client else "")
     return result
 
 
-@router.post("/subscriptions/{sub_id}/overage", dependencies=[Depends(_ADMIN)])
-async def run_overage(request: Request, sub_id: str) -> dict:
-    inv = await (await build_billing(request)).run_overage(sub_id)
+@router.post("/subscriptions/{sub_id}/overage")
+async def run_overage(request: Request, sub_id: str, principal: Principal = Depends(_ADMIN)) -> dict:
+    svc = await build_billing(request)
+    sub = await svc._subs.fetch(sub_id)
+    if sub is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    _guard(principal, sub.tenant)                      # no forcing an overage charge cross-tenant
+    inv = await svc.run_overage(sub_id)
     return inv.to_dict() if inv else {"overage": 0}
 
 

@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+gate_name="safety:tenant-guard"
+gate_desc="a tenant admin cannot act on another tenant's resource by id"
+gate_protects="A mutating route addressed by a resource id (/payments/{payment_id}/refund) gated on a
+capability a TENANT admin can hold (billing.manage, compliance.manage) fetches that
+resource BY ID and mutates it. If it never checks the resource belongs to the caller's
+tenant, tenant A refunds tenant B's payment, releases B's legal hold, forces a charge on
+B's subscription. The sibling routes beside it guard ownership; the one that forgot is
+invisible — it compiles, passes its own tests, and is a cross-tenant money/compliance
+breach. Found by a line-by-line audit; now checked against the CODE. A route is safe if it
+calls a *guard/owned/scoped* helper, compares a .tenant, or passes the id AND the caller's
+tenant into the same (non-audit) call (scope-by-query). Platform-only routes are exempt."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_tenant_guard.py"
+gate_units=0
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_tenant_guard.py; }
+
+# A gate that cannot fail is decoration. Prove it catches an id-addressed tenant-scoped mutation with
+# no ownership guard, and does NOT fire on a scope-by-query one.
+gate_selftest() {
+  "$PY" -c "
+import sys, pathlib, tempfile, textwrap
+sys.path.insert(0, 'tools/ci')
+import check_tenant_guard as c
+d = pathlib.Path(tempfile.mkdtemp()); (d/'app'/'api').mkdir(parents=True)
+common = 'from fastapi import Depends\n_ADMIN = require_any_capability(\"billing.manage\")\n'
+bad = common + textwrap.dedent('''
+    @router.post(\"/payments/{payment_id}/refund\")
+    async def refund(payment_id, principal = Depends(_ADMIN)):
+        return await svc.refund(payment_id)
+''')
+good = common + textwrap.dedent('''
+    @router.post(\"/payments/{payment_id}/refund\")
+    async def refund(payment_id, principal = Depends(_ADMIN)):
+        pay = await svc.get(payment_id, tenant=principal.tenant)
+        return await svc.refund(payment_id)
+''')
+(d/'app'/'api'/'r.py').write_text(bad)
+assert c.scan_service(d), 'gate missed an unguarded id-addressed tenant mutation'
+(d/'app'/'api'/'r.py').write_text(good)
+assert not c.scan_service(d), 'gate false-positived on a scope-by-query route'
+sys.exit(0)
+" >/dev/null 2>&1
+}

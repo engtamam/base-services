@@ -291,7 +291,7 @@ async def create_my_dsar(request: Request, body: MeDsarIn,
 @router.post("/dsar/{dsar_id}/verify")
 async def verify_dsar(request: Request, dsar_id: str, token: str,
                       principal: Principal = Depends(_ADMIN)) -> dict:
-    res = await build_dsar(request).verify(dsar_id, token)
+    res = await build_dsar(request).verify(dsar_id, token, tenant=_tenant(principal))
     if not res["ok"]:
         raise HTTPException(400, res["reason"])
     # Verification is what turns a claim into an actionable request — the point the clock starts.
@@ -311,7 +311,7 @@ async def process_dsar(request: Request, dsar_id: str,
         "dsar.processed", actor=principal.subject, tenant=principal.tenant,
         resource=f"dsar:{dsar_id}",
         ip=request.client.host if request.client else "")
-    res = await build_dsar(request).process(dsar_id)
+    res = await build_dsar(request).process(dsar_id, tenant=_tenant(principal))
     if not res.get("ok") and res.get("reason") == "NOT_FOUND":
         raise HTTPException(404, "NOT_FOUND")
     return res
@@ -345,7 +345,7 @@ async def release_hold(request: Request, hold_id: str,
         "legal_hold.released", actor=principal.subject, tenant=principal.tenant,
         resource=f"hold:{hold_id}",
         ip=request.client.host if request.client else "")
-    h = await build_compliance(request).release_hold(hold_id)
+    h = await build_compliance(request).release_hold(hold_id, tenant=_tenant(principal))
     if h is None:
         raise HTTPException(404, "NOT_FOUND")
     return h.to_dict()
@@ -467,7 +467,7 @@ async def notify_breach(request: Request, breach_id: str,
         "breach.notified", actor=principal.subject, tenant=principal.tenant,
         resource=f"breach:{breach_id}",
         ip=request.client.host if request.client else "")
-    res = await build_compliance(request).notify_breach(breach_id)
+    res = await build_compliance(request).notify_breach(breach_id, tenant=_tenant(principal))
     if not res["ok"]:
         raise HTTPException(404, "NOT_FOUND")
     return res

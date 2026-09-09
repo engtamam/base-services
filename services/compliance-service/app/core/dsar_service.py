@@ -60,9 +60,11 @@ class DsarService:
         return d, True
 
     # ── identity verification (before ANY PII leaves) ───────────────────────────
-    async def verify(self, dsar_id: str, token: str) -> dict[str, Any]:
+    async def verify(self, dsar_id: str, token: str, tenant: str = "") -> dict[str, Any]:
         d = await self._dsars.get(dsar_id)
-        if d is None:
+        # `tenant`, when supplied (always from the API), scopes ownership so one tenant's admin can
+        # never act on another's DSAR (IDOR). "" = a trusted internal caller (the sweeper), unscoped.
+        if d is None or (tenant and d.tenant != tenant):
             return {"ok": False, "reason": "NOT_FOUND"}
         now = self._clock.now()
         if d.verification_expires and now > d.verification_expires:
@@ -75,9 +77,9 @@ class DsarService:
         return {"ok": True, "verified": True}
 
     # ── process ──────────────────────────────────────────────────────────────────
-    async def process(self, dsar_id: str) -> dict[str, Any]:
+    async def process(self, dsar_id: str, tenant: str = "") -> dict[str, Any]:
         d = await self._dsars.get(dsar_id)
-        if d is None:
+        if d is None or (tenant and d.tenant != tenant):     # API-supplied tenant scopes ownership
             return {"ok": False, "reason": "NOT_FOUND"}
         if d.status in (COMPLETED, REFUSED):
             return {"ok": True, "status": d.status, "reason": "already_final"}
