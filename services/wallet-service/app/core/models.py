@@ -10,12 +10,21 @@ CREDIT = "credit"
 SPEND = "spend"
 REFUND = "refund"
 CLAWBACK = "clawback"
+# Grant expiry, two DISTINCT debits — the difference is the whole point of the reclaimable model:
+#   clawback — FORFEITURE. The money is gone; nothing here reverses it. For a fund whose credit may
+#              legally lapse (a non-refundable service credit, a promo).
+#   expire   — DORMANCY. The money leaves the SPENDABLE balance but is PRESERVED and RECLAIMABLE: the
+#              grant goes state="dormant" and a later `reclaim` credits it back (RECLAIM). This is the
+#              SAMA "unclaimed balances" shape for stored value that must not be silently forfeited.
+EXPIRE = "expire"
+RECLAIM = "reclaim"
 # A payout leaving the platform (a debit), and its reversal when the transfer fails (a credit back).
 WITHDRAW = "withdraw"
 WITHDRAW_REVERSAL = "withdraw_reversal"
 # Ledger types that ADD to the balance (everything else is a debit). reconcile() and any balance
-# derivation must read this, or a reversal would be counted the wrong way.
-CREDIT_TYPES = (CREDIT, REFUND, WITHDRAW_REVERSAL)
+# derivation must read this, or a reversal would be counted the wrong way. RECLAIM restores a dormant
+# grant, so it credits.
+CREDIT_TYPES = (CREDIT, REFUND, WITHDRAW_REVERSAL, RECLAIM)
 
 WITHDRAW_PENDING = "pending"        # debited, awaiting the external transfer
 WITHDRAW_PAID = "paid"              # the transfer settled
@@ -130,8 +139,9 @@ class Grant:
     fund: str = ""
     amount: int = 0
     expires_at: float = 0.0
-    state: str = "active"                                  # active|expired
-    swept: int = 0
+    state: str = "active"                                  # active|expired|dormant|reclaimed
+    swept: int = 0                                         # amount removed from spendable at expiry
+    noticed: int = 0                                       # 1 once a pre-expiry notice was emitted
     created: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:

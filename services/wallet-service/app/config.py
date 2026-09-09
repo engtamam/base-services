@@ -280,6 +280,39 @@ class Settings(BaseSettings):
     HOLD_TTL_SECONDS: int = 900
     HOLD_SWEEP_LIMIT: int = 500               # bound one sweep run
     GRANT_SWEEP_LIMIT: int = 500
+
+    # ── PER-FUND expiry policy — INFRASTRUCTURE, the platform decides each fund's mode ────────────
+    # A JSON object mapping a fund name (or "*" for a default) to a policy:
+    #     {"<fund>": {"ttl_days": <int>, "idle_behavior": "forfeit|dormant|extend",
+    #                 "notice_days": <int>}}
+    # A fund NOT listed (and no "*") = NO expiry — today's behaviour, unchanged. This service imposes
+    # no policy; it provides the capability and each platform picks per fund.
+    #
+    # ttl_days      — how long a NEW grant stays valid, FROZEN on the grant at credit time. Changing
+    #                 this later never touches grants already issued. 0 = the fund's credits never expire.
+    # notice_days   — emit wallet.grant_expiring this many days before expiry (once), so a customer is
+    #                 warned before anything happens. 0 = no notice.
+    # idle_behavior — what happens to the UNSPENT remainder when a grant expires:
+    #     forfeit — FORFEITURE (clawback): the remainder is gone, irreversibly. Legally defensible ONLY
+    #               for credit that is a NON-REFUNDABLE SERVICE CREDIT — non-cashable, spendable only on
+    #               a specific service (e.g. an AI-usage balance on a `locked`/non-withdrawable fund),
+    #               no cash equivalent, no property right. This is the OpenAI-style service-credit model
+    #               and sits OUTSIDE SAMA's prepaid stored-value regime. DO NOT use it for a fund whose
+    #               balance is real money the customer could withdraw.
+    #     dormant — PRESERVE + RECLAIMABLE: the remainder leaves the spendable balance (ledger `expire`)
+    #               and the grant becomes state="dormant" — traceable and reversible via `reclaim`.
+    #               This is the SAMA "unclaimed balances" shape: STORED VALUE (a withdrawable/cashable
+    #               fund) must NOT be silently forfeited — it is held for the customer to reclaim. Use
+    #               this whenever the credit represents money, or whenever the legal status is unsettled.
+    #               The safe default when in doubt.
+    #     extend  — auto-renew: push the grant's expiry forward by ttl_days. Credit that should not lapse
+    #               while the customer is active.
+    # Guidance by fund shape:
+    #   • AI/usage credit on a NON-withdrawable fund, sold as non-refundable → forfeit (service credit).
+    #   • Any withdrawable/cashable fund (real money) → dormant (SAMA-safe; never forfeit).
+    #   • Promotional gift you never owe back → forfeit; loyalty you want to keep alive → extend.
+    # (Verified against SAMA prepaid rules + gift-card/service-credit practice 2026-09-09.)
+    WALLET_FUND_EXPIRY_POLICIES: str = ""
     WALLET_IDEMPOTENCY_TTL_SECONDS: int = 86_400
     # The smallest payout allowed, in MINOR units. A payout costs a bank fee, so a floor keeps a
     # 3-riyal withdrawal from costing more to send than it is worth. 0 = no minimum.
@@ -356,6 +389,44 @@ class Settings(BaseSettings):
         if len(set(names)) != len(names):
             raise ConfigError(f"WALLET_FUNDS: duplicate fund name in {names}")
         return tuple(sorted(out, key=lambda f: f[1]))
+
+    @property
+    def fund_expiry_policies(self) -> dict[str, dict[str, Any]]:
+        """Parse + VALIDATE WALLET_FUND_EXPIRY_POLICIES at boot (fail-fast: a bad money policy must
+        never start). Returns {fund: {"ttl_days","idle_behavior","notice_days"}}. Each named fund must
+        exist in WALLET_FUNDS ("*" is the allowed wildcard default). Empty ⇒ {} (no fund expires)."""
+        from app.ports.errors import ConfigError  # noqa: PLC0415 — avoid an import cycle
+        raw = (self.WALLET_FUND_EXPIRY_POLICIES or "").strip()
+        if not raw:
+            return {}
+        import json  # noqa: PLC0415
+        try:
+            parsed = json.loads(raw)
+        except ValueError as exc:
+            raise ConfigError(f"WALLET_FUND_EXPIRY_POLICIES is not valid JSON: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise ConfigError("WALLET_FUND_EXPIRY_POLICIES must be a JSON object {fund: policy}")
+        known = {f[0] for f in self.wallet_funds}
+        out: dict[str, dict[str, Any]] = {}
+        for fund, pol in parsed.items():
+            if fund != "*" and fund not in known:
+                raise ConfigError(f"WALLET_FUND_EXPIRY_POLICIES: unknown fund {fund!r}")
+            if not isinstance(pol, dict):
+                raise ConfigError(f"WALLET_FUND_EXPIRY_POLICIES[{fund!r}] must be an object")
+            behavior = str(pol.get("idle_behavior", "dormant"))
+            if behavior not in ("forfeit", "dormant", "extend"):
+                raise ConfigError(
+                    f"WALLET_FUND_EXPIRY_POLICIES[{fund!r}].idle_behavior must be "
+                    f"forfeit|dormant|extend — got {behavior!r}")
+            try:
+                ttl = int(pol.get("ttl_days", 0)); notice = int(pol.get("notice_days", 0))
+            except (TypeError, ValueError) as exc:
+                raise ConfigError(
+                    f"WALLET_FUND_EXPIRY_POLICIES[{fund!r}]: ttl_days/notice_days must be ints") from exc
+            if ttl < 0 or notice < 0:
+                raise ConfigError(f"WALLET_FUND_EXPIRY_POLICIES[{fund!r}]: days must be >= 0")
+            out[fund] = {"ttl_days": ttl, "idle_behavior": behavior, "notice_days": notice}
+        return out
 
     @property
     def egress_allowed_hosts(self) -> frozenset[str]:

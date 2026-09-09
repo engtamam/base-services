@@ -37,8 +37,14 @@ WALLET_CREDITED = "wallet.credited"
 WALLET_SPENT = "wallet.spent"
 BALANCE_LOW = "wallet.balance_low"
 BALANCE_RECOVERED = "wallet.balance_recovered"
+# Grant lifecycle — a consumer (e.g. notification-service) tells the customer BEFORE credit lapses
+# (the SAMA notice principle + plain good UX) and when it did.
+GRANT_EXPIRING = "wallet.grant_expiring"      # pre-expiry notice (once, notice_days before)
+GRANT_EXPIRED = "wallet.grant_expired"        # remainder forfeited (clawback) or made dormant (expire)
+GRANT_RECLAIMED = "wallet.grant_reclaimed"    # a dormant grant restored to spendable
 
-EMITTED = (WALLET_CREDITED, WALLET_SPENT, BALANCE_LOW, BALANCE_RECOVERED)
+EMITTED = (WALLET_CREDITED, WALLET_SPENT, BALANCE_LOW, BALANCE_RECOVERED,
+           GRANT_EXPIRING, GRANT_EXPIRED, GRANT_RECLAIMED)
 
 # The two failure policies, named rather than spelled as a bool at each call site.
 FAIL_OPEN = "fail_open"

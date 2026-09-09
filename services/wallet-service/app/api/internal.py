@@ -295,6 +295,32 @@ async def sweep_grants(request: Request) -> dict:
     return result
 
 
+@router.post("/wallet/notice-grants", dependencies=[Depends(require_internal_token)])
+async def notice_grants(request: Request) -> dict:
+    """Emit the one-time pre-expiry notice for grants entering their fund's notice window. Scheduler-
+    driven, alongside sweep-grants."""
+    return await build_wallet(request).notice_grants()
+
+
+class ReclaimIn(BaseModel):
+    grant_id: str = Field(min_length=1, max_length=128)
+    source: str = Field(default="", max_length=200)
+    reason: str = Field(default="", max_length=500)
+
+
+@router.post("/wallet/reclaim", dependencies=[Depends(require_internal_token)])
+async def reclaim_grant(request: Request, body: ReclaimIn) -> dict:
+    """Restore a DORMANT grant's preserved remainder to spendable — the primitive a future 'reclaim
+    idle balance' flow calls. Recorded: moving money back into a customer's balance is a privileged act."""
+    result = await build_wallet(request).reclaim(
+        grant_id=body.grant_id, source=body.source, reason=body.reason)
+    await request.app.state.auditor.record(
+        "wallet.grant_reclaimed", actor="system", resource=f"grant:{body.grant_id}",
+        ip=request.client.host if request.client else "",
+        metadata={"amount": str(result.get("reclaimed", 0)), "fund": str(result.get("fund", ""))})
+    return result
+
+
 @router.get("/health", dependencies=[Depends(require_internal_token)])
 async def internal_health(settings: Settings = Depends(get_settings)) -> dict[str, str]:
     return {"status": "ok", "service": settings.SERVICE_NAME}

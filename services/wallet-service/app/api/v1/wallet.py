@@ -33,6 +33,7 @@ def wallet_config() -> dict[str, Any]:
     return {"funds": s.wallet_funds, "vat_bp": s.WALLET_VAT_BP, "currency": s.WALLET_CURRENCY,
             "hold_ttl": s.HOLD_TTL_SECONDS, "hold_sweep_limit": s.HOLD_SWEEP_LIMIT,
             "grant_sweep_limit": s.GRANT_SWEEP_LIMIT,
+            "fund_expiry_policies": s.fund_expiry_policies,
             "idempotency_ttl": s.WALLET_IDEMPOTENCY_TTL_SECONDS,
             "withdraw_min": s.WALLET_WITHDRAW_MIN_MINOR,
             "ledger_list_limit": s.LEDGER_LIST_LIMIT, "cas_max_retries": s.CAS_MAX_RETRIES,

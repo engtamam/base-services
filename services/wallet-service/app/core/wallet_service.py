@@ -32,7 +32,7 @@ from typing import Any
 from app.core import events as _events
 from app.core import funds as _funds
 from app.core.events import Emitter
-from app.core.models import (CLAWBACK, CREDIT, CREDIT_TYPES, HOLD_ACTIVE, HOLD_CONFIRMED,
+from app.core.models import (CLAWBACK, CREDIT, CREDIT_TYPES, EXPIRE, RECLAIM, HOLD_ACTIVE, HOLD_CONFIRMED,
                              HOLD_EXPIRED, HOLD_RELEASED, REFUND, SPEND, WITHDRAW, WITHDRAW_FAILED,
                              WITHDRAW_PAID, WITHDRAW_PENDING, WITHDRAW_REVERSAL, Grant, Hold,
                              LedgerEntry, Wallet, Withdrawal, new_id)
@@ -88,6 +88,12 @@ class WalletService:
         # Empty = the whole balance. A platform with a promo fund and a cash fund usually cares
         # about the fund that pays the bills, not the gift that will expire anyway.
         self._low_fund = str(config.get("low_balance_fund", "") or "")
+        # Per-fund expiry policy (validated in config). {} = no fund expires. See _policy().
+        self._policies = dict(config.get("fund_expiry_policies", {}) or {})
+
+    def _policy(self, fund: str) -> dict[str, Any] | None:
+        """This fund's expiry policy, the "*" default, or None (never expires)."""
+        return self._policies.get(fund) or self._policies.get("*")
 
     # ── wallet row ──────────────────────────────────────────────────────────────
     async def _wallet(self, tenant: str) -> Wallet:
@@ -268,6 +274,13 @@ class WalletService:
         entry = self._entry(tenant, CREDIT, {fund: int(amount)}, +1, source=source, reason=reason)
         out = await self._mutate(tenant, funds_delta={fund: int(amount)}, entry=entry)
 
+        # No explicit expiry from the caller? Take the fund's configured TTL, FROZEN on the grant now —
+        # a later policy change never touches this grant. ttl_days=0 (or no policy) ⇒ never expires.
+        if expires_at is None:
+            pol = self._policy(fund)
+            ttl_days = int((pol or {}).get("ttl_days", 0))
+            if ttl_days > 0:
+                expires_at = self._clock.now() + ttl_days * 86400
         if expires_at:
             grant = Grant(id=new_id("grt_"), tenant=tenant, fund=fund, amount=int(amount),
                           expires_at=float(expires_at), created=self._clock.now())
@@ -574,33 +587,125 @@ class WalletService:
         return {"swept": swept, "freed": freed, "limit": limit}
 
     async def sweep_grants(self) -> dict[str, Any]:
-        """Claw back the UNUSED remainder of an expired grant. The customer keeps what they spent."""
+        """Act on expired grants per each fund's configured idle_behavior. The customer always keeps
+        what they SPENT; only the unspent remainder is touched, and never money currently reserved.
+
+          forfeit — clawback (money gone, irreversible).           [non-refundable service credit]
+          dormant — `expire` ledger + state="dormant" (PRESERVED, reclaimable via reclaim()). [SAMA-safe]
+          extend  — push expiry forward by ttl_days, grant stays active (no money moves).
+
+        A fund with NO policy defaults to `forfeit` (the historical behaviour, unchanged)."""
         now = self._clock.now()
         limit = int(self._cfg["grant_sweep_limit"])
-        expired = clawed = 0
+        expired = clawed = dormant_total = extended = 0
         for row in await self._active(_GRANTS, "active", limit):
-            if expired >= limit:
+            if expired + extended >= limit:
                 break
             if not row.get("expires_at") or float(row["expires_at"]) > now:
                 continue
             grant = Grant.from_dict(row)
+            pol = self._policy(grant.fund) or {}
+            behavior = str(pol.get("idle_behavior", "forfeit"))
+
+            if behavior == "extend":
+                ttl_days = int(pol.get("ttl_days", 0))
+                if ttl_days > 0:                      # a 0-ttl extend would busy-loop the sweep
+                    grant.expires_at = now + ttl_days * 86400
+                    grant.noticed = 0                 # re-arm the pre-expiry notice for the new window
+                    await self._store.put(_GRANTS, grant.id, grant.to_dict())
+                    extended += 1
+                continue
+
             w = await self._wallet(grant.tenant)
-            # Never claw back money that is currently reserved for an in-flight action.
+            # Never touch money currently reserved for an in-flight action.
             spare = int(w.funds.get(grant.fund, 0)) - int(w.held.get(grant.fund, 0))
             remaining = max(0, min(spare, grant.amount))
             if remaining > 0:
-                entry = self._entry(grant.tenant, CLAWBACK, {grant.fund: remaining}, -1,
-                                    source=f"clawback:{grant.id}", reason="grant expired")
+                is_dormant = behavior == "dormant"
+                led_type = EXPIRE if is_dormant else CLAWBACK
+                entry = self._entry(grant.tenant, led_type, {grant.fund: remaining}, -1,
+                                    source=f"{led_type}:{grant.id}",
+                                    reason="grant expired (dormant)" if is_dormant else "grant expired")
                 out = await self._mutate(grant.tenant, funds_delta={grant.fund: -remaining},
                                          entry=entry)
-                clawed += remaining
-                # An expiring grant is the commonest way a balance falls without anyone spending.
+                if is_dormant:
+                    dormant_total += remaining
+                else:
+                    clawed += remaining
                 await self._check_low_balance(grant.tenant, out["funds"], debit=True)
-            grant.state = "expired"
+            grant.state = "dormant" if behavior == "dormant" else "expired"
             grant.swept = remaining
             await self._store.put(_GRANTS, grant.id, grant.to_dict())
+            await self._emit(_events.GRANT_EXPIRED, {
+                "tenant": grant.tenant, "fund": grant.fund, "grant_id": grant.id,
+                "amount": remaining, "behavior": behavior, "reclaimable": behavior == "dormant"})
             expired += 1
-        return {"expired": expired, "clawed": clawed, "limit": limit}
+        return {"expired": expired, "clawed": clawed, "dormant": dormant_total,
+                "extended": extended, "limit": limit}
+
+    async def notice_grants(self) -> dict[str, Any]:
+        """Emit a ONE-TIME pre-expiry notice (wallet.grant_expiring) for grants entering their fund's
+        notice_days window — the SAMA notice principle and plain good UX: warn before credit lapses.
+        Scheduler-driven; `noticed` makes it fire once. Grants on funds with notice_days=0 are skipped."""
+        now = self._clock.now()
+        limit = int(self._cfg["grant_sweep_limit"])
+        noticed = 0
+        for row in await self._active(_GRANTS, "active", limit):
+            if noticed >= limit:
+                break
+            if int(row.get("noticed", 0)) or not row.get("expires_at"):
+                continue
+            grant = Grant.from_dict(row)
+            notice_days = int((self._policy(grant.fund) or {}).get("notice_days", 0))
+            if notice_days <= 0 or float(grant.expires_at) > now + notice_days * 86400:
+                continue
+            grant.noticed = 1
+            await self._store.put(_GRANTS, grant.id, grant.to_dict())
+            await self._emit(_events.GRANT_EXPIRING, {
+                "tenant": grant.tenant, "fund": grant.fund, "grant_id": grant.id,
+                "amount": int(grant.amount), "expires_at": float(grant.expires_at)})
+            noticed += 1
+        return {"noticed": noticed, "limit": limit}
+
+    async def reclaim(self, *, grant_id: str, source: str = "", reason: str = "") -> dict[str, Any]:
+        """Restore a DORMANT grant's preserved remainder to the spendable balance (ledger `reclaim`).
+        The primitive a future 'reclaim idle balance' flow calls — so that flow needs no new model or
+        migration. Idempotent on `source`; refuses a grant that is not dormant."""
+        row = await self._store.get(_GRANTS, grant_id)
+        if not row:
+            raise WalletError("GRANT_NOT_FOUND")
+        grant = Grant.from_dict(row)
+        # Guard BEFORE claiming: an active/expired grant is refused without consuming an idempotency
+        # slot; only a dormant (or already-reclaimed, for idempotency) grant proceeds.
+        if grant.state not in ("dormant", "reclaimed"):
+            raise WalletError("GRANT_NOT_DORMANT")
+        amount = int(grant.swept)
+        src = source or f"reclaim:{grant.id}"
+        proceed, prior = await self._claim(grant.tenant, RECLAIM, src)
+        if prior is not None:
+            return prior                                   # same source replayed → the stored result
+        if not proceed:
+            raise Conflict("WALLET_OP_IN_PROGRESS")
+        if grant.state == "reclaimed":
+            # Already reclaimed under a DIFFERENT source — never credit a dormant grant twice.
+            result = {"reclaimed": 0, "fund": grant.fund, "grant_id": grant.id, "already": True,
+                      "funds": (await self._wallet(grant.tenant)).funds}
+            await self._finalize(grant.tenant, RECLAIM, src, result)
+            return result
+        out = {"funds": (await self._wallet(grant.tenant)).funds}
+        if amount > 0:
+            entry = self._entry(grant.tenant, RECLAIM, {grant.fund: amount}, +1,
+                                source=src, reason=reason or "dormant grant reclaimed",
+                                ref=f"{EXPIRE}:{grant.id}")
+            out = await self._mutate(grant.tenant, funds_delta={grant.fund: amount}, entry=entry)
+        grant.state = "reclaimed"
+        await self._store.put(_GRANTS, grant.id, grant.to_dict())
+        result = {"reclaimed": amount, "fund": grant.fund, "grant_id": grant.id, **out}
+        await self._finalize(grant.tenant, RECLAIM, src, result)
+        await self._emit(_events.GRANT_RECLAIMED,
+                         {"tenant": grant.tenant, "fund": grant.fund, "grant_id": grant.id,
+                          "amount": amount})
+        return result
 
     # ── events (optional consumer) ──────────────────────────────────────────────
     async def _emit(self, topic: str, payload: dict) -> None:

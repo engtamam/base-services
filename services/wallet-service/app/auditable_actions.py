@@ -45,6 +45,15 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "critical": False,
     },
     {
+        # A dormant (expired-but-preserved) grant's remainder was restored to a customer's spendable
+        # balance. Money moving BACK into a balance is privileged — worth a durable row naming which
+        # grant and how much — but not critical: a reclaim that could not be recorded is retried, and
+        # blocking it would keep a customer from their preserved funds.
+        "action": "wallet.grant_reclaimed",
+        "source": "system",
+        "critical": False,
+    },
+    {
         "action": "wallet.credited",
         "source": "admin",
         "critical": True,

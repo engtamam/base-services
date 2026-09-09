@@ -147,6 +147,33 @@
         "title": "HoldIn",
         "type": "object"
       },
+      "ReclaimIn": {
+        "properties": {
+          "grant_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Grant Id",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Reason",
+            "type": "string"
+          },
+          "source": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "grant_id"
+        ],
+        "title": "ReclaimIn",
+        "type": "object"
+      },
       "RefundIn": {
         "properties": {
           "reason": {
@@ -1222,6 +1249,152 @@
           }
         },
         "summary": "Credit",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/wallet/notice-grants": {
+      "post": {
+        "description": "Emit the one-time pre-expiry notice for grants entering their fund's notice window. Scheduler-\ndriven, alongside sweep-grants.",
+        "operationId": "notice_grants_internal_wallet_notice_grants_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Notice Grants Internal Wallet Notice Grants Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Notice Grants",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/wallet/reclaim": {
+      "post": {
+        "description": "Restore a DORMANT grant's preserved remainder to spendable \u2014 the primitive a future 'reclaim\nidle balance' flow calls. Recorded: moving money back into a customer's balance is a privileged act.",
+        "operationId": "reclaim_grant_internal_wallet_reclaim_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReclaimIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Reclaim Grant Internal Wallet Reclaim Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reclaim Grant",
         "tags": [
           "internal"
         ]
