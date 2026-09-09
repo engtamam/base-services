@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import base64
+import http.client
 import json as _json
+import socket
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -33,18 +36,45 @@ def configure(*, timeout_seconds: int, max_response_bytes: int, require_https: b
     _ALLOWED_HOSTS = tuple(allowed_hosts or ())
 
 
+def _pinned_opener(target: _ssrf.Target) -> urllib.request.OpenerDirector:
+    """An opener that connects to the VALIDATED ip and never re-resolves — closing the DNS-rebind
+    window between validate() and connect(). The Host header + TLS SNI keep the original hostname, so
+    vhost routing and certificate verification are unchanged; only the socket target is pinned."""
+    ip, host, port = target.ip, target.host, target.port
+
+    class _PinnedHTTPS(http.client.HTTPSConnection):
+        def connect(self):
+            sock = socket.create_connection((ip, port), self.timeout)
+            self.sock = self._context.wrap_socket(sock, server_hostname=host)   # SNI + cert = host
+
+    class _PinnedHTTP(http.client.HTTPConnection):
+        def connect(self):
+            self.sock = socket.create_connection((ip, port), self.timeout)
+
+    class _HTTPSHandler(urllib.request.HTTPSHandler):
+        def https_open(self, req):
+            return self.do_open(_PinnedHTTPS, req, context=ssl.create_default_context())
+
+    class _HTTPHandler(urllib.request.HTTPHandler):
+        def http_open(self, req):
+            return self.do_open(_PinnedHTTP, req)
+
+    return urllib.request.build_opener(_HTTPSHandler, _HTTPHandler)
+
+
 def _request(url: str, data: bytes | None, headers: dict[str, str], method: str) -> tuple[int, dict, dict]:
     # SSRF gate on EVERY outbound fetch — blocks internal/metadata targets and private ranges even for
     # a URL that was valid at registration. A blocked URL is a permanent provider error, never retried.
     try:
-        _ssrf.validate(url, require_https=_REQUIRE_HTTPS, allow_private=_ALLOW_PRIVATE,
-                       allowed_hosts=_ALLOWED_HOSTS)
+        target = _ssrf.validate(url, require_https=_REQUIRE_HTTPS, allow_private=_ALLOW_PRIVATE,
+                                allowed_hosts=_ALLOWED_HOSTS)
     except _ssrf.SsrfBlocked as exc:
         raise ProviderUnavailable(f"URL_REJECTED: {exc}") from None
     req = urllib.request.Request(url, data=data, method=method,
                                  headers={"User-Agent": _UA, "Accept": "application/json", **headers})
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:  # nosec B310 - validated/pinned hosts
+        # PIN to the validated ip — urllib's default opener would re-resolve the host (the rebind hole).
+        with _pinned_opener(target).open(req, timeout=TIMEOUT) as resp:  # nosec B310 - pinned to a validated public ip
             return resp.status, _parse(resp.read(MAX_BYTES)), dict(resp.getheaders())
     except urllib.error.HTTPError as exc:
         body = _parse(exc.read(MAX_BYTES))
