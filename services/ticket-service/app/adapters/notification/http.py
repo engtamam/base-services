@@ -6,6 +6,7 @@ choosing. The body carries a `source` idempotency key notification-service de-du
 retry after an ambiguous failure notifies once, not twice.
 """
 from __future__ import annotations
+import asyncio
 
 import json
 from app.core.internal_client import assertion_headers_from_env
@@ -47,8 +48,10 @@ class HttpNotificationSender:
         headers.update(assertion_headers_from_env(target="notification-service"))
         req = urllib.request.Request(self._url, data=payload, method="POST", headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # nosec B310 - config-only host
-                status = resp.status
+            def _send():  # blocking urllib OFF the event loop
+                with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # nosec B310 - config-only host
+                    return resp.status
+            status = await asyncio.to_thread(_send)
         except urllib.error.HTTPError as exc:
             if exc.code in (400, 404, 409, 422):
                 # A bad template or unknown recipient will not fix itself on the thousandth attempt.

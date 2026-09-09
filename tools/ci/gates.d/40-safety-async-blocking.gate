@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+gate_name="safety:async-blocking"
+gate_desc="no blocking I/O primitive runs directly on the async event loop"
+gate_protects="A single-worker async service that calls a blocking primitive (urllib urlopen,
+requests.*, time.sleep, a raw socket) directly inside an async def freezes the WHOLE
+worker — every other request AND the liveness probe — for the call's full timeout when
+the remote is slow or hung. It shipped once (v0.18.3: an HTTP audit sink froze /healthz)
+and a security+resilience audit found more. The fix is one line, await asyncio.to_thread.
+A call inside a nested plain def (the to_thread target) or passed by NAME to to_thread is
+fine. Blocking-primitive patterns are config; reviewed exceptions are named."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_async_blocking.py"
+gate_units=0
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_async_blocking.py; }
+
+# A gate that cannot fail is decoration. Prove it flags a direct urlopen in an async def and NOT one
+# moved into a nested def for to_thread.
+gate_selftest() {
+  "$PY" -c "
+import sys, pathlib, tempfile, textwrap
+sys.path.insert(0, 'tools/ci')
+import check_async_blocking as c
+d = pathlib.Path(tempfile.mkdtemp()); (d/'app').mkdir()
+bad = textwrap.dedent('''
+    import urllib.request
+    async def check():
+        with urllib.request.urlopen(req) as r:
+            return r.read()
+''')
+good = textwrap.dedent('''
+    import asyncio, urllib.request
+    async def check():
+        def _do():
+            with urllib.request.urlopen(req) as r:
+                return r.read()
+        return await asyncio.to_thread(_do)
+''')
+(d/'app'/'m.py').write_text(bad)
+assert c.scan_service(d), 'gate missed a blocking urlopen in an async def'
+(d/'app'/'m.py').write_text(good)
+assert not c.scan_service(d), 'gate false-positived on a to_thread-wrapped call'
+sys.exit(0)
+" >/dev/null 2>&1
+}

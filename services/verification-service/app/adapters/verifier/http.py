@@ -28,6 +28,7 @@ Unrecognised means unknown. It never falls through to yes.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import urllib.error
 import urllib.request
@@ -67,9 +68,12 @@ class HttpVerifier:
         body = self._render_request(claim)
         req = urllib.request.Request(url, data=body, method="POST",
                                      headers=self._headers())
-        try:
+
+        def _fetch():                                        # blocking urllib OFF the event loop
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # nosec B310 - config-only host
-                status, raw = resp.status, resp.read()
+                return resp.status, resp.read()
+        try:
+            status, raw = await asyncio.to_thread(_fetch)
         except urllib.error.HTTPError as exc:
             # An HTTP error is US failing to ask, not the provider refusing. A 500 from the
             # registry does not mean the company is not registered.

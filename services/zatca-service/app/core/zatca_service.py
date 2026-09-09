@@ -9,6 +9,7 @@ Guarantees (the smart part):
   • tamper-evident chain — verify walks PIH/ICV from genesis (first-break-wins).
 """
 from __future__ import annotations
+import asyncio
 
 import time
 from typing import Any
@@ -69,7 +70,8 @@ class ZatcaService:
     async def _sign(self, inv: ZatcaInvoice, secrets: dict) -> bool:
         d = inv.draft
         try:
-            signed = self._signer.sign(
+            signed = await asyncio.to_thread(                 # blocking SDK signer OFF the event loop
+                self._signer.sign,
                 invoice_xml=d["unsigned_xml"], certificate_pem=secrets["certificate_pem"],
                 private_key_pem=secrets["private_key_pem"], seller_name=d["seller_name"],
                 vat_number=d["vat_number"], invoice_total=d["invoice_total"],
@@ -109,8 +111,9 @@ class ZatcaService:
         success = "cleared" if inv.invoice_type == "standard" else "reported"
         creds = {"token": secrets.get("cert_base64"), "secret": secrets.get("secret")}
         try:
-            code, resp = call(signed_xml=inv.signed_xml, invoice_hash=inv.hash,
-                              uuid=inv.uuid, credentials=creds)
+            code, resp = await asyncio.to_thread(            # blocking Fatoora gateway OFF the event loop
+                call, signed_xml=inv.signed_xml, invoice_hash=inv.hash,
+                uuid=inv.uuid, credentials=creds)
         except FatooraUnavailable as ex:
             return await self._defer(inv, str(ex))
         outcome = classify(code, resp, success_status=success)

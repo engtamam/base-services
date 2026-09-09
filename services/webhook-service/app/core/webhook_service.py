@@ -12,6 +12,7 @@ Guarantees:
   • **hot path**: subscriber lookup is cached; dispatch does no table scans.
 """
 from __future__ import annotations
+import asyncio
 
 import json
 from typing import Any
@@ -197,9 +198,10 @@ class WebhookService:
         if signature:
             headers["X-Webhook-Signature"] = signature
 
-        resp = self._transport.send(url=ep.url, pinned_ip=target.ip, body=body, headers=headers,
-                                    timeout_seconds=self._cfg["timeout_seconds"],
-                                    max_response_bytes=self._cfg["max_response_bytes"])
+        resp = await asyncio.to_thread(                      # blocking transport OFF the event loop
+            self._transport.send, url=ep.url, pinned_ip=target.ip, body=body, headers=headers,
+            timeout_seconds=self._cfg["timeout_seconds"],
+            max_response_bytes=self._cfg["max_response_bytes"])
         outcome = classify(resp.status, resp.ok)
 
         d.response_code, d.latency_ms = resp.status, resp.latency_ms

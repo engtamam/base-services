@@ -10,6 +10,7 @@ unsatisfied. A source that returns 200 with a body we do not understand has told
 guessing in either direction is worse than saying so.
 """
 from __future__ import annotations
+import asyncio
 
 import json
 import urllib.error
@@ -41,8 +42,10 @@ class HttpRequirementSource:
         req = urllib.request.Request(url, method="GET",
                                      headers={"X-Internal-Token": self._token} if self._token else {})
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # nosec B310 - config-only host
-                status, raw = resp.status, resp.read()
+            def _send():  # blocking urllib OFF the event loop
+                with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # nosec B310 - config-only host
+                    return resp.status, resp.read()
+            status, raw = await asyncio.to_thread(_send)
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 # The owning service says there is no such record. That is a real answer: the fact

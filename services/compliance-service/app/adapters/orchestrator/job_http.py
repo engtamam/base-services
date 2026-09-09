@@ -4,6 +4,7 @@ Durable beats fire-and-forget for erasure: job-service retries, dead-letters, an
 loses the task. The job's `unique_key` makes a re-dispatch idempotent.
 """
 from __future__ import annotations
+import asyncio
 
 import json
 from app.core.internal_client import assertion_headers_from_env
@@ -53,7 +54,9 @@ class JobHttpOrchestrator:
                                     "X-Internal-Token": token,
                                     **assertion_headers_from_env(target="job-service")})
         try:
-            with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:  # nosec B310 - fixed config host
-                return 200 <= resp.status < 300
+            def _send():  # blocking urllib OFF the event loop
+                with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:  # nosec B310 - fixed config host
+                    return 200 <= resp.status < 300
+            return await asyncio.to_thread(_send)
         except (urllib.error.HTTPError, OSError, Exception):
             return False

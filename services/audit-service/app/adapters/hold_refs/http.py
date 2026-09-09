@@ -9,6 +9,7 @@ and it is deliberate. Carrying on here means deleting audit records that may be 
 which is not recoverable and is the exact thing a court would ask about.
 """
 from __future__ import annotations
+import asyncio
 
 import json
 import urllib.error
@@ -32,8 +33,10 @@ class HttpHoldRefs:
         if self._token:
             req.add_header("X-Internal-Token", self._token)
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # nosec B310 - config-only host
-                status, raw = resp.status, resp.read()
+            def _send():  # blocking urllib OFF the event loop
+                with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # nosec B310 - config-only host
+                    return resp.status, resp.read()
+            status, raw = await asyncio.to_thread(_send)
         except (urllib.error.HTTPError, urllib.error.URLError, OSError):
             return None
         if not 200 <= status < 300:

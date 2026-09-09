@@ -18,6 +18,7 @@ identity, so it survives account deletion too.
 not spent, which is what makes the offer bounded.
 """
 from __future__ import annotations
+import asyncio
 
 import json
 import urllib.error
@@ -60,8 +61,10 @@ class WalletEntitlement:
             self._url, data=json.dumps(body).encode(), method="POST",
             headers={"Content-Type": "application/json", "X-Internal-Token": self._token})
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # nosec B310 - config-only host
-                status, raw = resp.status, resp.read()
+            def _send():  # blocking urllib OFF the event loop
+                with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # nosec B310 - config-only host
+                    return resp.status, resp.read()
+            status, raw = await asyncio.to_thread(_send)
         except urllib.error.HTTPError as exc:
             return Receipt(status=FAILED, detail=f"wallet returned HTTP {exc.code}")
         except (urllib.error.URLError, OSError) as exc:

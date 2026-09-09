@@ -15,6 +15,7 @@
     provider stops consuming workers.
 """
 from __future__ import annotations
+import asyncio
 
 from typing import Any
 
@@ -87,9 +88,9 @@ class SyncEngine:
 
         try:
             access = await self._tokens.credentials(conn.tenant, conn.id, spec)
-            page = self._provider.fetch(access_token=access, resource=resource,
-                                        cursor=run.watermark_before,
-                                        limit=self._cfg["batch_size"], spec=spec)
+            page = await asyncio.to_thread(                  # blocking provider HTTP OFF the event loop
+                self._provider.fetch, access_token=access, resource=resource,
+                cursor=run.watermark_before, limit=self._cfg["batch_size"], spec=spec)
         except RateLimited as exc:
             await self._record_failure(conn, state, "rate_limited")
             delay = _backoff.next_delay(0, base_seconds=self._cfg["retry_base_seconds"],

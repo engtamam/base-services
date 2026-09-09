@@ -12,6 +12,7 @@ Classification is the whole job, and it is deliberately strict:
     anything else       -> FAILED  (retried; never mistaken for done)
 """
 from __future__ import annotations
+import asyncio
 
 import json
 from app.core.internal_client import assertion_headers_for_url
@@ -45,9 +46,10 @@ class HttpPrivacyTransport:
         req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST",
                                      headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310 - config-only host
-                status = resp.status
-                raw = resp.read()
+            def _send():  # blocking urllib OFF the event loop
+                with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310 - config-only host
+                    return resp.status, resp.read()
+            status, raw = await asyncio.to_thread(_send)
         except urllib.error.HTTPError as exc:
             return EraseOutcome(status=FAILED, detail=f"HTTP {exc.code}")
         except (urllib.error.URLError, OSError) as exc:
