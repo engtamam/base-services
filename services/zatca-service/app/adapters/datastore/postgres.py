@@ -122,6 +122,18 @@ class PostgresDataStore:
                 collection, key, json.dumps(value),
             )
 
+    async def create(self, collection: str, key: str, value: dict[str, Any]) -> bool:
+        """Atomic put-if-absent via INSERT ... ON CONFLICT DO NOTHING — the row is created by exactly
+        one caller under contention. Returns True iff this call inserted (rowcount 1)."""
+        pool = await self._ensure()
+        async with pool.acquire() as con:
+            res = await con.execute(
+                f"INSERT INTO {_TABLE} (collection, key, value) VALUES ($1,$2,$3) "  # nosec B608 - _TABLE trusted constant; values parameterized
+                "ON CONFLICT (collection, key) DO NOTHING",
+                collection, key, json.dumps(value),
+            )
+        return res.endswith("1")
+
     async def delete(self, collection: str, key: str) -> bool:
         pool = await self._ensure()
         async with pool.acquire() as con:

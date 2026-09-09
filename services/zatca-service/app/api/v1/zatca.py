@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from starlette.responses import Response
 
 from app.api.auth import Principal
-from app.api.authz import require_any_capability
+from app.api.authz import require_any_capability, require_capability
 from app.config import get_settings
 from app.core.stores import InvoiceStore, SettingsStore
 from app.core.zatca_service import ZatcaService
@@ -19,6 +19,9 @@ from app.ports.zatca_signer import SignerUnavailable
 router = APIRouter(prefix="/api/v1/zatca", tags=["zatca"])
 
 _ADMIN = require_any_capability("platform.zatca", "zatca.manage")
+# Fleet-wide operations (a sweep across ALL tenants) are a PLATFORM privilege — a tenant admin
+# (zatca.manage) must never trigger submission work for every other tenant.
+_PLATFORM = require_capability("platform.zatca")
 
 
 async def build_zatca(request: Request, tenant: str = "") -> ZatcaService:
@@ -89,7 +92,8 @@ async def onboard_compliance(request: Request, body: OnboardIn, principal: Princ
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
-        "zatca.onboarded_compliance", actor=principal.subject, tenant=principal.tenant, resource="csid",
+        "zatca.onboarded_compliance", actor=principal.subject,
+        tenant=op_tenant(principal, body.tenant), resource="csid",   # the tenant ACTUALLY onboarded
         ip=request.client.host if request.client else "")
     svc = (await build_zatca(request))
     try:
@@ -192,7 +196,7 @@ async def chain_verify(request: Request, principal: Principal = Depends(_ADMIN))
 
 
 @router.post("/sweep")
-async def sweep(request: Request, principal: Principal = Depends(_ADMIN)) -> dict:
+async def sweep(request: Request, principal: Principal = Depends(_PLATFORM)) -> dict:
     result = await (await build_zatca(request)).sweep()
     await request.app.state.auditor.record(
         "zatca.swept", actor=principal.subject, tenant=principal.tenant or "",

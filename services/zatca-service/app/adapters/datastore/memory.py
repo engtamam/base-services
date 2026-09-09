@@ -22,6 +22,15 @@ class MemoryDataStore:
     async def put(self, collection: str, key: str, value: dict[str, Any]) -> None:
         self._data.setdefault(collection, {})[key] = copy.deepcopy(value)
 
+    async def create(self, collection: str, key: str, value: dict[str, Any]) -> bool:
+        """Atomic put-if-absent: True if this call created the row, False if the key already existed.
+        The check-and-set has no await between it, so it is atomic on the asyncio loop."""
+        bucket = self._data.setdefault(collection, {})
+        if key in bucket:
+            return False
+        bucket[key] = copy.deepcopy(value)
+        return True
+
     async def delete(self, collection: str, key: str) -> bool:
         return self._data.get(collection, {}).pop(key, None) is not None
 

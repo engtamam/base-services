@@ -254,6 +254,22 @@ def test_allocate_slot_is_o1_via_index():
     assert run(st.get("zatca_index", "num::t1::INV-1")) is not None
 
 
+def test_concurrent_allocate_slot_never_duplicates_an_icv():
+    # The ICV chain must stay unique under concurrency — two finalizes racing for one tenant used to
+    # both mint the same ICV (corrupting the PIH/ICV chain). The atomic icv-claim prevents it.
+    import asyncio as _a
+    st = MemoryDataStore()
+    store = InvoiceStore(st)
+
+    async def _race():
+        return await _a.gather(*[
+            store.allocate_slot("t1", f"INV-{i}", "standard") for i in range(20)])
+
+    results = run(_race())
+    icvs = sorted(inv.icv for inv, created in results if created)
+    assert icvs == list(range(1, 21))                      # 20 distinct ICVs, 1..20, no duplicate
+
+
 def test_tenant_isolation():
     st = MemoryDataStore()
     s = SettingsStore(st, "k" * 8)

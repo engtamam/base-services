@@ -41,7 +41,11 @@ def build_ubl(inv: dict, *, icv: int, pih: str, invoice_type: str = "simplified"
     uuid_v = inv.get("uuid") or stable_uuid(str(inv["number"]))
     seller = inv.get("seller") or {}
     buyer = inv.get("buyer") or {}
-    cur = inv.get("currency", "SAR")
+    cur = str(inv.get("currency", "SAR")).upper()
+    if not (len(cur) == 3 and cur.isalpha()):
+        # currencyID is interpolated into signed XML attributes; an ISO-4217 code is 3 letters, so
+        # reject anything else rather than let it inject markup into the document we sign (CWE-91).
+        raise ValueError(f"invalid currency code: {inv.get('currency')!r}")
     rate = str(inv.get("vat_rate", "0.15"))
     vat_pct = str(int(round(float(rate) * 100)))
     type_name = "0200000" if invoice_type == "simplified" else "0100000"

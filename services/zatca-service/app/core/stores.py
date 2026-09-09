@@ -122,20 +122,36 @@ class InvoiceStore:
 
     async def allocate_slot(self, tenant: str, number: str, invoice_type: str) -> tuple[ZatcaInvoice, bool]:
         """Idempotent by (tenant, number). Reserve the next ICV + PIH (= prior invoice's hash).
-        O(1) via the per-tenant head pointer + number index (no full scan)."""
+
+        ATOMIC ICV reservation: the head pointer alone was a non-atomic read-modify-write, so two
+        concurrent finalizes for one tenant both read reserved=N and both minted ICV N+1 — duplicate
+        ICVs that corrupt the PIH/ICV chain. Now each ICV is claimed by an atomic put-if-absent on a
+        unique `icv::{tenant}::{icv}` key; a loser (key taken) re-reads and tries the next ICV. The
+        head pointer stays only as an O(1) hint for where to start — the icv-claim is the authority."""
         existing = await self.by_number(tenant, number)
         if existing is not None:
             return existing, False
         head = await self._store.get(_INDEX, f"head::{tenant}") or {"reserved_icv": 0, "last_hash": ""}
-        reserved = int(head.get("reserved_icv", 0))
-        icv = reserved + 1
-        pih = head["last_hash"] if (reserved > 0 and head.get("last_hash")) else GENESIS_PIH
+        icv = int(head.get("reserved_icv", 0)) + 1
+        last_hash = head.get("last_hash") or ""
+        for _ in range(10_000):                              # bounded; advances past ICVs already taken
+            claimed = await self._store.create(_INDEX, f"icv::{tenant}::{icv}", {"number": str(number)})
+            if claimed:
+                break
+            icv += 1                                         # this ICV was taken by a concurrent finalize
+        else:
+            raise RuntimeError("could not reserve an ICV slot")
+        pih = last_hash if (icv > 1 and last_hash) else GENESIS_PIH
         inv = ZatcaInvoice(id=new_id(), tenant=tenant, number=str(number), icv=icv,
                            pih=pih, status="pending", invoice_type=invoice_type, created=_now())
         await self.save(inv)
         await self._store.put(_INDEX, f"num::{tenant}::{number}", {"id": inv.id})
-        head["reserved_icv"] = icv                        # reserve the ICV (last_hash set on sign)
-        await self._store.put(_INDEX, f"head::{tenant}", head)
+        # Advance the head HINT if we moved it forward — re-read so we never clobber a concurrent
+        # sign's last_hash (the icv-claim, not this hint, is the uniqueness authority).
+        cur = await self._store.get(_INDEX, f"head::{tenant}") or {"reserved_icv": 0, "last_hash": ""}
+        if icv > int(cur.get("reserved_icv", 0)):
+            cur["reserved_icv"] = icv
+            await self._store.put(_INDEX, f"head::{tenant}", cur)
         return inv, True
 
 

@@ -15,6 +15,11 @@ class DataStore(Protocol):
 
     async def put(self, collection: str, key: str, value: dict[str, Any]) -> None: ...
 
+    async def create(self, collection: str, key: str, value: dict[str, Any]) -> bool:
+        """Atomic put-if-absent: True iff this call created the row (key was absent), else False.
+        The atomicity primitive behind race-free unique-slot reservation (e.g. the ICV chain)."""
+        ...
+
     async def delete(self, collection: str, key: str) -> bool: ...
 
     async def find(
