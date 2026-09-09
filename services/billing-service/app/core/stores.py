@@ -308,9 +308,12 @@ class InvoiceStore(_Repo):
     _SEQ = "billing_seq"
 
     async def next_number(self, tenant: str) -> str:
-        row = await self._store.get(self._SEQ, tenant)
-        n = int(row["n"]) + 1 if row else 1
-        await self._store.put(self._SEQ, tenant, {"n": n})
+        # ATOMIC sequence. A get()+put() here is a lost update: two invoices generated concurrently
+        # for one tenant both read n and both write n+1, minting the SAME invoice number twice — a
+        # duplicate on a VAT document, which breaks the ZATCA unique-sequential-number requirement and
+        # a finance system's assumption that a number identifies one invoice. incr_if_below(delta=1,
+        # limit=None) increments and returns the new value indivisibly, so every number is unique.
+        _, n = await self._store.incr_if_below(self._SEQ, tenant, 1, None)
         return f"INV-{n:06d}"
 
     async def save(self, inv: Invoice) -> Invoice:

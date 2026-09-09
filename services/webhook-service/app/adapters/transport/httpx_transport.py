@@ -24,13 +24,25 @@ class HttpxTransport:
             pinned = url.replace(f"//{host}", f"//{pinned_ip}", 1)
             with self._httpx.Client(transport=transport, timeout=timeout_seconds,
                                     verify=True) as client:
-                resp = client.post(pinned, content=body,
+                # STREAM the response and stop reading past the cap. `client.post(...).text` buffers
+                # the WHOLE body into memory first and truncates only afterwards, so a hostile or
+                # broken receiver returning a multi-GB body OOMs the worker before the cap is ever
+                # applied. iter_raw caps the WIRE bytes (bounded memory regardless of content-
+                # encoding — a decoded/decompressed stream could expand a bomb), then we decode the
+                # capped slice for the diagnostic body. Mirrors the stdlib transport's read cap.
+                with client.stream("POST", pinned, content=body,
                                    headers={**headers, "Host": host},
-                                   extensions={"sni_hostname": host})
-                latency = int((time.monotonic() - started) * 1000)
-                return Response(ok=True, status=resp.status_code,
-                                body=resp.text[:max_response_bytes], latency_ms=latency,
-                                headers={k.lower(): v for k, v in resp.headers.items()})
+                                   extensions={"sni_hostname": host}) as resp:
+                    raw = bytearray()
+                    for chunk in resp.iter_raw():
+                        raw.extend(chunk)
+                        if len(raw) > max_response_bytes:
+                            break                         # enough to store; do not read the rest
+                    latency = int((time.monotonic() - started) * 1000)
+                    return Response(ok=True, status=resp.status_code,
+                                    body=bytes(raw[:max_response_bytes]).decode("utf-8", "replace"),
+                                    latency_ms=latency,
+                                    headers={k.lower(): v for k, v in resp.headers.items()})
         except Exception as exc:
             return Response(ok=False, status=0, error=type(exc).__name__,
                             latency_ms=int((time.monotonic() - started) * 1000))

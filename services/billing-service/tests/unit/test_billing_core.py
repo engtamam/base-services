@@ -119,6 +119,21 @@ def test_sequential_invoice_numbers():
     assert run(st.next_number("t2")) == "INV-000001"           # per-tenant sequence
 
 
+def test_invoice_numbers_are_unique_under_concurrency():
+    """Concurrent invoice generation for one tenant must never mint the same number twice.
+
+    A get()+put() sequence loses updates (both read n, both write n+1) — a duplicate VAT invoice
+    number, which breaks ZATCA's unique-sequential requirement. The atomic increment prevents it.
+    """
+    st = InvoiceStore(MemoryDataStore())
+
+    async def hammer():
+        return await asyncio.gather(*[st.next_number("t1") for _ in range(50)])
+    nums = run(hammer())
+    assert len(set(nums)) == 50                                  # all distinct
+    assert sorted(nums) == [f"INV-{i:06d}" for i in range(1, 51)]  # gapless 1..50
+
+
 # ── orchestration ─────────────────────────────────────────────────────────────
 class MockGW:
     driver = "mock"
