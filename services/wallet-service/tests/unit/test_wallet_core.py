@@ -215,6 +215,57 @@ def test_confirming_twice_charges_once():
     assert run(w.balance("t"))["balance"] == 885
 
 
+def test_partial_confirm_charges_the_smaller_amount_and_releases_the_rest():
+    """Reserve a ceiling, confirm the real (smaller) net — the difference returns to the balance.
+
+    net=100 reserves gross 115. Confirming final_net=40 charges gross_of(40,15%)=46 and frees 69.
+    """
+    w = _svc()
+    run(w.credit(tenant="t", fund="cash", amount=1000, source="c"))
+    h = run(w.reserve(tenant="t", net=100, source="r"))
+    res = run(w.confirm(hold_id=h["hold_id"], final_net=40))
+    assert res["released"] == 115 - 46
+    b = run(w.balance("t"))
+    assert b["held"] == {} and b["balance"] == 1000 - 46          # only the real cost left the balance
+    assert run(w.reconcile("t"))["consistent"] is True
+    led = run(w.ledger("t"))
+    spend = [e for e in led if e["type"] == "spend"][0]
+    assert spend["net"] == 40 and spend["vat"] == 6 and spend["amount"] == -46   # VAT on the real net
+
+
+def test_confirm_with_final_net_equal_to_reserved_is_the_full_charge():
+    w = _svc()
+    run(w.credit(tenant="t", fund="cash", amount=1000, source="c"))
+    h = run(w.reserve(tenant="t", net=100, source="r"))
+    res = run(w.confirm(hold_id=h["hold_id"], final_net=100))
+    assert res["released"] == 0
+    assert run(w.balance("t"))["balance"] == 1000 - 115
+
+
+def test_confirm_above_the_reserved_net_is_refused_and_mutates_nothing():
+    from app.core.wallet_service import WalletError
+    w = _svc()
+    run(w.credit(tenant="t", fund="cash", amount=1000, source="c"))
+    h = run(w.reserve(tenant="t", net=100, source="r"))
+    try:
+        run(w.confirm(hold_id=h["hold_id"], final_net=101))   # > reserved net: never spend unreserved money
+        assert False, "expected WalletError"
+    except WalletError as exc:
+        assert "EXCEEDS_RESERVED" in str(exc)
+    b = run(w.balance("t"))
+    assert b["balance"] == 1000 and b["held"] == {"cash": 115}   # still reserved, nothing charged
+
+
+def test_partial_confirm_replay_is_idempotent_at_the_first_amount():
+    w = _svc()
+    run(w.credit(tenant="t", fund="cash", amount=1000, source="c"))
+    h = run(w.reserve(tenant="t", net=100, source="r"))
+    run(w.confirm(hold_id=h["hold_id"], final_net=40))
+    again = run(w.confirm(hold_id=h["hold_id"], final_net=70))   # a different amount on retry is ignored
+    assert again["idempotent"] is True
+    assert run(w.balance("t"))["balance"] == 1000 - 46           # still the FIRST confirm's charge
+
+
 def test_releasing_a_hold_frees_the_money_without_a_ledger_entry():
     w = _svc()
     run(w.credit(tenant="t", fund="cash", amount=1000, source="c"))

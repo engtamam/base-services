@@ -50,6 +50,33 @@
         "title": "BackupVerifyIn",
         "type": "object"
       },
+      "ConfirmIn": {
+        "properties": {
+          "final_net": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Net"
+          },
+          "hold_id": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Hold Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "hold_id"
+        ],
+        "title": "ConfirmIn",
+        "type": "object"
+      },
       "CreditIn": {
         "properties": {
           "amount": {
@@ -1100,7 +1127,7 @@
     },
     "/internal/wallet/confirm": {
       "post": {
-        "description": "The action succeeded: consume the hold. Replaying this must not charge twice.",
+        "description": "The action succeeded: consume the hold. Replaying this must not charge twice.\n\nPass `final_net` to charge the real (usually smaller) amount instead of the reserved ceiling \u2014\nthe difference is auto-released. Omit it for the full reserved amount.",
         "operationId": "confirm_internal_wallet_confirm_post",
         "parameters": [
           {
@@ -1140,7 +1167,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/HoldIn"
+                "$ref": "#/components/schemas/ConfirmIn"
               }
             }
           },

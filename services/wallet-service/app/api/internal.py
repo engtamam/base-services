@@ -99,6 +99,13 @@ class HoldIn(BaseModel):
     hold_id: str = Field(min_length=1, max_length=100)
 
 
+class ConfirmIn(HoldIn):
+    # Optional: confirm for a SMALLER real net than was reserved (the reserve was a conservative
+    # ceiling). The difference is auto-released. Omit to confirm the full reserved amount. Must be
+    # <= the reserved net; the core refuses a larger value (spending unreserved money).
+    final_net: int | None = Field(default=None, ge=0)
+
+
 class RefundIn(BaseModel):
     tenant: str = Field(min_length=1, max_length=200)
     seq: int = Field(ge=1)                             # ledger sequence of the spend to reverse
@@ -229,10 +236,13 @@ async def reserve(body: SpendIn, request: Request) -> dict:
 
 
 @router.post("/wallet/confirm", dependencies=[Depends(require_internal_token)])
-async def confirm(body: HoldIn, request: Request) -> dict:
-    """The action succeeded: consume the hold. Replaying this must not charge twice."""
+async def confirm(body: ConfirmIn, request: Request) -> dict:
+    """The action succeeded: consume the hold. Replaying this must not charge twice.
+
+    Pass `final_net` to charge the real (usually smaller) amount instead of the reserved ceiling —
+    the difference is auto-released. Omit it for the full reserved amount."""
     try:
-        result = await build_wallet(request).confirm(hold_id=body.hold_id)
+        result = await build_wallet(request).confirm(hold_id=body.hold_id, final_net=body.final_net)
     except Exception as exc:  # noqa: BLE001
         raise _handle(exc) from exc
     await request.app.state.auditor.record(

@@ -498,14 +498,25 @@ class WalletService:
             raise WalletError("HOLD_NOT_FOUND")
         return Hold.from_dict(row)
 
-    async def confirm(self, *, hold_id: str) -> dict[str, Any]:
-        """Consume a hold: the money finally leaves. A replay must not charge twice."""
+    async def confirm(self, *, hold_id: str, final_net: int | None = None) -> dict[str, Any]:
+        """Consume a hold: the money finally leaves. A replay must not charge twice.
+
+        `final_net` (optional) confirms for a SMALLER real amount than was reserved — the caller
+        reserved a conservative ceiling (e.g. before an LLM call whose token cost was unknown) and now
+        knows the true, usually-lower net. The difference is auto-released back to the balance. It is
+        RE-PLANNED against the held funds themselves (the same planner reserve/spend use), so the
+        per-fund split and the VAT are consistent by construction and each fund is charged at most what
+        it held — never a divergent ad-hoc reduction. Omit it to confirm the full reserved amount.
+
+        HARD INVARIANT: final_net ≤ the reserved net. A larger value would spend money that was never
+        reserved, so it is refused, mutating nothing."""
         hold = await self._hold(hold_id)
         if hold.state == HOLD_CONFIRMED:
             return {"hold_id": hold_id, "state": HOLD_CONFIRMED, "idempotent": True}
         # ATOMIC dedup keyed by the hold: the state read above is not enough — two concurrent confirms
         # both see ACTIVE and each debit (double-charge). The claim lets exactly one proceed; the other
-        # replays the finished result or is told to retry.
+        # replays the finished result or is told to retry. The claim is on the hold, NOT the amount, so
+        # a retry with a different final_net replays the FIRST confirm's result (idempotent on hold_id).
         proceed, prior = await self._claim(hold.tenant, "confirm", hold_id)
         if prior is not None:
             return prior
@@ -519,21 +530,44 @@ class WalletService:
         if hold.expires_at <= self._clock.now():
             raise WalletError("HOLD_EXPIRED")               # expired but unswept: never charge it
 
-        entry = self._entry(hold.tenant, SPEND, hold.applied, -1, plan=hold.plan,
+        reserved_applied = dict(hold.applied)               # what the reservation is holding, per fund
+        reserved_net = int(hold.plan.get("net", hold.amount))
+        if final_net is None:
+            applied, plan_dict = reserved_applied, dict(hold.plan)
+        else:
+            final_net = int(final_net)
+            if final_net < 0:
+                raise WalletError("FINAL_NET_NEGATIVE")
+            if final_net > reserved_net:
+                # Spending more than was reserved is exactly the thing a hold exists to prevent.
+                raise WalletError("FINAL_NET_EXCEEDS_RESERVED")
+            # Re-plan the smaller net against the HELD funds only (balances = the reservation). This
+            # reuses plan_spend, so the split + VAT match how the reserve was computed, and each fund's
+            # charge is capped at what it held (gross_of(final_net) ≤ gross_of(reserved_net) = held).
+            new_plan = _funds.plan_spend(final_net, dict(reserved_applied), self._funds,
+                                         self._vat_bp, allowed=frozenset(reserved_applied.keys()))
+            applied, plan_dict = dict(new_plan.applied), new_plan.to_dict()
+
+        entry = self._entry(hold.tenant, SPEND, applied, -1, plan=plan_dict,
                             source=hold.source, reason=hold.reason, ref=hold.id)
-        # Debit the funds and drop the reservation in the SAME atomic step: a crash between the
-        # two would either double-count the hold or spend money that was never reserved.
+        # Debit only the REAL spend, but drop the WHOLE reservation, in the SAME atomic step: held
+        # falls by the full reserved amount (freeing the unspent remainder back to available) while
+        # funds fall only by what was actually spent. A crash between the two would either double-count
+        # the hold or spend money that was never reserved.
         out = await self._mutate(hold.tenant,
-                                 funds_delta={k: -v for k, v in hold.applied.items()},
-                                 held_delta={k: -v for k, v in hold.applied.items()},
+                                 funds_delta={k: -v for k, v in applied.items()},
+                                 held_delta={k: -v for k, v in reserved_applied.items()},
                                  entry=entry)
         hold.state = HOLD_CONFIRMED
+        hold.applied = applied                              # record what was ACTUALLY charged
+        hold.plan = plan_dict
         await self._store.put(_HOLDS, hold.id, hold.to_dict())
-        result = {"hold_id": hold.id, "state": HOLD_CONFIRMED, **out}
+        released = sum(reserved_applied.values()) - sum(applied.values())
+        result = {"hold_id": hold.id, "state": HOLD_CONFIRMED, "released": released, **out}
         await self._finalize(hold.tenant, "confirm", hold_id, result)
         await self._emit(_events.WALLET_SPENT,
-                         {"tenant": hold.tenant, "net": hold.plan.get("net", 0),
-                          "vat": hold.plan.get("vat", 0),
+                         {"tenant": hold.tenant, "net": plan_dict.get("net", 0),
+                          "vat": plan_dict.get("vat", 0),
                           "currency": self._currency, "source": hold.source})
         await self._check_low_balance(hold.tenant, out["funds"], debit=True)
         return result
