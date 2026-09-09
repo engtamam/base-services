@@ -107,6 +107,15 @@ class NotificationService:
                 return await self._finish(idempotency_key, tenant or "", await self._record(
                     recipient, channel, template_key, "suppressed", tenant=tenant or ""))
 
+        # 1a) WHATSAPP marketing opt-out. Meta's "Stop promotions" arrives keyed by the customer's
+        # phone (the user_preferences webhook), which for a WhatsApp send IS the recipient. Honor it
+        # even with no internal user_id, so a business-initiated send to someone who unsubscribed is
+        # suppressed — the whole point of capturing the opt-out. Service replies inside the 24h window
+        # (send_interactive) are contractual, not marketing, and deliberately skip this.
+        if channel == "whatsapp" and not await self._wa_recipient_allows(recipient, event):
+            return await self._finish(idempotency_key, tenant or "", await self._record(
+                recipient, channel, template_key, "suppressed", tenant=tenant or ""))
+
         # 1b) CONSENT — a different question from the preference above, and the one this service
         # could not previously ask. A preference is the user's channel opt-out; consent is the
         # lawful basis for a PURPOSE. Someone who never opted out of email may still never have
@@ -289,6 +298,11 @@ class NotificationService:
             if prior is not None:
                 return {**prior, "duplicate": True}
         tk = template_name           # the Delivery's template_key names the Meta template, as sends do
+        # WhatsApp marketing opt-out (Meta "Stop promotions"), keyed by the recipient's phone — a
+        # carousel is business-initiated, so an unsubscribed customer must not receive it.
+        if not await self._wa_recipient_allows(recipient, event):
+            return await self._finish(idempotency_key, tenant or "", await self._record(
+                recipient, "whatsapp", tk, "suppressed", tenant=tenant or ""))
         # Consent — same rule as notify(): only a template MAPPED to a purpose is gated, and only with a
         # subject to key on. A carousel to a consented (or contract-basis) audience passes untouched.
         purpose = self._consent_purposes.get(event or "") or self._consent_purposes.get(template_name)
@@ -383,6 +397,14 @@ class NotificationService:
         return await self._record(recipient, channel, template_key, state, provider=provider,
                                   error=error, attempts=attempt, next_attempt_ts=next_ts,
                                   payload=payload if state == QUEUED else {}, tenant=tenant)
+
+    async def _wa_recipient_allows(self, recipient: str, event: str | None) -> bool:
+        """Whether a WhatsApp business-initiated send to this phone is allowed by its opt-out state.
+
+        The WhatsApp marketing opt-out is stored keyed by the customer's phone (see whatsapp_optout),
+        so for a WhatsApp send the recipient IS the preference key — no internal user_id needed."""
+        pref = await self._prefs.get(recipient)
+        return pref.allows("whatsapp", event)
 
     async def _finish(self, idempotency_key: str | None, tenant: str, result: dict) -> dict:
         """Remember a terminal-success result so a retry with the same key won't re-send.

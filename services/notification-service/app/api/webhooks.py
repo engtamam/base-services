@@ -27,6 +27,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from starlette.responses import PlainTextResponse
 
 from app.config import get_settings
+from app.core import whatsapp_optout as _optout
 from app.ports.event_bus import Event
 
 router = APIRouter(tags=["webhooks"])
@@ -73,7 +74,7 @@ async def _tenant_of(number_index, phone_id: str) -> str:
 
 
 async def _fan_out(bus, deliveries, data: dict, inbound=None, number_index=None,
-                   coexistence=None) -> int:
+                   coexistence=None, prefs=None) -> int:
     """Publish every change to the bus, NOTHING filtered. Returns how many events were emitted.
 
     Meta's shape: {object, entry:[{id: <waba id>, changes:[{field, value}]}]}. Each change's `field`
@@ -97,6 +98,14 @@ async def _fan_out(bus, deliveries, data: dict, inbound=None, number_index=None,
             await bus.publish(f"{_TOPIC}.{field}", Event(type=f"{_TOPIC}.{field}",
                                                          payload={**base, "value": value}))
             emitted += 1
+            # A marketing OPT-OUT is a compliance fact, not a hint: persist it DURABLY here (the bus
+            # is at-most-once — a dropped event would resume marketing to someone who unsubscribed,
+            # which suspends WhatsApp accounts). The send path then refuses marketing to this number.
+            if field == "user_preferences" and prefs is not None:
+                try:
+                    await _optout.apply_user_preferences(prefs, value)
+                except Exception:  # noqa: BLE001 — a parse hiccup must not fail the whole webhook
+                    pass
             # 2) first-class receipts, RESOLVED to a delivery, so the receipt is attributable.
             for st in value.get("statuses", []) or []:
                 delivery_id = None
@@ -206,7 +215,7 @@ async def receive(request: Request) -> dict:
     except ValueError:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "BAD_JSON")
     from app.core.stores import (CoexistenceStore, DeliveryStore, InboundStore,
-                                 WhatsAppNumberIndex)
+                                 PreferenceStore, WhatsAppNumberIndex)
     s = get_settings()
     bus = request.app.state.container.event_bus
     ds = request.app.state.container.datastore
@@ -219,7 +228,7 @@ async def receive(request: Request) -> dict:
             ds, retention_seconds=max(0, s.WHATSAPP_COEXISTENCE_RETENTION_DAYS) * 86400)
     emitted = await _fan_out(bus, deliveries, data if isinstance(data, dict) else {},
                              inbound=InboundStore(ds), number_index=WhatsAppNumberIndex(ds),
-                             coexistence=coexistence)
+                             coexistence=coexistence, prefs=PreferenceStore(ds))
     # Meta retries on any non-2xx and treats the retries as duplicates, so acknowledge fast once the
     # events are on the bus. The count is for our observability, not for Meta.
     return {"received": True, "events": emitted}

@@ -61,6 +61,20 @@ class PreferenceStore:
         await self._store.put(_PREFS, pref.user, pref.to_dict())
         return pref
 
+    async def apply_event_opt_out(self, user: str, event: str, *, opted_out: bool) -> Preference:
+        """Idempotently add/remove one event (e.g. "marketing") from a user's opt-out list.
+
+        This is how a WhatsApp marketing opt-out (Meta "Stop promotions") becomes a durable fact the
+        send path checks — read-modify-write, but the record is per-user and last-writer-wins is the
+        correct semantics for a toggle (the newest stop/resume is the truth). Empty event is a no-op."""
+        if not user or not event:
+            return await self.get(user)
+        pref = await self.get(user)
+        events = set(pref.opt_out_events)
+        events.add(event) if opted_out else events.discard(event)
+        pref.opt_out_events = sorted(events)
+        return await self.set(pref)
+
 
 class DeliveryStore:
     def __init__(self, store: DataStore) -> None:
