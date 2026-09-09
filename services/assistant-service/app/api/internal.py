@@ -205,8 +205,14 @@ def _conn_model(request: Request, conn):
             return await VertexTokenSource(sa_json=secret).token()
         return secret
 
+    # For the anthropic shape, a Vertex connection is Claude-on-Vertex (:rawPredict) — its body needs
+    # anthropic_version and the model is in the URL; a non-Vertex one is the direct Anthropic API
+    # (x-api-key). Derived from (shape, auth), so no extra connection field is needed.
+    anthropic_version = "vertex-2023-10-16" if (conn.shape == "anthropic"
+                                                and conn.auth == "vertex") else ""
     return HttpModel(conn.url, "", model=conn.model, shape=conn.shape,
-                     temperature=conn.temperature, key_resolver=resolver)
+                     temperature=conn.temperature, key_resolver=resolver,
+                     anthropic_version=anthropic_version)
 
 
 def _conn_caller(request: Request, conn):
@@ -222,7 +228,7 @@ class ConnIn(BaseModel):
     tenant: str = Field(min_length=1, max_length=128)
     name: str = Field(min_length=1, max_length=200)
     url: str = Field(min_length=1, max_length=2048)
-    shape: str = Field(default="chat", max_length=16)         # chat | generate
+    shape: str = Field(default="chat", max_length=16)         # chat | generate | anthropic
     model: str = Field(default="", max_length=200)
     auth: str = Field(default="api_key", max_length=16)       # api_key | vertex
     system_prompt: str = Field(default="", max_length=20000)

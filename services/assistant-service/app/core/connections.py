@@ -20,7 +20,7 @@ from typing import Any, Awaitable, Callable
 
 _CONNECTIONS = "ai_connections"
 _USAGE = "ai_connection_usage"
-_SHAPES = ("chat", "generate")
+_SHAPES = ("chat", "generate", "anthropic")
 _AUTHS = ("api_key", "vertex")
 
 
@@ -65,7 +65,7 @@ class AiConnection:
     tenant: str
     name: str
     url: str
-    shape: str = "chat"                  # chat | generate
+    shape: str = "chat"                  # chat | generate | anthropic
     model: str = ""
     auth: str = "api_key"                # api_key | vertex
     system_prompt: str = ""

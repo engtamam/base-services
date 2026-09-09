@@ -46,6 +46,14 @@ def test_create_and_get_roundtrip():
     assert got.name == "support-bot" and got.input_price_micros == 100 and got.currency == "SAR"
 
 
+def test_anthropic_shape_is_accepted_per_connection():
+    # A connection can pick shape="anthropic" (Claude) on its own — per-connection, not env-wide.
+    s = _store()
+    c = run(s.create(tenant="t1", name="claude", url="https://p/anthropic:rawPredict",
+                     shape="anthropic", auth="vertex", model="claude-sonnet-4"))
+    assert run(s.get("t1", c.id)).shape == "anthropic"
+
+
 def test_bad_shape_and_auth_are_refused():
     s = _store()
     with pytest.raises(ConnectionError):
