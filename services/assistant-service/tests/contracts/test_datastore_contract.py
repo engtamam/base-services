@@ -88,6 +88,31 @@ def test_health(store):
     assert run(store.health()) is True
 
 
+# ── add_fields(): atomic additive metering ───────────────────────────────────
+def test_add_fields_creates_then_accumulates(store):
+    run(store.add_fields("led", "c1", {"calls": 1, "cost": 40}, {"tenant": "t1"}))
+    run(store.add_fields("led", "c1", {"calls": 1, "cost": 60}, {"tenant": "t1"}))
+    row = run(store.get("led", "c1"))
+    assert int(row["calls"]) == 2 and int(row["cost"]) == 100 and row["tenant"] == "t1"
+
+
+def test_add_fields_is_atomic_under_concurrency(store):
+    """The whole point: N concurrent increments all land — none is lost to a read-modify-write race.
+
+    On the memory store this proves add_fields takes no await between read and write; on a real
+    postgres (DATASTORE_TEST_DSN) it proves the single-statement upsert genuinely serialises.
+    """
+    import asyncio
+
+    async def hammer():
+        await asyncio.gather(*[
+            store.add_fields("led", "c2", {"calls": 1, "cost": 10}, {"tenant": "t1"})
+            for _ in range(50)])
+    run(hammer())
+    row = run(store.get("led", "c2"))
+    assert int(row["calls"]) == 50 and int(row["cost"]) == 500
+
+
 # ── find(): the primitive that replaced the full-collection scan ─────────────
 # These must hold IDENTICALLY on both adapters. Where they do not, a repository that passes its
 # unit tests against the memory store is wrong in production and nothing says so.

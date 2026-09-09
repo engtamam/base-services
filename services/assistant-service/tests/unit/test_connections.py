@@ -83,6 +83,25 @@ def test_delete_removes_the_connection_and_its_usage():
     assert run(s.delete("t1", c.id)) is False          # idempotent
 
 
+def test_record_usage_never_loses_a_concurrent_increment():
+    """Metering is atomic: N in-flight calls on one connection all land, so cost is never under-billed.
+
+    The old get()+put() pair lost increments under concurrency (both read N, both write N+1), which
+    silently under-counted tokens and undercharged the tenant — a money leak that grows with traffic.
+    """
+    st = MemoryDataStore()
+    s = _store(st)
+    c = run(s.create(tenant="t1", name="a", url="u"))
+
+    async def hammer():
+        await asyncio.gather(*[
+            s.record_usage(tenant="t1", cid=c.id, tokens_in=2, tokens_out=3, cost=5)
+            for _ in range(40)])
+    run(hammer())
+    u = run(s.usage("t1", c.id))
+    assert u["calls"] == 40 and u["tokens_in"] == 80 and u["tokens_out"] == 120 and u["cost_micros"] == 200
+
+
 # ── invoke: isolation + metering ─────────────────────────────────────────────────
 def test_invoke_runs_the_connections_own_prompt_and_meters_only_it():
     st = MemoryDataStore()

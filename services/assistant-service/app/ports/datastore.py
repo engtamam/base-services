@@ -41,6 +41,16 @@ class DataStore(Protocol):
         """
         ...
 
+    async def add_fields(self, collection: str, key: str, deltas: dict[str, int],
+                         set_fields: dict[str, Any] | None = None) -> None:
+        """ATOMICALLY add integer `deltas` to a row's numeric fields (creating the row if absent),
+        and overwrite `set_fields` verbatim. This is one indivisible read-modify-write, so two
+        concurrent callers each incrementing the same counter never lose an increment — the failure a
+        plain get()+put() has (both read N, both write N+1). Used by additive ledgers (usage/cost
+        metering) where a lost increment is silently under-billed money. Missing counters start at 0.
+        """
+        ...
+
     async def scan_all(self, collection: str, limit: int) -> list[dict[str, Any]]:
         """EVERY row in a collection. A sweeper or a migration — never a request path."""
         ...

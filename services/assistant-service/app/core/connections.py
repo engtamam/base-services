@@ -184,15 +184,15 @@ class ConnectionStore:
     # ── usage ledger (per connection) ────────────────────────────────────────────
     async def record_usage(self, *, tenant: str, cid: str, tokens_in: int, tokens_out: int,
                            cost: int) -> None:
-        row = await self._s.get(_USAGE, _key(tenant, cid)) or {}
-        row.update(
-            tenant=tenant, connection_id=cid,
-            calls=int(row.get("calls", 0)) + 1,
-            tokens_in=int(row.get("tokens_in", 0)) + int(tokens_in),
-            tokens_out=int(row.get("tokens_out", 0)) + int(tokens_out),
-            cost_micros=int(row.get("cost_micros", 0)) + int(cost),
-            updated=self._now())
-        await self._s.put(_USAGE, _key(tenant, cid), row)
+        # ATOMIC additive metering. A get()+put() pair here loses increments under concurrency: two
+        # in-flight calls on the same connection both read calls=N and both write N+1, so the ledger
+        # under-counts and the cost is UNDER-BILLED — a silent money leak that grows with traffic.
+        # add_fields does the read-modify-write indivisibly, so every call's tokens and cost land.
+        await self._s.add_fields(
+            _USAGE, _key(tenant, cid),
+            {"calls": 1, "tokens_in": int(tokens_in), "tokens_out": int(tokens_out),
+             "cost_micros": int(cost)},
+            {"tenant": tenant, "connection_id": cid, "updated": self._now()})
 
     async def usage(self, tenant: str, cid: str) -> dict[str, Any]:
         row = await self._s.get(_USAGE, _key(tenant, cid))

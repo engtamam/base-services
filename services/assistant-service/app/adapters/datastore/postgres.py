@@ -6,6 +6,7 @@ services replace this with their own schema/repository behind the same port.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from app.adapters.lazy import load
@@ -121,6 +122,36 @@ class PostgresDataStore:
                 "ON CONFLICT (collection, key) DO UPDATE SET value=EXCLUDED.value",
                 collection, key, json.dumps(value),
             )
+
+    _SAFE_FIELD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+    async def add_fields(self, collection: str, key: str, deltas: dict[str, Any],
+                         set_fields: dict[str, Any] | None = None) -> None:
+        """Atomic additive upsert in ONE statement. The row is locked for the UPDATE, so two
+        concurrent callers each add their delta — neither increment is lost (the get()+put() race).
+        Field names are validated to a safe identifier (they are code-supplied constants, never user
+        input) because they are interpolated into the jsonb_build_object; all VALUES are parameters."""
+        set_fields = dict(set_fields or {})
+        items = [(f, int(d)) for f, d in deltas.items()]
+        for f, _ in items:
+            if not self._SAFE_FIELD.match(f):
+                raise ConfigError(f"add_fields: unsafe field name {f!r}")
+        initial = {f: d for f, d in items}
+        initial.update(set_fields)
+        args: list[Any] = [collection, key, json.dumps(initial), json.dumps(set_fields)]
+        parts = []
+        for f, d in items:
+            args.append(d)
+            parts.append(f"'{f}', (COALESCE((kv_store.value->>'{f}')::numeric, 0) + ${len(args)})")
+        build_obj = f"jsonb_build_object({', '.join(parts)})" if parts else "'{}'::jsonb"
+        sql = (
+            f"INSERT INTO {_TABLE} (collection, key, value) VALUES ($1,$2,$3::jsonb) "  # nosec B608 - _TABLE + validated field names; all values parameterized
+            f"ON CONFLICT (collection, key) DO UPDATE SET "
+            f"value = {_TABLE}.value || {build_obj} || $4::jsonb"
+        )
+        pool = await self._ensure()
+        async with pool.acquire() as con:
+            await con.execute(sql, *args)
 
     async def delete(self, collection: str, key: str) -> bool:
         pool = await self._ensure()

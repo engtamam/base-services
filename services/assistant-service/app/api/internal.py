@@ -190,6 +190,22 @@ def _conn_secret_name(cid: str) -> str:
     return f"AI_CONNECTION_KEY:{cid}"
 
 
+def _vertex_source(request: Request, cid: str, secret: str):
+    """One cached VertexTokenSource per connection, so its short-lived-token cache actually survives
+    between calls. Keyed by connection id and rebuilt only when the secret rotates (a sha256
+    fingerprint mismatch), so the cache holds at most one live source per connection."""
+    import hashlib
+    from app.core.gcp_token import VertexTokenSource
+    cache = request.app.state.__dict__.setdefault("_vertex_sources", {})
+    fp = hashlib.sha256(secret.encode("utf-8")).hexdigest()
+    prev = cache.get(cid)
+    if prev is None or prev[0] != fp:
+        src = VertexTokenSource(sa_json=secret)
+        cache[cid] = (fp, src)
+        return src
+    return prev[1]
+
+
 def _conn_model(request: Request, conn):
     """A model bound to THIS connection's endpoint + credential — the isolation boundary. Its
     credential is the connection's own secret: an API key (Bearer), or an SA JSON minted into a
@@ -201,8 +217,12 @@ def _conn_model(request: Request, conn):
         secret = await store.get(tenant=conn.tenant, name=_conn_secret_name(conn.id),
                                  fallback="") if store is not None else ""
         if conn.auth == "vertex":
-            from app.core.gcp_token import VertexTokenSource
-            return await VertexTokenSource(sa_json=secret).token()
+            # Reuse ONE VertexTokenSource per connection: it caches the OAuth token until just
+            # before expiry, but that cache lives on the instance — building a fresh one per call
+            # (the previous behaviour) threw it away every time, so every question signed a JWT and
+            # made a token-endpoint round trip on the hot path, and hammered Google's token quota.
+            # Rebuilt only when the connection's secret actually rotates (fingerprint mismatch).
+            return await _vertex_source(request, conn.id, secret).token()
         return secret
 
     # For the anthropic shape, a Vertex connection is Claude-on-Vertex (:rawPredict) — its body needs

@@ -25,6 +25,19 @@ class MemoryDataStore:
     async def delete(self, collection: str, key: str) -> bool:
         return self._data.get(collection, {}).pop(key, None) is not None
 
+    async def add_fields(self, collection: str, key: str, deltas: dict[str, Any],
+                         set_fields: dict[str, Any] | None = None) -> None:
+        """Atomic additive upsert. There is NO await between the read and the write, so on the single
+        event loop this whole method runs to completion before another coroutine can interleave —
+        exactly the property a get()+put() pair lacks. Missing counters start at 0."""
+        bucket = self._data.setdefault(collection, {})
+        row = dict(bucket.get(key) or {})
+        for field, delta in deltas.items():
+            row[field] = int(row.get(field, 0) or 0) + int(delta)
+        if set_fields:
+            row.update(set_fields)
+        bucket[key] = copy.deepcopy(row)
+
     @staticmethod
     def _matches(row: dict[str, Any], where: dict[str, Any]) -> bool:
         """Equality only. `{f: v}` or `{f: [v1, v2]}`. No operators => nothing to inject."""
