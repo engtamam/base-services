@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from app.config import Settings, get_settings
+from app.core.pii import subject_ref   # used at module-function scope (erase_subject); MUST be here
 from app.core import backup as _backup
 from app.backup_manifest import BACKUP
 from app.manifest import build_manifest

@@ -17,6 +17,7 @@ from app.backup_manifest import BACKUP
 from app.core import backup as _backup
 from app.config import Settings, get_settings
 from app.core.erasure import NotificationErasure
+from app.core.pii import subject_ref   # used at module-function scope; MUST be a module-level import
 from app.core.notifier import CHANNELS
 from app.manifest import build_manifest
 

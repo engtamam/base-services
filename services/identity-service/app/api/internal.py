@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, s
 from app.api.v1.tenancy import list_members_of
 from app.backup_manifest import BACKUP
 from app.config import Settings, get_settings
+from app.core.pii import subject_ref   # used at module-function scope (erase_subject); MUST be here
 from app.core import backup as _backup
 from app.core import facts
 from app.core.membership import MembershipStore

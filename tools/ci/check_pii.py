@@ -196,6 +196,36 @@ def raw_pii_in_audit(svc: pathlib.Path) -> list[str]:
     return problems
 
 
+def subject_ref_import_ok(svc: pathlib.Path) -> list[str]:
+    """A file that CALLS subject_ref(...) must import it at MODULE scope. A per-function local import
+    silently satisfies the name in THAT function while a call in another function NameErrors at runtime
+    (the audit-pseudonymisation codemod did exactly this — a DSAR erase 500'd on every call). Belt to
+    the point-#3 pseudonymisation: require the import to actually be in scope everywhere it is used."""
+    problems: list[str] = []
+    app = svc / "app"
+    if not app.is_dir():
+        return problems
+    for path in sorted(app.rglob("*.py")):
+        try:
+            src = path.read_text(encoding="utf-8")
+            tree = ast.parse(src)
+        except (OSError, UnicodeDecodeError, SyntaxError):
+            continue
+        calls_it = any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                       and n.func.id == "subject_ref" for n in ast.walk(tree))
+        if not calls_it:
+            continue
+        module_import = any(isinstance(n, ast.ImportFrom) and n.col_offset == 0
+                            and n.module == "app.core.pii"
+                            and any(a.name == "subject_ref" for a in n.names)
+                            for n in ast.walk(tree))
+        if not module_import:
+            problems.append(
+                f"{svc.name}: {path.relative_to(svc).as_posix()} calls subject_ref() but does not "
+                f"import it at MODULE scope — a per-function local import NameErrors elsewhere.")
+    return problems
+
+
 def main() -> int:
     problems: list[str] = []
     services = sorted(p for p in SERVICES.iterdir()
@@ -228,6 +258,7 @@ def main() -> int:
     # Point #3 runs for EVERY service, subject-holder or not: anyone can write to the audit chain.
     for svc in services:
         problems.extend(raw_pii_in_audit(svc))
+        problems.extend(subject_ref_import_ok(svc))
 
     for p in problems:
         print(f"  {p}")
