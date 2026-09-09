@@ -194,7 +194,8 @@ _MODEL: dict[str, Builder] = {
                                 shape=s.MODEL_SHAPE, timeout=s.MODEL_TIMEOUT_SECONDS,
                                 temperature=s.MODEL_TEMPERATURE,
                                 prompt_cache=s.MODEL_PROMPT_CACHE,
-                                gemini_cached_content=s.MODEL_GEMINI_CACHED_CONTENT),
+                                gemini_cached_content=s.MODEL_GEMINI_CACHED_CONTENT,
+                                anthropic_version=s.MODEL_ANTHROPIC_VERSION),
 }
 
 

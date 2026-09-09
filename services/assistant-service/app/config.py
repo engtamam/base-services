@@ -187,9 +187,17 @@ class Settings(BaseSettings):
     # CONFIGURED, never auto-detected. Guessing a response shape means an unexpected payload reads
     # as "no answer", which surfaces as an abstention and sends someone hunting a thin knowledge
     # base when the real fault is a schema mismatch.
-    #   chat      messages[] -> choices[].message.content   (OpenRouter, OpenAI-compatible, most)
-    #   generate  contents[] -> candidates[]                (Gemini shape)
-    MODEL_SHAPE: str = "chat"                 # chat | generate
+    #   chat      messages[] -> choices[].message.content   (OpenAI-compatible: OpenAI, Qwen,
+    #             DeepSeek, MiniMax, Zhipu/GLM/ZAI, OpenRouter — and Vertex Model Garden's
+    #             .../endpoints/openapi/chat/completions route for Llama etc.)
+    #   generate  contents[] -> candidates[]                (Gemini shape, incl. Gemini on Vertex)
+    #   anthropic messages[] + top-level system -> content[].text   (Claude — direct API, OR
+    #             Claude-on-Vertex :rawPredict when MODEL_ANTHROPIC_VERSION is set)
+    MODEL_SHAPE: str = "chat"                 # chat | generate | anthropic
+    # ANTHROPIC shape only. Set to Vertex's body version (e.g. "vertex-2023-10-16") to call
+    # Claude-on-Vertex publishers/anthropic/...:rawPredict (model named in MODEL_URL, Bearer GCP token).
+    # Leave empty for the direct Anthropic API (model in the body, x-api-key + anthropic-version header).
+    MODEL_ANTHROPIC_VERSION: str = ""
     MODEL_TEMPERATURE: float = 0.2
     MODEL_MAX_ANSWER_TOKENS: int = 700
     # Arrived with the provider adapter, which is when it started meaning something.

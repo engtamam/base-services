@@ -36,7 +36,12 @@ Transport = Callable[[str, dict, dict, float], Awaitable[tuple[int, Any]]]
 # owns the caching so this stays off the hot path.
 KeyResolver = Callable[[], Awaitable[str]]
 
-CHAT, GENERATE = "chat", "generate"
+CHAT, GENERATE, ANTHROPIC = "chat", "generate", "anthropic"
+# Anthropic requires max_tokens; when a caller passes 0 we send this so a request never 400s on it.
+_ANTHROPIC_DEFAULT_MAX_TOKENS = 1024
+# The Messages API version sent as a HEADER on the DIRECT Anthropic API (api.anthropic.com). On Vertex
+# rawPredict it goes in the BODY instead (MODEL_ANTHROPIC_VERSION, e.g. "vertex-2023-10-16").
+_ANTHROPIC_API_HEADER_VERSION = "2023-06-01"
 
 
 def _as_text(content: Any) -> str:
@@ -79,11 +84,13 @@ class HttpModel:
                  timeout: float = 20.0, temperature: float = 0.2,
                  transport: Transport | None = None,
                  key_resolver: KeyResolver | None = None,
-                 prompt_cache: str = "off", gemini_cached_content: str = "") -> None:
+                 prompt_cache: str = "off", gemini_cached_content: str = "",
+                 anthropic_version: str = "") -> None:
         if not url:
             raise ConfigError("MODEL_URL is required for the http model driver")
-        if shape not in (CHAT, GENERATE):
-            raise ConfigError(f"MODEL_SHAPE must be {CHAT!r} or {GENERATE!r}, got {shape!r}")
+        if shape not in (CHAT, GENERATE, ANTHROPIC):
+            raise ConfigError(
+                f"MODEL_SHAPE must be {CHAT!r}, {GENERATE!r} or {ANTHROPIC!r}, got {shape!r}")
         self._url = url
         self._key = api_key
         self._model = model
@@ -100,6 +107,38 @@ class HttpModel:
         # Gemini CachedContent resource name through on the generate shape, for a pre-created cache.
         self._prompt_cache = prompt_cache
         self._gemini_cached_content = gemini_cached_content
+        # ANTHROPIC shape only. Non-empty ⇒ Vertex Model Garden rawPredict (publishers/anthropic/...:
+        # rawPredict): the version rides in the BODY and the model is named in the URL (not the body),
+        # authenticated by the Bearer GCP token. Empty ⇒ the direct Anthropic API (model in the body,
+        # x-api-key + anthropic-version headers). Verified vs Meta/Google + Anthropic docs 2026-09-09.
+        self._anthropic_version = anthropic_version
+
+    def _auth_headers(self, key: str) -> dict[str, str]:
+        """The auth headers for THIS endpoint. Bearer everywhere (OpenAI/Gemini/Vertex — incl. a Vertex
+        GCP token for Claude-on-Vertex), EXCEPT the direct Anthropic API, which uses x-api-key +
+        anthropic-version instead."""
+        if not key:
+            return {}
+        if self._shape == ANTHROPIC and not self._anthropic_version:
+            return {"x-api-key": key, "anthropic-version": _ANTHROPIC_API_HEADER_VERSION}
+        return {"Authorization": f"Bearer {key}"}
+
+    def _anthropic_system(self, system: str) -> Any:
+        """System as a cache-marked block when ephemeral caching is on, else a plain string."""
+        if self._prompt_cache == "ephemeral":
+            return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+        return system
+
+    def _anthropic_envelope(self, body: dict[str, Any], max_tokens: int) -> dict[str, Any]:
+        """Fields common to every Anthropic request: max_tokens (required), and either the body-level
+        anthropic_version (Vertex rawPredict, model in the URL) or the model (direct API)."""
+        body["max_tokens"] = max_tokens or _ANTHROPIC_DEFAULT_MAX_TOKENS
+        body["temperature"] = self._temperature
+        if self._anthropic_version:
+            body["anthropic_version"] = self._anthropic_version   # Vertex: model is in the URL
+        elif self._model:
+            body["model"] = self._model                            # direct API: model in the body
+        return body
 
     def use_key_resolver(self, resolver: KeyResolver) -> None:
         """Take the credential from the operator store instead of the boot-time config value.
@@ -132,6 +171,10 @@ class HttpModel:
         return system, "Passages:\n\n" + "\n\n".join(lines) + f"\n\nQuestion: {question}"
 
     def _payload(self, system: str, user: str, max_tokens: int) -> dict:
+        if self._shape == ANTHROPIC:
+            return self._anthropic_envelope(
+                {"system": self._anthropic_system(system),
+                 "messages": [{"role": "user", "content": user}]}, max_tokens)
         if self._shape == CHAT:
             # The stable system block is the cache prefix. For Anthropic, mark it explicitly so its
             # 90% cached-read discount applies; for OpenAI/OpenRouter the marker is unnecessary (they
@@ -167,10 +210,18 @@ class HttpModel:
 
     @staticmethod
     def _extract(shape: str, body: dict) -> tuple[str, int, int]:
-        """(text, tokens_in, tokens_out) from either response shape."""
+        """(text, tokens_in, tokens_out) from any response shape."""
         usage = body.get("usage") or body.get("usageMetadata") or {}
-        tin = int(usage.get("prompt_tokens") or usage.get("promptTokenCount") or 0)
-        tout = int(usage.get("completion_tokens") or usage.get("candidatesTokenCount") or 0)
+        tin = int(usage.get("prompt_tokens") or usage.get("promptTokenCount")
+                  or usage.get("input_tokens") or 0)
+        tout = int(usage.get("completion_tokens") or usage.get("candidatesTokenCount")
+                   or usage.get("output_tokens") or 0)
+
+        if shape == ANTHROPIC:
+            for block in body.get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
+                    return str(block["text"]), tin, tout
+            return "", tin, tout
 
         if shape == CHAT:
             choices = body.get("choices") or []
@@ -208,6 +259,10 @@ class HttpModel:
     # the caller never speaks a vendor's wire shape — and is translated here per shape.
     def _tools_payload(self, tools: list[dict]) -> Any:
         """Vendor tool-declaration shape. `tools` items are {name, description, parameters}."""
+        if self._shape == ANTHROPIC:
+            return [{"name": t["name"], "description": t.get("description", ""),
+                     "input_schema": t.get("parameters") or {"type": "object", "properties": {}}}
+                    for t in tools]
         if self._shape == CHAT:
             return [{"type": "function",
                      "function": {"name": t["name"], "description": t.get("description", ""),
@@ -228,6 +283,31 @@ class HttpModel:
         {"role":"assistant","tool_calls":[{"id","name","arguments":dict}]},
         {"role":"tool","tool_call_id":str,"name":str,"content":str}.
         """
+        if self._shape == ANTHROPIC:
+            msgs: list[dict] = []
+            for m in messages:
+                role = m.get("role")
+                if role == "assistant" and m.get("tool_calls"):
+                    blocks: list[dict] = []
+                    if m.get("content"):
+                        blocks.append({"type": "text", "text": _as_text(m.get("content"))})
+                    for i, c in enumerate(m["tool_calls"]):
+                        blocks.append({"type": "tool_use", "id": c.get("id") or f"call_{i}",
+                                       "name": c["name"], "input": c.get("arguments") or {}})
+                    msgs.append({"role": "assistant", "content": blocks})
+                elif role == "tool":
+                    # a tool result is a USER turn carrying a tool_result block in the Messages API.
+                    msgs.append({"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": m.get("tool_call_id", ""),
+                         "content": _as_text(m.get("content"))}]})
+                else:
+                    msgs.append({"role": "assistant" if role == "assistant" else "user",
+                                 "content": _as_text(m.get("content"))})
+            body = self._anthropic_envelope(
+                {"system": self._anthropic_system(system), "messages": msgs}, max_tokens)
+            if tools:
+                body["tools"] = self._tools_payload(tools)
+            return body
         if self._shape == CHAT:
             if self._prompt_cache == "ephemeral":
                 sys_content: Any = [{"type": "text", "text": system,
@@ -292,8 +372,24 @@ class HttpModel:
         """Discriminated result: {"kind":"text","text",...} or
         {"kind":"tool_call","calls":[{id,name,arguments}], ...}, plus token counts."""
         usage = body.get("usage") or body.get("usageMetadata") or {}
-        tin = int(usage.get("prompt_tokens") or usage.get("promptTokenCount") or 0)
-        tout = int(usage.get("completion_tokens") or usage.get("candidatesTokenCount") or 0)
+        tin = int(usage.get("prompt_tokens") or usage.get("promptTokenCount")
+                  or usage.get("input_tokens") or 0)
+        tout = int(usage.get("completion_tokens") or usage.get("candidatesTokenCount")
+                   or usage.get("output_tokens") or 0)
+
+        if shape == ANTHROPIC:
+            calls, text = [], ""
+            for block in body.get("content") or []:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_use":
+                    calls.append({"id": block.get("id", ""), "name": block.get("name", ""),
+                                  "arguments": block.get("input") or {}})
+                elif block.get("type") == "text" and not text:
+                    text = str(block.get("text") or "")
+            if calls:
+                return {"kind": "tool_call", "calls": calls, "tokens_in": tin, "tokens_out": tout}
+            return {"kind": "text", "text": text, "tokens_in": tin, "tokens_out": tout}
 
         if shape == CHAT:
             choices = body.get("choices") or []
@@ -330,8 +426,7 @@ class HttpModel:
         tool_call it executes the tool and calls again with the result appended to `messages`."""
         headers = {"Content-Type": "application/json"}
         key = await self._credential()
-        if key:
-            headers["Authorization"] = f"Bearer {key}"
+        headers.update(self._auth_headers(key))
         payload = self._messages_payload(system, messages, tools or [], max_tokens)
         try:
             status, body = await self._transport(self._url, headers, payload, self._timeout)
@@ -351,8 +446,7 @@ class HttpModel:
         carries its own system prompt; the KB assistant path stays answer() with its grounding."""
         headers = {"Content-Type": "application/json"}
         key = await self._credential()
-        if key:
-            headers["Authorization"] = f"Bearer {key}"
+        headers.update(self._auth_headers(key))
         try:
             status, body = await self._transport(self._url, headers,
                                                  self._payload(system, user, max_tokens),
@@ -372,8 +466,7 @@ class HttpModel:
         system, user = self._prompt(question, passages, persona)
         headers = {"Content-Type": "application/json"}
         key = await self._credential()
-        if key:
-            headers["Authorization"] = f"Bearer {key}"
+        headers.update(self._auth_headers(key))
 
         try:
             status, body = await self._transport(self._url, headers,
