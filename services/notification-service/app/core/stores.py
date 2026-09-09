@@ -150,16 +150,26 @@ class DeliveryStore:
                                       sort=("receipt_ts", "asc"))
 
     # ── idempotency (at-least-once callers must not double-send) ───────────────
-    async def idempotent_get(self, key: str, *, now: float, ttl: int) -> dict | None:
-        row = await self._store.get(_IDEMPO, key)
+    @staticmethod
+    def _idempo_key(tenant: str, key: str) -> str:
+        """Scope the dedupe record to the TENANT. The idempotency_key is CALLER-SUPPLIED, so two
+        tenants presenting the same key (an order number, an invoice id) would otherwise collide on
+        one global slot: the second caller is told `duplicate` and handed the FIRST tenant's result
+        while its own send never goes out (a dropped OTP), or worse reads another tenant's payload.
+        The tenant is length-prefixed so a key containing the '|' delimiter cannot be crafted to
+        land in another tenant's slot (len('a')+'a|b|c' ≠ len('a|b')+'a|b|c')."""
+        return f"{len(tenant)}:{tenant}|{key}"
+
+    async def idempotent_get(self, key: str, *, tenant: str, now: float, ttl: int) -> dict | None:
+        row = await self._store.get(_IDEMPO, self._idempo_key(tenant, key))
         if not row:
             return None
         if ttl and now and (now - float(row.get("ts", 0) or 0)) > ttl:
             return None          # window elapsed → treat as a fresh send (bounded memory)
         return row.get("result")
 
-    async def remember_idempotent(self, key: str, result: dict, now: float) -> None:
-        await self._store.put(_IDEMPO, key, {"result": result, "ts": now})
+    async def remember_idempotent(self, key: str, result: dict, now: float, *, tenant: str) -> None:
+        await self._store.put(_IDEMPO, self._idempo_key(tenant, key), {"result": result, "ts": now})
 
 
 class InboundStore:

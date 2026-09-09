@@ -75,24 +75,34 @@ class AuditService:
             evt = await self.record(**fields)
             return {"id": evt.id, "seq": evt.seq, "hash": evt.hash}, False
 
-        prior = await self._repo.idempo_get(idempotency_key)
+        # NAMESPACE the client key by (service, tenant). idempotency_key is CALLER-supplied and stable
+        # only WITHIN one caller's action — two services (or two tenants) legitimately reuse the same
+        # value ("evt-1", an order id). Keyed globally, caller B's append would match caller A's
+        # reservation, get A's receipt with duplicate=true, and add NOTHING to the tamper-evident
+        # chain — a SILENTLY DROPPED audit event, the one failure an audit log must never have. Both
+        # components are length-prefixed so no delimiter can be crafted to cross a namespace.
+        service = str(fields.get("service", "") or "")
+        tenant = str(fields.get("tenant", "") or "")
+        ns_key = f"{len(service)}:{service}|{len(tenant)}:{tenant}|{idempotency_key}"
+
+        prior = await self._repo.idempo_get(ns_key)
         if prior and prior.get("state") == "done":
             return {"id": prior["id"], "seq": prior["seq"], "hash": prior["hash"]}, True
 
         ts = time.time()
-        if not await self._repo.idempo_reserve(idempotency_key, ts):
-            cur = await self._repo.idempo_get(idempotency_key) or {}
+        if not await self._repo.idempo_reserve(ns_key, ts):
+            cur = await self._repo.idempo_get(ns_key) or {}
             if cur.get("state") == "done":
                 return {"id": cur["id"], "seq": cur["seq"], "hash": cur["hash"]}, True
             # A live reserver is mid-append — unless its entry is stale (the process crashed before
             # committing), in which case we reclaim it and append. Otherwise tell the caller to retry.
             if ts - float(cur.get("ts", 0)) < stale_seconds:
                 raise IngestInProgress()
-            await self._repo.idempo_take_over(idempotency_key, ts)
+            await self._repo.idempo_take_over(ns_key, ts)
 
         evt = await self.record(**fields)
         receipt = {"id": evt.id, "seq": evt.seq, "hash": evt.hash}
-        await self._repo.idempo_commit(idempotency_key, receipt, ts)
+        await self._repo.idempo_commit(ns_key, receipt, ts)
         return receipt, False
 
     async def prune_idempotency(self, ttl_seconds: float, limit: int = 100_000) -> int:

@@ -99,14 +99,37 @@ def test_failed_send_is_not_deduped_so_retry_works():
     assert second["status"] == "sent" and email.calls == 2   # retry went through
 
 
+def test_same_key_different_tenants_do_not_collide():
+    """Two tenants presenting the SAME caller key both send — the dedupe slot is tenant-scoped.
+
+    Before scoping, tenant B's send with tenant A's key was told `duplicate` and handed A's result,
+    so B's message (an OTP, a receipt) never went out — a cross-tenant dropped send.
+    """
+    email = CountingEmail()
+    svc, _ = _svc(email)
+    a = run(svc.notify(recipient="a@x.com", channel="email", template_key="welcome",
+                       tenant="acme", idempotency_key="order-123"))
+    b = run(svc.notify(recipient="b@x.com", channel="email", template_key="welcome",
+                       tenant="globex", idempotency_key="order-123"))
+    assert a["status"] == "sent" and b["status"] == "sent"
+    assert "duplicate" not in b and email.calls == 2      # B was NOT suppressed by A's key
+    # ...and A's own retry is still deduped within its own tenant.
+    a2 = run(svc.notify(recipient="a@x.com", channel="email", template_key="welcome",
+                        tenant="acme", idempotency_key="order-123"))
+    assert a2.get("duplicate") is True and email.calls == 2
+
+
 def test_dedupe_window_expires():
     email = CountingEmail()
     svc, st = _svc(email, ttl=3600)
     run(svc.notify(recipient="u@x.com", channel="email", template_key="welcome", idempotency_key="evt_1"))
-    # force the remembered record's timestamp into the past
-    row = run(st.get("notify_idempo", "evt_1"))
+    # force the remembered record's timestamp into the past. The dedupe record is tenant-scoped
+    # (length-prefixed), so with no tenant the stored key is "0:|evt_1", not the raw "evt_1".
+    from app.core.stores import DeliveryStore
+    scoped = DeliveryStore._idempo_key("", "evt_1")
+    row = run(st.get("notify_idempo", scoped))
     row["ts"] = 0
-    run(st.put("notify_idempo", "evt_1", row))
+    run(st.put("notify_idempo", scoped, row))
     out = run(svc.notify(recipient="u@x.com", channel="email", template_key="welcome", idempotency_key="evt_1"))
     assert "duplicate" not in out and email.calls == 2       # window elapsed → sends again
 

@@ -91,12 +91,12 @@ class NotificationService:
         # SMS costs money; duplicate emails erode trust). Returns the original result.
         if idempotency_key:
             prior = await self._deliveries.idempotent_get(
-                idempotency_key, now=time.time(), ttl=self._dedupe_ttl)
+                idempotency_key, tenant=tenant or "", now=time.time(), ttl=self._dedupe_ttl)
             if prior is not None:
                 return {**prior, "duplicate": True}
 
         if channel not in CHANNELS:
-            return await self._finish(idempotency_key, await self._record(
+            return await self._finish(idempotency_key, tenant or "", await self._record(
                 recipient, channel, template_key, "failed", tenant=tenant or "",
                 error=f"unknown channel: {channel}"))
 
@@ -104,7 +104,7 @@ class NotificationService:
         if user_id:
             pref = await self._prefs.get(user_id)
             if not pref.allows(channel, event):
-                return await self._finish(idempotency_key, await self._record(
+                return await self._finish(idempotency_key, tenant or "", await self._record(
                     recipient, channel, template_key, "suppressed", tenant=tenant or ""))
 
         # 1b) CONSENT — a different question from the preference above, and the one this service
@@ -121,7 +121,7 @@ class NotificationService:
                 # A consent-gated purpose (e.g. marketing) with NO subject to check consent for must
                 # FAIL CLOSED, never silently send. Skipping the check here was the hole: a marketing
                 # send with no user_id went out with no lawful-basis check and no distinguishing trace.
-                return await self._finish(idempotency_key, await self._record(
+                return await self._finish(idempotency_key, tenant or "", await self._record(
                     recipient, channel, template_key, "consent_no_subject", tenant=tenant or "",
                     error=f"{purpose}: a consent-gated send requires a user_id to check consent for"))
             if not tenant:
@@ -130,7 +130,7 @@ class NotificationService:
                 # it as consent_denied is indistinguishable from a real refusal — name it distinctly
                 # so a caller that dropped the tenant sees the cause instead of a plausible-looking
                 # deny.
-                return await self._finish(idempotency_key, await self._record(
+                return await self._finish(idempotency_key, tenant or "", await self._record(
                     recipient, channel, template_key, "consent_no_tenant", tenant=tenant or "",
                     error=f"{purpose}: a consent-gated send requires a tenant"))
             verdict = await self._consent.check(
@@ -139,7 +139,7 @@ class NotificationService:
                 # A distinct status from "suppressed". A preference opt-out and a missing lawful
                 # basis look identical in a delivery log otherwise, and they are answered very
                 # differently when somebody asks why a person stopped receiving mail.
-                return await self._finish(idempotency_key, await self._record(
+                return await self._finish(idempotency_key, tenant or "", await self._record(
                     recipient, channel, template_key, "consent_denied", tenant=tenant or "",
                     error=f"{purpose}: {verdict.reason or verdict.status}"))
 
@@ -149,7 +149,7 @@ class NotificationService:
         # An unapproved WhatsApp template cannot be delivered by Meta, so we refuse rather than
         # pretend — a silent drop would hide a real block from the operator.
         if channel == "whatsapp":
-            return await self._finish(idempotency_key, await self._deliver_whatsapp(
+            return await self._finish(idempotency_key, tenant or "", await self._deliver_whatsapp(
                 recipient=recipient, tenant=tenant or "", template_key=template_key,
                 language=locale or self._default_locale, variables=variables or {},
                 biz_opaque=biz_opaque_callback_data or "", whatsapp_override=whatsapp_override,
@@ -173,11 +173,11 @@ class NotificationService:
 
         # 5) record — and if it failed, decide whether it is DEAD or merely DELAYED.
         if ok:
-            return await self._finish(idempotency_key, await self._record(
+            return await self._finish(idempotency_key, tenant or "", await self._record(
                 recipient, channel, template_key, SENT, provider=provider, attempts=1,
                 tenant=tenant or ""))
 
-        return await self._finish(idempotency_key, await self._on_failure(
+        return await self._finish(idempotency_key, tenant or "", await self._on_failure(
             recipient=recipient, channel=channel, template_key=template_key, provider=provider,
             error=error, attempt=1, tenant=tenant or "",
             payload={"recipient": recipient, "channel": channel, "template_key": template_key,
@@ -247,27 +247,27 @@ class NotificationService:
         """
         if idempotency_key:
             prior = await self._deliveries.idempotent_get(
-                idempotency_key, now=time.time(), ttl=self._dedupe_ttl)
+                idempotency_key, tenant=tenant or "", now=time.time(), ttl=self._dedupe_ttl)
             if prior is not None:
                 return {**prior, "duplicate": True}
         wa = whatsapp_override if whatsapp_override is not None else self._whatsapp
         tk = f"interactive:{kind}"           # the Delivery's template_key slot names the message type
         if wa is None:
-            return await self._finish(idempotency_key, await self._record(
+            return await self._finish(idempotency_key, tenant or "", await self._record(
                 recipient, "whatsapp", tk, "failed", tenant=tenant,
                 error="whatsapp channel not configured"))
         try:
             ok, provider, mid = await asyncio.to_thread(
                 wa.send_interactive, recipient, interactive, biz_opaque)
         except Exception as exc:  # noqa: BLE001
-            return await self._finish(idempotency_key, await self._record(
+            return await self._finish(idempotency_key, tenant or "", await self._record(
                 recipient, "whatsapp", tk, "failed", tenant=tenant,
                 error=f"{type(exc).__name__}: {exc}"))
         if ok:
-            return await self._finish(idempotency_key, await self._record(
+            return await self._finish(idempotency_key, tenant or "", await self._record(
                 recipient, "whatsapp", tk, SENT, tenant=tenant, provider=provider, attempts=1,
                 provider_message_id=mid))
-        return await self._finish(idempotency_key, await self._record(
+        return await self._finish(idempotency_key, tenant or "", await self._record(
             recipient, "whatsapp", tk, "failed", tenant=tenant, provider=provider,
             error="send failed"))
 
@@ -285,7 +285,7 @@ class NotificationService:
         """
         if idempotency_key:
             prior = await self._deliveries.idempotent_get(
-                idempotency_key, now=time.time(), ttl=self._dedupe_ttl)
+                idempotency_key, tenant=tenant or "", now=time.time(), ttl=self._dedupe_ttl)
             if prior is not None:
                 return {**prior, "duplicate": True}
         tk = template_name           # the Delivery's template_key names the Meta template, as sends do
@@ -295,35 +295,35 @@ class NotificationService:
         if purpose:
             if not user_id:
                 # Fail closed: a consent-gated carousel with no subject to check must not send.
-                return await self._finish(idempotency_key, await self._record(
+                return await self._finish(idempotency_key, tenant or "", await self._record(
                     recipient, "whatsapp", tk, "consent_no_subject", tenant=tenant or "",
                     error=f"{purpose}: a consent-gated send requires a user_id to check consent for"))
             if not tenant:
-                return await self._finish(idempotency_key, await self._record(
+                return await self._finish(idempotency_key, tenant or "", await self._record(
                     recipient, "whatsapp", tk, "consent_no_tenant", tenant=tenant or "",
                     error=f"{purpose}: a consent-gated send requires a tenant"))
             verdict = await self._consent.check(tenant=tenant, subject=user_id, purpose=purpose)
             if not verdict.permits(self._consent_unknown):
-                return await self._finish(idempotency_key, await self._record(
+                return await self._finish(idempotency_key, tenant or "", await self._record(
                     recipient, "whatsapp", tk, "consent_denied", tenant=tenant or "",
                     error=f"{purpose}: {verdict.reason or verdict.status}"))
         wa = whatsapp_override if whatsapp_override is not None else self._whatsapp
         if wa is None:
-            return await self._finish(idempotency_key, await self._record(
+            return await self._finish(idempotency_key, tenant or "", await self._record(
                 recipient, "whatsapp", tk, "failed", tenant=tenant,
                 error="whatsapp channel not configured"))
         try:
             ok, provider, mid = await asyncio.to_thread(
                 wa.send_template_components, recipient, template_name, language, components, biz_opaque)
         except Exception as exc:  # noqa: BLE001
-            return await self._finish(idempotency_key, await self._record(
+            return await self._finish(idempotency_key, tenant or "", await self._record(
                 recipient, "whatsapp", tk, "failed", tenant=tenant,
                 error=f"{type(exc).__name__}: {exc}"))
         if ok:
-            return await self._finish(idempotency_key, await self._record(
+            return await self._finish(idempotency_key, tenant or "", await self._record(
                 recipient, "whatsapp", tk, SENT, tenant=tenant, provider=provider, attempts=1,
                 provider_message_id=mid))
-        return await self._finish(idempotency_key, await self._record(
+        return await self._finish(idempotency_key, tenant or "", await self._record(
             recipient, "whatsapp", tk, "failed", tenant=tenant, provider=provider,
             error="send failed"))
 
@@ -384,10 +384,14 @@ class NotificationService:
                                   error=error, attempts=attempt, next_attempt_ts=next_ts,
                                   payload=payload if state == QUEUED else {}, tenant=tenant)
 
-    async def _finish(self, idempotency_key: str | None, result: dict) -> dict:
-        """Remember a terminal-success result so a retry with the same key won't re-send."""
+    async def _finish(self, idempotency_key: str | None, tenant: str, result: dict) -> dict:
+        """Remember a terminal-success result so a retry with the same key won't re-send.
+
+        Scoped by tenant: the dedupe record lives in a per-tenant slot (see _idempo_key), so one
+        tenant's key never returns another tenant's result nor suppresses another tenant's send."""
         if idempotency_key and result.get("status") in self._dedupe_states:
-            await self._deliveries.remember_idempotent(idempotency_key, result, time.time())
+            await self._deliveries.remember_idempotent(
+                idempotency_key, result, time.time(), tenant=tenant or "")
         return result
 
     async def _record(self, recipient: str, channel: str, template_key: str, status: str,

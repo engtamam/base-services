@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+gate_name="safety:idempo-scope"
+gate_desc="an idempotency/dedupe record is keyed by tenant, never by the caller's key alone"
+gate_protects="A dedupe store keyed on a CALLER-SUPPLIED idempotency_key (an order number, an invoice
+id) written to a GLOBAL slot collides across tenants: the second tenant presenting the
+same key is told 'duplicate' and handed the FIRST tenant's result — its send never goes
+out (a dropped OTP), its metered usage is never billed (real money to Meta, no cap), or
+it reads another tenant's payload. Compiles, passes single-tenant tests, is a cross-tenant
+breach. A key is safe when it is scoped: a helper call (_idempo_key(tenant,key)) or a
+len()-prefixed expression. Reviewed globals go in IDEMPO_EXEMPT."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_idempo_scope.py"
+gate_units=0
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_idempo_scope.py; }
+
+# A gate that cannot fail is decoration. Prove it catches a dedupe collection keyed by a bare key,
+# and does NOT fire on a tenant-scoped one.
+gate_selftest() {
+  "$PY" -c "
+import sys, pathlib, tempfile, textwrap
+sys.path.insert(0, 'tools/ci')
+import check_idempo_scope as c
+d = pathlib.Path(tempfile.mkdtemp()); (d/'app'/'core').mkdir(parents=True)
+bad = textwrap.dedent('''
+    _IDEMPO = \"notify_idempo\"
+    async def remember(self, key, result):
+        await self._store.put(_IDEMPO, key, {\"result\": result})
+''')
+good = textwrap.dedent('''
+    _IDEMPO = \"notify_idempo\"
+    def _idempo_key(tenant, key):
+        return f\"{len(tenant)}:{tenant}|{key}\"
+    async def remember(self, key, result, tenant):
+        await self._store.put(_IDEMPO, self._idempo_key(tenant, key), {\"result\": result})
+''')
+(d/'app'/'core'/'stores.py').write_text(bad)
+assert c.scan_service(d), 'gate missed a dedupe collection keyed by a bare caller key'
+(d/'app'/'core'/'stores.py').write_text(good)
+assert not c.scan_service(d), 'gate false-positived on a tenant-scoped dedupe key'
+sys.exit(0)
+" >/dev/null 2>&1
+}
