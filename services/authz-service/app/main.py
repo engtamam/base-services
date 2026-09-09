@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
 from app.api import health, internal, metrics
 from app.api.errors import register_error_handlers
@@ -119,7 +119,7 @@ def create_app() -> FastAPI:
     # ── Error handlers (safe, generic) ──────────────────────────────────────
     register_error_handlers(app)
 
-    from app.api.ratelimit import build_policy, register_ratelimit_refund
+    from app.api.ratelimit import build_policy, rate_limit, register_ratelimit_refund
     app.state.ratelimit_policy = build_policy(settings)
     register_ratelimit_refund(app)
 
@@ -130,8 +130,12 @@ def create_app() -> FastAPI:
     # only, never expose(). Grouped by route template (bounded cardinality); see _template.
     from prometheus_fastapi_instrumentator import Instrumentator
     Instrumentator().instrument(app)
-    app.include_router(internal.router)
-    app.include_router(v1_router)
+    # The limiter is attached at the router-include level so EVERY tenant/internal route is covered —
+    # a route added later cannot silently escape the budget. The policy classifies by path (its
+    # default class covers anything unlisted), so include-level is both comprehensive and the right
+    # granularity; health/metrics stay unlimited (liveness probes must never be throttled).
+    app.include_router(internal.router, dependencies=[Depends(rate_limit)])
+    app.include_router(v1_router, dependencies=[Depends(rate_limit)])
 
     return app
 

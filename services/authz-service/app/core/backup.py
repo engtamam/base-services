@@ -201,6 +201,14 @@ async def import_archive(datastore, archive: dict[str, Any], *,
             # The datastore key: the row's id by default, or rebuilt from a composite template. A
             # row that cannot produce a stable key is refused rather than restored under a guess.
             key = _row_key(template, name, row)
+            # For a COMPOSITE-keyed collection the row's own `id` field IS that composite (e.g. an
+            # assignment's "{tenant}::{subject}"). On a restore-as-clone the tenant was remapped
+            # above, so the rebuilt key now carries the destination tenant — but the stored `id`
+            # field would still spell the SOURCE tenant, leaving the row inconsistent with its own
+            # key (the store and erasure both look a row up by that id). Re-stamp `id` to the rebuilt
+            # key so the clone is self-consistent. No-op for the default "{id}" template (key == id).
+            if template != _DEFAULT_KEY and "id" in row and row["id"] != key:
+                row = {**row, "id": key}
             existing = await datastore.get(name, key)
             if existing is None:
                 await datastore.put(name, key, row)

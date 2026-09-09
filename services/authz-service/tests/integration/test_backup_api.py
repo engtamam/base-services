@@ -95,6 +95,31 @@ def test_export_then_import_restores_the_authorization_record(client):
     loop.close()
 
 
+def test_restore_as_clone_remaps_the_assignment_key_and_id(client):
+    """into_tenant clones a tenant's data under a NEW tenant WITHOUT colliding with the source.
+
+    The assignment's key is the composite "{tenant}::{subject}". A clone remaps the row's tenant,
+    so its key must be rebuilt as "beta::u1" (not the source "acme::u1") and its `id` field must
+    match — otherwise the clone would either be skipped or clobber the source tenant's own row.
+    """
+    archive = client.post("/internal/backup/export", headers=_h(), json={}).json()
+    imp = client.post("/internal/backup/import", headers=_h(),
+                      json={"archive": archive, "into_tenant": "beta"})
+    assert imp.status_code == 200, imp.text
+    assert imp.json()["remapped"] >= 1
+
+    st = client.app.state.container.datastore
+    loop = asyncio.new_event_loop()
+    try:
+        clone = loop.run_until_complete(st.get("assignments", "beta::u1"))
+        source = loop.run_until_complete(st.get("assignments", "acme::u1"))
+        # The clone landed under the destination key, self-consistent, and did NOT touch the source.
+        assert clone and clone["tenant"] == "beta" and clone["id"] == "beta::u1"
+        assert source and source["tenant"] == "acme"   # source row untouched
+    finally:
+        loop.close()
+
+
 def test_verify_confirms_the_archive_restores(client):
     archive = client.post("/internal/backup/export", headers=_h(), json={}).json()
     r = client.post("/internal/backup/verify", headers=_h(), json={"archive": archive})

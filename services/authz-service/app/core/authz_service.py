@@ -161,7 +161,7 @@ class AuthzService:
     async def _subject_caps(self, subject: str, tenant: str) -> set[str]:
         """The stored (assignment + role) caps — cacheable, independent of per-request caps."""
         gen = await self._gen(tenant)
-        key = f"authz:sc:{gen}:{tenant}:{subject}"
+        key = f"authz:sc:{gen}:{len(tenant)}:{tenant}:{subject}"  # len-prefixed: no (tenant,subject) collision
         cached = await self._cache_get(key)
         if cached is not None:
             return set(cached)
@@ -193,7 +193,7 @@ class AuthzService:
         caps: set[str] = set()
         gen = await self._gen(tenant)
         for ref in roles or []:
-            key = f"authz:rc:{gen}:{tenant}:{ref}"
+            key = f"authz:rc:{gen}:{len(tenant)}:{tenant}:{ref}"  # len-prefixed: no (tenant,ref) collision
             cached = await self._cache_get(key)
             if cached is not None:
                 caps |= set(cached)

@@ -124,11 +124,13 @@ async def create_role(request: Request, body: RoleIn, principal: Principal = Dep
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
-    await request.app.state.auditor.record(
-        "role.created", actor=principal.subject, tenant=body.tenant or principal.tenant,
-        resource="role",
-        ip=request.client.host if request.client else "")
+    # Record under the tenant the role is ACTUALLY written to (a tenant admin's body.tenant is ignored
+    # by _op_tenant) — recording body.tenant let a tenant admin inject role.created events into another
+    # tenant's immutable audit trail.
     tenant = _op_tenant(principal, body.tenant)
+    await request.app.state.auditor.record(
+        "role.created", actor=principal.subject, tenant=tenant, resource="role",
+        ip=request.client.host if request.client else "")
     r = await build_authz(request).create_role(tenant, body.name, body.capabilities, body.description)
     return r.to_dict()
 
