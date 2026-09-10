@@ -27,6 +27,10 @@ import re
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+# ONE source of truth for capability matching (wildcard + any-of). The gateway's request enforcement
+# imports the same module, so what the catalog SHOWS and what the gateway ALLOWS cannot drift.
+from app.core.capmatch import holds as _caps_allow
+
 _METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 _PATH_RE = re.compile(r"^/[A-Za-z0-9._~/{}-]*$")
 _ID_RE = re.compile(r"^[a-z][a-z0-9_.-]{1,63}$")
@@ -94,15 +98,6 @@ def _valid_action(a: Any) -> dict[str, Any] | None:
     return out
 
 
-def _caps_allow(held: frozenset[str], needed: str) -> bool:
-    """Does the caller hold `needed`? Honours wildcard grants like `platform.*` and `*`."""
-    if needed in held or "*" in held:
-        return True
-    # a held `a.b.*` grants `a.b.anything`
-    for h in held:
-        if h.endswith("*") and needed.startswith(h[:-1]):
-            return True
-    return False
 
 
 async def build_catalog(

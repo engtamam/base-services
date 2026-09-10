@@ -146,6 +146,30 @@ def test_auth_required_missing_cap_403():
     assert resp.status_code == 403
 
 
+def test_multi_capability_route_is_any_of_not_all_of():
+    """A route listing >1 capability means ANY-OF: holding one is enough (was AND via issubset)."""
+    r = Route(prefix="/echo", upstream="http://up", auth="required",
+              capabilities=("audit.view", "platform.audit"))
+    # Caller holds only the broader one — must be ALLOWED (the reported false-403).
+    gw = _gw(r, forwarder=FakeForwarder(),
+             verifier=FakeVerifier(claims={"sub": "u", "caps": ["platform.audit"]}))
+    assert run(gw.handle(make_request(headers={"Authorization": "Bearer x"}))).status_code == 200
+
+
+def test_wildcard_grant_satisfies_a_specific_capability():
+    r = Route(prefix="/echo", upstream="http://up", auth="required", capabilities=("platform.audit",))
+    gw = _gw(r, forwarder=FakeForwarder(),
+             verifier=FakeVerifier(claims={"sub": "u", "caps": ["platform.*"]}))
+    assert run(gw.handle(make_request(headers={"Authorization": "Bearer x"}))).status_code == 200
+
+
+def test_multi_capability_route_denies_a_caller_holding_none():
+    r = Route(prefix="/echo", upstream="http://up", auth="required",
+              capabilities=("audit.view", "platform.audit"))
+    gw = _gw(r, verifier=FakeVerifier(claims={"sub": "u", "caps": ["billing.read"]}))
+    assert run(gw.handle(make_request(headers={"Authorization": "Bearer x"}))).status_code == 403
+
+
 def test_auth_required_ok_forwards_with_identity():
     r = Route(prefix="/echo", upstream="http://up", auth="required", capabilities=("admin",))
     fwd = FakeForwarder()

@@ -16,6 +16,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from app.core.capmatch import holds_any
 from app.middleware.request_context import get_request_id
 from app.ports.errors import InvalidToken
 from app.ports.http_forwarder import UpstreamError
@@ -93,7 +94,11 @@ class Gateway:
             if identity is None:
                 return _err("UNAUTHORIZED", 401)
             held = set((identity.get("caps") or "").split(",")) if identity.get("caps") else set()
-            if route.capabilities and not set(route.capabilities).issubset(held):
+            # ANY-OF + wildcard, via the SAME matcher the admin/app catalogs use — so a caller the
+            # catalog shows an action to is not then 403'd here. The old `issubset` was AND (hold EVERY
+            # listed cap) with no wildcard, so a caller holding a broader/alternative cap (e.g.
+            # platform.audit, or a platform.* grant) was wrongly refused on a route listing more caps.
+            if not holds_any(held, route.capabilities):
                 return _err("FORBIDDEN", 403)
 
         # ── response cache (safe GETs) ───────────────────────────────────────
