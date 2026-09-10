@@ -19,9 +19,9 @@ gate_slow=0
 
 gate_main() { "$PY" tools/ci/check_async_blocking.py; }
 
-# A gate that cannot fail is decoration. Prove all THREE detections fire (direct urlopen, heavy open,
-# INDIRECT call to a plain def that blocks) and that the real offload shapes do NOT false-positive
-# (a nested def, a name passed to to_thread, and a lambda passed to to_thread).
+# A gate that cannot fail is decoration. Prove every detection fires AND the scope-aware indirect
+# resolution neither misses a cross-file import nor false-positives on a cross-file NAME COLLISION
+# (the whole point of dropping the blocklist), and that the real offload shapes stay clean.
 gate_selftest() {
   "$PY" -c "
 import sys, pathlib, tempfile, textwrap
@@ -29,50 +29,81 @@ sys.path.insert(0, 'tools/ci')
 import check_async_blocking as c
 d = pathlib.Path(tempfile.mkdtemp()); (d/'app').mkdir()
 
-def scan(names=None): return c.scan_service(d, names or c._blocking_plain_defs([d]))
+def W(rel, text): (d/'app'/rel).write_text(textwrap.dedent(text))
+def scan(): return c.scan_service(d, c._module_blocking_defs([d]))
+def clear():
+    for f in (d/'app').glob('*.py'): f.unlink()
 
 # 1. DIRECT
-(d/'app'/'m.py').write_text(textwrap.dedent('''
+clear(); W('m.py', '''
     import urllib.request
     async def check():
-        with urllib.request.urlopen(req) as r:
-            return r.read()
-'''))
-assert scan(), 'gate missed a direct blocking urlopen in an async def'
+        with urllib.request.urlopen(req) as r: return r.read()
+''')
+assert scan(), 'missed a direct blocking urlopen'
 
 # 2. HEAVY (bare open)
-(d/'app'/'m.py').write_text(textwrap.dedent('''
+clear(); W('m.py', '''
     async def check():
-        with open(\"/x\", \"rb\") as f:
-            return f.read()
-'''))
-assert scan(), 'gate missed a heavy open() in an async def'
+        with open(\"/x\", \"rb\") as f: return f.read()
+''')
+assert scan(), 'missed a heavy open()'
 
-# 3. INDIRECT: async def calls a plain def that itself blocks
-(d/'app'/'m.py').write_text(textwrap.dedent('''
+# 3. INDIRECT same-file bare def
+clear(); W('m.py', '''
     import urllib.request
-    def fetch_thing(u):
-        return urllib.request.urlopen(u).read()
-    async def check():
-        return fetch_thing(\"http://x\")
-'''))
-assert scan(), 'gate missed an INDIRECT call to a blocking plain def'
+    def fetch_thing(u): return urllib.request.urlopen(u).read()
+    async def check(): return fetch_thing(\"http://x\")
+''')
+assert scan(), 'missed an indirect bare-name call'
 
-# NEGATIVES — the real offload shapes must be clean.
-(d/'app'/'m.py').write_text(textwrap.dedent('''
+# 4. INDIRECT self-method (same file) — the onboarding/ticket class
+clear(); W('m.py', '''
+    import urllib.request
+    class C:
+        def _post(self, u): return urllib.request.urlopen(u).read()
+        async def go(self): return self._post(\"http://x\")
+''')
+assert scan(), 'missed an indirect self._post() call'
+
+# 5. INDIRECT cross-file IMPORT (post_json shape) — must still be caught
+clear()
+W('http.py', '''
+    import urllib.request
+    def post_json(u): return urllib.request.urlopen(u).read()
+''')
+W('caller.py', '''
+    from app.http import post_json
+    async def credit(): return post_json(\"http://x\")
+''')
+assert scan(), 'missed an indirect cross-file imported blocking helper'
+
+# 6. CROSS-FILE COLLISION must NOT flag (the blocklist-free win): caller._post is its OWN safe method,
+#    an unrelated file has a blocking _post — no import, no shared scope.
+clear()
+W('blocking.py', '''
+    import urllib.request
+    class B:
+        def _post(self, u): return urllib.request.urlopen(u).read()
+''')
+W('safe.py', '''
+    class S:
+        def _post(self, u): return 42
+        async def go(self): return self._post(\"x\")
+''')
+assert not scan(), 'false-positived on a cross-file name collision (_post)'
+
+# 7. NEGATIVES — real offload shapes clean.
+clear(); W('m.py', '''
     import asyncio, urllib.request
-    def fetch_thing(u):
-        return urllib.request.urlopen(u).read()
-    async def a():                      # nested def -> to_thread
-        def _do():
-            return urllib.request.urlopen(req).read()
+    def fetch_thing(u): return urllib.request.urlopen(u).read()
+    async def a():
+        def _do(): return urllib.request.urlopen(req).read()
         return await asyncio.to_thread(_do)
-    async def b():                      # name passed to to_thread
-        return await asyncio.to_thread(fetch_thing, \"http://x\")
-    async def cc():                     # lambda passed to to_thread (the object_store get() shape)
-        return await asyncio.to_thread(lambda: open(\"/x\", \"rb\").read())
-'''))
-assert not scan(), 'gate false-positived on a to_thread offload (def/name/lambda)'
+    async def b(): return await asyncio.to_thread(fetch_thing, \"http://x\")
+    async def cc(): return await asyncio.to_thread(lambda: open(\"/x\", \"rb\").read())
+''')
+assert not scan(), 'false-positived on a to_thread offload (def/name/lambda)'
 sys.exit(0)
 " >/dev/null 2>&1
 }

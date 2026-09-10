@@ -7,6 +7,7 @@ carries the pseudonym, never a raw identity.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from app.core.internal_client import assertion_headers_from_env
 import logging
@@ -57,7 +58,7 @@ class HttpSuggestionProvider:
 
     async def triage(self, *, tenant: str, ticket_type: str, subject: str, body: str,
                      types: tuple[str, ...]) -> Triage | None:
-        data = self._post(self._triage_path, {
+        data = await asyncio.to_thread(self._post, self._triage_path, {  # blocking urlopen off the loop
             "tenant": tenant, "current_type": ticket_type, "subject": subject, "body": body,
             "candidate_types": list(types)})
         if not data:
@@ -69,7 +70,8 @@ class HttpSuggestionProvider:
             summary=str(data.get("summary", "")))
 
     async def draft(self, *, tenant: str, subject: str, thread: list[dict[str, Any]]) -> Draft | None:
-        data = self._post(self._draft_path, {"tenant": tenant, "subject": subject, "thread": thread})
+        data = await asyncio.to_thread(   # blocking urlopen off the loop
+            self._post, self._draft_path, {"tenant": tenant, "subject": subject, "thread": thread})
         if not data:
             return None
         return Draft(text=str(data.get("text", "")), confidence=float(data.get("confidence", 0.0) or 0.0))

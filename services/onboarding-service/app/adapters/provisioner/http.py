@@ -11,6 +11,7 @@ an exception.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import urllib.error
 import urllib.request
@@ -32,7 +33,8 @@ class HttpProvisioner:
     async def create(self, request: ProvisionRequest) -> ProvisionResult:
         body = {"tenant": request.tenant, "subject": request.subject,
                 "idempotency_key": request.key, **request.attributes}
-        status, payload, error = self._call(self._create_url, body)
+        # _call is a BLOCKING urlopen — off the loop, or a slow downstream freezes the whole worker.
+        status, payload, error = await asyncio.to_thread(self._call, self._create_url, body)
         if error:
             return ProvisionResult(status=FAILED, detail=error)
         if status == 409:
@@ -55,7 +57,8 @@ class HttpProvisioner:
         if not reference:
             return ProvisionResult(status=CREATED, detail="nothing was created")
         url = self._undo_url.replace("{id}", reference)
-        status, _, error = self._call(url, {"idempotency_key": request.key}, method="DELETE")
+        status, _, error = await asyncio.to_thread(
+            self._call, url, {"idempotency_key": request.key}, method="DELETE")
         if error:
             return ProvisionResult(status=FAILED, detail=error)
         if status == 404 or 200 <= status < 300:
