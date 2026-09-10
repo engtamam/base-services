@@ -3611,11 +3611,20 @@
         ]
       }
     },
-    "/internal/whatsapp/flow/booking-json": {
+    "/internal/whatsapp/flow/{name}-json": {
       "get": {
-        "description": "The companion Flow JSON for the configured booking definition \u2014 a CONVENIENCE artifact the\nplatform uploads to Meta ITS OWN WAY (we never call Meta). 404 when no definition is configured.\nThe screens/field names are generated from the same constants the engine reads, so they cannot\ndrift; validate on upload (Meta revises the Flow JSON schema per version).",
-        "operationId": "booking_flow_json_internal_whatsapp_flow_booking_json_get",
+        "description": "The companion Flow JSON for ANY registered slot-reservation Flow, keyed by its engine name\n(`booking`, `delivery`, `visit`, \u2026) \u2014 one route instead of one per Flow forever. A CONVENIENCE\nartifact the platform uploads to Meta ITS OWN WAY (we never call Meta). The screens/field names are\ngenerated from the same constants the engine reads, so they cannot drift; validate on upload (Meta\nrevises the Flow JSON schema per version).\n\n404 when no engine is registered under that name, when it is not a slot-reservation engine (only a\nBookingEngine produces this JSON \u2014 loyalty/reschedule/order_status do not), or when that engine has\nno definition configured.",
+        "operationId": "flow_json_for_internal_whatsapp_flow__name__json_get",
         "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
           {
             "in": "header",
             "name": "X-Internal-Token",
@@ -3655,7 +3664,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Booking Flow Json Internal Whatsapp Flow Booking Json Get",
+                  "title": "Response Flow Json For Internal Whatsapp Flow  Name  Json Get",
                   "type": "object"
                 }
               }
@@ -3673,7 +3682,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Booking Flow Json",
+        "summary": "Flow Json For",
         "tags": [
           "internal"
         ]

@@ -204,6 +204,16 @@ def create_app() -> FastAPI:
         name="delivery",
         definitions=ConfigDefinitionProvider(settings.WHATSAPP_DELIVERY_DEFINITION),
         availability=_delivery_backend, booking=_delivery_backend, sessions=_sessions))
+    # Visit registration — the SAME slot-reservation engine (name "visit") for a "happens now" record:
+    # free-text (phone) + multi-select (services) + confirm, no calendar. Its own definition + URL;
+    # null backend when unset. Companion Flow JSON at GET /internal/whatsapp/flow/visit-json.
+    _visit_backend = (HttpBookingBackend(settings.WHATSAPP_VISIT_PROVIDER_URL,
+                                         settings.WHATSAPP_VISIT_PROVIDER_TOKEN)
+                      if settings.WHATSAPP_VISIT_PROVIDER_URL else NullBookingBackend())
+    _registry.register(BookingEngine(
+        name="visit",
+        definitions=ConfigDefinitionProvider(settings.WHATSAPP_VISIT_DEFINITION),
+        availability=_visit_backend, booking=_visit_backend, sessions=_sessions))
     # Flow #3 — order/request status (read-only). Its own config URL; null backend when unset.
     from app.adapters.order_status.http import HttpOrderStatusBackend
     from app.adapters.order_status.null import NullOrderStatusBackend

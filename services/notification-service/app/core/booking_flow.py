@@ -238,6 +238,11 @@ class BookingEngine:
         self._booking = booking
         self._sessions = sessions
 
+    async def definition(self, tenant: str = "") -> "FlowDefinition | None":
+        """This engine's FlowDefinition (for the companion-Flow-JSON generator). tenant-agnostic for a
+        config-backed definition; a per-tenant provider may key on it. None when not configured."""
+        return await self._defs.get(tenant)
+
     @staticmethod
     def _is_selection(dim: str) -> bool:
         return dim not in (_DATE, _TIME, _CONFIRM)

@@ -462,6 +462,13 @@ class Settings(BaseSettings):
     WHATSAPP_DELIVERY_DEFINITION: str = ""
     WHATSAPP_DELIVERY_PROVIDER_URL: str = ""
     WHATSAPP_DELIVERY_PROVIDER_TOKEN: str = ""
+    # Visit-registration flow — the SAME slot-reservation engine (name "visit") for a "happens now"
+    # record: a free-text step (customer phone/plate) + a multi-select services step + confirm, no
+    # calendar (see v0.19.17). Its own definition + URL (op contract identify/options/reserve); empty ⇒
+    # null backend. Served at .../flow/{tenant}/visit; companion JSON at .../flow/visit-json.
+    WHATSAPP_VISIT_DEFINITION: str = ""
+    WHATSAPP_VISIT_PROVIDER_URL: str = ""
+    WHATSAPP_VISIT_PROVIDER_TOKEN: str = ""
     # Order/request status tracking flow (#3) — READ-ONLY; the platform's order system answers over
     # this config-only URL (op=status). Empty ⇒ null backend. Served at .../flow/{tenant}/order_status.
     WHATSAPP_ORDER_STATUS_PROVIDER_URL: str = ""
