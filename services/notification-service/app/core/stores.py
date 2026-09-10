@@ -359,16 +359,31 @@ class WhatsAppNumberIndex:
     def __init__(self, store: DataStore) -> None:
         self._store = store
 
-    async def bind(self, phone_number_id: str, tenant: str) -> None:
-        # Best-effort and idempotent: a re-registration of the same number rebinds to the same tenant.
+    # bind() outcomes. A caller AUDITS a CONFLICT rather than swallowing it (see the routes).
+    BOUND, UNCHANGED, CONFLICT, NOOP = "bound", "unchanged", "conflict", "noop"
+
+    async def bind(self, phone_number_id: str, tenant: str) -> str:
+        """Bind phone_number_id → tenant, FIRST-WINS. Returns the outcome.
+
+        Idempotent for the same tenant (re-registration). But if the number ALREADY routes to a
+        DIFFERENT tenant, this REFUSES to overwrite (returns CONFLICT) rather than silently stealing
+        the incumbent's inbound routing and delivery visibility — a duplicate/mistaken onboarding of
+        one number under a second tenant must not hijack it with no trace. A genuine number transfer
+        between tenants is a deliberate, audited reassignment, not a blind rebind, and is not this path.
+        """
         if not phone_number_id or not tenant:
-            return
+            return self.NOOP
+        existing = await self._store.get(_WA_NUMBER_INDEX, phone_number_id)
+        owner = (existing or {}).get("tenant")
+        if owner and owner != tenant:
+            return self.CONFLICT                          # incumbent kept; caller records the collision
         # id == the key (the phone_number_id), so the row satisfies the backup key==id invariant and
         # this routing map survives a restore rather than silently emptying (and breaking inbound
         # attribution) until every shop happens to re-register.
         await self._store.put(_WA_NUMBER_INDEX, phone_number_id,
                               {"id": phone_number_id, "phone_number_id": phone_number_id,
                                "tenant": tenant})
+        return self.UNCHANGED if owner == tenant else self.BOUND
 
     async def tenant_of(self, phone_number_id: str) -> str | None:
         if not phone_number_id:

@@ -357,10 +357,18 @@ async def internal_embedded_signup(request: Request, body: EmbeddedSignupInterna
         # must not turn onboarding into an error — the map is rebuilt on the next registration.
         try:
             from app.core.stores import WhatsAppNumberIndex
-            await WhatsAppNumberIndex(request.app.state.container.datastore).bind(
+            outcome = await WhatsAppNumberIndex(request.app.state.container.datastore).bind(
                 body.phone_number_id, body.tenant)
         except Exception:  # noqa: BLE001
-            pass
+            outcome = None
+        if outcome == WhatsAppNumberIndex.CONFLICT:
+            # The number already routes to ANOTHER tenant. We did not steal it (first-wins); record the
+            # collision loudly so an operator resolves it — a silent overwrite here was the reported gap.
+            await request.app.state.auditor.record(
+                "whatsapp.number_bind_conflict", actor="", tenant=body.tenant,
+                resource=f"phone:{body.phone_number_id}",
+                ip=request.client.host if request.client else "")
+            result["number_bind"] = "conflict"
     return result
 
 
@@ -969,9 +977,16 @@ async def register_whatsapp_number(request: Request, body: WaRegisterIn):
         # Bind number → tenant here too — registration is the other place a number becomes a tenant's.
         try:
             from app.core.stores import WhatsAppNumberIndex
-            await WhatsAppNumberIndex(request.app.state.container.datastore).bind(phone_id, body.tenant)
+            _bind_outcome = await WhatsAppNumberIndex(
+                request.app.state.container.datastore).bind(phone_id, body.tenant)
         except Exception:  # noqa: BLE001 — best-effort, the number is registered regardless
-            pass
+            _bind_outcome = None
+        if _bind_outcome == WhatsAppNumberIndex.CONFLICT:
+            # First-wins: the number already routes to another tenant; we did NOT overwrite it. Record
+            # the collision so it is never silent (the reported gap), then let registration report it.
+            await request.app.state.auditor.record(
+                "whatsapp.number_bind_conflict", actor="", tenant=body.tenant,
+                resource=f"phone:{phone_id}", ip=request.client.host if request.client else "")
     await request.app.state.auditor.record(
         "whatsapp.number_registered", actor="", tenant=body.tenant,
         resource=f"phone:{phone_id}", ip=request.client.host if request.client else "",

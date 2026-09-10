@@ -162,6 +162,17 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "token and a working channel. The row names the phone id and the outcome (registered, "
                "or a distinct reason) so a launch that silently never registered is provable after "
                "the fact. Not critical: refusing to register because the log blinked helps no one.",
+    },
+    {
+        "action": "whatsapp.number_bind_conflict",
+        "source": "internal",
+        "critical": False,
+        "resource": "phone",
+        "why": "a second tenant tried to bind a phone number that ALREADY routes to another tenant. "
+               "The routing map is first-wins (the incumbent is kept, never silently overwritten), so "
+               "this is the trace that a collision happened at all — without it a duplicate/mistaken "
+               "onboarding would be invisible. Names the phone id and the attempting tenant; the "
+               "incumbent is not disclosed here. Not critical: the incumbent is already protected.",
     }
 
 ]
