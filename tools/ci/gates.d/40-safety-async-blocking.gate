@@ -78,6 +78,19 @@ W('caller.py', '''
 ''')
 assert scan(), 'missed an indirect cross-file imported blocking helper'
 
+# 5b. INDIRECT QUALIFIED cross-file (from pkg import mod as alias; alias.func()) — the caller file
+#     never mentions urlopen, proving there is no text pre-filter blind spot either.
+clear()
+W('internal_http.py', '''
+    import urllib.request
+    def post_json(u): return urllib.request.urlopen(u).read()
+''')
+W('quota.py', '''
+    from app import internal_http as ih
+    async def check(): return ih.post_json(\"http://x\")
+''')
+assert scan(), 'missed a qualified cross-file alias.func() blocking call'
+
 # 6. CROSS-FILE COLLISION must NOT flag (the blocklist-free win): caller._post is its OWN safe method,
 #    an unrelated file has a blocking _post — no import, no shared scope.
 clear()

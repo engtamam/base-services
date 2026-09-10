@@ -127,26 +127,48 @@ def _module_blocking_defs(services: list[pathlib.Path]) -> dict[tuple[str, str],
 
 
 def _visible_blocking(svc: str, cur_mod: str, tree: ast.AST, src: str,
-                      mod_defs: dict[tuple[str, str], set[str]]) -> tuple[set[str], set[str]]:
-    """The blocking names actually resolvable in THIS file: (bare-callables, self-methods).
+                      mod_defs: dict[tuple[str, str], set[str]]
+                      ) -> tuple[set[str], set[str], dict[str, set[str]]]:
+    """The blocking names actually resolvable in THIS file, across every import form. No blocklist:
+    a name counts only when it truly resolves here, so a same-named def in an unrelated, un-imported
+    file cannot false-positive. Returns:
 
-    bare = same-file sync defs that block + names imported `from <mod> import name` where <mod> (this
-    service) has a same-named blocking def. self-methods = same-file methods that block. No blocklist:
-    a name counts only when it truly resolves here, so a same-named def in an unrelated file cannot."""
+      bare      bare-callable names — same-file sync defs that block, PLUS names brought in by
+                `from <module> import name` where that module (this service) has a blocking `name`.
+                Matches `name(...)`.
+      methods   same-file methods that block. Matches `self.name(...)`.
+      alias_mods  alias -> {blocking func names in the module that alias points to}, for
+                `import pkg.mod as alias` and `from pkg import mod as alias`. Matches `alias.func(...)`
+                — the cross-file idiom (`from app.core import internal_http as ih; ih.post_json()`)
+                that bare-name + self resolution alone would miss."""
     same_file = mod_defs.get((svc, cur_mod), set())
     bare = set(same_file)
     methods = set(same_file)
+    alias_mods: dict[str, set[str]] = {}
+
+    def _blocking_in(module: str) -> set[str]:
+        return mod_defs.get((svc, module), set())
+
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             base = node.module or ""
             if node.level:                     # relative import → resolve against this module
                 parts = cur_mod.split(".")[:-node.level]
                 base = ".".join(parts + ([node.module] if node.module else []))
-            src_names = mod_defs.get((svc, base), set())
+            src_names = _blocking_in(base)
             for alias in node.names:
-                if alias.name in src_names:
+                if alias.name in src_names:                       # `from mod import func`
                     bare.add(alias.asname or alias.name)
-    return bare, methods
+                submod = f"{base}.{alias.name}" if base else alias.name
+                blocking = _blocking_in(submod)                   # `from pkg import mod [as alias]`
+                if blocking:
+                    alias_mods[alias.asname or alias.name] = blocking
+        elif isinstance(node, ast.Import):
+            for alias in node.names:                              # `import pkg.mod [as alias]`
+                blocking = _blocking_in(alias.name)
+                if blocking:
+                    alias_mods[alias.asname or alias.name.split(".")[0]] = blocking
+    return bare, methods, alias_mods
 
 
 def scan_service(svc: pathlib.Path,
@@ -155,7 +177,7 @@ def scan_service(svc: pathlib.Path,
     problems: list[str] = []
     defs = mod_defs if mod_defs is not None else _module_blocking_defs([svc])
     for path, src, tree in _iter_py(svc):
-        bare, methods = _visible_blocking(svc.name, _dotted(svc, path), tree, src, defs)
+        bare, methods, alias_mods = _visible_blocking(svc.name, _dotted(svc, path), tree, src, defs)
         for fn in ast.walk(tree):
             if not isinstance(fn, ast.AsyncFunctionDef):
                 continue
@@ -176,12 +198,23 @@ def scan_service(svc: pathlib.Path,
                 elif _HEAVY_RE.search(seg):
                     problems.append(f"{loc} runs heavy sync {seg}(...) on the event loop — "
                                     f"move it to await asyncio.to_thread(...).")
-                elif ("." not in seg and seg in bare) or \
-                     (seg.startswith("self.") and seg.count(".") == 1 and seg[5:] in methods):
-                    # INDIRECT: a call that resolves, in this file, to a sync def that blocks.
-                    target = seg if "." not in seg else seg[5:]
-                    problems.append(f"{loc} calls {seg}(...), a sync function that blocks on the event "
-                                    f"loop — wrap it in await asyncio.to_thread({target}, ...).")
+                else:
+                    # INDIRECT: a call that resolves, IN THIS FILE, to a sync def that blocks —
+                    # a bare imported/same-file name, a same-file self.method, or a qualified
+                    # alias.func from an imported module. A qualified call on anything else is skipped.
+                    indirect = False
+                    if "." not in seg and seg in bare:
+                        indirect, target = True, seg
+                    elif seg.startswith("self.") and seg.count(".") == 1 and seg[5:] in methods:
+                        indirect, target = True, seg[5:]
+                    elif seg.count(".") == 1:
+                        alias, func = seg.split(".")
+                        if func in alias_mods.get(alias, set()):
+                            indirect, target = True, func
+                    if indirect:
+                        problems.append(
+                            f"{loc} calls {seg}(...), a sync function that blocks on the event loop — "
+                            f"wrap it in await asyncio.to_thread({target}, ...).")
     return problems
 
 
