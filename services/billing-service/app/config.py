@@ -484,8 +484,14 @@ class Settings(BaseSettings):
     # double-taxes. 'tax_invoice' = add VAT and issue a tax invoice at top-up (only for a fund that
     # is NOT taxed at spend). A platform picks per its wallet-fund tax model.
     WALLET_TOPUP_TAX_MODE: str = "receipt"                # receipt | tax_invoice
-    # A guardrail against a fat-finger top-up. 0 = no cap.
-    WALLET_TOPUP_MAX_MINOR: int = 0
+    # Bounds on a single wallet top-up amount (minor units), ENFORCED on every top-up route (token +
+    # hosted checkout). A raw API call — or a bug in any caller — must not be able to request a
+    # 1-halala or an arbitrarily huge top-up; the gateway/AML economics set a sane floor and ceiling.
+    # Each bound: 0 = that bound disabled. Defaults 1 SAR .. 50,000 SAR; a platform tunes per its
+    # gateway fees and risk posture. (Previously MAX existed but was surfaced in a view and never
+    # actually checked — an advertised-but-unread knob; now both are enforced.)
+    WALLET_TOPUP_MIN_MINOR: int = 100                    # 1 SAR
+    WALLET_TOPUP_MAX_MINOR: int = 5_000_000              # 50,000 SAR
     # ── renewal by wallet debit (for gateways with no recurring/token, e.g. TuwaiqPay) ──────
     # OFF by default: a platform turns this on when it wants a subscription to renew by DEBITING
     # the customer's prepaid wallet instead of charging a card. Reusable infrastructure — the

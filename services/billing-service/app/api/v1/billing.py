@@ -194,6 +194,7 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
                 # all platform-owned config — never hardcoded here.
                 "wallet_topup_fund": s.WALLET_TOPUP_FUND,
                 "wallet_topup_tax_mode": s.WALLET_TOPUP_TAX_MODE,
+                "wallet_topup_min_minor": s.WALLET_TOPUP_MIN_MINOR,
                 "wallet_topup_max_minor": s.WALLET_TOPUP_MAX_MINOR,
                 # Entitlement resolution (Phase 42). Required by EntitlementResolver —
                 # every default lives in config.py, never inline at a call site.
@@ -509,6 +510,18 @@ async def create_checkout(request: Request, body: CheckoutIn,
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
 
 
+def _check_topup_amount(amount_minor: int) -> None:
+    """Enforce the configured min/max on a wallet top-up. Field(gt=0) only stops non-positive; the
+    real bounds are config (WALLET_TOPUP_MIN/MAX_MINOR) so a platform tunes them per gateway/AML.
+    Each bound with value 0 is disabled. A violation is a clean 400 — nothing is charged."""
+    s = get_settings()
+    lo, hi = int(s.WALLET_TOPUP_MIN_MINOR), int(s.WALLET_TOPUP_MAX_MINOR)
+    if lo > 0 and amount_minor < lo:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"AMOUNT_BELOW_MIN:{lo}")
+    if hi > 0 and amount_minor > hi:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"AMOUNT_ABOVE_MAX:{hi}")
+
+
 class WalletTopupIn(BaseModel):
     amount_minor: int = Field(gt=0)
     payment_token: str = Field(min_length=1, max_length=512)
@@ -525,6 +538,7 @@ async def wallet_topup(request: Request, body: WalletTopupIn,
     idempotent grant outbox a plan renewal uses (a redelivered webhook / a reconcile credits once; a
     refund claws back through the same seam). No VAT at top-up by default (payment on account)."""
     from app.core.billing_service import UpgradeChargeFailed, UpgradeChargeUnavailable
+    _check_topup_amount(body.amount_minor)
     tenant = _tenant(principal, body.tenant)
     try:
         result = await (await build_billing(request, tenant)).wallet_topup(
@@ -560,6 +574,7 @@ async def wallet_topup_checkout(request: Request, body: WalletTopupCheckoutIn,
     the top-up grant; completion (a webhook or POST /payments/{id}/reconcile) credits the wallet fund
     through the same _mark_paid seam as the token path. No VAT at top-up (payment on account)."""
     from app.core.billing_service import UpgradeChargeFailed, UpgradeChargeUnavailable
+    _check_topup_amount(body.amount_minor)
     tenant = _tenant(principal, body.tenant)
     try:
         result = await (await build_billing(request, tenant)).wallet_topup_checkout(

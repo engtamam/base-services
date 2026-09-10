@@ -297,6 +297,29 @@ def test_wallet_topup_rejects_a_non_positive_amount(client):
     assert r.status_code == 422        # pydantic gt=0
 
 
+def test_wallet_topup_rejects_below_the_configured_minimum(client):
+    # default min is 100 minor (1 SAR); 50 is a positive amount that Field(gt=0) would let through.
+    r = client.post("/api/v1/billing/wallet-topups",
+                    json={"amount_minor": 50, "payment_token": "t", "fund": "topup"},
+                    headers=_self())
+    assert r.status_code == 400        # below the configured floor (detail sanitized by the handler)
+
+
+def test_wallet_topup_rejects_above_the_configured_maximum(client):
+    # default max is 5,000,000 minor (50,000 SAR).
+    r = client.post("/api/v1/billing/wallet-topups",
+                    json={"amount_minor": 5_000_001, "payment_token": "t", "fund": "topup"},
+                    headers=_self())
+    assert r.status_code == 400
+
+
+def test_wallet_topup_checkout_enforces_the_same_bounds(client):
+    assert client.post("/api/v1/billing/wallet-topups/checkout",
+                       json={"amount_minor": 50}, headers=_self()).status_code == 400
+    assert client.post("/api/v1/billing/wallet-topups/checkout",
+                       json={"amount_minor": 5_000_001}, headers=_self()).status_code == 400
+
+
 def test_wallet_topup_is_scoped_to_the_callers_tenant(client):
     # a non-platform caller cannot top up another tenant's wallet: _tenant() ignores body.tenant
     r = client.post("/api/v1/billing/wallet-topups",
