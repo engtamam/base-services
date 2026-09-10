@@ -81,6 +81,10 @@ def build_manifest(
             {"path": "/internal/wallet/refund", "tier": "internal", "method": "POST"},
             {"path": "/internal/wallet/sweep-holds", "tier": "internal", "method": "POST"},
             {"path": "/internal/wallet/sweep-grants", "tier": "internal", "method": "POST"},
+            # Grant expiry-policy operations: reclaim a dormant (reclaimable) grant, and emit a
+            # pre-expiry notice for grants entering their notice window.
+            {"path": "/internal/wallet/reclaim", "tier": "internal", "method": "POST"},
+            {"path": "/internal/wallet/notice-grants", "tier": "internal", "method": "POST"},
             # Backup fan-out (backup-service orchestrates): export + verify + import the money record
             # (wallets, ledger, holds, grants). Declared so the fan-out discovers this holder — an
             # undeclared holder is one nobody backs up.

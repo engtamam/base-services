@@ -372,6 +372,26 @@ async def internal_embedded_signup(request: Request, body: EmbeddedSignupInterna
     return result
 
 
+@router.get("/whatsapp/platform-status", dependencies=[Depends(require_internal_token)])
+async def whatsapp_platform_status(request: Request) -> dict:
+    """Operator glance for a platform WhatsApp status panel — AGGREGATE COUNTS ONLY, never row dumps.
+
+    Every figure is bounded (capped at NOTIFY_PLATFORM_STATUS_CAP) and marked `capped` past the cap,
+    so a panel that polls this can never trigger an unbounded scan. Delivery outcomes come from a
+    single indexed read over the most-recent WhatsApp deliveries; the bound-number and marketing
+    opt-out figures are capped counts of their maps. No PII, no per-row data leaves this route."""
+    from app.core.stores import DeliveryStore, PreferenceStore, WhatsAppNumberIndex
+    s = get_settings()
+    ds = request.app.state.container.datastore
+    cap = int(s.NOTIFY_PLATFORM_STATUS_CAP)
+    return {
+        "deliveries": await DeliveryStore(ds).whatsapp_outcome_counts(cap),
+        "bound_numbers": await WhatsAppNumberIndex(ds).count(cap),
+        "marketing_opt_outs": await PreferenceStore(ds).marketing_opt_out_count(cap),
+        "cap": cap,
+    }
+
+
 @router.get("/notifications/receipts", dependencies=[Depends(require_internal_token)])
 async def delivery_receipts(request: Request, after: str = "", limit: int = 200) -> dict:
     """The catch-up read: delivery/read receipts forward from a cursor, oldest first, bounded.

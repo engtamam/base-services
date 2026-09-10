@@ -3973,6 +3973,74 @@
         ]
       }
     },
+    "/internal/whatsapp/platform-status": {
+      "get": {
+        "description": "Operator glance for a platform WhatsApp status panel \u2014 AGGREGATE COUNTS ONLY, never row dumps.\n\nEvery figure is bounded (capped at NOTIFY_PLATFORM_STATUS_CAP) and marked `capped` past the cap,\nso a panel that polls this can never trigger an unbounded scan. Delivery outcomes come from a\nsingle indexed read over the most-recent WhatsApp deliveries; the bound-number and marketing\nopt-out figures are capped counts of their maps. No PII, no per-row data leaves this route.",
+        "operationId": "whatsapp_platform_status_internal_whatsapp_platform_status_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Whatsapp Platform Status Internal Whatsapp Platform Status Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Whatsapp Platform Status",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/whatsapp/register": {
       "post": {
         "description": "Register a business phone number for Cloud API sending \u2014 the PIN-carrying step Embedded Signup\nstops before. Meta refuses to SEND until a number is registered (error 133010), so an unregistered\nnumber is \"connected\" and mute.\n\nPER NUMBER: the token is the WABA's (per tenant); the number is `phone_number_id` (a chain has\nmany). The PIN may be supplied, or read from the sealed store for a re-registration. Meta's verdict\nis returned as three distinct sentences, never one 400: WRONG_PIN (mistyped), RATE_LIMITED (the\n10-per-72h lock, error 133016 \u2014 WAIT, do not retry), UNREACHABLE. NOT_CONNECTED = no token stored\n(finish Embedded Signup); NO_PIN = no PIN supplied and none sealed.",

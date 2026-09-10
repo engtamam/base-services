@@ -195,6 +195,10 @@ class Settings(BaseSettings):
     # Idempotent: an upsert on every boot, so re-deploying re-asserts the shipped copy and an
     # operator's later edit through the API is overwritten only by a deliberate config change.
     NOTIFY_SEED_TEMPLATES: str = ""
+    # Upper bound for the operator platform-status glance (GET /internal/whatsapp/platform-status):
+    # every count is exact up to this many rows and reported `capped` past it, so the route stays a
+    # bounded aggregate — never an unbounded scan for a panel that may be polled.
+    NOTIFY_PLATFORM_STATUS_CAP: int = 5000
 
     @property
     def notify_seed_templates(self) -> list[dict[str, str]]:

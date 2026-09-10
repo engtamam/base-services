@@ -145,6 +145,17 @@ def build_manifest(
             {"path": "/internal/backup/export", "tier": "internal", "method": "POST"},
             {"path": "/internal/backup/import", "tier": "internal", "method": "POST"},
             {"path": "/internal/backup/verify", "tier": "internal", "method": "POST"},
+            # Non-secret Embedded-Signup client config (app_id/config_id/graph_version) — never a secret.
+            {"path": "/internal/whatsapp/config", "tier": "internal", "method": "GET"},
+            # WhatsApp Coexistence catch-up reads (owner-app echoes/history/contacts) + retention purge.
+            {"path": "/internal/whatsapp/coexistence/echoes", "tier": "internal", "method": "GET"},
+            {"path": "/internal/whatsapp/coexistence/history", "tier": "internal", "method": "GET"},
+            {"path": "/internal/whatsapp/coexistence/contacts", "tier": "internal", "method": "GET"},
+            {"path": "/internal/whatsapp/coexistence/purge", "tier": "internal", "method": "POST"},
+            # Ensure the WABA's Flow data-endpoint encryption keypair (generate/register, idempotent).
+            {"path": "/internal/whatsapp/flow-encryption/ensure", "tier": "internal", "method": "POST"},
+            # Operator platform-status glance — bounded AGGREGATE counts only (no rows, no PII).
+            {"path": "/internal/whatsapp/platform-status", "tier": "internal", "method": "GET"},
 
         ],
         "ports": ports or [],  # port -> driver, from the composition root

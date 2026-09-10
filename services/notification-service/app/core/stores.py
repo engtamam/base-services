@@ -75,6 +75,15 @@ class PreferenceStore:
         pref.opt_out_events = sorted(events)
         return await self.set(pref)
 
+    async def marketing_opt_out_count(self, cap: int) -> dict:
+        # sweeper: an operator aggregate glance — a bounded (cap) count of customers who opted out of
+        # marketing, for a platform status panel. opt_out_events is a LIST, which the equality find
+        # cannot match, so this reads a bounded page and tallies in Python; capped, never unbounded.
+        rows = await self._store.scan_all(_PREFS, max(1, cap) + 1)
+        capped = len(rows) > cap
+        n = sum(1 for r in rows[:cap] if "marketing" in (r.get("opt_out_events") or []))
+        return {"count": n, "capped": capped}
+
 
 class DeliveryStore:
     def __init__(self, store: DataStore) -> None:
@@ -88,6 +97,29 @@ class DeliveryStore:
         # sweeper: an operator's view of recent delivery attempts across every tenant. Bounded
         # by the caller's limit, and not reachable from any tenant-facing route.
         return await self._store.scan_all(_DELIVERIES, limit)
+
+    async def whatsapp_outcome_counts(self, cap: int) -> dict:
+        """Operator glance: capped outcome tally over the most-recent WhatsApp deliveries.
+
+        ONE bounded, INDEXED read — find on `channel` (a non-empty equality filter the store serves
+        from an index), newest first, limited to cap+1 — NOT a scan. The 'recent window' is the most
+        recent `cap` deliveries; each figure is exact up to `cap` and reported `capped` past it."""
+        rows, _ = await self._store.find(_DELIVERIES, {"channel": "whatsapp"},
+                                         limit=max(1, cap) + 1, sort=("ts", "desc"))
+        capped = len(rows) > cap
+        out = {"sent": 0, "failed": 0, "delivered": 0, "read": 0}
+        for r in rows[:cap]:
+            st = r.get("status")
+            if st == "sent":
+                out["sent"] += 1
+            elif st in ("failed", "dead_letter"):
+                out["failed"] += 1
+            rst = r.get("receipt_status")
+            if rst == "delivered":
+                out["delivered"] += 1
+            elif rst == "read":
+                out["read"] += 1
+        return {**out, "sampled": min(len(rows), cap), "capped": capped}
 
     async def by_tenant(self, tenant: str, limit: int = 100, *, channel: str = "") -> list[dict]:
         """Recent deliveries for ONE tenant, newest first, optionally one channel. Both filters are
@@ -390,6 +422,13 @@ class WhatsAppNumberIndex:
             return None
         row = await self._store.get(_WA_NUMBER_INDEX, phone_number_id)
         return row.get("tenant") if row else None
+
+    async def count(self, cap: int) -> dict:
+        # sweeper: an operator aggregate glance — a bounded (cap) count of the routing map for a
+        # platform status panel, not a per-tenant hot path. Capped so a large map cannot make it
+        # unbounded; reports `capped` when there are more than `cap` bound numbers.
+        rows = await self._store.scan_all(_WA_NUMBER_INDEX, max(1, cap) + 1)
+        return {"count": min(len(rows), cap), "capped": len(rows) > cap}
 
 
 class InAppStore:
