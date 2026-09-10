@@ -10,7 +10,7 @@ import pytest
 
 from app.adapters.datastore.memory import MemoryDataStore
 from app.core.booking_flow import (BookingEngine, BookingError, FlowDefinition, SessionStore,
-                                   CALENDAR, CONFIRM, SELECT, SUCCESS, TIME)
+                                   CALENDAR, CONFIRM, SELECT, SELECT_MULTI, SUCCESS, TIME)
 
 
 def run(c):
@@ -88,6 +88,63 @@ def _init(e, tenant="t1"):
 def _submit(e, screen, data, tenant="t1"):
     return run(e.handle({"action": "data_exchange", "screen": screen, "flow_token": TOK,
                          "data": data}, tenant=tenant))
+
+
+def _multi_defn():
+    # A service step that accepts MANY services, then date/time/confirm.
+    return FlowDefinition(steps=(
+        {"dimension": "service", "multi": True},
+        {"dimension": "date"}, {"dimension": "time"}, {"dimension": "confirm"}))
+
+
+# ── multi-select (CheckboxGroup) ─────────────────────────────────────────────
+def test_multi_select_step_renders_the_multi_screen_and_keeps_a_list():
+    bk = _Booking()
+    e = _engine(bk, defn=_multi_defn())
+    r = _init(e)
+    assert r["screen"] == SELECT_MULTI and r["data"]["dimension"] == "service"
+    assert r["data"]["multi"] is True
+    # the customer picks TWO services
+    r = _submit(e, SELECT_MULTI, {"selection": ["cut", "color"]})
+    assert r["screen"] == CALENDAR
+    r = _submit(e, CALENDAR, {"date": "2026-09-09"})
+    r = _submit(e, TIME, {"time": "2026-09-09T10:00"})
+    assert r["screen"] == CONFIRM and r["data"]["summary"]["service"] == ["cut", "color"]
+    r = _submit(e, CONFIRM, {})
+    assert r["screen"] == SUCCESS
+    assert bk.calls[0]["selection"]["service"] == ["cut", "color"]   # provider gets the LIST
+
+
+def test_multi_select_normalises_a_lone_pick_to_a_list():
+    bk = _Booking()
+    e = _engine(bk, defn=_multi_defn())
+    _init(e)
+    r = _submit(e, SELECT_MULTI, {"selection": "cut"})     # a single pick may arrive bare
+    assert r["screen"] == CALENDAR
+    _submit(e, CALENDAR, {"date": "2026-09-09"})
+    r = _submit(e, TIME, {"time": "2026-09-09T10:00"})
+    assert r["data"]["summary"]["service"] == ["cut"]
+
+
+def test_multi_select_rejects_an_empty_selection():
+    e = _engine(defn=_multi_defn())
+    _init(e)
+    for empty in ([], "", None):
+        r = _submit(e, SELECT_MULTI, {"selection": empty})
+        assert r["screen"] == SELECT_MULTI and r["data"].get("error_message")
+
+
+def test_single_select_is_unchanged_by_the_multi_capability():
+    e = _engine()                                          # the default single-choice definition
+    r = _init(e)
+    assert r["screen"] == SELECT and r["data"]["multi"] is False
+    r = _submit(e, SELECT, {"selection": "cut"})
+    assert r["screen"] == SELECT and r["data"]["dimension"] == "staff"
+
+
+def test_multi_flag_on_date_step_is_refused():
+    with pytest.raises(BookingError):
+        FlowDefinition(steps=({"dimension": "date", "multi": True}, {"dimension": "confirm"}))
 
 
 # ── the full happy path ──────────────────────────────────────────────────────

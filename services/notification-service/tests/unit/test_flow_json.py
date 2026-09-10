@@ -1,12 +1,27 @@
 """The Flow JSON generator matches the booking engine's screen contract (they can't drift)."""
 from __future__ import annotations
 
-from app.core.booking_flow import CALENDAR, CONFIRM, SELECT, SELECTION_FIELD, SUCCESS, TIME, FlowDefinition
+from app.core.booking_flow import (CALENDAR, CONFIRM, SELECT, SELECT_MULTI, SELECTION_FIELD, SUCCESS,
+                                   TIME, FlowDefinition)
 from app.core.flow_json import build_booking_flow_json
 
 
 def _screen(js, sid):
     return next((s for s in js["screens"] if s["id"] == sid), None)
+
+
+def test_multi_step_generates_a_checkboxgroup_screen():
+    js = build_booking_flow_json(FlowDefinition(steps=(
+        {"dimension": "service", "multi": True}, {"dimension": "date"}, {"dimension": "confirm"})))
+    scr = _screen(js, SELECT_MULTI)
+    assert scr is not None, "a multi step must generate the SELECT_MULTI screen"
+    cbg = next(c for c in scr["layout"]["children"] if c["type"] == "CheckboxGroup")
+    assert cbg["name"] == SELECTION_FIELD and cbg["data-source"] == "${data.options}"
+    assert cbg.get("min-selected-items") == 1
+    # a definition with NO multi step never emits the extra screen
+    js2 = build_booking_flow_json(FlowDefinition(steps=(
+        {"dimension": "service"}, {"dimension": "date"}, {"dimension": "confirm"})))
+    assert _screen(js2, SELECT_MULTI) is None and _screen(js2, SELECT) is not None
 
 
 def _full_defn():

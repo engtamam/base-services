@@ -16,8 +16,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.core.booking_flow import (CALENDAR, CONFIRM, SELECT, SELECTION_FIELD, SUCCESS, TIME,
-                                   FlowDefinition)
+from app.core.booking_flow import (CALENDAR, CONFIRM, SELECT, SELECT_MULTI, SELECTION_FIELD, SUCCESS,
+                                   TIME, FlowDefinition)
 
 _VERSION = "7.3"        # Flow JSON schema; must be >=6.1 for CalendarPicker (see module docstring)
 _DATA_API_VERSION = "3.0"
@@ -40,6 +40,24 @@ def _select_screen(defn: FlowDefinition) -> dict[str, Any]:
             {"type": "TextHeading", "text": "${data.title}"},
             {"type": "RadioButtonsGroup", "name": SELECTION_FIELD, "label": "${data.title}",
              "required": True, "data-source": "${data.options}"},
+            _footer(defn.label("continue", "Continue"),
+                    {SELECTION_FIELD: "${form." + SELECTION_FIELD + "}"})]}}
+
+
+def _select_multi_screen(defn: FlowDefinition) -> dict[str, Any]:
+    # The multi-choice twin of SELECT: a CheckboxGroup submitting a LIST under the same field name.
+    # Rendered for a step with "multi": true; the endpoint fills title + options each time, exactly
+    # as for SELECT. `min-selected-items` 1 mirrors the engine's "at least one" requirement.
+    return {
+        "id": SELECT_MULTI, "title": defn.label("select_title", "Choose"),
+        "data": {"title": {"type": "string", "__example__": "Choose services"},
+                 "options": {"type": "array",
+                             "__example__": [{"id": "cut", "title": "Haircut"}]},
+                 "error_message": {"type": "string", "__example__": "", "optional": True}},
+        "layout": {"type": "SingleColumnLayout", "children": [
+            {"type": "TextHeading", "text": "${data.title}"},
+            {"type": "CheckboxGroup", "name": SELECTION_FIELD, "label": "${data.title}",
+             "required": True, "min-selected-items": 1, "data-source": "${data.options}"},
             _footer(defn.label("continue", "Continue"),
                     {SELECTION_FIELD: "${form." + SELECTION_FIELD + "}"})]}}
 
@@ -108,14 +126,21 @@ def build_booking_flow_json(defn: FlowDefinition) -> dict[str, Any]:
     """The companion Flow JSON for a booking definition. Includes the SELECT screen only if the
     definition has selection steps, and the TIME screen only in single mode."""
     dims = [s.get("dimension") for s in defn.steps]
-    has_selection = any(d not in ("date", "time", "confirm") for d in dims)
+    sel_steps = [s for s in defn.steps if s.get("dimension") not in ("date", "time", "confirm")]
+    has_single = any(not s.get("multi") for s in sel_steps)   # a SELECT (RadioButtonsGroup) screen
+    has_multi = any(s.get("multi") for s in sel_steps)         # a SELECT_MULTI (CheckboxGroup) screen
     has_time = "time" in dims
 
     screens: list[dict[str, Any]] = []
     routing: dict[str, list[str]] = {}
-    if has_selection:
-        screens.append(_select_screen(defn))
-        routing[SELECT] = [SELECT, CALENDAR]                 # re-render for the next selection, or move on
+    sel_ids: list[str] = []
+    if has_single:
+        screens.append(_select_screen(defn)); sel_ids.append(SELECT)
+    if has_multi:
+        screens.append(_select_multi_screen(defn)); sel_ids.append(SELECT_MULTI)
+    for sid in sel_ids:
+        # any selection screen may re-render as the NEXT selection (single or multi), or move on to date
+        routing[sid] = [*sel_ids, CALENDAR]
     screens.append(_calendar_screen(defn))
     routing[CALENDAR] = [TIME] if has_time else [CONFIRM]
     if has_time:

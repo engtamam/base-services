@@ -23,6 +23,11 @@ from typing import Any, Protocol, runtime_checkable
 
 INIT, BACK, DATA_EXCHANGE = "INIT", "BACK", "data_exchange"
 SELECT, CALENDAR, TIME, CONFIRM, SUCCESS = "SELECT", "CALENDAR", "TIME", "CONFIRM", "SUCCESS"
+# A SECOND selection screen, identical to SELECT but backed by a CheckboxGroup (many choices) instead
+# of a RadioButtonsGroup (one). A single reused screen cannot be both, so a step that opts into
+# `"multi": true` renders here; single-choice steps stay on SELECT. Same submitted field name — the
+# value simply comes back as a LIST. Both share options()/skip/BACK; only the widget differs.
+SELECT_MULTI = "SELECT_MULTI"
 
 # The terminal spine — every dimension NOT in here is a "selection" dimension resolved via options().
 _DATE, _TIME, _CONFIRM = "date", "time", "confirm"
@@ -118,7 +123,10 @@ class BookingProvider(Protocol):
 class FlowDefinition:
     """A tenant's booking flow: the ordered steps and the calendar knobs. Everything customer-visible
     is in `strings` (i18n). Validated at construction so a broken definition never reaches runtime."""
-    steps: tuple[dict[str, Any], ...]          # e.g. ({"dimension":"service"},{"dimension":"date"},...)
+    # e.g. ({"dimension":"service","multi":True},{"dimension":"date"},...). A selection step may set
+    # "multi": True to let the customer pick MANY options (CheckboxGroup) — its chosen value is then a
+    # LIST of ids instead of one id. Only valid on a selection dimension (not date/time/confirm).
+    steps: tuple[dict[str, Any], ...]
     horizon_days: int = 30
     mode: str = "single"                        # single | range
     min_days: int = 1
@@ -138,6 +146,9 @@ class FlowDefinition:
             raise BookingError("'confirm' must be the last step")
         if _TIME in dims and self.mode == "range":
             raise BookingError("range mode has no single time step")
+        for s in self.steps:
+            if s.get("multi") and s.get("dimension") in (_DATE, _TIME, _CONFIRM):
+                raise BookingError("'multi' is only valid on a selection step, not date/time/confirm")
         if dims.index(_DATE) < len([d for d in dims if d not in (_DATE, _TIME, _CONFIRM)]):
             # date must come after every selection dimension (so calendar sees the full selection)
             for d in dims[dims.index(_DATE):]:
@@ -272,7 +283,16 @@ class BookingEngine:
         # a selection / date / time submission. The submitted field name is CANONICAL per screen type
         # (a reused SELECT screen has one fixed component name, not the dimension) — see _submitted().
         value = data.get(_submitted_field(dim))
-        if value in (None, ""):
+        if self._is_selection(dim) and bool(defn.steps[step_i].get("multi")):
+            # CheckboxGroup submits a LIST. Normalise (a lone pick may arrive bare), drop blanks, and
+            # require at least one — an empty multi-select is the "required" error, same as single.
+            items = value if isinstance(value, (list, tuple)) else ([] if value in (None, "") else [value])
+            value = [v for v in items if v not in (None, "")]
+            if not value:
+                return await self._render(defn, tenant, token, state,
+                                          error=defn.label("required", "Please make a selection."))
+            value = list(value)
+        elif value in (None, ""):
             return await self._render(defn, tenant, token, state,
                                       error=defn.label("required", "Please make a selection."))
         state["chosen"][dim] = value
@@ -297,9 +317,11 @@ class BookingEngine:
             options = await self._avail.options(tenant=tenant, dimension=dim, chosen=chosen,
                                                 customer=customer)
             if not self._is_skip(options):
-                return {"screen": SELECT, "data": {
+                multi = bool(defn.steps[step_i].get("multi"))
+                return {"screen": SELECT_MULTI if multi else SELECT, "data": {
                     "dimension": dim, "title": defn.label(f"pick_{dim}", f"Choose {dim}"),
-                    "options": options, **({"error_message": error} if error else {})}}
+                    "options": options, "multi": multi,
+                    **({"error_message": error} if error else {})}}
             state["step"] = step_i + 1
             await self._sessions.save(tenant, token, state)
 
