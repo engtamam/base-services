@@ -373,6 +373,44 @@ async def add_member_internal(request: Request, body: InternalMemberIn) -> dict:
     return out
 
 
+import re as _re
+
+# E.164: a leading + and 8–15 digits, first digit non-zero. The identity model stores no `phone` field
+# — a login identifier is a phone only when the human registered by phone (the LoginIdentifier port
+# normalizes it to this shape). The flag lets the caller (a WhatsApp notifier) skip an identifier that
+# is an email, rather than us guessing or silently sending to a non-number.
+_E164 = _re.compile(r"^\+[1-9]\d{7,14}$")
+
+
+@router.get("/tenancy/owner-phone", dependencies=[Depends(require_internal_token)])
+async def owner_phone(request: Request, tenant: str = Query(min_length=1, max_length=128)) -> dict:
+    """The founding owner's login identifier for ONE tenant — the contact a peer sends a subscription
+    renewal (or similar) notification to.
+
+    PRIVACY: identity stores no dedicated phone; it returns the FOUNDING owner's login identifier (a
+    phone when they registered by phone, else an email) with `is_phone` telling the caller which. Only
+    the founding owner is exposed — never a second member, never a directory. Behind the internal token.
+
+    IDOR: `tenant` is the only key. A tenant with no active owner, or one that does not exist, is
+    reported as absent (404) — the response never distinguishes the two, so it cannot confirm a tenant's
+    existence to a caller that guessed an id."""
+    s = get_settings()
+    if not s.IDENTITY_MULTI_TENANT:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "MULTI_TENANT_OFF")
+    store = MembershipStore(request.app.state.container.datastore)
+    m = await store.founding_owner(tenant)
+    if m is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "OWNER_NOT_FOUND")
+    person = await store.person(m.person_id)
+    if person is None or person.status == "suspended":
+        # A gone or SUSPENDED person is not a reachable owner → same absent answer. A `pending` person
+        # (a seeded owner who has not claimed the login yet) IS reachable — that is who we notify.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "OWNER_NOT_FOUND")
+    identifier = person.identifier
+    return {"tenant": tenant, "person_id": m.person_id, "identifier": identifier,
+            "is_phone": bool(_E164.match(identifier))}
+
+
 @router.delete("/tenancy/membership/{ref}", dependencies=[Depends(require_internal_token)])
 async def revoke_membership(request: Request, ref: str) -> dict:
     """Compensation for a seeded owner: revoke ONE membership, idempotently.

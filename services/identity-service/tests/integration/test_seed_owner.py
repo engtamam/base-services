@@ -67,6 +67,48 @@ def test_internal_add_member_staffs_a_second_employee_with_an_invite(client):
     assert "+966500000009" in idents and "owner@shop" in idents
 
 
+# ── owner-phone: the founding owner's contact for a renewal notification ──────
+def _owner_phone(client, tenant):
+    return client.get(f"/internal/tenancy/owner-phone?tenant={tenant}", headers=_h())
+
+
+def test_owner_phone_returns_the_founding_owner_identifier_with_phone_flag(client):
+    _seed(client, tenant="shopp", identifier="+966500000001", caps=["members:write"])
+    r = _owner_phone(client, "shopp")
+    assert r.status_code == 200, r.text
+    b = r.json()
+    assert b["identifier"] == "+966500000001" and b["is_phone"] is True and b["person_id"]
+
+
+def test_owner_phone_flags_a_non_phone_identifier(client):
+    _seed(client, tenant="shope", identifier="owner@shop.sa", caps=["members:write"])
+    b = _owner_phone(client, "shope").json()
+    assert b["identifier"] == "owner@shop.sa" and b["is_phone"] is False
+
+
+def test_owner_phone_returns_the_earliest_owner_not_a_later_one(client):
+    # A tenant may gain a second owner; the founding one (seeded first) is the stable answer.
+    _seed(client, tenant="shopm", identifier="+966500000010", caps=["members:write"])
+    _add(client, tenant="shopm", identifier="+966500000011", roles=["owner"])
+    assert _owner_phone(client, "shopm").json()["identifier"] == "+966500000010"
+
+
+def test_owner_phone_ignores_a_non_owner_member(client):
+    # An operator is not the owner — never returned as the contact.
+    _seed(client, tenant="shopo", identifier="+966500000020", caps=["members:write"])
+    _add(client, tenant="shopo", identifier="+966500000021", roles=["operator"])
+    assert _owner_phone(client, "shopo").json()["identifier"] == "+966500000020"
+
+
+def test_owner_phone_404_for_unknown_tenant_does_not_confirm_existence(client):
+    # IDOR: absent tenant and tenant-without-owner give the SAME 404 — no existence oracle.
+    assert _owner_phone(client, "nope").status_code == 404
+
+
+def test_owner_phone_requires_the_internal_token(client):
+    assert client.get("/internal/tenancy/owner-phone?tenant=shopp").status_code == 401
+
+
 def test_internal_add_member_is_roles_only_no_caps_can_be_injected(client):
     # even if a caller puts caps in the body, the route has no caps field — capabilities come from
     # roles alone, so nothing crosses that a role does not derive.

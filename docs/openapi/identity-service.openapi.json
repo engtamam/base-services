@@ -3328,6 +3328,85 @@
         ]
       }
     },
+    "/internal/tenancy/owner-phone": {
+      "get": {
+        "description": "The founding owner's login identifier for ONE tenant \u2014 the contact a peer sends a subscription\nrenewal (or similar) notification to.\n\nPRIVACY: identity stores no dedicated phone; it returns the FOUNDING owner's login identifier (a\nphone when they registered by phone, else an email) with `is_phone` telling the caller which. Only\nthe founding owner is exposed \u2014 never a second member, never a directory. Behind the internal token.\n\nIDOR: `tenant` is the only key. A tenant with no active owner, or one that does not exist, is\nreported as absent (404) \u2014 the response never distinguishes the two, so it cannot confirm a tenant's\nexistence to a caller that guessed an id.",
+        "operationId": "owner_phone_internal_tenancy_owner_phone_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Owner Phone Internal Tenancy Owner Phone Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Owner Phone",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/tenancy/seed-owner": {
       "post": {
         "description": "Bootstrap a tenant's FIRST owner as a Person, over the internal token.\n\nThe chicken-and-egg breaker: a freshly provisioned tenant has nobody holding members:write, so\nno USER route can add the first admin. This service-to-service door does \u2014 guarded so it stays a\nbootstrap primitive, not a grant backdoor: the owner must hold the members-write cap, and\n`only_if_empty` refuses a DIFFERENT owner on an already-staffed tenant. Idempotent; reuses an\nexisting Person without touching their credential (T2).\n\nAudited WRITE-AHEAD and CRITICAL: an owner grant that cannot be recorded must not happen \u2014 an\nunattributable owner is exactly what an attacker wants. The seeded human is recorded as a\nPSEUDONYM, never the raw identifier, so the trail is provable (resolve it here) yet erasable.",

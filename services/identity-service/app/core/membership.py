@@ -207,6 +207,33 @@ class MembershipStore:
                 break
         return False
 
+    async def founding_owner(self, tenant: str, *, page: int = 200,
+                             max_pages: int = 50) -> Membership | None:
+        """The tenant's FOUNDING owner — the EARLIEST NON-SUSPENDED membership carrying the "owner" role.
+
+        Deterministic on purpose: a tenant may end up with several owners, but exactly one was seeded
+        first (seed-owner's only_if_empty first-account primitive), and a "notify the shop owner" caller
+        needs ONE stable answer, not a set. "owner" is the same role marker has_other_active_owner keys
+        on. Unlike that guard (which needs a CLAIMED owner, hence ACTIVE), a contact read wants a
+        REACHABLE owner: a freshly seeded owner is `pending` until they claim the account but still owns
+        the shop and still gets billed, so pending counts; only a SUSPENDED owner is excluded. The tenant
+        is pushed into the datastore and rows come back created_at-ascending, so the first qualifying
+        owner is the founding one; the walk is page-bounded (never a platform-wide scan, so safety:scans
+        holds). Returns None when the tenant has no non-suspended owner (or does not exist)."""
+        if not tenant:
+            raise ValueError("founding_owner requires a tenant")
+        after = None
+        for _ in range(max_pages):
+            rows, after = await self._store.find(_MEMBERSHIPS, {"tenant": tenant}, limit=page,
+                                                 after=after, sort=("created_at", "asc"))
+            for r in rows:
+                m = Membership.from_dict(r)
+                if "owner" in m.roles and m.status != SUSPENDED:
+                    return m
+            if not after:
+                break
+        return None
+
     async def members(self, tenant: str, *, limit: int,
                       after: str | None = None) -> tuple[list[Membership], str | None]:
         """Everyone who works HERE — one tenant, paginated.
