@@ -83,6 +83,10 @@ def build_manifest(
             {"path": "/api/v1/billing/offers", "tier": "public", "method": "GET"},
             {"path": "/api/v1/billing/coupons", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/checkouts", "tier": "user", "method": "POST"},
+            # A trackable hosted-checkout LINK for an unpaid invoice (send to the payer, e.g. WhatsApp).
+            {"path": "/api/v1/billing/invoices/{invoice_id}/pay-link", "tier": "user", "method": "POST"},
+            # PUBLIC redirector: the unguessable token IS the capability; 302s to the gateway page.
+            {"path": "/api/v1/billing/pay/{token}", "tier": "public", "method": "GET"},
             {"path": "/api/v1/billing/wallet-topups", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/wallet-topups/checkout", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/subscriptions", "tier": "user", "method": "POST"},

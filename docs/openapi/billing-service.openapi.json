@@ -412,6 +412,41 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "PayLinkIn": {
+        "properties": {
+          "return_url": {
+            "default": "",
+            "maxLength": 1024,
+            "title": "Return Url",
+            "type": "string"
+          },
+          "tenant": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant"
+          },
+          "ttl_seconds": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttl Seconds"
+          }
+        },
+        "title": "PayLinkIn",
+        "type": "object"
+      },
       "PaymentMethodIn": {
         "properties": {
           "payment_token": {
@@ -2014,6 +2049,61 @@
         ]
       }
     },
+    "/api/v1/billing/invoices/{invoice_id}/pay-link": {
+      "post": {
+        "description": "A trackable hosted-checkout LINK for an existing unpaid invoice \u2014 to send to the payer (e.g.\nover WhatsApp). Amount = the invoice total (server-authoritative). Completion flows through the\nsame webhook/reconcile -> _mark_paid seam, marking THIS invoice paid once. Returns `checkout_url`\n(fully dynamic \u2014 use inside the 24h window as a cta_url) and `pay_url` (a stable redirector link,\nwhen BILLING_PAY_LINK_BASE_URL is set, so it can ride inside a Meta template's URL button).",
+        "operationId": "create_invoice_pay_link_api_v1_billing_invoices__invoice_id__pay_link_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invoice_id",
+            "required": true,
+            "schema": {
+              "title": "Invoice Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PayLinkIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Invoice Pay Link Api V1 Billing Invoices  Invoice Id  Pay Link Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Invoice Pay Link",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
     "/api/v1/billing/invoices/{invoice_id}/pdf": {
       "get": {
         "description": "The TAX invoice. Served on the invoice's ISSUED type (the stamp), so it stays downloadable\nafter the mode is switched back to receipt. Refused \u2014 and /document serves a receipt instead \u2014\nwhen the live tax profile can no longer back a tax invoice (a seller registration emptied).",
@@ -2580,6 +2670,47 @@
         "summary": "Clear Secret",
         "tags": [
           "operator"
+        ]
+      }
+    },
+    "/api/v1/billing/pay/{token}": {
+      "get": {
+        "description": "PUBLIC redirector: 302 a pay-link token to its gateway hosted-checkout page. No auth (the\nunguessable token IS the capability, meant to be shared with the payer); no data leaked (just a\nredirect). The target URL was minted by us from the gateway session (never caller input); even so,\nit is defended: https-only and an optional host allow-list.",
+        "operationId": "pay_link_redirect_api_v1_billing_pay__token__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pay Link Redirect",
+        "tags": [
+          "billing"
         ]
       }
     },

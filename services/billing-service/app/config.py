@@ -272,6 +272,19 @@ class Settings(BaseSettings):
     # Where the payer is returned after a redirect/3DS step. Moyasar REQUIRES a callback_url for a
     # token/card source; redirect-flow providers use it as the return target. Empty ⇒ not sent.
     PAYMENT_RETURN_URL: str = ""
+    # ── pay-by-link (send an invoice's hosted-checkout link, e.g. over WhatsApp) ─────────────────
+    # How long a generated pay-link stays valid. The link is one-shot at the gateway; this bounds our
+    # own redirector too so a shared/stale link dies. A platform tunes it; default 72h.
+    BILLING_PAY_LINK_TTL_SECONDS: int = 259_200
+    # OPTIONAL stable redirector base so a fully-dynamic gateway checkout URL can ride inside a Meta
+    # template URL button (which allows only a fixed base + a dynamic suffix). Set to the platform's
+    # own pay domain, e.g. "https://pay.example.com/pay/" — the token is appended. Empty ⇒ no
+    # redirector; callers send the raw checkout_url (fine for in-window cta_url, not for a template).
+    BILLING_PAY_LINK_BASE_URL: str = ""
+    # Defence-in-depth for the public redirector: only 302 to a checkout URL whose host is in this
+    # comma list (the gateways' hosted-page hosts). Empty ⇒ allow any https host the gateway returned
+    # (the URL is server-set from the gateway session, never caller input, so this is belt-and-braces).
+    BILLING_PAY_LINK_ALLOWED_HOSTS: str = ""
     # Max age of a signed webhook whose scheme carries a timestamp (Stripe's t=…): an event older
     # than this is rejected as a replay even if the signature is valid. Stripe's own default is 300s.
     # 0 disables the freshness check (signature only).

@@ -18,7 +18,7 @@ from app.core.events import Emitter
 from app.core.grants import GrantOutbox
 from app.core.billing_service import BillingService
 from app.core.stores import (CouponStore, IdempotencyStore, InvoiceStore, LedgerStore,
-                             PaymentStore, PlanStore, SettlementStore, SubscriptionStore,
+                             PayLinkStore, PaymentStore, PlanStore, SettlementStore, SubscriptionStore,
                              UsageStore)
 from app.core.usage_service import UsageService
 
@@ -150,6 +150,7 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
         plans=PlanStore(c.datastore, c.cache), coupons=CouponStore(c.datastore),
         subs=SubscriptionStore(c.datastore, c.cache),
         invoices=InvoiceStore(c.datastore), payments=PaymentStore(c.datastore), usage=UsageStore(c.datastore),
+        paylinks=PayLinkStore(c.datastore),
         ledger=LedgerStore(c.datastore, cas_max_retries=s.LEDGER_CAS_MAX_RETRIES,
                            cas_backoff_ms=s.LEDGER_CAS_BACKOFF_MS),
         idempo=IdempotencyStore(c.datastore),
@@ -196,6 +197,8 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
                 "wallet_topup_tax_mode": s.WALLET_TOPUP_TAX_MODE,
                 "wallet_topup_min_minor": s.WALLET_TOPUP_MIN_MINOR,
                 "wallet_topup_max_minor": s.WALLET_TOPUP_MAX_MINOR,
+                # Pay-by-link: how long a generated invoice pay-link stays valid (default 72h).
+                "pay_link_ttl_seconds": s.BILLING_PAY_LINK_TTL_SECONDS,
                 # Entitlement resolution (Phase 42). Required by EntitlementResolver —
                 # every default lives in config.py, never inline at a call site.
                 "billable_statuses": s.billable_statuses,
@@ -508,6 +511,76 @@ async def create_checkout(request: Request, body: CheckoutIn,
     except GatewayUnavailable as exc:
         # Unreachable / unconfigured gateway — retryable, not a client error.
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+
+
+class PayLinkIn(BaseModel):
+    # A platform operator names the tenant whose invoice to bill; a tenant admin's value is ignored
+    # (scoped to their own tenant by _tenant()) — the operator-tenant-wired pattern.
+    tenant: str | None = None
+    return_url: str = Field(default="", max_length=1024)
+    ttl_seconds: int | None = Field(default=None, ge=0)
+
+
+@router.post("/invoices/{invoice_id}/pay-link", status_code=201, dependencies=[Depends(rate_limit)])
+async def create_invoice_pay_link(request: Request, invoice_id: str, body: PayLinkIn,
+                                  principal: Principal = Depends(_SELF)) -> dict:
+    """A trackable hosted-checkout LINK for an existing unpaid invoice — to send to the payer (e.g.
+    over WhatsApp). Amount = the invoice total (server-authoritative). Completion flows through the
+    same webhook/reconcile -> _mark_paid seam, marking THIS invoice paid once. Returns `checkout_url`
+    (fully dynamic — use inside the 24h window as a cta_url) and `pay_url` (a stable redirector link,
+    when BILLING_PAY_LINK_BASE_URL is set, so it can ride inside a Meta template's URL button)."""
+    from app.core.billing_service import UpgradeChargeFailed, UpgradeChargeUnavailable
+    s = get_settings()
+    tenant = _tenant(principal, body.tenant)
+    try:
+        res = await (await build_billing(request, tenant)).create_invoice_pay_link(
+            tenant=tenant, invoice_id=invoice_id, return_url=body.return_url,
+            ttl_seconds=int(body.ttl_seconds or 0))
+    except ValueError as exc:
+        msg = str(exc)
+        if msg == "INVOICE_NOT_FOUND":
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND") from exc
+        if msg.startswith("INVOICE_NOT_PAYABLE"):
+            raise HTTPException(status.HTTP_409_CONFLICT, msg) from exc
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, msg) from exc
+    except UpgradeChargeUnavailable as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "GATEWAY_UNAVAILABLE") from exc
+    except UpgradeChargeFailed as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc) or "CHECKOUT_FAILED") from exc
+    await request.app.state.auditor.record(
+        "billing.pay_link_created", actor=principal.subject, tenant=tenant,
+        resource=f"invoice:{invoice_id}", ip=request.client.host if request.client else "",
+        metadata={"payment_id": res["payment_id"]})
+    base = (s.BILLING_PAY_LINK_BASE_URL or "").strip()
+    pay_url = (base.rstrip("/") + "/" + res["token"]) if (base and res.get("token")) else res["checkout_url"]
+    return {"payment_id": res["payment_id"], "invoice_id": res["invoice_id"],
+            "amount_minor": res["amount_minor"], "currency": res["currency"],
+            "checkout_url": res["checkout_url"], "pay_url": pay_url, "expires_at": res["expires_at"]}
+
+
+@router.get("/pay/{token}", dependencies=[Depends(rate_limit)])
+async def pay_link_redirect(request: Request, token: str):
+    """PUBLIC redirector: 302 a pay-link token to its gateway hosted-checkout page. No auth (the
+    unguessable token IS the capability, meant to be shared with the payer); no data leaked (just a
+    redirect). The target URL was minted by us from the gateway session (never caller input); even so,
+    it is defended: https-only and an optional host allow-list."""
+    from urllib.parse import urlsplit
+
+    from starlette.responses import RedirectResponse
+    s = get_settings()
+    res = await (await build_billing(request, "")).resolve_pay_link(token)
+    if res is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    if res.get("expired"):
+        raise HTTPException(status.HTTP_410_GONE, "LINK_EXPIRED")
+    url = res.get("checkout_url", "")
+    parts = urlsplit(url)
+    if parts.scheme != "https" or not parts.hostname:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "BAD_CHECKOUT_URL")
+    allowed = [h.strip() for h in (s.BILLING_PAY_LINK_ALLOWED_HOSTS or "").split(",") if h.strip()]
+    if allowed and parts.hostname not in allowed:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "CHECKOUT_HOST_NOT_ALLOWED")
+    return RedirectResponse(url, status_code=302)
 
 
 def _check_topup_amount(amount_minor: int) -> None:

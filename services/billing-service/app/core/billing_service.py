@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json as _json
+import secrets as _secrets
 import time
 from decimal import Decimal as _Decimal
 from typing import Any
@@ -72,9 +73,11 @@ class BillingService:
                  ledger: LedgerStore, idempo: IdempotencyStore,
                  gateway, tax, einvoicer, pdf, config: dict[str, Any], cache=None,
                  settlements: SettlementStore | None = None, clock=now_ts,
-                 emitter=None, grants=None, gateway_resolver=None, wallet=None) -> None:
+                 emitter=None, grants=None, gateway_resolver=None, wallet=None,
+                 paylinks: "PayLinkStore | None" = None) -> None:
         self._plans, self._coupons, self._subs = plans, coupons, subs
         self._invoices, self._payments, self._usage = invoices, payments, usage
+        self._paylinks = paylinks
         self._ledger, self._idempo = ledger, idempo
         self._gw, self._tax, self._einv, self._pdf = gateway, tax, einvoicer, pdf
         # Resolves a gateway by (tenant, driver) for PINNED mode — async, injected so core imports no
@@ -1790,6 +1793,66 @@ class BillingService:
         session = fn(amount_minor=int(amount_minor), currency=currency or self._cfg["currency"],
                      reference=reference, return_url=return_url, metadata=metadata or {})
         return {"supported": True, **session.to_dict()}
+
+    async def create_invoice_pay_link(self, *, tenant: str, invoice_id: str, return_url: str = "",
+                                      ttl_seconds: int = 0) -> dict[str, Any]:
+        """A trackable hosted-checkout link for an EXISTING unpaid invoice — to send to the payer
+        (e.g. over WhatsApp). The amount is the INVOICE's total (server-authoritative, never a caller
+        field); the link is opened on the tenant's/platform's own gateway; completion flows through
+        the SAME webhook / reconcile -> _apply_outcome -> _mark_paid seam as any other payment, so the
+        SAME invoice is marked paid exactly once. A high-entropy token + TTL back the public
+        redirector (so the link can ride inside a Meta template's fixed-base URL button)."""
+        row = await self._invoices.get(invoice_id)
+        inv = Invoice.from_dict(row) if row else None
+        # IDOR guard: an invoice that is not this tenant's is indistinguishable from a missing one.
+        if inv is None or inv.tenant != tenant:
+            raise ValueError("INVOICE_NOT_FOUND")
+        if inv.status in ("paid", "void", "uncollectible"):
+            raise ValueError(f"INVOICE_NOT_PAYABLE:{inv.status}")
+        fn = getattr(self._gw, "prepare_checkout", None)
+        if fn is None:
+            raise UpgradeChargeFailed("CHECKOUT_UNSUPPORTED")
+        try:
+            session = fn(amount_minor=int(inv.total_minor), currency=inv.currency,
+                         reference=inv.id, return_url=return_url,
+                         metadata={"tenant": tenant, "invoice_id": inv.id})
+        except GatewayUnavailable as ex:
+            raise UpgradeChargeUnavailable(str(ex)) from ex
+        if not getattr(session, "ok", False):
+            raise UpgradeChargeFailed(getattr(session, "error", "") or "CHECKOUT_FAILED")
+        checkout_url = str(getattr(session, "redirect_url", "") or "")
+        # A pending payment tied to THIS invoice, keyed by the gateway session so webhook/reconcile
+        # resolves it (PaymentStore.by_provider_id) and _mark_paid settles the invoice.
+        pay = Payment(id=new_id("pay_"), tenant=tenant, invoice_id=inv.id,
+                      amount_minor=int(inv.total_minor), currency=inv.currency,
+                      provider=getattr(session, "provider", ""), provider_id=session.id,
+                      status="pending", created=iso())
+        await self._payments.save(pay)
+        ttl = int(ttl_seconds or self._cfg.get("pay_link_ttl_seconds", 259_200))
+        expires_at = self._clock() + ttl
+        token = ""
+        if self._paylinks is not None and checkout_url:
+            token = _secrets.token_urlsafe(32)          # unguessable; the redirector's only key
+            await self._paylinks.save({
+                "token": token, "tenant": tenant, "payment_id": pay.id, "invoice_id": inv.id,
+                "checkout_url": checkout_url, "expires_at": expires_at, "status": "pending"})
+        return {"invoice_id": inv.id, "payment_id": pay.id, "amount_minor": int(inv.total_minor),
+                "currency": inv.currency, "checkout_url": checkout_url, "token": token,
+                "expires_at": expires_at, "status": "pending",
+                "checkout": {"supported": True, **session.to_dict()}}
+
+    async def resolve_pay_link(self, token: str) -> dict[str, Any] | None:
+        """The public redirector's lookup: token -> the hosted checkout_url, or None (unknown), or
+        {"expired": True} once past its TTL. Holds no secret and no card data — only a URL we minted."""
+        if self._paylinks is None or not token:
+            return None
+        row = await self._paylinks.by_token(token)
+        if not row:
+            return None
+        if self._clock() > float(row.get("expires_at", 0) or 0):
+            return {"expired": True}
+        return {"checkout_url": str(row.get("checkout_url", "") or ""),
+                "invoice_id": row.get("invoice_id", ""), "payment_id": row.get("payment_id", "")}
 
     async def wallet_topup_checkout(self, *, tenant: str, amount_minor: int, fund: str = "",
                                     currency: str = "", return_url: str = "") -> dict[str, Any]:

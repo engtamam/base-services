@@ -425,6 +425,21 @@ class PaymentStore(_Repo):
         return out[:limit]
 
 
+class PayLinkStore(_Repo):
+    """Maps a high-entropy TOKEN to the hosted-checkout URL of a pay-by-link, for the public
+    redirector (so a fully-dynamic gateway URL can ride inside a Meta template's fixed-base URL
+    button). The token is the row key; the row carries the tenant, the payment/invoice it belongs to,
+    the checkout_url, and an expiry. It holds NO card data and no secret — only a URL we generated."""
+    collection = "pay_links"
+
+    async def save(self, record: dict) -> dict:
+        await self.put(record["token"], record)
+        return record
+
+    async def by_token(self, token: str) -> dict | None:
+        return await self.get(token) if token else None
+
+
 class LedgerStore(_Repo):
     """Append-only money ledger — the reconciliation source of truth.
 
