@@ -186,6 +186,15 @@ def create_app() -> FastAPI:
                                    settings.WHATSAPP_LOYALTY_PROVIDER_TOKEN)
                 if settings.WHATSAPP_LOYALTY_PROVIDER_URL else NullLoyaltyBackend())
     _registry.register(LoyaltyEngine(provider=_loyalty, sessions=_sessions))
+    # Flow #6b — SUBSCRIPTION RENEWAL over WhatsApp, the same generic redeem-a-thing engine with a
+    # second name + its own provider URL (usually billing-service): it lists the tenant's renewable
+    # subscriptions as "rewards" and "redeems" one by taking the renewal payment. Its own config URL;
+    # null backend (flow simply unavailable) when unset — never a fake renewal.
+    _renewal = (HttpLoyaltyBackend(settings.WHATSAPP_RENEWAL_PROVIDER_URL,
+                                   settings.WHATSAPP_RENEWAL_PROVIDER_TOKEN)
+                if settings.WHATSAPP_RENEWAL_PROVIDER_URL else NullLoyaltyBackend())
+    _registry.register(LoyaltyEngine(provider=_renewal, sessions=_sessions,
+                                     name="subscription_renewal"))
     # Flow #2 — delivery slots IS the slot engine (a second BookingEngine, name "delivery"), its own
     # definition + provider URL. options=zone, calendar=delivery days, slots=capacity-limited windows.
     _delivery_backend = (HttpBookingBackend(settings.WHATSAPP_DELIVERY_PROVIDER_URL,

@@ -44,12 +44,18 @@ _PICK, _CONFIRM = "pick", "confirm"
 
 
 class LoyaltyEngine:
-    """FlowHandler (name="loyalty"). Register in the FlowRegistry alongside booking/reschedule."""
-
-    name = "loyalty"
+    """FlowHandler for a points-redemption Flow. Register in the FlowRegistry alongside
+    booking/reschedule. `name` is the FlowRegistry key (the flow name a template routes to) and
+    defaults to "loyalty"; a SECOND instance with a distinct name + its own provider is how the same
+    generic redeem-a-thing screens back another flow — e.g. name="subscription_renewal", whose provider
+    lists the renewable subscriptions as "rewards" and "redeems" one by taking the renewal payment. The
+    provider's opaque `customer` id is whatever the sender seeds — a shop's end customer for loyalty, or
+    the subscription/tenant being renewed for renewal (the engine passes `tenant` separately already, so
+    no protocol change is needed to target the tenant)."""
 
     def __init__(self, *, provider: LoyaltyProvider, sessions: SessionStore,
-                 strings: dict[str, str] | None = None) -> None:
+                 name: str = "loyalty", strings: dict[str, str] | None = None) -> None:
+        self.name = name
         self._p = provider
         self._sessions = sessions
         self._s = strings or {}

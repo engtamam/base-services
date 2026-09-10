@@ -44,6 +44,24 @@ def _sub(e, screen, data):
     return run(e.handle({"action": "data_exchange", "screen": screen, "flow_token": TOK, "data": data}, tenant="t1"))
 
 
+def test_name_defaults_to_loyalty_and_is_configurable():
+    # A second instance (e.g. subscription_renewal) reuses the whole engine under its own registry key.
+    assert _eng().name == "loyalty"
+    renewal = LoyaltyEngine(provider=_Prov(), name="subscription_renewal",
+                            sessions=SessionStore(MemoryDataStore(), clock=lambda: 1000.0))
+    assert renewal.name == "subscription_renewal"
+
+
+def test_two_instances_register_under_distinct_names():
+    from app.core.flow_registry import FlowRegistry
+    reg = FlowRegistry()
+    reg.register(_eng())
+    reg.register(LoyaltyEngine(provider=_Prov(), name="subscription_renewal",
+                               sessions=SessionStore(MemoryDataStore(), clock=lambda: 1000.0)))
+    assert set(reg.names()) >= {"loyalty", "subscription_renewal"}
+    assert reg.get("subscription_renewal") is not reg.get("loyalty")
+
+
 def test_redeem_path_to_success():
     p = _Prov()
     e = _eng(p)

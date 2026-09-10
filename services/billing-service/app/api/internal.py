@@ -212,6 +212,49 @@ async def list_invoices_internal(request: Request, tenant: str, status: str = "p
     return {"tenant": tenant, "status": status, "invoices": invoices, "truncated": truncated}
 
 
+# States a caller may still COLLECT on — the only ones this read exposes. A settled invoice (paid /
+# void / uncollectible) is money HISTORY and stays behind the tenant-scoped history read above, which
+# deliberately omits line items; this read is the opposite consumer — the amount a payer is about to
+# pay, shown on a checkout/Flow screen, so it DOES carry the lines. Keeping the two contracts apart is
+# the privacy boundary: settled detail never leaks through the "what will this cost me" path.
+_INVOICE_PAYABLE_STATUSES = ("draft", "open", "partially_paid")
+
+
+@router.get("/billing/invoices/{invoice_id}", dependencies=[Depends(require_internal_token)])
+async def get_payable_invoice_internal(request: Request, invoice_id: str, tenant: str) -> dict:
+    """One OPEN (not-yet-settled) invoice's amount + lines, for a peer that must show a customer what a
+    renewal will cost BEFORE they pay it (a WhatsApp Flow / checkout screen).
+
+    tenant is REQUIRED and is the IDOR guard: an invoice whose tenant differs is reported as absent
+    (404), never confirmed to exist for another tenant. Only a payable invoice is returned — a settled
+    one (paid/void/uncollectible) is money history and is read through GET /billing/invoices instead,
+    so this path never becomes a second, line-leaking window onto settled invoices. amount_due_minor is
+    total minus what has already settled (a partial payment), which is what the payer still owes."""
+    if not tenant:
+        raise HTTPException(400, "tenant is required")
+    from app.core.stores import InvoiceStore
+    c = request.app.state.container
+    inv = await InvoiceStore(c.datastore).fetch(invoice_id)
+    if inv is None or inv.tenant != tenant or inv.status not in _INVOICE_PAYABLE_STATUSES:
+        raise HTTPException(404, "invoice not found")
+    lines = [{"description": li.get("description", ""), "quantity": int(li.get("quantity", 1) or 1),
+              "unit_minor": int(li.get("unit_minor", 0) or 0),
+              "amount_minor": int(li.get("amount_minor", 0) or 0),
+              **({"proration": li["proration"]} if li.get("proration") is not None else {})}
+             for li in (inv.lines or [])]
+    settled = int(inv.settled_minor or 0)
+    total = int(inv.total_minor or 0)
+    return {
+        "id": inv.id, "tenant": inv.tenant, "subscription_id": inv.subscription_id or "",
+        "status": inv.status, "currency": inv.currency or "",
+        "subtotal_minor": int(inv.subtotal_minor or 0), "discount_minor": int(inv.discount_minor or 0),
+        "tax_minor": int(inv.tax_minor or 0), "total_minor": total,
+        "settled_minor": settled, "amount_due_minor": max(0, total - settled),
+        "consolidated": bool((inv.meta or {}).get("consolidated")),
+        "lines": lines, "created": inv.created or "",
+    }
+
+
 @router.get("/billing/plans", dependencies=[Depends(require_internal_token)])
 async def list_plans_internal(request: Request, tenant: str = "",
                               include_hidden: bool = False) -> dict:

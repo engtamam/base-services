@@ -131,6 +131,45 @@ def test_requires_a_tenant(seeded):
     assert seeded.get("/internal/billing/invoices", headers=IT).status_code in (400, 422)
 
 
+def test_payable_invoice_read_returns_amount_and_lines_for_a_checkout_screen(client):
+    # A peer shows the customer what a renewal costs BEFORE they pay it: lines DO surface here.
+    _put_invoice(client, id="op1", tenant="tpay", status="open", total_minor=17250,
+                 subtotal_minor=15000, tax_minor=2250,
+                 lines=[{"description": "AppA", "quantity": 1, "unit_minor": 10000, "amount_minor": 10000},
+                        {"description": "AppB", "quantity": 1, "unit_minor": 5000, "amount_minor": 5000}])
+    r = client.get("/internal/billing/invoices/op1?tenant=tpay", headers=IT)
+    assert r.status_code == 200
+    b = r.json()
+    assert b["status"] == "open" and b["total_minor"] == 17250 and b["amount_due_minor"] == 17250
+    assert [li["description"] for li in b["lines"]] == ["AppA", "AppB"]
+
+
+def test_payable_invoice_amount_due_subtracts_a_partial_settlement(client):
+    _put_invoice(client, id="pp1", tenant="tpay", status="partially_paid", total_minor=10000,
+                 settled_minor=4000)
+    b = client.get("/internal/billing/invoices/pp1?tenant=tpay", headers=IT).json()
+    assert b["amount_due_minor"] == 6000
+
+
+def test_payable_invoice_read_hides_a_settled_invoice(client):
+    # A paid invoice is money history — it must NOT be readable through the payable path (which leaks lines).
+    _put_invoice(client, id="paid1", tenant="tpay", status="paid", total_minor=10000)
+    assert client.get("/internal/billing/invoices/paid1?tenant=tpay", headers=IT).status_code == 404
+
+
+def test_payable_invoice_read_is_tenant_scoped_idor_guard(client):
+    _put_invoice(client, id="op2", tenant="towner", status="open", total_minor=10000)
+    # wrong tenant → reported absent, never confirmed to exist for another tenant
+    assert client.get("/internal/billing/invoices/op2?tenant=tattacker", headers=IT).status_code == 404
+    assert client.get("/internal/billing/invoices/op2?tenant=towner", headers=IT).status_code == 200
+
+
+def test_payable_invoice_read_requires_token_and_tenant(client):
+    _put_invoice(client, id="op3", tenant="tpay", status="open")
+    assert client.get("/internal/billing/invoices/op3?tenant=tpay").status_code == 401
+    assert client.get("/internal/billing/invoices/op3", headers=IT).status_code in (400, 422)
+
+
 def test_store_history_reports_truncation(client):
     # The bounded-read guarantee: past the cap, `truncated` is loud, not a silent dropped tail.
     from app.core.stores import InvoiceStore

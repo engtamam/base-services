@@ -450,6 +450,12 @@ class Settings(BaseSettings):
     # session store + screens; a separate URL because loyalty is usually a different system.
     WHATSAPP_LOYALTY_PROVIDER_URL: str = ""
     WHATSAPP_LOYALTY_PROVIDER_TOKEN: str = ""
+    # Subscription-renewal flow (#6b) — the SAME redeem-a-thing engine under the flow name
+    # "subscription_renewal", its provider (usually billing-service) listing renewable subscriptions as
+    # "rewards" and taking the renewal payment on redeem (op=balance|rewards|redeem). Its OWN URL;
+    # empty ⇒ null backend (the renewal flow is simply unavailable, never a fake renewal).
+    WHATSAPP_RENEWAL_PROVIDER_URL: str = ""
+    WHATSAPP_RENEWAL_PROVIDER_TOKEN: str = ""
     # Delivery-slot flow (#2) — IS the slot engine (options=zone, calendar=delivery days,
     # slots=capacity-limited windows, reserve=book the delivery). Same op contract as booking, its own
     # definition + URL (usually a separate system); empty ⇒ null backend. Served at .../flow/{tenant}/delivery.

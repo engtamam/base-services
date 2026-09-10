@@ -110,6 +110,7 @@ def build_manifest(
             # service enforcing a base-plus-apps catalogue (one base per tenant; an app bought once).
             {"path": "/internal/billing/subscriptions", "tier": "internal", "method": "GET"},
             {"path": "/internal/billing/invoices", "tier": "internal", "method": "GET"},
+            {"path": "/internal/billing/invoices/{invoice_id}", "tier": "internal", "method": "GET"},
             # Read + create twins of the user-tier plan/subscribe routes, for a peer service (operations
             # during signup / purchase): the user routes are rate-limited per caller, and a service has
             # no subject to key on, so the limiter falls to the pod IP and every shop shares one bucket
