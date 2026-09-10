@@ -156,6 +156,13 @@ def build_manifest(
             {"path": "/internal/whatsapp/flow-encryption/ensure", "tier": "internal", "method": "POST"},
             # Operator platform-status glance — bounded AGGREGATE counts only (no rows, no PII).
             {"path": "/internal/whatsapp/platform-status", "tier": "internal", "method": "GET"},
+            # Set/rotate a number's 6-digit two-step-verification PIN (write-only; the PIN is never read
+            # back). Distinct from /register, which activates sending using the PIN.
+            {"path": "/internal/whatsapp/two-step-pin", "tier": "internal", "method": "POST"},
+            # Read-only operator confirmations, live from Meta: which apps/fields are subscribed to the
+            # WABA's webhooks, and the WABA's business-verification status.
+            {"path": "/internal/whatsapp/subscribed-fields", "tier": "internal", "method": "GET"},
+            {"path": "/internal/whatsapp/business-verification", "tier": "internal", "method": "GET"},
 
         ],
         "ports": ports or [],  # port -> driver, from the composition root

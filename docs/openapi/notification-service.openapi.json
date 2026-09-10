@@ -729,6 +729,39 @@
         "title": "TemplateIn",
         "type": "object"
       },
+      "TwoStepPinIn": {
+        "properties": {
+          "phone_number_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone Number Id"
+          },
+          "pin": {
+            "pattern": "^[0-9]{6}$",
+            "title": "Pin",
+            "type": "string"
+          },
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant",
+          "pin"
+        ],
+        "title": "TwoStepPinIn",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -2837,6 +2870,79 @@
         ]
       }
     },
+    "/internal/whatsapp/business-verification": {
+      "get": {
+        "description": "The WABA's business-verification status + overall status, read live from Meta\n(GET /{WABA_ID}?fields=business_verification_status,status). It gates template-review speed and\nthroughput upgrades, so an operator needs it readable rather than assumed.",
+        "operationId": "whatsapp_business_verification_internal_whatsapp_business_verification_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Whatsapp Business Verification",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/whatsapp/coexistence/contacts": {
       "get": {
         "description": "Catch-up read for the COEXISTENCE contact sync \u2014 the business's contacts at onboarding and on\nevery add/remove. One row per contact number per tenant (latest state wins); each carries the\naction (add|remove) and the contact fields. Ordered by timestamp; page with the cursor.",
@@ -4198,6 +4304,79 @@
         ]
       }
     },
+    "/internal/whatsapp/subscribed-fields": {
+      "get": {
+        "description": "Which apps (and their webhook fields) are subscribed to this tenant's WABA, read live from Meta\n(GET /{WABA_ID}/subscribed_apps). READ-ONLY: Meta configures subscribed fields at the APP level,\nnot per WABA, so this exists to CONFIRM what Meta is actually sending \u2014 an operator who changed the\nevent handling had no way to verify it before.",
+        "operationId": "whatsapp_subscribed_fields_internal_whatsapp_subscribed_fields_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Whatsapp Subscribed Fields",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/whatsapp/templates": {
       "get": {
         "description": "Which templates are approved (or pending/paused/\u2026) for this tenant \u2014 for a PEER SERVICE.\n\nA sending service that picks a template by TYPE needs to prefer an APPROVED one before it spends\na send and a slot in the daily cap on a template notify() will refuse. The user-tier list needs a\nJWT (whose signing key must stay in identity-service) and caching the statuses is a second copy\nof another service's state that drifts on the first sync \u2014 so this is the internal, token-authed\ncounterpart to GET /api/v1/whatsapp/templates: same handler, tenant as a parameter.",
@@ -4617,6 +4796,80 @@
           }
         },
         "summary": "Submit Whatsapp Template Internal",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/whatsapp/two-step-pin": {
+      "post": {
+        "description": "Set / rotate a number's 6-digit two-step-verification PIN (Meta: POST /{phone_number_id} {pin}).\n\nDISTINCT from /whatsapp/register (which ACTIVATES sending using the PIN) \u2014 this sets the PIN\nitself. WRITE-ONLY: the PIN is never returned by any read, and the new value is re-sealed for this\nnumber so a later re-registration needs no human (same discipline as secrets.update).",
+        "operationId": "set_whatsapp_two_step_pin_internal_whatsapp_two_step_pin_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TwoStepPinIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Whatsapp Two Step Pin",
         "tags": [
           "internal"
         ]

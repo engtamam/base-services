@@ -164,6 +164,16 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "the fact. Not critical: refusing to register because the log blinked helps no one.",
     },
     {
+        "action": "whatsapp.two_step_pin_set",
+        "source": "internal",
+        "critical": False,
+        "resource": "phone",
+        "why": "setting/rotating a number's 6-digit two-step-verification PIN is a credential-changing "
+               "act — like registration it must be attributable. The row names the phone id and the "
+               "outcome; the PIN value is NEVER recorded (write-only). Not critical: Meta already "
+               "accepted the change, so a log blink must not report a false failure.",
+    },
+    {
         "action": "whatsapp.number_bind_conflict",
         "source": "internal",
         "critical": False,

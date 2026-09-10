@@ -1016,6 +1016,108 @@ async def register_whatsapp_number(request: Request, body: WaRegisterIn):
     return JSONResponse({"registered": False, "reason": res.reason}, status_code=400)
 
 
+class TwoStepPinIn(BaseModel):
+    tenant: str = Field(min_length=1, max_length=128)
+    phone_number_id: str | None = Field(default=None, max_length=128)   # PER NUMBER; falls back to the tenant's
+    # Meta's 6-digit PIN, validated HERE so a malformed value never reaches Meta. Write-only.
+    pin: str = Field(pattern=r"^[0-9]{6}$")
+
+
+@router.post("/whatsapp/two-step-pin", dependencies=[Depends(require_internal_token)])
+async def set_whatsapp_two_step_pin(request: Request, body: TwoStepPinIn):
+    """Set / rotate a number's 6-digit two-step-verification PIN (Meta: POST /{phone_number_id} {pin}).
+
+    DISTINCT from /whatsapp/register (which ACTIVATES sending using the PIN) — this sets the PIN
+    itself. WRITE-ONLY: the PIN is never returned by any read, and the new value is re-sealed for this
+    number so a later re-registration needs no human (same discipline as secrets.update)."""
+    import asyncio
+
+    from starlette.responses import JSONResponse
+
+    from app.core.whatsapp_admin import set_two_step_pin
+    from app.core.whatsapp_register import pin_secret_name
+    s = get_settings()
+    pool = getattr(request.app.state, "provider_pool", None)
+    if pool is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "PROVIDER_POOL_UNAVAILABLE")
+    token = await pool.whatsapp_access_token(body.tenant)
+    phone_id = body.phone_number_id or await pool.whatsapp_phone_number_id(body.tenant)
+    if not token or not phone_id:
+        return JSONResponse({"ok": False, "reason": "NOT_CONNECTED"}, status_code=409)
+    changed, reason = await asyncio.to_thread(
+        set_two_step_pin, access_token=token, phone_number_id=phone_id, pin=body.pin,
+        graph_base=s.WHATSAPP_ONBOARDING_GRAPH_BASE)
+    if changed:
+        # Re-seal the new PIN (best-effort — Meta already accepted it; a store hiccup must not report
+        # failure). Never returned by any read.
+        try:
+            from app.api.v1.operator import _secret_store
+            await _secret_store(request).set(tenant=body.tenant, name=pin_secret_name(phone_id),
+                                             value=body.pin, actor_ref="")
+        except Exception:  # noqa: BLE001
+            pass
+    # Audit the ACT (never the PIN value): a 2FA-PIN rotation is a credential-changing operation.
+    await request.app.state.auditor.record(
+        "whatsapp.two_step_pin_set", actor="", tenant=body.tenant,
+        resource=f"phone:{phone_id}", ip=request.client.host if request.client else "",
+        metadata={"ok": str(changed), "reason": reason})
+    if changed:
+        return {"ok": True}
+    return JSONResponse({"ok": False, "reason": reason}, status_code=400)
+
+
+@router.get("/whatsapp/subscribed-fields", dependencies=[Depends(require_internal_token)])
+async def whatsapp_subscribed_fields(request: Request, tenant: str):
+    """Which apps (and their webhook fields) are subscribed to this tenant's WABA, read live from Meta
+    (GET /{WABA_ID}/subscribed_apps). READ-ONLY: Meta configures subscribed fields at the APP level,
+    not per WABA, so this exists to CONFIRM what Meta is actually sending — an operator who changed the
+    event handling had no way to verify it before."""
+    if not tenant:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "tenant is required")
+    import asyncio
+
+    from app.core.whatsapp_admin import fetch_subscribed_apps
+    s = get_settings()
+    pool = getattr(request.app.state, "provider_pool", None)
+    if pool is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "PROVIDER_POOL_UNAVAILABLE")
+    token = await pool.whatsapp_access_token(tenant)
+    waba = await pool.whatsapp_business_account_id(tenant)
+    if not token or not waba:
+        raise HTTPException(status.HTTP_409_CONFLICT, "NOT_CONNECTED")
+    res = await asyncio.to_thread(fetch_subscribed_apps, access_token=token, waba_id=waba,
+                                  graph_base=s.WHATSAPP_GRAPH_BASE)
+    if not res.get("ok"):
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, res.get("reason", "META_ERROR"))
+    return {"apps": res["apps"]}
+
+
+@router.get("/whatsapp/business-verification", dependencies=[Depends(require_internal_token)])
+async def whatsapp_business_verification(request: Request, tenant: str):
+    """The WABA's business-verification status + overall status, read live from Meta
+    (GET /{WABA_ID}?fields=business_verification_status,status). It gates template-review speed and
+    throughput upgrades, so an operator needs it readable rather than assumed."""
+    if not tenant:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "tenant is required")
+    import asyncio
+
+    from app.core.whatsapp_admin import fetch_business_verification
+    s = get_settings()
+    pool = getattr(request.app.state, "provider_pool", None)
+    if pool is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "PROVIDER_POOL_UNAVAILABLE")
+    token = await pool.whatsapp_access_token(tenant)
+    waba = await pool.whatsapp_business_account_id(tenant)
+    if not token or not waba:
+        raise HTTPException(status.HTTP_409_CONFLICT, "NOT_CONNECTED")
+    res = await asyncio.to_thread(fetch_business_verification, access_token=token, waba_id=waba,
+                                  graph_base=s.WHATSAPP_GRAPH_BASE)
+    if not res.get("ok"):
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, res.get("reason", "META_ERROR"))
+    return {"business_verification_status": res["business_verification_status"],
+            "status": res["status"]}
+
+
 @router.get("/whatsapp/status", dependencies=[Depends(require_internal_token)])
 async def whatsapp_number_status(request: Request, tenant: str, phone_number_id: str = ""):
     """A number's REAL readiness, read live from Meta — so a shop's state is READABLE, not assumed.

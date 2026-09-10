@@ -178,6 +178,12 @@ class ProviderPool:
         in core — a route may not read stored credentials."""
         return await self._credential(tenant, "WHATSAPP_PHONE_NUMBER_ID")
 
+    async def whatsapp_business_account_id(self, tenant: str = "") -> str:
+        """The tenant's WABA id (config fallback for the single-brand case). Subscribed-apps and the
+        business-verification status live on the WABA node, so an operator read of them needs it.
+        Reading the credential is a core act — a route may not read stored credentials."""
+        return await self._credential(tenant, "WHATSAPP_BUSINESS_ACCOUNT_ID")
+
     async def whatsapp_access_token(self, tenant: str = "") -> str:
         """The tenant's WhatsApp business access token (config fallback for the single-brand case).
 
