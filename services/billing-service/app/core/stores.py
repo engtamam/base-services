@@ -439,6 +439,18 @@ class PayLinkStore(_Repo):
     async def by_token(self, token: str) -> dict | None:
         return await self.get(token) if token else None
 
+    async def live_for_invoice(self, invoice_id: str, now: float) -> dict | None:
+        """An existing NON-expired, still-pending pay-link for this invoice, so a repeat create returns
+        the same link instead of opening a second gateway session (single-use per invoice)."""
+        if not invoice_id:
+            return None
+        rows, _ = await self._store.find(
+            self.collection, {"invoice_id": invoice_id, "status": "pending"}, limit=10)
+        for r in rows:
+            if float(r.get("expires_at", 0) or 0) > now:
+                return r
+        return None
+
 
 class LedgerStore(_Repo):
     """Append-only money ledger — the reconciliation source of truth.

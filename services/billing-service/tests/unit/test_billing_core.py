@@ -341,6 +341,23 @@ def test_webhook_reconcile_idempotent():
     assert r2["payment_status"] == "succeeded"
 
 
+def test_webhook_rejects_a_tenant_mismatch():
+    """A valid signing secret for tenant A must not drive tenant B's payment (known provider_id)."""
+    import json
+    st = MemoryDataStore()
+    b = _svc(st, MockGW(ok=False))
+    _, sub = _plan_sub(b)                                    # tenant "t1"
+    run(b.run_cycle(sub.id))
+    pid = run(PaymentStore(st).list_tenant("t1", 10))[0]["provider_id"]
+    body = json.dumps({"type": "payment.succeeded", "pid": pid}).encode()
+    # Signature verifies (good secret), but the caller claims a DIFFERENT tenant than the payment's.
+    r = run(b.handle_webhook("mock", {}, body, "good", webhook_tenant="other"))
+    assert r["ok"] is False and r["reason"] == "TENANT_MISMATCH"
+    assert run(PaymentStore(st).list_tenant("t1", 10))[0]["status"] != "succeeded"   # not driven
+    # The correct tenant still works.
+    assert run(b.handle_webhook("mock", {}, body, "good", webhook_tenant="t1"))["reconciled"]
+
+
 def test_plan_scoped_coupon_refuses_the_wrong_plan_without_redeeming():
     st = MemoryDataStore()
     b = _svc(st, MockGW(ok=True))

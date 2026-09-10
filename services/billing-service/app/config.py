@@ -281,9 +281,10 @@ class Settings(BaseSettings):
     # own pay domain, e.g. "https://pay.example.com/pay/" — the token is appended. Empty ⇒ no
     # redirector; callers send the raw checkout_url (fine for in-window cta_url, not for a template).
     BILLING_PAY_LINK_BASE_URL: str = ""
-    # Defence-in-depth for the public redirector: only 302 to a checkout URL whose host is in this
-    # comma list (the gateways' hosted-page hosts). Empty ⇒ allow any https host the gateway returned
-    # (the URL is server-set from the gateway session, never caller input, so this is belt-and-braces).
+    # REQUIRED to use the public redirector: it only 302s to a checkout URL whose host is in this comma
+    # list (the gateways' hosted-page hosts). Empty ⇒ the redirector is DISABLED (fail closed, 503) —
+    # a tenant with a custom/base-overridden gateway could otherwise steer the redirect to an attacker
+    # host under the platform's domain (open-redirect/phishing). Set it when enabling pay-link delivery.
     BILLING_PAY_LINK_ALLOWED_HOSTS: str = ""
     # Max age of a signed webhook whose scheme carries a timestamp (Stripe's t=…): an event older
     # than this is rejected as a replay even if the signature is valid. Stripe's own default is 300s.

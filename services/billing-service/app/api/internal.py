@@ -77,9 +77,13 @@ async def payment_webhook(provider: str, request: Request,
     # signed with whatever the gateway held when it sent; rejecting it as forged would leave an
     # invoice unpaid after the customer's money has already moved.
     resolver = getattr(request.app.state, "credentials", None)
-    secrets = (await resolver.webhook_secrets(_webhook_tenant(request))
+    wh_tenant = _webhook_tenant(request)
+    secrets = (await resolver.webhook_secrets(wh_tenant)
                if resolver is not None else settings.PAYMENT_WEBHOOK_SECRET)
-    result = await (await build_billing(request)).handle_webhook(provider, headers, body, secrets)
+    # Bind the secret's tenant to the payment's tenant: a party holding tenant A's signing secret must
+    # not drive tenant B's payment by passing ?tenant=A with a known provider_id belonging to B.
+    result = await (await build_billing(request)).handle_webhook(
+        provider, headers, body, secrets, webhook_tenant=wh_tenant)
     if not result.get("ok"):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, result.get("reason", "INVALID"))
     return result

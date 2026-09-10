@@ -573,12 +573,23 @@ async def pay_link_redirect(request: Request, token: str):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
     if res.get("expired"):
         raise HTTPException(status.HTTP_410_GONE, "LINK_EXPIRED")
+    if res.get("settled"):
+        # The invoice is no longer open (paid/void) — the link is dead, so a payer cannot pay an
+        # already-settled invoice through a still-pending link.
+        raise HTTPException(status.HTTP_410_GONE, "INVOICE_SETTLED")
     url = res.get("checkout_url", "")
     parts = urlsplit(url)
     if parts.scheme != "https" or not parts.hostname:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "BAD_CHECKOUT_URL")
+    # FAIL CLOSED against open-redirect: the redirector must not 302 to an unvetted host. The
+    # allow-list is REQUIRED to use the redirector — a tenant with a custom/base-overridden gateway
+    # could otherwise steer checkout_url to an attacker host under the platform's domain (phishing).
     allowed = [h.strip() for h in (s.BILLING_PAY_LINK_ALLOWED_HOSTS or "").split(",") if h.strip()]
-    if allowed and parts.hostname not in allowed:
+    if not allowed:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
+                            "PAY_LINK_ALLOWED_HOSTS not configured — the redirector is disabled until "
+                            "the platform sets the gateway host allow-list")
+    if parts.hostname not in allowed:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "CHECKOUT_HOST_NOT_ALLOWED")
     return RedirectResponse(url, status_code=302)
 

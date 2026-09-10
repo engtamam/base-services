@@ -1611,7 +1611,8 @@ class BillingService:
 
     # ── webhooks ───────────────────────────────────────────────────────────────────
     async def handle_webhook(self, provider: str, headers: dict, body: bytes,
-                             secret: str | tuple[str, ...]) -> dict[str, Any]:
+                             secret: str | tuple[str, ...],
+                             webhook_tenant: str = "") -> dict[str, Any]:
         """Reconcile a gateway callback. `secret` may be SEVERAL candidate signing secrets.
 
         During a rotation both the new and the previous secret must verify. The gateway signed
@@ -1632,6 +1633,10 @@ class BillingService:
         pay = await self._payments.by_provider_id(event.provider_id) if event.provider_id else None
         if pay is None:
             return {"ok": True, "reconciled": False, "type": event.type}
+        # Tenant binding: the secret that verified belongs to `webhook_tenant`; the payment must too.
+        # Prevents driving another tenant's payment with a valid-but-wrong-tenant signing secret.
+        if webhook_tenant and pay.tenant != webhook_tenant:
+            return {"ok": False, "reason": "TENANT_MISMATCH", "type": event.type}
         outcome = await self._apply_outcome(pay, event.type)
         return {"ok": True, "reconciled": True, "type": event.type,
                 "payment_status": outcome["payment_status"]}
@@ -1809,6 +1814,19 @@ class BillingService:
             raise ValueError("INVOICE_NOT_FOUND")
         if inv.status in ("paid", "void", "uncollectible"):
             raise ValueError(f"INVOICE_NOT_PAYABLE:{inv.status}")
+        # SINGLE-USE per invoice: if a non-expired pending link already exists, RETURN IT instead of
+        # opening a second gateway session — a double POST (retry/double-click) or a second recipient
+        # must never yield two live checkouts for one invoice (a double-charge). Industry default
+        # (Adyen/Stripe pay-links are single-use).
+        if self._paylinks is not None:
+            live = await self._paylinks.live_for_invoice(inv.id, self._clock())
+            if live is not None:
+                return {"invoice_id": inv.id, "payment_id": live.get("payment_id", ""),
+                        "amount_minor": int(inv.total_minor), "currency": inv.currency,
+                        "checkout_url": str(live.get("checkout_url", "") or ""),
+                        "token": str(live.get("token", "") or ""),
+                        "expires_at": float(live.get("expires_at", 0) or 0), "status": "pending",
+                        "reused": True, "checkout": {"supported": True}}
         fn = getattr(self._gw, "prepare_checkout", None)
         if fn is None:
             raise UpgradeChargeFailed("CHECKOUT_UNSUPPORTED")
@@ -1833,9 +1851,14 @@ class BillingService:
         token = ""
         if self._paylinks is not None and checkout_url:
             token = _secrets.token_urlsafe(32)          # unguessable; the redirector's only key
-            await self._paylinks.save({
-                "token": token, "tenant": tenant, "payment_id": pay.id, "invoice_id": inv.id,
-                "checkout_url": checkout_url, "expires_at": expires_at, "status": "pending"})
+            try:
+                await self._paylinks.save({
+                    "token": token, "tenant": tenant, "payment_id": pay.id, "invoice_id": inv.id,
+                    "checkout_url": checkout_url, "expires_at": expires_at, "status": "pending"})
+            except Exception:
+                # No reachable link → do not leave an orphan pending payment for the reconcile poller.
+                await self._payments.delete(pay.id)
+                raise
         return {"invoice_id": inv.id, "payment_id": pay.id, "amount_minor": int(inv.total_minor),
                 "currency": inv.currency, "checkout_url": checkout_url, "token": token,
                 "expires_at": expires_at, "status": "pending",
@@ -1851,6 +1874,11 @@ class BillingService:
             return None
         if self._clock() > float(row.get("expires_at", 0) or 0):
             return {"expired": True}
+        # STATUS-AWARE: a link must stop working once its invoice is no longer open — otherwise a payer
+        # could pay an already-paid (or voided) invoice through a still-"pending" link. Re-fetch live.
+        inv_row = await self._invoices.get(str(row.get("invoice_id", "") or ""))
+        if inv_row is not None and str(inv_row.get("status", "")) != "open":
+            return {"settled": True, "status": str(inv_row.get("status", ""))}
         return {"checkout_url": str(row.get("checkout_url", "") or ""),
                 "invoice_id": row.get("invoice_id", ""), "payment_id": row.get("payment_id", "")}
 

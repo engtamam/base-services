@@ -71,6 +71,31 @@ def test_pay_link_uses_the_invoice_total_and_ties_a_pending_payment():
     assert pay and pay.invoice_id == "inv_1" and pay.status == "pending" and pay.amount_minor == 57500
 
 
+def test_pay_link_is_single_use_per_invoice_no_double_session():
+    """A repeat create for the same invoice REUSES the live link — never a second gateway session
+    (which could be paid twice)."""
+    st = MemoryDataStore(); svc = _svc(st, _Clock())
+    run(_seed_invoice(st, total=57500))
+    a = run(svc.create_invoice_pay_link(tenant="acme", invoice_id="inv_1"))
+    b = run(svc.create_invoice_pay_link(tenant="acme", invoice_id="inv_1"))
+    assert b.get("reused") is True
+    assert b["token"] == a["token"] and b["checkout_url"] == a["checkout_url"]
+    # exactly ONE pending payment exists for the invoice
+    rows, _ = run(PaymentStore(st)._store.find("payments", {"invoice_id": "inv_1"}, limit=10))
+    assert len([r for r in rows if r["status"] == "pending"]) == 1
+
+
+def test_a_settled_invoice_kills_the_link():
+    """Once the invoice is no longer open, the redirector refuses — a payer can't pay a paid invoice."""
+    st = MemoryDataStore(); svc = _svc(st, _Clock())
+    run(_seed_invoice(st))
+    token = run(svc.create_invoice_pay_link(tenant="acme", invoice_id="inv_1"))["token"]
+    # mark the invoice paid (as _mark_paid would)
+    row = run(InvoiceStore(st).get("inv_1")); row["status"] = "paid"
+    run(InvoiceStore(st).put("inv_1", row))
+    assert run(svc.resolve_pay_link(token)) == {"settled": True, "status": "paid"}
+
+
 def test_another_tenants_invoice_is_not_found_idor():
     st = MemoryDataStore(); svc = _svc(st, _Clock())
     run(_seed_invoice(st, tenant="acme"))
