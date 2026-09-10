@@ -14,6 +14,7 @@ The credit itself is idempotent on `source` at the far side, so a retry after an
 """
 from __future__ import annotations
 
+import asyncio
 import urllib.parse
 
 from app.adapters.billing_http import post_json
@@ -45,7 +46,10 @@ class HttpWallet:
     async def credit(self, *, tenant: str, fund: str, amount_minor: int, source: str,
                      reason: str = "", expires_at: float | None = None) -> bool:
         token = await self._token()
-        status, body = post_json(
+        # post_json is a BLOCKING urlopen — off the event loop, or a slow/hung wallet-service freezes
+        # this whole worker (every other request AND /healthz) on the money path. See v0.18.3.
+        status, body = await asyncio.to_thread(
+            post_json,
             f"{self._base}/internal/wallet/credit",
             {"tenant": tenant, "fund": fund, "amount": int(amount_minor),
              "source": source, "reason": reason,
@@ -64,7 +68,8 @@ class HttpWallet:
     async def debit(self, *, tenant: str, fund: str, amount_minor: int, source: str,
                     reason: str = "", allow_negative: bool = False) -> bool:
         token = await self._token()
-        status, body = post_json(
+        status, body = await asyncio.to_thread(   # BLOCKING urlopen off the loop — see credit()
+            post_json,
             f"{self._base}/internal/wallet/debit",
             {"tenant": tenant, "fund": fund, "amount": int(amount_minor),
              "source": source, "reason": reason, "allow_negative": bool(allow_negative)},

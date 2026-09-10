@@ -11,6 +11,7 @@ deleted locally, so a re-run never double-ships. Driven by the sweep CronJob.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 
 from app.core.models import Recording, new_id, now
@@ -45,9 +46,13 @@ class RecordingShipper:
         shipped = 0
         for name in ship:
             path = os.path.join(output_dir, name)
+
+            def _read(p: str = path) -> bytes:   # blocking disk read off the loop (segments are large)
+                with open(p, "rb") as fh:
+                    return fh.read()
+
             try:
-                with open(path, "rb") as fh:
-                    data = fh.read()
+                data = await asyncio.to_thread(_read)
             except OSError:
                 continue
             seq = _seq_of(name)

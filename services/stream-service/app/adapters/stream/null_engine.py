@@ -7,6 +7,7 @@ ffmpeg or a camera. The real ffmpeg engine (Phase 35.3) is a drop-in for this.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 
 from app.ports.stream_types import EngineHandle, EngineSpec, EngineStats, ProbeResult
@@ -31,11 +32,15 @@ class NullStreamEngine:
     async def start(self, spec: EngineSpec) -> EngineHandle:
         self._seq += 1
         hid = f"null-{self._seq}"
-        os.makedirs(spec.output_dir, exist_ok=True)
-        if "hls" in spec.outputs:
-            # A minimal live playlist so the HLS output has something to point at.
-            with open(os.path.join(spec.output_dir, "index.m3u8"), "w", encoding="utf-8") as fh:
-                fh.write("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n")
+
+        def _seed_dir() -> None:   # blocking disk I/O off the loop (uniform with the real engine)
+            os.makedirs(spec.output_dir, exist_ok=True)
+            if "hls" in spec.outputs:
+                # A minimal live playlist so the HLS output has something to point at.
+                with open(os.path.join(spec.output_dir, "index.m3u8"), "w", encoding="utf-8") as fh:
+                    fh.write("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n")
+
+        await asyncio.to_thread(_seed_dir)
         self._running[hid] = {"bytes": 0, "frames": 0}
         return EngineHandle(id=hid, pid=None, output_dir=spec.output_dir)
 

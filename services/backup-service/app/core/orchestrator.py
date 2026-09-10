@@ -29,6 +29,7 @@ phase's whole belief is that an unverified backup counts as no backup at all.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from dataclasses import dataclass, field
@@ -86,8 +87,9 @@ class Orchestrator:
         timeout = self._cfg["target_timeout_seconds"]
         try:
             token = await self._resolve_token(target.token_ref)
-            status, archive = post_json(f"{base}/internal/backup/export", {"tenant": tenant},
-                                        token, allowed_hosts=allowed, timeout_seconds=timeout)
+            status, archive = await asyncio.to_thread(   # BLOCKING urlopen off the loop (see v0.18.3)
+                post_json, f"{base}/internal/backup/export", {"tenant": tenant},
+                token, allowed_hosts=allowed, timeout_seconds=timeout)
         except TargetUnreachable as exc:
             return TargetResult(target.service, MISSED, error=str(exc))
         if status == 503:
@@ -139,8 +141,9 @@ class Orchestrator:
                                       f"{type(exc).__name__}")
         try:
             token = await self._resolve_token(target.token_ref)
-            status, body = post_json(f"{base}/internal/backup/verify", {"archive": stored},
-                                     token, allowed_hosts=allowed, timeout_seconds=timeout)
+            status, body = await asyncio.to_thread(   # BLOCKING urlopen off the loop (see v0.18.3)
+                post_json, f"{base}/internal/backup/verify", {"archive": stored},
+                token, allowed_hosts=allowed, timeout_seconds=timeout)
         except TargetUnreachable as exc:
             # The archive is stored, but we could not PROVE it restores this run. Not OK, not lost:
             # UNVERIFIED, retried next run rather than reported as a good backup.

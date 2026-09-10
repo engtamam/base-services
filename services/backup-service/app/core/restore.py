@@ -30,6 +30,7 @@ target's knowledge.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from typing import Any
@@ -201,7 +202,8 @@ class RestoreOrchestrator:
             return TargetRestore(service, FAILED, snapshot_key=snapshot_key,
                                  reason=f"stored archive could not be read: {type(exc).__name__}")
         try:
-            status, body = post_json(
+            status, body = await asyncio.to_thread(   # BLOCKING urlopen off the loop (see v0.18.3)
+                post_json,
                 f"{base}/internal/backup/import",
                 {"archive": archive, "overwrite": overwrite, "into_tenant": into_tenant},
                 token, allowed_hosts=allowed, timeout_seconds=timeout)
@@ -220,8 +222,9 @@ class RestoreOrchestrator:
                         allowed, timeout) -> str:
         """Capture the target's current state and store it as a pre-restore undo point."""
         try:
-            status, archive = post_json(f"{base}/internal/backup/export", {"tenant": tenant},
-                                        token, allowed_hosts=allowed, timeout_seconds=timeout)
+            status, archive = await asyncio.to_thread(   # BLOCKING urlopen off the loop (see v0.18.3)
+                post_json, f"{base}/internal/backup/export", {"tenant": tenant},
+                token, allowed_hosts=allowed, timeout_seconds=timeout)
         except TargetUnreachable as exc:
             raise _SnapshotFailed(str(exc)) from exc
         if not (200 <= status < 300) or archive.get("format") != "base-backup/v1":
@@ -277,9 +280,10 @@ class RestoreOrchestrator:
         except Exception as exc:  # noqa: BLE001
             return TargetRestore(service, FAILED, reason=f"could not read snapshot: {type(exc).__name__}")
         try:
-            status, body = post_json(f"{base}/internal/backup/import",
-                                     {"archive": archive, "overwrite": True},
-                                     token, allowed_hosts=allowed, timeout_seconds=timeout)
+            status, body = await asyncio.to_thread(   # BLOCKING urlopen off the loop (see v0.18.3)
+                post_json, f"{base}/internal/backup/import",
+                {"archive": archive, "overwrite": True},
+                token, allowed_hosts=allowed, timeout_seconds=timeout)
         except TargetUnreachable as exc:
             return TargetRestore(service, FAILED, reason=f"target unreachable during undo: {exc}")
         if not (200 <= status < 300):

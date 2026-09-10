@@ -6,6 +6,7 @@ holds only the returned object id. Bytes never linger in this service.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 
 from app.ports.stream_types import SegmentRef
@@ -80,9 +81,13 @@ class LocalRecordingSink:
                           content_type: str, start: str, end: str) -> SegmentRef:
         ref = f"{tenant}/{session_id}/{seq:08d}"
         path = self._path(ref)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "wb") as fh:
-            fh.write(data)
+
+        def _write() -> None:   # blocking disk I/O off the event loop (a segment can be large)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as fh:
+                fh.write(data)
+
+        await asyncio.to_thread(_write)
         return SegmentRef(ref=ref, bytes=len(data), start=start, end=end)
 
     async def delete(self, ref: str) -> bool:

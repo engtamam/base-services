@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 gate_name="safety:async-blocking"
-gate_desc="no blocking I/O primitive runs directly on the async event loop"
+gate_desc="no blocking I/O primitive runs directly on the async event loop (direct, heavy, indirect)"
 gate_protects="A single-worker async service that calls a blocking primitive (urllib urlopen,
-requests.*, time.sleep, a raw socket) directly inside an async def freezes the WHOLE
-worker — every other request AND the liveness probe — for the call's full timeout when
-the remote is slow or hung. It shipped once (v0.18.3: an HTTP audit sink froze /healthz)
-and a security+resilience audit found more. The fix is one line, await asyncio.to_thread.
-A call inside a nested plain def (the to_thread target) or passed by NAME to to_thread is
-fine. Blocking-primitive patterns are config; reviewed exceptions are named."
+requests.*, time.sleep, subprocess.*, os.system, a bare open(), a slow hash) inside an
+async def freezes the WHOLE worker — every other request AND the liveness probe — for the
+call's full timeout when the remote is slow or hung. It shipped once (v0.18.3: an HTTP
+audit sink froze /healthz) and audits found more, including a urlopen hidden one function
+away behind post_json() on billing's money path (v0.19.14). Three detections: DIRECT (the
+async body blocks), HEAVY (open()/pbkdf2/scrypt/bcrypt), and INDIRECT (the async body calls
+a plain def that itself blocks). The fix is one line, await asyncio.to_thread. A call in a
+nested def/lambda (the to_thread target) or passed by NAME to to_thread is fine. Patterns
+are config; the too-generic-name blocklist is narrowed, never guessed; exceptions are named."
 gate_needs="python"
 gate_env=""
 gate_subject="tools/ci/check_async_blocking.py"
@@ -16,32 +19,60 @@ gate_slow=0
 
 gate_main() { "$PY" tools/ci/check_async_blocking.py; }
 
-# A gate that cannot fail is decoration. Prove it flags a direct urlopen in an async def and NOT one
-# moved into a nested def for to_thread.
+# A gate that cannot fail is decoration. Prove all THREE detections fire (direct urlopen, heavy open,
+# INDIRECT call to a plain def that blocks) and that the real offload shapes do NOT false-positive
+# (a nested def, a name passed to to_thread, and a lambda passed to to_thread).
 gate_selftest() {
   "$PY" -c "
 import sys, pathlib, tempfile, textwrap
 sys.path.insert(0, 'tools/ci')
 import check_async_blocking as c
 d = pathlib.Path(tempfile.mkdtemp()); (d/'app').mkdir()
-bad = textwrap.dedent('''
+
+def scan(names=None): return c.scan_service(d, names or c._blocking_plain_defs([d]))
+
+# 1. DIRECT
+(d/'app'/'m.py').write_text(textwrap.dedent('''
     import urllib.request
     async def check():
         with urllib.request.urlopen(req) as r:
             return r.read()
-''')
-good = textwrap.dedent('''
-    import asyncio, urllib.request
+'''))
+assert scan(), 'gate missed a direct blocking urlopen in an async def'
+
+# 2. HEAVY (bare open)
+(d/'app'/'m.py').write_text(textwrap.dedent('''
     async def check():
+        with open(\"/x\", \"rb\") as f:
+            return f.read()
+'''))
+assert scan(), 'gate missed a heavy open() in an async def'
+
+# 3. INDIRECT: async def calls a plain def that itself blocks
+(d/'app'/'m.py').write_text(textwrap.dedent('''
+    import urllib.request
+    def fetch_thing(u):
+        return urllib.request.urlopen(u).read()
+    async def check():
+        return fetch_thing(\"http://x\")
+'''))
+assert scan(), 'gate missed an INDIRECT call to a blocking plain def'
+
+# NEGATIVES — the real offload shapes must be clean.
+(d/'app'/'m.py').write_text(textwrap.dedent('''
+    import asyncio, urllib.request
+    def fetch_thing(u):
+        return urllib.request.urlopen(u).read()
+    async def a():                      # nested def -> to_thread
         def _do():
-            with urllib.request.urlopen(req) as r:
-                return r.read()
+            return urllib.request.urlopen(req).read()
         return await asyncio.to_thread(_do)
-''')
-(d/'app'/'m.py').write_text(bad)
-assert c.scan_service(d), 'gate missed a blocking urlopen in an async def'
-(d/'app'/'m.py').write_text(good)
-assert not c.scan_service(d), 'gate false-positived on a to_thread-wrapped call'
+    async def b():                      # name passed to to_thread
+        return await asyncio.to_thread(fetch_thing, \"http://x\")
+    async def cc():                     # lambda passed to to_thread (the object_store get() shape)
+        return await asyncio.to_thread(lambda: open(\"/x\", \"rb\").read())
+'''))
+assert not scan(), 'gate false-positived on a to_thread offload (def/name/lambda)'
 sys.exit(0)
 " >/dev/null 2>&1
 }
