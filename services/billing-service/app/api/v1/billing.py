@@ -174,6 +174,7 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
                 "platform_max_pages": s.PLATFORM_MAX_PAGES,
                 "cycle_sweep_limit": s.CYCLE_SWEEP_LIMIT,
                 "cycle_lead_seconds": s.CYCLE_LEAD_SECONDS,
+                "renewal_invoice_mode": s.BILLING_RENEWAL_INVOICE_MODE,
                 "grant_fund": s.WALLET_GRANT_FUND,
                 "plan_credit_limit_key": s.PLAN_CREDIT_LIMIT_KEY,
                 "plan_credit_grant_mode": s.PLAN_CREDIT_GRANT_MODE,

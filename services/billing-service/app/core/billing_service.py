@@ -870,26 +870,12 @@ class BillingService:
         return await self._usage.record(tenant, subscription_id, metric, quantity)
 
     # ── billing cycle ─────────────────────────────────────────────────────────────
-    async def run_cycle(self, sub_id: str) -> Invoice:
-        sub = await self._subs.fetch(sub_id)
-        if sub is None:
-            raise ValueError("SUB_NOT_FOUND")
-        if sub.status not in _BILLABLE:
-            # This check was absent, and it made two features decorative: the cycle invoiced
-            # PAUSED and CANCELED subscriptions exactly like active ones. Pausing suppressed
-            # nothing, and cancelling only stopped renewals if some caller happened not to run
-            # the cycle — charging people who had left, which is the failure customers escalate
-            # rather than report. The state has to be enforced where the money is made.
-            raise ValueError(f"SUB_NOT_BILLABLE:{sub.status}")
-        key = f"cycle:{sub.id}:{int(sub.current_period_end)}"     # deterministic → no double-charge
-        # ATOMIC claim, not get-then-mark: two concurrent runs of the same cycle would each create a
-        # NEW invoice id, so the gateway idempotency key would differ and the card would be charged
-        # TWICE. The claim lets exactly one run proceed; a duplicate replays the invoice or retries.
-        proceed, prior = await self._idempo.claim(key)
-        if prior is not None:
-            return await self._invoices.fetch(prior["invoice_id"]) or Invoice(id="", tenant=sub.tenant)
-        if not proceed:
-            raise ValueError("CYCLE_IN_PROGRESS")     # a concurrent run holds it; the sweep retries
+    async def _compute_renewal(self, sub) -> dict[str, Any]:
+        """Price ONE subscription's renewal — adopt a scheduled downgrade, apply grandfathered price,
+        proration, usage, coupon and tax — and return the invoice LINE + rolled-up amounts + the
+        plan's granted allowance. NO side effects on the invoice/charge/period: the SAME priced unit is
+        used by a per-subscription invoice AND by a consolidated (one-per-tenant) invoice, so both cut
+        identical money. Mutates only `sub`'s plan fields when a pending downgrade is adopted."""
         # A SCHEDULED DOWNGRADE takes effect at THIS renewal: adopt the new plan BEFORE pricing, so the
         # invoice is the new plan at its FULL price for the new period — no proration, no credit, the
         # shop having had full value from the old plan through the period it paid for. `cancel_at_period_end`
@@ -912,12 +898,6 @@ class BillingService:
             usage_units = await self._usage.aggregate(sub.id, price["usage_metric"],
                                                       sub.current_period_start, sub.current_period_end)
         subtotal = pricing.line_amount(price, quantity=sub.quantity, usage_units=usage_units)
-        # FIRST-CYCLE PRORATION for a subscription aligned onto the tenant's grid: its first period is
-        # partial, so charge the RECURRING fee for the fraction of a full interval it covered. Usage is
-        # metered on actuals and billed in full — only the recurring commitment is prorated. Gated on the
-        # explicit flag, never on period length, because a trial's first period is short too and must be
-        # charged in FULL when it converts. The fraction is an exact Decimal over whole seconds, so the
-        # charge is deterministic to the minor unit.
         proration = None
         if getattr(sub, "first_period_prorated", False):
             interval_secs = _INTERVAL.get(sub.interval, _INTERVAL["month"])
@@ -930,8 +910,6 @@ class BillingService:
                          "interval_seconds": interval_secs,
                          "recurring_full_minor": recurring, "recurring_charged_minor": subtotal - metered}
         coupon = await self._coupons.fetch(sub.coupon_code) if sub.coupon_code else None
-        # `now` gates the campaign window: an expired or exhausted coupon must stop
-        # discounting, and until this argument existed neither ever did.
         discount = pricing.coupon_discount(coupon.to_dict() if coupon else None, subtotal,
                                            now=self._clock())
         taxable, tax, total = self._split_tax(subtotal - discount, price.get("includes_tax", False),
@@ -940,22 +918,41 @@ class BillingService:
                 "quantity": sub.quantity, "unit_minor": price.get("amount_minor", 0),
                 "amount_minor": taxable}
         if proration is not None:
-            # A tax invoice must state WHY the amount is not the full unit price. The line names the
-            # partial first period explicitly and carries the exact fraction, so the charge is legible
-            # to the customer, an auditor and the regulator — never a silent short amount.
             line["description"] += " (prorated first period)"
             line["proration"] = proration
-        lines = [line]
-        # Captured from the plan AS SOLD, onto the invoice. Recomputing this later from the live
-        # plan would mean a repriced plan silently changes what an old invoice granted.
         granted = int((plan.limits or {}).get(self._cfg["plan_credit_limit_key"], 0) or 0) if plan else 0
+        return {"line": line, "taxable": taxable, "discount": discount, "tax": tax, "total": total,
+                "currency": currency, "granted": granted, "plan": plan}
+
+    async def run_cycle(self, sub_id: str) -> Invoice:
+        sub = await self._subs.fetch(sub_id)
+        if sub is None:
+            raise ValueError("SUB_NOT_FOUND")
+        if sub.status not in _BILLABLE:
+            # This check was absent, and it made two features decorative: the cycle invoiced
+            # PAUSED and CANCELED subscriptions exactly like active ones. Pausing suppressed
+            # nothing, and cancelling only stopped renewals if some caller happened not to run
+            # the cycle — charging people who had left, which is the failure customers escalate
+            # rather than report. The state has to be enforced where the money is made.
+            raise ValueError(f"SUB_NOT_BILLABLE:{sub.status}")
+        key = f"cycle:{sub.id}:{int(sub.current_period_end)}"     # deterministic → no double-charge
+        # ATOMIC claim, not get-then-mark: two concurrent runs of the same cycle would each create a
+        # NEW invoice id, so the gateway idempotency key would differ and the card would be charged
+        # TWICE. The claim lets exactly one run proceed; a duplicate replays the invoice or retries.
+        proceed, prior = await self._idempo.claim(key)
+        if prior is not None:
+            return await self._invoices.fetch(prior["invoice_id"]) or Invoice(id="", tenant=sub.tenant)
+        if not proceed:
+            raise ValueError("CYCLE_IN_PROGRESS")     # a concurrent run holds it; the sweep retries
+        r = await self._compute_renewal(sub)              # adopt pending + price (no side effects)
         inv = Invoice(id=new_id("inv_"), tenant=sub.tenant, number=await self._invoices.next_number(sub.tenant),
-                      subscription_id=sub.id, lines=lines, subtotal_minor=taxable, discount_minor=discount,
-                      tax_minor=tax, total_minor=total, currency=currency, status="open", created=iso(),
+                      subscription_id=sub.id, lines=[r["line"]], subtotal_minor=r["taxable"],
+                      discount_minor=r["discount"], tax_minor=r["tax"], total_minor=r["total"],
+                      currency=r["currency"], status="open", created=iso(),
                       # period_end travels WITH the invoice so a `reset` grant expires at the end
                       # of the period it was sold for, even if delivery is retried days later.
-                      meta={"grant_minor": granted,
-                            "period_end": sub.current_period_end} if granted > 0 else {})
+                      meta={"grant_minor": r["granted"],
+                            "period_end": sub.current_period_end} if r["granted"] > 0 else {})
         await self._invoices.save(inv)
         sub.current_period_start = sub.current_period_end
         sub.current_period_end += _INTERVAL.get(sub.interval, _INTERVAL["month"])
@@ -1218,6 +1215,21 @@ class BillingService:
                 await self._grants.record(
                     tenant=inv.tenant, invoice_id=inv.id, fund=fund,
                     amount_minor=grantable, reason=f"invoice:{inv.number}", expires_at=expires)
+            # CONSOLIDATED invoice: one grant PER subscription (meta.grants). Each carries its own
+            # sub_id as the discriminator, so the several grants under one invoice are distinct,
+            # independently-idempotent promises (not collapsed onto a single invoice-keyed source).
+            for g in (inv.meta or {}).get("grants", []) or []:
+                amt = int(g.get("amount_minor", 0) or 0)
+                if amt <= 0:
+                    continue
+                g_expires = None
+                if self._cfg["plan_credit_grant_mode"] == "reset":
+                    g_expires = float(g.get("period_end", 0) or 0) or None
+                await self._grants.record(
+                    tenant=inv.tenant, invoice_id=inv.id,
+                    fund=g.get("fund") or self._cfg["grant_fund"], amount_minor=amt,
+                    reason=f"invoice:{inv.number}:{g.get('sub_id', '')}", expires_at=g_expires,
+                    discriminator=str(g.get("sub_id", "")))
         if self._events is not None:
             payload = _events.payment_payload(inv, source=source or inv.number)
             await self._events.emit(_events.INVOICE_PAID, payload)
@@ -1552,9 +1564,28 @@ class BillingService:
         limit = self._cfg["cycle_sweep_limit"]
         horizon = self._clock() + self._cfg.get("cycle_lead_seconds", 0)
         due = await self._subs.due(horizon, limit)
+        mode = self._cfg.get("renewal_invoice_mode", "per_subscription")
         invoiced = failed = 0
         errors: list[dict[str, str]] = []
-        for sub in due:
+
+        # Decide the unit(s) to invoice per the MODE. per_subscription: one run_cycle per sub (today).
+        # consolidated/hybrid: group the due subs by (tenant, gateway) into ONE invoice each; in hybrid
+        # a `bill_separately` sub opts back out to its own invoice. Grouping by gateway keeps every
+        # consolidated invoice chargeable by a single token. Money safety is unchanged: the per-sub
+        # idempotency claim inside run_consolidated_cycle still guarantees one charge/advance per sub.
+        singles: list = []
+        groups: dict[tuple[str, str], list] = {}
+        if mode in ("consolidated", "hybrid"):
+            for sub in due:
+                if mode == "hybrid" and getattr(sub, "bill_separately", False):
+                    singles.append(sub)
+                else:
+                    key = (sub.tenant, self._group_gateway_key(sub), self._sub_currency(sub))
+                    groups.setdefault(key, []).append(sub)
+        else:
+            singles = list(due)
+
+        for sub in singles:
             try:
                 await self.run_cycle(sub.id)
                 invoiced += 1
@@ -1563,8 +1594,102 @@ class BillingService:
                 # The reason is kept for the run report, never swallowed: an operator needs to see
                 # WHICH subscriptions are stuck, or a slow leak of unrenewed customers is invisible.
                 errors.append({"subscription_id": sub.id, "error": type(exc).__name__})
-        return {"due": len(due), "invoiced": invoiced, "failed": failed,
+        for gsubs in groups.values():
+            try:
+                inv = await self.run_consolidated_cycle(gsubs)
+                if inv is not None:
+                    invoiced += 1
+            except Exception as exc:  # noqa: BLE001 — one group's failure must not stop the others
+                failed += 1
+                errors.append({"tenant": gsubs[0].tenant, "error": type(exc).__name__,
+                               "subscriptions": ",".join(s.id for s in gsubs)})
+        return {"due": len(due), "invoiced": invoiced, "failed": failed, "mode": mode,
                 "capped": len(due) >= limit, "errors": errors}
+
+    def _group_gateway_key(self, sub) -> str:
+        """The gateway a consolidated invoice will charge on. In pinned mode that is the subscription's
+        OWN pinned gateway (so different-gateway subs never share one invoice); in active mode every sub
+        charges the one active gateway, so they group together (key "")."""
+        if self._cfg.get("renewal_gateway_mode") == "pinned":
+            return (getattr(sub, "payment_gateway", "") or "").strip()
+        return ""
+
+    def _sub_currency(self, sub) -> str:
+        """The currency this subscription renews in — the snapshot the invoice will be cut in. Used to
+        keep a consolidated invoice single-currency: money in two currencies must NEVER be summed into
+        one total, so subscriptions of different currencies land in different groups."""
+        return ((sub.price_snapshot or {}).get("currency") or self._cfg["currency"]).strip()
+
+    async def run_consolidated_cycle(self, subs: list) -> Invoice | None:
+        """Renew a group of due subscriptions for ONE (tenant, gateway) into a SINGLE invoice — a line
+        per subscription, one charge, one pay-link. Each subscription is claimed and advanced under its
+        OWN idempotency key (cycle:{sub}:{period_end}), so nothing is charged or advanced twice even if
+        the group is swept concurrently or overlaps a per-sub run; a sub already renewed is excluded.
+        A group-level claim stops two concurrent sweeps cutting two invoices for the same group."""
+        if not subs:
+            return None
+        tenant = subs[0].tenant
+        group_ccy = self._sub_currency(subs[0])
+        bucket = int(min(float(s.current_period_end) for s in subs))
+        gkey = f"consol:{tenant}:{self._group_gateway_key(subs[0])}:{group_ccy}:{bucket}"
+        proceed, prior = await self._idempo.claim(gkey)
+        if prior is not None:
+            return await self._invoices.fetch(prior.get("invoice_id", "")) if prior.get("invoice_id") else None
+        if not proceed:
+            raise ValueError("CYCLE_IN_PROGRESS")
+        lines: list[dict] = []
+        grants_meta: list[dict] = []
+        claimed: list[tuple[Any, str]] = []               # (sub, its per-sub idempo key)
+        subtotal = discount = tax = total = 0
+        currency = None
+        rep_token = ""
+        for sub in subs:
+            if self._sub_currency(sub) != group_ccy:
+                continue          # defence: never sum two currencies into one total (checked pre-claim)
+            skey = f"cycle:{sub.id}:{int(sub.current_period_end)}"
+            sproceed, sprior = await self._idempo.claim(skey)
+            if sprior is not None or not sproceed:
+                continue                                  # already renewed / in progress → exclude
+            r = await self._compute_renewal(sub)
+            currency = currency or r["currency"]
+            lines.append(r["line"])
+            subtotal += r["taxable"]; discount += r["discount"]; tax += r["tax"]; total += r["total"]
+            sold_period_end = sub.current_period_end      # the period being sold (grant expiry basis)
+            sub.current_period_start = sub.current_period_end
+            sub.current_period_end += _INTERVAL.get(sub.interval, _INTERVAL["month"])
+            sub.first_period_prorated = False
+            if sub.status == "trialing":
+                sub.status = "active"
+            await self._subs.save(sub)
+            if r["granted"] > 0:
+                grants_meta.append({"sub_id": sub.id, "fund": self._cfg["grant_fund"],
+                                    "amount_minor": r["granted"], "period_end": sold_period_end})
+            rep_token = rep_token or sub.payment_token
+            claimed.append((sub, skey))
+        if not claimed:
+            await self._idempo.mark(gkey, {"invoice_id": ""})   # all already renewed concurrently
+            return None
+        meta: dict[str, Any] = {"consolidated": True}
+        if grants_meta:
+            meta["grants"] = grants_meta
+        inv = Invoice(id=new_id("inv_"), tenant=tenant,
+                      number=await self._invoices.next_number(tenant), subscription_id="",
+                      lines=lines, subtotal_minor=subtotal, discount_minor=discount, tax_minor=tax,
+                      total_minor=total, currency=currency or self._cfg["currency"], status="open",
+                      created=iso(), meta=meta)
+        await self._invoices.save(inv)
+        for sub, skey in claimed:
+            await self._idempo.mark(skey, {"invoice_id": inv.id})
+        await self._idempo.mark(gkey, {"invoice_id": inv.id})
+        await self._charge_invoice(inv, rep_token, claimed[0][0])   # one charge, group's gateway/token
+        if self._events is not None:
+            for sub, _ in claimed:
+                await self._events.emit(_events.SUBSCRIPTION_RENEWED, {
+                    "tenant": tenant, "subscription_id": sub.id, "plan_id": sub.plan_id,
+                    "invoice_id": inv.id, "period_key": f"cycle:{sub.id}:{int(sub.current_period_start)}",
+                    "period_start": sub.current_period_start, "period_end": sub.current_period_end,
+                    "limits": dict(sub.limits_snapshot or {}) if hasattr(sub, "limits_snapshot") else {}})
+        return await self._invoices.fetch(inv.id) or inv
 
     async def dunning_sweep(self) -> dict[str, Any]:
         due = await self._payments.due(now_ts(), self._cfg["list_limit"])

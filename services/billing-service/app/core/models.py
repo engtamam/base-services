@@ -129,6 +129,9 @@ class Subscription:
     pending_interval: str = ""
     pending_quantity: int = 0
     cancel_at_period_end: bool = False
+    # HYBRID renewal mode only: keep THIS subscription on its own invoice even when the tenant's other
+    # due subscriptions are consolidated into one. Default False → it joins the consolidated invoice.
+    bill_separately: bool = False
     created: str = ""
     # When the subscription actually became `canceled` (ISO-8601), stamped at the transition — not to
     # be confused with cancel_at_period_end (a SCHEDULED intent that has not taken effect yet). Empty

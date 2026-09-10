@@ -338,6 +338,17 @@ class Settings(BaseSettings):
     # Invoice this many seconds BEFORE a period actually ends, so a renewal is raised before access
     # lapses. 0 = exactly at the boundary. Never negative — that would skip due renewals.
     CYCLE_LEAD_SECONDS: int = 0
+    # How the renewal sweep cuts invoices for a tenant with several due subscriptions — a MODE each
+    # platform picks, so nothing changes for anyone who does not opt in:
+    #   per_subscription (DEFAULT) — one invoice per subscription, exactly as today.
+    #   consolidated               — ONE invoice per (tenant, gateway) per sweep, a line per due
+    #                                subscription, one charge, one WhatsApp pay-link. Grouped by gateway
+    #                                so a consolidated invoice is always chargeable by one token.
+    #   hybrid                     — consolidated by default, but a subscription flagged
+    #                                `bill_separately` keeps its own invoice (per-app flexibility).
+    # Money safety is unchanged in every mode: the per-subscription idempotency claim
+    # (cycle:{sub}:{period_end}) stays the guard, so no period is ever advanced or charged twice.
+    BILLING_RENEWAL_INVOICE_MODE: str = "per_subscription"
     DUNNING_MAX_ATTEMPTS: int = 4
     GRACE_DAYS: int = 7
     # When a paused subscription's invoice is paid (card, webhook or off-gateway settle), reactivate

@@ -116,19 +116,24 @@ class GrantOutbox:
     # ── record ────────────────────────────────────────────────────────────────
     async def record(self, *, tenant: str, invoice_id: str, fund: str, amount_minor: int,
                      reason: str = "", expires_at: float | None = None,
-                     meta: dict | None = None) -> Grant | None:
+                     meta: dict | None = None, discriminator: str = "") -> Grant | None:
         """Write the promise down. Returns None when there is nothing to grant.
 
         The id IS the source, so recording the same invoice twice overwrites one row instead of
         queueing a second delivery. Two rows would both be delivered, and the wallet would
         de-duplicate them — but only because it happens to key on the same string. Relying on the
         far side to clean up after us is not a design, it is a coincidence.
+
+        `discriminator` distinguishes SEVERAL grants under ONE invoice (a CONSOLIDATED renewal invoice
+        carries one grant per subscription). Without it two grants for the same invoice would share a
+        source and only one would be credited; with it (e.g. the subscription id) each is a distinct,
+        independently-idempotent promise.
         """
         if amount_minor <= 0:
             # Nothing to grant. A zero grant would be an outbox row that delivers nothing for ever,
             # and a negative one is a refund pretending to be a credit.
             return None
-        source = source_for(invoice_id)
+        source = source_for(invoice_id) + (f":{discriminator}" if discriminator else "")
         existing = await self._s.get(_COLL, source)
         if existing:
             return Grant.from_dict(existing)
