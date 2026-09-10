@@ -281,9 +281,6 @@ class WalletService:
         if not proceed:
             raise Conflict("WALLET_OP_IN_PROGRESS")
 
-        entry = self._entry(tenant, CREDIT, {fund: int(amount)}, +1, source=source, reason=reason)
-        out = await self._mutate(tenant, funds_delta={fund: int(amount)}, entry=entry)
-
         # Freeze the fund's ENTIRE expiry policy onto the grant at credit time — expiry AND behaviour —
         # so a later config change (or a deleted policy) can never retroactively forfeit a grant that
         # was issued as preserved/reclaimable. ttl_days=0 (or no policy) ⇒ never expires.
@@ -292,6 +289,14 @@ class WalletService:
             ttl_days = int(pol.get("ttl_days", 0))
             if ttl_days > 0:
                 expires_at = self._clock.now() + ttl_days * 86400
+        # Write the grant BEFORE the atomic balance credit, and roll it back if the credit fails —
+        # exactly as reserve() does with its Hold. Writing the grant AFTER _mutate (the old order) left
+        # a window where the balance was already credited but the grant carrying its TTL/idle policy was
+        # not: a failed grant write then (a) made the credit silently PERMANENT (no expiry), and worse
+        # (b) aborted before _finalize, so the idempotency claim stayed `pending` — once its lease
+        # lapsed, a redelivered settlement webhook re-ran credit() and DOUBLE-credited. Grant-first with
+        # rollback closes both: a grant failure credits nothing, a credit failure leaves no orphan grant.
+        grant = None
         if expires_at:
             grant = Grant(id=new_id("grt_"), tenant=tenant, fund=fund, amount=int(amount),
                           expires_at=float(expires_at),
@@ -300,6 +305,15 @@ class WalletService:
                           notice_days=int(pol.get("notice_days", 0)),
                           created=self._clock.now())
             await self._store.put(_GRANTS, grant.id, grant.to_dict())
+
+        entry = self._entry(tenant, CREDIT, {fund: int(amount)}, +1, source=source, reason=reason)
+        try:
+            out = await self._mutate(tenant, funds_delta={fund: int(amount)}, entry=entry)
+        except Exception:
+            if grant is not None:
+                await self._store.delete(_GRANTS, grant.id)   # nothing was credited — no orphan grant
+            raise
+        if grant is not None:
             out["grant_id"] = grant.id
 
         result = {"credited": int(amount), "fund": fund, **out}
