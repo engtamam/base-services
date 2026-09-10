@@ -692,6 +692,12 @@
             "title": "Body",
             "type": "string"
           },
+          "category": {
+            "default": "transactional",
+            "pattern": "^(transactional|marketing)$",
+            "title": "Category",
+            "type": "string"
+          },
           "key": {
             "maxLength": 128,
             "minLength": 1,

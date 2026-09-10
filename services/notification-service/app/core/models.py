@@ -15,6 +15,16 @@ def new_id() -> str:
     return uuid.uuid4().hex
 
 
+# A template's CONSENT CATEGORY — the source of truth for "does sending this need consent?". A
+# `marketing` template MUST be mapped to a consent purpose (NOTIFY_CONSENT_PURPOSES) so the send path
+# gates it; the boot + write guards enforce that, closing the gap where a marketing template a
+# developer forgot to map shipped as unchecked "transactional". Default transactional (OTP, receipts,
+# booking updates — sent under contract, not consent).
+TEMPLATE_TRANSACTIONAL = "transactional"
+TEMPLATE_MARKETING = "marketing"
+TEMPLATE_CATEGORIES = (TEMPLATE_TRANSACTIONAL, TEMPLATE_MARKETING)
+
+
 @dataclass
 class Template:
     key: str
@@ -22,14 +32,16 @@ class Template:
     subject: str
     body: str
     version: int = 1
+    category: str = TEMPLATE_TRANSACTIONAL
 
     def to_dict(self) -> dict[str, Any]:
         return {"key": self.key, "locale": self.locale, "subject": self.subject,
-                "body": self.body, "version": self.version}
+                "body": self.body, "version": self.version, "category": self.category}
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Template":
-        return cls(d["key"], d["locale"], d["subject"], d["body"], int(d.get("version", 1)))
+        return cls(d["key"], d["locale"], d["subject"], d["body"], int(d.get("version", 1)),
+                   str(d.get("category", TEMPLATE_TRANSACTIONAL) or TEMPLATE_TRANSACTIONAL))
 
 
 @dataclass

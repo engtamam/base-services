@@ -293,6 +293,9 @@ class TemplateIn(BaseModel):
     subject: str = Field(default="", max_length=512)
     body: str = Field(min_length=1, max_length=20000)
     version: int = 1
+    # transactional (default) | marketing. A marketing template must be mapped to a consent purpose;
+    # the upsert route enforces it so it can never be saved unmapped (and then sent unchecked).
+    category: str = Field(default="transactional", pattern="^(transactional|marketing)$")
 
 
 # ── User: in-app feed ────────────────────────────────────────────────────────
@@ -343,8 +346,15 @@ async def set_preferences(request: Request, body: PreferenceIn,
 # ── Admin: template management (capability-gated) ────────────────────────────
 @templates_router.post("", dependencies=[Depends(_PLATFORM_CAP)])
 async def upsert_template(request: Request, body: TemplateIn) -> dict:
+    from app.core.consent_guard import is_unmapped_marketing
+    # A marketing template with no consent-purpose mapping would send unchecked — refuse to save it.
+    if is_unmapped_marketing(body.key, body.category, get_settings().notify_consent_purposes):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"MARKETING_TEMPLATE_UNMAPPED:{body.key} — add it to NOTIFY_CONSENT_PURPOSES so the "
+            f"send path checks consent before sending it")
     tmpl = Template(key=body.key, locale=body.locale, subject=body.subject,
-                    body=body.body, version=body.version)
+                    body=body.body, version=body.version, category=body.category)
     await TemplateStore(request.app.state.container.datastore).upsert(tmpl)
     return tmpl.to_dict()
 

@@ -78,14 +78,31 @@ def create_app() -> FastAPI:
         # and then serving every template that already exists.
         seeds = settings.notify_seed_templates
         if seeds:
-            from app.core.models import Template
+            from app.core.consent_guard import is_unmapped_marketing
+            from app.core.models import TEMPLATE_TRANSACTIONAL, Template
             from app.core.stores import TemplateStore
+            # FAIL CLOSED, BEFORE serving a single request: a seeded MARKETING template with no
+            # consent-purpose mapping would send unchecked. Refuse to start rather than run with the
+            # hole — a deploy that pairs a marketing template with a missing mapping is a
+            # misconfiguration to fix, not to serve. (Transactional seeds are unaffected.)
+            purposes = settings.notify_consent_purposes
+            unmapped = [e.get("key") for e in seeds
+                        if is_unmapped_marketing(str(e.get("key", "")),
+                                                 str(e.get("category", TEMPLATE_TRANSACTIONAL)
+                                                     or TEMPLATE_TRANSACTIONAL), purposes)]
+            if unmapped:
+                raise RuntimeError(
+                    "marketing seed template(s) not mapped to a consent purpose "
+                    f"(NOTIFY_CONSENT_PURPOSES): {unmapped} — a marketing send must be consent-gated")
             store = TemplateStore(container.datastore)
             seeded = 0
             for entry in seeds:
                 try:
-                    await store.upsert(Template(key=entry["key"], locale=entry["locale"],
-                                                subject=entry["subject"], body=entry["body"]))
+                    await store.upsert(Template(
+                        key=entry["key"], locale=entry["locale"], subject=entry["subject"],
+                        body=entry["body"],
+                        category=str(entry.get("category", TEMPLATE_TRANSACTIONAL)
+                                     or TEMPLATE_TRANSACTIONAL)))
                     seeded += 1
                 except Exception as exc:      # noqa: BLE001 - boot must not die on one template
                     logger.error("template_seed_failed",
