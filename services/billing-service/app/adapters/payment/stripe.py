@@ -89,4 +89,5 @@ class StripeGateway:
         kind = "payment.succeeded" if "succeeded" in t else "payment.failed" if "failed" in t \
             else "refund" if "refund" in t else "unknown"
         return WebhookEvent(verified=verified, type=kind,
+                            event_id=str(evt.get("id", "")),   # Stripe evt_… — a true per-event id
                             provider_id=str(((evt.get("data") or {}).get("object") or {}).get("id", "")))

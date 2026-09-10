@@ -97,4 +97,5 @@ class PayPalGateway:
         kind = "payment.succeeded" if "COMPLETED" in t or "CAPTURE.COMPLETED" in t else \
             "refund" if "REFUND" in t else "payment.failed" if "DENIED" in t or "DECLINED" in t else "unknown"
         return WebhookEvent(verified=verified, type=kind,
+                            event_id=str(evt.get("id", "")),   # PayPal WH-… webhook event id
                             provider_id=str(((evt.get("resource") or {})).get("id", "")))

@@ -93,4 +93,5 @@ class MoyasarGateway:
         else:
             kind = "payment.failed"
         return WebhookEvent(verified=verified, type=kind,
+                            event_id=str(evt.get("id", "")),   # Moyasar top-level event id (≠ data.id)
                             provider_id=str((evt.get("data") or {}).get("id", "")))

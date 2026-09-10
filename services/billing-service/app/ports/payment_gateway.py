@@ -37,7 +37,12 @@ class Charge:
 class WebhookEvent:
     verified: bool
     type: str = ""                        # payment.succeeded | payment.failed | refund | unknown
-    provider_id: str = ""
+    provider_id: str = ""                 # the gateway's charge/payment id
+    # The gateway's OWN unique id for THIS notification (Stripe evt_…, Checkout event id, …), when it
+    # sends one. It is the strongest dedupe key: it distinguishes two genuinely-different events about
+    # the same charge (e.g. two partial refunds). Empty ⇒ the handler falls back to a composite key
+    # (provider:provider_id:type). Populated per adapter where the payload carries an event id.
+    event_id: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
 
 

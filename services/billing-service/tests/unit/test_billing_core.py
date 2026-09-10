@@ -155,7 +155,8 @@ class MockGW:
             e = json.loads(k["body"])
         except Exception:
             return WebhookEvent(verified=False)
-        return WebhookEvent(verified=k["secret"] == "good", type=e.get("type", ""), provider_id=e.get("pid", ""))
+        return WebhookEvent(verified=k["secret"] == "good", type=e.get("type", ""),
+                            provider_id=e.get("pid", ""), event_id=e.get("eid", ""))
 
 
 class MockEInv:
@@ -339,6 +340,38 @@ def test_webhook_reconcile_idempotent():
     assert r["reconciled"] and run(InvoiceStore(st).fetch(inv.id)).status == "paid"
     r2 = run(b.handle_webhook("mock", {}, body, "good"))                        # idempotent
     assert r2["payment_status"] == "succeeded"
+
+
+def test_webhook_replay_of_the_same_event_id_is_deduped():
+    """A re-delivered/replayed notification with the SAME gateway event id is skipped (duplicate),
+    money moves once — defence-in-depth over the state machine."""
+    import json
+    st = MemoryDataStore()
+    b = _svc(st, MockGW(ok=False))
+    _, sub = _plan_sub(b)
+    inv = run(b.run_cycle(sub.id))
+    pid = run(PaymentStore(st).list_tenant("t1", 10))[0]["provider_id"]
+    body = json.dumps({"type": "payment.succeeded", "pid": pid, "eid": "evt_123"}).encode()
+    r1 = run(b.handle_webhook("mock", {}, body, "good"))
+    r2 = run(b.handle_webhook("mock", {}, body, "good"))     # exact replay (same eid)
+    assert r1["reconciled"] is True
+    assert r2.get("duplicate") is True and r2["payment_status"] == "succeeded"
+    assert run(InvoiceStore(st).fetch(inv.id)).status == "paid"
+
+
+def test_webhook_distinct_event_ids_are_not_collapsed():
+    """Two DIFFERENT event ids for the same charge+type are NOT treated as one — the event id, not
+    just (charge,type), is the dedupe key, so a genuinely distinct event is never silently dropped."""
+    import json
+    st = MemoryDataStore()
+    b = _svc(st, MockGW(ok=False))
+    _, sub = _plan_sub(b)
+    run(b.run_cycle(sub.id))
+    pid = run(PaymentStore(st).list_tenant("t1", 10))[0]["provider_id"]
+    e1 = json.dumps({"type": "payment.succeeded", "pid": pid, "eid": "evt_a"}).encode()
+    e2 = json.dumps({"type": "payment.succeeded", "pid": pid, "eid": "evt_b"}).encode()
+    assert run(b.handle_webhook("mock", {}, e1, "good")).get("duplicate") is not True
+    assert run(b.handle_webhook("mock", {}, e2, "good")).get("duplicate") is not True  # distinct id
 
 
 def test_webhook_rejects_a_tenant_mismatch():

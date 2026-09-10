@@ -67,4 +67,5 @@ class CheckoutGateway:
         kind = "payment.succeeded" if t in ("payment_approved", "payment_captured") else \
             "refund" if "refund" in t else "payment.failed" if "declined" in t or "failed" in t else "unknown"
         return WebhookEvent(verified=verified, type=kind,
+                            event_id=str(evt.get("id", "")),   # Checkout.com per-event id
                             provider_id=str(((evt.get("data") or {})).get("id", "")))

@@ -1637,9 +1637,26 @@ class BillingService:
         # Prevents driving another tenant's payment with a valid-but-wrong-tenant signing secret.
         if webhook_tenant and pay.tenant != webhook_tenant:
             return {"ok": False, "reason": "TENANT_MISMATCH", "type": event.type}
+        # EVENT-LEVEL DEDUPE (defence-in-depth over the state machine below). A gateway re-delivers a
+        # notification, and a hostile party may replay a captured one; some gateways (field-digest
+        # schemes) carry no timestamp, so a freshness window is impossible — a per-event fingerprint is
+        # the correct, gateway-agnostic replay guard. Key = the gateway's own event id when present,
+        # else a composite (provider:charge:type). Routed through the SAME atomic idempotency claim the
+        # rest of the service uses (one mechanism), so a duplicate replays the first result and never
+        # re-runs the outcome; a crash mid-process leaves a pending claim that re-runs after its lease.
+        fp = getattr(event, "event_id", "") or f"{provider}:{event.provider_id}:{event.type}"
+        wh_key = f"wh:{fp}"
+        proceed, prior = await self._idempo.claim(wh_key)
+        if prior is not None:
+            return {**prior, "duplicate": True}
+        if not proceed:
+            # A concurrent delivery of the SAME event is mid-process; the gateway will retry.
+            return {"ok": True, "reconciled": False, "in_progress": True, "type": event.type}
         outcome = await self._apply_outcome(pay, event.type)
-        return {"ok": True, "reconciled": True, "type": event.type,
-                "payment_status": outcome["payment_status"]}
+        result = {"ok": True, "reconciled": True, "type": event.type,
+                  "payment_status": outcome["payment_status"]}
+        await self._idempo.mark(wh_key, result)
+        return result
 
     async def _apply_outcome(self, pay: Payment, kind: str) -> dict[str, Any]:
         """Move a payment (and its invoice) to the outcome a gateway reports — the ONE seam a
