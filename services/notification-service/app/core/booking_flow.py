@@ -18,11 +18,19 @@ The engine returns bare {screen, data} dicts; flow_endpoint.process encrypts the
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 INIT, BACK, DATA_EXCHANGE = "INIT", "BACK", "data_exchange"
 SELECT, CALENDAR, TIME, CONFIRM, SUCCESS = "SELECT", "CALENDAR", "TIME", "CONFIRM", "SUCCESS"
+# A free-TEXT input screen (Meta TextInput): the person TYPES a value — a phone number, a plate —
+# instead of picking from a list (nobody preselects who a walk-in visit is for). A step opts in with
+# {"input": "text"}; the chosen value is the trimmed string. Its own field name so it never collides
+# with the SELECT screens' "selection". An optional step "pattern" (regex) is a basic guardrail; real
+# format/existence validation stays the provider's job.
+INPUT = "INPUT"
+INPUT_FIELD = "input_value"
 # A SECOND selection screen, identical to SELECT but backed by a CheckboxGroup (many choices) instead
 # of a RadioButtonsGroup (one). A single reused screen cannot be both, so a step that opts into
 # `"multi": true` renders here; single-choice steps stay on SELECT. Same submitted field name — the
@@ -44,6 +52,18 @@ def _submitted_field(dimension: str) -> str:
     if dimension == _TIME:
         return _TIME
     return SELECTION_FIELD
+
+
+def _is_text_step(step: dict[str, Any]) -> bool:
+    return step.get("input") == "text"
+
+
+def _field_for_step(step: dict[str, Any]) -> str:
+    """The submitted-field name for a step — canonical per SCREEN type (date/time pickers carry their
+    own name; a text step submits INPUT_FIELD; every SELECT/SELECT_MULTI screen submits SELECTION_FIELD)."""
+    if _is_text_step(step):
+        return INPUT_FIELD
+    return _submitted_field(step.get("dimension", ""))
 
 
 class BookingError(ValueError):
@@ -138,19 +158,26 @@ class FlowDefinition:
         if not self.steps:
             raise BookingError("a booking flow needs at least one step")
         dims = [s.get("dimension") for s in self.steps]
-        if _DATE not in dims:
-            raise BookingError("a booking flow must include a 'date' step")
+        # confirm is the ONE universal requirement — every flow ends by committing. `date` (and `time`)
+        # are OPTIONAL: a "happens now" flow (a walk-in visit) has no calendar, so forcing one would be
+        # a fake detour. When a date step IS present the calendar rules below still apply.
         if _CONFIRM not in dims:
-            raise BookingError("a booking flow must include a 'confirm' step")
+            raise BookingError("a flow must include a 'confirm' step")
         if dims[-1] != _CONFIRM:
             raise BookingError("'confirm' must be the last step")
+        if _TIME in dims and _DATE not in dims:
+            raise BookingError("a 'time' step needs a 'date' step")
+        if self.mode == "range" and _DATE not in dims:
+            raise BookingError("range mode needs a 'date' step")
         if _TIME in dims and self.mode == "range":
             raise BookingError("range mode has no single time step")
         for s in self.steps:
             if s.get("multi") and s.get("dimension") in (_DATE, _TIME, _CONFIRM):
                 raise BookingError("'multi' is only valid on a selection step, not date/time/confirm")
-        if dims.index(_DATE) < len([d for d in dims if d not in (_DATE, _TIME, _CONFIRM)]):
-            # date must come after every selection dimension (so calendar sees the full selection)
+            if _is_text_step(s) and s.get("dimension") in (_DATE, _TIME, _CONFIRM):
+                raise BookingError("a text 'input' step must be a selection dimension, not date/time/confirm")
+        if _DATE in dims:
+            # date must come after every selection/input dimension (so the calendar sees the full choice)
             for d in dims[dims.index(_DATE):]:
                 if d not in (_DATE, _TIME, _CONFIRM):
                     raise BookingError("selection steps must come before 'date'")
@@ -266,7 +293,8 @@ class BookingEngine:
         step_i = int(state["step"])
         if step_i >= len(defn.steps):
             return {"screen": CONFIRM, "data": {"error_message": "This booking has already finished."}}
-        dim = defn.steps[step_i]["dimension"]
+        step = defn.steps[step_i]
+        dim = step["dimension"]
 
         if dim == _CONFIRM:
             result = await self._booking.reserve(
@@ -280,10 +308,22 @@ class BookingEngine:
             return {"screen": SUCCESS, "data": {"extension_message_response": {"params": {
                 "flow_token": token, "booking_ref": result.get("ref", "")}}}}
 
-        # a selection / date / time submission. The submitted field name is CANONICAL per screen type
-        # (a reused SELECT screen has one fixed component name, not the dimension) — see _submitted().
-        value = data.get(_submitted_field(dim))
-        if self._is_selection(dim) and bool(defn.steps[step_i].get("multi")):
+        # a selection / text / date / time submission. The submitted field name is CANONICAL per screen
+        # type (a reused SELECT screen has one fixed component name, not the dimension) — see _field_for_step.
+        value = data.get(_field_for_step(step))
+        if _is_text_step(step):
+            # Free text: trim, require non-empty, and honour an optional `pattern` guardrail. Real
+            # format/existence validation stays the provider's job (this only stops an empty/garbage tap).
+            value = str(value or "").strip()
+            if not value:
+                return await self._render(defn, tenant, token, state,
+                                          error=defn.label("required", "Please enter a value."))
+            pattern = step.get("pattern")
+            if pattern and not re.fullmatch(str(pattern), value):
+                return await self._render(defn, tenant, token, state,
+                                          error=defn.label(f"invalid_{dim}",
+                                                           defn.label("invalid", "That does not look right.")))
+        elif self._is_selection(dim) and bool(step.get("multi")):
             # CheckboxGroup submits a LIST. Normalise (a lone pick may arrive bare), drop blanks, and
             # require at least one — an empty multi-select is the "required" error, same as single.
             items = value if isinstance(value, (list, tuple)) else ([] if value in (None, "") else [value])
@@ -311,13 +351,19 @@ class BookingEngine:
             step_i = int(state["step"])
             if step_i >= len(defn.steps):
                 return await self._confirm_screen(defn, chosen, error=error)
-            dim = defn.steps[step_i]["dimension"]
+            step = defn.steps[step_i]
+            dim = step["dimension"]
             if not self._is_selection(dim):
                 break
+            if _is_text_step(step):
+                # A free-text step: render the TextInput screen. No options()/skip — nobody preselects.
+                return {"screen": INPUT, "data": {
+                    "dimension": dim, "title": defn.label(f"enter_{dim}", f"Enter {dim}"),
+                    **({"error_message": error} if error else {})}}
             options = await self._avail.options(tenant=tenant, dimension=dim, chosen=chosen,
                                                 customer=customer)
             if not self._is_skip(options):
-                multi = bool(defn.steps[step_i].get("multi"))
+                multi = bool(step.get("multi"))
                 return {"screen": SELECT_MULTI if multi else SELECT, "data": {
                     "dimension": dim, "title": defn.label(f"pick_{dim}", f"Choose {dim}"),
                     "options": options, "multi": multi,

@@ -16,8 +16,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.core.booking_flow import (CALENDAR, CONFIRM, SELECT, SELECT_MULTI, SELECTION_FIELD, SUCCESS,
-                                   TIME, FlowDefinition)
+from app.core.booking_flow import (CALENDAR, CONFIRM, INPUT, INPUT_FIELD, SELECT, SELECT_MULTI,
+                                   SELECTION_FIELD, SUCCESS, TIME, FlowDefinition)
 
 _VERSION = "7.3"        # Flow JSON schema; must be >=6.1 for CalendarPicker (see module docstring)
 _DATA_API_VERSION = "3.0"
@@ -60,6 +60,22 @@ def _select_multi_screen(defn: FlowDefinition) -> dict[str, Any]:
              "required": True, "min-selected-items": 1, "data-source": "${data.options}"},
             _footer(defn.label("continue", "Continue"),
                     {SELECTION_FIELD: "${form." + SELECTION_FIELD + "}"})]}}
+
+
+def _input_screen(defn: FlowDefinition) -> dict[str, Any]:
+    # ONE reused free-TEXT screen (Meta TextInput) for every {"input":"text"} step; the endpoint fills
+    # the title each time. Submits INPUT_FIELD — the name the engine reads. input-type "text" so a
+    # leading + or 0 on a phone number is preserved.
+    return {
+        "id": INPUT, "title": defn.label("input_title", "Enter a value"),
+        "data": {"title": {"type": "string", "__example__": "Enter the customer's phone"},
+                 "error_message": {"type": "string", "__example__": "", "optional": True}},
+        "layout": {"type": "SingleColumnLayout", "children": [
+            {"type": "TextHeading", "text": "${data.title}"},
+            {"type": "TextInput", "name": INPUT_FIELD, "label": "${data.title}",
+             "input-type": "text", "required": True},
+            _footer(defn.label("continue", "Continue"),
+                    {INPUT_FIELD: "${form." + INPUT_FIELD + "}"})]}}
 
 
 def _calendar_screen(defn: FlowDefinition) -> dict[str, Any]:
@@ -123,29 +139,39 @@ def _success_screen(defn: FlowDefinition) -> dict[str, Any]:
 
 
 def build_booking_flow_json(defn: FlowDefinition) -> dict[str, Any]:
-    """The companion Flow JSON for a booking definition. Includes the SELECT screen only if the
-    definition has selection steps, and the TIME screen only in single mode."""
+    """The companion Flow JSON for a flow definition, shaped to the steps it actually has: a SELECT
+    and/or SELECT_MULTI screen for selection steps, an INPUT screen for free-text steps, and CALENDAR
+    /TIME only when the definition includes date/time (a "happens now" flow has neither). CONFIRM +
+    SUCCESS always close it."""
     dims = [s.get("dimension") for s in defn.steps]
     sel_steps = [s for s in defn.steps if s.get("dimension") not in ("date", "time", "confirm")]
-    has_single = any(not s.get("multi") for s in sel_steps)   # a SELECT (RadioButtonsGroup) screen
-    has_multi = any(s.get("multi") for s in sel_steps)         # a SELECT_MULTI (CheckboxGroup) screen
+    picker_steps = [s for s in sel_steps if s.get("input") != "text"]
+    has_single = any(not s.get("multi") for s in picker_steps)   # a SELECT (RadioButtonsGroup) screen
+    has_multi = any(s.get("multi") for s in picker_steps)         # a SELECT_MULTI (CheckboxGroup) screen
+    has_input = any(s.get("input") == "text" for s in sel_steps)  # an INPUT (TextInput) screen
+    has_date = "date" in dims
     has_time = "time" in dims
 
     screens: list[dict[str, Any]] = []
     routing: dict[str, list[str]] = {}
-    sel_ids: list[str] = []
+    pre_ids: list[str] = []                                   # every pre-commit step screen
     if has_single:
-        screens.append(_select_screen(defn)); sel_ids.append(SELECT)
+        screens.append(_select_screen(defn)); pre_ids.append(SELECT)
     if has_multi:
-        screens.append(_select_multi_screen(defn)); sel_ids.append(SELECT_MULTI)
-    for sid in sel_ids:
-        # any selection screen may re-render as the NEXT selection (single or multi), or move on to date
-        routing[sid] = [*sel_ids, CALENDAR]
-    screens.append(_calendar_screen(defn))
-    routing[CALENDAR] = [TIME] if has_time else [CONFIRM]
-    if has_time:
-        screens.append(_time_screen(defn))
-        routing[TIME] = [CONFIRM]
+        screens.append(_select_multi_screen(defn)); pre_ids.append(SELECT_MULTI)
+    if has_input:
+        screens.append(_input_screen(defn)); pre_ids.append(INPUT)
+    # after the pre-commit steps comes the calendar if there is one, else straight to confirm
+    after_pre = CALENDAR if has_date else CONFIRM
+    for sid in pre_ids:
+        # any pre-commit screen may re-render as the NEXT step (another selection/input) or move on
+        routing[sid] = [*pre_ids, after_pre]
+    if has_date:
+        screens.append(_calendar_screen(defn))
+        routing[CALENDAR] = [TIME] if has_time else [CONFIRM]
+        if has_time:
+            screens.append(_time_screen(defn))
+            routing[TIME] = [CONFIRM]
     screens.append(_confirm_screen(defn))
     routing[CONFIRM] = [SUCCESS]
     screens.append(_success_screen(defn))

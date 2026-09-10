@@ -10,7 +10,7 @@ import pytest
 
 from app.adapters.datastore.memory import MemoryDataStore
 from app.core.booking_flow import (BookingEngine, BookingError, FlowDefinition, SessionStore,
-                                   CALENDAR, CONFIRM, SELECT, SELECT_MULTI, SUCCESS, TIME)
+                                   CALENDAR, CONFIRM, INPUT, SELECT, SELECT_MULTI, SUCCESS, TIME)
 
 
 def run(c):
@@ -145,6 +145,56 @@ def test_single_select_is_unchanged_by_the_multi_capability():
 def test_multi_flag_on_date_step_is_refused():
     with pytest.raises(BookingError):
         FlowDefinition(steps=({"dimension": "date", "multi": True}, {"dimension": "confirm"}))
+
+
+def _visit_defn():
+    # A "happens now" flow: type a phone, pick services (multi), confirm. NO date/time.
+    return FlowDefinition(steps=(
+        {"dimension": "phone", "input": "text", "pattern": r"\+?\d{7,15}"},
+        {"dimension": "service", "multi": True},
+        {"dimension": "confirm"}))
+
+
+# ── free-text input + no-date shape (visit registration) ─────────────────────
+def test_text_input_flow_with_no_date_walks_to_success():
+    bk = _Booking()
+    e = _engine(bk, defn=_visit_defn())
+    r = _init(e)
+    assert r["screen"] == INPUT and r["data"]["dimension"] == "phone"
+    r = _submit(e, INPUT, {"input_value": " +966500000001 "})   # trimmed
+    assert r["screen"] == SELECT_MULTI and r["data"]["dimension"] == "service"
+    r = _submit(e, SELECT_MULTI, {"selection": ["cut", "color"]})
+    assert r["screen"] == CONFIRM                                # straight to confirm, no calendar
+    assert r["data"]["summary"]["phone"] == "+966500000001"
+    r = _submit(e, CONFIRM, {})
+    assert r["screen"] == SUCCESS
+    assert bk.calls[0]["selection"] == {"phone": "+966500000001", "service": ["cut", "color"]}
+
+
+def test_text_input_requires_a_value():
+    e = _engine(defn=_visit_defn())
+    _init(e)
+    r = _submit(e, INPUT, {"input_value": "   "})
+    assert r["screen"] == INPUT and r["data"].get("error_message")
+
+
+def test_text_input_honours_an_optional_pattern():
+    e = _engine(defn=_visit_defn())
+    _init(e)
+    r = _submit(e, INPUT, {"input_value": "not-a-phone"})
+    assert r["screen"] == INPUT and r["data"].get("error_message")   # fails the phone pattern
+
+
+def test_a_flow_without_a_date_step_is_valid_now():
+    # confirm-last is the only hard requirement; date/time are optional.
+    FlowDefinition(steps=({"dimension": "service"}, {"dimension": "confirm"}))
+    with pytest.raises(BookingError):
+        FlowDefinition(steps=({"dimension": "service"},))            # still needs confirm last
+
+
+def test_text_input_on_a_date_dimension_is_refused():
+    with pytest.raises(BookingError):
+        FlowDefinition(steps=({"dimension": "date", "input": "text"}, {"dimension": "confirm"}))
 
 
 # ── the full happy path ──────────────────────────────────────────────────────

@@ -1,9 +1,22 @@
 """The Flow JSON generator matches the booking engine's screen contract (they can't drift)."""
 from __future__ import annotations
 
-from app.core.booking_flow import (CALENDAR, CONFIRM, SELECT, SELECT_MULTI, SELECTION_FIELD, SUCCESS,
-                                   TIME, FlowDefinition)
+from app.core.booking_flow import (CALENDAR, CONFIRM, INPUT, INPUT_FIELD, SELECT, SELECT_MULTI,
+                                   SELECTION_FIELD, SUCCESS, TIME, FlowDefinition)
 from app.core.flow_json import build_booking_flow_json
+
+
+def test_text_step_generates_a_textinput_screen_and_no_date_shape():
+    js = build_booking_flow_json(FlowDefinition(steps=(
+        {"dimension": "phone", "input": "text"}, {"dimension": "service", "multi": True},
+        {"dimension": "confirm"})))
+    ids = {s["id"] for s in js["screens"]}
+    assert INPUT in ids and CALENDAR not in ids and TIME not in ids   # no forced calendar
+    scr = next(s for s in js["screens"] if s["id"] == INPUT)
+    ti = next(c for c in scr["layout"]["children"] if c["type"] == "TextInput")
+    assert ti["name"] == INPUT_FIELD
+    # the input screen routes on to the next pre-commit step / confirm
+    assert js["routing_model"][INPUT]
 
 
 def _screen(js, sid):
