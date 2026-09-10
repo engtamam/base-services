@@ -229,6 +229,11 @@
             ],
             "title": "Messages"
           },
+          "priority": {
+            "default": false,
+            "title": "Priority",
+            "type": "boolean"
+          },
           "prompt": {
             "default": "",
             "maxLength": 100000,

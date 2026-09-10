@@ -211,6 +211,12 @@ class Settings(BaseSettings):
     # this setting.
     REDACT_PII: bool = True
     REDACT_MAX_CHARS: int = 20_000
+    # Vertex AI "priority" tier (Priority PayGo): a per-request header buys more consistent latency
+    # during congestion at ~1.8x the standard per-token rate. LOCKED by default — the capability
+    # exists but is inert until the PLATFORM turns this on, so nobody can incur the surcharge by
+    # accident. Even when on, it applies only to a Vertex connection AND only when the caller sets
+    # `priority:true` on that specific invoke (both locks must be open). Off ⇒ today's behaviour.
+    ASSISTANT_PRIORITY_TIER_ENABLED: bool = False
     # Storing history is opt-in: a service that keeps nothing has nothing to leak or erase.
     CONVERSATIONS_ENABLED: bool = False
     # Refuses to start rather than store plaintext when on without a key.

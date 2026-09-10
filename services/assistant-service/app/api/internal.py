@@ -206,10 +206,11 @@ def _vertex_source(request: Request, cid: str, secret: str):
     return prev[1]
 
 
-def _conn_model(request: Request, conn):
+def _conn_model(request: Request, conn, priority: bool = False):
     """A model bound to THIS connection's endpoint + credential — the isolation boundary. Its
     credential is the connection's own secret: an API key (Bearer), or an SA JSON minted into a
-    Vertex OAuth token when auth='vertex'."""
+    Vertex OAuth token when auth='vertex'. `priority` (opt-in, double-locked) selects the Vertex
+    priority tier via extra headers; see _priority_headers."""
     from app.adapters.model.http_provider import HttpModel
     store = getattr(request.app.state, "secret_store", None)
 
@@ -232,12 +233,30 @@ def _conn_model(request: Request, conn):
                                                 and conn.auth == "vertex") else ""
     return HttpModel(conn.url, "", model=conn.model, shape=conn.shape,
                      temperature=conn.temperature, key_resolver=resolver,
-                     anthropic_version=anthropic_version)
+                     anthropic_version=anthropic_version,
+                     extra_headers=_priority_headers(request, conn, priority))
 
 
-def _conn_caller(request: Request, conn):
+def _priority_headers(request: Request, conn, priority: bool) -> dict[str, str]:
+    """Vertex priority-tier headers, sent ONLY when BOTH locks are open and the connection is Vertex.
+
+    Lock 1 (platform): ASSISTANT_PRIORITY_TIER_ENABLED — the capability is inert until the platform
+    turns it on, so the ~1.8x surcharge can never be incurred by accident. Lock 2 (per call): the
+    caller set priority=true on THIS invoke. Non-Vertex connections ignore it (the header is a Vertex
+    concept). Verified vs Google Cloud docs (2026-09-10): for a no-Provisioned-Throughput project,
+    'X-Vertex-AI-LLM-Request-Type: shared' + 'X-Vertex-AI-LLM-Shared-Request-Type: priority' selects
+    Priority PayGo. Empty dict ⇒ the request is byte-identical to the standard tier."""
+    if not (priority and conn.auth == "vertex"):
+        return {}
+    if not get_settings().ASSISTANT_PRIORITY_TIER_ENABLED:
+        return {}
+    return {"X-Vertex-AI-LLM-Request-Type": "shared",
+            "X-Vertex-AI-LLM-Shared-Request-Type": "priority"}
+
+
+def _conn_caller(request: Request, conn, priority: bool = False):
     """The text-completion caller for a tool-less connection (unchanged single-shot path)."""
-    model = _conn_model(request, conn)
+    model = _conn_model(request, conn, priority)
 
     async def caller(system: str, user: str, max_tokens: int):
         return await model.complete(system=system, user=user, max_tokens=max_tokens)
@@ -354,6 +373,10 @@ class ConnInvokeIn(BaseModel):
     prompt: str = Field(default="", max_length=100000)
     messages: list[dict] | None = None
     max_tokens: int = Field(default=0, ge=0)
+    # Opt-in Vertex priority tier for THIS call (default OFF = standard tier, today's behaviour). Only
+    # takes effect on a Vertex connection AND when the platform lock ASSISTANT_PRIORITY_TIER_ENABLED
+    # is on; otherwise ignored. Costs ~1.8x the standard per-token rate when active.
+    priority: bool = False
 
 
 @router.post("/assistant/connections/{cid}/invoke", dependencies=[Depends(require_internal_token)])
@@ -373,7 +396,7 @@ async def invoke_connection(request: Request, cid: str, body: ConnInvokeIn) -> d
         raise HTTPException(404, "NOT_FOUND")
     try:
         if conn.tools or body.messages is not None:
-            model = _conn_model(request, conn)
+            model = _conn_model(request, conn, body.priority)
             messages = body.messages if body.messages is not None else body.prompt
             if not messages:
                 raise HTTPException(422, "prompt or messages is required")
@@ -381,7 +404,7 @@ async def invoke_connection(request: Request, cid: str, body: ConnInvokeIn) -> d
                                       store=cstore, max_tokens=body.max_tokens)
         if not body.prompt:
             raise HTTPException(422, "prompt or messages is required")
-        result = await _invoke(conn, prompt=body.prompt, caller=_conn_caller(request, conn),
+        result = await _invoke(conn, prompt=body.prompt, caller=_conn_caller(request, conn, body.priority),
                                store=cstore, max_tokens=body.max_tokens)
         return {"kind": "text", **result}      # uniform shape: kind alongside the existing text field
     except ModelError as exc:

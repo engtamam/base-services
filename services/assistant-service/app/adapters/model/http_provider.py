@@ -85,7 +85,7 @@ class HttpModel:
                  transport: Transport | None = None,
                  key_resolver: KeyResolver | None = None,
                  prompt_cache: str = "off", gemini_cached_content: str = "",
-                 anthropic_version: str = "") -> None:
+                 anthropic_version: str = "", extra_headers: dict[str, str] | None = None) -> None:
         if not url:
             raise ConfigError("MODEL_URL is required for the http model driver")
         if shape not in (CHAT, GENERATE, ANTHROPIC):
@@ -112,6 +112,9 @@ class HttpModel:
         # authenticated by the Bearer GCP token. Empty ⇒ the direct Anthropic API (model in the body,
         # x-api-key + anthropic-version headers). Verified vs Meta/Google + Anthropic docs 2026-09-09.
         self._anthropic_version = anthropic_version
+        # Static per-call headers merged into every request (after auth) — e.g. the Vertex priority
+        # tier. Empty by default, so the wire is byte-identical to before unless a caller opts in.
+        self._extra_headers = dict(extra_headers or {})
 
     def _auth_headers(self, key: str) -> dict[str, str]:
         """The auth headers for THIS endpoint. Bearer everywhere (OpenAI/Gemini/Vertex — incl. a Vertex
@@ -427,6 +430,7 @@ class HttpModel:
         headers = {"Content-Type": "application/json"}
         key = await self._credential()
         headers.update(self._auth_headers(key))
+        headers.update(self._extra_headers)      # e.g. Vertex priority tier; empty unless opted in
         payload = self._messages_payload(system, messages, tools or [], max_tokens)
         try:
             status, body = await self._transport(self._url, headers, payload, self._timeout)
@@ -447,6 +451,7 @@ class HttpModel:
         headers = {"Content-Type": "application/json"}
         key = await self._credential()
         headers.update(self._auth_headers(key))
+        headers.update(self._extra_headers)      # e.g. Vertex priority tier; empty unless opted in
         try:
             status, body = await self._transport(self._url, headers,
                                                  self._payload(system, user, max_tokens),
@@ -467,6 +472,7 @@ class HttpModel:
         headers = {"Content-Type": "application/json"}
         key = await self._credential()
         headers.update(self._auth_headers(key))
+        headers.update(self._extra_headers)      # e.g. Vertex priority tier; empty unless opted in
 
         try:
             status, body = await self._transport(self._url, headers,
