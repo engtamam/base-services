@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+gate_name="safety:operator-tenant-wired"
+gate_desc="a platform operator's cross-tenant override is actually wired, never designed-then-dead"
+gate_protects="Several services resolve the request's tenant through a helper that lets a PLATFORM
+operator act on a chosen tenant (return override or principal.tenant) while a tenant
+admin stays scoped to their own. The override only works if a route SUPPLIES it (a
+tenant query param / body field) and passes it in. When every call is
+_tenant(principal) with one arg, the override is DEAD: nothing ever fills it and a
+platform operator is silently locked to their own reserved tenant, unable to view or
+act on any real shop's records — the capability they hold does nothing. Compiles,
+passes tenant-admin tests, reported live on compliance. The gate fails a resolver
+whose override no call site ever supplies. Reviewed exceptions: OP_TENANT_EXEMPT."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_operator_tenant_wired.py"
+gate_units=0
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_operator_tenant_wired.py; }
+
+# A gate that cannot fail is decoration. Prove it catches a resolver whose override is never supplied,
+# and does NOT fire once a single call site wires it.
+gate_selftest() {
+  "$PY" -c "
+import sys, pathlib, tempfile, textwrap
+sys.path.insert(0, 'tools/ci')
+import check_operator_tenant_wired as c
+d = pathlib.Path(tempfile.mkdtemp()); (d/'app'/'api').mkdir(parents=True)
+resolver = 'def _tenant(p, override=None):\n    if \"platform.x\" in p.caps:\n        return override or p.tenant or \"global\"\n    return p.tenant\n'
+bad = resolver + 'def route(p):\n    return _tenant(p)\n'
+good = resolver + 'def route(p, tenant=None):\n    return _tenant(p, tenant)\n'
+(d/'app'/'api'/'r.py').write_text(bad)
+assert c.scan_service(d), 'gate missed a dead operator-tenant override'
+(d/'app'/'api'/'r.py').write_text(good)
+assert not c.scan_service(d), 'gate false-positived on a wired override'
+sys.exit(0)
+" >/dev/null 2>&1
+}

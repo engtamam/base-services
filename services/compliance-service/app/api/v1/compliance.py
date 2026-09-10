@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app.api.auth import Principal
@@ -133,10 +133,16 @@ def _tenant(p: Principal, body_tenant: str | None = None) -> str:
     return p.tenant or "__none__"
 
 
+# A platform.compliance operator may target a specific shop by setting `tenant`; _tenant() honours it
+# ONLY for that capability (a tenant admin's value is ignored — they stay scoped to their own tenant).
+# Without it a platform operator was silently stuck on their own reserved tenant and could not act on
+# any real shop's compliance record — the reported bug. MeDsarIn deliberately has NO tenant (a
+# self-service DSAR is always the caller's own).
 class ConsentIn(BaseModel):
     subject: str = Field(min_length=1, max_length=256)
     purpose: str = Field(min_length=1, max_length=128)
     notice_version: str = ""
+    tenant: str | None = Field(default=None, max_length=128)
     method: str = ""
     expires_at: float = 0.0
     # ── capacity (Phase 39) ─────────────────────────────────────────────────
@@ -152,6 +158,7 @@ class DsarIn(BaseModel):
     subject: str = Field(min_length=1, max_length=256)
     type: str
     payload: dict[str, Any] = Field(default_factory=dict)
+    tenant: str | None = Field(default=None, max_length=128)   # platform-only; see ConsentIn note
 
 
 class MeDsarIn(BaseModel):
@@ -165,6 +172,7 @@ class MeDsarIn(BaseModel):
 class HoldIn(BaseModel):
     subject: str = Field(min_length=1, max_length=256)
     reason: str = Field(min_length=1, max_length=512)
+    tenant: str | None = Field(default=None, max_length=128)   # platform-only; see ConsentIn note
 
 
 class TargetIn(BaseModel):
@@ -195,9 +203,10 @@ class BreachIn(BaseModel):
 # ── consent ───────────────────────────────────────────────────────────────────
 @router.post("/consent/grant", status_code=201)
 async def grant(request: Request, body: ConsentIn, principal: Principal = Depends(_ADMIN)) -> dict:
+    t = _tenant(principal, body.tenant)     # platform op may target a shop; a tenant admin -> own
     try:
         c = await build_consent(request).grant(
-            tenant=_tenant(principal), subject=body.subject, purpose=body.purpose,
+            tenant=t, subject=body.subject, purpose=body.purpose,
             notice_version=body.notice_version, method=body.method, expires_at=body.expires_at,
             actor=principal.subject, ip=request.client.host if request.client else "",
             basis=body.basis, consented_by=body.consented_by, relation=body.relation,
@@ -207,7 +216,7 @@ async def grant(request: Request, body: ConsentIn, principal: Principal = Depend
             # would bury the log; the exception is the claim someone may later dispute.
             await request.app.state.auditor.record(
                 "consent.guardian_recorded", actor=principal.subject,
-                tenant=_tenant(principal), resource=f"consent:{body.purpose}",
+                tenant=t, resource=f"consent:{body.purpose}",
                 ip=request.client.host if request.client else "",
                 metadata={"basis": body.basis, "relation": body.relation})
         # AFTER the grant, not write-ahead. The write-ahead pattern exists so a CRITICAL action
@@ -215,7 +224,7 @@ async def grant(request: Request, body: ConsentIn, principal: Principal = Depend
         # actions are fail-open by declaration, so the auditor never refuses them, and recording
         # first would only log grants that then failed validation.
         await request.app.state.auditor.record(
-            "consent.granted", actor=principal.subject, tenant=_tenant(principal),
+            "consent.granted", actor=principal.subject, tenant=t,
             resource=f"consent:{body.purpose}",
             ip=request.client.host if request.client else "")
     except CapacityRefused as exc:
@@ -228,21 +237,25 @@ async def grant(request: Request, body: ConsentIn, principal: Principal = Depend
 
 @router.post("/consent/withdraw")
 async def withdraw(request: Request, body: ConsentIn, principal: Principal = Depends(_ADMIN)) -> dict:
+    t = _tenant(principal, body.tenant)     # platform op may target a shop; a tenant admin -> own
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
-        "consent.withdrawn", actor=principal.subject, tenant=principal.tenant, resource=f"subject:{subject_ref(get_settings().PII_SALT, principal.tenant, body.subject)}",
+        "consent.withdrawn", actor=principal.subject, tenant=t, resource=f"subject:{subject_ref(get_settings().PII_SALT, t, body.subject)}",
         ip=request.client.host if request.client else "")
     c = await build_consent(request).withdraw(
-        tenant=_tenant(principal), subject=body.subject, purpose=body.purpose,
+        tenant=t, subject=body.subject, purpose=body.purpose,
         actor=principal.subject, ip=request.client.host if request.client else "")
     return c.to_dict()
 
 
 @router.get("/consent/history", dependencies=[Depends(_READ)])
-async def consent_history(request: Request, subject: str, principal: Principal = Depends(_READ)) -> dict:
-    return await build_consent(request).history(_tenant(principal), subject)
+async def consent_history(request: Request, subject: str, principal: Principal = Depends(_READ),
+                          tenant: str | None = Query(default=None, max_length=128)) -> dict:
+    # platform op may pass ?tenant to read a specific shop's consent history; a tenant admin's value
+    # is ignored (scoped to own). Without it a platform op saw only their own reserved tenant.
+    return await build_consent(request).history(_tenant(principal, tenant), subject)
 
 
 # ── DSAR ───────────────────────────────────────────────────────────────────────
@@ -250,10 +263,11 @@ async def consent_history(request: Request, subject: str, principal: Principal =
 async def create_dsar(request: Request, body: DsarIn, principal: Principal = Depends(_ADMIN)) -> dict:
     if body.type not in DSAR_TYPES:
         raise HTTPException(422, f"type must be one of {DSAR_TYPES}")
-    d, created = await build_dsar(request).create(tenant=_tenant(principal), subject=body.subject,
+    t = _tenant(principal, body.tenant)     # platform op may target a shop; a tenant admin -> own
+    d, created = await build_dsar(request).create(tenant=t, subject=body.subject,
                                                   type=body.type, payload=body.payload)
     await request.app.state.auditor.record(
-        "dsar.created", actor=principal.subject, tenant=_tenant(principal),
+        "dsar.created", actor=principal.subject, tenant=t,
         resource=f"dsar:{d.id}", ip=request.client.host if request.client else "",
         metadata={"type": body.type, "created": created})
     out = d.public()
@@ -318,8 +332,13 @@ async def process_dsar(request: Request, dsar_id: str,
 
 
 @router.get("/dsar", dependencies=[Depends(_READ)])
-async def list_dsar(request: Request, principal: Principal = Depends(_READ)) -> dict:
-    return {"requests": await build_dsar(request).list(_tenant(principal))}
+async def list_dsar(request: Request, principal: Principal = Depends(_READ),
+                    tenant: str | None = Query(default=None, max_length=128)) -> dict:
+    """List DSAR requests. A PLATFORM operator (platform.compliance) may pass `tenant` to view a
+    specific shop's DSARs — without it a GET has no body, so the operator was stuck on their own JWT
+    tenant and never saw any real shop's requests (the reported bug). A tenant admin's `tenant` is
+    ignored: _tenant() scopes them to their own tenant, so this opens no cross-tenant read."""
+    return {"requests": await build_dsar(request).list(_tenant(principal, tenant))}
 
 
 # ── legal hold ─────────────────────────────────────────────────────────────────
@@ -328,11 +347,12 @@ async def place_hold(request: Request, body: HoldIn, principal: Principal = Depe
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
+    t = _tenant(principal, body.tenant)     # platform op may target a shop; a tenant admin -> own
     await request.app.state.auditor.record(
-        "legal_hold.placed", actor=principal.subject, tenant=principal.tenant, resource=f"subject:{subject_ref(get_settings().PII_SALT, principal.tenant, body.subject)}",
+        "legal_hold.placed", actor=principal.subject, tenant=t, resource=f"subject:{subject_ref(get_settings().PII_SALT, t, body.subject)}",
         ip=request.client.host if request.client else "")
     return (await build_compliance(request).place_hold(
-        tenant=_tenant(principal), subject=body.subject, reason=body.reason)).to_dict()
+        tenant=t, subject=body.subject, reason=body.reason)).to_dict()
 
 
 @router.post("/legal-holds/{hold_id}/release")
@@ -352,8 +372,11 @@ async def release_hold(request: Request, hold_id: str,
 
 
 @router.get("/legal-holds", dependencies=[Depends(_READ)])
-async def list_holds(request: Request, principal: Principal = Depends(_READ)) -> dict:
-    return {"holds": await build_compliance(request).list_holds(_tenant(principal))}
+async def list_holds(request: Request, principal: Principal = Depends(_READ),
+                     tenant: str | None = Query(default=None, max_length=128)) -> dict:
+    # platform op may pass ?tenant to view a specific shop's legal holds; a tenant admin's value is
+    # ignored (scoped to own). Without it a platform op saw only their own reserved tenant.
+    return {"holds": await build_compliance(request).list_holds(_tenant(principal, tenant))}
 
 
 # ── data map ───────────────────────────────────────────────────────────────────

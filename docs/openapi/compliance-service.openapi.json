@@ -210,6 +210,18 @@
             "default": 0.0,
             "title": "Subject Born At",
             "type": "number"
+          },
+          "tenant": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant"
           }
         },
         "required": [
@@ -231,6 +243,18 @@
             "minLength": 1,
             "title": "Subject",
             "type": "string"
+          },
+          "tenant": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant"
           },
           "type": {
             "title": "Type",
@@ -294,6 +318,18 @@
             "minLength": 1,
             "title": "Subject",
             "type": "string"
+          },
+          "tenant": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant"
           }
         },
         "required": [
@@ -746,6 +782,23 @@
               "title": "Subject",
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant"
+            }
           }
         ],
         "responses": {
@@ -955,7 +1008,27 @@
     },
     "/api/v1/compliance/dsar": {
       "get": {
+        "description": "List DSAR requests. A PLATFORM operator (platform.compliance) may pass `tenant` to view a\nspecific shop's DSARs \u2014 without it a GET has no body, so the operator was stuck on their own JWT\ntenant and never saw any real shop's requests (the reported bug). A tenant admin's `tenant` is\nignored: _tenant() scopes them to their own tenant, so this opens no cross-tenant read.",
         "operationId": "list_dsar_api_v1_compliance_dsar_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -968,6 +1041,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "List Dsar",
@@ -1141,6 +1224,25 @@
     "/api/v1/compliance/legal-holds": {
       "get": {
         "operationId": "list_holds_api_v1_compliance_legal_holds_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -1153,6 +1255,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "List Holds",
