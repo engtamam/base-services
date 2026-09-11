@@ -36,6 +36,12 @@ dependencies = [
     # Direct floor over the transitive pull from pyjwt[crypto]: 49.0.0 is
     # PYSEC-2026-3552, fixed in 50.0.0. Pinned so the CVE cannot re-enter via resolution.
     "cryptography>=50.0.0",
+    # RUNTIME HTTP client (BSD-3, permissive). Four adapters import httpx to make real outbound
+    # calls — the action-catalog client (knowledge_source/catalog.py), embeddings, the model HTTP
+    # provider, and gcp_token. It was ONLY under [dev] ("drives TestClient"), so a prod image (main
+    # deps only) shipped without it and EVERY /assistant/help 500'd with "No module named 'httpx'".
+    # It is a runtime dependency, not a test tool — declared here so the image installs it.
+    "httpx>=0.27,<1.0",
 ]
 
 [project.optional-dependencies]
@@ -49,10 +55,9 @@ vault = ["hvac>=2.0,<3.0"]
 
 # Dev/test — PERMISSIVE ONLY.
 #   pytest   MIT
-#   httpx    BSD-3-Clause  (drives FastAPI TestClient)
+# (httpx is a RUNTIME dependency — see main `dependencies` — and drives FastAPI TestClient too.)
 dev = [
     "pytest>=9.0.3,<10.0",
-    "httpx>=0.27,<1.0",
 ]
 
 # CI security tools — PERMISSIVE ONLY.
