@@ -513,30 +513,49 @@ class BillingService:
         return {str(k) for k in keys if k}
 
     async def discount_preview(self, tenant: str) -> dict[str, dict]:
-        """Per-plan "you already qualify for X% off" for a shop DECIDING whether to buy — the same
-        ownership-only resolution a renewal would do right now (current ownership via the resolver,
-        highest-percent-wins across discount rules), but charging/creating nothing. No coupon (none is
-        typed at browse time). Returns {plan_id: {"percent", "owning_key"}} only for plans a rule
-        currently applies to; a plan with no applicable rule is simply absent."""
+        """Per-plan cross-app discount preview for a shop DECIDING whether to buy. Two sets:
+
+          applied   — the shop ALREADY qualifies (holds the owning_key): the same ownership-only
+                      resolution a renewal does right now (resolver + highest-percent-wins), charging
+                      nothing. {plan_id: {"percent","owning_key"}}.
+          potential — a MARKETING teaser: the best rule targeting a plan the shop does NOT yet qualify
+                      for, computed WITHOUT the ownership filter, only for plans not already in
+                      `applied`. owning_key names the app they must ALSO get ("X% off if you also get
+                      Y"). {plan_id: {"percent","owning_key"}}.
+
+        A plan absent from both simply has no rule. No coupon (none is typed at browse time)."""
+        empty = {"applied": {}, "potential": {}}
         if self._rules is None:
-            return {}
+            return empty
         rules = await self._rules.all(self._cfg["list_limit"])
         if not rules:
-            return {}
+            return empty
         now = self._clock()
         resolved = await self._entitlements.resolve(tenant, now)
         held = {str(k) for k, v in (resolved.get("limits") or {}).items() if v}
+        # For the teaser, ignore real ownership by pretending every rule's owner is held — so
+        # best_rule_percent ranks purely by target match. Only used for plans NOT already applied,
+        # where the shop holds none of the matching owners, so this never mislabels an owned rule.
+        all_owners = {str(r.get("owning_key", "")) for r in rules}
         by_id = {str(r.get("id", "")): r for r in rules}
-        out: dict[str, dict] = {}
+        applied: dict[str, dict] = {}
+        potential: dict[str, dict] = {}
         for plan_row in await self._plans.all(self._cfg["list_limit"]):
             if not (plan_row.get("active", True) and plan_row.get("listed", True)):
                 continue
+            plan_id = plan_row.get("id", "")
             targets = self._plan_target_keys(plan_row)
             pct, rule_id = pricing.best_rule_percent(rules, held_keys=held, target_keys=targets, now=now)
             if pct > 0:
-                out[plan_row.get("id", "")] = {
-                    "percent": pct, "owning_key": by_id.get(rule_id, {}).get("owning_key", "")}
-        return out
+                applied[plan_id] = {"percent": pct,
+                                    "owning_key": by_id.get(rule_id, {}).get("owning_key", "")}
+                continue
+            ppct, prid = pricing.best_rule_percent(rules, held_keys=all_owners, target_keys=targets,
+                                                   now=now)
+            if ppct > 0:
+                potential[plan_id] = {"percent": ppct,
+                                      "owning_key": by_id.get(prid, {}).get("owning_key", "")}
+        return {"applied": applied, "potential": potential}
 
     # ── subscriptions ─────────────────────────────────────────────────────────────
     def _price_for(self, plan: Plan, interval: str) -> dict:

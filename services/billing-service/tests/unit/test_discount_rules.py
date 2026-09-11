@@ -162,22 +162,39 @@ def test_full_free_rule():
     assert inv.discount_minor == 10000 and inv.total_minor == 0        # fully free
 
 
-def test_discount_preview_shows_qualifying_plans_only():
+def test_discount_preview_applied_when_owner_held():
     st = MemoryDataStore(); b = _svc(st)
     # tenant owns "visit" (holds app.visit). The bookings plan is listed & buyable.
     _two_apps(b, st)
     run(b.create_discount_rule(owning_key="app.visit", target_key="app.bookings", percent=30))
     prev = run(b.discount_preview("t1"))
-    # the bookings plan is previewed at 30%, naming the app that earned it
-    bookings = next(v for k, v in prev.items() if v["percent"] == 30)
+    # the bookings plan is APPLIED at 30%, naming the app that earned it — not a teaser
+    bookings = next(v for v in prev["applied"].values() if v["percent"] == 30)
     assert bookings["owning_key"] == "app.visit"
+    assert prev["potential"] == {}
 
 
-def test_discount_preview_empty_when_owner_not_held():
+def test_discount_preview_teases_potential_when_owner_not_held():
     st = MemoryDataStore(); b = _svc(st)
     _two_apps(b, st)
-    run(b.create_discount_rule(owning_key="app.nonexistent", target_key="app.bookings", percent=30))
-    assert run(b.discount_preview("t1")) == {}
+    # the tenant does NOT hold app.premium — so this is a teaser, not applied
+    run(b.create_discount_rule(owning_key="app.premium", target_key="app.bookings", percent=30))
+    prev = run(b.discount_preview("t1"))
+    assert prev["applied"] == {}
+    teaser = next(v for v in prev["potential"].values() if v["percent"] == 30)
+    assert teaser["owning_key"] == "app.premium"          # "get 30% off if you also get premium"
+
+
+def test_discount_preview_applied_wins_over_potential_for_a_plan():
+    st = MemoryDataStore(); b = _svc(st)
+    _two_apps(b, st)
+    # one rule the tenant qualifies for (app.visit) and one it doesn't (app.premium), same target
+    run(b.create_discount_rule(owning_key="app.visit", target_key="app.bookings", percent=20))
+    run(b.create_discount_rule(owning_key="app.premium", target_key="app.bookings", percent=50))
+    prev = run(b.discount_preview("t1"))
+    # the plan is APPLIED (owned rule), so it never appears as a teaser even though a bigger unowned rule exists
+    assert any(v["percent"] == 20 for v in prev["applied"].values())
+    assert prev["potential"] == {}
 
 
 def test_crud_percent_out_of_range_refused():

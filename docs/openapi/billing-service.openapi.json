@@ -1975,7 +1975,7 @@
     },
     "/api/v1/billing/discount-preview": {
       "get": {
-        "description": "Per-plan \"you already qualify for X% off\" for the CALLING shop \u2014 a browse-time preview of the\ncross-app discount rules, so an owner discovers the cross-sell before checkout. Same auth as the\nplan list (any signed-in shop user), ownership-only (no coupon), charges/creates nothing.\n\n-> {\"previews\": {plan_id: {\"percent\": int, \"owning_key\": str}}} \u2014 a plan with no applicable rule\nis absent. `owning_key` names WHICH app of theirs earned it, so the badge can say why.",
+        "description": "Per-plan \"you already qualify for X% off\" for the CALLING shop \u2014 a browse-time preview of the\ncross-app discount rules, so an owner discovers the cross-sell before checkout. Same auth as the\nplan list (any signed-in shop user), ownership-only (no coupon), charges/creates nothing.\n\n-> {\"previews\": {plan_id: {percent, owning_key}},   # APPLIED \u2014 the shop already qualifies (owns\n                                                    # owning_key). Backward-compatible key name.\n    \"potential\": {plan_id: {percent, owning_key}}}  # TEASER \u2014 a discount the shop would get if it\n                                                    # ALSO bought owning_key; only for plans not\n                                                    # already in previews.\nA plan absent from both has no rule; `owning_key` names the app that earns (or would earn) it.",
         "operationId": "discount_preview_api_v1_billing_discount_preview_get",
         "responses": {
           "200": {

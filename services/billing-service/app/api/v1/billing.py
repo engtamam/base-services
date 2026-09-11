@@ -422,10 +422,15 @@ async def discount_preview(request: Request, principal: Principal = Depends(requ
     cross-app discount rules, so an owner discovers the cross-sell before checkout. Same auth as the
     plan list (any signed-in shop user), ownership-only (no coupon), charges/creates nothing.
 
-    -> {"previews": {plan_id: {"percent": int, "owning_key": str}}} — a plan with no applicable rule
-    is absent. `owning_key` names WHICH app of theirs earned it, so the badge can say why."""
+    -> {"previews": {plan_id: {percent, owning_key}},   # APPLIED — the shop already qualifies (owns
+                                                        # owning_key). Backward-compatible key name.
+        "potential": {plan_id: {percent, owning_key}}}  # TEASER — a discount the shop would get if it
+                                                        # ALSO bought owning_key; only for plans not
+                                                        # already in previews.
+    A plan absent from both has no rule; `owning_key` names the app that earns (or would earn) it."""
     tenant = principal.tenant or "__none__"
-    return {"previews": await (await build_billing(request)).discount_preview(tenant)}
+    r = await (await build_billing(request)).discount_preview(tenant)
+    return {"previews": r["applied"], "potential": r["potential"]}
 
 
 @router.patch("/plans/{plan_id}", dependencies=[Depends(_PLATFORM)])
