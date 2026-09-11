@@ -536,6 +536,12 @@ class Settings(BaseSettings):
     # of the granted number changes, from a static limit to this live percentage. 0 = grant nothing for
     # an opted-in plan (the feature is off until set). Clamped 0-100.
     PLAN_CREDIT_PERCENT: int = 0
+    # Per-platform flag: base a percent-of-price allowance on the price ACTUALLY PAID this cycle (after
+    # any cross-app rule / coupon discount) instead of the raw list price. Off by default (list price,
+    # the original behaviour — a discount never shrinks the allowance). On closes the hole where a
+    # fully-discounted plan (a 100%-off rule → 0 SAR) still granted full-price free units. Each platform
+    # chooses; runtime-editable (RUNTIME_POLICY).
+    BILLING_CREDIT_DISCOUNT_AWARE: bool = False
     # Do unused included credits carry over at renewal, or start fresh?
     PLAN_CREDIT_GRANT_MODE: str = "accumulate"   # accumulate | reset
     # Retry backoff for an undelivered grant. There is no attempt CAP on purpose: giving up would

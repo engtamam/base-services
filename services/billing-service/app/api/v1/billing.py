@@ -146,6 +146,17 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
             return int(v)
         except Exception:  # noqa: BLE001 — a config read must never break a charge
             return int(default)
+    async def _rc_bool(key: str, default: bool) -> bool:
+        # A GLOBAL platform flag, read live. A config read must never break a charge → fall back.
+        if rc is None:
+            return bool(default)
+        try:
+            v = await rc.get(tenant="", key=key, default=default)
+            if isinstance(v, bool):
+                return v
+            return str(v).strip().lower() in ("true", "1", "yes", "on")
+        except Exception:  # noqa: BLE001 — a config read must never break a charge
+            return bool(default)
     tax_driver = await _rc_str("TAX_CALCULATOR_DRIVER", s.TAX_CALCULATOR_DRIVER)
     vat_rate = await _rc_str("VAT_RATE", s.VAT_RATE)
     einvoicer_driver = await _rc_str("EINVOICER_DRIVER", s.EINVOICER_DRIVER)
@@ -192,6 +203,9 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
                 # Global (platform-scope) runtime knob: the included-allowance percent for opted-in
                 # plans. Read live here so a panel change takes effect next cycle with no redeploy.
                 "plan_credit_percent": await _rc_int("PLAN_CREDIT_PERCENT", s.PLAN_CREDIT_PERCENT),
+                # Per-platform: base a percent-of-price allowance on the discounted price actually paid.
+                "credit_discount_aware": await _rc_bool("BILLING_CREDIT_DISCOUNT_AWARE",
+                                                        s.BILLING_CREDIT_DISCOUNT_AWARE),
                 # Refund/chargeback grant clawback — a set of operator choices, all read at use.
                 "clawback_enabled": clawback_enabled,
                 "document_mode": document_mode,
@@ -413,7 +427,10 @@ async def list_plans(request: Request, include_hidden: bool = False,
     # list into a way to enumerate retired and unlisted pricing.
     if include_hidden:
         await _ADMIN(principal)
-    return {"plans": await (await build_billing(request)).list_plans(include_hidden=include_hidden)}
+    # Pass the caller's tenant so a discount-aware platform can show the included-units badge off the
+    # price this shop would actually pay (its cross-app rule discount). Ignored when discount-unaware.
+    return {"plans": await (await build_billing(request)).list_plans(
+        include_hidden=include_hidden, tenant=principal.tenant or "")}
 
 
 @router.get("/discount-preview", dependencies=[Depends(_SELF)])

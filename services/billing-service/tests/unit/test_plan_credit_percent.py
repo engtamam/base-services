@@ -40,7 +40,7 @@ class MockTax:
         return 0                                   # tax irrelevant to the allowance test
 
 
-def _svc(st, percent=0):
+def _svc(st, percent=0, discount_aware=False):
     from app.core.models import iso, now_ts
     cfg = {"currency": "SAR", "trial_days": 0, "vat_rate": "0", "reverse_charge": False,
            "grandfather": True, "dunning_base_hours": 24, "dunning_max_attempts": 4, "grace_days": 7,
@@ -50,7 +50,7 @@ def _svc(st, percent=0):
            "platform_max_pages": 50, "grant_fund": "ai_credit", "plan_credit_limit_key": "credits",
            "plan_credit_grant_mode": "reset", "document_mode": "receipt",
            "renewal_invoice_mode": "per_subscription", "renewal_gateway_mode": "active",
-           "plan_credit_percent": percent}
+           "plan_credit_percent": percent, "credit_discount_aware": discount_aware}
     return BillingService(
         plans=PlanStore(st), coupons=CouponStore(st), discount_rules=DiscountRuleStore(st),
         subs=SubscriptionStore(st), invoices=InvoiceStore(st), payments=PaymentStore(st),
@@ -119,6 +119,62 @@ def test_included_credit_minor_does_not_mutate_the_stored_plan():
     run(b.list_plans())
     stored = run(PlanStore(st).fetch(p.id))
     assert "included_credit_minor" not in stored.prices[0]          # the view field never persisted
+
+
+def test_discount_aware_off_grants_full_units_despite_a_rule():
+    # flag OFF (default): a discount never shrinks the allowance — list-price based.
+    st = MemoryDataStore(); b = _svc(st, percent=20, discount_aware=False)
+    px = run(b.create_plan(name="Visit", prices=[{"interval": "month", "amount_minor": 3000,
+             "currency": "SAR", "type": "flat"}], limits={"app.visit": 1}))
+    py = run(b.create_plan(name="AI Bot", prices=[{"interval": "month", "amount_minor": 19900,
+             "currency": "SAR", "type": "flat"}], limits={"app.bot": 1}, credit_percent_of_price=True))
+    run(b.subscribe(tenant="t1", plan_id=px.id, payment_token="pm_1"))
+    sy = run(b.subscribe(tenant="t1", plan_id=py.id, payment_token="pm_1"))
+    run(b.create_discount_rule(owning_key="app.visit", target_key="app.bot", percent=100))
+    inv = run(b.run_cycle(sy.id))
+    assert inv.total_minor == 0                         # 100% off → pays nothing
+    assert _grant_of(inv) == 3980                       # but still full 20% of list price (flag off)
+
+
+def test_discount_aware_on_zeroes_units_for_a_fully_discounted_plan():
+    # flag ON: the allowance follows the price actually paid — 100% off → 0 units. Closes the hole.
+    st = MemoryDataStore(); b = _svc(st, percent=20, discount_aware=True)
+    px = run(b.create_plan(name="Visit", prices=[{"interval": "month", "amount_minor": 3000,
+             "currency": "SAR", "type": "flat"}], limits={"app.visit": 1}))
+    py = run(b.create_plan(name="AI Bot", prices=[{"interval": "month", "amount_minor": 19900,
+             "currency": "SAR", "type": "flat"}], limits={"app.bot": 1}, credit_percent_of_price=True))
+    run(b.subscribe(tenant="t1", plan_id=px.id, payment_token="pm_1"))
+    sy = run(b.subscribe(tenant="t1", plan_id=py.id, payment_token="pm_1"))
+    run(b.create_discount_rule(owning_key="app.visit", target_key="app.bot", percent=100))
+    inv = run(b.run_cycle(sy.id))
+    assert inv.total_minor == 0 and _grant_of(inv) == 0     # 0 paid → 0 included units
+
+
+def test_discount_aware_on_scales_units_by_a_partial_discount():
+    st = MemoryDataStore(); b = _svc(st, percent=20, discount_aware=True)
+    px = run(b.create_plan(name="Visit", prices=[{"interval": "month", "amount_minor": 3000,
+             "currency": "SAR", "type": "flat"}], limits={"app.visit": 1}))
+    py = run(b.create_plan(name="AI Bot", prices=[{"interval": "month", "amount_minor": 20000,
+             "currency": "SAR", "type": "flat"}], limits={"app.bot": 1}, credit_percent_of_price=True))
+    run(b.subscribe(tenant="t1", plan_id=px.id, payment_token="pm_1"))
+    sy = run(b.subscribe(tenant="t1", plan_id=py.id, payment_token="pm_1"))
+    run(b.create_discount_rule(owning_key="app.visit", target_key="app.bot", percent=50))
+    inv = run(b.run_cycle(sy.id))
+    # pays 20000 - 50% = 10000; included = 20% of 10000 = 2000
+    assert inv.total_minor == 10000 and _grant_of(inv) == 2000
+
+
+def test_included_badge_follows_discount_when_aware():
+    st = MemoryDataStore(); b = _svc(st, percent=20, discount_aware=True)
+    px = run(b.create_plan(name="Visit", prices=[{"interval": "month", "amount_minor": 3000,
+             "currency": "SAR", "type": "flat"}], limits={"app.visit": 1}))
+    run(b.create_plan(name="AI Bot", prices=[{"interval": "month", "amount_minor": 20000,
+             "currency": "SAR", "type": "flat"}], limits={"app.bot": 1}, credit_percent_of_price=True))
+    run(b.subscribe(tenant="t1", plan_id=px.id, payment_token="pm_1"))
+    run(b.create_discount_rule(owning_key="app.visit", target_key="app.bot", percent=50))
+    plans = {p["name"]: p for p in run(b.list_plans(tenant="t1"))}
+    # the badge reflects the discounted price the shop would pay: 20% of (20000-50%) = 2000
+    assert plans["AI Bot"]["prices"][0]["included_credit_minor"] == 2000
 
 
 def test_opted_in_but_percent_zero_grants_nothing():

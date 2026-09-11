@@ -273,27 +273,47 @@ class BillingService:
             out.append(plan)
         return out
 
-    def _with_included_credit(self, row: dict) -> dict:
+    def _with_included_credit(self, row: dict, *, rule_pct: int = 0) -> dict:
         """A VIEW copy of a plan row with `included_credit_minor` added to each price, when the plan
         opts into a percent-of-price allowance. Computed LIVE from the current PLAN_CREDIT_PERCENT so a
         panel change shows immediately — per price, because each interval's price (hence its included
-        amount) differs. Never mutates the stored row, and never touches a static-credits plan."""
+        amount) differs. Never mutates the stored row, and never touches a static-credits plan.
+
+        `rule_pct` is the calling tenant's best cross-app discount for THIS plan; when the platform is
+        discount-aware (BILLING_CREDIT_DISCOUNT_AWARE) the included amount is taken off the DISCOUNTED
+        price, so the badge matches what the grant will actually be (a 100%-off plan shows 0 units)."""
         if not row.get("credit_percent_of_price"):
             return row
         pct = max(0, min(100, int(self._cfg.get("plan_credit_percent", 0) or 0)))
+        aware = bool(self._cfg.get("credit_discount_aware")) and rule_pct > 0
         prices = []
         for p in (row.get("prices") or []):
             base = int(p.get("amount_minor", 0) or 0)
-            inc = int((_Decimal(base) * _Decimal(pct) / 100).quantize(_Decimal(1), _ROUND_HALF_UP))
-            prices.append({**p, "included_credit_minor": inc})
+            net = base - self._pct_of(base, rule_pct) if aware else base
+            prices.append({**p, "included_credit_minor": self._pct_of(net, pct)})
         return {**row, "prices": prices}
 
-    async def list_plans(self, *, include_hidden: bool = False) -> list[dict]:
+    async def list_plans(self, *, include_hidden: bool = False, tenant: str = "") -> list[dict]:
         rows = await self._plans.all(self._cfg["list_limit"])
-        if include_hidden:
-            return [self._with_included_credit(r) for r in rows]   # operator view: everything
-        return [self._with_included_credit(r) for r in rows
-                if r.get("listed", True) and r.get("active", True)]
+        rows = ([r for r in rows] if include_hidden else
+                [r for r in rows if r.get("listed", True) and r.get("active", True)])
+        # When the platform is discount-aware AND we know the tenant, the included-units badge is taken
+        # off the price the shop would actually pay (its best cross-app rule discount), so it matches
+        # the grant. Otherwise it is list-price based (operator/internal view, or discount-unaware).
+        rule_by_plan: dict[str, int] = {}
+        if tenant and self._cfg.get("credit_discount_aware") and self._rules is not None:
+            drules = await self._rules.all(self._cfg["list_limit"])
+            if drules:
+                now = self._clock()
+                resolved = await self._entitlements.resolve(tenant, now)
+                held = {str(k) for k, v in (resolved.get("limits") or {}).items() if v}
+                for r in rows:
+                    if r.get("credit_percent_of_price"):
+                        p, _ = pricing.best_rule_percent(
+                            drules, held_keys=held, target_keys=self._plan_target_keys(r), now=now)
+                        rule_by_plan[r.get("id", "")] = p
+        return [self._with_included_credit(r, rule_pct=rule_by_plan.get(r.get("id", ""), 0))
+                for r in rows]
 
     async def upsert_coupon(self, **kw) -> Coupon:
         return await self._coupons.upsert(Coupon(created=iso(), **kw))
@@ -1019,20 +1039,30 @@ class BillingService:
         return pricing.rule_discount(rules, subtotal, held_keys=held, target_keys=targets,
                                      now=self._clock())
 
-    def _granted_allowance(self, plan, price: dict) -> int:
+    def _pct_of(self, base_minor: int, pct: int) -> int:
+        return int((_Decimal(max(0, base_minor)) * _Decimal(pct) / 100).quantize(
+            _Decimal(1), _ROUND_HALF_UP))
+
+    def _granted_allowance(self, plan, *, list_base: int, net_base: int) -> int:
         """The included wallet allowance to grant for this cycle, in minor units.
 
         Default: the plan's static limits[PLAN_CREDIT_LIMIT_KEY]. A plan that opts in with
-        credit_percent_of_price=True instead grants a PERCENT of its recurring price
-        (PLAN_CREDIT_PERCENT, a runtime-editable global knob) — so an operator can change "how much is
-        included" with no redeploy or reseed. Computed off the plan's list price, not the discounted
-        subtotal, so a coupon/rule never shrinks the allowance. Percent clamped 0-100."""
+        credit_percent_of_price=True instead grants a PERCENT of its price (PLAN_CREDIT_PERCENT, a
+        runtime-editable global knob) — so an operator can change "how much is included" with no
+        redeploy or reseed. Percent clamped 0-100.
+
+        WHICH PRICE the percent is taken from is per-platform (BILLING_CREDIT_DISCOUNT_AWARE):
+          off  (default) — the plan's LIST price (list_base): a discount never shrinks the allowance.
+          on             — the amount ACTUALLY PAID this cycle (net_base = subtotal after the rule/
+                           coupon discount): a 100%-off plan grants 0 units, matching 0 paid. This
+                           closes the hole where a fully-discounted plan still handed out full-price
+                           free units."""
         if plan is None:
             return 0
         if getattr(plan, "credit_percent_of_price", False):
             pct = max(0, min(100, int(self._cfg.get("plan_credit_percent", 0) or 0)))
-            base = int(price.get("amount_minor", 0) or 0)
-            return int((_Decimal(base) * _Decimal(pct) / 100).quantize(_Decimal(1), _ROUND_HALF_UP))
+            base = net_base if self._cfg.get("credit_discount_aware") else list_base
+            return self._pct_of(int(base or 0), pct)
         return int((plan.limits or {}).get(self._cfg["plan_credit_limit_key"], 0) or 0)
 
     async def _compute_renewal(self, sub) -> dict[str, Any]:
@@ -1091,7 +1121,8 @@ class BillingService:
         if proration is not None:
             line["description"] += " (prorated first period)"
             line["proration"] = proration
-        granted = self._granted_allowance(plan, price)
+        granted = self._granted_allowance(
+            plan, list_base=int(price.get("amount_minor", 0) or 0), net_base=int(subtotal - discount))
         return {"line": line, "taxable": taxable, "discount": discount, "tax": tax, "total": total,
                 "currency": currency, "granted": granted, "plan": plan}
 
