@@ -32,7 +32,13 @@ _TABLE = "kv_store"
 _INDEXES = (
     f"CREATE INDEX IF NOT EXISTS kv_value_gin ON {_TABLE} USING gin (value jsonb_path_ops)",
     f"CREATE INDEX IF NOT EXISTS kv_created_desc ON {_TABLE} "
-    f"(collection, COALESCE(value->>'created', '') DESC, key DESC)",
+    f"(collection, COALESCE(value->'created', 'null'::jsonb) DESC, key DESC)",
+    # created_at is the second common ordering field (membership/person rows sort by it); index it too
+    # so those keyset scans are O(page), not O(tenant-rows). Uses jsonb ordering (-> not ->>) so a
+    # NUMERIC timestamp sorts numerically, matching the memory adapter — text ordering placed '100'
+    # before '9' and mis-ordered every 'oldest-first' priority view.
+    f"CREATE INDEX IF NOT EXISTS kv_created_at_desc ON {_TABLE} "
+    f"(collection, COALESCE(value->'created_at', 'null'::jsonb) DESC, key DESC)",
 )
 
 
@@ -182,7 +188,7 @@ class PostgresDataStore:
         position = _cursor.decode(after) if after else None
         if position is not None:
             last_value, last_id = position
-            args.append("" if last_value is None else str(last_value))
+            args.append(json.dumps(last_value))   # jsonb-compared below (None -> JSON null)
             value_param = len(args)
             args.append(str(last_id))
             id_param = len(args)
@@ -190,14 +196,14 @@ class PostgresDataStore:
             # Tuple comparison: the id tie-break keeps the order total, so a page boundary
             # cannot fall between two rows sharing a `created` value.
             clauses.append(
-                f"(COALESCE(value->>'{field}', ''), key) {comparison} (${value_param}, ${id_param})"
+                f"(COALESCE(value->'{field}', 'null'::jsonb), key) {comparison} (${value_param}::jsonb, ${id_param})"
             )
 
         args.append(limit + 1)          # one extra row tells us whether another page exists
         order = "DESC" if descending else "ASC"
         sql = (
             f"SELECT key, value FROM {_TABLE} WHERE " + " AND ".join(clauses) +  # nosec B608 - _TABLE and the field name are trusted; all VALUES are parameterized
-            f" ORDER BY COALESCE(value->>'{field}', '') {order}, key {order} LIMIT ${len(args)}"
+            f" ORDER BY COALESCE(value->'{field}', 'null'::jsonb) {order}, key {order} LIMIT ${len(args)}"
         )
 
         pool = await self._ensure()

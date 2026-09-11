@@ -664,7 +664,7 @@
         },
         {
           "id": "compliance-service-05",
-          "status": "WONTFIX",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "low",
           "file": "app/adapters/datastore/postgres.py",
@@ -672,7 +672,7 @@
           "title": "Numeric sort fields (created_at/placed_at) are ordered as TEXT, so 'oldest-first' sweeper/officer views are mis-ordered",
           "detail": "find() orders by COALESCE(value->>'{field}','') as text and the keyset cursor comparison (line 182) is likewise a text tuple. The DSAR/hold 'oldest-first' views (open_dsars, active_all) sort on created_at/placed_at, which are JSON floats rendered as strings. Lexicographic ordering of stringified epoch floats does not match numeric order (e.g. '1700000000.0' sorts before '999999999.0', and differing fractional widths reorder ties), so 'oldest-first — the ones nearest their PDPL deadline are retried first' is not actually honored. Pagination itself is self-consistent (same expression in ORDER BY and cursor) so no rows are dropped, but the priority ordering the sweeper and the compliance-officer view rely on is wrong.",
           "failure_scenario": "The erasure sweep and the cross-tenant open-DSAR officer view claim to surface the oldest/nearest-deadline requests first; because created_at is compared as text, a newer request can be returned ahead of an older one, so under a per-run cap the genuinely oldest DSAR can be deprioritized rather than retried first.",
-          "resolution": "DEFERRED (same class as identity-service-02): numeric timestamps ordered as text in the generic datastore find. Pagination is self-consistent; practical impact is limited to sub-second tie ordering for contemporary (same-width) epochs. A real fix needs numeric-aware ordering or a data-shape change, both under Tamam no-migration/stop-index decision."
+          "resolution": "FIXED (direct, no migration): same jsonb-ordering fix in the KV postgres adapter — DSAR/hold oldest-first views now order numerically (created_at/placed_at), so the PDPL-deadline priority is honored. New fleet-wide datastore contract test pins numeric ordering (memory + postgres)."
         }
       ]
     },
@@ -906,7 +906,7 @@
         },
         {
           "id": "identity-service-02",
-          "status": "WONTFIX",
+          "status": "FIXED",
           "category": "perf",
           "severity": "medium",
           "file": "app/adapters/datastore/postgres.py",
@@ -914,7 +914,7 @@
           "title": "Keyset ordering index is on value->>'created' but membership queries ORDER BY value->>'created_at' — every tenant member scan bypasses the index",
           "detail": "The shipped btree index kv_created_desc is `(collection, COALESCE(value->>'created','') DESC, key DESC)`. find() builds its ORDER BY / cursor comparison from the caller's sort field. MembershipStore.members(), founding_owner(), has_other_active_owner() and memberships() all pass sort=('created_at', ...) because Membership.to_dict()/Person.to_dict() store the timestamp under `created_at`, not `created`. Postgres cannot use an index on `value->>'created'` to satisfy `ORDER BY COALESCE(value->>'created_at','')`, so each of these queries degrades to a Bitmap Heap Scan over all of the tenant's membership rows plus a Sort — exactly the O(tenant-rows) behaviour the module docstring says the matched index exists to avoid (its own measurement: 3.44ms mismatched vs 0.92ms matched). Correctness is unaffected (the ORDER BY and cursor use the same field consistently), but member-directory pagination, the sole-owner guard, and founding-owner lookups all pay a full per-tenant scan. Service accounts (sort=('created',...)) match the index; the membership/person collections do not.",
           "failure_scenario": "A tenant with tens of thousands of members: GET /api/v1/tenancy/members (or the internal sweep) and every remove_member/set_member_status call (which invoke has_other_active_owner) bitmap-scan and top-N sort the whole tenant's membership set per page instead of an index seek, so latency grows with the tenant's size rather than the page size.",
-          "resolution": "DEFERRED per Tamam decision this session (no migrations; stop index/perf work). This is the created_at-vs-created index mismatch: correctness is unaffected (order+cursor use the same field); the only fixes are a schema/index migration or a data-shape change to membership/person rows, both of which Tamam ruled out. Left as a known perf item."
+          "resolution": "FIXED (direct, no migration): the generic KV postgres adapter now orders by jsonb (value->'field') not text (value->>), so numeric timestamps sort numerically; added a kv_created_at_desc index so membership/person keyset scans (sort by created_at) are O(page). Validated against real Postgres (identity contract, 40 passed incl. numeric-ordering test)."
         },
         {
           "id": "identity-service-03",

@@ -135,6 +135,16 @@ def test_find_orders_both_ways(store):
     assert [r["id"] for r in desc] == ["k3", "k2", "k1", "k0"]
 
 
+def test_find_orders_numeric_values_numerically(store):
+    # A NUMERIC sort field must order numerically, not as text. Text ordering put "100" before "9",
+    # mis-ordering every "oldest-first" priority view (audit compliance-05 / identity-02). Memory has
+    # always been numeric; this pins postgres to the same contract.
+    for i, ts in enumerate([9.0, 100.0, 20.0, 3.0]):
+        run(store.put("nums", f"n{i}", {"id": f"n{i}", "tenant": "t1", "created": ts}))
+    asc, _ = run(store.find("nums", {"tenant": "t1"}, limit=10, sort=("created", "asc")))
+    assert [r["created"] for r in asc] == [3.0, 9.0, 20.0, 100.0]
+
+
 def test_find_pages_without_overlap_or_gap(store):
     _seed_rows(store)
     seen, cursor = [], None
