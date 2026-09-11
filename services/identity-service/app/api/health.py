@@ -35,36 +35,38 @@ async def healthz() -> dict[str, str]:
     return {"status": "ok", "service": get_settings().SERVICE_NAME}
 
 
+async def _run_check(name: str, check: ReadinessCheck, timeout: float) -> tuple[str, str, bool]:
+    """Run ONE readiness probe under its own bounded timeout. Returns (name, state, ok). Never raises:
+    a failing or hanging probe becomes a state ("down"/"timeout"), never a 500 on the endpoint."""
+    try:
+        res = await asyncio.wait_for(check(), timeout)
+        # A check may return a bool (ok/down) or a REASON string ("ok", "pool exhausted …", "down").
+        # A string is reported verbatim so readiness can name WHY, not just that it is not ready.
+        if isinstance(res, str):
+            return name, res, (res == "ok")
+        ok = bool(res)
+        return name, "ok" if ok else "down", ok
+    except asyncio.TimeoutError:
+        # DISTINCT from "down": the check did not answer within the budget — almost always a
+        # dependency unreachable in a way that hangs rather than refuses.
+        return name, "timeout", False
+    except Exception:  # a failing probe must never crash the endpoint
+        return name, "down", False
+
+
 @router.get("/readyz")
 async def readyz() -> JSONResponse:
-    # Each dependency probe runs under a BOUNDED timeout. A blackholed dependency (an egress
-    # NetworkPolicy that DROPS rather than refuses, a wedged upstream) would otherwise leave the
-    # probe hanging until the kubelet's own deadline, with NO response body — the pod sits
-    # Running 0/1 and nothing says why. A bounded wait turns that silence into
-    # `{"<dep>": "timeout"}`, which points straight at the stuck dependency instead of reading as a
-    # slow start, then a bad image, then a missing bucket in turn.
+    # Every dependency probe runs CONCURRENTLY, each under its OWN bounded timeout. Sequentially the
+    # worst case was the SUM of every check's timeout (6 deps x 5s = 30s), which blows past the
+    # kubelet's own httpGet timeout (5s) on a busy node — the pod never turns Ready even though every
+    # dependency is actually fine, only slow. Concurrent, the worst case is the SLOWEST SINGLE check.
+    # A bounded per-check wait still turns a blackholed dependency into `{"<dep>": "timeout"}` (a named
+    # reason) rather than a silent hang with no response body.
     timeout = getattr(get_settings(), "READYZ_TIMEOUT_SECONDS", _DEFAULT_READYZ_TIMEOUT)
-    results: dict[str, str] = {}
-    all_ok = True
-    for name, check in _readiness_checks.items():
-        try:
-            res = await asyncio.wait_for(check(), timeout)
-            # A check may return a bool (ok/down) or a REASON string ("ok", "pool exhausted …",
-            # "down"). A string is reported verbatim so readiness can name WHY, not just that it is
-            # not ready — a full datastore must not read as an unreachable one.
-            if isinstance(res, str):
-                state, ok = res, (res == "ok")
-            else:
-                ok = bool(res)
-                state = "ok" if ok else "down"
-        except asyncio.TimeoutError:
-            # DISTINCT from "down": the check did not answer within the budget — almost always a
-            # dependency that is unreachable in a way that hangs rather than refuses.
-            state, ok = "timeout", False
-        except Exception:  # a failing probe must never crash the endpoint
-            state, ok = "down", False
-        results[name] = state
-        all_ok = all_ok and ok
+    checks = list(_readiness_checks.items())
+    gathered = await asyncio.gather(*(_run_check(n, c, timeout) for n, c in checks))
+    results = {name: state for name, state, _ in gathered}
+    all_ok = all(ok for _, _, ok in gathered)
     status_code = 200 if all_ok else 503
     return JSONResponse(
         {"status": "ready" if all_ok else "not_ready", "checks": results},

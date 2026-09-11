@@ -141,3 +141,26 @@ def test_readyz_names_a_hanging_dependency_as_timeout_not_a_hang(probe_app, monk
     assert r.status_code == 503
     assert r.json()["checks"]["stuck_dep"] == "timeout"   # named, not a generic "down"
     assert elapsed < 5, "readyz hung on the check instead of bounding it"
+
+
+def test_readyz_runs_checks_concurrently_not_sequentially(probe_app, monkeypatch):
+    """The bug that stranded backup-service 0/1: probes ran SEQUENTIALLY, so worst-case latency was
+    the SUM of every check's timeout (6 deps x 5s = 30s), blowing past the kubelet's own 5s httpGet
+    timeout even though every dependency was fine, only slow. Concurrent, total ≈ the SLOWEST single
+    check. Five 0.4s checks must finish in well under their 2.0s sum."""
+    _, client, health_mod = probe_app
+    health_mod._readiness_checks.clear()          # isolate: only our slow probes
+
+    async def slow() -> bool:
+        await asyncio.sleep(0.4)
+        return True
+
+    for i in range(5):
+        health_mod.register_readiness_check(f"slow_{i}", slow)
+    start = time.monotonic()
+    r = client.get("/readyz")
+    elapsed = time.monotonic() - start
+
+    assert r.status_code == 200 and r.json()["status"] == "ready"
+    assert len(r.json()["checks"]) == 5           # every check ran and is reported
+    assert elapsed < 1.5, f"sequential? 5×0.4s ran in {elapsed:.2f}s (expected ~0.4s concurrent)"
