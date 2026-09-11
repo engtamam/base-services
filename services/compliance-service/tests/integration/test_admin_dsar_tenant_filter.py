@@ -55,13 +55,20 @@ def test_platform_operator_lists_a_specific_shops_dsars(app):
                     headers=_auth("cust@x.com", "shopx", "compliance.self")).status_code == 201
 
     plat = _auth("op@platform", "platform", "platform.compliance")
-    # Without the param the operator sees only their own (platform) tenant — the reported bug: empty.
-    own = app.get("/api/v1/compliance/dsar", headers=plat).json()["requests"]
-    assert all(r.get("tenant") != "shopx" for r in own)
-    # With ?tenant=shopx the operator now sees the shop's DSAR.
+    # With ?tenant=shopx the operator sees that shop's DSAR (scoped).
     got = app.get("/api/v1/compliance/dsar?tenant=shopx", headers=plat).json()["requests"]
     assert any(r.get("subject") == "cust@x.com" or r.get("tenant") == "shopx" for r in got)
     assert len(got) >= 1
+
+
+def test_platform_operator_no_tenant_gets_cross_tenant_open_dsars(app):
+    # The reported bug's real fix: a customer's DSAR must be DISCOVERABLE without knowing the shop.
+    app.post("/api/v1/compliance/me/dsar", json={"type": "access"},
+             headers=_auth("disco@z.com", "shopz", "compliance.self"))
+    plat = _auth("op@platform", "platform", "platform.compliance")
+    body = app.get("/api/v1/compliance/dsar", headers=plat).json()   # NO ?tenant
+    assert body["scope"] == "all_open"
+    assert any(r.get("tenant") == "shopz" for r in body["requests"])   # every shop's open rows
 
 
 def test_tenant_admins_tenant_param_is_ignored_no_cross_tenant_read(app):
@@ -72,3 +79,25 @@ def test_tenant_admins_tenant_param_is_ignored_no_cross_tenant_read(app):
     other = _auth("admin@other", "other", "compliance.read")
     got = app.get("/api/v1/compliance/dsar?tenant=shopy", headers=other).json()["requests"]
     assert all(r.get("tenant") != "shopy" for r in got)   # no cross-tenant leak
+
+
+def test_tenant_admin_no_tenant_gets_no_cross_tenant_view(app):
+    # A non-platform caller with NO tenant param must NOT get the cross-tenant all-open view.
+    app.post("/api/v1/compliance/me/dsar", json={"type": "access"},
+             headers=_auth("c@w.com", "shopw", "compliance.self"))
+    other = _auth("admin@other2", "other2", "compliance.read")
+    body = app.get("/api/v1/compliance/dsar", headers=other).json()
+    assert body.get("scope") != "all_open"                # scoped to own tenant, not cross-tenant
+    assert all(r.get("tenant") != "shopw" for r in body["requests"])
+
+
+def test_platform_operator_lists_cross_tenant_active_holds(app):
+    # Two shops each get a legal hold; the platform officer sees both with no ?tenant.
+    plat = _auth("op@platform", "platform", "platform.compliance")
+    for shop, subj in (("holdshop1", "a@1"), ("holdshop2", "b@2")):
+        app.post("/api/v1/compliance/legal-holds",
+                 json={"tenant": shop, "subject": subj, "reason": "litigation"}, headers=plat)
+    body = app.get("/api/v1/compliance/legal-holds", headers=plat).json()
+    assert body["scope"] == "all_active"
+    tenants = {h.get("tenant") for h in body["holds"]}
+    assert {"holdshop1", "holdshop2"} <= tenants

@@ -59,6 +59,12 @@ class ComplianceService:
     async def list_holds(self, tenant: str) -> list[dict]:
         return await self._holds.list(tenant, self._cfg["list_limit"])
 
+    async def list_open_holds(self, limit: int = 100,
+                              after: str | None = None) -> tuple[list[dict], str | None]:
+        """Every tenant's ACTIVE legal hold — the platform compliance-officer cross-tenant view.
+        Gated to platform.compliance at the route + audited."""
+        return await self._holds.active_all(limit=limit, after=after)
+
     async def is_held(self, tenant: str, subject: str) -> bool:
         return bool(await self._holds.active_for(tenant, subject))
 

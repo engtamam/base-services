@@ -242,7 +242,10 @@ class DiscountRuleStore(_Repo):
         return DiscountRule.from_dict(row)
 
     async def all(self, limit: int = 100) -> list[dict]:
-        """The whole rule catalogue — global and small, bounded by the catalogue cap (see CouponStore)."""
+        """The whole rule catalogue."""
+        # sweeper: the discount-rule catalogue is GLOBAL and small (one row per rule, not per tenant),
+        # exactly like the coupon/plan catalogue — there is no tenant to scope by, so reading it whole
+        # IS the operation, bounded by _CATALOG_MAX so a runaway rule list cannot become unbounded.
         return (await self._store.scan_all(self.collection, _CATALOG_MAX))[:limit]
 
     async def remove(self, rule_id: str) -> bool:

@@ -34,6 +34,21 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "critical": False,
     },
     {
+        "action": "dsar.cross_tenant_listed",
+        "source": "admin",
+        "critical": False,
+        "why": "a platform compliance officer reading EVERY tenant's open DSARs is a legitimate but "
+               "cross-tenant view of personal-data requests; who looked across all shops, and when, "
+               "must be recordable — the platform-admin cross-tenant read pattern",
+    },
+    {
+        "action": "legal_hold.cross_tenant_listed",
+        "source": "admin",
+        "critical": False,
+        "why": "reading EVERY tenant's active legal holds is a cross-tenant view of who is under a "
+               "preservation order; a platform-wide look must be attributable, like the DSAR one",
+    },
+    {
         "action": "data_target.registered",
         "source": "admin",
         "critical": False,

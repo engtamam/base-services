@@ -1008,7 +1008,7 @@
     },
     "/api/v1/compliance/dsar": {
       "get": {
-        "description": "List DSAR requests. A PLATFORM operator (platform.compliance) may pass `tenant` to view a\nspecific shop's DSARs \u2014 without it a GET has no body, so the operator was stuck on their own JWT\ntenant and never saw any real shop's requests (the reported bug). A tenant admin's `tenant` is\nignored: _tenant() scopes them to their own tenant, so this opens no cross-tenant read.",
+        "description": "List DSAR requests.\n\nA PLATFORM operator (platform.compliance) who passes NO `tenant` gets the CROSS-TENANT view: every\nshop's still-OPEN DSAR, oldest-first (the ones nearest their PDPL deadline), paginated \u2014 because a\ncompliance officer must DISCOVER a request exists, not only find it by already knowing the shop\n(the reported bug: the old `tenant or \"global\"` fallback matched a shop literally named \"global\"\nand found nothing). This cross-tenant read is audited. Passing `tenant` scopes to that one shop.\nA tenant admin's `tenant` is ignored \u2014 _tenant() scopes them to their own \u2014 so no cross-tenant read.",
         "operationId": "list_dsar_api_v1_compliance_dsar_get",
         "parameters": [
           {
@@ -1026,6 +1026,35 @@
                 }
               ],
               "title": "Tenant"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
             }
           }
         ],
@@ -1240,6 +1269,35 @@
                 }
               ],
               "title": "Tenant"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
             }
           }
         ],

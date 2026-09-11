@@ -333,11 +333,24 @@ async def process_dsar(request: Request, dsar_id: str,
 
 @router.get("/dsar", dependencies=[Depends(_READ)])
 async def list_dsar(request: Request, principal: Principal = Depends(_READ),
-                    tenant: str | None = Query(default=None, max_length=128)) -> dict:
-    """List DSAR requests. A PLATFORM operator (platform.compliance) may pass `tenant` to view a
-    specific shop's DSARs — without it a GET has no body, so the operator was stuck on their own JWT
-    tenant and never saw any real shop's requests (the reported bug). A tenant admin's `tenant` is
-    ignored: _tenant() scopes them to their own tenant, so this opens no cross-tenant read."""
+                    tenant: str | None = Query(default=None, max_length=128),
+                    limit: int = Query(default=100, ge=1, le=500),
+                    after: str | None = Query(default=None, max_length=512)) -> dict:
+    """List DSAR requests.
+
+    A PLATFORM operator (platform.compliance) who passes NO `tenant` gets the CROSS-TENANT view: every
+    shop's still-OPEN DSAR, oldest-first (the ones nearest their PDPL deadline), paginated — because a
+    compliance officer must DISCOVER a request exists, not only find it by already knowing the shop
+    (the reported bug: the old `tenant or "global"` fallback matched a shop literally named "global"
+    and found nothing). This cross-tenant read is audited. Passing `tenant` scopes to that one shop.
+    A tenant admin's `tenant` is ignored — _tenant() scopes them to their own — so no cross-tenant read."""
+    if "platform.compliance" in principal.caps and not tenant:
+        rows, cursor = await build_dsar(request).list_all_open(limit=limit, after=after)
+        await request.app.state.auditor.record(
+            "dsar.cross_tenant_listed", actor=principal.subject, tenant=principal.tenant,
+            resource="dsar:all_open", ip=request.client.host if request.client else "",
+            metadata={"returned": str(len(rows))})
+        return {"requests": rows, "next_cursor": cursor, "scope": "all_open"}
     return {"requests": await build_dsar(request).list(_tenant(principal, tenant))}
 
 
@@ -373,9 +386,19 @@ async def release_hold(request: Request, hold_id: str,
 
 @router.get("/legal-holds", dependencies=[Depends(_READ)])
 async def list_holds(request: Request, principal: Principal = Depends(_READ),
-                     tenant: str | None = Query(default=None, max_length=128)) -> dict:
-    # platform op may pass ?tenant to view a specific shop's legal holds; a tenant admin's value is
-    # ignored (scoped to own). Without it a platform op saw only their own reserved tenant.
+                     tenant: str | None = Query(default=None, max_length=128),
+                     limit: int = Query(default=100, ge=1, le=500),
+                     after: str | None = Query(default=None, max_length=512)) -> dict:
+    # A platform.compliance op with NO tenant gets the CROSS-TENANT view: every shop's ACTIVE legal
+    # hold, paginated + audited (a compliance officer must see every hold in force, not one shop's).
+    # Passing ?tenant scopes to that shop; a tenant admin's value is ignored (scoped to own).
+    if "platform.compliance" in principal.caps and not tenant:
+        rows, cursor = await build_compliance(request).list_open_holds(limit=limit, after=after)
+        await request.app.state.auditor.record(
+            "legal_hold.cross_tenant_listed", actor=principal.subject, tenant=principal.tenant,
+            resource="legal_hold:all_active", ip=request.client.host if request.client else "",
+            metadata={"returned": str(len(rows))})
+        return {"holds": rows, "next_cursor": cursor, "scope": "all_active"}
     return {"holds": await build_compliance(request).list_holds(_tenant(principal, tenant))}
 
 

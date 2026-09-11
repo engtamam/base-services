@@ -214,6 +214,21 @@ class DsarService:
             out.append(item)
         return out
 
+    async def list_all_open(self, limit: int = 100,
+                            after: str | None = None) -> tuple[list[dict], str | None]:
+        """Every tenant's still-OPEN DSAR, oldest-first — the platform compliance-officer view (a
+        PDPL response deadline spans shops, and a request must be discoverable without already knowing
+        which shop it came from). Reuses the sweeper's indexed, pushed-down open-status find (never a
+        raw scan), paginated. Platform-scoped: gated to platform.compliance at the route + audited."""
+        now = self._clock.now()
+        dsars, cursor = await self._dsars.open_dsars(limit=limit, after=after)
+        out = []
+        for d in dsars:
+            item = d.public()
+            item["overdue"] = d.overdue(now)
+            out.append(item)
+        return out, cursor
+
     async def _emit(self, event: str, payload: dict) -> None:
         if self._bus is None:
             return

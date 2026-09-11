@@ -266,6 +266,16 @@ class HoldStore:
                                          sort=("placed_at", "desc"))
         return rows
 
+    async def active_all(self, limit: int = 100,
+                         after: str | None = None) -> tuple[list[dict], str | None]:
+        """Every tenant's ACTIVE legal hold, oldest-first — the platform compliance-officer view.
+        Deliberately NOT tenant-scoped (mirrors DsarStore.open_dsars): the `active` flag is pushed
+        down to the store, so this stays an indexed find, not a platform-wide scan. Platform-scoped:
+        gated to platform.compliance at the route + audited."""
+        rows, cursor = await self._store.find(_HOLDS, {"active": True}, limit=limit, after=after,
+                                              sort=("placed_at", "asc"))
+        return rows, cursor
+
     async def active_in_tenant(self, tenant: str, limit: int) -> tuple[list[LegalHold], bool]:
         """Every active hold for a tenant, and whether the answer is COMPLETE.
 
