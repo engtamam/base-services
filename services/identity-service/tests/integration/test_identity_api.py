@@ -62,6 +62,38 @@ def test_register_login_me(client):
     assert "password_hash" not in me.json()
 
 
+def _login(client, username="pref", password="password1"):
+    client.post("/api/v1/auth/register", json={"username": username, "password": password})
+    return client.post("/api/v1/auth/login",
+                       json={"username": username, "password": password}).json()["access_token"]
+
+
+def test_update_and_read_my_preferences(client):
+    tok = _login(client, "prefuser")
+    r = client.patch("/api/v1/auth/me/preferences",
+                     json={"preferences": {"locale": "ar", "theme": "dark"}}, headers=_auth(tok))
+    assert r.status_code == 200
+    assert r.json()["preferences"] == {"locale": "ar", "theme": "dark"}
+    # persisted + a MERGE: a second patch updates one key, leaves the other, null clears a key
+    r = client.patch("/api/v1/auth/me/preferences",
+                     json={"preferences": {"locale": "en", "theme": None}}, headers=_auth(tok))
+    assert r.json()["preferences"] == {"locale": "en"}
+    assert client.get("/api/v1/auth/me", headers=_auth(tok)).json()["preferences"] == {"locale": "en"}
+
+
+def test_preferences_requires_a_token(client):
+    assert client.patch("/api/v1/auth/me/preferences",
+                        json={"preferences": {"locale": "ar"}}).status_code == 401
+
+
+def test_preferences_reject_non_scalar_and_oversize(client):
+    tok = _login(client, "prefbad")
+    assert client.patch("/api/v1/auth/me/preferences",
+                        json={"preferences": {"x": {"nested": 1}}}, headers=_auth(tok)).status_code == 400
+    assert client.patch("/api/v1/auth/me/preferences",
+                        json={"preferences": {"x": "y" * 300}}, headers=_auth(tok)).status_code == 400
+
+
 def test_duplicate_register_409(client):
     client.post("/api/v1/auth/register", json={"username": "bob", "password": "password1"})
     r = client.post("/api/v1/auth/register", json={"username": "bob", "password": "password1"})

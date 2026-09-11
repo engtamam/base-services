@@ -411,6 +411,21 @@
         "title": "PersonLoginIn",
         "type": "object"
       },
+      "PreferencesIn": {
+        "description": "A MERGE patch of personal preferences (language, theme, \u2026). Bounded, not enum-validated: the\nvalid VALUES are a platform decision, so identity caps only the size. A value of null DELETES that\nkey (so a console can clear a preference).",
+        "properties": {
+          "preferences": {
+            "additionalProperties": true,
+            "title": "Preferences",
+            "type": "object"
+          }
+        },
+        "required": [
+          "preferences"
+        ],
+        "title": "PreferencesIn",
+        "type": "object"
+      },
       "RefreshIn": {
         "properties": {
           "refresh_token": {
@@ -1003,6 +1018,50 @@
           }
         },
         "summary": "Me",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/me/preferences": {
+      "patch": {
+        "description": "Any signed-in principal sets their OWN preferences (e.g. locale) \u2014 owner or staff alike, since\nidentity is the one record every account authenticates through. No capability beyond being logged\nin, same posture as GET /me. This is a MERGE: keys present are set (null deletes), others untouched.\n\nBounded (keys/lengths, scalar values only) so it stays a preferences bag, not a data store; the\nvalues themselves (which locales are valid) are the platform's to decide, not identity's.",
+        "operationId": "update_my_preferences_api_v1_auth_me_preferences_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreferencesIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Update My Preferences Api V1 Auth Me Preferences Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update My Preferences",
         "tags": [
           "auth"
         ]

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import hashlib
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
@@ -338,6 +339,53 @@ async def me(request: Request, principal: Principal = Depends(require_user),
         body = user.public()  # excludes password_hash / mfa_secret
         step.result = body
     return body
+
+
+class PreferencesIn(BaseModel):
+    """A MERGE patch of personal preferences (language, theme, …). Bounded, not enum-validated: the
+    valid VALUES are a platform decision, so identity caps only the size. A value of null DELETES that
+    key (so a console can clear a preference)."""
+    preferences: dict[str, Any]
+
+
+# Bounds so a self-writable bag cannot become an unbounded blob store on the person's row.
+_PREF_MAX_KEYS = 32
+_PREF_MAX_KEY_LEN = 64
+_PREF_MAX_VAL_LEN = 256
+
+
+@router.patch("/me/preferences", dependencies=[Depends(rate_limit)])
+async def update_my_preferences(request: Request, body: PreferencesIn,
+                                principal: Principal = Depends(require_user)) -> dict:
+    """Any signed-in principal sets their OWN preferences (e.g. locale) — owner or staff alike, since
+    identity is the one record every account authenticates through. No capability beyond being logged
+    in, same posture as GET /me. This is a MERGE: keys present are set (null deletes), others untouched.
+
+    Bounded (keys/lengths, scalar values only) so it stays a preferences bag, not a data store; the
+    values themselves (which locales are valid) are the platform's to decide, not identity's."""
+    repo = UserRepository(request.app.state.container.datastore,
+                          request.app.state.container.login_identifier)
+    user = await repo.get(principal.subject)
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    merged = dict(user.preferences or {})
+    for key, value in body.preferences.items():
+        if not isinstance(key, str) or not key or len(key) > _PREF_MAX_KEY_LEN:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "PREFERENCE_KEY_INVALID")
+        if value is None:
+            merged.pop(key, None)                       # null clears a preference
+            continue
+        if not isinstance(value, (str, int, float, bool)):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "PREFERENCE_VALUE_MUST_BE_SCALAR")
+        if isinstance(value, str) and len(value) > _PREF_MAX_VAL_LEN:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "PREFERENCE_VALUE_TOO_LONG")
+        merged[key] = value
+    if len(merged) > _PREF_MAX_KEYS:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "TOO_MANY_PREFERENCES")
+    user.preferences = merged
+    user.touch()
+    await repo.update(user)
+    return user.public()
 
 
 @router.delete("/me", dependencies=[Depends(rate_limit)])

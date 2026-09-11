@@ -93,6 +93,7 @@ def build_manifest(
             {"path": "/api/v1/auth/logout", "tier": "user", "method": "POST"},
             {"path": "/api/v1/auth/me", "tier": "user", "method": "GET"},
             {"path": "/api/v1/auth/me", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/auth/me/preferences", "tier": "user", "method": "PATCH"},
             {"path": "/api/v1/auth/change-password", "tier": "user", "method": "POST"},
             {"path": "/api/v1/auth/reset-password", "tier": "user", "method": "POST"},
             {"path": "/api/v1/auth/mfa/enroll", "tier": "user", "method": "POST"},

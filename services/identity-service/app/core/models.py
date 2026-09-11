@@ -34,6 +34,13 @@ class User:
     # locked out, or every future one is waved through. The policy decides; the model records.
     email_verified: bool | None = None
     mfa_secret: str | None = None   # set when TOTP enrolled
+    # A small, generic personal-preferences bag the account owns — language, a UI theme, a default
+    # landing tab. Identity is the ONE record every account type (owner AND staff) authenticates
+    # through, so a preference stored here follows the person regardless of whether they hold a
+    # product-specific row (e.g. operations' Operator, which only staff have). Deliberately NOT a
+    # typed/enum field: the VALID values (which locales, which themes) are a platform decision, so
+    # identity stores an opaque key->scalar map and bounds only its SIZE (see the PATCH route).
+    preferences: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=_now)
     updated_at: str = field(default_factory=_now)
 
@@ -42,7 +49,7 @@ class User:
             "id": self.id, "tenant": self.tenant, "username": self.username,
             "password_hash": self.password_hash, "caps": self.caps, "roles": self.roles,
             "status": self.status, "mfa_secret": self.mfa_secret,
-            "email_verified": self.email_verified,
+            "email_verified": self.email_verified, "preferences": self.preferences,
             "created_at": self.created_at, "updated_at": self.updated_at,
         }
 
@@ -56,6 +63,7 @@ class User:
             # .get() with no default: an ABSENT key stays None (a legacy row), which is not the
             # same as a stored False. See the field comment.
             email_verified=d.get("email_verified"),
+            preferences=dict(d.get("preferences") or {}),
             created_at=d.get("created_at", _now()), updated_at=d.get("updated_at", _now()),
         )
 
@@ -66,6 +74,7 @@ class User:
             "caps": self.caps, "roles": self.roles, "status": self.status,
             "mfa_enabled": self.mfa_secret is not None,
             "email_verified": bool(self.email_verified),
+            "preferences": self.preferences,
             "created_at": self.created_at,
         }
 

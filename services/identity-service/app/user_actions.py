@@ -17,6 +17,10 @@ from typing import Any
 USER_ACTIONS: list[dict[str, Any]] = [
     {"id": "identity.me", "label": "View my profile", "method": "GET",
      "path": "/api/v1/auth/me", "capability": "identity.self", "group": "My account"},
+    {"id": "identity.update_preferences", "label": "Update my preferences", "method": "PATCH",
+     "path": "/api/v1/auth/me/preferences", "capability": "identity.self", "group": "My account",
+     "params": [{"name": "preferences", "in": "body", "type": "object", "required": True,
+                 "help": "a merge patch of key->value (e.g. {\"locale\": \"ar\"}); null clears a key"}]},
     {"id": "identity.change_password", "label": "Change my password", "method": "POST",
      "path": "/api/v1/auth/change-password", "capability": "identity.self", "group": "My account",
      "confirm": True,
