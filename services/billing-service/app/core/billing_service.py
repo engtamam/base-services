@@ -22,11 +22,11 @@ from app.core import pricing
 from app.core import events as _events
 from app.core import settlement as _stl
 from app.core import tax_profile
-from app.core.models import (Coupon, Invoice, Payment, Plan, Settlement, Subscription, iso,
-                             new_id, now_ts)
-from app.core.stores import (CouponStore, IdempotencyStore, InvoiceStore, LedgerStore,
-                             PaymentStore, PlanStore, SettlementStore, SubscriptionStore,
-                             UsageStore)
+from app.core.models import (Coupon, DiscountRule, Invoice, Payment, Plan, Settlement, Subscription,
+                             iso, new_id, now_ts)
+from app.core.stores import (CouponStore, DiscountRuleStore, IdempotencyStore, InvoiceStore,
+                             LedgerStore, PaymentStore, PlanStore, SettlementStore,
+                             SubscriptionStore, UsageStore)
 from app.observability.logging import get_logger
 from app.ports.payment_gateway import GatewayUnavailable
 from app.ports.wallet import WalletRefused, WalletUnavailable
@@ -74,8 +74,12 @@ class BillingService:
                  gateway, tax, einvoicer, pdf, config: dict[str, Any], cache=None,
                  settlements: SettlementStore | None = None, clock=now_ts,
                  emitter=None, grants=None, gateway_resolver=None, wallet=None,
-                 paylinks: "PayLinkStore | None" = None) -> None:
+                 paylinks: "PayLinkStore | None" = None,
+                 discount_rules: "DiscountRuleStore | None" = None) -> None:
         self._plans, self._coupons, self._subs = plans, coupons, subs
+        # Cross-app, ownership-triggered discount rules (sibling to coupons). None ⇒ the feature is
+        # simply off: no rule ever applies, and renewals price exactly as before.
+        self._rules = discount_rules
         self._invoices, self._payments, self._usage = invoices, payments, usage
         self._paylinks = paylinks
         self._ledger, self._idempo = ledger, idempo
@@ -434,6 +438,51 @@ class BillingService:
 
     async def delete_coupon(self, code: str) -> bool:
         return await self._coupons.remove(code)
+
+    # ── cross-app discount rules ────────────────────────────────────────────────────
+    @staticmethod
+    def _clean_percent(value: Any) -> int:
+        pct = int(value or 0)
+        if not 0 <= pct <= 100:
+            raise ValueError("DISCOUNT_PERCENT_OUT_OF_RANGE")   # 0-100 only; 100 = free
+        return pct
+
+    def _require_rules(self) -> DiscountRuleStore:
+        if self._rules is None:
+            raise ValueError("DISCOUNT_RULES_NOT_CONFIGURED")
+        return self._rules
+
+    async def create_discount_rule(self, *, owning_key: str, target_key: str, percent: int,
+                                   active: bool = True, starts_at: float | None = None,
+                                   expires_at: float | None = None, note: str = "") -> dict:
+        store = self._require_rules()
+        if not owning_key or not target_key:
+            raise ValueError("DISCOUNT_KEYS_REQUIRED")
+        rule = DiscountRule(id=new_id("dr_"), owning_key=str(owning_key), target_key=str(target_key),
+                            percent=self._clean_percent(percent), active=bool(active),
+                            starts_at=starts_at, expires_at=expires_at, note=note, created=iso())
+        return (await store.upsert(rule)).to_dict()
+
+    async def list_discount_rules(self) -> list[dict]:
+        store = self._require_rules()
+        rows = await store.all(self._cfg["list_limit"])
+        return sorted(rows, key=lambda r: r.get("created", ""), reverse=True)
+
+    async def update_discount_rule(self, rule_id: str, **changes) -> dict:
+        store = self._require_rules()
+        allowed = ("owning_key", "target_key", "percent", "active", "starts_at", "expires_at", "note")
+        for key in changes:
+            if key not in allowed:
+                raise ValueError(f"DISCOUNT_FIELD_NOT_EDITABLE:{key}")
+        if "percent" in changes and changes["percent"] is not None:
+            changes["percent"] = self._clean_percent(changes["percent"])
+        updated = await store.patch(rule_id, changes)
+        if updated is None:
+            raise ValueError("DISCOUNT_RULE_NOT_FOUND")
+        return updated.to_dict()
+
+    async def delete_discount_rule(self, rule_id: str) -> bool:
+        return await self._require_rules().remove(rule_id)
 
     # ── subscriptions ─────────────────────────────────────────────────────────────
     def _price_for(self, plan: Plan, interval: str) -> dict:
@@ -870,6 +919,33 @@ class BillingService:
         return await self._usage.record(tenant, subscription_id, metric, quantity)
 
     # ── billing cycle ─────────────────────────────────────────────────────────────
+    @staticmethod
+    def _sub_target_keys(sub, plan) -> set[str]:
+        """The feature/plan keys that identify WHICH app this subscription is — what a discount rule's
+        target_key matches against: the plan's features, the plan id, and the keys the plan grants."""
+        keys: set[str] = {sub.plan_id}
+        if plan is not None:
+            keys.update(plan.features or [])
+            keys.update((plan.limits or {}).keys())
+        keys.update((getattr(sub, "limits_snapshot", None) or {}).keys())
+        return {str(k) for k in keys if k}
+
+    async def _rule_discount(self, sub, plan, subtotal: int) -> tuple[int, str]:
+        """The best cross-app discount (minor units, MAX composition) for this subscription's renewal,
+        and the rule id. (0, "") when the feature is off or nothing applies. Ownership is read from the
+        EntitlementResolver — the same source of truth billing uses — so a rule triggers on what the
+        tenant holds RIGHT NOW, and a lapse/gain moves only the next cycle."""
+        if self._rules is None or subtotal <= 0:
+            return 0, ""
+        rules = await self._rules.all(self._cfg["list_limit"])
+        if not rules:
+            return 0, ""
+        resolved = await self._entitlements.resolve(sub.tenant, self._clock())
+        held = {str(k) for k, v in (resolved.get("limits") or {}).items() if v}
+        targets = self._sub_target_keys(sub, plan)
+        return pricing.rule_discount(rules, subtotal, held_keys=held, target_keys=targets,
+                                     now=self._clock())
+
     async def _compute_renewal(self, sub) -> dict[str, Any]:
         """Price ONE subscription's renewal — adopt a scheduled downgrade, apply grandfathered price,
         proration, usage, coupon and tax — and return the invoice LINE + rolled-up amounts + the
@@ -910,8 +986,14 @@ class BillingService:
                          "interval_seconds": interval_secs,
                          "recurring_full_minor": recurring, "recurring_charged_minor": subtotal - metered}
         coupon = await self._coupons.fetch(sub.coupon_code) if sub.coupon_code else None
-        discount = pricing.coupon_discount(coupon.to_dict() if coupon else None, subtotal,
-                                           now=self._clock())
+        coupon_disc = pricing.coupon_discount(coupon.to_dict() if coupon else None, subtotal,
+                                              now=self._clock())
+        # Cross-app rule discount, evaluated LIVE this cycle against what the tenant holds NOW (so
+        # gaining/losing an app changes the NEXT renewal only, never a past invoice). The larger of the
+        # coupon and the best rule wins — never summed (product decision 2026-09-11), so combined
+        # discounts can't silently reach 100%.
+        rule_disc, rule_id = await self._rule_discount(sub, plan, subtotal)
+        discount = max(coupon_disc, rule_disc)
         taxable, tax, total = self._split_tax(subtotal - discount, price.get("includes_tax", False),
                                               reverse_charge=bool(sub.buyer_vat) and self._cfg.get("reverse_charge", False))
         line = {"description": (plan.name if plan else "Subscription"),

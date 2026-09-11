@@ -89,6 +89,37 @@ class Coupon:
 
 
 @dataclass
+class DiscountRule:
+    """A cross-app, ownership-triggered discount — sibling to Coupon, different semantics.
+
+    A Coupon is a CODE someone redeems (with a redemption count). A DiscountRule is an AUTOMATIC rule:
+    "a tenant who HOLDS `owning_key` gets `percent`% off any subscription whose plan carries
+    `target_key`". No code, no redemption count — it simply applies while the ownership holds. Both
+    keys are the tenant's own feature/plan keys (e.g. "feature.visit" → "feature.bookings"), never an
+    app name hardcoded in code; ownership is checked through the EntitlementResolver (the same source of
+    truth billing already uses), so gaining or losing an app changes the NEXT cycle's discount only —
+    never a past invoice, same grandfathering discipline as coupons/plans.
+    """
+    id: str
+    owning_key: str                      # the feature/plan key the tenant must HOLD to qualify
+    target_key: str                      # the discount applies to a subscription whose plan carries this
+    percent: int = 0                     # 0-100; 100 = fully free (same reach a coupon has)
+    active: bool = True
+    # A campaign window, like Coupon — a rule can be pre-created to start later, or auto-expire.
+    starts_at: float | None = None
+    expires_at: float | None = None
+    note: str = ""                       # why this rule exists; operators only, never shown to a buyer
+    created: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "DiscountRule":
+        return cls(**{k: d.get(k, getattr(cls, k, None)) for k in cls.__dataclass_fields__})
+
+
+@dataclass
 class Subscription:
     id: str
     tenant: str

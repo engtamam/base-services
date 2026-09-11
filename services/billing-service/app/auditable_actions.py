@@ -179,6 +179,28 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "is no evidence the campaign ever existed",
     },
     {
+        "action": "discount_rule.created",
+        "source": "admin",
+        "critical": False,
+    },
+    {
+        "action": "discount_rule.updated",
+        "source": "admin",
+        "critical": True,
+        "resource": "discount_rule",
+        "why": "a cross-app discount rule silently changes what every qualifying tenant is charged "
+               "each cycle, and the edit overwrites the previous terms — without this nobody can say "
+               "what the rule discounted yesterday",
+    },
+    {
+        "action": "discount_rule.deleted",
+        "source": "admin",
+        "critical": True,
+        "resource": "discount_rule",
+        "why": "the rule is gone; if its removal is not recorded there is no evidence the discount "
+               "was ever offered or when it stopped applying",
+    },
+    {
         "action": "billing.platform_invoices_viewed",
         "source": "admin",
         "critical": False,

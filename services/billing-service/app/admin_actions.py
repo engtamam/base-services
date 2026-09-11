@@ -180,6 +180,53 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
             {"name": "note", "in": "body", "type": "string", "required": False},
         ],
     },
+    # ── Cross-app discount rules ─────────────────────────────────────────────
+    {
+        "id": "billing.list_discount_rules", "label": "Discount rules", "method": "GET",
+        "path": "/api/v1/billing/discount-rules", "capability": "platform.billing",
+        "group": "Catalogue",
+    },
+    {
+        "id": "billing.create_discount_rule", "label": "Create discount rule", "method": "POST",
+        "path": "/api/v1/billing/discount-rules", "capability": "platform.billing",
+        "group": "Catalogue",
+        "params": [
+            {"name": "owning_key", "in": "body", "type": "string", "required": True,
+             "help": "the feature/plan key a tenant must HOLD to qualify, e.g. feature.visit"},
+            {"name": "target_key", "in": "body", "type": "string", "required": True,
+             "help": "the discount applies to a subscription whose plan carries this key, e.g. feature.bookings"},
+            {"name": "percent", "in": "body", "type": "integer", "required": True,
+             "help": "0-100; 100 = fully free. If several rules qualify, the HIGHEST wins (never summed)"},
+            {"name": "active", "in": "body", "type": "boolean", "required": False},
+            {"name": "starts_at", "in": "body", "type": "number", "required": False,
+             "help": "epoch seconds; before this the rule is scheduled, not active"},
+            {"name": "expires_at", "in": "body", "type": "number", "required": False},
+            {"name": "note", "in": "body", "type": "string", "required": False},
+        ],
+    },
+    {
+        "id": "billing.update_discount_rule", "label": "Edit a discount rule", "method": "PATCH",
+        "path": "/api/v1/billing/discount-rules/{rule_id}", "capability": "platform.billing",
+        "group": "Catalogue", "confirm": True,
+        "params": [
+            {"name": "rule_id", "in": "path", "type": "string", "required": True},
+            {"name": "owning_key", "in": "body", "type": "string", "required": False},
+            {"name": "target_key", "in": "body", "type": "string", "required": False},
+            {"name": "percent", "in": "body", "type": "integer", "required": False,
+             "help": "0-100; 100 = fully free"},
+            {"name": "active", "in": "body", "type": "boolean", "required": False,
+             "help": "false turns it off without deleting it"},
+            {"name": "starts_at", "in": "body", "type": "number", "required": False},
+            {"name": "expires_at", "in": "body", "type": "number", "required": False},
+            {"name": "note", "in": "body", "type": "string", "required": False},
+        ],
+    },
+    {
+        "id": "billing.delete_discount_rule", "label": "Delete a discount rule", "method": "DELETE",
+        "path": "/api/v1/billing/discount-rules/{rule_id}", "capability": "platform.billing",
+        "group": "Catalogue", "danger": True, "confirm": True,
+        "params": [{"name": "rule_id", "in": "path", "type": "string", "required": True}],
+    },
     # ── Subscriptions (operator) ─────────────────────────────────────────────
     {
         "id": "billing.run_cycle", "label": "Run a billing cycle", "method": "POST",

@@ -44,6 +44,45 @@ def coupon_discount(coupon: dict | None, subtotal_minor: int, *, now: float | No
     return max(0, min(disc, subtotal_minor))
 
 
+def best_rule_percent(rules: list[dict], *, held_keys: set[str], target_keys: set[str],
+                      now: float | None = None) -> tuple[int, str]:
+    """The single best cross-app discount percent that applies to a subscription, and the rule id.
+
+    A rule applies when the tenant HOLDS its owning_key, the charged subscription carries its
+    target_key, it is active, and (if a window is set) `now` is inside it. COMPOSITION IS MAX, by an
+    explicit product decision (2026-09-11): when several rules qualify, the HIGHEST single percent
+    wins — never summed — so stacked rules can never silently reach 100% off. Returns (0, "") when
+    none apply. Pure: the caller supplies the held set and the target set.
+    """
+    best_pct, best_id = 0, ""
+    for r in rules:
+        if not r.get("active", True):
+            continue
+        if r.get("owning_key") not in held_keys or r.get("target_key") not in target_keys:
+            continue
+        if now is not None:
+            starts, ends = r.get("starts_at"), r.get("expires_at")
+            if starts is not None and now < float(starts):
+                continue
+            if ends is not None and now >= float(ends):
+                continue
+        pct = max(0, min(100, int(r.get("percent", 0) or 0)))
+        if pct > best_pct:
+            best_pct, best_id = pct, str(r.get("id", ""))
+    return best_pct, best_id
+
+
+def rule_discount(rules: list[dict], subtotal_minor: int, *, held_keys: set[str],
+                  target_keys: set[str], now: float | None = None) -> tuple[int, str]:
+    """The cross-app discount in MINOR units (best applicable rule), and the rule id. Capped at the
+    subtotal — a 100% rule is fully free, never negative. Returns (0, "") when no rule applies."""
+    pct, rule_id = best_rule_percent(rules, held_keys=held_keys, target_keys=target_keys, now=now)
+    if pct <= 0:
+        return 0, ""
+    disc = int((Decimal(subtotal_minor) * Decimal(pct) / 100).quantize(Decimal(1), ROUND_HALF_UP))
+    return max(0, min(disc, subtotal_minor)), rule_id
+
+
 def proration_delta(old_minor: int, new_minor: int, *, period_start: float,
                     period_end: float, now: float) -> int:
     """Net charge (minor units) for switching plans mid-period: prorated new − credit old."""

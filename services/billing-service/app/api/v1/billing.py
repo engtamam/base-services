@@ -17,9 +17,9 @@ from app.core import settlement as _stl
 from app.core.events import Emitter
 from app.core.grants import GrantOutbox
 from app.core.billing_service import BillingService
-from app.core.stores import (CouponStore, IdempotencyStore, InvoiceStore, LedgerStore,
-                             PayLinkStore, PaymentStore, PlanStore, SettlementStore, SubscriptionStore,
-                             UsageStore)
+from app.core.stores import (CouponStore, DiscountRuleStore, IdempotencyStore, InvoiceStore,
+                             LedgerStore, PayLinkStore, PaymentStore, PlanStore, SettlementStore,
+                             SubscriptionStore, UsageStore)
 from app.core.usage_service import UsageService
 
 router = APIRouter(prefix="/api/v1/billing", tags=["billing"])
@@ -148,6 +148,7 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
               "address": await _rc_str("INVOICE_SELLER_ADDRESS", s.INVOICE_SELLER_ADDRESS)}
     return BillingService(
         plans=PlanStore(c.datastore, c.cache), coupons=CouponStore(c.datastore),
+        discount_rules=DiscountRuleStore(c.datastore),
         subs=SubscriptionStore(c.datastore, c.cache),
         invoices=InvoiceStore(c.datastore), payments=PaymentStore(c.datastore), usage=UsageStore(c.datastore),
         paylinks=PayLinkStore(c.datastore),
@@ -295,6 +296,31 @@ class CouponPatchIn(BaseModel):
     plan_id: str | None = Field(default=None, max_length=128)   # scope to ONE plan; "" = any plan
     active: bool | None = None
     public: bool | None = None
+    note: str | None = Field(default=None, max_length=512)
+
+
+class DiscountRuleIn(BaseModel):
+    """A cross-app discount rule: holding `owning_key` grants `percent`% off any subscription whose
+    plan carries `target_key`. No code, no redemption count — it applies automatically while owned."""
+
+    owning_key: str = Field(min_length=1, max_length=128)
+    target_key: str = Field(min_length=1, max_length=128)
+    percent: int = Field(ge=0, le=100)                 # 100 = fully free, same reach as a coupon
+    active: bool = True
+    starts_at: float | None = None
+    expires_at: float | None = None
+    note: str = Field(default="", max_length=512)
+
+
+class DiscountRulePatchIn(BaseModel):
+    """A partial edit; every field optional. id/created are never editable."""
+
+    owning_key: str | None = Field(default=None, max_length=128)
+    target_key: str | None = Field(default=None, max_length=128)
+    percent: int | None = Field(default=None, ge=0, le=100)
+    active: bool | None = None
+    starts_at: float | None = None
+    expires_at: float | None = None
     note: str | None = Field(default=None, max_length=512)
 
 
@@ -466,6 +492,52 @@ async def delete_coupon(request: Request, code: str,
         "coupon.deleted", actor=principal.subject, tenant=principal.tenant,
         resource=f"coupon:{code}", ip=request.client.host if request.client else "")
     return {"deleted": await (await build_billing(request)).delete_coupon(code)}
+
+
+# ── cross-app discount rules (operator) ─────────────────────────────────────────
+@router.post("/discount-rules", status_code=201, dependencies=[Depends(_ADMIN)])
+async def create_discount_rule(request: Request, body: DiscountRuleIn,
+                               principal: Principal = Depends(require_user)) -> dict:
+    await request.app.state.auditor.record(
+        "discount_rule.created", actor=principal.subject, tenant=principal.tenant,
+        resource=f"discount_rule:{body.owning_key}->{body.target_key}",
+        ip=request.client.host if request.client else "")
+    try:
+        return await (await build_billing(request)).create_discount_rule(**body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+
+@router.get("/discount-rules", dependencies=[Depends(_ADMIN)])
+async def list_discount_rules(request: Request) -> dict:
+    try:
+        return {"discount_rules": await (await build_billing(request)).list_discount_rules()}
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+
+@router.patch("/discount-rules/{rule_id}", dependencies=[Depends(_ADMIN)])
+async def update_discount_rule(request: Request, rule_id: str, body: DiscountRulePatchIn,
+                               principal: Principal = Depends(require_user)) -> dict:
+    await request.app.state.auditor.record(
+        "discount_rule.updated", actor=principal.subject, tenant=principal.tenant,
+        resource=f"discount_rule:{rule_id}", ip=request.client.host if request.client else "",
+        metadata={"fields": sorted(k for k, v in body.model_dump().items() if v is not None)})
+    try:
+        return await (await build_billing(request)).update_discount_rule(
+            rule_id, **{k: v for k, v in body.model_dump().items() if v is not None})
+    except ValueError as exc:
+        code_ = status.HTTP_404_NOT_FOUND if "NOT_FOUND" in str(exc) else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(code_, str(exc)) from exc
+
+
+@router.delete("/discount-rules/{rule_id}", dependencies=[Depends(_ADMIN)])
+async def delete_discount_rule(request: Request, rule_id: str,
+                               principal: Principal = Depends(require_user)) -> dict:
+    await request.app.state.auditor.record(
+        "discount_rule.deleted", actor=principal.subject, tenant=principal.tenant,
+        resource=f"discount_rule:{rule_id}", ip=request.client.host if request.client else "")
+    return {"deleted": await (await build_billing(request)).delete_discount_rule(rule_id)}
 
 
 # ── subscriptions (customer) ────────────────────────────────────────────────────

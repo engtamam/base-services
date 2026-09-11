@@ -5,8 +5,8 @@ import asyncio
 import random
 from typing import Any
 
-from app.core.models import (Coupon, Invoice, Payment, Plan, Settlement, Subscription, iso,
-                             new_id, now_ts)
+from app.core.models import (Coupon, DiscountRule, Invoice, Payment, Plan, Settlement, Subscription,
+                             iso, new_id, now_ts)
 from app.ports.datastore import DataStore
 
 # Bounds for the few reads that legitimately cross every tenant: the plan CATALOGUE (tens of
@@ -211,6 +211,44 @@ class CouponStore(_Repo):
         if await self.get(code) is None:
             return False
         await self.delete(code)
+        return True
+
+
+class DiscountRuleStore(_Repo):
+    """Cross-app discount rules — global like the coupon/plan catalogue (a rule is not tenant-owned),
+    small (one row per rule), bounded by the catalogue cap. Sibling to CouponStore in shape."""
+
+    collection = "discount_rules"
+    tenant_scoped = False
+
+    async def upsert(self, r: DiscountRule) -> DiscountRule:
+        await self.put(r.id, r.to_dict())
+        return r
+
+    async def fetch(self, rule_id: str) -> DiscountRule | None:
+        row = await self.get(rule_id)
+        return DiscountRule.from_dict(row) if row else None
+
+    async def patch(self, rule_id: str, changes: dict) -> DiscountRule | None:
+        row = await self.get(rule_id)
+        if row is None:
+            return None
+        for key, value in changes.items():
+            if key in ("id", "created"):          # identity + provenance are not editable
+                continue
+            if value is not None:
+                row[key] = value
+        await self.put(rule_id, row)
+        return DiscountRule.from_dict(row)
+
+    async def all(self, limit: int = 100) -> list[dict]:
+        """The whole rule catalogue — global and small, bounded by the catalogue cap (see CouponStore)."""
+        return (await self._store.scan_all(self.collection, _CATALOG_MAX))[:limit]
+
+    async def remove(self, rule_id: str) -> bool:
+        if await self.get(rule_id) is None:
+            return False
+        await self.delete(rule_id)
         return True
 
 

@@ -82,6 +82,7 @@ def build_manifest(
             {"path": "/api/v1/billing/public/plans", "tier": "public", "method": "GET"},
             {"path": "/api/v1/billing/offers", "tier": "public", "method": "GET"},
             {"path": "/api/v1/billing/coupons", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/billing/discount-rules", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/checkouts", "tier": "user", "method": "POST"},
             # A trackable hosted-checkout LINK for an unpaid invoice (send to the payer, e.g. WhatsApp).
             {"path": "/api/v1/billing/invoices/{invoice_id}/pay-link", "tier": "user", "method": "POST"},
@@ -159,6 +160,9 @@ def build_manifest(
             {"path": "/api/v1/billing/coupons/{}", "tier": "user", "method": "GET"},
             {"path": "/api/v1/billing/coupons/{}", "tier": "user", "method": "PATCH"},
             {"path": "/api/v1/billing/coupons/{}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/billing/discount-rules", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/billing/discount-rules/{}", "tier": "user", "method": "PATCH"},
+            {"path": "/api/v1/billing/discount-rules/{}", "tier": "user", "method": "DELETE"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         # DECLARED, because a consumer cannot subscribe to an event it cannot discover. An
