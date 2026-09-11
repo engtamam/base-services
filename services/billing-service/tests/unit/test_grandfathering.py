@@ -271,7 +271,12 @@ def test_cancel_at_period_end_wins_over_a_scheduled_downgrade(monkeypatch):
     sub = run(b.subscribe(tenant="ali", plan_id=pro.id, payment_token="pm"))
     monkeypatch.setattr(bs, "now_ts", lambda: sub.current_period_start)
     run(b.change_plan(sub.id, new_plan_id=basic.id))     # downgrade scheduled
-    run(b.cancel(sub.id, at_period_end=True))            # and then a cancel
+    run(b.cancel(sub.id, at_period_end=True))            # and then a cancel — cancel WINS
     inv = run(b.run_cycle(sub.id))
-    assert run(SubscriptionStore(st).fetch(sub.id)).plan_id == pro.id     # downgrade NOT adopted
-    assert inv.subtotal_minor == 30000
+    # Cancel wins: at the boundary the sub is FINALIZED, nothing is billed, and the scheduled
+    # downgrade is moot (it never renews to adopt it). Previously this charged 30000 despite the
+    # cancel — the charge-after-cancel bug; "cancel wins" must mean no charge, not a renewal.
+    after = run(SubscriptionStore(st).fetch(sub.id))
+    assert after.status == "canceled" and after.canceled_at
+    assert inv.id == ""                                   # no invoice cut, no card charged
+    assert after.plan_id == pro.id                        # downgrade never adopted

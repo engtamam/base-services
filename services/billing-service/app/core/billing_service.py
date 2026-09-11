@@ -1126,6 +1126,22 @@ class BillingService:
         return {"line": line, "taxable": taxable, "discount": discount, "tax": tax, "total": total,
                 "currency": currency, "granted": granted, "plan": plan}
 
+    async def _finalize_cancellation(self, sub) -> Invoice:
+        """A subscription whose owner asked to stop AT PERIOD END has reached that boundary: end it
+        instead of renewing. Sets status=canceled + stamps canceled_at, raises NO invoice and takes NO
+        payment. Idempotent — once canceled the _BILLABLE guard refuses any further cycle. Returns the
+        no-invoice sentinel (id="") the prior-claim path already uses, so a caller can tell nothing was
+        billed. This is the money guard the reported charge-after-cancel bug was missing."""
+        if sub.status != "canceled":
+            sub.status = "canceled"
+            sub.canceled_at = sub.canceled_at or iso()
+            await self._subs.save(sub)
+            if self._events is not None:
+                await self._events.emit(_events.SUBSCRIPTION_CANCELLED, {
+                    "tenant": sub.tenant, "subscription_id": sub.id, "plan_id": sub.plan_id,
+                    "at_period_end": True, "finalized": True})
+        return Invoice(id="", tenant=sub.tenant)
+
     async def run_cycle(self, sub_id: str) -> Invoice:
         sub = await self._subs.fetch(sub_id)
         if sub is None:
@@ -1137,6 +1153,12 @@ class BillingService:
             # the cycle — charging people who had left, which is the failure customers escalate
             # rather than report. The state has to be enforced where the money is made.
             raise ValueError(f"SUB_NOT_BILLABLE:{sub.status}")
+        if sub.cancel_at_period_end:
+            # The customer asked to stop at the period end and the sweep has reached it: FINALIZE the
+            # cancellation here instead of renewing + charging. Without this the sub stayed `active`,
+            # due() kept returning it, and run_cycle billed it every period — silently ignoring an
+            # explicit cancel (the reported money bug).
+            return await self._finalize_cancellation(sub)
         key = f"cycle:{sub.id}:{int(sub.current_period_end)}"     # deterministic → no double-charge
         # ATOMIC claim, not get-then-mark: two concurrent runs of the same cycle would each create a
         # NEW invoice id, so the gateway idempotency key would differ and the card would be charged
@@ -1767,7 +1789,7 @@ class BillingService:
         horizon = self._clock() + self._cfg.get("cycle_lead_seconds", 0)
         due = await self._subs.due(horizon, limit)
         mode = self._cfg.get("renewal_invoice_mode", "per_subscription")
-        invoiced = failed = 0
+        invoiced = failed = canceled = 0
         errors: list[dict[str, str]] = []
 
         # Decide the unit(s) to invoice per the MODE. per_subscription: one run_cycle per sub (today).
@@ -1789,8 +1811,11 @@ class BillingService:
 
         for sub in singles:
             try:
-                await self.run_cycle(sub.id)
-                invoiced += 1
+                inv = await self.run_cycle(sub.id)
+                if not inv.id:
+                    canceled += 1     # cancel_at_period_end finalized — no invoice, no charge
+                else:
+                    invoiced += 1
             except Exception as exc:  # noqa: BLE001 — one unbillable sub must not stop the sweep
                 failed += 1
                 # The reason is kept for the run report, never swallowed: an operator needs to see
@@ -1805,8 +1830,8 @@ class BillingService:
                 failed += 1
                 errors.append({"tenant": gsubs[0].tenant, "error": type(exc).__name__,
                                "subscriptions": ",".join(s.id for s in gsubs)})
-        return {"due": len(due), "invoiced": invoiced, "failed": failed, "mode": mode,
-                "capped": len(due) >= limit, "errors": errors}
+        return {"due": len(due), "invoiced": invoiced, "canceled": canceled, "failed": failed,
+                "mode": mode, "capped": len(due) >= limit, "errors": errors}
 
     def _group_gateway_key(self, sub) -> str:
         """The gateway a consolidated invoice will charge on. In pinned mode that is the subscription's
@@ -1848,6 +1873,11 @@ class BillingService:
         for sub in subs:
             if self._sub_currency(sub) != group_ccy:
                 continue          # defence: never sum two currencies into one total (checked pre-claim)
+            if sub.cancel_at_period_end:
+                # Owner asked to stop at period end: finalize here, never add it to the consolidated
+                # invoice or charge it (same money guard as the single-sub path).
+                await self._finalize_cancellation(sub)
+                continue
             skey = f"cycle:{sub.id}:{int(sub.current_period_end)}"
             sproceed, sprior = await self._idempo.claim(skey)
             if sprior is not None or not sproceed:

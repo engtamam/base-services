@@ -171,6 +171,49 @@ def test_a_cancelled_subscription_is_not_renewed():
     assert run(b.cycle_due_sweep())["due"] == 0
 
 
+def test_cancel_at_period_end_is_finalized_not_renewed():
+    """The reported money bug: cancel(at_period_end=True) set the flag but the sweep still renewed and
+    charged. At the boundary the sub must be FINALIZED (canceled), NO invoice, NO charge."""
+    st = MemoryDataStore()
+    b = _svc(st)
+    sub = _sub_due(b, st, "acme", NOW - 10)
+    run(b.cancel(sub.id, at_period_end=True))              # flag set, status still active
+    before = len(run(InvoiceStore(st).list("acme", 100)))
+    report = run(b.cycle_due_sweep())
+    assert report["invoiced"] == 0 and report["canceled"] == 1
+    assert len(run(InvoiceStore(st).list("acme", 100))) == before   # NO invoice cut
+    after = run(SubscriptionStore(st).fetch(sub.id))
+    assert after.status == "canceled" and after.canceled_at        # finalized + stamped
+
+
+def test_run_cycle_directly_finalizes_a_cancel_at_period_end_sub():
+    st = MemoryDataStore()
+    b = _svc(st)
+    sub = _sub_due(b, st, "acme", NOW - 10)
+    run(b.cancel(sub.id, at_period_end=True))
+    inv = run(b.run_cycle(sub.id))
+    assert inv.id == ""                                    # the no-invoice sentinel — nothing billed
+    assert run(SubscriptionStore(st).fetch(sub.id)).status == "canceled"
+    # idempotent: a re-run refuses (already canceled), never charges
+    import pytest
+    with pytest.raises(ValueError):
+        run(b.run_cycle(sub.id))
+
+
+def test_consolidated_cycle_finalizes_a_cancel_at_period_end_sub_not_bills_it():
+    st = MemoryDataStore()
+    b = _svc(st, cfg={"renewal_invoice_mode": "consolidated"})
+    keep = _sub_due(b, st, "acme", NOW - 10)
+    stop = _sub_due(b, st, "acme", NOW - 10)
+    run(b.cancel(stop.id, at_period_end=True))
+    run(b.cycle_due_sweep())
+    assert run(SubscriptionStore(st).fetch(stop.id)).status == "canceled"   # finalized, not billed
+    assert run(SubscriptionStore(st).fetch(keep.id)).status == "active"     # the other still renews
+    # the consolidated invoice has a line only for the kept sub, never the canceled one
+    invs = run(InvoiceStore(st).list("acme", 100))
+    assert sum(len(i["lines"]) for i in invs) == 1
+
+
 # ── public offers ─────────────────────────────────────────────────────────────
 def test_a_public_active_coupon_appears_as_an_offer():
     st = MemoryDataStore()
