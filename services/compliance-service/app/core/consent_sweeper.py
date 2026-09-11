@@ -143,9 +143,11 @@ class ConsentSweeper:
         """
         flag = "lapsed_announced" if event == "consent.lapsed" else "lapsing_announced"
         row[flag] = True
-        await self._store.put("consent",
-                              f"{row.get('tenant','')}::{row.get('subject','')}::{row.get('purpose','')}",
-                              row)
+        # Write back under the CANONICAL (normalised) key, like _derive_lapse does. The raw-purpose key
+        # misses for any purpose with uppercase/whitespace, so the flag landed on a NEW legacy-key
+        # duplicate while the canonical row stayed unflagged — and the next run re-announced the lapse,
+        # re-emailing the guardian every night (the very outcome the docstring calls worse than late).
+        await self._store.put("consent", self._key(row), row)
         if self._bus is None:
             return
         try:

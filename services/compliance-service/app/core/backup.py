@@ -196,7 +196,17 @@ async def import_archive(datastore, archive: dict[str, Any], *,
             if into_tenant and "tenant" in row:
                 # Reassign only rows that were tenant-partitioned; the key is rebuilt from the
                 # remapped row below, so a tenant-keyed collection lands under the new tenant.
+                orig_tenant = row.get("tenant", "")
                 row = {**row, "tenant": into_tenant}
+                # A composite id (consent 'tenant::subject::purpose', legal 'tenant::doc::version',
+                # legal_current 'tenant::doc') EMBEDS the original tenant, and the key template is
+                # '{id}'. Remapping only the tenant FIELD would still rebuild the key under the ORIGINAL
+                # tenant, so with overwrite=False the clone skipped every legal/consent row and restored
+                # nothing for the new tenant — silently dropping exactly the proof-of-lawful-basis this
+                # service exists to keep. Rewrite the tenant prefix inside the id too.
+                rid = row.get("id", "")
+                if isinstance(rid, str) and orig_tenant and rid.startswith(f"{orig_tenant}::"):
+                    row["id"] = f"{into_tenant}::{rid[len(orig_tenant) + 2:]}"
                 remapped += 1
             # The datastore key: the row's id by default, or rebuilt from a composite template. A
             # row that cannot produce a stable key is refused rather than restored under a guess.

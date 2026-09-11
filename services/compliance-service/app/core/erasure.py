@@ -20,6 +20,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.pii import subject_ref
+from app.core.stores import ConsentStore
 
 
 _CONSENT = "consent"
@@ -67,10 +68,19 @@ class ComplianceErasure:
 
         rows, _ = await self._store.find(_CONSENT, {"tenant": tenant, "subject": subject},
                                          limit=1000, sort=("updated_at", "asc"))
+        # Delete under the CANONICAL key (row['id'], the normalised tenant::subject::purpose stamped at
+        # write time) — NOT a raw-purpose reconstruction. The store key normalises the purpose
+        # (casefold+strip), so f"...::{raw_purpose}" misses any purpose with uppercase/whitespace and
+        # the row survived while the ack still claimed it erased — the exact false-completion this
+        # service exists to prevent. Count only rows actually removed so `erased`/already_absent tell
+        # the truth. (Fallback to the reconstructed key for a legacy row written before id-stamping.)
+        deleted = 0
         for r in rows:
-            await self._store.delete(_CONSENT, f"{tenant}::{subject}::{r.get('purpose', '')}")
-        if rows:
-            erased.append(f"consent:{len(rows)}")
+            key = r.get("id") or f"{tenant}::{subject}::{ConsentStore.normalise(r.get('purpose', ''))}"
+            if await self._store.delete(_CONSENT, key):
+                deleted += 1
+        if deleted:
+            erased.append(f"consent:{deleted}")
 
         # the PROOF survives, pseudonymised — it is the evidence, not the person
         proofs = 0

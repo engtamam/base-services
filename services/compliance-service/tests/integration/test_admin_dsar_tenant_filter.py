@@ -91,6 +91,26 @@ def test_tenant_admin_no_tenant_gets_no_cross_tenant_view(app):
     assert all(r.get("tenant") != "shopw" for r in body["requests"])
 
 
+def test_platform_operator_can_verify_and_process_a_discovered_dsar(app):
+    # audit #04: an officer who DISCOVERS another shop's DSAR must be able to advance it past its PDPL
+    # clock. Before the fix verify/process took no tenant and scoped to the operator's own reserved
+    # tenant, so a discovered request could never be verified or processed through the platform surface.
+    created = app.post("/api/v1/compliance/me/dsar", json={"type": "access"},
+                       headers=_auth("act@shopq", "shopq", "compliance.self")).json()
+    dsar_id, token = created["id"], created["verification_token"]
+    plat = _auth("op@platform", "platform", "platform.compliance")
+
+    # Without ?tenant the operator is scoped to their own reserved tenant -> cannot reach shopq's DSAR.
+    miss = app.post(f"/api/v1/compliance/dsar/{dsar_id}/verify?token={token}", headers=plat)
+    assert miss.status_code == 400
+
+    # With ?tenant=shopq the operator verifies and then processes the discovered request.
+    ok = app.post(f"/api/v1/compliance/dsar/{dsar_id}/verify?token={token}&tenant=shopq", headers=plat)
+    assert ok.status_code == 200 and ok.json()["ok"] is True
+    proc = app.post(f"/api/v1/compliance/dsar/{dsar_id}/process?tenant=shopq", headers=plat)
+    assert proc.status_code == 200
+
+
 def test_platform_operator_lists_cross_tenant_active_holds(app):
     # Two shops each get a legal hold; the platform officer sees both with no ?tenant.
     plat = _auth("op@platform", "platform", "platform.compliance")

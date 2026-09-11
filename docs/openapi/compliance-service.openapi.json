@@ -1141,6 +1141,22 @@
               "title": "Dsar Id",
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant"
+            }
           }
         ],
         "responses": {
@@ -1193,6 +1209,22 @@
             "schema": {
               "title": "Token",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant"
             }
           }
         ],

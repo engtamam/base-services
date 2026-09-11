@@ -303,29 +303,37 @@ async def create_my_dsar(request: Request, body: MeDsarIn,
 
 
 @router.post("/dsar/{dsar_id}/verify")
-async def verify_dsar(request: Request, dsar_id: str, token: str,
+async def verify_dsar(request: Request, dsar_id: str, token: str, tenant: str | None = None,
                       principal: Principal = Depends(_ADMIN)) -> dict:
-    res = await build_dsar(request).verify(dsar_id, token, tenant=_tenant(principal))
+    # `tenant` lets a platform.compliance officer act on a shop's DSAR they DISCOVERED through the
+    # cross-tenant open-DSAR view — without it they were stuck on their own reserved tenant and could
+    # not advance any real shop's request past its PDPL clock. _tenant() honours it only for the
+    # platform cap; a tenant admin's value is ignored (they stay scoped to their own tenant).
+    scoped = _tenant(principal, tenant)
+    res = await build_dsar(request).verify(dsar_id, token, tenant=scoped)
     if not res["ok"]:
         raise HTTPException(400, res["reason"])
     # Verification is what turns a claim into an actionable request — the point the clock starts.
     await request.app.state.auditor.record(
-        "dsar.verified", actor=principal.subject, tenant=_tenant(principal),
+        "dsar.verified", actor=principal.subject, tenant=scoped,
         resource=f"dsar:{dsar_id}", ip=request.client.host if request.client else "")
     return res
 
 
 @router.post("/dsar/{dsar_id}/process")
-async def process_dsar(request: Request, dsar_id: str,
+async def process_dsar(request: Request, dsar_id: str, tenant: str | None = None,
                        principal: Principal = Depends(_ADMIN)) -> dict:
+    # `tenant` scopes a platform.compliance officer to the shop whose DSAR they discovered (see
+    # verify_dsar); ignored for a tenant admin.
+    scoped = _tenant(principal, tenant)
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
-        "dsar.processed", actor=principal.subject, tenant=principal.tenant,
+        "dsar.processed", actor=principal.subject, tenant=scoped,
         resource=f"dsar:{dsar_id}",
         ip=request.client.host if request.client else "")
-    res = await build_dsar(request).process(dsar_id, tenant=_tenant(principal))
+    res = await build_dsar(request).process(dsar_id, tenant=scoped)
     if not res.get("ok") and res.get("reason") == "NOT_FOUND":
         raise HTTPException(404, "NOT_FOUND")
     return res

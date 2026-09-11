@@ -613,58 +613,63 @@
       "issues": [
         {
           "id": "compliance-service-01",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "high",
           "file": "app/core/erasure.py",
           "line": 71,
           "title": "DSAR erasure deletes consent rows under the raw purpose key, not the normalized key, so records survive while the ack reports them erased",
           "detail": "ConsentStore stores every consent under _key = f\"{tenant}::{subject}::{normalise(purpose)}\" (casefold + strip), and the stored row's `purpose` field keeps the RAW value. ComplianceErasure.erase() reads rows via find() and deletes with f\"{tenant}::{subject}::{r.get('purpose','')}\" — the RAW purpose, i.e. the legacy key. For any purpose containing uppercase letters or surrounding whitespace (e.g. 'Marketing', ' analytics '), delete targets a key that does not exist and the consent record is NOT removed. Worse, `erased` is appended as `consent:{len(rows)}` whenever find() returned rows (line 72-73) regardless of whether delete actually removed anything, and `already_absent` is computed as `not erased` — so the erase ack asserts the consent was deleted when it still sits in the store. This is the exact 'false completion' the service is designed to prevent, on the /internal/privacy/erase path invoked during every DSAR erasure fan-out. Contrast retention.py:_purge which deletes row['id'] (the canonical stamped key) and works correctly.",
-          "failure_scenario": "A subject consented to purpose 'Marketing'. An erasure DSAR fans out to compliance-service. erase() finds the consent row, calls delete('consent','tenant::subj::Marketing'), but the row lives at 'tenant::subj::marketing'; delete is a no-op. The ack returns erased=['consent:1'], the DSAR target flips to acked and the request completes 'successfully', yet the marketing consent record is still present and check() will keep returning allowed=True for it."
+          "failure_scenario": "A subject consented to purpose 'Marketing'. An erasure DSAR fans out to compliance-service. erase() finds the consent row, calls delete('consent','tenant::subj::Marketing'), but the row lives at 'tenant::subj::marketing'; delete is a no-op. The ack returns erased=['consent:1'], the DSAR target flips to acked and the request completes 'successfully', yet the marketing consent record is still present and check() will keep returning allowed=True for it.",
+          "resolution": "FIXED: erasure deletes consent by the canonical key (row id / normalise(purpose)) not a raw-purpose reconstruction, and counts only rows actually removed. Regression: test_audit_fixes.py."
         },
         {
           "id": "compliance-service-02",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "bug",
           "severity": "medium",
           "file": "app/core/consent_sweeper.py",
           "line": 147,
           "title": "Lapse-announcement flag is written back under the raw purpose key, breaking idempotency and re-emailing guardians every run",
           "detail": "ConsentSweeper._announce() sets row['lapsed_announced']/['lapsing_announced'] then persists with store.put('consent', f\"{tenant}::{subject}::{purpose}\", row) using the RAW purpose. But the canonical row is stored under normalise(purpose) (and _derive_lapse's own write-back at stores line/sweeper line 78 correctly uses ConsentStore._key). For any purpose with uppercase/whitespace, the flag lands on a NEW legacy-key duplicate row while the canonical row still has no flag. On the next run, scan_all() re-reads the unflagged canonical row and announces the lapse again — every night — which is precisely the 'repeatedly telling a guardian their child's consent is ending' outcome the docstring calls worse than telling them late. It also leaves a duplicate consent row that ConsentStore.get()'s legacy fallback can surface.",
-          "failure_scenario": "A guardian consent for purpose 'Newsletter' crosses the age of majority. Each nightly sweep announces consent.lapsed for it because the lapsed_announced flag is persisted to key 'tenant::subj::Newsletter' while the live row is at 'tenant::subj::newsletter'; the guardian receives a lapse email every night indefinitely, and a stale duplicate consent row accumulates."
+          "failure_scenario": "A guardian consent for purpose 'Newsletter' crosses the age of majority. Each nightly sweep announces consent.lapsed for it because the lapsed_announced flag is persisted to key 'tenant::subj::Newsletter' while the live row is at 'tenant::subj::newsletter'; the guardian receives a lapse email every night indefinitely, and a stale duplicate consent row accumulates.",
+          "resolution": "FIXED: ConsentSweeper._announce writes the lapse flag under the canonical key (self._key(row)); no legacy duplicate, no nightly re-announce. Regression: test_audit_fixes.py."
         },
         {
           "id": "compliance-service-03",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "bug",
           "severity": "medium",
           "file": "app/core/backup.py",
           "line": 196,
           "title": "Restore-as-clone (into_tenant) silently loses consent and legal records because their datastore key embeds the original tenant in row['id']",
           "detail": "import_archive() with into_tenant remaps only row['tenant'] (line 199) then rebuilds the datastore key via _row_key(template, ...). For consent, legal_documents and legal_current the backup key template is the default '{id}', and those ids are the CANONICAL composite keys stamped at write time ('tenant::subject::purpose', 'tenant::doc_id::version', 'tenant::doc_id') which embed the ORIGINAL tenant. Remapping the tenant field does not change row['id'], so the clone writes each row back under its original-tenant key, not the destination tenant's key. With overwrite=False the original rows already occupy those keys, so every consent / legal-page row is counted as 'skipped' and nothing is restored for the new tenant; the cloned tenant's own scoped reads (which compute 'newtenant::...') find none of them. The clone therefore silently omits exactly the legal records (consent proof-of-lawful-basis, accepted legal versions) this service exists to preserve.",
-          "failure_scenario": "An operator clones tenant A's compliance data into a fresh tenant B via backup import with into_tenant='B'. DSARs and holds (uuid ids) restore fine, but every consent row and legal document is written under 'A::...' keys, skipped as already-existing, and invisible under tenant B — B ends up with no consent records or accepted-terms history, while the import result reports success."
+          "failure_scenario": "An operator clones tenant A's compliance data into a fresh tenant B via backup import with into_tenant='B'. DSARs and holds (uuid ids) restore fine, but every consent row and legal document is written under 'A::...' keys, skipped as already-existing, and invisible under tenant B — B ends up with no consent records or accepted-terms history, while the import result reports success.",
+          "resolution": "FIXED: import_archive(into_tenant=...) rewrites the tenant prefix embedded in a composite row id, so consent/legal rows restore under the destination tenant. Regression: test_audit_fixes.py."
         },
         {
           "id": "compliance-service-04",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "medium",
           "file": "app/api/v1/compliance.py",
           "line": 305,
           "title": "Platform compliance officers can discover cross-tenant DSARs but cannot verify or process them (no tenant param), risking missed statutory deadlines",
           "detail": "list_dsar() gives a platform.compliance operator a cross-tenant open-DSAR discovery view (list_all_open). But verify_dsar() (line 306) and process_dsar() (line 318) take no tenant/body parameter and scope the action with _tenant(principal), which for a platform operator with no body returns body_tenant or p.tenant or 'global'. DsarService.verify()/process() then apply `(tenant and d.tenant != tenant)` and return NOT_FOUND for any DSAR whose tenant differs from the operator's own reserved tenant. So an officer who discovers another shop's open erasure/access request through the very cross-tenant view built for them cannot verify or process it — the request cannot be advanced past its PDPL clock through the platform surface.",
-          "failure_scenario": "A platform compliance officer sees shop X's overdue erasure DSAR via GET /dsar (cross-tenant view), then POSTs /dsar/{id}/process. _tenant() resolves to the officer's own tenant ('global'), d.tenant is shop X, so process() returns NOT_FOUND and the erasure is never driven; the DSAR runs past its statutory deadline with no way for the officer to act on it."
+          "failure_scenario": "A platform compliance officer sees shop X's overdue erasure DSAR via GET /dsar (cross-tenant view), then POSTs /dsar/{id}/process. _tenant() resolves to the officer's own tenant ('global'), d.tenant is shop X, so process() returns NOT_FOUND and the erasure is never driven; the DSAR runs past its statutory deadline with no way for the officer to act on it.",
+          "resolution": "FIXED: verify_dsar/process_dsar accept an optional tenant param honored only for platform.compliance (via _tenant), so an officer can act on a DSAR discovered through the cross-tenant view. Regression: test_admin_dsar_tenant_filter.py."
         },
         {
           "id": "compliance-service-05",
-          "status": "OPEN",
+          "status": "WONTFIX",
           "category": "correctness",
           "severity": "low",
           "file": "app/adapters/datastore/postgres.py",
           "line": 189,
           "title": "Numeric sort fields (created_at/placed_at) are ordered as TEXT, so 'oldest-first' sweeper/officer views are mis-ordered",
           "detail": "find() orders by COALESCE(value->>'{field}','') as text and the keyset cursor comparison (line 182) is likewise a text tuple. The DSAR/hold 'oldest-first' views (open_dsars, active_all) sort on created_at/placed_at, which are JSON floats rendered as strings. Lexicographic ordering of stringified epoch floats does not match numeric order (e.g. '1700000000.0' sorts before '999999999.0', and differing fractional widths reorder ties), so 'oldest-first — the ones nearest their PDPL deadline are retried first' is not actually honored. Pagination itself is self-consistent (same expression in ORDER BY and cursor) so no rows are dropped, but the priority ordering the sweeper and the compliance-officer view rely on is wrong.",
-          "failure_scenario": "The erasure sweep and the cross-tenant open-DSAR officer view claim to surface the oldest/nearest-deadline requests first; because created_at is compared as text, a newer request can be returned ahead of an older one, so under a per-run cap the genuinely oldest DSAR can be deprioritized rather than retried first."
+          "failure_scenario": "The erasure sweep and the cross-tenant open-DSAR officer view claim to surface the oldest/nearest-deadline requests first; because created_at is compared as text, a newer request can be returned ahead of an older one, so under a per-run cap the genuinely oldest DSAR can be deprioritized rather than retried first.",
+          "resolution": "DEFERRED (same class as identity-service-02): numeric timestamps ordered as text in the generic datastore find. Pagination is self-consistent; practical impact is limited to sub-second tie ordering for contemporary (same-width) epochs. A real fix needs numeric-aware ordering or a data-shape change, both under Tamam no-migration/stop-index decision."
         }
       ]
     },
