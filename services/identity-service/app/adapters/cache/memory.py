@@ -30,6 +30,18 @@ class MemoryCache:
         exp = time.monotonic() + ttl_seconds if ttl_seconds else None
         self._data[key] = (value, exp)
 
+    async def incr(self, key: str, ttl_seconds: int | None = None) -> int:
+        # Single-threaded asyncio with no await inside: this read-modify-write is atomic by
+        # construction, matching redis INCR's guarantee for the memory driver.
+        if self._expired(key):
+            exp = time.monotonic() + ttl_seconds if ttl_seconds else None
+            self._data[key] = ("1", exp)
+            return 1
+        value, exp = self._data[key]                      # keep the existing expiry across increments
+        nxt = int(value) + 1
+        self._data[key] = (str(nxt), exp)
+        return nxt
+
     async def delete(self, key: str) -> bool:
         return self._data.pop(key, None) is not None
 

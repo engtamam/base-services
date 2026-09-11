@@ -22,6 +22,12 @@ class RedisCache:
     async def set(self, key: str, value: str, ttl_seconds: int | None = None) -> None:
         await self._client.set(key, value, ex=ttl_seconds)
 
+    async def incr(self, key: str, ttl_seconds: int | None = None) -> int:
+        val = int(await self._client.incr(key))
+        if val == 1 and ttl_seconds:
+            await self._client.expire(key, ttl_seconds)   # TTL only on creation; later incrs keep it
+        return val
+
     async def delete(self, key: str) -> bool:
         return bool(await self._client.delete(key))
 

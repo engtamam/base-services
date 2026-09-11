@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.pii import subject_ref
+from app.ports.errors import ValidationError
 
 
 class IdentityErasure:
@@ -99,7 +100,18 @@ class IdentityErasure:
             # is correct rather than a silence.
             return erased, retained
 
-        ident = self._identifier.display(subject)
+        # The person index is keyed on the NORMALIZED identifier (create_person stores
+        # normalize(identifier); auth_service looks up with normalize() everywhere). display() only
+        # trims/keeps case and drops the composite type prefix, so it never matches the index key —
+        # the lookup silently missed and the Person row (password_hash, mfa_secret) + its index
+        # SURVIVED a completed DSAR while the receipt reported success. Normalize, like every other
+        # caller.
+        try:
+            ident = self._identifier.normalize(subject)
+        except ValidationError:
+            # A subject that is not a valid login identifier indexes to no Person — nothing to erase.
+            # Idempotent: a DSAR retries, and an unknown/garbage subject must not 500.
+            return erased, retained
         person = await self._memberships.person_by_identifier(ident)
         if person is None:
             return erased, retained

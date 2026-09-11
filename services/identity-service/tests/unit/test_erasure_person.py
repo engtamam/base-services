@@ -27,12 +27,20 @@ def run(c):
 
 
 class _Identifier:
-    """The LoginIdentifier port's normalising half — the same one auth uses."""
+    """The LoginIdentifier port's normalising half — the same one auth uses.
+
+    display() and normalize() DIFFER, exactly as the real email/composite adapters do: display keeps
+    the original case, normalize casefolds to the canonical index key. Erasure must use normalize()
+    (the key the person index is stored under) — using display() would silently match nobody.
+    """
 
     driver = "email"
 
     def display(self, value: str) -> str:
-        return value.strip().casefold()
+        return value.strip()                     # keeps case, like the real email adapter
+
+    def normalize(self, value: str) -> str:
+        return value.strip().casefold()          # the canonical key the person index uses
 
 
 class _Users:

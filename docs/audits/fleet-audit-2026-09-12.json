@@ -886,36 +886,39 @@
       "issues": [
         {
           "id": "identity-service-01",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "vuln",
           "severity": "high",
           "file": "app/core/erasure.py",
           "line": 102,
           "title": "DSAR erase of a Person uses display() instead of normalize(), so PII survives a right-to-erasure request",
           "detail": "IdentityErasure._erase_person computes `ident = self._identifier.display(subject)` and then calls `self._memberships.person_by_identifier(ident)`. But the person index (persons_by_identifier) is keyed on the NORMALIZED identifier: create_person stores `_PERSON_INDEX[p.identifier]` where p.identifier = identifier.normalize(...) (see auth_service.add_member which sets `ident = self._identifier.normalize(identifier)` before creating the Person, and MembershipStore.person_by_identifier does a raw store.get with no normalization). display() only strips whitespace for the email adapter (returns original case), and for the composite adapter display() returns the sub-adapter's display WITHOUT the `email:`/`phone:` type prefix that normalize() prepends. So the lookup key never matches the index key. The Person row — identifier, password_hash, mfa_secret — and its identifier index are therefore NOT deleted, while erase() still returns a success receipt reporting the membership erased. This defeats the entire purpose of the erasure path (identity owns the pseudonym linkage), leaving the most sensitive record intact after a completed DSAR.",
-          "failure_scenario": "Multi-tenant (composite login) deployment: person registered as `email:alice@x.com` in the index. Compliance calls POST /internal/privacy/erase {tenant, subject:'alice@x.com'}. _erase_person looks up person_by_identifier('alice@x.com') but the index key is 'email:alice@x.com' -> returns None -> Person (identifier, password hash, MFA secret) is retained; receipt claims membership erased and retained:[] -- silent PII retention. Same failure for any mixed-case email (display 'Alice@X.com' vs index 'alice@x.com') even with a plain email identifier."
+          "failure_scenario": "Multi-tenant (composite login) deployment: person registered as `email:alice@x.com` in the index. Compliance calls POST /internal/privacy/erase {tenant, subject:'alice@x.com'}. _erase_person looks up person_by_identifier('alice@x.com') but the index key is 'email:alice@x.com' -> returns None -> Person (identifier, password hash, MFA secret) is retained; receipt claims membership erased and retained:[] -- silent PII retention. Same failure for any mixed-case email (display 'Alice@X.com' vs index 'alice@x.com') even with a plain email identifier.",
+          "resolution": "FIXED: _erase_person normalizes the subject (was display(), which never matched the normalized person index) with a ValidationError guard for idempotency; test mocks now distinguish display vs normalize so they actually pin it. Regression: test_erasure_person.py / test_erasure_boundary.py."
         },
         {
           "id": "identity-service-02",
-          "status": "OPEN",
+          "status": "WONTFIX",
           "category": "perf",
           "severity": "medium",
           "file": "app/adapters/datastore/postgres.py",
           "line": 33,
           "title": "Keyset ordering index is on value->>'created' but membership queries ORDER BY value->>'created_at' — every tenant member scan bypasses the index",
           "detail": "The shipped btree index kv_created_desc is `(collection, COALESCE(value->>'created','') DESC, key DESC)`. find() builds its ORDER BY / cursor comparison from the caller's sort field. MembershipStore.members(), founding_owner(), has_other_active_owner() and memberships() all pass sort=('created_at', ...) because Membership.to_dict()/Person.to_dict() store the timestamp under `created_at`, not `created`. Postgres cannot use an index on `value->>'created'` to satisfy `ORDER BY COALESCE(value->>'created_at','')`, so each of these queries degrades to a Bitmap Heap Scan over all of the tenant's membership rows plus a Sort — exactly the O(tenant-rows) behaviour the module docstring says the matched index exists to avoid (its own measurement: 3.44ms mismatched vs 0.92ms matched). Correctness is unaffected (the ORDER BY and cursor use the same field consistently), but member-directory pagination, the sole-owner guard, and founding-owner lookups all pay a full per-tenant scan. Service accounts (sort=('created',...)) match the index; the membership/person collections do not.",
-          "failure_scenario": "A tenant with tens of thousands of members: GET /api/v1/tenancy/members (or the internal sweep) and every remove_member/set_member_status call (which invoke has_other_active_owner) bitmap-scan and top-N sort the whole tenant's membership set per page instead of an index seek, so latency grows with the tenant's size rather than the page size."
+          "failure_scenario": "A tenant with tens of thousands of members: GET /api/v1/tenancy/members (or the internal sweep) and every remove_member/set_member_status call (which invoke has_other_active_owner) bitmap-scan and top-N sort the whole tenant's membership set per page instead of an index seek, so latency grows with the tenant's size rather than the page size.",
+          "resolution": "DEFERRED per Tamam decision this session (no migrations; stop index/perf work). This is the created_at-vs-created index mismatch: correctness is unaffected (order+cursor use the same field); the only fixes are a schema/index migration or a data-shape change to membership/person rows, both of which Tamam ruled out. Left as a known perf item."
         },
         {
           "id": "identity-service-03",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "low",
           "file": "app/core/otp_service.py",
           "line": 103,
           "title": "OTP verify attempt counter is read-modify-write with no atomicity, allowing brute-force amplification under concurrency",
           "detail": "OtpService.verify() does `raw = await cache.get(key)`; `rec['attempts'] += 1`; then on a wrong code `cache.set(key, rec, ttl)`. There is no compare-and-set or atomic increment. Concurrent verify requests all read the same pre-increment `attempts` value and each re-writes attempts=old+1, so N parallel wrong guesses only advance the counter by 1 rather than N. The redis cache adapter's get/set are separate round-trips, so this race is real in production (not just the memory adapter). The single-use success path (delete on match) is also not guarded, but the practical impact is that the max_attempts (default 5) ceiling per code can be substantially exceeded by fanning out concurrent guesses, weakening the '6-digit code cannot be ground down within its short life' guarantee.",
-          "failure_scenario": "Attacker fires K concurrent POST /api/v1/otp/verify for one identifier/code each cycle; each batch reads attempts=0..4 and increments to 1..5, so many more than max_attempts guesses are consumed before the code is deleted, raising the odds of hitting the correct 6-digit code inside its TTL beyond the intended 5-in-1,000,000."
+          "failure_scenario": "Attacker fires K concurrent POST /api/v1/otp/verify for one identifier/code each cycle; each batch reads attempts=0..4 and increments to 1..5, so many more than max_attempts guesses are consumed before the code is deleted, raising the odds of hitting the correct 6-digit code inside its TTL beyond the intended 5-in-1,000,000.",
+          "resolution": "FIXED: added atomic Cache.incr (memory+redis); OTP verify() counts attempts on a separate atomic counter key instead of a JSON read-modify-write, so the max_attempts ceiling holds under concurrency. Regression: test_otp_atomicity.py."
         }
       ]
     },

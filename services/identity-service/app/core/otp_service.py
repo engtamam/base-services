@@ -99,15 +99,20 @@ class OtpService:
         rec = json.loads(raw)
         if self._clock() >= float(rec.get("expires_at", 0)):
             await self._cache.delete(key)
+            await self._cache.delete(key + ":attempts")
             raise OtpError("EXPIRED")
-        rec["attempts"] = int(rec.get("attempts", 0)) + 1
-        if rec["attempts"] > self._max_attempts:
+        # ATOMIC attempt counter (separate key). A read-modify-write on the JSON record loses
+        # concurrent increments — N parallel wrong guesses advance the counter by 1, not N — which
+        # lets a fan-out grind a 6-digit code far past max_attempts within its short life. An atomic
+        # incr counts every attempt exactly once, so the ceiling actually holds under concurrency.
+        ttl = max(1, int(float(rec["expires_at"]) - self._clock()))
+        attempts = await self._cache.incr(key + ":attempts", ttl)
+        if attempts > self._max_attempts:
             await self._cache.delete(key)                 # exhausted — a new code must be issued
+            await self._cache.delete(key + ":attempts")
             raise OtpError("TOO_MANY_ATTEMPTS")
         if not hmac.compare_digest(self._hash(str(code or "")), str(rec.get("hash", ""))):
-            # Persist the incremented attempt (bounded by the record's remaining TTL) then refuse.
-            ttl = max(1, int(float(rec["expires_at"]) - self._clock()))
-            await self._cache.set(key, json.dumps(rec), ttl)
             raise OtpError("INVALID")
         await self._cache.delete(key)                     # single-use: consumed on success
+        await self._cache.delete(key + ":attempts")
         return {"verified": True, "identifier": identifier, "purpose": purpose}

@@ -29,6 +29,9 @@ class _Identifier:
     driver = "email"
 
     def display(self, value: str) -> str:
+        return value.strip()
+
+    def normalize(self, value: str) -> str:
         return value.strip().casefold()
 
     def validate(self, value: str) -> None:
