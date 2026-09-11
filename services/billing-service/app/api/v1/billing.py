@@ -1003,9 +1003,14 @@ async def list_subs(request: Request, status_: str | None = Query(default=None, 
 @router.post("/usage", status_code=201)
 async def record_usage(request: Request, body: UsageIn, principal: Principal = Depends(_SELF)) -> dict:
     tenant = _tenant(principal)
-    result = await (await build_billing(request)).record_usage(
-        tenant=tenant, subscription_id=body.subscription_id,
-        metric=body.metric, quantity=body.quantity)
+    try:
+        result = await (await build_billing(request)).record_usage(
+            tenant=tenant, subscription_id=body.subscription_id,
+            metric=body.metric, quantity=body.quantity)
+    except ValueError as exc:
+        # a subscription that does not exist OR belongs to another tenant — same opaque 404 either way,
+        # so a caller cannot probe which subscription ids exist across tenants.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     await request.app.state.auditor.record(
         "usage.recorded", actor=principal.subject, tenant=tenant,
         resource=f"subscription:{body.subscription_id}",
@@ -1238,6 +1243,8 @@ async def refund(request: Request, payment_id: str, amount_minor: int | None = N
     res = await svc.refund(payment_id, amount_minor)
     if not res.get("ok") and res.get("reason") == "NOT_FOUND":
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    if not res.get("ok") and res.get("reason") in ("REFUND_EXCEEDS_OUTSTANDING", "REFUND_AMOUNT_INVALID"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, res["reason"])
     return res
 
 

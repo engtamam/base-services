@@ -616,7 +616,7 @@ class UsageStore(_Repo):
         await self.put(rec["id"], rec)
         return rec
 
-    async def aggregate(self, subscription_id: str, metric: str,
+    async def aggregate(self, tenant: str, subscription_id: str, metric: str,
                         start: float, end: float) -> int:
         """Metered usage for one subscription in one period.
 
@@ -624,11 +624,15 @@ class UsageStore(_Repo):
         tenant, once per subscription per metric — quadratic in customers. Now the subscription
         and the metric are pushed into the datastore and only that series is paged; the period
         window is a range the equality filter cannot express, so it is applied here.
+
+        Tenant is part of the equality filter (defence in depth): even if a stray row for this
+        subscription id were ever written under another tenant, it can never be summed into this
+        tenant's overage — the injection path is closed at write time, this closes it at read time.
         """
         total, cursor = 0, None
         while True:
             rows, cursor = await self._store.find(
-                self.collection, {"subscription_id": subscription_id, "metric": metric},
+                self.collection, {"tenant": tenant, "subscription_id": subscription_id, "metric": metric},
                 limit=_SWEEP_PAGE, after=cursor, sort=("created", "asc"))
             for r in rows:
                 if start <= float(r.get("ts", 0)) < end:

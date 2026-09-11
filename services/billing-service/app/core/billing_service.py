@@ -839,6 +839,18 @@ class BillingService:
             raise UpgradeChargeUnavailable(str(ex)) from ex
         if not charge.ok:
             raise UpgradeChargeFailed(charge.error or "DECLINED")
+        # Application-level idempotency, keyed deterministically like the gateway charge. The gateway
+        # dedupes the CHARGE, but without this a duplicate/retried request would still mint a SECOND
+        # invoice (new id) whose _mark_paid records a SECOND grant — grants are idempotent by
+        # invoice_id, so two invoice ids = two credits for one payment. Claiming AFTER a successful
+        # charge (so a decline never poisons the key) makes the whole top-up credit exactly once: a
+        # duplicate replays the first invoice; a concurrent duplicate is told it is in progress.
+        topup_key = f"topup:{tenant}:{payment_token}:{total}:{fund}"
+        proceed, prior = await self._idempo.claim(topup_key)
+        if prior is not None:
+            return {**prior, "duplicate": True}
+        if not proceed:
+            raise UpgradeChargeFailed("TOPUP_IN_PROGRESS")
         inv = Invoice(id=new_id("inv_"), tenant=tenant,
                       number=await self._invoices.next_number(tenant), subscription_id="",
                       lines=[{"description": "Wallet top-up", "quantity": 1,
@@ -851,9 +863,11 @@ class BillingService:
                       status="succeeded", created=iso())
         await self._payments.save(pay)
         await self._mark_paid(inv)          # credits `fund` via the grant outbox; doc_type frozen
-        return {"topup_id": inv.id, "invoice_id": inv.id, "invoice_number": inv.number,
-                "status": "succeeded", "amount_minor": total, "fund": fund, "currency": currency,
-                "doc_type": inv.doc_type, "provider_id": charge.provider_id}
+        result = {"topup_id": inv.id, "invoice_id": inv.id, "invoice_number": inv.number,
+                  "status": "succeeded", "amount_minor": total, "fund": fund, "currency": currency,
+                  "doc_type": inv.doc_type, "provider_id": charge.provider_id}
+        await self._idempo.mark(topup_key, result)   # a duplicate replays THIS, never a second credit
+        return result
 
     async def cancel_scheduled_change(self, sub_id: str) -> dict[str, Any]:
         """Undo a scheduled downgrade before it takes effect — the shop stays on its current plan."""
@@ -1009,6 +1023,13 @@ class BillingService:
         return await self._subs.save(sub)
 
     async def record_usage(self, *, tenant: str, subscription_id: str, metric: str, quantity: int) -> dict:
+        # Ownership at the door: the subscription MUST belong to the caller's tenant. Without this a
+        # shop user could post usage against another tenant's subscription id, and since aggregate()
+        # sums by subscription+metric that usage would land on the victim's overage invoice and be
+        # charged to the victim's card. Reject a foreign/unknown sub before writing any row.
+        sub = await self._subs.fetch(subscription_id)
+        if sub is None or sub.tenant != tenant:
+            raise ValueError("SUB_NOT_FOUND")
         return await self._usage.record(tenant, subscription_id, metric, quantity)
 
     # ── billing cycle ─────────────────────────────────────────────────────────────
@@ -1090,7 +1111,7 @@ class BillingService:
         currency = price.get("currency", self._cfg["currency"])
         usage_units = 0
         if price.get("usage_metric"):
-            usage_units = await self._usage.aggregate(sub.id, price["usage_metric"],
+            usage_units = await self._usage.aggregate(sub.tenant, sub.id, price["usage_metric"],
                                                       sub.current_period_start, sub.current_period_end)
         subtotal = pricing.line_amount(price, quantity=sub.quantity, usage_units=usage_units)
         proration = None
@@ -1235,7 +1256,7 @@ class BillingService:
             return None                                   # already billed this period (unchanged contract)
         if not proceed:
             raise ValueError("OVERAGE_IN_PROGRESS")
-        units = await self._usage.aggregate(sub.id, metric, sub.current_period_start, sub.current_period_end)
+        units = await self._usage.aggregate(sub.tenant, sub.id, metric, sub.current_period_start, sub.current_period_end)
         over = max(0, units - int(price.get("included_units", 0)))
         if over <= 0:
             await self._idempo.mark(key, {"overage": 0})
@@ -1979,8 +2000,15 @@ class BillingService:
         invoice stays unpaid while the customer's money has already moved.
         """
         candidates = (secret,) if isinstance(secret, str) else tuple(secret)
+        # FAIL CLOSED: only a NON-EMPTY configured secret may verify a callback. An empty secret makes
+        # the adapters' constant_eq('','') / hmac(key='') accept a forged, unsigned webhook — which
+        # would let an attacker mark an invoice paid with no money moving. If nothing is configured we
+        # reject outright rather than passing '' down to the adapter.
+        candidates = tuple(c for c in candidates if c)
+        if not candidates:
+            return {"ok": False, "reason": "WEBHOOK_SECRET_NOT_CONFIGURED", "type": ""}
         event = None
-        for candidate in candidates or ("",):
+        for candidate in candidates:
             event = self._gw.verify_webhook(headers=headers, body=body, secret=candidate)
             if event.verified:
                 break
@@ -2122,16 +2150,33 @@ class BillingService:
         pay = await self._payments.fetch(payment_id)
         if pay is None:
             return {"ok": False, "reason": "NOT_FOUND"}
+        inv = await self._invoices.fetch(pay.invoice_id)
+        # The invoice is the money ledger: outstanding = what was charged minus what already went back.
+        # Guard BEFORE the gateway call so a retry / double-click / over-amount never moves real money
+        # twice. When there is no invoice (shouldn't happen), fall back to the payment amount + status.
+        if inv is not None:
+            already = int(inv.refunded_minor or 0)
+            outstanding = int(inv.total_minor) - already
+        else:
+            outstanding = 0 if pay.status == "refunded" else int(pay.amount_minor)
+        if outstanding <= 0:
+            # Fully refunded already — idempotent success, NO second gateway call, NO second ledger row.
+            return {"ok": True, "status": "already_refunded"}
+        refund_amt = amount_minor if amount_minor is not None else outstanding
+        if refund_amt <= 0:
+            return {"ok": False, "reason": "REFUND_AMOUNT_INVALID"}
+        if refund_amt > outstanding:
+            # Never refund more than is outstanding — that would return money that was never charged
+            # and drive refunded_minor past total_minor.
+            return {"ok": False, "reason": "REFUND_EXCEEDS_OUTSTANDING"}
         gw = await self._gw_for_refund(pay)     # pinned: refund via the gateway that CHARGED it
-        charge = gw.refund(provider_id=pay.provider_id, amount_minor=amount_minor,
+        charge = gw.refund(provider_id=pay.provider_id, amount_minor=refund_amt,
                            currency=pay.currency)
         if charge.ok:
             pay.status = "refunded"
             await self._payments.save(pay)
-            inv = await self._invoices.fetch(pay.invoice_id)
             if inv:
-                refund_amt = amount_minor if amount_minor is not None else inv.total_minor
-                is_partial = amount_minor is not None and amount_minor < inv.total_minor
+                is_partial = refund_amt < outstanding
                 # Record the amount that went BACK, so "what the shop kept paying" is answerable
                 # (total_minor - refunded_minor). A PARTIAL refund no longer voids the whole invoice —
                 # the shop kept the rest, and voiding it charged commission on nothing or excluded a
@@ -2153,7 +2198,7 @@ class BillingService:
                     # it back. Without this, a refunded customer keeps whatever the payment bought.
                     await self._events.emit(_events.PAYMENT_REFUNDED, {
                         **_events.payment_payload(inv, payment_id=pay.id, source="refund"),
-                        "amount_minor": amount_minor or inv.total_minor,
+                        "amount_minor": refund_amt,
                     })
         return {"ok": charge.ok, "status": charge.status}
 

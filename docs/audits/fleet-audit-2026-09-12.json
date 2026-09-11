@@ -560,47 +560,51 @@
       "issues": [
         {
           "id": "billing-service-01",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "vuln",
           "severity": "high",
           "file": "app/core/billing_service.py",
           "line": 1238,
           "title": "Cross-tenant usage injection inflates a victim tenant's overage invoice",
           "detail": "POST /api/v1/billing/usage (app/api/v1/billing.py:999) is guarded only by _SELF and records the raw body.subscription_id with record_usage(tenant=_tenant(principal), subscription_id=body.subscription_id, ...) — billing_service.record_usage (line 1011) and UsageStore.record (app/core/stores.py:613) never verify that subscription_id belongs to the caller's tenant. run_overage() then computes billable units via UsageStore.aggregate(sub.id, metric, ...) (line 1238 / stores.py:619) which filters ONLY on subscription_id+metric, with NO tenant scoping. So any authenticated shop user can post large usage against another tenant's subscription id and metric; those rows are summed into the victim's overage and charged to the victim's payment token.",
-          "failure_scenario": "Tenant A (any billing.self token) calls POST /usage with subscription_id=<tenant B's sub_id>, metric=<B's usage_metric>, quantity=1000000. When B's period-end run_overage executes, aggregate() sums A's injected rows, over>0, and B is charged net = over * overage_minor + VAT for usage B never incurred."
+          "failure_scenario": "Tenant A (any billing.self token) calls POST /usage with subscription_id=<tenant B's sub_id>, metric=<B's usage_metric>, quantity=1000000. When B's period-end run_overage executes, aggregate() sums A's injected rows, over>0, and B is charged net = over * overage_minor + VAT for usage B never incurred.",
+          "resolution": "FIXED: record_usage now verifies the subscription belongs to the caller tenant (SUB_NOT_FOUND -> 404); UsageStore.aggregate is tenant-scoped and both call sites pass sub.tenant. Regression: test_audit_fixes.py."
         },
         {
           "id": "billing-service-02",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "bug",
           "severity": "high",
           "file": "app/core/billing_service.py",
           "line": 2121,
           "title": "refund() has no idempotency/status guard — repeat calls double-refund and over-refund",
           "detail": "refund(payment_id, amount_minor) fetches the payment and immediately calls gw.refund(...) without checking pay.status (an already-'refunded' payment is refunded again) and without bounding amount_minor against inv.total_minor - inv.refunded_minor. On each ok charge it does inv.refunded_minor = (inv.refunded_minor or 0) + refund_amt and records a negative ledger row. POST /payments/{payment_id}/refund (app/api/v1/billing.py:1218) is a plain _ADMIN call with no dedupe, so two clicks / retries move real money twice and drive refunded_minor and the ledger past the amount originally charged.",
-          "failure_scenario": "Admin (or a retried request) calls refund twice on the same payment: gw.refund executes both times, money is returned twice, inv.refunded_minor exceeds total_minor, and two negative ledger 'refund' rows are written. Passing amount_minor > outstanding is likewise unbounded."
+          "failure_scenario": "Admin (or a retried request) calls refund twice on the same payment: gw.refund executes both times, money is returned twice, inv.refunded_minor exceeds total_minor, and two negative ledger 'refund' rows are written. Passing amount_minor > outstanding is likewise unbounded.",
+          "resolution": "FIXED: refund() guards on invoice outstanding BEFORE the gateway call — already-refunded returns idempotent success (no 2nd charge/ledger), over-outstanding rejected (REFUND_EXCEEDS_OUTSTANDING -> 400). Regression: test_audit_fixes.py."
         },
         {
           "id": "billing-service-03",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "security",
           "severity": "high",
           "file": "app/core/billing_service.py",
           "line": 1981,
           "title": "Webhook signature verification fails open when no webhook secret is configured",
           "detail": "handle_webhook builds candidates=(secret,) and, when the resolved secret is empty (a tenant/deployment with no PAYMENT_WEBHOOK_SECRET set), passes candidate='' to the adapters. The adapters treat an empty secret as valid: moyasar.verify_webhook (app/adapters/payment/moyasar.py:84) does constant_eq(payload.secret_token, secret or self._whsec) → constant_eq('','')==True; checkout.verify_webhook (app/adapters/payment/checkout.py:60) computes hmac_sha256_hex(secret or self._whsec='', body) which an attacker can reproduce with an empty key. There is no fail-closed guard rejecting an empty configured secret, so a forged, unsigned webhook verifies and, with a known provider_id, drives _apply_outcome→_mark_paid to mark an invoice paid.",
-          "failure_scenario": "For a tenant with no webhook secret configured, an attacker POSTs /internal/billing/webhook/moyasar with a JSON body whose data.id is a known pending payment's provider_id and type=payment_paid (no valid secret_token needed). verify returns verified=True and the invoice is marked paid without any money moving."
+          "failure_scenario": "For a tenant with no webhook secret configured, an attacker POSTs /internal/billing/webhook/moyasar with a JSON body whose data.id is a known pending payment's provider_id and type=payment_paid (no valid secret_token needed). verify returns verified=True and the invoice is marked paid without any money moving.",
+          "resolution": "FIXED: handle_webhook drops empty candidates and fails closed (WEBHOOK_SECRET_NOT_CONFIGURED) instead of passing empty secret to the adapter. Regression: test_audit_fixes.py."
         },
         {
           "id": "billing-service-04",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "bug",
           "severity": "medium",
           "file": "app/core/billing_service.py",
           "line": 793,
           "title": "Duplicate wallet top-up request double-credits the wallet for a single charge",
           "detail": "wallet_topup() uses only a gateway-level idempotency key (topup:{tenant}:{payment_token}:{total}) and creates a brand-new invoice + grant per call. On a duplicate/retried request the gateway dedupes the actual charge and returns ok, but a SECOND Invoice (new id) is saved and _mark_paid records a SECOND grant keyed by that new invoice_id. Grants are idempotent by invoice_id, so the two distinct invoice ids yield two separate credits to the fund while the customer was charged once — the platform hands out double prepaid credit.",
-          "failure_scenario": "A user double-submits POST /api/v1/billing/wallet-topups with the same payment_token and amount. Gateway charges once (same idempotency_key), but two paid invoices and two grant outbox rows are produced, crediting the wallet fund twice for one payment."
+          "failure_scenario": "A user double-submits POST /api/v1/billing/wallet-topups with the same payment_token and amount. Gateway charges once (same idempotency_key), but two paid invoices and two grant outbox rows are produced, crediting the wallet fund twice for one payment.",
+          "resolution": "FIXED: wallet_topup claims an app-level idempotency key after a successful charge; a duplicate replays the first invoice (duplicate=True) so the fund is credited once. Regression: test_audit_fixes.py."
         }
       ]
     },
