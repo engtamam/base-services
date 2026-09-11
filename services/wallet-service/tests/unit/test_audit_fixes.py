@@ -14,7 +14,8 @@ import asyncio
 import pytest
 
 from app.adapters.datastore.memory import MemoryDataStore
-from app.core.wallet_service import WalletError, WalletService, _IDEMPO
+from app.core.models import Grant, Wallet
+from app.core.wallet_service import WalletError, WalletService, _GRANTS, _IDEMPO, _WALLETS
 
 FUNDS = (("promo", 1, False), ("cash", 2, True, True))   # cash is withdrawable
 CFG = {"funds": FUNDS, "vat_bp": 1500, "currency": "SAR", "hold_ttl": 900,
@@ -64,6 +65,38 @@ def test_reconcile_still_verifies_within_the_cap():
     run(w.credit(tenant="t", fund="cash", amount=100, source="a"))
     res = run(w.reconcile("t"))
     assert res["consistent"] is True and res["stored"] == {"cash": 100}
+
+
+# ── 02: an expiring forfeit grant must not claw a co-fund active grant's money ─
+def _seed_wallet(st, tenant, fund, balance):
+    run(st.put(_WALLETS, tenant, Wallet(tenant=tenant, funds={fund: balance}, held={}).to_dict()))
+
+
+def _seed_grant(st, gid, tenant, fund, amount, *, behavior, expires_at):
+    g = Grant(id=gid, tenant=tenant, fund=fund, amount=amount, expires_at=expires_at,
+              state="active", idle_behavior=behavior)
+    run(st.put(_GRANTS, gid, g.to_dict()))
+
+
+def test_forfeit_sweep_does_not_claw_a_coexisting_active_grants_money():
+    st = MemoryDataStore(); clock = Clock(1000.0); w = _svc(st, clock)
+    # One fund, two grants of 100 each (total credited 200). The customer spent 100, so 100 remains.
+    _seed_wallet(st, "t", "cash", 100)
+    _seed_grant(st, "g_forfeit", "t", "cash", 100, behavior="forfeit", expires_at=clock.now() - 1)  # expired
+    _seed_grant(st, "g_dormant", "t", "cash", 100, behavior="dormant", expires_at=clock.now() + 10_000)  # active
+    out = run(w.sweep_grants())
+    # The remaining 100 is protected as the still-active dormant grant's money: forfeit claws 0.
+    assert out["clawed"] == 0
+    assert run(w.balance("t"))["funds"]["cash"] == 100     # preserved, not forfeited
+
+
+def test_forfeit_sweep_still_claws_when_it_is_the_only_grant():
+    st = MemoryDataStore(); clock = Clock(1000.0); w = _svc(st, clock)
+    _seed_wallet(st, "t", "cash", 100)
+    _seed_grant(st, "g_only", "t", "cash", 100, behavior="forfeit", expires_at=clock.now() - 1)
+    out = run(w.sweep_grants())
+    assert out["clawed"] == 100                            # no other grant to protect — full claw
+    assert run(w.balance("t"))["funds"].get("cash", 0) == 0
 
 
 # ── 04: withdraw requires a source (money leaving must be idempotent) ──────────

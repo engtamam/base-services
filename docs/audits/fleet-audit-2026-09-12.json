@@ -1490,7 +1490,7 @@
         },
         {
           "id": "wallet-service-02",
-          "status": "NEEDS_DECISION",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "medium",
           "file": "app/core/wallet_service.py",
@@ -1498,7 +1498,7 @@
           "title": "sweep_grants claws back money attributed to a different grant on the same fund (mixed policies)",
           "detail": "sweep_grants computes spare = int(w.funds.get(grant.fund,0)) - int(w.held.get(grant.fund,0)) (line 719) and claws remaining = max(0, min(spare, grant.amount)). This is a FUND-GLOBAL figure; the service never tracks per-grant consumption. When two grants share one fund but carry DIFFERENT frozen policies and the customer has spent part of the pool, an expiring 'forfeit' grant will forfeit balance that logically belongs to a still-active 'extend'/'dormant' grant, because it assumes its own remainder is still whole. Money the platform intended to preserve (dormant/extend) is irreversibly clawed back (clawback). With a single policy per fund the accounting is fungible and harmless; the defect appears only with mixed policies on one fund.",
           "failure_scenario": "Fund 'promo' has grant A (100, forfeit, expires today) and grant B (100, extend, expires next month); customer spent 100 from the fungible 200. Balance=100, held=0. sweep_grants on A: spare=100, remaining=min(100,100)=100 -> clawback 100, leaving 0. B's 100 that should have been auto-extended is gone.",
-          "resolution": "VERIFIED REAL. Requires a money-accounting decision (how pooled spend attributes across grants with mixed idle policies on one fund). The service tracks no per-grant consumption. Surfaced to Tamam before choosing a model (conservative under-claw vs FIFO per-grant tracking). Not silently fixed."
+          "resolution": "FIXED (conservative, per Tamam): sweep_grants reserves the full amount of every other still-active, not-yet-expired grant on the same fund before clawing an expiring grant, so preserved (dormant/extend) money is never forfeited. Trade-off accepted and documented in-code: with no per-grant consumption tracking this may under-claw (leave the customer slightly more) on a partly-spent shared fund; chosen because it is the safer direction. Regression: test_audit_fixes.py."
         },
         {
           "id": "wallet-service-03",

@@ -716,6 +716,30 @@ class WalletService:
             freed += hold.amount
         return {"swept": swept, "freed": freed, "limit": limit}
 
+    async def _reserved_for_other_grants(self, tenant: str, fund: str, exclude_id: str,
+                                         now: float) -> int:
+        """The total amount to PROTECT from an expiring grant's clawback: the sum of every OTHER
+        still-active, not-yet-expired grant on the same fund (audit wallet-02). Active grants' money
+        is still in the fund's balance (dormant/expired grants were already debited out), so reserving
+        their full original amounts guarantees an expiring grant never claws money that could be theirs.
+        Paged so a tenant with many grants is not read in one unbounded call."""
+        total = 0
+        cursor = None
+        while True:
+            rows, cursor = await self._store.find(
+                _GRANTS, {"tenant": tenant, "fund": fund, "state": "active"},
+                limit=_SWEEP_PAGE, after=cursor)
+            for r in rows:
+                if r.get("id") == exclude_id:
+                    continue
+                exp = r.get("expires_at")
+                if exp and float(exp) <= now:
+                    continue                      # itself expired — being swept, not protected
+                total += int(r.get("amount", 0))
+            if not cursor:
+                break
+        return total
+
     async def sweep_grants(self) -> dict[str, Any]:
         """Act on expired grants per each fund's configured idle_behavior. The customer always keeps
         what they SPENT; only the unspent remainder is touched, and never money currently reserved.
@@ -753,7 +777,22 @@ class WalletService:
             w = await self._wallet(grant.tenant)
             # Never touch money currently reserved for an in-flight action.
             spare = int(w.funds.get(grant.fund, 0)) - int(w.held.get(grant.fund, 0))
-            remaining = max(0, min(spare, grant.amount))
+            # PROTECT other grants sharing this fund (audit wallet-02). The fund is a single pool and we
+            # do NOT track per-grant consumption, so when several grants feed one fund and some balance
+            # was spent, we cannot know which grant's money is left. This expiring grant must never claw
+            # money that could belong to another STILL-ACTIVE grant (a preserved 'dormant'/'extend' one
+            # that was clawed here would be lost irreversibly). So we reserve the full amount of every
+            # other active, not-yet-expired grant on this fund and only touch the spare ABOVE that.
+            #
+            # DELIBERATE TRADE-OFF (chosen: conservative): reserving full ORIGINAL amounts (we have no
+            # per-grant remaining) can leave the customer slightly MORE than strictly owed when a shared
+            # fund was partly spent — i.e. the platform may forfeit less than it theoretically could. We
+            # accept that: erring toward the customer is safe and reversible-in-spirit, whereas
+            # over-clawing preserved money is not. Full per-grant consumption tracking (FIFO) would be
+            # exact but is a larger data-model change; this is the safe fix for now.
+            reserved = await self._reserved_for_other_grants(grant.tenant, grant.fund, grant.id, now)
+            claimable = max(0, spare - reserved)
+            remaining = max(0, min(claimable, grant.amount))
             if remaining > 0:
                 is_dormant = behavior == "dormant"
                 led_type = EXPIRE if is_dormant else CLAWBACK
