@@ -96,6 +96,31 @@ def test_non_opted_plan_keeps_static_credits():
     assert _grant_of(inv) == 500                       # static, untouched by the percent knob
 
 
+def test_list_plans_adds_included_credit_minor_per_price_when_opted_in():
+    st = MemoryDataStore(); b = _svc(st, percent=20)
+    run(b.create_plan(name="AI Bot", prices=[
+        {"interval": "month", "amount_minor": 19900, "currency": "SAR", "type": "flat"},
+        {"interval": "year", "amount_minor": 199000, "currency": "SAR", "type": "flat"}],
+        credit_percent_of_price=True))
+    run(b.create_plan(name="Fixed", prices=[{"interval": "month", "amount_minor": 10000,
+        "currency": "SAR", "type": "flat"}], limits={"credits": 500}))
+    plans = {p["name"]: p for p in run(b.list_plans())}
+    ai_prices = {pr["interval"]: pr for pr in plans["AI Bot"]["prices"]}
+    assert ai_prices["month"]["included_credit_minor"] == 3980      # 20% of 19900, per price
+    assert ai_prices["year"]["included_credit_minor"] == 39800      # 20% of 199000
+    # a non-opted plan's prices carry no such field
+    assert "included_credit_minor" not in plans["Fixed"]["prices"][0]
+
+
+def test_included_credit_minor_does_not_mutate_the_stored_plan():
+    st = MemoryDataStore(); b = _svc(st, percent=20)
+    p = run(b.create_plan(name="AI Bot", prices=[{"interval": "month", "amount_minor": 19900,
+        "currency": "SAR", "type": "flat"}], credit_percent_of_price=True))
+    run(b.list_plans())
+    stored = run(PlanStore(st).fetch(p.id))
+    assert "included_credit_minor" not in stored.prices[0]          # the view field never persisted
+
+
 def test_opted_in_but_percent_zero_grants_nothing():
     st = MemoryDataStore(); b = _svc(st, percent=0)
     p = run(b.create_plan(name="AI Bot", prices=[{"interval": "month", "amount_minor": 19900,

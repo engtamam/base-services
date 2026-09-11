@@ -273,11 +273,27 @@ class BillingService:
             out.append(plan)
         return out
 
+    def _with_included_credit(self, row: dict) -> dict:
+        """A VIEW copy of a plan row with `included_credit_minor` added to each price, when the plan
+        opts into a percent-of-price allowance. Computed LIVE from the current PLAN_CREDIT_PERCENT so a
+        panel change shows immediately — per price, because each interval's price (hence its included
+        amount) differs. Never mutates the stored row, and never touches a static-credits plan."""
+        if not row.get("credit_percent_of_price"):
+            return row
+        pct = max(0, min(100, int(self._cfg.get("plan_credit_percent", 0) or 0)))
+        prices = []
+        for p in (row.get("prices") or []):
+            base = int(p.get("amount_minor", 0) or 0)
+            inc = int((_Decimal(base) * _Decimal(pct) / 100).quantize(_Decimal(1), _ROUND_HALF_UP))
+            prices.append({**p, "included_credit_minor": inc})
+        return {**row, "prices": prices}
+
     async def list_plans(self, *, include_hidden: bool = False) -> list[dict]:
         rows = await self._plans.all(self._cfg["list_limit"])
         if include_hidden:
-            return rows          # the operator view: everything, including retired plans
-        return [r for r in rows if r.get("listed", True) and r.get("active", True)]
+            return [self._with_included_credit(r) for r in rows]   # operator view: everything
+        return [self._with_included_credit(r) for r in rows
+                if r.get("listed", True) and r.get("active", True)]
 
     async def upsert_coupon(self, **kw) -> Coupon:
         return await self._coupons.upsert(Coupon(created=iso(), **kw))
