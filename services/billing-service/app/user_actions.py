@@ -16,6 +16,8 @@ from typing import Any
 USER_ACTIONS: list[dict[str, Any]] = [
     {"id": "billing.plans", "label": "Browse plans", "method": "GET",
      "path": "/api/v1/billing/plans", "capability": "billing.self", "group": "Plan"},
+    {"id": "billing.discount_preview", "label": "Discount preview", "method": "GET",
+     "path": "/api/v1/billing/discount-preview", "capability": "billing.self", "group": "Plan"},
     {"id": "billing.my_subscriptions", "label": "My subscription", "method": "GET",
      "path": "/api/v1/billing/subscriptions", "capability": "billing.self", "group": "Plan"},
     {"id": "billing.subscribe", "label": "Subscribe to a plan", "method": "POST",
