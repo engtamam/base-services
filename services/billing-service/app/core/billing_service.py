@@ -11,6 +11,7 @@ import datetime as _dt
 import json as _json
 import secrets as _secrets
 import time
+from decimal import ROUND_HALF_UP as _ROUND_HALF_UP
 from decimal import Decimal as _Decimal
 from typing import Any
 
@@ -198,10 +199,11 @@ class BillingService:
 
     # ── catalog ─────────────────────────────────────────────────────────────────
     async def create_plan(self, *, name: str, prices: list[dict], features=None,
-                          limits=None, trial_days=0) -> Plan:
+                          limits=None, trial_days=0, credit_percent_of_price: bool = False) -> Plan:
         return await self._plans.create(Plan(id=new_id("plan_"), name=name, prices=prices,
                                              features=features or [], limits=limits or {},
-                                             trial_days=trial_days))
+                                             trial_days=trial_days,
+                                             credit_percent_of_price=bool(credit_percent_of_price)))
 
     async def update_plan(self, plan_id: str, **changes) -> Plan:
         """Correct a live plan: price, limits, features, name, availability.
@@ -215,7 +217,8 @@ class BillingService:
         plan = await self._plans.fetch(plan_id)
         if plan is None:
             raise ValueError("PLAN_NOT_FOUND")
-        allowed = ("name", "prices", "features", "limits", "trial_days", "active", "listed")
+        allowed = ("name", "prices", "features", "limits", "trial_days", "active", "listed",
+                   "credit_percent_of_price")
         for key, value in changes.items():
             if key not in allowed:
                 # An unknown field silently ignored is how an operator comes to believe they
@@ -946,6 +949,22 @@ class BillingService:
         return pricing.rule_discount(rules, subtotal, held_keys=held, target_keys=targets,
                                      now=self._clock())
 
+    def _granted_allowance(self, plan, price: dict) -> int:
+        """The included wallet allowance to grant for this cycle, in minor units.
+
+        Default: the plan's static limits[PLAN_CREDIT_LIMIT_KEY]. A plan that opts in with
+        credit_percent_of_price=True instead grants a PERCENT of its recurring price
+        (PLAN_CREDIT_PERCENT, a runtime-editable global knob) — so an operator can change "how much is
+        included" with no redeploy or reseed. Computed off the plan's list price, not the discounted
+        subtotal, so a coupon/rule never shrinks the allowance. Percent clamped 0-100."""
+        if plan is None:
+            return 0
+        if getattr(plan, "credit_percent_of_price", False):
+            pct = max(0, min(100, int(self._cfg.get("plan_credit_percent", 0) or 0)))
+            base = int(price.get("amount_minor", 0) or 0)
+            return int((_Decimal(base) * _Decimal(pct) / 100).quantize(_Decimal(1), _ROUND_HALF_UP))
+        return int((plan.limits or {}).get(self._cfg["plan_credit_limit_key"], 0) or 0)
+
     async def _compute_renewal(self, sub) -> dict[str, Any]:
         """Price ONE subscription's renewal — adopt a scheduled downgrade, apply grandfathered price,
         proration, usage, coupon and tax — and return the invoice LINE + rolled-up amounts + the
@@ -1002,7 +1021,7 @@ class BillingService:
         if proration is not None:
             line["description"] += " (prorated first period)"
             line["proration"] = proration
-        granted = int((plan.limits or {}).get(self._cfg["plan_credit_limit_key"], 0) or 0) if plan else 0
+        granted = self._granted_allowance(plan, price)
         return {"line": line, "taxable": taxable, "discount": discount, "tax": tax, "total": total,
                 "currency": currency, "granted": granted, "plan": plan}
 

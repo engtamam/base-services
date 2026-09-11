@@ -136,6 +136,16 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
             return str(v) if v is not None else default
         except Exception:  # noqa: BLE001 — a config read must never break a charge
             return default
+    async def _rc_int(key: str, default: int) -> int:
+        # A GLOBAL knob (platform scope, tenant=""), not per-tenant — the included-allowance percent is
+        # a platform decision. A read must never break a charge, so any failure falls back to config.
+        if rc is None:
+            return int(default)
+        try:
+            v = await rc.get(tenant="", key=key, default=default)
+            return int(v)
+        except Exception:  # noqa: BLE001 — a config read must never break a charge
+            return int(default)
     tax_driver = await _rc_str("TAX_CALCULATOR_DRIVER", s.TAX_CALCULATOR_DRIVER)
     vat_rate = await _rc_str("VAT_RATE", s.VAT_RATE)
     einvoicer_driver = await _rc_str("EINVOICER_DRIVER", s.EINVOICER_DRIVER)
@@ -179,6 +189,9 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
                 "grant_fund": s.WALLET_GRANT_FUND,
                 "plan_credit_limit_key": s.PLAN_CREDIT_LIMIT_KEY,
                 "plan_credit_grant_mode": s.PLAN_CREDIT_GRANT_MODE,
+                # Global (platform-scope) runtime knob: the included-allowance percent for opted-in
+                # plans. Read live here so a panel change takes effect next cycle with no redeploy.
+                "plan_credit_percent": await _rc_int("PLAN_CREDIT_PERCENT", s.PLAN_CREDIT_PERCENT),
                 # Refund/chargeback grant clawback — a set of operator choices, all read at use.
                 "clawback_enabled": clawback_enabled,
                 "document_mode": document_mode,
@@ -244,6 +257,7 @@ class PlanIn(BaseModel):
     features: list[str] = Field(default_factory=list)
     limits: dict[str, Any] = Field(default_factory=dict)
     trial_days: int = 0
+    credit_percent_of_price: bool = False   # opt in to a percent-of-price included allowance
 
 
 class PlanUpdateIn(BaseModel):
@@ -255,6 +269,7 @@ class PlanUpdateIn(BaseModel):
     features: list[str] | None = None
     limits: dict[str, Any] | None = None
     trial_days: int | None = Field(default=None, ge=0)
+    credit_percent_of_price: bool | None = None
 
 
 class PlanAvailabilityIn(BaseModel):

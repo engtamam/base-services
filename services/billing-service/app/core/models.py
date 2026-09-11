@@ -48,6 +48,13 @@ class Plan:
     #                legacy or negotiated plan keeps working without being on the pricing page.
     active: bool = True
     listed: bool = True
+    # Opt IN to a PERCENT-OF-PRICE included allowance instead of a static credits limit: when True the
+    # grant each cycle is (this plan's recurring price) × PLAN_CREDIT_PERCENT/100, granted to the same
+    # fund in the same mode as a static allowance. The percent is a runtime-editable global knob, so an
+    # operator can change "how much is included" without a redeploy or a plan reseed. Default False →
+    # the plan keeps the static limits[PLAN_CREDIT_LIMIT_KEY] behaviour, unchanged. Explicit per-plan
+    # opt-in (decision 2026-09-11) so changing the global percent never silently touches other plans.
+    credit_percent_of_price: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

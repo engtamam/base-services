@@ -530,6 +530,12 @@ class Settings(BaseSettings):
     WALLET_RENEWAL_FUND: str = ""
     # Where the grant amount comes from on a plan: plan.limits[<this key>], in minor units.
     PLAN_CREDIT_LIMIT_KEY: str = "credits"
+    # The included allowance, as a PERCENT of a plan's recurring price, for plans that opt in with
+    # credit_percent_of_price=True. Runtime-editable (declared in RUNTIME_POLICY) so an operator can
+    # change "how much is included" from the panel with no redeploy and no plan reseed — only the SOURCE
+    # of the granted number changes, from a static limit to this live percentage. 0 = grant nothing for
+    # an opted-in plan (the feature is off until set). Clamped 0-100.
+    PLAN_CREDIT_PERCENT: int = 0
     # Do unused included credits carry over at renewal, or start fresh?
     PLAN_CREDIT_GRANT_MODE: str = "accumulate"   # accumulate | reset
     # Retry backoff for an undelivered grant. There is no attempt CAP on purpose: giving up would

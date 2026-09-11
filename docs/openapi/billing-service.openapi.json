@@ -644,6 +644,11 @@
       },
       "PlanIn": {
         "properties": {
+          "credit_percent_of_price": {
+            "default": false,
+            "title": "Credit Percent Of Price",
+            "type": "boolean"
+          },
           "features": {
             "items": {
               "type": "string"
@@ -687,6 +692,17 @@
       "PlanUpdateIn": {
         "description": "Every field optional: an operator correcting a price must not have to resend the limits and\nrisk clobbering them with whatever the form happened to hold.",
         "properties": {
+          "credit_percent_of_price": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Credit Percent Of Price"
+          },
           "features": {
             "anyOf": [
               {

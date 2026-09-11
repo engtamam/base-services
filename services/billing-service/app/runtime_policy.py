@@ -23,6 +23,11 @@ from __future__ import annotations
 # only for tax_invoice/both) and the document routes. Default `receipt`: a fresh platform issues our
 # own receipt with no VAT/ZATCA until it opts into tax.
 #
+# PLAN_CREDIT_PERCENT — the included allowance as a percent of a plan's price, for plans that opt in
+# with credit_percent_of_price=True. READ (global scope) in build_billing and applied at grant time in
+# _compute_renewal's _granted_allowance. This is the promise: the panel can change "how much is
+# included" live, and the next cycle grants the new percentage — no redeploy, no plan reseed.
+#
 # THE TAX PROFILE IS ONE UNIT. The mode was live-editable while the profile behind it — the tax
 # calculator, the VAT rate, the seller's registration number — was read from static settings at boot.
 # That split WAS the whole defect: one click flipped a tenant to tax_invoice and the next paid invoice
@@ -36,4 +41,5 @@ RUNTIME_POLICY: frozenset[str] = frozenset({
     "PAYMENT_GATEWAY_DRIVER", "BILLING_AUTO_REACTIVATE", "BILLING_CLAWBACK_ENABLED",
     "BILLING_DOCUMENT_MODE",
     "TAX_CALCULATOR_DRIVER", "VAT_RATE", "EINVOICER_DRIVER",
-    "INVOICE_SELLER_NAME", "INVOICE_SELLER_VAT", "INVOICE_SELLER_CR", "INVOICE_SELLER_ADDRESS"})
+    "INVOICE_SELLER_NAME", "INVOICE_SELLER_VAT", "INVOICE_SELLER_CR", "INVOICE_SELLER_ADDRESS",
+    "PLAN_CREDIT_PERCENT"})
