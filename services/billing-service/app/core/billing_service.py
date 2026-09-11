@@ -487,6 +487,41 @@ class BillingService:
     async def delete_discount_rule(self, rule_id: str) -> bool:
         return await self._require_rules().remove(rule_id)
 
+    @staticmethod
+    def _plan_target_keys(plan_row: dict) -> set[str]:
+        """The keys a discount rule's target_key matches for a PLAN (no subscription yet): the plan's
+        features, its limit keys, and its id."""
+        keys: set[str] = {plan_row.get("id", "")}
+        keys.update(plan_row.get("features") or [])
+        keys.update((plan_row.get("limits") or {}).keys())
+        return {str(k) for k in keys if k}
+
+    async def discount_preview(self, tenant: str) -> dict[str, dict]:
+        """Per-plan "you already qualify for X% off" for a shop DECIDING whether to buy — the same
+        ownership-only resolution a renewal would do right now (current ownership via the resolver,
+        highest-percent-wins across discount rules), but charging/creating nothing. No coupon (none is
+        typed at browse time). Returns {plan_id: {"percent", "owning_key"}} only for plans a rule
+        currently applies to; a plan with no applicable rule is simply absent."""
+        if self._rules is None:
+            return {}
+        rules = await self._rules.all(self._cfg["list_limit"])
+        if not rules:
+            return {}
+        now = self._clock()
+        resolved = await self._entitlements.resolve(tenant, now)
+        held = {str(k) for k, v in (resolved.get("limits") or {}).items() if v}
+        by_id = {str(r.get("id", "")): r for r in rules}
+        out: dict[str, dict] = {}
+        for plan_row in await self._plans.all(self._cfg["list_limit"]):
+            if not (plan_row.get("active", True) and plan_row.get("listed", True)):
+                continue
+            targets = self._plan_target_keys(plan_row)
+            pct, rule_id = pricing.best_rule_percent(rules, held_keys=held, target_keys=targets, now=now)
+            if pct > 0:
+                out[plan_row.get("id", "")] = {
+                    "percent": pct, "owning_key": by_id.get(rule_id, {}).get("owning_key", "")}
+        return out
+
     # ── subscriptions ─────────────────────────────────────────────────────────────
     def _price_for(self, plan: Plan, interval: str) -> dict:
         for p in plan.prices:

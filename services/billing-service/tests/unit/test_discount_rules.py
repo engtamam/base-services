@@ -162,6 +162,24 @@ def test_full_free_rule():
     assert inv.discount_minor == 10000 and inv.total_minor == 0        # fully free
 
 
+def test_discount_preview_shows_qualifying_plans_only():
+    st = MemoryDataStore(); b = _svc(st)
+    # tenant owns "visit" (holds app.visit). The bookings plan is listed & buyable.
+    _two_apps(b, st)
+    run(b.create_discount_rule(owning_key="app.visit", target_key="app.bookings", percent=30))
+    prev = run(b.discount_preview("t1"))
+    # the bookings plan is previewed at 30%, naming the app that earned it
+    bookings = next(v for k, v in prev.items() if v["percent"] == 30)
+    assert bookings["owning_key"] == "app.visit"
+
+
+def test_discount_preview_empty_when_owner_not_held():
+    st = MemoryDataStore(); b = _svc(st)
+    _two_apps(b, st)
+    run(b.create_discount_rule(owning_key="app.nonexistent", target_key="app.bookings", percent=30))
+    assert run(b.discount_preview("t1")) == {}
+
+
 def test_crud_percent_out_of_range_refused():
     import pytest
     st = MemoryDataStore(); b = _svc(st)

@@ -161,6 +161,7 @@ def build_manifest(
             {"path": "/api/v1/billing/coupons/{}", "tier": "user", "method": "PATCH"},
             {"path": "/api/v1/billing/coupons/{}", "tier": "user", "method": "DELETE"},
             {"path": "/api/v1/billing/discount-rules", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/billing/discount-preview", "tier": "user", "method": "GET"},
             {"path": "/api/v1/billing/discount-rules/{}", "tier": "user", "method": "PATCH"},
             {"path": "/api/v1/billing/discount-rules/{}", "tier": "user", "method": "DELETE"},
         ],

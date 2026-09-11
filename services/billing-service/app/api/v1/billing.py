@@ -416,6 +416,18 @@ async def list_plans(request: Request, include_hidden: bool = False,
     return {"plans": await (await build_billing(request)).list_plans(include_hidden=include_hidden)}
 
 
+@router.get("/discount-preview", dependencies=[Depends(_SELF)])
+async def discount_preview(request: Request, principal: Principal = Depends(require_user)) -> dict:
+    """Per-plan "you already qualify for X% off" for the CALLING shop — a browse-time preview of the
+    cross-app discount rules, so an owner discovers the cross-sell before checkout. Same auth as the
+    plan list (any signed-in shop user), ownership-only (no coupon), charges/creates nothing.
+
+    -> {"previews": {plan_id: {"percent": int, "owning_key": str}}} — a plan with no applicable rule
+    is absent. `owning_key` names WHICH app of theirs earned it, so the badge can say why."""
+    tenant = principal.tenant or "__none__"
+    return {"previews": await (await build_billing(request)).discount_preview(tenant)}
+
+
 @router.patch("/plans/{plan_id}", dependencies=[Depends(_PLATFORM)])
 async def update_plan(request: Request, plan_id: str, body: PlanUpdateIn,
                       principal: Principal = Depends(require_user)) -> dict:

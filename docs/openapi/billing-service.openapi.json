@@ -1952,6 +1952,30 @@
         ]
       }
     },
+    "/api/v1/billing/discount-preview": {
+      "get": {
+        "description": "Per-plan \"you already qualify for X% off\" for the CALLING shop \u2014 a browse-time preview of the\ncross-app discount rules, so an owner discovers the cross-sell before checkout. Same auth as the\nplan list (any signed-in shop user), ownership-only (no coupon), charges/creates nothing.\n\n-> {\"previews\": {plan_id: {\"percent\": int, \"owning_key\": str}}} \u2014 a plan with no applicable rule\nis absent. `owning_key` names WHICH app of theirs earned it, so the badge can say why.",
+        "operationId": "discount_preview_api_v1_billing_discount_preview_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Discount Preview Api V1 Billing Discount Preview Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Discount Preview",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
     "/api/v1/billing/discount-rules": {
       "get": {
         "operationId": "list_discount_rules_api_v1_billing_discount_rules_get",
