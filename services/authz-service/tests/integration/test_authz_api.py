@@ -136,6 +136,32 @@ def test_roles_assigned_audit_carries_what_was_granted(client):
     assert captured["metadata"] == {"roles": [role["id"]], "capabilities": ["extra.cap"]}
 
 
+def test_cross_tenant_role_update_is_audited_to_the_affected_tenant(client):
+    # audit #01: a platform operator edits ANOTHER tenant's role; the change must land in THAT
+    # tenant's audit trail, not the operator's. (Pre-fix it recorded principal.tenant.)
+    role = client.post("/api/v1/roles",
+                       json={"name": "victimrole", "capabilities": ["docs.*"], "tenant": "victimtenant"},
+                       headers=_plat()).json()
+    captured = {}
+    orig = client.app.state.auditor.record
+
+    async def spy(action, **kw):
+        if action == "role.updated":
+            captured.update(kw)
+        return await orig(action, **kw)
+
+    client.app.state.auditor.record = spy
+    try:
+        # operator authenticates under their OWN tenant "platformops" but edits victimtenant's role
+        r = client.put(f"/api/v1/roles/{role['id']}",
+                       json={"capabilities": ["docs.read"], "description": "scoped down"},
+                       headers={"Authorization": "Bearer " + _tok(["platform.authz"], tenant="platformops")})
+    finally:
+        client.app.state.auditor.record = orig
+    assert r.status_code == 200
+    assert captured["tenant"] == "victimtenant"     # the affected tenant, not "platformops"
+
+
 def test_abac_deny(client):
     role = client.post("/api/v1/roles", json={"name": "w", "capabilities": ["files.*"], "tenant": "t1"},
                        headers=_plat()).json()

@@ -46,9 +46,14 @@ class AbacEngine:
 
     @staticmethod
     def _context(ctx: dict[str, Any]) -> dict[str, Any]:
-        # Flat attribute context: caller-supplied attributes + a few standard keys.
+        # Flat attribute context: caller-supplied attributes, then the AUTHORITATIVE keys stamped
+        # OVER them. These three come from the authenticated subject/action/resource the PDP derived,
+        # so they must never be shadowable by a caller-supplied attribute of the same name — with
+        # setdefault, a user-influenced `attributes` map carrying "subject.id"/"resource.id" would
+        # override the real principal, and an ownership condition ($subject.id vs resource.owner) would
+        # then evaluate against attacker-chosen values. Assign, do not setdefault.
         base = dict(ctx.get("attributes") or {})
-        base.setdefault("subject.id", ctx.get("subject", ""))
-        base.setdefault("action", ctx.get("action", ""))
-        base.setdefault("resource.id", ctx.get("resource", ""))
+        base["subject.id"] = ctx.get("subject", "")
+        base["action"] = ctx.get("action", "")
+        base["resource.id"] = ctx.get("resource", "")
         return base

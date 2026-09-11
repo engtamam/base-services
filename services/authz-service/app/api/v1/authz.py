@@ -161,8 +161,10 @@ async def update_role(request: Request, role_id: str, body: RoleUpdate,
     # recorded as a successful update. Still write-ahead of the MUTATION, which is what matters for
     # the log-cannot-record invariant.
     _guard_tenant(principal, role.tenant)
+    # Record under the tenant the role BELONGS to (a platform operator may edit another tenant's role;
+    # that tenant's audit trail must carry the change, not the operator's own).
     await request.app.state.auditor.record(
-        "role.updated", actor=principal.subject, tenant=principal.tenant, resource=f"role:{role_id}",
+        "role.updated", actor=principal.subject, tenant=role.tenant, resource=f"role:{role_id}",
         ip=request.client.host if request.client else "")
     return (await svc.update_role(role, body.capabilities, body.description)).to_dict()
 
@@ -177,7 +179,7 @@ async def delete_role(request: Request, role_id: str, principal: Principal = Dep
     # as a deletion), still ahead of the mutation itself.
     _guard_tenant(principal, role.tenant)
     await request.app.state.auditor.record(
-        "role.deleted", actor=principal.subject, tenant=principal.tenant, resource=f"role:{role_id}",
+        "role.deleted", actor=principal.subject, tenant=role.tenant, resource=f"role:{role_id}",
         ip=request.client.host if request.client else "")
     await svc.delete_role(role_id)
     return {"deleted": True}
@@ -194,7 +196,7 @@ async def create_policy(request: Request, body: PolicyIn, principal: Principal =
     # policy. The guard closes the privilege-escalation hole (an allow policy is a capability grant).
     _guard_policy(principal, effect=body.effect, action=body.action, resource=body.resource)
     await request.app.state.auditor.record(
-        "policy.created", actor=principal.subject, tenant=principal.tenant, resource="policy",
+        "policy.created", actor=principal.subject, tenant=tenant, resource="policy",
         ip=request.client.host if request.client else "")
     p = await build_authz(request).create_policy(tenant, body.effect, body.action, body.resource,
                                                  body.condition, body.priority, body.description)
@@ -228,7 +230,7 @@ async def delete_policy(request: Request, policy_id: str, principal: Principal =
     # as a deletion), still ahead of the mutation itself.
     _guard_tenant(principal, p.tenant)
     await request.app.state.auditor.record(
-        "policy.deleted", actor=principal.subject, tenant=principal.tenant, resource=f"policy:{policy_id}",
+        "policy.deleted", actor=principal.subject, tenant=p.tenant, resource=f"policy:{policy_id}",
         ip=request.client.host if request.client else "")
     await svc.delete_policy(policy_id)
     return {"deleted": True}

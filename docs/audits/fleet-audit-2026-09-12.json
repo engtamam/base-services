@@ -473,36 +473,39 @@
       "issues": [
         {
           "id": "authz-service-01",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "security",
           "severity": "medium",
           "file": "app/api/v1/authz.py",
           "line": 165,
           "title": "Cross-tenant admin mutations recorded under the operator's own tenant, not the affected tenant",
           "detail": "update_role (line 165), delete_role (line 180), create_policy (line 197) and delete_policy (line 231) all pass tenant=principal.tenant to auditor.record(). For a platform operator (holds `platform.authz`), _guard_tenant() short-circuits and permits editing/deleting another tenant's role or policy, and create_policy writes to _op_tenant(principal, body.tenant) which for an operator honors body.tenant (a different tenant). But the audit event is filed under principal.tenant (the operator's), so the AFFECTED tenant's audit trail contains no record of the change to its own authorization config. This is inconsistent with create_role (lines 130-133), which was explicitly fixed to record under the object's real tenant (`tenant = _op_tenant(...)`) precisely to avoid this class of misattribution. Legitimate platform-admin cross-tenant actions are supposed to be audited to the tenant they touch.",
-          "failure_scenario": "A platform operator (caps include platform.authz) calls DELETE /api/v1/policies/{id} for a policy owned by tenant 'acme'. The action succeeds; the audit event is recorded with tenant=<operator's tenant> instead of 'acme'. When acme (or a compliance officer) later pulls acme's audit trail, the deletion of acme's security policy is absent — an unattributable, invisible change to a tenant's authz configuration."
+          "failure_scenario": "A platform operator (caps include platform.authz) calls DELETE /api/v1/policies/{id} for a policy owned by tenant 'acme'. The action succeeds; the audit event is recorded with tenant=<operator's tenant> instead of 'acme'. When acme (or a compliance officer) later pulls acme's audit trail, the deletion of acme's security policy is absent — an unattributable, invisible change to a tenant's authz configuration.",
+          "resolution": "FIXED: update_role/delete_role/create_policy/delete_policy now record audit under the AFFECTED tenant (role.tenant/p.tenant/_op_tenant), matching create_role. Regression: test_authz_api.py."
         },
         {
           "id": "authz-service-02",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "medium",
           "file": "app/adapters/policy/abac.py",
           "line": 51,
           "title": "Caller-supplied ABAC attributes can shadow the authoritative subject.id/action/resource.id via setdefault",
           "detail": "_context() builds the ABAC evaluation context as `base = dict(ctx.get('attributes') or {})` then uses base.setdefault('subject.id', ...), base.setdefault('action', ...), base.setdefault('resource.id', ...). Because setdefault only fills a key when ABSENT, any attribute key already present in the caller-supplied `attributes` map (from CheckIn.attributes on POST /internal/authz/check) wins over the trusted values the PDP derives from subject/action/resource. Conditions frequently compare a resource attribute to `$subject.id` (see conditions.py doc example {'attr':'resource.owner','op':'eq','value':'$subject.id'}); _resolve_value resolves `$subject.id` from this same shadowable dict. Any attribute that is user-influenced and happens to carry the reserved keys silently overrides the real principal, so an ownership/identity condition evaluates against attacker-chosen values instead of the authenticated subject.",
-          "failure_scenario": "A caller performs an authz check whose attributes include {\"subject.id\":\"victim\",\"resource.owner\":\"victim\"} while the real subject is \"attacker\". An ABAC allow policy with condition {attr:resource.owner, op:eq, value:$subject.id} matches (victim==victim), granting the attacker access to a resource whose ownership check should have failed. The reserved keys should be set with override, not setdefault, so the PDP's own values always win."
+          "failure_scenario": "A caller performs an authz check whose attributes include {\"subject.id\":\"victim\",\"resource.owner\":\"victim\"} while the real subject is \"attacker\". An ABAC allow policy with condition {attr:resource.owner, op:eq, value:$subject.id} matches (victim==victim), granting the attacker access to a resource whose ownership check should have failed. The reserved keys should be set with override, not setdefault, so the PDP's own values always win.",
+          "resolution": "FIXED: AbacEngine._context stamps subject.id/action/resource.id OVER caller attributes (assign, not setdefault), so a caller-supplied attribute cannot shadow the authenticated principal. Regression: test_audit_fixes.py."
         },
         {
           "id": "authz-service-03",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "security",
           "severity": "low",
           "file": "app/middleware/security.py",
           "line": 71,
           "title": "Body size limit enforced only via Content-Length; chunked/streamed bodies bypass it",
           "detail": "BodyLimitMiddleware.dispatch only inspects the Content-Length header and rejects when it exceeds max_bytes. A request sent with Transfer-Encoding: chunked (or otherwise omitting Content-Length) has content_length is None and is passed straight through to call_next with no cap, and nothing downstream re-enforces BODY_LIMIT_BYTES by counting streamed bytes. The stated purpose (CWE-400 resource abuse) is only partially met — an attacker who omits Content-Length can stream an arbitrarily large body.",
-          "failure_scenario": "A client POSTs to any route with Transfer-Encoding: chunked and a multi-hundred-MB body and no Content-Length header. BodyLimitMiddleware sees content_length is None, skips the check, and the oversized body is read and buffered by the framework, defeating the 1 MiB BODY_LIMIT_BYTES guard and enabling a memory-exhaustion DoS."
+          "failure_scenario": "A client POSTs to any route with Transfer-Encoding: chunked and a multi-hundred-MB body and no Content-Length header. BodyLimitMiddleware sees content_length is None, skips the check, and the oversized body is read and buffered by the framework, defeating the 1 MiB BODY_LIMIT_BYTES guard and enabling a memory-exhaustion DoS.",
+          "resolution": "FIXED: BodyLimitMiddleware rewritten as pure ASGI; a chunked/no-Content-Length body is counted and capped (413) then replayed downstream. Regression: test_body_limit_chunked.py."
         }
       ]
     },
