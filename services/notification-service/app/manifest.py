@@ -65,6 +65,7 @@ def build_manifest(
             {"path": "/metrics", "tier": "public", "method": "GET"},
             {"path": "/internal/health", "tier": "internal", "method": "GET"},
             {"path": "/internal/whatsapp/flow/{name}-json", "tier": "internal", "method": "GET"},
+            {"path": "/api/v1/whatsapp/flows/{name}/preview-json", "tier": "user", "method": "GET"},
             {"path": "/internal/manifest", "tier": "internal", "method": "GET"},
             {"path": "/internal/privacy/erase", "tier": "internal", "method": "POST",
              # DECLARED, because a data map built from manifests is how a DSAR fan-out

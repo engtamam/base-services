@@ -24,6 +24,29 @@ from app.core.stores import (
 notifications_router = APIRouter(prefix="/api/v1/notifications", tags=["notifications"])
 templates_router = APIRouter(prefix="/api/v1/templates", tags=["templates"])
 wa_templates_router = APIRouter(prefix="/api/v1/whatsapp/templates", tags=["whatsapp-templates"])
+wa_flows_router = APIRouter(prefix="/api/v1/whatsapp/flows", tags=["whatsapp-flows"])
+
+
+@wa_flows_router.get("/{name}/preview-json")
+async def flow_preview_json(request: Request, name: str,
+                           principal: Principal = Depends(require_user)) -> dict:
+    """The companion Flow JSON for a registered slot-reservation Flow (booking/delivery/visit/…), for
+    an OWNER to preview the multi-screen Flow visually in the console — the owner-facing twin of
+    GET /internal/whatsapp/flow/{name}-json. Read-only, no special capability beyond being a signed-in
+    shop user; the JSON is generated from the platform's config definition, identical for every tenant.
+
+    404 (same as the internal route): no engine under that name, not a slot-reservation engine (only a
+    BookingEngine produces this JSON), or that engine has no definition configured yet."""
+    from app.core.booking_flow import BookingEngine
+    from app.core.flow_json import build_booking_flow_json
+    registry = getattr(request.app.state, "flow_registry", None)
+    handler = registry.get(name) if registry is not None else None
+    if not isinstance(handler, BookingEngine):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NO_SUCH_FLOW")
+    defn = await handler.definition()
+    if defn is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NO_DEFINITION")
+    return build_booking_flow_json(defn)
 _WA_CAP = require_capability("notifications.templates")
 # The GLOBAL notification-template catalogue and the cross-tenant delivery log are PLATFORM surfaces
 # (one shared row per template key; deliveries span every tenant). They must NOT share the per-tenant

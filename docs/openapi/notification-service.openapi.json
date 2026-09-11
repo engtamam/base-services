@@ -1812,6 +1812,51 @@
         ]
       }
     },
+    "/api/v1/whatsapp/flows/{name}/preview-json": {
+      "get": {
+        "description": "The companion Flow JSON for a registered slot-reservation Flow (booking/delivery/visit/\u2026), for\nan OWNER to preview the multi-screen Flow visually in the console \u2014 the owner-facing twin of\nGET /internal/whatsapp/flow/{name}-json. Read-only, no special capability beyond being a signed-in\nshop user; the JSON is generated from the platform's config definition, identical for every tenant.\n\n404 (same as the internal route): no engine under that name, not a slot-reservation engine (only a\nBookingEngine produces this JSON), or that engine has no definition configured yet.",
+        "operationId": "flow_preview_json_api_v1_whatsapp_flows__name__preview_json_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Flow Preview Json Api V1 Whatsapp Flows  Name  Preview Json Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Flow Preview Json",
+        "tags": [
+          "whatsapp-flows"
+        ]
+      }
+    },
     "/api/v1/whatsapp/templates": {
       "get": {
         "operationId": "list_wa_templates_api_v1_whatsapp_templates_get",
