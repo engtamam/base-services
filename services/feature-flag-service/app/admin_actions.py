@@ -75,7 +75,9 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
     {"id": "flags.rollback_config", "label": "Roll back config to a prior version", "method": "POST",
      "path": "/api/v1/config/{key}/rollback", "capability": "platform.flags", "group": "Remote config",
      "danger": True, "confirm": True,
-     "params": [{"name": "key", "in": "path", "type": "string", "required": True}]},
+     "params": [{"name": "key", "in": "path", "type": "string", "required": True},
+                {"name": "version", "in": "query", "type": "integer", "required": True,
+                 "help": "the prior config version number to roll back to"}]},
     # ── Maintenance ──────────────────────────────────────────────────────────
     {"id": "flags.get_maintenance", "label": "View maintenance state", "method": "GET",
      "path": "/api/v1/maintenance", "capability": "platform.flags", "group": "Maintenance"},

@@ -50,6 +50,25 @@ PY
  {"schema": {"type": "object", "required": ["name"],
              "properties": {"name": {"type": "string"}}}}}}}}}}
 JSON
-  ! ( SERVICES_ROOT="$probe/services" OPENAPI_DIR="$probe/openapi" \
+  ( SERVICES_ROOT="$probe/services" OPENAPI_DIR="$probe/openapi" \
+      "$PY" tools/ci/check_admin_params.py >/dev/null 2>&1 ) && return 1
+
+  # AND the required-QUERY-param defect (the verify_dsar bug): a route with a required query param
+  # the declaration never names. This class passed the gate until the query check was added.
+  local q="$RUN_TMP/admin-params-q"
+  mkdir -p "$q/services/thing-service/app" "$q/openapi"
+  cat > "$q/services/thing-service/app/admin_actions.py" <<'PY'
+ADMIN_ACTIONS = [
+    {"id": "thing.verify", "label": "Verify", "method": "POST",
+     "path": "/api/v1/things/{id}/verify", "capability": "platform.thing", "group": "Things",
+     "params": [{"name": "id", "in": "path", "type": "string", "required": True}]},
+]
+PY
+  cat > "$q/openapi/thing-service.openapi.json" <<'JSON'
+{"paths": {"/api/v1/things/{id}/verify": {"post": {"parameters": [
+ {"name": "id", "in": "path", "required": true, "schema": {"type": "string"}},
+ {"name": "token", "in": "query", "required": true, "schema": {"type": "string"}}]}}}}
+JSON
+  ! ( SERVICES_ROOT="$q/services" OPENAPI_DIR="$q/openapi" \
       "$PY" tools/ci/check_admin_params.py >/dev/null 2>&1 )
 }

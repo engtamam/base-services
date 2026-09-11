@@ -26,6 +26,8 @@ from the running service:
 
   * the action's (path, method) exists in the spec
   * every REQUIRED body field of that operation is declared as a param
+  * every REQUIRED query parameter of that operation is declared as a param (the verify_dsar bug: a
+    required `token` query param the catalog never named, so the console called the route without it)
   * every declared param's type is compatible with the spec's type for that field
   * a declared param that the operation does not accept is reported — it is a form field that
     goes nowhere
@@ -172,6 +174,16 @@ def main() -> int:
 
             query = {p.get("name"): p for p in (op.get("parameters") or [])
                      if p.get("in") == "query"}
+
+            # A REQUIRED query param the catalog never names is the verify_dsar bug: the console has
+            # no field for it, calls the route without it, and the operator gets a generic failure
+            # with nothing pointing at the cause. Path params are covered by the placeholder check
+            # above; body by the required-fields check; this closes the query hole.
+            for name in sorted(n for n, p in query.items()
+                               if p.get("required") and n not in declared):
+                problems.append(
+                    f"{service.name}:{aid}: query param {name!r} is REQUIRED by the API and is not "
+                    f"declared — a console builds a form without it and the call fails")
             # A path param is checked against the ACTION'S OWN path template, never the API's
             # parameter name. `/invoices/{id}/resubmit` with a param named `id` is internally
             # consistent and produces the right URL, even though the route calls it `invoice_id`
