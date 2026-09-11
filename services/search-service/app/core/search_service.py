@@ -69,7 +69,9 @@ class SearchService:
         return {"id": doc_id, "index": index, "terms": len(weighted_tf)}
 
     async def delete(self, *, index: str, doc_id: str, tenant: str) -> dict:
-        await self._index.delete(index=index, doc_id=doc_id)
+        # Pass tenant so a peer cannot delete another tenant's document under a shared (index, doc_id)
+        # — the engine no-ops when the stored record belongs to a different tenant.
+        await self._index.delete(index=index, doc_id=doc_id, tenant=tenant)
         await self._bump(tenant)
         return {"deleted": True, "id": doc_id}
 
@@ -116,6 +118,12 @@ class SearchService:
 
         # candidate docs = union of posting lists for the query terms (+ typo variants).
         # This reads ONLY the query's posting lists — never the whole corpus.
+        # Bound the candidate set: a single very common term can have a posting list of millions, and
+        # the loop below does one datastore get PER candidate. Without a cap a common query fans out to
+        # millions of reads + a full in-memory rank (a DoS, esp. with the rate limiter now wired). We
+        # take up to `max_candidates` and stop; ranking is best-effort over that bound for pathological
+        # queries — a documented cost ceiling, not silent unbounded work.
+        cap = int(self._cfg.get("max_candidates", 10_000))
         candidate_tf: dict[str, dict[str, float]] = {}
         doc_freq: dict[str, int] = {}
         for term in set(terms):
@@ -123,6 +131,8 @@ class SearchService:
             doc_freq[term] = len(postings)
             for doc_id, tf in postings.items():
                 candidate_tf.setdefault(doc_id, {})[term] = tf
+            if len(candidate_tf) >= cap:
+                break
 
         pos = _cursor.decode(cursor)
         hits: list[tuple[float, str]] = []
@@ -140,9 +150,11 @@ class SearchService:
             hits.append((s, doc_id))
 
         ordered = ranking.rank(hits)
+        total = len(ordered)          # the FULL match count — computed BEFORE cursor filtering, so it
+        #                               stays stable across pages (it previously shrank every page
+        #                               because total was taken after dropping everything before the cursor).
         if pos is not None:
             ordered = [h for h in ordered if _cursor.after(h[0], h[1], pos)]
-        total = len(ordered)
         page = ordered[:size]
 
         facet_counts = self._facets(facets, [docs_cache[i] for _, i in ordered]) if facets else {}
@@ -153,7 +165,9 @@ class SearchService:
             if highlight and terms:
                 hit["highlights"] = self._highlight(rec.get("fields") or {}, terms)
             out_hits.append(hit)
-        next_cursor = _cursor.encode(page[-1][0], page[-1][1]) if len(page) == size and total > size else ""
+        # More pages iff the REMAINING (post-cursor) set has more than this page — not `total > size`,
+        # which (now that total is the full count) would emit a cursor to an empty page on the last one.
+        next_cursor = _cursor.encode(page[-1][0], page[-1][1]) if len(ordered) > size else ""
         return {"hits": out_hits, "total": total, "next_cursor": next_cursor, "facets": facet_counts}
 
     def _facets(self, facets: list[str], docs: list[dict]) -> dict[str, dict[str, int]]:

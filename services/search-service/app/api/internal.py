@@ -185,5 +185,7 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
         ip=request.client.host if request.client else "")
     c = request.app.state.container
     s = get_settings()
-    eraser = SearchErasure(store=c.datastore, pii_salt=s.PII_SALT)
+    # The index engine so erase scrubs the doc row AND its postings AND meta (not just a raw row that
+    # left the person's terms searchable) — and enforces tenant on each delete.
+    eraser = SearchErasure(store=c.datastore, index=build_search(request)._index, pii_salt=s.PII_SALT)
     return await eraser.erase(body.tenant, body.subject)

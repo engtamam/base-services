@@ -543,8 +543,12 @@ async def delete_coupon(request: Request, code: str,
     return {"deleted": await (await build_billing(request)).delete_coupon(code)}
 
 
-# ── cross-app discount rules (operator) ─────────────────────────────────────────
-@router.post("/discount-rules", status_code=201, dependencies=[Depends(_ADMIN)])
+# ── cross-app discount rules (platform) ─────────────────────────────────────────
+# A DiscountRule is GLOBAL config, not tenant-scoped: it has no tenant field and keys off feature/plan
+# keys, exactly like a Plan. So it is PLATFORM-only (require_capability("platform.billing")), never the
+# tenant-scoped billing.manage — a tenant operator must not create/edit/delete a rule that changes
+# every tenant's next-cycle pricing.
+@router.post("/discount-rules", status_code=201, dependencies=[Depends(_PLATFORM)])
 async def create_discount_rule(request: Request, body: DiscountRuleIn,
                                principal: Principal = Depends(require_user)) -> dict:
     await request.app.state.auditor.record(
@@ -557,7 +561,7 @@ async def create_discount_rule(request: Request, body: DiscountRuleIn,
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
 
-@router.get("/discount-rules", dependencies=[Depends(_ADMIN)])
+@router.get("/discount-rules", dependencies=[Depends(_PLATFORM)])
 async def list_discount_rules(request: Request) -> dict:
     try:
         return {"discount_rules": await (await build_billing(request)).list_discount_rules()}
@@ -565,7 +569,7 @@ async def list_discount_rules(request: Request) -> dict:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
 
-@router.patch("/discount-rules/{rule_id}", dependencies=[Depends(_ADMIN)])
+@router.patch("/discount-rules/{rule_id}", dependencies=[Depends(_PLATFORM)])
 async def update_discount_rule(request: Request, rule_id: str, body: DiscountRulePatchIn,
                                principal: Principal = Depends(require_user)) -> dict:
     await request.app.state.auditor.record(
@@ -580,7 +584,7 @@ async def update_discount_rule(request: Request, rule_id: str, body: DiscountRul
         raise HTTPException(code_, str(exc)) from exc
 
 
-@router.delete("/discount-rules/{rule_id}", dependencies=[Depends(_ADMIN)])
+@router.delete("/discount-rules/{rule_id}", dependencies=[Depends(_PLATFORM)])
 async def delete_discount_rule(request: Request, rule_id: str,
                                principal: Principal = Depends(require_user)) -> dict:
     await request.app.state.auditor.record(

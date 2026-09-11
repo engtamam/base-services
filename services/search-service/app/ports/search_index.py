@@ -24,7 +24,9 @@ class SearchIndex(Protocol):
                      weighted_tf: dict[str, float]) -> None:
         ...
 
-    async def delete(self, *, index: str, doc_id: str) -> None:
+    async def delete(self, *, index: str, doc_id: str, tenant: str | None = None) -> None:
+        # `tenant`, when given, guards a shared-key store: an implementation must not delete a record
+        # that belongs to a different tenant under the same (index, doc_id).
         ...
 
     async def get(self, *, index: str, doc_id: str) -> dict[str, Any] | None:

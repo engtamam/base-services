@@ -1089,91 +1089,99 @@
       "issues": [
         {
           "id": "search-service-01",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "critical",
           "file": "services/search-service/app/core/erasure.py",
           "line": 37,
           "title": "DSAR subject erasure is a silent no-op (wrong collection) — index keeps erased persons",
           "detail": "SearchErasure.erase() queries the datastore collection _DOCS = \"documents\" (line 21) via store.find(\"documents\", {\"tenant\":..,\"owner\":..}). But the actual index writes documents to a DIFFERENT collection: BuiltinIndex uses _DOCS = \"search_docs\" (adapters/index/builtin.py line 15, key \"<index>:<doc_id>\"). The \"documents\" collection is never written by this service, so find() always returns zero rows. The erase therefore deletes nothing, and even if the collection name matched it deletes only the raw doc row via store.delete and never scrubs the inverted-index postings (search_postings) or meta, so the person's terms remain fully searchable. Worse, the ack returns already_absent=True / erased=[] falsely reporting a successful erasure to compliance-service.",
-          "failure_scenario": "compliance-service fans out a DSAR erase for tenant T subject S whose name was indexed. POST /internal/privacy/erase returns {\"erased\":[],\"already_absent\":true} while a subsequent POST /api/v1/search for S's name still returns the document. GDPR/PDPL right-to-erasure is violated and the audit trail records a completed erasure that never happened."
+          "failure_scenario": "compliance-service fans out a DSAR erase for tenant T subject S whose name was indexed. POST /internal/privacy/erase returns {\"erased\":[],\"already_absent\":true} while a subsequent POST /api/v1/search for S's name still returns the document. GDPR/PDPL right-to-erasure is violated and the audit trail records a completed erasure that never happened.",
+          "resolution": "FIXED: erasure.py re-queries search_docs and deletes each doc via the index engine (postings+meta+row); returns erased:[search_docs:N]."
         },
         {
           "id": "search-service-02",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "vuln",
           "severity": "high",
           "file": "services/search-service/app/adapters/index/builtin.py",
           "line": 28,
           "title": "Cross-tenant document overwrite/hijack: storage key omits tenant",
           "detail": "Documents are stored under _dk(index, doc_id) = f\"{index}:{doc_id}\" (lines 28-29) with tenant only a field inside the record, not part of the key; postings are keyed (index, term) too. On upsert, _remove_existing (lines 35-48) deletes any existing record with that (index, doc_id) regardless of its tenant, then writes the new record under the caller's tenant. The internal /search/index route (api/internal.py lines 99-108) lets any authenticated peer choose both index and tenant freely. Two tenants sharing an index name and a doc id collide: a peer indexing for tenant A can silently destroy or re-own tenant B's document. The read path filters by tenant so this is not a read leak, but it is cross-tenant data loss / record hijacking on the write path.",
-          "failure_scenario": "Tenant B has doc index=\"contacts\", id=\"c-100\". A peer indexing for tenant A calls POST /internal/search/index with index=\"contacts\", id=\"c-100\", tenant=\"A\". _remove_existing wipes B's postings/meta and the record is rewritten with tenant=A; B's document is gone (and B's document count in meta is corrupted)."
+          "failure_scenario": "Tenant B has doc index=\"contacts\", id=\"c-100\". A peer indexing for tenant A calls POST /internal/search/index with index=\"contacts\", id=\"c-100\", tenant=\"A\". _remove_existing wipes B's postings/meta and the record is rewritten with tenant=A; B's document is gone (and B's document count in meta is corrupted).",
+          "resolution": "FIXED: builtin upsert raises CrossTenantConflict when an existing (index,doc_id) belongs to another tenant; _remove_existing is tenant-guarded."
         },
         {
           "id": "search-service-03",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "vuln",
           "severity": "high",
           "file": "services/search-service/app/core/search_service.py",
           "line": 71,
           "title": "Internal delete ignores tenant — cross-tenant document deletion",
           "detail": "SearchService.delete(index, doc_id, tenant) (lines 71-74) calls self._index.delete(index=index, doc_id=doc_id) with NO tenant, and BuiltinIndex.delete -> _remove_existing (builtin.py lines 65-66, 35-48) removes by (index, doc_id) only. The DeleteIn body (api/internal.py lines 40-43, 120-128) requires a tenant but it is never used to verify the target record actually belongs to that tenant. Any internal peer can delete another tenant's document by supplying the right index+id (entity ids are often predictable), causing cross-tenant data loss.",
-          "failure_scenario": "A peer acting for tenant A calls POST /internal/search/delete {index:\"orders\", id:\"o-42\", tenant:\"A\"} where o-42 actually belongs to tenant B. The tenant field is ignored and B's document is deleted."
+          "failure_scenario": "A peer acting for tenant A calls POST /internal/search/delete {index:\"orders\", id:\"o-42\", tenant:\"A\"} where o-42 actually belongs to tenant B. The tenant field is ignored and B's document is deleted.",
+          "resolution": "FIXED: internal delete + core delete + port now thread tenant; _remove_existing returns early on tenant mismatch."
         },
         {
           "id": "search-service-04",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "vuln",
           "severity": "high",
           "file": "services/search-service/app/api/ratelimit.py",
           "line": 81,
           "title": "Rate limiting fully built but wired to zero routes",
           "detail": "build_policy/register_ratelimit_refund and the rate_limit dependency are constructed in main.py (lines 122-124) and defined here, but grep shows no route anywhere adds Depends(rate_limit) — not the user search/suggest routes (api/v1/search.py) nor the internal routes (api/internal.py). No middleware enforces it either. The entire limiter (including the RateLimit-* headers and fail-closed logic) is dead code, so every endpoint, including the expensive unbounded search path, is unthrottled. (The file header even still says \"identity-service\", a copy-paste indicator.)",
-          "failure_scenario": "An authenticated caller floods POST /api/v1/search with broad queries; nothing rate-limits them and the per-query cost (see the unbounded-candidate finding) amplifies into a service-wide DoS."
+          "failure_scenario": "An authenticated caller floods POST /api/v1/search with broad queries; nothing rate-limits them and the per-query cost (see the unbounded-candidate finding) amplifies into a service-wide DoS.",
+          "resolution": "FIXED: search POST + suggest GET now Depends(rate_limit); catalogue/stats also rate-limited."
         },
         {
           "id": "search-service-05",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "perf",
           "severity": "high",
           "file": "services/search-service/app/core/search_service.py",
           "line": 130,
           "title": "Unbounded candidate materialization on the search hot path (DoS)",
           "detail": "_run builds candidate_tf as the full union of every term's posting list (lines 119-125), then loops over ALL candidates doing one datastore get per candidate (line 131), ranks all of them, and only paginates AFTER (lines 142-146). The only cost limits are query length and term count (core/query.py); there is no cap on posting-list size or candidate count. A single common term matching millions of docs triggers millions of per-doc datastore reads and full in-memory ranking per request. Because postings are shared across tenants in an index, a query also fetches other tenants' matching docs (filtered out at line 132) — pure read amplification. Combined with the missing rate limiter this is an easy DoS.",
-          "failure_scenario": "A tenant on a large shared index searches a single high-frequency term; the request reads and ranks the entire posting union (all tenants' matching docs) before returning one page, spiking latency/memory and blocking the single-worker event loop."
+          "failure_scenario": "A tenant on a large shared index searches a single high-frequency term; the request reads and ranks the entire posting union (all tenants' matching docs) before returning one page, spiking latency/memory and blocking the single-worker event loop.",
+          "resolution": "FIXED: _run caps candidate_tf at SEARCH_MAX_CANDIDATES (config, default 10_000) and breaks."
         },
         {
           "id": "search-service-06",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "perf",
           "severity": "medium",
           "file": "services/search-service/app/adapters/index/builtin.py",
           "line": 77,
           "title": "suggest() scans up to 1,000,000 rows of the whole corpus on a user hot path",
           "detail": "iter_docs (lines 77-79) calls self._store.list(_DOCS, _SCAN) with _SCAN = 1_000_000 (line 18), i.e. scan_all across ALL indexes and ALL tenants, pulling up to a million records into memory, THEN filters by index and slices [:limit]. This runs on the user-facing GET /api/v1/search/suggest and internal /search/suggest for every keystroke-style autocomplete call. The 'bounded by list_limit' claim in SearchService.suggest is false at the store layer — list_limit is applied only after the million-row read. On postgres this is a LIMIT 1000000 heap read per call.",
-          "failure_scenario": "Autocomplete on a service with a large search_docs collection: each /search/suggest request loads up to 1M rows into the process, causing memory pressure and multi-second latency; a few concurrent typers exhaust the worker."
+          "failure_scenario": "Autocomplete on a service with a large search_docs collection: each /search/suggest request loads up to 1M rows into the process, causing memory pressure and multi-second latency; a few concurrent typers exhaust the worker.",
+          "resolution": "FIXED: suggest scan bounded to _SUGGEST_SCAN=10_000 (was 1_000_000)."
         },
         {
           "id": "search-service-07",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "security",
           "severity": "medium",
           "file": "services/search-service/app/api/v1/search.py",
           "line": 75,
           "title": "Index stats/catalogue leak global cross-tenant counts despite documented tenant re-scoping",
           "detail": "GET /api/v1/search/indexes and GET /api/v1/search/indexes/{index}/stats are gated by _ADMIN = platform.search OR search.manage. search.manage is documented as a tenant-scoped operator capability (user_actions.py: 're-scopes to the caller's tenant on every call'), but the code does no tenant scoping: SearchService.stats/list_indexes (search_service.py lines 212-217) and BuiltinIndex.stats/list_indexes (builtin.py lines 74-88) return the global meta rows — index names across all tenants and aggregate n_docs/total_len that count every tenant's documents in a shared index. A tenant operator thus learns other tenants' index names and document volumes, and the documented isolation invariant is violated.",
-          "failure_scenario": "A tenant admin holding search.manage calls GET /api/v1/search/indexes and sees every index name in the platform plus global document counts, and /indexes/{index}/stats returns n_docs including other tenants' docs."
+          "failure_scenario": "A tenant admin holding search.manage calls GET /api/v1/search/indexes and sees every index name in the platform plus global document counts, and /indexes/{index}/stats returns n_docs including other tenants' docs.",
+          "resolution": "FIXED: /indexes and /stats now platform.search only (require_any_capability(platform.search)); tenant operator (search.manage) gets 403."
         },
         {
           "id": "search-service-08",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "low",
           "file": "services/search-service/app/core/search_service.py",
           "line": 145,
           "title": "Reported total shrinks across pages (computed after cursor filtering)",
           "detail": "In _run, when a cursor is supplied, ordered is filtered to only hits AFTER the cursor position (lines 143-144) and THEN total = len(ordered) (line 145). So 'total' is the number of REMAINING results, not the total match count. Each subsequent page reports a smaller total, breaking clients that render 'N results' or compute page counts from total; next_cursor's guard (total > size, line 156) is also evaluated against the shrunken value.",
-          "failure_scenario": "A query with 100 matches and size=20: page 1 reports total=100, page 2 reports total=80, page 3 total=60, etc., so any UI or caller using total for pagination math is wrong on every page after the first."
+          "failure_scenario": "A query with 100 matches and size=20: page 1 reports total=100, page 2 reports total=80, page 3 total=60, etc., so any UI or caller using total for pagination math is wrong on every page after the first.",
+          "resolution": "FIXED: total computed before cursor filtering; next_cursor emitted only when more results remain."
         }
       ]
     },

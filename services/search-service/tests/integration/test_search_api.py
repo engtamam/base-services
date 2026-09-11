@@ -90,22 +90,23 @@ def test_suggest_prefix(client):
 
 
 def test_read_cap_cannot_index_or_see_stats(client):
-    # search.read can query but not view admin stats
+    # The catalogue/stats are GLOBAL (cross-tenant) in this shared-index engine, so a TENANT operator
+    # (search.manage) must NOT read them — only the PLATFORM cap may. search.read (query-only) can't either.
     assert client.get("/api/v1/search/indexes/art/stats", headers=_tok(caps=("search.read",))).status_code == 403
-    assert client.get("/api/v1/search/indexes/art/stats", headers=_tok(caps=("search.manage",))).status_code == 200
+    assert client.get("/api/v1/search/indexes/art/stats", headers=_tok(caps=("search.manage",))).status_code == 403
+    assert client.get("/api/v1/search/indexes/art/stats", headers=_tok(caps=("platform.search",))).status_code == 200
 
 
-def test_the_index_catalogue_lists_indexes_for_an_operator(client):
+def test_the_index_catalogue_is_platform_only_not_tenant_operator(client):
     _index(client, "cat_a", "d1", "t1", {"title": "one"})
     _index(client, "cat_b", "d1", "t1", {"title": "two"})
-    # search.read (a query capability) must not reach the operator catalogue.
+    # Neither a query cap nor a tenant operator may see the global catalogue (cross-tenant leak).
     assert client.get("/api/v1/search/indexes", headers=_tok(caps=("search.read",))).status_code == 403
-    out = client.get("/api/v1/search/indexes", headers=_tok(caps=("search.manage",)))
+    assert client.get("/api/v1/search/indexes", headers=_tok(caps=("search.manage",))).status_code == 403
+    out = client.get("/api/v1/search/indexes", headers=_tok(caps=("platform.search",)))
     assert out.status_code == 200
     names = {i["index"] for i in out.json()["indexes"]}
     assert {"cat_a", "cat_b"} <= names
-    a = next(i for i in out.json()["indexes"] if i["index"] == "cat_a")
-    assert a["n_docs"] >= 1
 
 
 # ── internal (token-gated) suggest + query — the peer-service twins ──────────────────────────

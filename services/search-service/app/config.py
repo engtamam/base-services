@@ -265,6 +265,11 @@ class Settings(BaseSettings):
     MAX_PAGE_SIZE: int = 100
     MAX_QUERY_LEN: int = 512                # cost limit
     MAX_QUERY_TERMS: int = 32              # cost limit
+    # Cost ceiling on the search hot path: the max candidate documents a single query may materialise
+    # and rank (one datastore read per candidate). A very common term's posting list can be millions;
+    # without this a single query fans out to millions of reads (DoS). Ranking is best-effort over this
+    # bound for pathological queries.
+    SEARCH_MAX_CANDIDATES: int = 10_000
     TYPO_TOLERANCE: bool = True             # typo-tolerant autocomplete (edit-distance ≤1)
     STOPWORDS_ENABLED: bool = True
     ARABIC_NORMALIZE: bool = True           # strip tashkeel + fold alef/hamza/taa-marbuta

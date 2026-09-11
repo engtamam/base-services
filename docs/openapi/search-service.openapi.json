@@ -339,7 +339,7 @@
     },
     "/api/v1/search/indexes": {
       "get": {
-        "description": "The index catalogue \u2014 which indexes exist and how many documents each holds. The\nsee-before-you-inspect read: an operator cannot view an index's stats without first knowing its\nname. Read-only; the panel never mutates an index (indexing is internal-token only).",
+        "description": "The index catalogue \u2014 which indexes exist and how many documents each holds. GLOBAL/cross-tenant\n(meta is per-index, not per-tenant), so PLATFORM-only: a tenant operator must not learn other\ntenants' index names or volumes. Read-only; the panel never mutates an index (indexing is\ninternal-token only).",
         "operationId": "list_indexes_api_v1_search_indexes_get",
         "responses": {
           "200": {
