@@ -35,18 +35,16 @@ async def flow_preview_json(request: Request, name: str,
     GET /internal/whatsapp/flow/{name}-json. Read-only, no special capability beyond being a signed-in
     shop user; the JSON is generated from the platform's config definition, identical for every tenant.
 
-    404 (same as the internal route): no engine under that name, not a slot-reservation engine (only a
-    BookingEngine produces this JSON), or that engine has no definition configured yet."""
-    from app.core.booking_flow import BookingEngine
-    from app.core.flow_json import build_booking_flow_json
+    404 (same as the internal route): no engine under that name, an engine that produces no Flow JSON
+    (loyalty/order_status), or a booking engine with no definition configured yet. Booking-style engines
+    (booking/delivery/visit) AND the reschedule engine are previewable."""
+    from app.core.flow_json import FlowPreviewUnavailable, build_flow_preview_json
     registry = getattr(request.app.state, "flow_registry", None)
     handler = registry.get(name) if registry is not None else None
-    if not isinstance(handler, BookingEngine):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "NO_SUCH_FLOW")
-    defn = await handler.definition()
-    if defn is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "NO_DEFINITION")
-    return build_booking_flow_json(defn)
+    try:
+        return await build_flow_preview_json(handler)
+    except FlowPreviewUnavailable as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
 _WA_CAP = require_capability("notifications.templates")
 # The GLOBAL notification-template catalogue and the cross-tenant delivery log are PLATFORM surfaces
 # (one shared row per template key; deliveries span every tenant). They must NOT share the per-tenant

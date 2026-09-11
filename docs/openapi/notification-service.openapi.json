@@ -1814,7 +1814,7 @@
     },
     "/api/v1/whatsapp/flows/{name}/preview-json": {
       "get": {
-        "description": "The companion Flow JSON for a registered slot-reservation Flow (booking/delivery/visit/\u2026), for\nan OWNER to preview the multi-screen Flow visually in the console \u2014 the owner-facing twin of\nGET /internal/whatsapp/flow/{name}-json. Read-only, no special capability beyond being a signed-in\nshop user; the JSON is generated from the platform's config definition, identical for every tenant.\n\n404 (same as the internal route): no engine under that name, not a slot-reservation engine (only a\nBookingEngine produces this JSON), or that engine has no definition configured yet.",
+        "description": "The companion Flow JSON for a registered slot-reservation Flow (booking/delivery/visit/\u2026), for\nan OWNER to preview the multi-screen Flow visually in the console \u2014 the owner-facing twin of\nGET /internal/whatsapp/flow/{name}-json. Read-only, no special capability beyond being a signed-in\nshop user; the JSON is generated from the platform's config definition, identical for every tenant.\n\n404 (same as the internal route): no engine under that name, an engine that produces no Flow JSON\n(loyalty/order_status), or a booking engine with no definition configured yet. Booking-style engines\n(booking/delivery/visit) AND the reschedule engine are previewable.",
         "operationId": "flow_preview_json_api_v1_whatsapp_flows__name__preview_json_get",
         "parameters": [
           {
@@ -3658,7 +3658,7 @@
     },
     "/internal/whatsapp/flow/{name}-json": {
       "get": {
-        "description": "The companion Flow JSON for ANY registered slot-reservation Flow, keyed by its engine name\n(`booking`, `delivery`, `visit`, \u2026) \u2014 one route instead of one per Flow forever. A CONVENIENCE\nartifact the platform uploads to Meta ITS OWN WAY (we never call Meta). The screens/field names are\ngenerated from the same constants the engine reads, so they cannot drift; validate on upload (Meta\nrevises the Flow JSON schema per version).\n\n404 when no engine is registered under that name, when it is not a slot-reservation engine (only a\nBookingEngine produces this JSON \u2014 loyalty/reschedule/order_status do not), or when that engine has\nno definition configured.",
+        "description": "The companion Flow JSON for ANY registered slot-reservation Flow, keyed by its engine name\n(`booking`, `delivery`, `visit`, \u2026) \u2014 one route instead of one per Flow forever. A CONVENIENCE\nartifact the platform uploads to Meta ITS OWN WAY (we never call Meta). The screens/field names are\ngenerated from the same constants the engine reads, so they cannot drift; validate on upload (Meta\nrevises the Flow JSON schema per version).\n\n404 when no engine is registered under that name, when the engine produces no Flow JSON\n(loyalty/order_status), or when a booking engine has no definition configured. Booking-style engines\n(booking/delivery/visit) AND the reschedule engine are previewable.",
         "operationId": "flow_json_for_internal_whatsapp_flow__name__json_get",
         "parameters": [
           {

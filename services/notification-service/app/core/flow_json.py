@@ -178,3 +178,62 @@ def build_booking_flow_json(defn: FlowDefinition) -> dict[str, Any]:
 
     return {"version": _VERSION, "data_api_version": _DATA_API_VERSION,
             "routing_model": routing, "screens": screens}
+
+
+class _RescheduleDefn:
+    """A minimal FlowDefinition-shaped label/mode source so the reschedule Flow JSON reuses the SAME
+    screen builders as booking (no drift). RescheduleEngine isn't step-driven, so it has no real
+    FlowDefinition — only its i18n strings and a fixed single-date mode."""
+    mode = "single"
+    min_days = 1
+    max_days = 14
+    default_working_days: tuple[str, ...] = ()
+
+    def __init__(self, strings: dict[str, str] | None = None) -> None:
+        self._s = strings or {}
+
+    def label(self, key: str, default: str) -> str:
+        return self._s.get(key, default)
+
+
+def build_reschedule_flow_json(strings: dict[str, str] | None = None) -> dict[str, Any]:
+    """The companion Flow JSON for RescheduleEngine — a FIXED, branching machine (not step-driven):
+    SELECT (the appointment list, then reused for the reschedule/cancel action choice) → CALENDAR →
+    TIME → CONFIRM (also the cancel confirmation) → SUCCESS. Reuses booking's screen builders so the
+    two never drift; the routing_model reflects the reschedule branches (from SELECT: re-render as the
+    action choice, go to CALENDAR for reschedule, or CONFIRM for cancel)."""
+    defn = _RescheduleDefn(strings)
+    screens = [_select_screen(defn), _calendar_screen(defn), _time_screen(defn),
+               _confirm_screen(defn), _success_screen(defn)]
+    routing = {
+        SELECT: [SELECT, CALENDAR, CONFIRM],   # list→action re-render, reschedule→date, cancel→confirm
+        CALENDAR: [TIME],
+        TIME: [CONFIRM],
+        CONFIRM: [SUCCESS],
+    }
+    return {"version": _VERSION, "data_api_version": _DATA_API_VERSION,
+            "routing_model": routing, "screens": screens}
+
+
+class FlowPreviewUnavailable(ValueError):
+    """No Flow JSON can be produced for this handler. `str()` is the 404 reason code
+    (NO_SUCH_FLOW / NO_DEFINITION)."""
+
+
+async def build_flow_preview_json(handler: Any) -> dict[str, Any]:
+    """The companion Flow JSON for any previewable engine, dispatched by type — the ONE place both the
+    internal and owner-facing preview routes go through, so they stay identical. A BookingEngine
+    (booking/delivery/visit/…) renders from its config definition; a RescheduleEngine renders its fixed
+    machine. Raises FlowPreviewUnavailable (→ 404) for an unknown/non-previewable engine or a booking
+    engine with no definition configured yet."""
+    # Imported here (not at module top) to avoid any import-order coupling with the engine modules.
+    from app.core.booking_flow import BookingEngine
+    from app.core.reschedule_flow import RescheduleEngine
+    if isinstance(handler, BookingEngine):
+        defn = await handler.definition()
+        if defn is None:
+            raise FlowPreviewUnavailable("NO_DEFINITION")
+        return build_booking_flow_json(defn)
+    if isinstance(handler, RescheduleEngine):
+        return build_reschedule_flow_json(handler.strings())
+    raise FlowPreviewUnavailable("NO_SUCH_FLOW")

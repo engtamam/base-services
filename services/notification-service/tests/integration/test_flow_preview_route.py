@@ -54,8 +54,16 @@ def test_unknown_flow_is_404(client):
                       headers=_user()).status_code == 404
 
 
-def test_a_non_booking_engine_is_404(client):
-    # loyalty is registered but is not a slot-reservation engine → no companion booking JSON
+def test_reschedule_engine_is_previewable(client):
+    # reschedule reuses the booking screens with a fixed branching machine — it now previews too.
+    r = client.get("/api/v1/whatsapp/flows/reschedule/preview-json", headers=_user())
+    assert r.status_code == 200, r.text
+    ids = {s["id"] for s in r.json()["screens"]}
+    assert {"SELECT", "CALENDAR", "TIME", "CONFIRM", "SUCCESS"} == ids
+
+
+def test_a_non_previewable_engine_is_404(client):
+    # loyalty produces no booking-style Flow JSON → 404
     assert client.get("/api/v1/whatsapp/flows/loyalty/preview-json",
                       headers=_user()).status_code == 404
 

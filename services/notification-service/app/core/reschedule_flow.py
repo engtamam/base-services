@@ -67,6 +67,11 @@ class RescheduleEngine:
     def _label(self, key: str, default: str) -> str:
         return self._s.get(key, default)
 
+    def strings(self) -> dict[str, str]:
+        """The engine's i18n strings — read by the Flow-JSON preview builder (build_reschedule_flow_json)
+        so the generated screens carry this engine's own labels."""
+        return dict(self._s)
+
     async def handle(self, payload: dict[str, Any], *, tenant: str = "") -> dict[str, Any]:
         token = str(payload.get("flow_token") or "")
         data = payload.get("data") or {}

@@ -108,19 +108,16 @@ async def flow_json_for(request: Request, name: str) -> dict:
     generated from the same constants the engine reads, so they cannot drift; validate on upload (Meta
     revises the Flow JSON schema per version).
 
-    404 when no engine is registered under that name, when it is not a slot-reservation engine (only a
-    BookingEngine produces this JSON — loyalty/reschedule/order_status do not), or when that engine has
-    no definition configured."""
-    from app.core.booking_flow import BookingEngine
-    from app.core.flow_json import build_booking_flow_json
+    404 when no engine is registered under that name, when the engine produces no Flow JSON
+    (loyalty/order_status), or when a booking engine has no definition configured. Booking-style engines
+    (booking/delivery/visit) AND the reschedule engine are previewable."""
+    from app.core.flow_json import FlowPreviewUnavailable, build_flow_preview_json
     registry = getattr(request.app.state, "flow_registry", None)
     handler = registry.get(name) if registry is not None else None
-    if not isinstance(handler, BookingEngine):
-        raise HTTPException(404, "NO_SUCH_FLOW")
-    defn = await handler.definition()
-    if defn is None:
-        raise HTTPException(404, "NO_DEFINITION")
-    return build_booking_flow_json(defn)
+    try:
+        return await build_flow_preview_json(handler)
+    except FlowPreviewUnavailable as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
 async def _resolve_sending_identity(request: Request, tenant: str, sending_identity: str | None):

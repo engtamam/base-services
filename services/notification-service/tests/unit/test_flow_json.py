@@ -23,6 +23,20 @@ def _screen(js, sid):
     return next((s for s in js["screens"] if s["id"] == sid), None)
 
 
+def test_reschedule_flow_json_has_the_fixed_branching_screens():
+    from app.core.flow_json import build_reschedule_flow_json
+    js = build_reschedule_flow_json({"pick_appointment": "مواعيدك"})
+    ids = {s["id"] for s in js["screens"]}
+    assert ids == {SELECT, CALENDAR, TIME, CONFIRM, SUCCESS}
+    # SELECT branches to the action re-render, to CALENDAR (reschedule) and to CONFIRM (cancel)
+    assert set(js["routing_model"][SELECT]) == {SELECT, CALENDAR, CONFIRM}
+    assert js["routing_model"][CONFIRM] == [SUCCESS]
+    # strings flow through to the reused screen builder
+    radio = next(c for c in _screen(js, SELECT)["layout"]["children"]
+                 if c["type"] == "RadioButtonsGroup")
+    assert radio["name"] == SELECTION_FIELD
+
+
 def test_multi_step_generates_a_checkboxgroup_screen():
     js = build_booking_flow_json(FlowDefinition(steps=(
         {"dimension": "service", "multi": True}, {"dimension": "date"}, {"dimension": "confirm"})))
