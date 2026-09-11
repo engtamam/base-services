@@ -274,3 +274,32 @@ def test_internal_subscribe_unknown_plan_is_404(client):
     r = client.post("/internal/billing/subscriptions", headers=IT,
                     json={"tenant": "t", "plan_id": "nope"})
     assert r.status_code == 404
+
+
+def test_internal_cancel_cancels_a_tenants_subscription(client, subscribed):
+    sub = client.post("/internal/billing/subscriptions", headers=IT,
+                      json={"tenant": "casc_shop", "plan_id": subscribed["id"]}).json()
+    r = client.post(f"/internal/billing/subscriptions/{sub['id']}/cancel", headers=IT,
+                    json={"tenant": "casc_shop", "at_period_end": False})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "canceled"
+
+
+def test_internal_cancel_is_tenant_scoped_idor_guard(client, subscribed):
+    sub = client.post("/internal/billing/subscriptions", headers=IT,
+                      json={"tenant": "owner_shop", "plan_id": subscribed["id"]}).json()
+    # wrong tenant → reported absent, never cancelled for another tenant
+    assert client.post(f"/internal/billing/subscriptions/{sub['id']}/cancel", headers=IT,
+                       json={"tenant": "attacker_shop"}).status_code == 404
+    # still active for the real owner
+    held = client.get("/internal/billing/subscriptions?tenant=owner_shop", headers=IT).json()
+    assert any(s["plan_id"] == subscribed["id"] for s in held["subscriptions"])
+
+
+def test_internal_cancel_requires_token_and_tenant(client, subscribed):
+    sub = client.post("/internal/billing/subscriptions", headers=IT,
+                      json={"tenant": "tok_shop", "plan_id": subscribed["id"]}).json()
+    assert client.post(f"/internal/billing/subscriptions/{sub['id']}/cancel",
+                       json={"tenant": "tok_shop"}).status_code == 401
+    assert client.post(f"/internal/billing/subscriptions/{sub['id']}/cancel",
+                       headers=IT, json={}).status_code == 422

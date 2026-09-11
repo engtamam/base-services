@@ -305,6 +305,34 @@ async def subscribe_internal(request: Request, body: SubscribeInternalIn) -> dic
     return sub.to_dict()
 
 
+class CancelInternalIn(BaseModel):
+    """The internal twin of POST /api/v1/billing/subscriptions/{sub_id}/cancel. The TENANT rides in the
+    body — the caller is a product service acting FOR a shop (e.g. operations cascading a cancel when a
+    dependency lapses), not a human whose token carries a tenant. tenant is the IDOR guard."""
+    tenant: str = Field(min_length=1, max_length=128)
+    at_period_end: bool = True
+
+
+@router.post("/billing/subscriptions/{sub_id}/cancel",
+             dependencies=[Depends(require_internal_token)])
+async def cancel_internal(request: Request, sub_id: str, body: CancelInternalIn) -> dict:
+    """Cancel a shop's subscription service-to-service — the internal twin of the user cancel route,
+    for a peer's cascade (e.g. a dependent app that requires visit/bookings must be REALLY cancelled,
+    not just blocked, once both are gone). Same core .cancel(); at_period_end mirrors the user route
+    (True = cancel at period end, False = now). tenant is REQUIRED and verified: a subscription whose
+    tenant differs is reported absent (404), never cancelled or confirmed for another tenant."""
+    svc = await build_billing(request, body.tenant)
+    sub = await svc._subs.fetch(sub_id)
+    if sub is None or sub.tenant != body.tenant:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    result = (await svc.cancel(sub_id, at_period_end=body.at_period_end)).to_dict()
+    await request.app.state.auditor.record(
+        "subscription.cancelled", actor="", tenant=sub.tenant,
+        resource=f"subscription:{sub_id}", ip=request.client.host if request.client else "",
+        metadata={"at_period_end": str(body.at_period_end), "via": "internal"})
+    return result
+
+
 @router.post("/billing/usage/consume", dependencies=[Depends(require_internal_token)])
 async def usage_consume(body: ConsumeIn, request: Request) -> dict:
     """THE enforcing call: atomic check-and-increment of a counter entitlement.

@@ -15,6 +15,27 @@
         "title": "BackupVerifyIn",
         "type": "object"
       },
+      "CancelInternalIn": {
+        "description": "The internal twin of POST /api/v1/billing/subscriptions/{sub_id}/cancel. The TENANT rides in the\nbody \u2014 the caller is a product service acting FOR a shop (e.g. operations cascading a cancel when a\ndependency lapses), not a human whose token carries a tenant. tenant is the IDOR guard.",
+        "properties": {
+          "at_period_end": {
+            "default": true,
+            "title": "At Period End",
+            "type": "boolean"
+          },
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant"
+        ],
+        "title": "CancelInternalIn",
+        "type": "object"
+      },
       "ChangeIn": {
         "properties": {
           "interval": {
@@ -5339,6 +5360,93 @@
           }
         },
         "summary": "Subscribe Internal",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/billing/subscriptions/{sub_id}/cancel": {
+      "post": {
+        "description": "Cancel a shop's subscription service-to-service \u2014 the internal twin of the user cancel route,\nfor a peer's cascade (e.g. a dependent app that requires visit/bookings must be REALLY cancelled,\nnot just blocked, once both are gone). Same core .cancel(); at_period_end mirrors the user route\n(True = cancel at period end, False = now). tenant is REQUIRED and verified: a subscription whose\ntenant differs is reported absent (404), never cancelled or confirmed for another tenant.",
+        "operationId": "cancel_internal_internal_billing_subscriptions__sub_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sub_id",
+            "required": true,
+            "schema": {
+              "title": "Sub Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelInternalIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Cancel Internal Internal Billing Subscriptions  Sub Id  Cancel Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Internal",
         "tags": [
           "internal"
         ]
