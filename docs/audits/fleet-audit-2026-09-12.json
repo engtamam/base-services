@@ -505,7 +505,7 @@
           "title": "Body size limit enforced only via Content-Length; chunked/streamed bodies bypass it",
           "detail": "BodyLimitMiddleware.dispatch only inspects the Content-Length header and rejects when it exceeds max_bytes. A request sent with Transfer-Encoding: chunked (or otherwise omitting Content-Length) has content_length is None and is passed straight through to call_next with no cap, and nothing downstream re-enforces BODY_LIMIT_BYTES by counting streamed bytes. The stated purpose (CWE-400 resource abuse) is only partially met — an attacker who omits Content-Length can stream an arbitrarily large body.",
           "failure_scenario": "A client POSTs to any route with Transfer-Encoding: chunked and a multi-hundred-MB body and no Content-Length header. BodyLimitMiddleware sees content_length is None, skips the check, and the oversized body is read and buffered by the framework, defeating the 1 MiB BODY_LIMIT_BYTES guard and enabling a memory-exhaustion DoS.",
-          "resolution": "FIXED: BodyLimitMiddleware rewritten as pure ASGI; a chunked/no-Content-Length body is counted and capped (413) then replayed downstream. Regression: test_body_limit_chunked.py."
+          "resolution": "FIXED: BodyLimitMiddleware rewritten as pure ASGI; a chunked/no-Content-Length body is counted and capped (413) then replayed downstream. Regression: test_body_limit_chunked.py. PROPAGATED FLEET-WIDE: the identical vulnerable middleware existed in all 23 services + _template; all converted to pure-ASGI. New CI gate safety:body-limit (check_body_limit.py + selftest) prevents regression; _template carries a chunked regression test."
         }
       ]
     },

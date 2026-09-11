@@ -60,25 +60,66 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
-class BodyLimitMiddleware(BaseHTTPMiddleware):
-    """Reject requests whose declared body exceeds the configured limit."""
+class BodyLimitMiddleware:
+    """Reject requests whose body exceeds the configured limit (CWE-400).
+
+    PURE ASGI, deliberately — not BaseHTTPMiddleware. A Content-Length check alone is bypassable: a
+    Transfer-Encoding: chunked request carries no Content-Length, so the header check sees nothing and
+    an attacker streams an unbounded body straight through. To cap a chunked body we must count the
+    bytes as they arrive AND still hand the body to the downstream app. BaseHTTPMiddleware cannot do
+    the second half (a receive it swaps in does not reach the wrapped app via call_next), so this is a
+    pure-ASGI middleware that owns the receive channel it passes downstream.
+    """
 
     def __init__(self, app, *, max_bytes: int) -> None:
-        super().__init__(app)
+        self.app = app
         self._max = max_bytes
 
-    async def dispatch(self, request: Request, call_next):  # type: ignore[override]
-        content_length = request.headers.get("content-length")
-        if content_length is not None:
+    @staticmethod
+    async def _reject(scope, send, status: int, error: str) -> None:
+        async def _noop_receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await JSONResponse({"error": error}, status_code=status)(scope, _noop_receive, send)
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            return await self.app(scope, receive, send)
+        headers = {k.lower(): v for k, v in (scope.get("headers") or [])}
+        cl = headers.get(b"content-length")
+        if cl is not None:
             try:
-                declared = int(content_length)
+                declared = int(cl)
             except ValueError:
-                return JSONResponse({"error": "BAD_REQUEST"}, status_code=400)
+                return await self._reject(scope, send, 400, "BAD_REQUEST")
             if declared > self._max:
-                return JSONResponse(
-                    {"error": "PAYLOAD_TOO_LARGE"}, status_code=413
-                )
-        return await call_next(request)
+                return await self._reject(scope, send, 413, "PAYLOAD_TOO_LARGE")
+            return await self.app(scope, receive, send)
+        # No Content-Length (chunked/streamed): buffer while counting, bail the moment the cap is
+        # crossed (so we never hold more than the limit), then replay the buffered body downstream.
+        body = b""
+        while True:
+            message = await receive()
+            if message["type"] != "http.request":
+                # e.g. http.disconnect — nothing more to read; hand what we have to the app.
+                async def _forward(_m=message):
+                    return _m
+                return await self.app(scope, _forward, send)
+            body += message.get("body", b"")
+            if len(body) > self._max:
+                return await self._reject(scope, send, 413, "PAYLOAD_TOO_LARGE")
+            if not message.get("more_body", False):
+                break
+
+        replayed = False
+
+        async def _replay():
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return {"type": "http.disconnect"}
+
+        return await self.app(scope, _replay, send)
 
 
 class TimeoutMiddleware(BaseHTTPMiddleware):

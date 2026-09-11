@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+gate_name="safety:body-limit"
+gate_desc="the body-size cap holds for a chunked body, fleet-wide"
+gate_protects="BodyLimitMiddleware used to be a BaseHTTPMiddleware that only read Content-Length. A
+request sent Transfer-Encoding: chunked carries no Content-Length, so the header check
+saw nothing and the body streamed through uncapped (CWE-400) — in EVERY service, which
+shared the identical class. The fix is a pure-ASGI middleware that counts the streamed
+bytes, rejects past the cap, and replays the buffered body downstream (a receive swapped
+inside BaseHTTPMiddleware never reaches the wrapped app, so it must be pure ASGI). This
+gate keeps any service from regressing to the header-only, bypassable form."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_body_limit.py"
+gate_units=1
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_body_limit.py; }
+
+# A gate that cannot fail is decoration. Mutation-tested: a correct pure-ASGI middleware passes, then
+# each regression (back to BaseHTTPMiddleware, header-only, wrong __call__) turns it red.
+gate_selftest() { "$PY" tools/ci/selftest_body_limit.py >/dev/null 2>&1; }
