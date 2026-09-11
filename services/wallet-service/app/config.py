@@ -335,6 +335,13 @@ class Settings(BaseSettings):
     # that would rather refuse than proceed unobserved.
     EVENT_PUBLISH_FAILURE: Literal["fail_open", "fail_closed"] = "fail_open"
     LEDGER_LIST_LIMIT: int = 100              # a statement endpoint must never dump the ledger
+    # reconcile() proves sum(ledger)==balance by reading every entry seq 1..w.seq. That is unbounded
+    # on a request path — a huge ledger would fire millions of sequential keyed reads inside one HTTP
+    # request (a DoS reachable by any operator/internal caller). Bound the synchronous work: past this
+    # many entries reconcile refuses (consistent=None, reason LEDGER_TOO_LARGE) rather than run for
+    # minutes. 0 disables the bound (single-node/dev only). A platform that must verify a larger ledger
+    # raises this knowing the cost, or runs the proof off the request path.
+    RECONCILE_MAX_ENTRIES: int = 20_000
     # Compare-and-swap contention. Losers back off with FULL JITTER before retrying; without
     # it every loser wakes in the same instant and collides again.
     #

@@ -1467,69 +1467,75 @@
       "issues": [
         {
           "id": "wallet-service-01",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "bug",
           "severity": "medium",
           "file": "app/core/wallet_service.py",
           "line": 266,
           "title": "Idempotency row loses its version on finalize; Postgres re-claim after TTL is permanently stuck at 409",
           "detail": "_claim() atomically claims a slot with store.cas(..., expected_version=0/N, ...) which stamps a version. But _finalize() (line 266) writes the finished result with a plain store.put({'result':..., 'expires_at':...}) that carries NO version field. On the Postgres datastore, put() upserts the value verbatim, so the finished idempotency row ends up with no 'version' key. When the result TTL later expires and the SAME source is presented again, _claim() falls through to the re-claim branch: expected = int(row.get('version',0)) = 0, then store.cas(key, 0, ...). PostgresDataStore.cas() treats expected==0 as INSERT ... ON CONFLICT DO NOTHING (postgres.py:248-254), which returns 0 rows because the key already exists -> won=False -> (False, None) -> caller raises Conflict('WALLET_OP_IN_PROGRESS'). The slot can never be re-claimed and never replays. On the in-memory store the same path works (cas with expected 0 matches a versionless row), so this is also a silent memory-vs-postgres behavioural divergence that tests on memory will not catch.",
-          "failure_scenario": "credit(source='psp_settlement_123') runs and finalizes on Postgres. >24h later (WALLET_IDEMPOTENCY_TTL_SECONDS elapsed) the PSP redelivers settlement 'psp_settlement_123'. Instead of a clean replay or re-execution, credit() returns HTTP 409 forever and never resolves."
+          "failure_scenario": "credit(source='psp_settlement_123') runs and finalizes on Postgres. >24h later (WALLET_IDEMPOTENCY_TTL_SECONDS elapsed) the PSP redelivers settlement 'psp_settlement_123'. Instead of a clean replay or re-execution, credit() returns HTTP 409 forever and never resolves.",
+          "resolution": "FIXED: _finalize carries the row version forward so a post-TTL re-claim stays on the Postgres cas UPDATE branch (was permanently stuck at 409; also a memory/postgres divergence). Regression: test_audit_fixes.py."
         },
         {
           "id": "wallet-service-02",
-          "status": "OPEN",
+          "status": "NEEDS_DECISION",
           "category": "correctness",
           "severity": "medium",
           "file": "app/core/wallet_service.py",
           "line": 719,
           "title": "sweep_grants claws back money attributed to a different grant on the same fund (mixed policies)",
           "detail": "sweep_grants computes spare = int(w.funds.get(grant.fund,0)) - int(w.held.get(grant.fund,0)) (line 719) and claws remaining = max(0, min(spare, grant.amount)). This is a FUND-GLOBAL figure; the service never tracks per-grant consumption. When two grants share one fund but carry DIFFERENT frozen policies and the customer has spent part of the pool, an expiring 'forfeit' grant will forfeit balance that logically belongs to a still-active 'extend'/'dormant' grant, because it assumes its own remainder is still whole. Money the platform intended to preserve (dormant/extend) is irreversibly clawed back (clawback). With a single policy per fund the accounting is fungible and harmless; the defect appears only with mixed policies on one fund.",
-          "failure_scenario": "Fund 'promo' has grant A (100, forfeit, expires today) and grant B (100, extend, expires next month); customer spent 100 from the fungible 200. Balance=100, held=0. sweep_grants on A: spare=100, remaining=min(100,100)=100 -> clawback 100, leaving 0. B's 100 that should have been auto-extended is gone."
+          "failure_scenario": "Fund 'promo' has grant A (100, forfeit, expires today) and grant B (100, extend, expires next month); customer spent 100 from the fungible 200. Balance=100, held=0. sweep_grants on A: spare=100, remaining=min(100,100)=100 -> clawback 100, leaving 0. B's 100 that should have been auto-extended is gone.",
+          "resolution": "VERIFIED REAL. Requires a money-accounting decision (how pooled spend attributes across grants with mixed idle policies on one fund). The service tracks no per-grant consumption. Surfaced to Tamam before choosing a model (conservative under-claw vs FIFO per-grant tracking). Not silently fixed."
         },
         {
           "id": "wallet-service-03",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "perf",
           "severity": "medium",
           "file": "app/core/wallet_service.py",
           "line": 216,
           "title": "reconcile() is an unbounded O(seq) sequential read on request-exposed endpoints",
           "detail": "reconcile() loops `for seq in range(1, w.seq + 1)` issuing one store.get(_LEDGER, key) per ledger entry (line 216-217). It is exposed at GET /internal/wallet/{tenant}/reconcile (internal.py:148) and GET /api/v1/wallet/admin/reconcile (wallet.py:110). Unlike ledger() (clamped to LEDGER_LIST_LIMIT) and the sweepers (paged), reconcile has no bound: a tenant with a large ledger forces millions of sequential round-trips inside a single HTTP request. On Postgres each get() is a separate pool acquire + query, so this both starves the connection pool and can run for minutes, a denial-of-service vector reachable by any platform operator or internal caller.",
-          "failure_scenario": "A high-volume tenant accumulates ~2M ledger entries. A single call to /api/v1/wallet/admin/reconcile?tenant=X issues ~2M sequential SELECTs, holding a pool slot and blocking for minutes; a few concurrent calls exhaust DATASTORE_POOL_MAX and stall the service."
+          "failure_scenario": "A high-volume tenant accumulates ~2M ledger entries. A single call to /api/v1/wallet/admin/reconcile?tenant=X issues ~2M sequential SELECTs, holding a pool slot and blocking for minutes; a few concurrent calls exhaust DATASTORE_POOL_MAX and stall the service.",
+          "resolution": "FIXED: reconcile() bounded by RECONCILE_MAX_ENTRIES (config, default 20000); past the cap it returns consistent=None/LEDGER_TOO_LARGE instead of an unbounded sequential request-path scan. Regression: test_audit_fixes.py."
         },
         {
           "id": "wallet-service-04",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "bug",
           "severity": "medium",
           "file": "app/core/wallet_service.py",
           "line": 398,
           "title": "withdraw() double-pays on retry when source is empty despite documented idempotency",
           "detail": "withdraw()'s docstring states 'Idempotent by source, so a retried request never pays out twice', but _claim() returns (True, None) immediately when source is falsy (line 240-241 opt-out). The internal route defines source with default '' (internal.py:88), so a caller (or a network-level retry) that omits source gets NO idempotency: each call writes a new PENDING Withdrawal and debits withdrawable funds again. Because this is money LEAVING the platform, a silent idempotency opt-out on empty source is a double-payout footgun that contradicts the stated guarantee (refund() deliberately avoids this by keying on the spend seq instead of the caller source).",
-          "failure_scenario": "A payout orchestrator POSTs /internal/wallet/withdraw {tenant, amount:50000} with no source, the response is lost to a timeout, and it retries. Two PENDING withdrawals are created and the balance is debited 100000; two external transfers execute."
+          "failure_scenario": "A payout orchestrator POSTs /internal/wallet/withdraw {tenant, amount:50000} with no source, the response is lost to a timeout, and it retries. Two PENDING withdrawals are created and the balance is debited 100000; two external transfers execute.",
+          "resolution": "FIXED: withdraw() now requires a non-empty source (WITHDRAW_SOURCE_REQUIRED) - money leaving must be idempotent; empty-source opt-out is refused. Regression: test_audit_fixes.py."
         },
         {
           "id": "wallet-service-05",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "low",
           "file": "app/api/internal.py",
           "line": 250,
           "title": "confirm/release audit rows record an empty tenant",
           "detail": "The confirm and release routes record audit with tenant=str(result.get('tenant','')) (internal.py:250 and 264), but WalletService.confirm()/release() results never include a 'tenant' key (confirm returns {'hold_id','state','released', **out} where out is {'funds','held','balance','entry'}). So every wallet.confirmed / wallet.released audit row is written with tenant='' , weakening cross-tenant attribution of money-consuming actions in the audit trail (the hold_id resource is still present, but the tenant dimension a review filters on is blank).",
-          "failure_scenario": "During an incident review, filtering audit records by tenant misses all confirm/release events for the affected tenant because they were all recorded with an empty tenant field."
+          "failure_scenario": "During an incident review, filtering audit records by tenant misses all confirm/release events for the affected tenant because they were all recorded with an empty tenant field.",
+          "resolution": "FIXED: confirm()/release() results include tenant on every return path, so wallet.confirmed/released audit rows are attributable. Regression: test_audit_fixes.py."
         },
         {
           "id": "wallet-service-06",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "low",
           "file": "app/api/internal.py",
           "line": 160,
           "title": "Critical wallet.credited audit written before input validation, logging credits that never happened",
           "detail": "The credit route records the critical wallet.credited audit row (write-ahead) at internal.py:160 BEFORE calling WalletService.credit(), which then validates the fund and raises WalletError('UNKNOWN_FUND:...') at wallet_service.py:276-277 (and require_non_negative before that). A request naming a non-existent fund (or otherwise rejected before any mutation) still emits a critical money-creation audit event, producing a false 'credit' record for an action that moved no money. This pollutes exactly the insider-fraud trail that marking wallet.credited critical is meant to keep trustworthy.",
-          "failure_scenario": "POST /internal/wallet/credit {tenant, fund:'nonexistent', amount:1000} is rejected with 400 UNKNOWN_FUND, yet a wallet.credited audit row for tenant/1000 is already in the tamper-evident chain, implying a credit that never occurred."
+          "failure_scenario": "POST /internal/wallet/credit {tenant, fund:'nonexistent', amount:1000} is rejected with 400 UNKNOWN_FUND, yet a wallet.credited audit row for tenant/1000 is already in the tamper-evident chain, implying a credit that never occurred.",
+          "resolution": "FIXED: validate_credit() runs in the credit route BEFORE the write-ahead wallet.credited audit, so a rejected credit no longer emits a critical money-creation row. Regression: test_audit_fixes.py."
         }
       ]
     },
@@ -1648,6 +1654,7 @@
     "VERIFIED",
     "FALSE_POSITIVE",
     "FIXED",
-    "WONTFIX"
+    "WONTFIX",
+    "NEEDS_DECISION"
   ]
 }

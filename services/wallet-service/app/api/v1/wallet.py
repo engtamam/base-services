@@ -37,6 +37,7 @@ def wallet_config() -> dict[str, Any]:
             "idempotency_ttl": s.WALLET_IDEMPOTENCY_TTL_SECONDS,
             "withdraw_min": s.WALLET_WITHDRAW_MIN_MINOR,
             "ledger_list_limit": s.LEDGER_LIST_LIMIT, "cas_max_retries": s.CAS_MAX_RETRIES,
+            "reconcile_max_entries": s.RECONCILE_MAX_ENTRIES,
             "cas_backoff_ms": s.CAS_BACKOFF_MS,
             "low_balance_threshold": s.WALLET_LOW_BALANCE_THRESHOLD,
             "low_balance_mode": s.WALLET_LOW_BALANCE_MODE,

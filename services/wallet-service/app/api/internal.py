@@ -154,6 +154,14 @@ async def reconcile(tenant: str, request: Request) -> dict:
 @router.post("/wallet/credit", dependencies=[Depends(require_internal_token)])
 async def credit(body: CreditIn, request: Request) -> dict:
     """Add money. Call this only once the PSP has SETTLED — recording an intent is not money."""
+    svc = build_wallet(request)
+    # Validate the inputs BEFORE the write-ahead audit: a rejected request (unknown fund / negative
+    # amount) moves no money, so it must not emit the critical wallet.credited row. Validation is
+    # non-mutating, so this does not weaken the write-ahead guarantee for the actual mutation below.
+    try:
+        svc.validate_credit(fund=body.fund, amount=body.amount)
+    except Exception as exc:  # noqa: BLE001
+        raise _handle(exc) from exc
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
@@ -161,7 +169,7 @@ async def credit(body: CreditIn, request: Request) -> dict:
         "wallet.credited", actor="", tenant=body.tenant, resource="wallet",
         ip=request.client.host if request.client else "")
     try:
-        return await build_wallet(request).credit(
+        return await svc.credit(
             tenant=body.tenant, fund=body.fund, amount=body.amount, source=body.source,
             reason=body.reason, expires_at=body.expires_at)
     except Exception as exc:  # noqa: BLE001

@@ -209,9 +209,18 @@ class WalletService:
         return out
 
     async def reconcile(self, tenant: str) -> dict[str, Any]:
-        """Prove the projection equals the truth: sum(ledger) == the materialized balance."""
+        """Prove the projection equals the truth: sum(ledger) == the materialized balance.
+
+        Bounded on the request path: reading every entry is O(ledger), so past reconcile_max_entries
+        this refuses (consistent=None) rather than fire millions of sequential keyed reads inside one
+        HTTP request — a DoS any operator/internal caller could otherwise trigger. 0 disables the bound.
+        """
         w = await self._wallet(tenant)
         await self._flush(w)
+        cap = int(self._cfg.get("reconcile_max_entries", 0) or 0)
+        if cap and w.seq > cap:
+            return {"tenant": tenant, "consistent": None, "reason": "LEDGER_TOO_LARGE",
+                    "entries": w.seq, "max": cap}
         derived: dict[str, int] = {}
         for seq in range(1, w.seq + 1):
             row = await self._store.get(_LEDGER, _ledger_key(tenant, seq))
@@ -260,21 +269,41 @@ class WalletService:
     async def _finalize(self, tenant: str, op: str, source: str, result: dict) -> None:
         if not source:
             return
+        key = f"{tenant}|{op}|{source}"
         # Only the caller that WON the claim finalizes, so there is no contention on this key — a
         # plain put is safe. A late loser never clobbers it: _claim returns the finished result
         # (replay) before it would ever attempt to re-claim, because the row now carries "result".
-        await self._store.put(_IDEMPO, f"{tenant}|{op}|{source}",
+        #
+        # CARRY THE VERSION FORWARD. The winning claim wrote this row via cas(), stamping a non-zero
+        # version. A plain put that dropped the field would leave the finished row versionless, and
+        # after the result TTL lapsed a re-claim would compute expected=0 and call cas(key, 0, ...) —
+        # which on Postgres is INSERT..ON CONFLICT DO NOTHING and returns 0 rows because the key still
+        # exists, so the slot could NEVER be re-claimed (a permanent 409, and a memory-vs-Postgres
+        # divergence memory tests miss). Preserving the version keeps a later re-claim on the UPDATE
+        # branch, which matches and re-claims correctly.
+        prior = await self._store.get(_IDEMPO, key)
+        version = int(prior.get("version", 0)) if prior else 0
+        await self._store.put(_IDEMPO, key,
                               {"result": result,
+                               "version": version,
                                "expires_at": self._clock.now() + int(self._cfg["idempotency_ttl"])})
 
     # ── credit ──────────────────────────────────────────────────────────────────
+    def validate_credit(self, *, fund: str, amount: int) -> None:
+        """Non-mutating input validation for a credit. Split out so the route can validate BEFORE it
+        writes the write-ahead `wallet.credited` audit row — that row is deliberately written before
+        the MUTATION, but writing it before INPUT VALIDATION logged a critical money-creation event for
+        a request (unknown fund / negative amount) that never moved a cent, polluting the very
+        insider-fraud trail the critical marker exists to keep trustworthy."""
+        require_non_negative(amount, "amount")
+        if fund not in self._names:
+            raise WalletError(f"UNKNOWN_FUND:{fund}")
+
     async def credit(self, *, tenant: str, fund: str, amount: int, source: str = "",
                      reason: str = "", expires_at: float | None = None) -> dict[str, Any]:
         """Add money. Credit a top-up only once the PSP has SETTLED it — recording an intent is
         not money. `source` makes a redelivered settlement webhook safe."""
-        require_non_negative(amount, "amount")
-        if fund not in self._names:
-            raise WalletError(f"UNKNOWN_FUND:{fund}")
+        self.validate_credit(fund=fund, amount=amount)
         proceed, prior = await self._claim(tenant, CREDIT, source)
         if prior is not None:
             return prior
@@ -389,6 +418,13 @@ class WalletService:
         amount = int(amount)
         if amount <= 0:
             raise WalletError("WITHDRAW_AMOUNT_MUST_BE_POSITIVE")
+        # Money LEAVING the platform must be idempotent, always. _claim() opts out of idempotency on an
+        # empty source, which for a payout is a double-payout footgun: a retried request (or a network
+        # replay) with no source would write a second PENDING Withdrawal and debit again. So a source
+        # (idempotency key) is MANDATORY here — the docstring's "never pays out twice" guarantee is only
+        # true if we refuse the opt-out. (credit/spend may opt out; withdraw may not.)
+        if not (source or "").strip():
+            raise WalletError("WITHDRAW_SOURCE_REQUIRED")
         withdrawable = self._withdrawable()
         if not withdrawable:
             raise WalletError("NO_WITHDRAWABLE_FUND")   # nothing on this platform may be paid out
@@ -526,7 +562,7 @@ class WalletService:
         reserved, so it is refused, mutating nothing."""
         hold = await self._hold(hold_id)
         if hold.state == HOLD_CONFIRMED:
-            return {"hold_id": hold_id, "state": HOLD_CONFIRMED, "idempotent": True}
+            return {"hold_id": hold_id, "tenant": hold.tenant, "state": HOLD_CONFIRMED, "idempotent": True}
         # ATOMIC dedup keyed by the hold: the state read above is not enough — two concurrent confirms
         # both see ACTIVE and each debit (double-charge). The claim lets exactly one proceed; the other
         # replays the finished result or is told to retry. The claim is on the hold, NOT the amount, so
@@ -538,7 +574,7 @@ class WalletService:
             raise Conflict("WALLET_OP_IN_PROGRESS")
         hold = await self._hold(hold_id)                    # re-read under the claim
         if hold.state == HOLD_CONFIRMED:
-            return {"hold_id": hold_id, "state": HOLD_CONFIRMED, "idempotent": True}
+            return {"hold_id": hold_id, "tenant": hold.tenant, "state": HOLD_CONFIRMED, "idempotent": True}
         if hold.state != HOLD_ACTIVE:
             raise WalletError(f"HOLD_{hold.state.upper()}")
         if hold.expires_at <= self._clock.now():
@@ -577,7 +613,7 @@ class WalletService:
         hold.plan = plan_dict
         await self._store.put(_HOLDS, hold.id, hold.to_dict())
         released = sum(reserved_applied.values()) - sum(applied.values())
-        result = {"hold_id": hold.id, "state": HOLD_CONFIRMED, "released": released, **out}
+        result = {"hold_id": hold.id, "tenant": hold.tenant, "state": HOLD_CONFIRMED, "released": released, **out}
         await self._finalize(hold.tenant, "confirm", hold_id, result)
         await self._emit(_events.WALLET_SPENT,
                          {"tenant": hold.tenant, "net": plan_dict.get("net", 0),
@@ -590,14 +626,14 @@ class WalletService:
         """Cancel a hold. Nothing was debited, so nothing is refunded — the money is freed."""
         hold = await self._hold(hold_id)
         if hold.state in (HOLD_RELEASED, HOLD_EXPIRED):
-            return {"hold_id": hold_id, "state": hold.state, "idempotent": True}
+            return {"hold_id": hold_id, "tenant": hold.tenant, "state": hold.state, "idempotent": True}
         if hold.state == HOLD_CONFIRMED:
             raise WalletError("HOLD_ALREADY_CONFIRMED")     # that needs refund(), not release()
         if hold.counted:
             await self._mutate(hold.tenant, held_delta={k: -v for k, v in hold.applied.items()})
         hold.state = HOLD_RELEASED
         await self._store.put(_HOLDS, hold.id, hold.to_dict())
-        return {"hold_id": hold.id, "state": HOLD_RELEASED, "freed": hold.amount}
+        return {"hold_id": hold.id, "tenant": hold.tenant, "state": HOLD_RELEASED, "freed": hold.amount}
 
     # ── refund ──────────────────────────────────────────────────────────────────
     async def refund(self, *, tenant: str, seq: int, source: str = "",
