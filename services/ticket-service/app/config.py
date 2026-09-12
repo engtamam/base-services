@@ -186,9 +186,10 @@ class Settings(BaseSettings):
     # Scoped ticket sharing (core/share.py): the most tickets one grantee's internal read returns per
     # tenant — a bounded read, never a scan; a `truncated` flag makes a larger history loud, not silent.
     TICKET_SHARE_LIST_MAX: int = 200
-    # Default lifetime of a consent grant when the caller sets none. 0 = no expiry (consent stands
-    # until revoked). A platform that wants consent to lapse by default sets a positive value.
-    TICKET_SHARE_DEFAULT_TTL_SECONDS: int = 0
+    # Default lifetime of a consent grant when the caller sets none. Ships as 90 days so consent
+    # LAPSES by default — "forever" must be an explicit, audited choice (0), not the silent default a
+    # data subject never agreed to (ticket-r2-08). A platform can still set 0 to opt into no-expiry.
+    TICKET_SHARE_DEFAULT_TTL_SECONDS: int = 7_776_000   # 90 days
 
     # ── notifications (through notification-service, never sent here) ─────────
     # The service NEVER sends mail. It records a durable notification-outbox row on notify-worthy

@@ -17,6 +17,7 @@ the ticket's `ref` records {kind: channel, id: sender} for traceability only.
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -74,7 +75,10 @@ class InboundBridge:
         """-> 'created' | 'appended' | 'skipped'. Skips an unaddressable or already-ingested message."""
         if not (msg.external_id and msg.sender and msg.tenant):
             return "skipped"                        # nothing to key, dedupe, or attribute
-        ikey = f"{msg.channel}:{msg.external_id}"
+        # Tenant-scoped, length-prefixed idempotency key (matches _thread_key): keying on
+        # channel+external_id ALONE let one tenant's external_id collide with another's and drop a
+        # legitimate message as a duplicate (ticket-r2-06).
+        ikey = f"{len(msg.tenant)}:{msg.tenant}|{msg.channel}:{msg.external_id}"
         # Claim ATOMICALLY before the write so a concurrent/re-polled copy cannot double-open. The old
         # get-then-put had a TOCTOU window: two deliveries of the same message could both see "absent"
         # and both open a ticket. cas(expected_version=0) is insert-if-absent — exactly one claimant
@@ -91,12 +95,37 @@ class InboundBridge:
             tkey = self._thread_key(msg.tenant, msg.channel, sref)
             idx = await self._store.get(_THREAD, tkey) or {}
             existing = idx.get("ticket_id")
+            if not existing:
+                # ATOMICALLY reserve the thread slot before opening. The old get-then-put was a TOCTOU:
+                # two concurrent messages from the SAME customer both saw an empty index and both opened
+                # a duplicate ticket (ticket-r2-04). cas(expected_version=0) is insert-if-absent — the
+                # winner opens the ticket and fills in its id; the loser polls for the winner's id.
+                if await self._store.cas(_THREAD, tkey, 0, {"ticket_id": ""}):
+                    t = await self._svc.open(
+                        tenant=msg.tenant, type=self._type, subject=self._subject(msg),
+                        body=msg.text, raiser=msg.sender, ref={"kind": msg.channel, "id": sref})
+                    await self._store.put(_THREAD, tkey, {"ticket_id": t.id})
+                    return "created"
+                # lost the reservation race — wait for the winner to publish its ticket_id, then append
+                for _ in range(100):
+                    idx = await self._store.get(_THREAD, tkey) or {}
+                    existing = idx.get("ticket_id")
+                    if existing:
+                        break
+                    await asyncio.sleep(0)
             if existing:
                 t = await self._open_ticket(msg.tenant, existing)
                 if t is not None:
                     await self._svc.reply(tenant=msg.tenant, ticket_id=existing,
                                           author=sref, body=msg.text, by="customer")
                     return "appended"
+                # the grouped ticket is terminal/gone → open a fresh one under a new reservation
+                t = await self._svc.open(
+                    tenant=msg.tenant, type=self._type, subject=self._subject(msg),
+                    body=msg.text, raiser=msg.sender, ref={"kind": msg.channel, "id": sref})
+                await self._store.put(_THREAD, tkey, {"ticket_id": t.id})
+                return "created"
+            # reservation won by nobody we can see (should not happen) → open defensively
             t = await self._svc.open(tenant=msg.tenant, type=self._type, subject=self._subject(msg),
                                      body=msg.text, raiser=msg.sender,
                                      ref={"kind": msg.channel, "id": sref})

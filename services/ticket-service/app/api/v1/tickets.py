@@ -23,7 +23,16 @@ from app.core.stores import EventStore, TicketStore
 from app.core.ticket_service import (InvalidTransition, RequiredFieldMissing, TicketNotFound,
                                      TicketService, TransitionForbidden, UnknownType)
 
+from app.core.pii import subject_ref
+
 router = APIRouter(prefix="/api/v1", tags=["tickets"])
+
+
+def _actor(principal: Principal, tenant: str) -> str:
+    """Pseudonymize the caller before it is written as `actor` into the immutable, hash-chained audit
+    log — the raw JWT sub is an email/user-id and must never land in a tamper-evident record
+    (ticket-r2-01). Tenant-scoped, matching the actor_ref the ticket event log stores."""
+    return subject_ref(get_settings().PII_SALT, tenant, principal.subject)
 
 # Customer self-service, and operator. platform.tickets is the cross-tenant operator override.
 _SELF = require_any_capability("tickets.self", "tickets.manage", "platform.tickets")
@@ -115,7 +124,7 @@ async def open_ticket(request: Request, body: OpenIn,
                       principal: Principal = Depends(_SELF)) -> dict:
     tenant = _tenant(principal)
     await request.app.state.auditor.record(
-        "ticket.created", actor=principal.subject, tenant=tenant, resource="ticket",
+        "ticket.created", actor=_actor(principal, tenant), tenant=tenant, resource="ticket",
         ip=request.client.host if request.client else "", metadata={"type": body.type})
     try:
         t = await build_tickets(request).open(
@@ -196,7 +205,7 @@ async def reply_ticket(request: Request, ticket_id: str, body: ReplyIn,
         if needed and needed not in set(principal.caps or ()):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "FORBIDDEN")
     await request.app.state.auditor.record(
-        "ticket.replied", actor=principal.subject, tenant=tenant, resource=f"ticket:{ticket_id}",
+        "ticket.replied", actor=_actor(principal, tenant), tenant=tenant, resource=f"ticket:{ticket_id}",
         ip=request.client.host if request.client else "")
     t = await svc.reply(tenant=tenant, ticket_id=ticket_id, author=principal.subject,
                         body=body.body, is_operator=operator)
@@ -278,7 +287,7 @@ async def platform_list_tickets(request: Request, principal: Principal = Depends
 
     if tenant:
         await request.app.state.auditor.record(
-            "ticket.platform_viewed", actor=principal.subject, tenant=principal.tenant or "",
+            "ticket.platform_viewed", actor=_actor(principal, principal.tenant or ""), tenant=principal.tenant or "",
             resource=f"tickets:{tenant}", ip=ip, metadata={"tenant": tenant, "view": "list"})
         rows, nxt = await store.find(tenant=tenant, filters=filters, limit=limit, after=cursor or None)
         return {"tenant": tenant, "tickets": rows, "cursor": nxt}
@@ -287,7 +296,7 @@ async def platform_list_tickets(request: Request, principal: Principal = Depends
     if not any(filters.values()):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "PLATFORM_SWEEP_NEEDS_A_FILTER")
     await request.app.state.auditor.record(
-        "ticket.platform_swept", actor=principal.subject, tenant=principal.tenant or "",
+        "ticket.platform_swept", actor=_actor(principal, principal.tenant or ""), tenant=principal.tenant or "",
         resource="tickets:all-tenants", ip=ip, metadata={"view": "sweep", **{k: v for k, v in filters.items() if v}})
     rows, nxt = await store.find_across_tenants(filters=filters, limit=limit, after=cursor or None)
     return {"tenant": None, "tickets": rows, "cursor": nxt}
@@ -303,7 +312,7 @@ async def platform_get_ticket(request: Request, ticket_id: str,
     operator. platform.tickets only; tenant MANDATORY; audited on every access. Crosses the tenancy
     boundary on platform authority; ShareGrant remains the consented path for outside parties."""
     await request.app.state.auditor.record(
-        "ticket.platform_viewed", actor=principal.subject, tenant=principal.tenant or "",
+        "ticket.platform_viewed", actor=_actor(principal, principal.tenant or ""), tenant=principal.tenant or "",
         resource=f"ticket:{tenant}:{ticket_id}", ip=request.client.host if request.client else "",
         metadata={"tenant": tenant, "view": "detail"})
     svc = build_tickets(request)
@@ -320,7 +329,7 @@ async def transition_ticket(request: Request, ticket_id: str, body: StatusIn,
                             principal: Principal = Depends(_MANAGE)) -> dict:
     tenant = _tenant(principal)
     await request.app.state.auditor.record(
-        "ticket.status_changed", actor=principal.subject, tenant=tenant,
+        "ticket.status_changed", actor=_actor(principal, tenant), tenant=tenant,
         resource=f"ticket:{ticket_id}", ip=request.client.host if request.client else "",
         metadata={"to": body.to})
     try:
@@ -343,7 +352,7 @@ async def escalate_ticket(request: Request, ticket_id: str, body: EscalateIn,
     KPI can answer 'was it escalated, when, how far' from truth rather than a guess at a status name."""
     tenant = _tenant(principal)
     await request.app.state.auditor.record(
-        "ticket.escalated", actor=principal.subject, tenant=tenant,
+        "ticket.escalated", actor=_actor(principal, tenant), tenant=tenant,
         resource=f"ticket:{ticket_id}", ip=request.client.host if request.client else "",
         metadata={"level": body.level})
     try:
@@ -360,7 +369,7 @@ async def assign_ticket(request: Request, ticket_id: str, body: AssignIn,
                         principal: Principal = Depends(_MANAGE)) -> dict:
     tenant = _tenant(principal)
     await request.app.state.auditor.record(
-        "ticket.assigned", actor=principal.subject, tenant=tenant, resource=f"ticket:{ticket_id}",
+        "ticket.assigned", actor=_actor(principal, tenant), tenant=tenant, resource=f"ticket:{ticket_id}",
         ip=request.client.host if request.client else "")
     try:
         t = await build_tickets(request).assign(tenant=tenant, ticket_id=ticket_id,

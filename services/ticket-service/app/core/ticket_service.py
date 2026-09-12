@@ -85,11 +85,28 @@ class TicketService:
         return t
 
     # ── reply ─────────────────────────────────────────────────────────────────
+    async def _mutate(self, tenant: str, ticket_id: str, apply, *, retries: int = 5) -> Ticket:
+        """fetch -> apply -> cas_save, retrying on a lost race. The one lose-safe write path for the
+        ticket row: assign/tag/escalate/rate used a plain save() that clobbered a concurrent CAS status
+        transition (ticket-r2-03). `apply(ticket)` mutates in place and returns an event dict (kind +
+        actor_ref + body/data) to append once the write wins, or None to append nothing."""
+        for _ in range(max(1, retries)):
+            t = await self._fetch(tenant, ticket_id)
+            ev = apply(t)
+            t.touch()
+            if await self._tickets.cas_save(t):
+                if ev:
+                    await self._events.append(tenant=tenant, ticket_id=t.id, **ev)
+                return t
+        raise InvalidTransition(f"{ticket_id}: concurrent updates could not converge")
+
     async def reply(self, *, tenant: str, ticket_id: str, author: str, body: str,
                     is_operator: bool = False, by: str = "") -> Ticket:
         t = await self._fetch(tenant, ticket_id)
         tt = self._wf.require(t.type)
-        actor_ref = author if is_operator else self.pseudonym(tenant, author)
+        # ALWAYS pseudonymize the actor into the immutable, hash-chained event log — operators included
+        # (ticket-r2-02). The `by` label below carries the role for KPIs, so no raw identity is needed.
+        actor_ref = self.pseudonym(tenant, author)
         # `by` labels the author class in the log ("operator"/"customer"/"grantee"). A KPI keys
         # first-response on "operator" only, so a grantee's reply is recorded truthfully as its own
         # class and never miscounted as the shop's own SLA response.
@@ -126,7 +143,7 @@ class TicketService:
             needed = tt.capability_for(to, self._operator_cap)
             if needed not in actor_caps:
                 raise TransitionForbidden(f"transition to {to!r} requires {needed!r}")
-            actor_ref = actor if is_operator else self.pseudonym(tenant, actor)
+            actor_ref = self.pseudonym(tenant, actor)   # operators pseudonymized too (r2-02)
             frm = t.status
             t.status = to
             t.touch()
@@ -148,44 +165,36 @@ class TicketService:
         status name. It appends an `escalated` event (with an optional severity level) so 'was it
         escalated, when, how far' is answerable from the log for an SLA/stipend KPI. Idempotent-friendly
         by nature: each call records one escalation; a KPI keys on the FIRST."""
-        t = await self._fetch(tenant, ticket_id)
-        actor_ref = actor if is_operator else self.pseudonym(tenant, actor)
-        t.touch()
-        await self._tickets.save(t)
-        await self._events.append(tenant=tenant, ticket_id=t.id, kind="escalated",
-                                  actor_ref=actor_ref, body=reason, data={"level": level})
+        actor_ref = self.pseudonym(tenant, actor)   # operators pseudonymized too (r2-02)
+        # CAS-safe: escalate no longer clobbers a concurrent status transition (r2-03).
+        t = await self._mutate(tenant, ticket_id, lambda t: {
+            "kind": "escalated", "actor_ref": actor_ref, "body": reason, "data": {"level": level}})
         await self._after(t, self._wf.require(t.type), "escalated", actor_ref=actor_ref)
         return t
 
     # ── assign / tag / rate ─────────────────────────────────────────────────────
     async def assign(self, *, tenant: str, ticket_id: str, assignee: str, actor: str) -> Ticket:
-        t = await self._fetch(tenant, ticket_id)
-        t.assignee = assignee
-        t.touch()
-        await self._tickets.save(t)
-        await self._events.append(tenant=tenant, ticket_id=t.id, kind="assigned",
-                                  actor_ref=actor, data={"assignee": assignee})
-        return t
+        actor_ref = self.pseudonym(tenant, actor)
+
+        def _apply(t: Ticket) -> dict:
+            t.assignee = assignee
+            return {"kind": "assigned", "actor_ref": actor_ref, "data": {"assignee": assignee}}
+        return await self._mutate(tenant, ticket_id, _apply)
 
     async def tag(self, *, tenant: str, ticket_id: str, tags: list[str], actor: str) -> Ticket:
-        t = await self._fetch(tenant, ticket_id)
-        t.tags = sorted({*t.tags, *[s for s in tags if s]})
-        t.touch()
-        await self._tickets.save(t)
-        await self._events.append(tenant=tenant, ticket_id=t.id, kind="tagged",
-                                  actor_ref=actor, data={"tags": t.tags})
-        return t
+        actor_ref = self.pseudonym(tenant, actor)
+
+        def _apply(t: Ticket) -> dict:
+            t.tags = sorted({*t.tags, *[s for s in tags if s]})
+            return {"kind": "tagged", "actor_ref": actor_ref, "data": {"tags": t.tags}}
+        return await self._mutate(tenant, ticket_id, _apply)
 
     async def rate(self, *, tenant: str, ticket_id: str, rater: str, score: int,
                    comment: str = "") -> Ticket:
-        t = await self._fetch(tenant, ticket_id)
         score = max(1, min(5, int(score)))
-        await self._events.append(tenant=tenant, ticket_id=t.id, kind="rated",
-                                  actor_ref=self.pseudonym(tenant, rater), body=comment,
-                                  data={"score": score})
-        t.touch()
-        await self._tickets.save(t)
-        return t
+        actor_ref = self.pseudonym(tenant, rater)
+        return await self._mutate(tenant, ticket_id, lambda t: {
+            "kind": "rated", "actor_ref": actor_ref, "body": comment, "data": {"score": score}})
 
     # ── AI advisory (operator, on demand) ──────────────────────────────────────
     async def suggest_reply(self, tenant: str, ticket_id: str) -> dict[str, Any]:
