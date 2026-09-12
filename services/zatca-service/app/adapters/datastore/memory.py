@@ -31,6 +31,21 @@ class MemoryDataStore:
         bucket[key] = copy.deepcopy(value)
         return True
 
+    async def cas(self, collection: str, key: str, expected_version: int,
+                  value: dict[str, Any]) -> bool:
+        """Compare-and-set on the row's `version` (atomic on the loop). Writes `value` only if the
+        stored version equals `expected_version`, stamping version = expected+1. expected_version=0 is
+        insert-if-absent (an existing row seeded version>=1 fails)."""
+        bucket = self._data.setdefault(collection, {})
+        current = bucket.get(key)
+        current_version = int(current.get("version", 0)) if current else 0
+        if current_version != int(expected_version):
+            return False
+        stored = copy.deepcopy(value)
+        stored["version"] = current_version + 1
+        bucket[key] = stored
+        return True
+
     async def delete(self, collection: str, key: str) -> bool:
         return self._data.get(collection, {}).pop(key, None) is not None
 

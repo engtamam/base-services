@@ -20,6 +20,13 @@ class DataStore(Protocol):
         The atomicity primitive behind race-free unique-slot reservation (e.g. the ICV chain)."""
         ...
 
+    async def cas(self, collection: str, key: str, expected_version: int,
+                  value: dict[str, Any]) -> bool:
+        """Compare-and-set on the row's `version`: write `value` only if the stored version equals
+        `expected_version` (returning True), stamping version = expected+1. expected_version=0 is
+        insert-if-absent. Serialises the signed PIH/ICV chain head so it advances strictly in order."""
+        ...
+
     async def delete(self, collection: str, key: str) -> bool: ...
 
     async def find(

@@ -107,6 +107,20 @@ class ZatcaService:
         return await self._submit(inv, secrets)
 
     async def _sign(self, inv: ZatcaInvoice, secrets: dict) -> bool:
+        # ORDER + PIH binding (zatca-01). Signing is deferred/retryable and can run out of ICV order,
+        # so the PIH baked at allocation may point at the wrong predecessor. Here we require the
+        # immediately-preceding ICV to be signed, bind THIS invoice's PIH to that predecessor's real
+        # hash (rebuilding just the PIH in the unsigned XML), and sign the corrected document. If the
+        # predecessor is not signed yet, we defer — the chain is built strictly in order.
+        signed_icv, signed_hash = await self._inv.signed_head(inv.tenant)
+        if int(inv.icv) != signed_icv + 1:
+            await self._defer(inv, f"awaiting ICV {signed_icv + 1} before signing ICV {inv.icv}")
+            return False
+        correct_pih = signed_hash if inv.icv > 1 else _chain.GENESIS_PIH
+        if inv.pih != correct_pih:
+            inv.pih = correct_pih
+            inv.draft = {**inv.draft, "unsigned_xml": _ubl.set_pih(inv.draft["unsigned_xml"], correct_pih)}
+            await self._inv.save(inv)
         d = inv.draft
         # Per-tenant signer: resolve this invoice's tenant credential rather than a request-wide one.
         signer = self._signer
@@ -133,7 +147,10 @@ class ZatcaService:
         inv.hash = signed["invoiceHash"]                   # this hash = next invoice's PIH
         inv.qr = signed.get("qrBase64", "")
         inv.status = "signed"
-        await self._inv.record_hash(inv)                   # save + advance chain head (O(1))
+        # Advance the signed head CONTIGUOUSLY (save + cas). We already verified icv == signed_icv+1
+        # above, so this advances the chain by exactly one link; if a concurrent sign moved it first,
+        # the invoice is still durably saved as 'signed' and the next sweep reconciles the head.
+        await self._inv.mark_signed(inv)
         return True
 
     def _validate_ok(self, inv: ZatcaInvoice) -> bool:
@@ -188,7 +205,15 @@ class ZatcaService:
         sched = compute_retry_schedule(inv.attempts, base_ms=self._retry["base_ms"],
                                        max_ms=self._retry["max_ms"], max_attempts=self._retry["max_attempts"])
         inv.attempts += 1
-        inv.next_retry_at = None if sched["capped"] else time.time() + sched["next_delay_ms"] / 1000.0
+        if sched["capped"]:
+            # Retries exhausted: move OUT of the swept statuses to a terminal 'failed' (zatca-03), so
+            # the retry sweep never reads it again. It was left 'pending' with next_retry_at=None, which
+            # kept it in the swept set forever — making every sweep O(all unfinished invoices) instead
+            # of O(due). Manual resubmit (which resets attempts) can still recover a 'failed' invoice.
+            inv.next_retry_at = None
+            inv.status = "failed"
+        else:
+            inv.next_retry_at = time.time() + sched["next_delay_ms"] / 1000.0
 
     # ── retry sweep / resubmit ──────────────────────────────────────────────────
     async def sweep(self) -> dict[str, Any]:

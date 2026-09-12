@@ -1690,7 +1690,7 @@
       "issues": [
         {
           "id": "zatca-service-01",
-          "status": "NEEDS_DECISION",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "high",
           "file": "app/core/stores.py",
@@ -1712,7 +1712,7 @@
         },
         {
           "id": "zatca-service-03",
-          "status": "NEEDS_DECISION",
+          "status": "FIXED",
           "category": "perf",
           "severity": "medium",
           "file": "app/core/stores.py",

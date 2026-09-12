@@ -38,6 +38,11 @@ _INDEXES = (
     # before '9' and mis-ordered every 'oldest-first' priority view.
     f"CREATE INDEX IF NOT EXISTS kv_created_at_desc ON {_TABLE} "
     f"(collection, COALESCE(value->'created_at', 'null'::jsonb) DESC, key DESC)",
+    # next_retry_at ASC serves the retry sweep's ORDER BY (zatca-03): due invoices first, so the scan
+    # stops at the first not-yet-due row instead of reading every unfinished invoice. jsonb ordering
+    # (-> not ->>) so numeric timestamps sort numerically, matching the memory adapter.
+    f"CREATE INDEX IF NOT EXISTS kv_next_retry_at_asc ON {_TABLE} "
+    f"(collection, COALESCE(value->'next_retry_at', 'null'::jsonb) ASC, key ASC)",
 )
 
 
@@ -138,6 +143,28 @@ class PostgresDataStore:
                 "ON CONFLICT (collection, key) DO NOTHING",
                 collection, key, json.dumps(value),
             )
+        return res.endswith("1")
+
+    async def cas(self, collection: str, key: str, expected_version: int,
+                  value: dict[str, Any]) -> bool:
+        """Compare-and-set on the row's `version`. expected_version=0 -> INSERT ON CONFLICT DO NOTHING;
+        otherwise a version-pinned UPDATE. New version (expected+1) is stamped into the stored jsonb."""
+        stored = dict(value)
+        stored["version"] = int(expected_version) + 1
+        pool = await self._ensure()
+        async with pool.acquire() as con:
+            if int(expected_version) == 0:
+                res = await con.execute(
+                    f"INSERT INTO {_TABLE} (collection, key, value) VALUES ($1,$2,$3) "  # nosec B608 - _TABLE trusted constant; values parameterized
+                    "ON CONFLICT (collection, key) DO NOTHING",
+                    collection, key, json.dumps(stored),
+                )
+            else:
+                res = await con.execute(
+                    f"UPDATE {_TABLE} SET value=$3 WHERE collection=$1 AND key=$2 "  # nosec B608 - _TABLE trusted constant; values parameterized
+                    "AND (value->>'version')::bigint = $4",
+                    collection, key, json.dumps(stored), int(expected_version),
+                )
         return res.endswith("1")
 
     async def delete(self, collection: str, key: str) -> bool:

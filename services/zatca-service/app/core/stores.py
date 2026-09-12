@@ -49,14 +49,30 @@ class InvoiceStore:
         idx = await self._store.get(_INDEX, f"num::{tenant}::{number}")   # O(1)
         return await self.get(idx["id"]) if idx else None
 
-    async def record_hash(self, inv: ZatcaInvoice) -> None:
-        """Persist a signed invoice AND advance the chain head (last_hash) — O(1)."""
+    async def signed_head(self, tenant: str) -> tuple[int, str]:
+        """The CONTIGUOUSLY-signed chain head: the highest ICV whose invoice (and every one before it)
+        is signed, and that invoice's hash — which is the PIH the NEXT invoice must carry. Distinct
+        from the allocation head (`head::`), which only tracks the highest RESERVED ICV."""
+        row = await self._store.get(_INDEX, f"signed::{tenant}")
+        return (int(row.get("signed_icv", 0)), row.get("last_hash", "")) if row else (0, "")
+
+    async def mark_signed(self, inv: ZatcaInvoice) -> bool:
+        """Persist a signed invoice and advance the signed head — but ONLY contiguously (icv ==
+        signed_icv + 1). Compare-and-set so two concurrent signs cannot both advance the head off the
+        same base. Returns False if this invoice is not the next link (its predecessor is not signed
+        yet); the caller must not treat it as chained. See zatca-01: the PIH/ICV chain forks when an
+        invoice is signed while an earlier ICV is still unsigned, so the head advances in strict order."""
         await self.save(inv)
-        head = await self._store.get(_INDEX, f"head::{inv.tenant}") or {"reserved_icv": 0, "last_hash": ""}
-        if int(inv.icv) >= int(head.get("reserved_icv", 0)):
-            head["reserved_icv"] = max(int(head.get("reserved_icv", 0)), int(inv.icv))
-            head["last_hash"] = inv.hash
-            await self._store.put(_INDEX, f"head::{inv.tenant}", head)
+        for _ in range(64):
+            row = await self._store.get(_INDEX, f"signed::{inv.tenant}")
+            signed_icv = int(row.get("signed_icv", 0)) if row else 0
+            ver = int(row.get("version", 0)) if row else 0
+            if int(inv.icv) != signed_icv + 1:
+                return False                        # not the next link — do not advance out of order
+            if await self._store.cas(_INDEX, f"signed::{inv.tenant}", ver,
+                                     {"signed_icv": int(inv.icv), "last_hash": inv.hash}):
+                return True
+        return False
 
     async def list(self, tenant: str, *, needs_attention: bool = False, limit: int = 100) -> list[dict]:
         rows = await self._rows(tenant)
@@ -105,14 +121,26 @@ class InvoiceStore:
         out: list[ZatcaInvoice] = []
         cursor = None
         while len(out) < limit:
+            # Ordered by next_retry_at ASC (indexed) so DUE invoices come first and we STOP at the
+            # first one whose retry time is still in the future — O(due), not O(all unfinished). This
+            # relies on capped invoices being moved to a terminal status (see _schedule_retry), so the
+            # swept set never accumulates never-due rows. A row with no next_retry_at is transient
+            # (created, not yet attempted); skip it without stopping the scan.
             rows, cursor = await self._store.find(
                 _INVOICES, {"status": ["pending", "signed", "submitted"]},
-                limit=_PAGE, after=cursor, sort=("created", "asc"))
+                limit=_PAGE, after=cursor, sort=("next_retry_at", "asc"))
+            stop = False
             for r in rows:
                 nra = r.get("next_retry_at")
-                if nra is not None and nra <= now_ts:
-                    out.append(ZatcaInvoice.from_dict(r))
-            if not cursor:
+                if nra is None:
+                    continue                        # transient, not yet scheduled — keep scanning
+                if nra > now_ts:
+                    stop = True                     # ascending: everything after this is also future
+                    break
+                out.append(ZatcaInvoice.from_dict(r))
+                if len(out) >= limit:
+                    break
+            if stop or not cursor:
                 break
         return out[:limit]
 
@@ -133,7 +161,6 @@ class InvoiceStore:
             return existing, False
         head = await self._store.get(_INDEX, f"head::{tenant}") or {"reserved_icv": 0, "last_hash": ""}
         icv = int(head.get("reserved_icv", 0)) + 1
-        last_hash = head.get("last_hash") or ""
         for _ in range(10_000):                              # bounded; advances past ICVs already taken
             claimed = await self._store.create(_INDEX, f"icv::{tenant}::{icv}", {"number": str(number)})
             if claimed:
@@ -141,7 +168,12 @@ class InvoiceStore:
             icv += 1                                         # this ICV was taken by a concurrent finalize
         else:
             raise RuntimeError("could not reserve an ICV slot")
-        pih = last_hash if (icv > 1 and last_hash) else GENESIS_PIH
+        # PROVISIONAL PIH: a best-effort hint from the signed head at allocation time. The AUTHORITATIVE
+        # PIH is bound at SIGN time (zatca-01), when the predecessor is actually signed — because
+        # signing is deferred/retryable and out of order, the last-signed hash known now may not be the
+        # true predecessor's hash by the time this invoice signs.
+        _, signed_hash = await self.signed_head(tenant)
+        pih = signed_hash if (icv > 1 and signed_hash) else GENESIS_PIH
         inv = ZatcaInvoice(id=new_id(), tenant=tenant, number=str(number), icv=icv,
                            pih=pih, status="pending", invoice_type=invoice_type, created=_now())
         await self.save(inv)

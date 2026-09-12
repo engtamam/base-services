@@ -248,9 +248,12 @@ def test_allocate_slot_is_o1_via_index():
     run(z.finalize(INV, "t1"))
     run(z.finalize({**INV, "number": "INV-2"}, "t1"))
     inv2 = run(InvoiceStore(st).by_number("t1", "INV-2"))
-    assert inv2.icv == 2                                             # head advanced, index resolves
+    assert inv2.icv == 2                                             # allocation head advanced
     head = run(st.get("zatca_index", "head::t1"))
-    assert head["reserved_icv"] == 2 and head["last_hash"]
+    assert head["reserved_icv"] == 2                                 # reservation hint advanced
+    # the signed-chain head (authoritative PIH source, zatca-01) advances as invoices sign
+    signed = run(st.get("zatca_index", "signed::t1"))
+    assert signed["signed_icv"] == 2 and signed["last_hash"]
     assert run(st.get("zatca_index", "num::t1::INV-1")) is not None
 
 

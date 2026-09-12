@@ -29,6 +29,25 @@ def stable_uuid(number: str) -> str:
     return str(_uuid.uuid5(_uuid.NAMESPACE_URL, f"urn:base-services:zatca:invoice:{number}"))
 
 
+import re as _re
+
+# The PIH lives in the one EmbeddedDocumentBinaryObject in the unsigned UBL (the QR node is added by
+# the signer afterwards). This targets exactly that element's text so the PIH can be corrected at sign
+# time without rebuilding the whole document (zatca-01) — the value is base64/hex, no XML specials.
+_PIH_RE = _re.compile(
+    r"(<cbc:EmbeddedDocumentBinaryObject mimeCode=\"text/plain\">)(.*?)(</cbc:EmbeddedDocumentBinaryObject>)",
+    _re.DOTALL)
+
+
+def set_pih(xml: str, pih: str) -> str:
+    """Replace the PIH value in an UNSIGNED UBL document. Used to bind the authoritative PIH at sign
+    time. Raises if the PIH node is absent (a document that cannot carry a chain link must not sign)."""
+    new, n = _PIH_RE.subn(lambda m: m.group(1) + _esc(str(pih)) + m.group(3), xml, count=1)
+    if n != 1:
+        raise ValueError("PIH node not found in unsigned UBL")
+    return new
+
+
 def build_ubl(inv: dict, *, icv: int, pih: str, invoice_type: str = "simplified") -> dict:
     """Assemble the unsigned UBL 2.1 invoice + rolled-up money figures.
 
