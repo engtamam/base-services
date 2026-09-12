@@ -38,6 +38,11 @@ _INDEXES = (
     # before '9' and mis-ordered every 'oldest-first' priority view.
     f"CREATE INDEX IF NOT EXISTS kv_created_at_desc ON {_TABLE} "
     f"(collection, COALESCE(value->'created_at', 'null'::jsonb) DESC, key DESC)",
+    # audit events order by '_seq_key' (a zero-padded per-partition sequence), not 'created'. Without a
+    # matching index every audit query/export/verify GIN-matched the partition then Sorted the WHOLE
+    # partition (O(all events) with the default single 'global' partition). Index it so paging seeks.
+    f"CREATE INDEX IF NOT EXISTS kv_seq_key_desc ON {_TABLE} "
+    f"(collection, COALESCE(value->'_seq_key', 'null'::jsonb) DESC, key DESC)",
 )
 
 

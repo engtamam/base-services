@@ -43,13 +43,16 @@ class AuditErasure:
         self._audit = audit
 
     async def erase(self, tenant: str, subject_ref_value: str,
-                    partition: str = "global") -> dict[str, Any]:
+                    partition: str | None = None) -> dict[str, Any]:
         """Erase nothing; retain everything; PROVE the chain still verifies.
 
         The proof is the point. A service that says "I retained it for security" and cannot show
-        the record is still intact has given an excuse, not an ack.
+        the record is still intact has given an excuse, not an ack. In AUDIT_PARTITION=tenant mode
+        the subject's events live in the TENANT's partition, so we must verify THAT chain — checking
+        the hardcoded 'global' partition (often empty in tenant mode) proved an unrelated chain.
         """
-        report = await self._audit.verify(partition)
+        part = partition if partition is not None else self._audit._partition(tenant)
+        report = await self._audit.verify(part)
         intact = bool(report.get("ok"))
 
         return {
