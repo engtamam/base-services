@@ -223,6 +223,8 @@ async def disconnect(request: Request, connection_id: str, principal: Principal 
     conn.access_sealed = conn.refresh_sealed = ""     # credentials destroyed at rest
     await ConnectionStore(c.datastore).save(conn)
     await build_tokens(request).bump(conn.tenant)      # cached token dies immediately
+    from app.core.token_manager import evict_lock
+    evict_lock(conn.id)                                 # release the per-connection refresh lock (r2-07)
     return {"disconnected": True, "provider_revoked": revoked}
 
 
@@ -252,5 +254,10 @@ async def list_runs(request: Request, principal: Principal = Depends(_READ)) -> 
 
 @router.get("/dead-letters", dependencies=[Depends(_READ)])
 async def dead_letters(request: Request, principal: Principal = Depends(_READ)) -> dict:
-    return {"dead_letters": await DlqStore(request.app.state.container.datastore).list(
-        _tenant(principal), get_settings().CONNECTOR_LIST_LIMIT)}
+    rows = await DlqStore(request.app.state.container.datastore).list(
+        _tenant(principal), get_settings().CONNECTOR_LIST_LIMIT)
+    # REDACT the raw provider payload: the DLQ row stores the full unmapped record, which routinely
+    # carries PII/secrets. Reprocessing uses the stored row server-side; a human listing dead-letters
+    # needs the metadata (what failed and why), not the customer's data (connector-r2-06).
+    redacted = [{k: v for k, v in r.items() if k != "record"} for r in rows]
+    return {"dead_letters": redacted}

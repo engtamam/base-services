@@ -27,6 +27,10 @@ class Connection:
     spec_id: str = ""
     # per-resource incremental watermark — advanced ONLY after a batch commits
     watermarks: dict[str, str] = field(default_factory=dict)
+    # per-resource UNACKED delivery (at-least-once): the token the caller must echo to ack, the real
+    # provider cursor to advance to, whether it was the terminal page, and the delivered idempotency
+    # keys (reserved on ack so a terminal tail stops re-delivering). Internal; never public.
+    pending: dict[str, Any] = field(default_factory=dict)
     # circuit breaker + monitoring
     circuit_state: str = "closed"
     consecutive_failures: int = 0
@@ -41,6 +45,7 @@ class Connection:
         d = asdict(self)
         for secret in ("access_sealed", "refresh_sealed"):
             d.pop(secret, None)        # credentials never cross the API boundary
+        d.pop("pending", None)         # internal at-least-once delivery bookkeeping
         d["connected"] = bool(self.access_sealed)
         return d
 

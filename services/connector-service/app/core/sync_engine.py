@@ -104,10 +104,20 @@ class SyncEngine:
         if not _circuit.can_attempt(state):
             return {"ok": False, "reason": "circuit_open"}
 
-        # ACK the previously delivered batch (at-least-once mode): the caller confirms it durably
-        # processed up to `ack_cursor`, so it is now safe to advance the watermark past it.
-        if ack_cursor and conn.watermarks.get(resource, "") != ack_cursor:
-            conn.watermarks[resource] = ack_cursor
+        # ACK the previously delivered batch. The ack is VALIDATED against the token this service
+        # actually issued for the pending batch (conn.pending) — an arbitrary caller-supplied cursor is
+        # no longer trusted to jump the watermark to any string (which would skip/lose records — r2-03).
+        # A terminal batch (provider next_cursor == "") is unackable by cursor, so we issued a synthetic
+        # non-empty token for it; acking it RESERVES the delivered keys so the tail stops re-delivering
+        # forever (r2-01), rather than advancing the watermark to "" (which means "from the start").
+        pend = conn.pending.get(resource) if isinstance(conn.pending, dict) else None
+        if ack_cursor and pend and ack_cursor == pend.get("token"):
+            if pend.get("terminal"):
+                for k in pend.get("keys", []):
+                    await self._seen.reserve(k)        # commit the tail: future fetches skip these
+            else:
+                conn.watermarks[resource] = pend.get("cursor", "")
+            conn.pending.pop(resource, None)
             await self._conns.save(conn)
 
         now = self._clock.now()
@@ -144,6 +154,11 @@ class SyncEngine:
             if not at_least_once:
                 if not await self._seen.reserve(key):
                     continue                              # already committed on a prior/concurrent run
+            elif await self._seen.seen(key):
+                # alo: a key is only reserved once it is COMMITTED — a durably dead-lettered poison
+                # record (r2-02) or an acked terminal-tail record (r2-01). Skip it so it is neither
+                # re-DLQ'd nor re-delivered on every subsequent poll.
+                continue
             try:
                 out = _mapping.apply(field_map or {}, rec) if field_map else dict(rec)
                 out[ORIGIN_FIELD] = conn.provider          # echo-loop marker
@@ -173,6 +188,16 @@ class SyncEngine:
         next_cursor = page.next_cursor or ""
         if at_least_once:
             run.watermark_after = run.watermark_before     # unchanged until the caller acks
+            # Record the UNACKED delivery so the next pull's ack can be validated (r2-03) and a
+            # terminal batch (empty provider cursor) is still ackable via a synthetic non-empty token
+            # (r2-01). token is the value the caller echoes; cursor is the real position to advance to.
+            terminal = not next_cursor
+            # Deterministic terminal token (no run id): a re-pull of the same terminal page yields the
+            # SAME token, so acking the token from any delivery of that page commits it.
+            token = next_cursor if next_cursor else f"__eos__:{run.watermark_before}"
+            if isinstance(conn.pending, dict):
+                conn.pending[resource] = {"token": token, "cursor": next_cursor,
+                                          "terminal": terminal, "keys": [k for k, _ in mapped]}
         elif next_cursor:
             conn.watermarks[resource] = next_cursor
             run.watermark_after = next_cursor
@@ -187,9 +212,15 @@ class SyncEngine:
         status = "succeeded" if failed == 0 else "partial"
         out = await self._finish(run, status)
         out["records"] = [r for _k, r in mapped]
-        # The cursor to ACK on the next pull (at-least-once), and the per-record idempotency keys the
-        # consumer dedupes on across a re-delivery. Returned in both modes; only ack mode requires them.
-        out["cursor"] = next_cursor
+        # The token to ACK on the next pull (at-least-once), and the per-record idempotency keys the
+        # consumer dedupes on across a re-delivery. In alo mode the cursor is the ack TOKEN (a synthetic
+        # non-empty value for a terminal page, so the tail is ackable — r2-01); in default mode it is the
+        # provider cursor. Returned in both modes; only ack mode requires them.
+        if at_least_once:
+            out["cursor"] = conn.pending.get(resource, {}).get("token", next_cursor) \
+                if isinstance(conn.pending, dict) else next_cursor
+        else:
+            out["cursor"] = next_cursor
         out["keys"] = [k for k, _r in mapped]
         return out
 

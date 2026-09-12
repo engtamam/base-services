@@ -31,6 +31,13 @@ from app.ports.connector_provider import CredentialInvalid
 _LOCKS: dict[str, asyncio.Lock] = {}
 
 
+def evict_lock(connection_id: str) -> None:
+    """Drop a connection's refresh lock when it is disconnected. Without this the process-wide table
+    grows one asyncio.Lock per connection id for the life of the process and never shrinks — an
+    unbounded leak over a long-running service (connector-r2-07)."""
+    _LOCKS.pop(connection_id, None)
+
+
 class TokenManager:
     def __init__(self, *, connections: ConnectionStore, provider, clock, seal_key: str,
                  cache=None, cache_ttl: int = 60, refresh_skew: int = 60) -> None:
