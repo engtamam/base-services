@@ -812,6 +812,9 @@ class WalletService:
                 if ttl_days > 0:                      # a 0-ttl extend would busy-loop the sweep
                     grant.expires_at = now + ttl_days * 86400
                     grant.noticed = 0                 # re-arm the pre-expiry notice for the new window
+                    # atomic: ok — extend moves NO money; two overlapping sweeps compute the same new
+                    # window (now + ttl_days) and land the identical value, so the get-then-put is
+                    # idempotent. The money-moving forfeit/dormant path below is claim-serialized.
                     await self._store.put(_GRANTS, grant.id, grant.to_dict())
                     extended += 1
                 continue
@@ -867,6 +870,8 @@ class WalletService:
                 await self._check_low_balance(grant.tenant, out["funds"], debit=True)
             grant.state = "dormant" if behavior == "dormant" else "expired"
             grant.swept = remaining
+            # atomic: ok — serialized by the _claim("sweep", grant.id) above; only the winning sweep
+            # reaches this state write, so there is no competing writer on this grant.
             await self._store.put(_GRANTS, grant.id, grant.to_dict())
             await self._finalize(grant.tenant, "sweep", grant.id,
                                  {"grant_id": grant.id, "state": grant.state, "swept": remaining})
@@ -896,6 +901,8 @@ class WalletService:
             if notice_days <= 0 or float(grant.expires_at) > now + notice_days * 86400:
                 continue
             grant.noticed = 1
+            # atomic: ok — idempotent one-time flag (noticed=1); two overlapping notice sweeps write
+            # the identical value, and the only cost of a lost update is one duplicate notice, no money.
             await self._store.put(_GRANTS, grant.id, grant.to_dict())
             await self._emit(_events.GRANT_EXPIRING, {
                 "tenant": grant.tenant, "fund": grant.fund, "grant_id": grant.id,

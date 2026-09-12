@@ -50,7 +50,7 @@ def _chain(store, n, partition="global"):
         e["hash"] = integ.seal(prev, e)
         run(repo.append_event(e, partition))    # event row; head advanced once below
         prev = e["hash"]
-    run(repo.set_head(partition, n, prev))
+    run(repo.set_head_versioned(partition, run(repo.head_versioned(partition))[2], n, prev))
     return repo
 
 

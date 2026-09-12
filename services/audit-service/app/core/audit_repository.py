@@ -110,18 +110,6 @@ class AuditRepository:
     async def delete(self, event_id: str) -> None:
         await self._store.delete(_EVENTS, event_id)
 
-    async def set_head(self, partition: str, seq: int, head_hash: str) -> None:
-        # Retention purge re-anchors the head. BUMP the version (read-then-cas-loop) so any append
-        # holding an older head version fails its cas and refetches — a purge and a concurrent append
-        # can never both write the head from the same base. Carry `partition` in the row, exactly as
-        # append_event does, so partitions() and the backup key template can rely on the row shape.
-        for _ in range(100):
-            _, _, ver = await self.head_versioned(partition)
-            if await self._store.cas(_META, partition, ver,
-                                     {"partition": partition, "seq": seq, "head_hash": head_hash}):
-                return
-        raise RuntimeError("could not set audit head under contention")
-
     async def set_head_versioned(self, partition: str, expected_version: int, seq: int,
                                  head_hash: str) -> bool:
         """Move the head from `expected_version` in a SINGLE compare-and-set — no read-cas retry loop.

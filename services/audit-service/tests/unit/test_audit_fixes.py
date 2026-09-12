@@ -133,7 +133,7 @@ def test_keyed_chain_resists_recompute_without_the_key():
         r["hash"] = forger.seal(prev, r)
         run(repo.replace(r))
         prev = r["hash"]
-    run(repo.set_head("global", rows[-1]["seq"], prev))
+    run(repo.set_head_versioned("global", run(repo.head_versioned("global"))[2], rows[-1]["seq"], prev))
     assert run(svc.verify())["ok"] is False          # HMAC verify rejects the sha256-forged chain
 
 
