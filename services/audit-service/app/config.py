@@ -290,6 +290,13 @@ class Settings(BaseSettings):
     # excludes backend access.
     INTEGRITY_DRIVER: str = "hmac-chain"     # none | hash-chain | hmac-chain
     INTEGRITY_HMAC_KEY: str = ""             # REQUIRED for hmac-chain (the default); held outside the DB
+    # Explicit, documented opt-out for running an UNKEYED chain (`hash-chain`) in production. Off by
+    # default: an unkeyed chain is tamper-evident only against an attacker who cannot recompute public
+    # sha256 — not the audit-log threat model (a backend attacker re-anchors and verify() passes). Set
+    # this true only for a deployment whose threat model genuinely excludes datastore write access.
+    # `none` is NEVER allowed in production regardless of this flag — it disables tamper-evidence
+    # entirely while verify() still returns ok:true (audit-r2-04).
+    INTEGRITY_ALLOW_UNKEYED: bool = False
     EXPORTER_DEFAULT: str = "json"           # json | csv | ndjson
     AUDIT_PARTITION: str = "global"          # global | tenant
     RETENTION_DAYS: int = 0                  # 0 = keep forever
@@ -406,6 +413,26 @@ class Settings(BaseSettings):
         if self.AUDIT_SERVICE_URL and not self.AUDIT_SERVICE_URL.startswith(("http://", "https://")):
             raise ValueError(
                 f"AUDIT_SERVICE_URL {self.AUDIT_SERVICE_URL!r} must start with http:// or https://"
+            )
+        # Tamper-evidence must FAIL CLOSED at boot, not silently at verify() time (audit-r2-04).
+        # `none` seals every event to '' so verify() passes trivially while proving nothing — it is
+        # refused in production unconditionally. `hash-chain` is unkeyed and defeatable by a backend
+        # attacker (the audit threat model), so it is refused too unless the operator has explicitly
+        # acknowledged that threat model with INTEGRITY_ALLOW_UNKEYED=true. `hmac-chain` (the default)
+        # additionally fails closed on a missing/short key in HmacChainIntegrity at container build.
+        if self.INTEGRITY_DRIVER == "none":
+            raise ValueError(
+                "INTEGRITY_DRIVER=none in production disables tamper-evidence entirely: every event "
+                "seals to an empty hash and verify() returns ok:true while proving nothing. Use "
+                "'hmac-chain' (set INTEGRITY_HMAC_KEY, held outside the DB)."
+            )
+        if self.INTEGRITY_DRIVER == "hash-chain" and not self.INTEGRITY_ALLOW_UNKEYED:
+            raise ValueError(
+                "INTEGRITY_DRIVER=hash-chain in production is an UNKEYED sha256 chain: a backend "
+                "attacker can delete events and re-anchor the whole chain so verify() passes clean. "
+                "Use 'hmac-chain' (set INTEGRITY_HMAC_KEY, held outside the DB), or set "
+                "INTEGRITY_ALLOW_UNKEYED=true only if your threat model genuinely excludes datastore "
+                "write access."
             )
 
     @field_validator("INTERNAL_SERVICE_TOKEN")

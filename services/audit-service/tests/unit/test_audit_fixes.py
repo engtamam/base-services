@@ -156,3 +156,142 @@ def test_concurrent_stale_takeover_appends_once():
     run(_race())
     rows = run(AuditRepository(store).iterate("global"))
     assert len(rows) == 1                             # exactly one event (pre-fix: two, chain forked)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Round 2 (2026-09-12): findings r2-01, r2-03, r2-04, r2-07 — purge/append mutual
+# exclusion, idempotency crash-window duplicate, integrity fail-open, verify()
+# spurious break. Each test is RED on the pre-fix code.
+# ─────────────────────────────────────────────────────────────────────────────
+import datetime as _dt  # noqa: E402
+
+
+def _old_ts(days: int) -> str:
+    return (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days)).isoformat()
+
+
+class _AppendDuringIterate(MemoryDataStore):
+    """Fires a hook exactly once, AFTER an audit_events snapshot is taken but BEFORE it is returned.
+
+    This lands a concurrent append strictly after purge's iterate() read — the precise interleaving
+    that orphans the appended event and breaks the chain on the pre-fix purge (audit-r2-01)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._hook = None
+        self._fired = False
+
+    async def find(self, collection, where, **kw):
+        rows, cur = await super().find(collection, where, **kw)
+        if collection == "audit_events" and self._hook is not None and not self._fired:
+            self._fired = True
+            await self._hook()
+        return rows, cur
+
+
+def test_purge_is_serialised_against_a_concurrent_append():
+    store = _AppendDuringIterate()
+    svc = AuditService(repo=AuditRepository(store), integrity=HmacChainIntegrity("k" * 20),
+                       exporters={"json": JsonExporter()}, default_format="json",
+                       partition_mode="global", query_limit=100)
+    # one OLD (expired) event + one RECENT (kept) event
+    ev_old = run(svc.record(service="s", action="old", actor="x"))
+    row = run(store.get("audit_events", ev_old.id))
+    row["ts"] = _old_ts(400)
+    run(store.put("audit_events", ev_old.id, row))
+    run(svc.record(service="s", action="recent", actor="x"))
+
+    # A concurrent append lands right after purge snapshots the chain (pre-fix: orphaned + head
+    # rolled back below it -> verify() reports a real event as tampering).
+    store._hook = lambda: svc.record(service="s", action="concurrent", actor="x")
+    run(svc.purge(_old_ts(200), "global"))
+
+    assert run(svc.verify("global"))["ok"] is True         # chain intact (pre-fix: broken)
+    actions = [r["action"] for r in run(AuditRepository(store).iterate("global"))]
+    assert "concurrent" in actions                         # not orphaned/lost
+    assert "old" not in actions                            # expired prefix purged
+
+
+def test_stale_takeover_adopts_an_already_appended_event():
+    # Crash after append but before idempo_commit: the key stays `pending` while the event is
+    # already in the chain. A stale take-over must adopt it, not append a duplicate (audit-r2-03).
+    store = MemoryDataStore()
+    svc = _svc2(store)
+    ns = "1:s|0:|evt-1"
+    ev = run(svc.record(idempo_key=ns, service="s", action="a", actor="x"))   # reserver appended…
+    run(store.cas("audit_idempo", ns, 0, {"key": ns, "state": "pending", "ts": 0.0}))  # …then crashed
+
+    receipt, duplicate = run(svc.record_idempotent(
+        idempotency_key="evt-1", stale_seconds=1.0, service="s", action="a", actor="x"))
+
+    rows = run(AuditRepository(store).iterate("global"))
+    assert len(rows) == 1                                   # no duplicate (pre-fix: two)
+    assert duplicate is True and receipt["seq"] == ev.seq   # adopted the existing receipt
+
+
+class _TailSettles(MemoryDataStore):
+    """The FIRST audit_events snapshot hides the newest row (head is already advanced, but the just
+    -written event row is not yet visible to this reader); later snapshots reveal it. A deterministic
+    stand-in for an in-flight append that settles across verify()'s re-read (audit-r2-07)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.hide_newest_once = False
+        self._hidden = False
+
+    async def find(self, collection, where, **kw):
+        rows, cur = await super().find(collection, where, **kw)
+        if collection == "audit_events" and self.hide_newest_once and not self._hidden and rows:
+            self._hidden = True
+            rows = rows[:-1]                 # tail appears one short of the recorded head
+        return rows, cur
+
+
+def test_verify_does_not_cry_broken_on_an_in_flight_append():
+    store = _TailSettles()
+    svc = _svc2(store)
+    run(svc.record(service="s", action="a1", actor="x"))
+    run(svc.record(service="s", action="a2", actor="x"))
+    run(svc.record(service="s", action="a3", actor="x"))
+
+    store.hide_newest_once = True           # first snapshot: head at 3 but only a1,a2 visible
+    assert run(svc.verify("global"))["ok"] is True    # reconciled on re-read (pre-fix: broken)
+
+
+def test_verify_still_reports_a_truly_truncated_tail():
+    # The reconcile must not MASK a real break: a stable head ahead of the tail is tamper.
+    store = MemoryDataStore()
+    svc = _svc2(store)
+    run(svc.record(service="s", action="a1", actor="x"))
+    ev2 = run(svc.record(service="s", action="a2", actor="x"))
+    run(store.delete("audit_events", ev2.id))     # delete the newest event, leave head at seq 2
+    out = run(svc.verify("global"))
+    assert out["ok"] is False
+
+
+def _prod_settings(**overrides):
+    from app.config import Settings
+    base = dict(_env_file=None, INTERNAL_SERVICE_TOKEN="a" * 40, ENV="production",
+                PII_SALT="frozen-salt", AUDIT_SINK_DRIVER="http",
+                AUDIT_SERVICE_URL="http://audit.internal")
+    base.update(overrides)
+    return Settings(**base)
+
+
+def test_integrity_none_refused_in_production():
+    with pytest.raises(ValueError):
+        _prod_settings(INTEGRITY_DRIVER="none").assert_audit_config_ok()
+
+
+def test_integrity_unkeyed_hash_chain_refused_in_production_by_default():
+    with pytest.raises(ValueError):
+        _prod_settings(INTEGRITY_DRIVER="hash-chain").assert_audit_config_ok()
+
+
+def test_integrity_unkeyed_hash_chain_allowed_with_explicit_optout():
+    _prod_settings(INTEGRITY_DRIVER="hash-chain",
+                   INTEGRITY_ALLOW_UNKEYED=True).assert_audit_config_ok()  # no raise
+
+
+def test_integrity_hmac_chain_is_fine_in_production():
+    _prod_settings(INTEGRITY_DRIVER="hmac-chain").assert_audit_config_ok()  # no raise

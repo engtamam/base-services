@@ -1,0 +1,150 @@
+{
+  "service": "audit-service",
+  "round": 2,
+  "findings": [
+    {
+      "id": "audit-r2-01",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "concurrency / chain integrity",
+      "file": "app/core/audit_service.py",
+      "line": 311,
+      "title": "Retention purge is not mutually exclusive with concurrent append — re-seal + set_head orphans and breaks the chain",
+      "detail": "purge() runs a multi-await read-modify-write with NO lock: (1) events=iterate(partition); (2) delete expired; (3) re-seal EVERY retained event in place (replace(), lines 321-326 change prev_hash/hash of survivors including the current head event); (4) set_head(last_seq, prev). Nothing serialises this against record(). The cas version on _META only protects the head cell; it does NOT protect purge's blind re-hashing of already-stored survivor rows against an event appended after purge's iterate() read.",
+      "failure_scenario": "Partition head at seq N (hash H_N_old). A concurrent record() lands fully: advance_head cas(V) succeeds -> head (N+1, H_{N+1}=seal(H_N_old,...)), append_event writes event N+1 with prev_hash=H_N_old. Meanwhile purge() re-seals event N to H_N_new (!= H_N_old) and set_head(last_seq, H_kept_last) with last_seq<=N. Now: event N+1 exists with prev_hash=H_N_old but the stored event N hash is H_N_new, and head_seq=last_seq<N+1. verify() reports 'broken chain (prev_hash mismatch)' at N+1 AND 'chain does not reach the recorded head'. The chain is permanently corrupted and a real (untampered) event is reported as tampering. A nightly retention cron overlapping normal ingest triggers this.",
+      "fix": "Serialise purge against append per partition (an asyncio.Lock is insufficient across pods — use a datastore-level guard: e.g. bump _META version at purge START so any append in-flight fails its cas, take events strictly below a frozen cutoff seq, and re-verify head version is unchanged before set_head; or run purge in a real DB transaction that also re-reads the head). At minimum, re-fetch the head after re-anchoring and abort/retry if seq advanced."
+    },
+    {
+      "id": "audit-r2-02",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "atomicity / chain integrity",
+      "file": "app/core/audit_service.py",
+      "line": 66,
+      "title": "Append is two un-transacted datastore writes (advance_head then append_event); a failure between them permanently bricks the chain",
+      "detail": "record() advances the head cas FIRST (line 66) and writes the event row SECOND (line 67, append_event -> store.put), in two independent datastore operations with no transaction and no compensating rollback of the head. The docstring claims a crash here 'shows as a (detectable) missing tail, never as two events sharing a seq' — but it is worse than a missing tail.",
+      "failure_scenario": "advance_head commits (head=(N,H_N)) then append_event raises (connection drop, row too large, pod killed) so event N is never written. The next successful record() reads head (N,H_N), builds event N+1 with prev_hash=H_N and seq N+1, and appends. verify() now walks ...,N-1,N+1: at N+1 prev_hash=H_N but running prev=H_{N-1} -> 'broken chain' forever. A single transient put error, not even a crash, cements an unrecoverable break that reads as tampering.",
+      "fix": "Make the head advance and event insert atomic: write the event row FIRST then advance the head (a crash then leaves an orphan row with no head reference, which the next append/verify can tolerate or reconcile), or wrap both in one postgres transaction. If keeping head-first, roll back the head on append_event failure and never let a subsequent append build on a head whose event row is absent."
+    },
+    {
+      "id": "audit-r2-03",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "idempotency / chain integrity",
+      "file": "app/core/audit_service.py",
+      "line": 116,
+      "title": "Crash after append but before idempo_commit yields a DUPLICATE chain event on stale take-over",
+      "detail": "record_idempotent() reserves the key, calls record() (appends the event), THEN idempo_commit() (lines 119-121). The stale take-over path (lines 111-117) assumes a pending entry means 'reserver crashed mid-append' and re-runs record(). But there is a window where record() already appended the event and the process died before idempo_commit — the entry is still 'pending', never 'done'. There is no content-level dedup.",
+      "failure_scenario": "Caller sends idempotency_key=K. reserve wins, record() appends event seq=100, then the pod is killed before idempo_commit. Entry K stays state=pending. After AUDIT_INGEST_STALE_SECONDS a retry with K judges it stale, take_over cas succeeds, record() runs AGAIN and appends event seq=101 for the same action. Two events in the tamper-evident chain for one idempotent operation — defeating the guarantee the whole reserve/commit machinery exists to provide (contradicts the 'exactly one event is ever appended' claim at lines 19-20/83-85).",
+      "fix": "Commit the idempotency receipt atomically with the append (same transaction), or write the receipt as part of append_event, so 'event appended' and 'key done' can never diverge. Alternatively, before re-running record() on a stale take-over, look for an already-appended event carrying this key and return its receipt instead of appending."
+    },
+    {
+      "id": "audit-r2-04",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "config fail-open",
+      "file": "app/config.py",
+      "line": 291,
+      "title": "INTEGRITY_DRIVER=none is not refused in production; disables tamper-evidence while verify() still returns ok:true",
+      "detail": "assert_audit_config_ok() (lines 387-409) guards AUDIT_SINK_DRIVER=null in production but never checks INTEGRITY_DRIVER. main.py (lines 45-47) calls only assert_audit/pii/cors_config_ok. So INTEGRITY_DRIVER=none boots fine in production: NoneIntegrity.seal() returns '' for every event, and AuditService.verify() then passes trivially (each e.hash=''==seal(prev,e)='' , head_hash='' so the final-hash check is skipped) -> {ok:true}. hash-chain (unkeyed sha256) is likewise unguarded, which the config's own comment (lines 285-290) argues is defeatable by any backend attacker (they can re-anchor with public sha256, exactly what purge does).",
+      "failure_scenario": "An operator sets INTEGRITY_DRIVER=none (perf, or a copied dev env). The service serves as a production audit log with zero tamper-evidence, and the scheduled /internal/audit/verify returns ok:true forever — a control that reports healthy while proving nothing. Nobody learns until a regulator asks.",
+      "fix": "Add a production boot guard mirroring the sink guard: refuse INTEGRITY_DRIVER in ('none') in production, and warn/refuse 'hash-chain' unless an explicit opt-out flag is set. Fail closed at boot, not silently at verify time."
+    },
+    {
+      "id": "audit-r2-05",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "PII / permanence",
+      "file": "app/core/pii_policy.py",
+      "line": 73,
+      "title": "The `resource` field is never pseudonymized or scrubbed — raw PII in resource is permanent in the chain",
+      "detail": "PiiPolicy.apply() folds actor, scrubs ip, and redacts metadata keys, but takes no `resource` argument (line 73), and record() (audit_service.py lines 46-48) passes resource straight through unmodified into AuditEvent, which is hashed into the chain. `resource` accepts up to 512 chars (api/internal.py line 29) and is a pushdown query field.",
+      "failure_scenario": "A caller records resource='user:alice@example.com' or 'iqama:1098765432'. The raw identifier is canonicalised and HMAC/hash-chained permanently; it cannot be redacted later without breaking verify() from that seq onward. The erasure endpoint proudly reports 'the events carry a pseudonym, not an identity' while resource holds the real one. This is the exact leak AUDIT_PII_MODE claims to prevent, on a field the policy simply does not cover.",
+      "fix": "Route `resource` through the same fold/enforce policy (detect and pseudonymize identity-shaped values, or at least redact configured PII fields when resource is 'k:v' shaped), or document and enforce at the schema that resource must already be a subject_ref / non-PII opaque handle in fold/enforce mode."
+    },
+    {
+      "id": "audit-r2-06",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "PII / permanence",
+      "file": "app/core/pii_policy.py",
+      "line": 108,
+      "title": "Metadata PII scrub matches only top-level KEY NAMES; PII in values, nested dicts, or free text lands permanently",
+      "detail": "apply() computes `leaked = [k for k in meta if k.lower() in self.fields]` (line 108) and only redacts those top-level keys. It does not inspect values, nested dicts/lists, or arbitrary free-text keys. metadata is hashed into the chain, so anything missed is permanent.",
+      "failure_scenario": "metadata={'note':'called alice@example.com from +9665...'} or {'payload':{'email':'alice@x.com'}} passes untouched ('note'/'payload' are not in AUDIT_PII_FIELDS). Raw email/phone/national-id embedded in values or one level down is hash-chained forever and cannot be erased. fold mode advertises 'raw PII cannot land, no matter what a caller forgets' — but only for exact top-level key-name matches.",
+      "fix": "Recurse into nested structures and apply the redaction to nested keys; optionally value-scan for identity patterns (email/phone/national-id regexes over string values) in fold/enforce mode. State the residual limit explicitly if value-scanning is out of scope."
+    },
+    {
+      "id": "audit-r2-07",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "concurrency / false alarm",
+      "file": "app/core/audit_service.py",
+      "line": 191,
+      "title": "verify() reads events then head non-atomically — a concurrent append raises a spurious 'chain broken' 409",
+      "detail": "verify() calls iterate(partition) (line 191, reads all event rows) and THEN head(partition) (line 192) as two separate un-synchronised reads. record() advances the head BEFORE writing the event row, so there is a window where head_seq is ahead of what iterate() saw.",
+      "failure_scenario": "During verify's iterate/head gap a record() advances head to N+1 (and may not yet have written row N+1, or wrote it after iterate paged past). head()=N+1 but events[-1].seq=N -> line 214 returns ok:false 'chain does not reach the recorded head (truncated or reordered)'. /internal/audit/verify then raises 409 AUDIT_CHAIN_BROKEN (api/internal.py line 128), firing the tamper alarm on a perfectly intact, merely-busy chain. Repeated false positives train operators to ignore the one real break.",
+      "fix": "Take a consistent snapshot: read head first, then iterate and accept events with seq<=head_seq (ignore a newer tail), or read head after iterate and treat head_seq>last_event_seq as 'in-flight tail', not tamper. A DB-consistent read (single transaction / snapshot) removes the window entirely."
+    },
+    {
+      "id": "audit-r2-08",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "non-repudiation",
+      "file": "app/core/audit_service.py",
+      "line": 321,
+      "title": "purge re-seals hashes of RETAINED events, invalidating every receipt/anchor previously issued for them",
+      "detail": "purge() re-anchors survivors from prev='' and rewrites each retained event's prev_hash and hash (lines 320-326), even events that were NOT expired. The {id,seq,hash} receipt returned by ingest (record_idempotent, and stored in the idempotency row) and any hash an external party recorded as an anchor no longer match the stored event after any purge.",
+      "failure_scenario": "A caller stored the receipt {seq:500, hash:H} at write time as proof of an event. After a routine retention purge that removes an older prefix, event 500 is re-sealed to H'!=H. The caller's independently held anchor now 'fails to match' the log, and a stale idempotency 'done' row still returns the old H while the chain holds H' — undermining the exact non-repudiation the HMAC chain sells.",
+      "fix": "Prefer a purge model that does not rewrite survivors' content hashes (e.g. a segmented chain with checkpoint anchors, or keep a tombstone/genesis anchor so surviving events keep their original hashes). If re-anchoring is unavoidable, publish/record the new anchor and version the receipts so old ones are recognisably superseded rather than silently wrong."
+    },
+    {
+      "id": "audit-r2-09",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "DoS / unbounded memory",
+      "file": "app/core/audit_repository.py",
+      "line": 72,
+      "title": "iterate() (backing verify and purge) loads an entire partition into memory with no cap",
+      "detail": "iterate() pages by _PAGE=500 but extends `out` to exhaustion with 'There is no cap here' (lines 72-91). verify(), verify_all() (per partition), and purge() all call it. Unlike query/export which are bounded by AUDIT_QUERY_LIMIT/AUDIT_EXPORT_LIMIT, there is no ceiling here.",
+      "failure_scenario": "In the default single 'global' partition an audit log naturally grows to millions of rows. A scheduled /internal/audit/verify (verify_all) materialises the whole chain in one list; on a multi-million-row log this is a multi-GB allocation that can OOM-kill the pod, and it happens on a timer, repeatedly. RETENTION_DAYS=0 (the default, keep-forever) guarantees unbounded growth.",
+      "fix": "Stream the verification: walk page by page maintaining only prev_hash and a running count/last-seq, never accumulating the full list. purge similarly should operate page-by-page. Add a configurable safety ceiling that fails loudly rather than OOMs."
+    },
+    {
+      "id": "audit-r2-10",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "cross-partition correctness",
+      "file": "app/core/audit_service.py",
+      "line": 177,
+      "title": "Cross-partition query sorts merged results by per-partition `seq`, so 'newest' is wrong across tenants",
+      "detail": "The tenant-partition cross-partition fan-out (lines 171-178) merges each partition's newest `limit` then does out.sort(key=lambda r: r['seq'], reverse=True)[:limit]. seq is monotonic PER PARTITION and resets per tenant, so sorting the merge by seq does not order by time across partitions.",
+      "failure_scenario": "Tenant A has 1,000,000 events (seq up to 1e6), tenant B has 50 (seq up to 50). A platform-wide 'newest 100 events' query returns only tenant A's high-seq rows and never B's genuinely-recent events, because B's max seq (50) sorts below A's. A platform officer investigating a recent incident silently misses the newest events of low-volume tenants. Should sort by `ts`.",
+      "fix": "Merge-sort the cross-partition results by `ts` (the actual timestamp), not `seq`. seq is only meaningful within one partition."
+    },
+    {
+      "id": "audit-r2-11",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "audit completeness",
+      "file": "app/core/audit_service.py",
+      "line": 329,
+      "title": "Per-tenant purge is witnessed only in the GLOBAL partition, and `remaining` miscounts",
+      "detail": "purge() ends by calling self.record(service='audit-service', action='audit.purged', ...) with no tenant (lines 329-331). record() computes partition from tenant='' -> always 'global'. So when purging a TENANT partition, the audit.purged witness lands in the global chain, not the tenant's own chain, and `remaining: len(kept)+1` (line 332) counts a +1 event that is not in this partition.",
+      "failure_scenario": "In AUDIT_PARTITION=tenant mode, tenant T's chain is purged (evidence deleted) but T's chain contains no record that a purge occurred — the witness is in a different partition an investigator of T may not consult. verify(T) also sees head=last_seq with no purge marker, so the deletion of old evidence is not self-documenting within the affected chain.",
+      "fix": "Record the audit.purged witness INTO the partition being purged (pass tenant/partition through to record()), and fix the `remaining` count to reflect the actual partition."
+    },
+    {
+      "id": "audit-r2-12",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "purge vs restore consistency",
+      "file": "app/core/backup.py",
+      "line": 200,
+      "title": "Backup import can reintroduce a purged prefix or a stale head, producing a chain verify() flags broken",
+      "detail": "import_archive() restores rows keyed by identity and, with overwrite=False (the default, lines 216-222), LEAVES existing rows alone — including the audit_meta head singleton. audit_events and audit_meta are restored independently with no post-restore chain reconciliation or verify.",
+      "failure_scenario": "A backup is taken; retention purge then removes an old prefix and re-anchors survivors (new hashes) and moves the head. The backup is later restored (overwrite=False) into the same partition: purged old-prefix events are re-INSERTED with their ORIGINAL pre-purge hashes, while surviving events keep their re-anchored hashes and the head is skipped (already exists). The chain now has a hash discontinuity at the old purge boundary and/or events beyond the head -> verify() 'broken chain'. Conversely overwrite=True can roll the head backwards below existing event seqs. No import path runs verify() to catch this.",
+      "fix": "After an audit import, recompute/reconcile the partition head from the restored events and run verify(partition), failing the import if the resulting chain does not verify; treat audit_meta specially so a restore cannot leave head and events inconsistent."
+    }
+  ]
+}

@@ -52,10 +52,19 @@ class AuditRepository:
         return await self._store.cas(_META, partition, expected_version,
                                      {"partition": partition, "seq": seq, "head_hash": head_hash})
 
-    async def append_event(self, event: dict[str, Any], partition: str) -> None:
+    async def append_event(self, event: dict[str, Any], partition: str,
+                           idempo_key: str = "") -> None:
         """Write the event row ONLY. The head is advanced separately by an atomic advance_head(),
-        which is what serialises the chain — so this never touches _META."""
+        which is what serialises the chain — so this never touches _META.
+
+        `idempo_key` (when supplied) is stamped as an internal, NON-hashed `_idempo_key` routing
+        field: canonical() drops every `_`-prefixed key, so this never changes the chain hash, and
+        query() strips it from results. It lets a stale idempotency take-over discover that the
+        crashed reserver already appended THIS event (append precedes commit) and adopt its receipt
+        instead of appending a duplicate to the tamper-evident chain."""
         stored = {**event, "_partition": partition, "_seq_key": seq_key(event["seq"])}
+        if idempo_key:
+            stored["_idempo_key"] = idempo_key
         await self._store.put(_EVENTS, event["id"], stored)
 
     async def partitions(self) -> list[str]:
@@ -113,6 +122,18 @@ class AuditRepository:
                 return
         raise RuntimeError("could not set audit head under contention")
 
+    async def set_head_versioned(self, partition: str, expected_version: int, seq: int,
+                                 head_hash: str) -> bool:
+        """Move the head from `expected_version` in a SINGLE compare-and-set — no read-cas retry loop.
+
+        This is purge's serialization point against append. Both purge's re-anchor commit and a
+        concurrent append's advance_head() are a cas on the SAME _META version, so exactly one wins:
+        if an append lands while purge is computing, purge's cas fails and it retries against the new
+        tail rather than clobbering the head and orphaning the just-appended event (audit-r2-01)."""
+        return await self._store.cas(
+            _META, partition, expected_version,
+            {"partition": partition, "seq": seq, "head_hash": head_hash})
+
     # ── idempotency ────────────────────────────────────────────────────────────────────────────
     # The row carries its own `key` so idempo_prune (which reads VALUES via scan_all) can delete it.
     async def idempo_get(self, key: str) -> dict[str, Any] | None:
@@ -131,6 +152,19 @@ class AuditRepository:
         observed, so exactly one concurrent take-over wins; the loser is told to retry."""
         return await self._store.cas(_IDEMPO, key, expected_version,
                                      {"key": key, "state": "pending", "ts": ts})
+
+    async def idempo_find_event(self, idempo_key: str) -> dict[str, Any] | None:
+        """The event already appended under this idempotency key, if any.
+
+        A crash can land between record()'s append and idempo_commit(), leaving the key `pending`
+        with the event already in the chain. Before a stale take-over re-runs record() (which would
+        append a DUPLICATE), it asks this: an event stamped with `_idempo_key` means the reserver
+        DID append, so its receipt is adopted rather than a second event chained (audit-r2-03)."""
+        if not idempo_key:
+            return None
+        rows, _ = await self._store.find(
+            _EVENTS, {"_idempo_key": idempo_key}, limit=1, sort=("_seq_key", "desc"))
+        return rows[0] if rows else None
 
     async def idempo_commit(self, key: str, receipt: dict[str, Any], ts: float) -> None:
         await self._store.put(_IDEMPO, key, {"key": key, "state": "done", "ts": ts, **receipt})

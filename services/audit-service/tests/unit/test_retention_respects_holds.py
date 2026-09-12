@@ -31,6 +31,7 @@ class _Repo:
         self.events = list(events)
         self._partitions = list(partitions)
         self.deleted: list[str] = []
+        self._version = 0
 
     async def iterate(self, partition):
         return [e for e in self.events if e.get("partition", "global") == partition]
@@ -41,6 +42,19 @@ class _Repo:
 
     async def replace(self, e):
         return None
+
+    async def head_versioned(self, partition):
+        # purge pins its head-move to the version observed here; no concurrent append in these
+        # single-threaded tests, so the first set_head_versioned() always wins.
+        evs = [e for e in self.events if e.get("partition", "global") == partition]
+        seq = max((e["seq"] for e in evs), default=0)
+        return seq, "", self._version
+
+    async def set_head_versioned(self, partition, expected_version, seq, prev):
+        if expected_version != self._version:
+            return False
+        self._version += 1
+        return True
 
     async def set_head(self, partition, seq, prev):
         return None

@@ -6,9 +6,15 @@ API (append-only); retention purge is the only removal and re-anchors the chain.
 """
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
 import time
 from typing import Any
+
+# verify() re-snapshots the tail this many times before calling a head/tail disagreement a break.
+# A concurrent in-flight append settles within a yield; a real truncation/reorder persists across
+# every re-read (audit-r2-07). The prev_hash / content walk is never retried — that is tamper.
+_VERIFY_TAIL_RETRIES = 3
 
 from app.core.audit_repository import AuditRepository
 from app.core.models import AuditEvent, new_id, now
@@ -42,7 +48,8 @@ class AuditService:
 
     # ── record (append-only) ──────────────────────────────────────────────────
     async def record(self, *, service: str, action: str, actor: str = "", resource: str = "",
-                     tenant: str = "", ip: str = "", metadata: dict[str, Any] | None = None) -> AuditEvent:
+                     tenant: str = "", ip: str = "", metadata: dict[str, Any] | None = None,
+                     idempo_key: str = "") -> AuditEvent:
         if self._pii is not None:
             actor, ip, metadata = self._pii.apply(tenant=tenant, actor=actor, ip=ip,
                                                   metadata=metadata)
@@ -64,7 +71,7 @@ class AuditService:
             )
             evt.hash = self._integrity.seal(head, evt.to_dict())
             if await self._repo.advance_head(partition, ver, evt.seq, evt.hash):
-                await self._repo.append_event(evt.to_dict(), partition)
+                await self._repo.append_event(evt.to_dict(), partition, idempo_key=idempo_key)
                 return evt
             # another writer advanced the head first — refetch and re-seal against the new head
         raise RuntimeError(f"audit append could not converge on partition {partition!r}")
@@ -116,7 +123,20 @@ class AuditService:
             if not await self._repo.idempo_take_over(ns_key, int(cur.get("version", 0)), ts):
                 raise IngestInProgress()
 
-        evt = await self.record(**fields)
+            # We won the take-over — but "pending" does NOT prove the reserver never appended. record()
+            # appends the event and THEN commits the receipt; a crash between the two leaves the key
+            # pending with the event ALREADY in the chain. Re-running record() here would append a
+            # DUPLICATE for one idempotent operation (audit-r2-03). So first look for an event stamped
+            # with this key: if the reserver got that far, adopt its receipt and heal the pending row
+            # rather than chaining a second event.
+            existing = await self._repo.idempo_find_event(ns_key)
+            if existing is not None:
+                receipt = {"id": existing["id"], "seq": existing["seq"], "hash": existing["hash"]}
+                await self._repo.idempo_commit(ns_key, receipt, ts)
+                return receipt, True
+
+        # Stamp the append with the namespaced key so a future take-over can recognise it (above).
+        evt = await self.record(idempo_key=ns_key, **fields)
         receipt = {"id": evt.id, "seq": evt.seq, "hash": evt.hash}
         await self._repo.idempo_commit(ns_key, receipt, ts)
         return receipt, False
@@ -188,36 +208,55 @@ class AuditService:
 
         A tamper-evident log that verifies part of itself is worse than no log.
         """
-        events = await self._repo.iterate(partition)
-        head_seq, head_hash = await self._repo.head(partition)
+        # A tail-vs-head DISAGREEMENT can be transient rather than tamper (audit-r2-07): record()
+        # advances the head before writing the event row, and iterate()/head() are separate reads, so
+        # a concurrent append in flight makes head_seq and the last read event legitimately diverge for
+        # a moment. We distinguish "tail grew/settling during a busy read" from "broken" by re-reading
+        # once the walk itself is clean: a REAL truncation or reorder persists across the re-read; an
+        # in-flight append resolves. The prev_hash / content walk is NOT retried — a middle hole or a
+        # forged hash is tamper regardless of concurrency, so it is reported on the first pass.
+        for attempt in range(_VERIFY_TAIL_RETRIES):
+            events = await self._repo.iterate(partition)
+            head_seq, head_hash = await self._repo.head(partition)
 
-        prev = ""
-        for e in events:
-            if e.get("prev_hash", "") != prev:
-                return {"ok": False, "checked": len(events), "first_bad_seq": e["seq"],
-                        "reason": "broken chain (prev_hash mismatch — event deleted/reordered)"}
-            if e.get("hash", "") != self._integrity.seal(prev, e):
-                return {"ok": False, "checked": len(events), "first_bad_seq": e["seq"],
-                        "reason": "content tampered (hash mismatch)"}
-            prev = e["hash"]
+            prev = ""
+            bad = None
+            for e in events:
+                if e.get("prev_hash", "") != prev:
+                    return {"ok": False, "checked": len(events), "first_bad_seq": e["seq"],
+                            "reason": "broken chain (prev_hash mismatch — event deleted/reordered)"}
+                if e.get("hash", "") != self._integrity.seal(prev, e):
+                    return {"ok": False, "checked": len(events), "first_bad_seq": e["seq"],
+                            "reason": "content tampered (hash mismatch)"}
+                prev = e["hash"]
 
-        # The chain read must REACH THE HEAD the writer recorded. If it stops short, we read
-        # only part of the log — the exact failure that used to pass silently.
-        #
-        # Note what is NOT asserted: `len(events) == head_seq`. Retention purge deliberately
-        # removes an old PREFIX of the chain, so the count is legitimately less than the head
-        # sequence. A hole in the middle is caught by the prev_hash walk; a missing tail is
-        # caught below.
-        if head_seq and not events:
-            return {"ok": False, "checked": 0, "first_bad_seq": None,
-                    "reason": f"read no events, head is at seq {head_seq}"}
-        if head_seq and events and events[-1]["seq"] != head_seq:
-            return {"ok": False, "checked": len(events), "first_bad_seq": events[-1]["seq"],
-                    "reason": "chain does not reach the recorded head (truncated or reordered)"}
-        if head_hash and prev != head_hash:
-            return {"ok": False, "checked": len(events), "first_bad_seq": None,
-                    "reason": "final hash does not match the recorded head hash"}
-        return {"ok": True, "checked": len(events), "first_bad_seq": None}
+            # The chain read must REACH THE HEAD the writer recorded. If it stops short, we read
+            # only part of the log — the exact failure that used to pass silently.
+            #
+            # Note what is NOT asserted: `len(events) == head_seq`. Retention purge deliberately
+            # removes an old PREFIX of the chain, so the count is legitimately less than the head
+            # sequence. A hole in the middle is caught by the prev_hash walk above.
+            last_seq = events[-1]["seq"] if events else 0
+            if head_seq and not events:
+                bad = {"ok": False, "checked": 0, "first_bad_seq": None,
+                       "reason": f"read no events, head is at seq {head_seq}"}
+            elif head_seq and last_seq != head_seq:
+                # head ahead of the tail (append advanced head, row not yet visible) OR the tail read
+                # ahead of head (append's row visible, head about to advance): both are in-flight, and
+                # both settle. Only a STABLE disagreement across the re-read is a truncation/reorder.
+                bad = {"ok": False, "checked": len(events), "first_bad_seq": last_seq or None,
+                       "reason": "chain does not reach the recorded head (truncated or reordered)"}
+            elif head_hash and prev != head_hash:
+                bad = {"ok": False, "checked": len(events), "first_bad_seq": None,
+                       "reason": "final hash does not match the recorded head hash"}
+
+            if bad is None:
+                return {"ok": True, "checked": len(events), "first_bad_seq": None}
+            if attempt + 1 < _VERIFY_TAIL_RETRIES:
+                # Yield and re-snapshot: an in-flight append resolves, a real break persists.
+                await asyncio.sleep(0)
+                continue
+            return bad
 
     async def verify_all(self) -> dict:
         """Verify EVERY partition's chain, so a scheduled check can prove the whole log.
@@ -308,24 +347,46 @@ class AuditService:
         None means no protection was applied, which is what this did unconditionally before.
         The caller reports that as `hold_protected: false` rather than leaving it implied.
         """
-        events = await self._repo.iterate(partition)
-        expired = [e for e in events if e.get("ts", "") < before_ts]
-        held = ([e for e in expired if e.get("actor") in held_refs]
-                if held_refs else [])
-        held_ids = {e["id"] for e in held}
-        kept = [e for e in events if e.get("ts", "") >= before_ts or e["id"] in held_ids]
-        purged = [e for e in expired if e["id"] not in held_ids]
-        for e in purged:
-            await self._repo.delete(e["id"])
-        # re-anchor the retained events so the chain stays valid post-purge
-        prev = ""
-        for e in kept:
-            e["prev_hash"] = prev
-            e["hash"] = self._integrity.seal(prev, e)
-            await self._repo.replace(e)
-            prev = e["hash"]
-        last_seq = kept[-1]["seq"] if kept else 0
-        await self._repo.set_head(partition, last_seq, prev)
+        # SERIALISED against append (audit-r2-01). purge re-anchors survivors (new hashes, including
+        # the head event) and moves the head — a concurrent record() that chained onto the pre-purge
+        # head would be orphaned and read as tampering. So the head move is a version-pinned cas on the
+        # SAME _META cell append advances: whoever commits first wins, the loser retries.
+        #
+        # The commit ORDER is deliberate: everything is computed in memory, then set_head_versioned()
+        # (pinned to the version observed at the TOP of this attempt) is the single serialization
+        # point. If an append raced in during iterate(), the cas fails and NOTHING has been written to
+        # the event rows yet — we simply retry against the now-larger tail (re-anchoring the new event
+        # too). Only after the head is ours do we persist the deletes and re-sealed survivor rows.
+        for _attempt in range(64):
+            _, _, ver = await self._repo.head_versioned(partition)
+            events = await self._repo.iterate(partition)
+            expired = [e for e in events if e.get("ts", "") < before_ts]
+            held = ([e for e in expired if e.get("actor") in held_refs]
+                    if held_refs else [])
+            held_ids = {e["id"] for e in held}
+            kept = [e for e in events if e.get("ts", "") >= before_ts or e["id"] in held_ids]
+            purged = [e for e in expired if e["id"] not in held_ids]
+            # re-anchor the retained events IN MEMORY so the chain stays valid post-purge
+            prev = ""
+            for e in kept:
+                e["prev_hash"] = prev
+                e["hash"] = self._integrity.seal(prev, e)
+                prev = e["hash"]
+            last_seq = kept[-1]["seq"] if kept else 0
+            # COMMIT POINT: claim the head under the observed version. A concurrent append that landed
+            # since our head_versioned() read bumped the version, so this cas fails and we retry — the
+            # append is never orphaned.
+            if not await self._repo.set_head_versioned(partition, ver, last_seq, prev):
+                continue
+            # The head now reflects the re-anchored survivors; persist the row changes.
+            for e in purged:
+                await self._repo.delete(e["id"])
+            for e in kept:
+                await self._repo.replace(e)
+            break
+        else:
+            raise RuntimeError(
+                f"audit purge could not converge on partition {partition!r} under append contention")
         await self.record(service="audit-service", action="audit.purged",
                           metadata={"before_ts": before_ts, "purged": len(purged),
                                     "held": len(held)})
