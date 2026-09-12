@@ -44,6 +44,15 @@ _HOLDS = "holds"
 _GRANTS = "grants"
 _WITHDRAWALS = "withdrawals"
 _IDEMPO = "wallet_idempo"
+# DURABLE once-only marker for a settled top-up, keyed by (tenant, source), keyed == id so it
+# round-trips through backup under the default {id} template. Unlike _IDEMPO this NEVER expires: it
+# is the backstop that stops a settlement webhook redelivered AFTER the idempotency TTL (audit
+# wallet-r2-03) from double-crediting. The TTL claim stays the fast path; this is the money backstop.
+_CREDIT_SEEN = "wallet_credit_seen"
+# Symmetric durable backstop for a debit (audit wallet-r2-03): stops a `spend` whose source is
+# replayed AFTER the idempotency TTL from debiting twice (a double-charge). Same shape as
+# _CREDIT_SEEN — keyed "{tenant}|{source}" == id, stamped before the debit, rolled back on failure.
+_SPEND_SEEN = "wallet_spend_seen"
 _ALERTS = "wallet_alerts"    # the low-balance armed/triggered state, ONE keyed row per tenant
 _SWEEP_PAGE = 500        # the sweepers page; they never read a collection whole
 
@@ -316,6 +325,21 @@ class WalletService:
         if not proceed:
             raise Conflict("WALLET_OP_IN_PROGRESS")
 
+        # DURABLE backstop, independent of the idempotency TTL (audit wallet-r2-03). The _claim above
+        # only replays a duplicate while its result row is unexpired (idempotency_ttl, 24h); after that
+        # it re-claims and the credit would run a SECOND time, double-crediting a settlement webhook
+        # redelivered days later. A never-expiring seen-source marker refuses that forever. Written
+        # BEFORE the balance mutate (and rolled back with the grant on failure), so — like grant-first
+        # and withdrawal-first — a crash can only ever leave money UNcredited (a legit retry may be
+        # refused, fail-safe), never double-credited (a mint).
+        seen_key = f"{tenant}|{source}" if source else ""
+        if seen_key:
+            seen = await self._store.get(_CREDIT_SEEN, seen_key)
+            if seen and "result" in seen:
+                result = {**seen["result"], "idempotent": True}
+                await self._finalize(tenant, CREDIT, source, result)
+                return result
+
         # Freeze the fund's ENTIRE expiry policy onto the grant at credit time — expiry AND behaviour —
         # so a later config change (or a deleted policy) can never retroactively forfeit a grant that
         # was issued as preserved/reclaimable. ttl_days=0 (or no policy) ⇒ never expires.
@@ -341,12 +365,23 @@ class WalletService:
                           created=self._clock.now())
             await self._store.put(_GRANTS, grant.id, grant.to_dict())
 
+        # Stamp the durable seen-source marker BEFORE the credit lands (rolled back below on failure),
+        # so a post-TTL replay can never double-credit even across a crash mid-mutate.
+        if seen_key:
+            # atomic: ok — serialized by the credit _claim on `source`; only the claim winner reaches
+            # here, and distinct sources write distinct seen_keys, so this key has a single writer.
+            await self._store.put(_CREDIT_SEEN, seen_key,
+                                  {"id": seen_key, "tenant": tenant, "source": source,
+                                   "result": {"credited": int(amount), "fund": fund}})
+
         entry = self._entry(tenant, CREDIT, {fund: int(amount)}, +1, source=source, reason=reason)
         try:
             out = await self._mutate(tenant, funds_delta={fund: int(amount)}, entry=entry)
         except Exception:
             if grant is not None:
                 await self._store.delete(_GRANTS, grant.id)   # nothing was credited — no orphan grant
+            if seen_key:
+                await self._store.delete(_CREDIT_SEEN, seen_key)  # roll back the marker with it
             raise
         if grant is not None:
             out["grant_id"] = grant.id
@@ -394,11 +429,36 @@ class WalletService:
             return prior
         if not proceed:
             raise Conflict("WALLET_OP_IN_PROGRESS")
+        # DURABLE backstop, independent of the idempotency TTL (audit wallet-r2-03). The _claim above
+        # only replays a duplicate while its result row is unexpired (24h); after that the source is
+        # re-claimed and the debit would run AGAIN — a double-charge. A never-expiring seen-source
+        # marker refuses that forever. Mirrors credit()/wallet_credit_seen exactly: stamped BEFORE the
+        # debit (rolled back on failure), so a crash can only ever leave money UNspent (a legit retry
+        # may be refused, fail-safe), never double-charged. Skipped when source is empty (opt-out).
+        seen_key = f"{tenant}|{source}" if source else ""
+        if seen_key:
+            seen = await self._store.get(_SPEND_SEEN, seen_key)
+            if seen and "result" in seen:
+                result = {**seen["result"], "idempotent": True}
+                await self._finalize(tenant, SPEND, source, result)
+                return result
         plan = await self._plan(await self._wallet(tenant), net, allowed)
         entry = self._entry(tenant, SPEND, plan.applied, -1, plan=plan.to_dict(),
                             source=source, reason=reason)
-        out = await self._mutate(tenant, funds_delta={k: -v for k, v in plan.applied.items()},
-                                 entry=entry)
+        if seen_key:
+            # atomic: ok — serialized by the spend _claim on `source`; only the claim winner reaches
+            # here, and distinct sources write distinct seen_keys, so this key has a single writer.
+            await self._store.put(_SPEND_SEEN, seen_key,
+                                  {"id": seen_key, "tenant": tenant, "source": source,
+                                   "result": {"spent": sum(plan.applied.values()),
+                                              "plan": plan.to_dict()}})
+        try:
+            out = await self._mutate(tenant, funds_delta={k: -v for k, v in plan.applied.items()},
+                                     entry=entry)
+        except Exception:
+            if seen_key:
+                await self._store.delete(_SPEND_SEEN, seen_key)   # nothing debited — un-mark
+            raise
         result = {"spent": sum(plan.applied.values()), "plan": plan.to_dict(), **out}
         await self._finalize(tenant, SPEND, source, result)
         await self._emit(_events.WALLET_SPENT,
@@ -442,6 +502,18 @@ class WalletService:
             return prior
         if not proceed:
             raise Conflict("WALLET_OP_IN_PROGRESS")
+        # DURABLE backstop, independent of the idempotency TTL (audit wallet-r2-03). The Withdrawal is
+        # the durable source object: it is written (with this `source`) BEFORE the debit and only
+        # deleted if that debit fails, so a request replayed AFTER the 24h claim TTL — a retried batch,
+        # a delayed callback — finds the earlier Withdrawal and never opens a second PENDING payout /
+        # debits again. find() by (tenant, source), not a ledger scan.
+        existing, _ = await self._store.find(_WITHDRAWALS, {"tenant": tenant, "source": source}, limit=1)
+        if existing:
+            wd0 = Withdrawal.from_dict(existing[0])
+            result = {"withdrawal_id": wd0.id, "amount": wd0.amount, "applied": dict(wd0.applied),
+                      "state": wd0.state, "idempotent": True}
+            await self._finalize(tenant, WITHDRAW, source, result)
+            return result
         w = await self._wallet(tenant)
         avail = _funds.available(w.funds, w.held)
         pool = sum(int(avail.get(n, 0)) for n in withdrawable)
@@ -683,18 +755,42 @@ class WalletService:
         # being refunded was the latest op and the process died between its wallet CAS and the ledger
         # put, refund would raise LEDGER_ENTRY_NOT_FOUND after taking the claim — a spurious refusal
         # that blocks a legitimate retry for the whole claim lease. The flush replays the staged row.
+        spend_key = _ledger_key(tenant, seq)
         await self._flush(await self._wallet(tenant))
-        row = await self._store.get(_LEDGER, _ledger_key(tenant, seq))
+        row = await self._store.get(_LEDGER, spend_key)
         if not row:
             raise WalletError("LEDGER_ENTRY_NOT_FOUND")
         if row["type"] != SPEND:
             raise WalletError("ONLY_A_SPEND_CAN_BE_REFUNDED")
 
         applied = {k: int(v) for k, v in row["applied"].items()}
+        # DURABLE backstop, independent of the idempotency TTL (audit wallet-r2-03). The _claim on
+        # spend:{seq} caps a spend at ONE refund only while its result row is unexpired (24h); after
+        # that the key is re-claimed and the spend would be refunded AGAIN — minting balance from an
+        # immutable spend row. A `refunded_ref` marker written onto that spend's ledger row makes
+        # "already refunded" a permanent fact. The row is otherwise immutable; this is the sole
+        # sanctioned marker and it touches no field reconcile() sums (type/applied are untouched).
+        if row.get("refunded_ref"):
+            result = {"refunded": sum(applied.values()), "applied": applied,
+                      "refunded_ref": row["refunded_ref"], "idempotent": True}
+            await self._finalize(tenant, REFUND, claim_key, result)
+            return result
+
         entry = self._entry(tenant, REFUND, applied, +1, source=source or claim_key, reason=reason,
                             ref=row["id"])
-        out = await self._mutate(tenant, funds_delta=applied, entry=entry)
-        result = {"refunded": sum(applied.values()), "applied": applied, **out}
+        # Stamp the marker BEFORE the credit (rolled back on failure), so a post-TTL replay can never
+        # double-refund even across a crash mid-mutate — fail-safe toward never over-refunding.
+        # atomic: ok — serialized by the refund _claim on spend:{seq}; only the claim winner reaches
+        # this read-modify-write of the spend row, so it has a single writer.
+        await self._store.put(_LEDGER, spend_key, {**row, "refunded_ref": entry["id"]})
+        try:
+            out = await self._mutate(tenant, funds_delta=applied, entry=entry)
+        except Exception:
+            # atomic: ok — same single-writer refund claim as the stamp above; restores the pre-stamp row.
+            await self._store.put(_LEDGER, spend_key, row)   # nothing credited — un-mark the spend
+            raise
+        result = {"refunded": sum(applied.values()), "applied": applied, "refunded_ref": entry["id"],
+                  **out}
         await self._finalize(tenant, REFUND, claim_key, result)
         # A refund can lift a wallet back over the line, and a customer never told they recovered
         # is one whose alerting is stuck low for ever.

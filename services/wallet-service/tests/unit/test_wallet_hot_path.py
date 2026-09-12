@@ -116,8 +116,10 @@ def test_a_spend_is_one_cas_plus_one_append_and_never_scans():
     # wallet-row mutate. The claim is what makes a duplicate source safe under concurrency — a
     # get-then-put check let two same-source requests both apply the spend. Still O(1), still no scan.
     assert st.cas_calls == 2, f"spend used {st.cas_calls} compare-and-swaps"
-    # writes: the ledger append + the finalized idempotency record. No ledger scan for dedupe.
-    assert st.writes == 2, f"unexpected write amplification: {st.writes}"
+    # writes: the ledger append + the DURABLE spend-seen marker (audit wallet-r2-03, the money
+    # backstop that makes a post-TTL replay safe — stamped before the debit) + the finalized
+    # idempotency record. Still O(1) keyed writes, no ledger scan for dedupe.
+    assert st.writes == 3, f"unexpected write amplification: {st.writes}"
 
 
 def test_spend_cost_does_not_grow_with_the_ledger():

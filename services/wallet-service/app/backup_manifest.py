@@ -40,6 +40,15 @@ BACKUP: dict[str, Any] = {
         # and losing it on restore would either strand the customer's debited funds or re-pay a
         # settled withdrawal. id-keyed.
         {"name": "withdrawals", "tenant_scoped": True},
+        # The DURABLE once-only credit marker (audit wallet-r2-03): one row per settled top-up source,
+        # keyed "{tenant}|{source}" == its own id, so the default {id} template round-trips it. This is
+        # money-integrity state, NOT a throwaway idempotency key: lose it on restore and a settlement
+        # webhook redelivered after the restore would double-credit, so it MUST survive. id-keyed.
+        {"name": "wallet_credit_seen", "tenant_scoped": True},
+        # The DURABLE once-only debit marker (audit wallet-r2-03), symmetric to wallet_credit_seen:
+        # one row per spent source, keyed "{tenant}|{source}" == its own id. Money-integrity state —
+        # lose it on restore and a spend replayed after the restore would double-charge. id-keyed.
+        {"name": "wallet_spend_seen", "tenant_scoped": True},
     ],
     "excluded": [
         {"name": "wallet_idempo",
