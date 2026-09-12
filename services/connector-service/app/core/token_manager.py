@@ -131,7 +131,11 @@ class TokenManager:
                 raise CredentialInvalid("no refresh token; re-authorisation required")
 
             try:
-                tokens = self._provider.refresh(refresh_token=refresh_token, spec=spec)
+                # OFFLOAD: refresh() does blocking urllib I/O to the OAuth token endpoint. Inline it
+                # blocks the single-worker event loop for the whole round-trip AND the single-flight
+                # lock holds it, so a slow token endpoint stalls the entire worker on every refresh.
+                tokens = await asyncio.to_thread(
+                    self._provider.refresh, refresh_token=refresh_token, spec=spec)
             except CredentialInvalid:
                 # Another REPLICA may have rotated the token a moment ago, which invalidates
                 # ours. Re-read before condemning the connection: if a fresh token now exists,

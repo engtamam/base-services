@@ -99,3 +99,14 @@ class SeenStore:
 
     async def mark(self, key: str) -> None:
         await self._store.put(_SEEN, key, {"k": key})
+
+    async def reserve(self, key: str) -> bool:
+        """Atomically claim `key`: True if WE reserved it (first-seen → process), False if it was
+        already taken. Replaces the non-atomic seen()->mark() pair so two concurrent syncs cannot both
+        process the same record (double-write). cas(expected=0) is an insert-if-absent."""
+        return await self._store.cas(_SEEN, key, 0, {"k": key})
+
+    async def release(self, key: str) -> None:
+        """Undo a reservation whose work then FAILED (e.g. a push whose provider call errored), so a
+        retry may process the record again — otherwise a failed send would be skipped forever."""
+        await self._store.delete(_SEEN, key)

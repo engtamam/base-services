@@ -16,6 +16,8 @@
 """
 from __future__ import annotations
 import asyncio
+import hashlib
+import json
 
 from typing import Any
 
@@ -44,7 +46,16 @@ class SyncEngine:
         self._bus = event_bus
 
     def _idem_key(self, conn_id: str, resource: str, record: dict) -> str:
-        source_id = record.get("id") or record.get("vid") or record.get("_id") or ""
+        source_id = record.get("id") or record.get("vid") or record.get("_id")
+        if not source_id:
+            # No natural source id — hash the record CONTENT so distinct id-less records get distinct
+            # keys. The old `or ''` collapsed every id-less record to one key `conn:res:`, so the
+            # first was processed and all the rest were silently seen-skipped (dropped). The hash is
+            # stable across retries of the same record (same content), preserving idempotency.
+            digest = hashlib.sha256(
+                json.dumps(record, sort_keys=True, separators=(",", ":"), default=str).encode()
+            ).hexdigest()
+            source_id = f"h:{digest[:32]}"
         return f"{conn_id}:{resource}:{source_id}"
 
     async def _guard_circuit(self, conn: Connection) -> str:
@@ -107,8 +118,11 @@ class SyncEngine:
         mapped, failed = [], 0
         for rec in page.records:
             key = self._idem_key(conn.id, resource, rec)
-            if await self._seen.seen(key):
-                continue                                  # already committed on a prior attempt
+            # ATOMIC reserve (was seen()->mark(), a check-then-set two concurrent runs could both
+            # pass). A reserved record is committed; a mapping failure keeps the reservation so the
+            # poison record is NOT reprocessed forever.
+            if not await self._seen.reserve(key):
+                continue                                  # already committed on a prior/concurrent run
             try:
                 out = _mapping.apply(field_map or {}, rec) if field_map else dict(rec)
                 out[ORIGIN_FIELD] = conn.provider          # echo-loop marker
@@ -119,27 +133,27 @@ class SyncEngine:
                     id=new_id("dlq_"), tenant=conn.tenant, connection_id=conn.id, run_id=run.id,
                     resource=resource, idempotency_key=key, record=rec,
                     error=f"map:{type(exc).__name__}", created=self._clock.now()))
-
-        # commit each record's idempotency mark — this IS the durable commit
-        for key, _out in mapped:
-            await self._seen.mark(key)
+                # reservation intentionally KEPT: the record is durably dead-lettered, so it must not
+                # be re-fetched and re-DLQ'd on every subsequent run (the poison-pill stall).
 
         run.records_in = len(page.records)
         run.records_out = len(mapped)
         run.records_failed = failed
 
-        # ── the watermark moves LAST, and only when nothing was lost ────────────
-        if failed == 0 and page.next_cursor:
+        # ── watermark advances whenever the provider gave a next cursor ──────────
+        # Failures no longer block it: an unmappable record is durably DLQ'd AND reserved, so advancing
+        # cannot lose it, and NOT advancing froze all progress for the resource forever (poison-pill).
+        if page.next_cursor:
             conn.watermarks[resource] = page.next_cursor
             run.watermark_after = page.next_cursor
         else:
-            run.watermark_after = run.watermark_before     # retry re-reads the same page
+            run.watermark_after = run.watermark_before
         await self._conns.save(conn)
 
-        if failed == 0:
-            await self._record_success(conn)
-        else:
-            await self._record_failure(conn, state, "map_failures")
+        # The PROVIDER fetch succeeded, so the connection is healthy — a client-side field-map failure
+        # is a tenant config error, not a provider outage, and must NOT trip the provider circuit
+        # breaker (which would disable a healthy connection). Record success regardless of map failures.
+        await self._record_success(conn)
         status = "succeeded" if failed == 0 else "partial"
         out = await self._finish(run, status)
         out["records"] = [r for _k, r in mapped]
@@ -171,17 +185,23 @@ class SyncEngine:
                 skipped += 1                              # echo-loop guard: don't send it back
                 continue
             key = self._idem_key(conn.id, resource, rec)
-            if await self._seen.seen(key):
-                skipped += 1                              # already pushed (retry-safe)
+            # ATOMIC reserve BEFORE the send, so two concurrent runs cannot both push the same record.
+            # A reservation that then FAILS to send is released, so a retry can resend (no lost write).
+            if not await self._seen.reserve(key):
+                skipped += 1                              # already pushed / being pushed
                 continue
             payload = _mapping.apply(field_map or {}, rec) if field_map else {
                 k: v for k, v in rec.items() if k != ORIGIN_FIELD}
             try:
-                self._provider.push(access_token=access, resource=resource, record=payload,
-                                    idempotency_key=key, spec=spec)
-                await self._seen.mark(key)                # commit before counting it sent
-                sent += 1
+                # OFFLOAD the blocking provider HTTP off the event loop (urllib inside push()); calling
+                # it inline froze the single-worker loop for the whole round-trip, per record — the
+                # same crash-loop class pull() already avoids with to_thread.
+                await asyncio.to_thread(
+                    self._provider.push, access_token=access, resource=resource, record=payload,
+                    idempotency_key=key, spec=spec)
+                sent += 1                                 # reservation stands = committed
             except (ProviderUnavailable, RateLimited, CredentialInvalid) as exc:
+                await self._seen.release(key)             # send failed → free it so a retry resends
                 failed += 1
                 await self._dlq.add(SyncRecord(
                     id=new_id("dlq_"), tenant=conn.tenant, connection_id=conn.id, run_id=run.id,

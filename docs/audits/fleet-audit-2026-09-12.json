@@ -686,80 +686,87 @@
       "issues": [
         {
           "id": "connector-service-01",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "high",
           "file": "app/core/sync_engine.py",
           "line": 46,
           "title": "Idempotency key collapses to one value for records lacking a source id, silently dropping records on push",
           "detail": "_idem_key returns f\"{conn_id}:{resource}:{source_id}\" where source_id = record.get('id') or record.get('vid') or record.get('_id') or ''. Any record without one of those keys produces the SAME key `cn:res:`. In push() (lines 173-176) the first such record is sent and marked seen; every subsequent record without an id then hits `if await self._seen.seen(key): skipped += 1; continue` and is silently skipped. The same collapse affects pull() dedup. Records that legitimately have no top-level id (nested-id objects, arrays of value rows) are dropped, not synced, with no error surfaced to the caller.",
-          "failure_scenario": "push a batch of 5 CRM notes that carry their id under `noteId` (not id/vid/_id). Record 1 is pushed; records 2-5 share key `cn:notes:` which is now marked seen, so they are counted `skipped` and never delivered. Response reports success with skipped=4; four records are permanently lost."
+          "failure_scenario": "push a batch of 5 CRM notes that carry their id under `noteId` (not id/vid/_id). Record 1 is pushed; records 2-5 share key `cn:notes:` which is now marked seen, so they are counted `skipped` and never delivered. Response reports success with skipped=4; four records are permanently lost.",
+          "resolution": "FIXED: _idem_key hashes record CONTENT when there is no id/vid/_id, so id-less records no longer collapse to one key and get dropped. Regression: test_audit_fixes.py."
         },
         {
           "id": "connector-service-02",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "bug",
           "severity": "high",
           "file": "app/core/sync_engine.py",
           "line": 132,
           "title": "A single unmappable record permanently blocks the pull watermark (poison-pill stall) and re-duplicates DLQ every attempt",
           "detail": "In pull(), the watermark only advances when `failed == 0` (lines 132-136), and any mapping exception increments `failed` and dead-letters the record (lines 116-121). Successfully mapped records are marked seen, but the failed record is not. On the next run the same page is re-fetched (watermark unchanged), the good records are seen-skipped, and the still-broken record fails again and is added to the DLQ with a NEW dlq id each time (line 118 new_id). So one permanently-unmappable record (bad field_map, malformed provider field) freezes ALL further progress for that resource forever and grows the DLQ without bound on every retry. push() handles this correctly (dead-letter and continue); pull() does not.",
-          "failure_scenario": "provider page 1 contains one record whose mapped field raises in _mapping.apply. failed=1 forever, so conn.watermarks[resource] never advances past page 1. Every scheduled sync re-reads page 1, re-DLQs that record (duplicate rows accumulate), and the tenant never receives pages 2..N — a silent, unrecoverable sync outage for that resource."
+          "failure_scenario": "provider page 1 contains one record whose mapped field raises in _mapping.apply. failed=1 forever, so conn.watermarks[resource] never advances past page 1. Every scheduled sync re-reads page 1, re-DLQs that record (duplicate rows accumulate), and the tenant never receives pages 2..N — a silent, unrecoverable sync outage for that resource.",
+          "resolution": "FIXED: pull dead-letters AND reserves an unmappable record and advances the watermark regardless of map failures, so one poison record no longer freezes the resource or re-DLQs every run. Regression: test_sync_engine.py."
         },
         {
           "id": "connector-service-03",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "perf",
           "severity": "high",
           "file": "app/core/sync_engine.py",
           "line": 180,
           "title": "push() runs the blocking provider HTTP call on the event loop",
           "detail": "pull() deliberately offloads the blocking provider call with `await asyncio.to_thread(self._provider.fetch, ...)` (line 91) precisely because the provider adapter does synchronous urllib I/O. push() calls `self._provider.push(...)` directly (line 180) with no to_thread. Each pushed record makes a synchronous outbound HTTP round-trip (oauth2_rest.push -> post_json -> urllib) that blocks the single-worker event loop for its full duration, freezing every other coroutine (including /healthz) — the exact crash-loop class documented in the project's 'blocking sync in async' memory. A push of N records serially blocks the loop for N round-trips.",
-          "failure_scenario": "a push batch of 100 records against a slow provider (500ms each) blocks the event loop for ~50s; liveness/readiness probes fail and the pod is killed mid-batch."
+          "failure_scenario": "a push batch of 100 records against a slow provider (500ms each) blocks the event loop for ~50s; liveness/readiness probes fail and the pod is killed mid-batch.",
+          "resolution": "FIXED: push offloads the blocking provider HTTP via asyncio.to_thread (was inline on the loop). Enforced by safety:async-blocking."
         },
         {
           "id": "connector-service-04",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "perf",
           "severity": "medium",
           "file": "app/core/token_manager.py",
           "line": 134,
           "title": "Token refresh performs blocking provider HTTP on the event loop while holding the single-flight lock",
           "detail": "_refresh_single_flight acquires the process-wide asyncio.Lock for the connection (line 114-115) then calls `self._provider.refresh(refresh_token=..., spec=spec)` synchronously (line 134). refresh() does blocking urllib I/O (oauth2_rest -> post_form -> urllib). Because it is not wrapped in asyncio.to_thread, the entire event loop is blocked for the full token-endpoint round-trip, AND the lock serializes it — so a slow OAuth token endpoint stalls the whole worker on every credential refresh. Contrast with pull()'s explicit to_thread offload for the same class of call.",
-          "failure_scenario": "an expiring token triggers refresh against a token endpoint that takes 3s; the event loop is frozen for those 3s, all concurrent requests stall, and health probes may fail."
+          "failure_scenario": "an expiring token triggers refresh against a token endpoint that takes 3s; the event loop is frozen for those 3s, all concurrent requests stall, and health probes may fail.",
+          "resolution": "FIXED: token refresh offloads the blocking OAuth call via asyncio.to_thread inside the single-flight lock. Enforced by safety:async-blocking."
         },
         {
           "id": "connector-service-05",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "medium",
           "file": "app/core/stores.py",
           "line": 97,
           "title": "SeenStore idempotency is a non-atomic check-then-set, allowing double-processing under concurrent runs",
           "detail": "SeenStore.seen() (get) and mark() (put) are two separate datastore operations with no atomic compare-and-set. sync_engine push (lines 174-182) and pull rely on `if seen(): skip else process; mark`. Two concurrent syncs of the same connection/resource (e.g. job-service retry overlapping a manual /api/v1/connectors/sync, or two replicas) can both observe the key as not-seen and both call provider.push for the same record, defeating the stated at-least-once/no-double-write guarantee. There is no per-connection concurrency guard on the sync routes either.",
-          "failure_scenario": "job-service's scheduled push and an operator-triggered push run within the same window; both pass seen(key)==False for record R and both POST it to the provider, creating a duplicate downstream record despite the Idempotency-Key header being provider-dependent."
+          "failure_scenario": "job-service's scheduled push and an operator-triggered push run within the same window; both pass seen(key)==False for record R and both POST it to the provider, creating a duplicate downstream record despite the Idempotency-Key header being provider-dependent.",
+          "resolution": "FIXED: SeenStore.reserve (atomic cas insert-if-absent) replaces the non-atomic seen()->mark(); a failed push releases the reservation so a retry resends. Added cas to the datastore. Regression: test_audit_fixes.py."
         },
         {
           "id": "connector-service-06",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "medium",
           "file": "app/core/sync_engine.py",
           "line": 142,
           "title": "Client-side mapping failures trip the provider circuit breaker",
           "detail": "In pull(), when records fail during local field-map application, the code calls `_record_failure(conn, state, 'map_failures')` (line 142), which increments conn.consecutive_failures and, at threshold, opens the circuit (circuit.on_failure). A malformed field_map is a tenant configuration error, not a provider outage, yet it drives the per-connection circuit breaker to OPEN, after which can_attempt() returns False and ALL further syncs for that connection are skipped with reason 'circuit_open' (lines 80-81). A configuration mistake thus disables a healthy connection.",
-          "failure_scenario": "a tenant saves a spec whose field_map path is wrong; five sync runs each record map_failures, the circuit opens, and subsequent syncs are refused for CIRCUIT_RESET_SECONDS even though the provider is fully reachable."
+          "failure_scenario": "a tenant saves a spec whose field_map path is wrong; five sync runs each record map_failures, the circuit opens, and subsequent syncs are refused for CIRCUIT_RESET_SECONDS even though the provider is fully reachable.",
+          "resolution": "FIXED: a client-side field-map failure no longer calls _record_failure, so a tenant config error cannot trip the provider circuit breaker; the fetch succeeded so _record_success is recorded. Regression: test_sync_engine.py."
         },
         {
           "id": "connector-service-07",
-          "status": "OPEN",
+          "status": "NEEDS_DECISION",
           "category": "correctness",
           "severity": "medium",
           "file": "app/core/sync_engine.py",
           "line": 124,
           "title": "pull() marks records 'seen' and advances the watermark before the caller has durably received them (at-most-once delivery)",
           "detail": "pull() commits idempotency marks (lines 124-125) and advances conn.watermarks (lines 132-133) before returning the records in the HTTP response body (lines 145-146). If the response is lost in transit and the caller retries the same pull, the watermark has already advanced and the records are seen-marked, so they are neither re-fetched nor re-returned — they are lost to the caller. This contradicts the module docstring's claim that the watermark 'advances only after the batch is durably processed'; for pull, 'processed' means only 'returned', which is not durable at the consumer.",
-          "failure_scenario": "engine.pull returns page 1 (watermark now at cursor2) but the network drops the HTTP response; the caller retries, receives page 2, and page 1's records are permanently skipped — silent data loss."
+          "failure_scenario": "engine.pull returns page 1 (watermark now at cursor2) but the network drops the HTTP response; the caller retries, receives page 2, and page 1's records are permanently skipped — silent data loss.",
+          "resolution": "VERIFIED REAL. pull() advances the server-stored watermark + marks records seen BEFORE the caller durably receives them, so a lost response = lost records (at-most-once). Making it at-least-once needs an explicit ACK step (or caller-supplied cursor), which changes the pull contract for the consumer (job-service). Surfaced to Tamam for a delivery-semantics decision; not silently changed."
         }
       ]
     },

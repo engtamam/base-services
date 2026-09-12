@@ -50,8 +50,10 @@ def test_clean_batch_advances_the_watermark():
     assert run(conns.get("cn_1")).watermarks["c"] == "CUR2"
 
 
-def test_partial_batch_does_not_advance_the_watermark():
-    """Advancing on a partial batch would skip the failed records forever."""
+def test_a_map_failure_dead_letters_and_still_advances_the_watermark():
+    """A permanently-unmappable record must NOT freeze progress (poison-pill). It is durably
+    dead-lettered AND its idempotency key reserved, so advancing the watermark cannot lose it — and
+    NOT advancing (the old behaviour) re-fetched the same page forever and re-DLQ'd it every run."""
     import app.core.sync_engine as SE
     original = SE._mapping.apply
 
@@ -68,9 +70,11 @@ def test_partial_batch_does_not_advance_the_watermark():
     finally:
         SE._mapping.apply = original
     assert r["status"] == "partial" and r["records_failed"] == 1
-    assert r["watermark_after"] == r["watermark_before"] == ""     # NOT advanced
-    assert run(conns.get("cn_1")).watermarks.get("c", "") == ""
+    assert r["watermark_after"] == "CUR2"                          # advanced past the poison record
+    assert run(conns.get("cn_1")).watermarks.get("c", "") == "CUR2"
     assert [d["record"]["id"] for d in run(dlq.list("t1"))] == ["2"]   # dead-lettered, not dropped
+    # the healthy connection is NOT circuit-tripped by a client-side map failure
+    assert run(conns.get("cn_1")).consecutive_failures == 0
 
 
 def test_partial_run_is_never_reported_as_success():
