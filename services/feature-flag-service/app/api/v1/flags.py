@@ -18,6 +18,12 @@ from app.core.stores import ConfigStore, FlagStore, MaintenanceStore, SegmentSto
 
 router = APIRouter(prefix="/api/v1", tags=["flags"])
 
+# The GLOBAL catalogue — flag definitions, segments, versioned config, maintenance mode — is shared
+# by EVERY tenant, so mutating it is a platform act: it requires platform.flags. flags.manage is a
+# tenant-delegatable cap (a tenant admin manages their own overrides); letting it edit the global
+# catalogue let any such holder kill a flag, retarget a segment, or trip global maintenance for the
+# whole fleet (round-2 r2-01..04). Tenant-scoped routes (overrides) still accept _ADMIN.
+_PLATFORM = require_any_capability("platform.flags")
 _ADMIN = require_any_capability("platform.flags", "flags.manage")
 _READ = require_any_capability("platform.flags", "flags.manage", "flags.read")
 
@@ -101,7 +107,7 @@ class MaintenanceIn(BaseModel):
 
 # ── flags (admin) ─────────────────────────────────────────────────────────────
 @router.post("/flags", status_code=201)
-async def upsert_flag(request: Request, body: FlagIn, principal: Principal = Depends(_ADMIN)) -> dict:
+async def upsert_flag(request: Request, body: FlagIn, principal: Principal = Depends(_PLATFORM)) -> dict:
     try:
         flag = await build_flags(request).upsert(actor=principal.subject, **body.model_dump())
     except ValueError as e:
@@ -124,7 +130,7 @@ async def stale_flags(request: Request, days: int | None = None) -> dict:
 
 
 @router.delete("/flags/{key}")
-async def archive_flag(request: Request, key: str, principal: Principal = Depends(_ADMIN)) -> dict:
+async def archive_flag(request: Request, key: str, principal: Principal = Depends(_PLATFORM)) -> dict:
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
@@ -140,7 +146,7 @@ async def archive_flag(request: Request, key: str, principal: Principal = Depend
 # ── segments (reusable audiences) ──────────────────────────────────────────────
 @router.post("/segments", status_code=201)
 async def upsert_segment(request: Request, body: SegmentIn,
-                         principal: Principal = Depends(_ADMIN)) -> dict:
+                         principal: Principal = Depends(_PLATFORM)) -> dict:
     seg = Segment(key=body.key, description=body.description, rules=body.rules, created=iso())
     saved = (await build_segments(request).save(seg)).to_dict()
     await request.app.state.auditor.record(
@@ -156,7 +162,7 @@ async def list_segments(request: Request) -> dict:
 
 @router.delete("/segments/{key}")
 async def delete_segment(request: Request, key: str,
-                         principal: Principal = Depends(_ADMIN)) -> dict:
+                         principal: Principal = Depends(_PLATFORM)) -> dict:
     await build_segments(request).delete(key)
     await request.app.state.auditor.record(
         "segment.deleted", actor=principal.subject, tenant=principal.tenant or "",
@@ -224,9 +230,9 @@ async def evaluate(request: Request, body: EvalIn, principal: Principal = Depend
 
 
 # ── config (versioned) ─────────────────────────────────────────────────────────
-@router.put("/config/{key}", dependencies=[Depends(_ADMIN)])
+@router.put("/config/{key}", dependencies=[Depends(_PLATFORM)])
 async def put_config(request: Request, key: str, body: ConfigIn,
-                     principal: Principal = Depends(_ADMIN)) -> dict:
+                     principal: Principal = Depends(_PLATFORM)) -> dict:
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
@@ -249,9 +255,9 @@ async def config_history(request: Request, key: str) -> dict:
     return {"history": await build_config(request).history(key)}
 
 
-@router.post("/config/{key}/rollback", dependencies=[Depends(_ADMIN)])
+@router.post("/config/{key}/rollback", dependencies=[Depends(_PLATFORM)])
 async def rollback_config(request: Request, key: str, version: int,
-                          principal: Principal = Depends(_ADMIN)) -> dict:
+                          principal: Principal = Depends(_PLATFORM)) -> dict:
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
@@ -267,7 +273,7 @@ async def rollback_config(request: Request, key: str, version: int,
 # ── maintenance ───────────────────────────────────────────────────────────────
 @router.put("/maintenance")
 async def set_maintenance(request: Request, body: MaintenanceIn,
-                          principal: Principal = Depends(_ADMIN)) -> dict:
+                          principal: Principal = Depends(_PLATFORM)) -> dict:
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.

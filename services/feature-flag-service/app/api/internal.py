@@ -131,7 +131,7 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
         ip=request.client.host if request.client else "")
     c = request.app.state.container
     s = get_settings()
-    eraser = FeatureFlagErasure(store=c.datastore, pii_salt=s.PII_SALT)
+    eraser = FeatureFlagErasure(store=c.datastore, pii_salt=s.PII_SALT, cache=c.cache)
     return await eraser.erase(body.tenant, body.subject)
 
 

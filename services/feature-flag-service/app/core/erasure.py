@@ -17,19 +17,35 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.pii import subject_ref
+from app.core.stores import FlagStore
 
 
 _FLAGS = "flags"
 _CATALOG_MAX = 10_000
+_CACHE_ONE = "flag:"          # must match FlagService's cache keys
+_CACHE_ALL = "flags:all"
 
 
 class FeatureFlagErasure:
     service = "feature-flag-service"
     category = "flag_overrides"
 
-    def __init__(self, *, store, pii_salt: str) -> None:
+    def __init__(self, *, store, pii_salt: str, cache=None) -> None:
         self._store = store
+        self._flags = FlagStore(store)
         self._salt = pii_salt
+        self._cache = cache
+
+    async def _invalidate(self, key: str) -> None:
+        # Evaluation reads a CACHED flag definition (flag:<key> / flags:all). Without invalidation an
+        # erased user's override would keep influencing evaluation until the cache TTL expired.
+        if self._cache is None:
+            return
+        for k in (f"{_CACHE_ONE}{key}", _CACHE_ALL):
+            try:
+                await self._cache.delete(k)
+            except Exception:
+                pass
 
     async def erase(self, tenant: str, subject: str) -> dict[str, Any]:
         ref = subject_ref(self._salt, tenant, subject)
@@ -39,10 +55,11 @@ class FeatureFlagErasure:
         for row in await self._store.scan_all(_FLAGS, _CATALOG_MAX):
             overrides = row.get("user_overrides") or {}
             if subject in overrides:
-                overrides.pop(subject)
-                row["user_overrides"] = overrides
-                await self._store.put(_FLAGS, row["key"], row)
-                touched += 1
+                # CAS-retry removal (not a raw put — that raced a concurrent admin edit) + cache
+                # invalidation so evaluation stops seeing the erased override immediately.
+                if await self._flags.remove_user_override(row["key"], subject):
+                    await self._invalidate(row["key"])
+                    touched += 1
 
         return {
             "service": self.service,

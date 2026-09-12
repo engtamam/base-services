@@ -37,6 +37,24 @@ class FlagStore:
         row = await self._store.get(_FLAGS, key)
         return Flag.from_dict(row) if row else None
 
+    async def remove_user_override(self, key: str, subject: str, *, retries: int = 5) -> bool:
+        """CAS-retry removal of ONE subject from a flag's user_overrides. True if the flag changed.
+
+        A raw put here raced a concurrent admin edit (whole-document last-writer-wins would drop the
+        edit); the version check makes the DSAR erasure lose-safe. On a lost CAS we re-read and retry."""
+        for _ in range(retries):
+            flag = await self.get(key)
+            if flag is None:
+                return False
+            overrides = dict(flag.user_overrides or {})
+            if subject not in overrides:
+                return False
+            overrides.pop(subject)
+            flag.user_overrides = overrides
+            if await self.cas_save(flag, int(flag.version)):
+                return True
+        return False
+
     async def list(self, limit: int = 500, include_archived: bool = False) -> list[dict]:
         if include_archived:
             # sweeper: the whole catalogue, archived flags included. Global, not tenant-scoped.
