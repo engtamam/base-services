@@ -25,5 +25,7 @@ class DrillStore:
         """The most recent drills, newest first — the DR-works evidence an operator reviews."""
         # sweeper: the drill log is this service's own control data, global and bounded by retention,
         # so reading it whole IS the operation, not a shortcut around an index.
-        rows = await self._s.scan_all(_COLL, limit)
+        # scan_all returns the key-ASCENDING first `limit` (oldest); read the whole bounded
+        # collection and sort newest-first so "recent" is genuinely the newest.
+        rows = await self._s.scan_all(_COLL, 10_000)
         return sorted(rows, key=lambda r: r.get("at", ""), reverse=True)[:limit]

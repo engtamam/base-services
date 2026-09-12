@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 _COLL = "backup_runs"
+_RECENT_SCAN = 10_000   # the run/restore/drill logs are bounded by retention; read the lot to sort
 
 
 class RunStore:
@@ -29,5 +30,8 @@ class RunStore:
         """The most recent runs, newest first — what the staleness alert reads."""
         # sweeper: the run log is the orchestrator's own control data, global and bounded by
         # retention, so reading it whole IS the operation, not a shortcut around an index.
-        rows = await self._s.scan_all(_COLL, limit)
+        # Read the WHOLE (bounded) collection then sort — scan_all(_COLL, limit) returns the
+        # key-ASCENDING first `limit`, i.e. the OLDEST runs (ids are run_<timestamp>), so "latest run"
+        # (recent(1)) was actually the earliest. Sort the full set newest-first and take `limit`.
+        rows = await self._s.scan_all(_COLL, _RECENT_SCAN)
         return sorted(rows, key=lambda r: r.get("started_at", ""), reverse=True)[:limit]

@@ -25,9 +25,28 @@ class TargetUnreachable(RuntimeError):
     """
 
 
+# Cloud instance-metadata endpoints — the classic exfil prize; blocked unconditionally.
+_METADATA_HOSTS = frozenset({"169.254.169.254", "fd00:ec2::254", "100.100.100.200", "192.0.0.192",
+                             "metadata.google.internal"})
+
+
 def _check_host(url: str, allowed_hosts: frozenset[str]) -> str:
-    host = (urllib.parse.urlparse(url).hostname or "").lower()
-    if allowed_hosts and host not in allowed_hosts:
+    parts = urllib.parse.urlparse(url)
+    scheme = (parts.scheme or "").lower()
+    host = (parts.hostname or "").lower()
+    # This call carries the internal token (and can resolve a stored operator secret into an outbound
+    # header), so egress is FAIL-CLOSED: without an explicit allowlist nothing may leave. An empty
+    # EGRESS_ALLOWED_HOSTS used to skip the check entirely — any host, enabling token/secret exfil to
+    # an attacker-registered target.
+    if scheme not in ("http", "https"):
+        raise TargetUnreachable(f"egress scheme not allowed: {scheme or '(none)'}")
+    if host in _METADATA_HOSTS:
+        raise TargetUnreachable("egress to a cloud metadata endpoint is refused")
+    if not allowed_hosts:
+        raise TargetUnreachable(
+            "egress is refused: EGRESS_ALLOWED_HOSTS is empty. This call carries an internal token, "
+            "so every outbound host must be explicitly allow-listed — an empty list means no egress.")
+    if host not in allowed_hosts:
         raise TargetUnreachable(
             f"target host {host!r} is not in EGRESS_ALLOWED_HOSTS — this call carries an internal "
             f"token and must not reach an unlisted host")

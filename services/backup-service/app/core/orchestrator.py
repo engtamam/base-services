@@ -29,6 +29,8 @@ phase's whole belief is that an unverified backup counts as no backup at all.
 """
 from __future__ import annotations
 
+import secrets as _secrets
+
 import asyncio
 import hashlib
 import json
@@ -174,7 +176,7 @@ class Orchestrator:
 
     async def run(self, *, tenant: str = "") -> dict[str, Any]:
         """Capture every enabled target. The run's status is the worst target's."""
-        run_id = f"run_{self._iso().replace(':', '').replace('-', '')}"
+        run_id = f"run_{self._iso().replace(':', '').replace('-', '')}_{_secrets.token_hex(3)}"
         targets = await self._targets.enabled(self._cfg["target_limit"])
         results = [await self._capture_one(t, run_id, tenant) for t in targets]
 

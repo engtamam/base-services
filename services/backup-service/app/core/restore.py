@@ -30,6 +30,8 @@ target's knowledge.
 """
 from __future__ import annotations
 
+import secrets as _secrets
+
 import asyncio
 import json
 from dataclasses import dataclass
@@ -130,7 +132,7 @@ class RestoreOrchestrator:
                       overwrite: bool = False, require_verified: bool = True,
                       safety_snapshot: bool = True) -> dict[str, Any]:
         """Restore a backup run across its targets. Returns the recorded restore."""
-        restore_id = f"restore_{self._iso().replace(':', '').replace('-', '')}"
+        restore_id = f"restore_{self._iso().replace(':', '').replace('-', '')}_{_secrets.token_hex(3)}"
         run = await self._runs.get(run_id)
         if not run:
             raise RestoreError(f"backup run {run_id!r} does not exist")
@@ -187,7 +189,13 @@ class RestoreOrchestrator:
         snapshot_key = ""
         if safety_snapshot:
             try:
-                snapshot_key = await self._snapshot(base, service, restore_id, token, tenant,
+                # WHOLE-SERVICE snapshot (tenant=""), not the caller's `tenant`: the import below
+                # overwrites the target's full state (import_archive applies the whole stored archive
+                # with no tenant filter), so the undo point MUST capture the same scope or undo() can
+                # only restore a subset — leaving the rest of the overwrite unrecoverable. The `tenant`
+                # arg does NOT scope the restore (import has no tenant filter); scoping it is a
+                # separate feature (see the audit note), and a partial snapshot was the unsafe part.
+                snapshot_key = await self._snapshot(base, service, restore_id, token, "",
                                                     allowed, timeout)
             except _SnapshotFailed as exc:
                 return TargetRestore(service, FAILED,
@@ -244,7 +252,7 @@ class RestoreOrchestrator:
         prior = await self._restores.get(restore_id)
         if not prior:
             raise RestoreError(f"restore {restore_id!r} does not exist")
-        undo_id = f"undo_{self._iso().replace(':', '').replace('-', '')}"
+        undo_id = f"undo_{self._iso().replace(':', '').replace('-', '')}_{_secrets.token_hex(3)}"
         want = set(services or [])
         results: list[TargetRestore] = []
         for r in prior.get("results", []):

@@ -17,6 +17,8 @@ is torn down there. The drill writes only its own result row.
 """
 from __future__ import annotations
 
+import secrets as _secrets
+
 import asyncio
 import json
 from dataclasses import dataclass
@@ -71,7 +73,7 @@ class RestoreDrill:
 
     async def run(self, *, services: list[str] | None = None) -> dict[str, Any]:
         """Drill every registered target's best backup. Records and returns the result."""
-        drill_id = f"drill_{self._iso().replace(':', '').replace('-', '')}"
+        drill_id = f"drill_{self._iso().replace(':', '').replace('-', '')}_{_secrets.token_hex(3)}"
         targets = await self._targets.enabled(self._cfg["target_limit"])
         ordered = sorted(await self._runs.recent(self._cfg["run_history"]),
                          key=lambda r: r.get("started_at", ""), reverse=True)
