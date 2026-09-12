@@ -1242,7 +1242,19 @@ class BillingService:
         return base_minor, tax, base_minor + tax
 
     async def run_overage(self, sub_id: str) -> Invoice | None:
-        """Bill metered usage over the plan's included units (idempotent per period). Zero → none."""
+        """Bill metered usage over the plan's included units (idempotent per period). Zero → none.
+
+        OPERATOR CONTRACT (billing-r2-05): overage bills the subscription's CURRENT period
+        (current_period_start/end) and keys idempotency on current_period_start. run_cycle() ADVANCES
+        those fields when it renews. The scheduler is safe by construction — the due sweep
+        (cycle_due_sweep) calls run_cycle/run_consolidated_cycle only, never run_overage, so the
+        service never advances a period before billing its overage. The one hazard is a HUMAN running
+        this admin action AFTER a manual run_cycle for the same subscription: it would then aggregate
+        the freshly-advanced (empty) window and bill zero, silently skipping the just-closed period's
+        overage. RULE: run overage BEFORE renewing a period (or before a manual run_cycle). A robust
+        code-level fix (bill overage against an explicit closed period captured inside run_cycle, or an
+        explicit period argument here) is a deliberate money-routing change held for a separate decision.
+        """
         sub = await self._subs.fetch(sub_id)
         if sub is None:
             raise ValueError("SUB_NOT_FOUND")
