@@ -22,6 +22,16 @@ class TicketStore:
         await self._s.put(self.collection, t.id, t.to_dict())
         return t
 
+    async def cas_save(self, t: Ticket) -> bool:
+        """Persist `t` ONLY if the stored row is still at `t.version` (the version we read). Returns
+        True and advances `t.version` on success, False if another writer moved it first. This is the
+        atomic seam a state transition needs: read -> decide -> cas, retrying on a lost race, so two
+        concurrent moves can never both apply on top of the same base state."""
+        ok = await self._s.cas(self.collection, t.id, t.version, t.to_dict())
+        if ok:
+            t.version += 1
+        return ok
+
     async def fetch(self, ticket_id: str) -> Ticket | None:
         row = await self._s.get(self.collection, ticket_id)
         return Ticket.from_dict(row) if row else None

@@ -75,24 +75,31 @@ class InboundBridge:
         if not (msg.external_id and msg.sender and msg.tenant):
             return "skipped"                        # nothing to key, dedupe, or attribute
         ikey = f"{msg.channel}:{msg.external_id}"
-        if await self._store.get(_INGESTED, ikey) is not None:
-            return "skipped"                        # idempotent: seen this message before
-        # Claim BEFORE the write so a concurrent/re-polled copy cannot double-open; roll back if the
-        # write fails so the message is retried rather than silently lost.
-        await self._store.put(_INGESTED, ikey, {"seen": 1, "ts": msg.timestamp})
+        # Claim ATOMICALLY before the write so a concurrent/re-polled copy cannot double-open. The old
+        # get-then-put had a TOCTOU window: two deliveries of the same message could both see "absent"
+        # and both open a ticket. cas(expected_version=0) is insert-if-absent — exactly one claimant
+        # wins; the loser is a re-delivery and is skipped. Rolled back if the write fails so the
+        # message is retried rather than silently lost.
+        if not await self._store.cas(_INGESTED, ikey, 0, {"seen": 1, "ts": msg.timestamp}):
+            return "skipped"                        # idempotent: seen (or being ingested) already
         try:
-            tkey = self._thread_key(msg.tenant, msg.channel, msg.sender)
+            # PSEUDONYMISE the sender before it is persisted anywhere. The raw phone number must never
+            # be stored — not in the thread-index key, the ticket ref, or a reply author. The
+            # pseudonym is deterministic (salted hash), so the same sender still resolves to the same
+            # thread. (raiser is still passed raw to open(), which pseudonymises it into raiser_ref.)
+            sref = self._svc.pseudonym(msg.tenant, msg.sender)
+            tkey = self._thread_key(msg.tenant, msg.channel, sref)
             idx = await self._store.get(_THREAD, tkey) or {}
             existing = idx.get("ticket_id")
             if existing:
                 t = await self._open_ticket(msg.tenant, existing)
                 if t is not None:
                     await self._svc.reply(tenant=msg.tenant, ticket_id=existing,
-                                          author=msg.sender, body=msg.text, by="customer")
+                                          author=sref, body=msg.text, by="customer")
                     return "appended"
             t = await self._svc.open(tenant=msg.tenant, type=self._type, subject=self._subject(msg),
                                      body=msg.text, raiser=msg.sender,
-                                     ref={"kind": msg.channel, "id": msg.sender})
+                                     ref={"kind": msg.channel, "id": sref})
             await self._store.put(_THREAD, tkey, {"ticket_id": t.id})
             return "created"
         except Exception:

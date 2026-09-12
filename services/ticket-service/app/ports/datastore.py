@@ -41,6 +41,18 @@ class DataStore(Protocol):
         """
         ...
 
+    async def cas(self, collection: str, key: str, expected_version: int,
+                  value: dict[str, Any]) -> bool:
+        """Compare-and-set: write `value` only if the stored row's `version` equals
+        `expected_version`, returning True on success and False on a version mismatch (a lost race).
+
+        The stored row's `version` is stamped by this method (expected_version + 1); callers never
+        set it. `expected_version=0` means "insert only if absent" — so a row under optimistic locking
+        must seed version>=1 the first time it is written, or a second insert-if-absent would also see
+        version 0 and both would think they won.
+        """
+        ...
+
     async def scan_all(self, collection: str, limit: int) -> list[dict[str, Any]]:
         """EVERY row in a collection. A sweeper or a migration — never a request path."""
         ...

@@ -45,7 +45,11 @@ def test_first_message_opens_a_ticket_with_sender_pseudonymised():
     assert len(rows) == 1
     t = rows[0]
     assert t["type"] == "support" and t["status"] == "new"
-    assert t["ref"] == {"kind": "whatsapp", "id": "966500"}
+    # ref.id is the PSEUDONYM of the sender, never the raw phone (audit #02): the channel kind stays
+    # for traceability, the identity is the same salted pseudonym as raiser_ref.
+    assert t["ref"]["kind"] == "whatsapp"
+    assert t["ref"]["id"] == svc.pseudonym("acme", "966500")
+    assert "966500" not in t["ref"]["id"]
     assert t["raiser_ref"] and t["raiser_ref"] != "966500"     # pseudonym, never the raw phone
 
 

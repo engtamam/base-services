@@ -69,6 +69,9 @@ class Ticket:
     created: str = field(default_factory=now)
     updated: str = field(default_factory=now)
     meta: dict[str, Any] = field(default_factory=dict)
+    # Optimistic-lock counter for compare-and-set on status transitions. Seeded to 1 on first save so
+    # an insert-if-absent (cas expected_version=0) is well-defined; each successful cas bumps it.
+    version: int = 1
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -76,6 +79,7 @@ class Ticket:
             "status": self.status, "raiser_ref": self.raiser_ref, "assignee": self.assignee,
             "priority": self.priority, "ref": self.ref, "tags": self.tags,
             "created": self.created, "updated": self.updated, "meta": self.meta,
+            "version": self.version,
         }
 
     @classmethod
@@ -86,10 +90,13 @@ class Ticket:
             raiser_ref=d.get("raiser_ref", ""), assignee=d.get("assignee", ""),
             priority=d.get("priority", "normal"), ref=dict(d.get("ref") or {}),
             tags=list(d.get("tags") or []), created=d.get("created", now()),
-            updated=d.get("updated", now()), meta=dict(d.get("meta") or {}))
+            updated=d.get("updated", now()), meta=dict(d.get("meta") or {}),
+            version=int(d.get("version", 1)))
 
     def public(self) -> dict[str, Any]:
-        return self.to_dict()
+        d = self.to_dict()
+        d.pop("version", None)   # the lock counter is an internal detail, not part of the API shape
+        return d
 
     def touch(self) -> None:
         self.updated = now()

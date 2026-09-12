@@ -313,8 +313,17 @@ async def list_shared_tickets(request: Request, tenant: str, grantee: str,
                              "reason": "no active consent grant for this grantee"}, status_code=409)
     tickets, _, _ = _stores(request)
     cap = settings.TICKET_SHARE_LIST_MAX
-    rows, cursor = await tickets.find(tenant=tenant, limit=cap + 1)
-    covered = [r for r in rows if grant.covers(r)]
+    # PAGE the tenant's tickets applying grant.covers as a post-filter, until we have cap+1 covered
+    # rows or the tenant is exhausted. The old single find(limit=cap+1) filtered ONE page: if the
+    # first cap+1 tickets were mostly outside the grant's scope, a covered ticket sitting past that
+    # page was silently invisible to the grantee (an under-read, not a leak) and `truncated` lied.
+    covered: list[dict] = []
+    cursor: str | None = None
+    while len(covered) <= cap:
+        page, cursor = await tickets.find(tenant=tenant, limit=cap + 1, after=cursor)
+        covered.extend(r for r in page if grant.covers(r))
+        if not cursor:
+            break
     truncated = len(covered) > cap
     return {"tenant": tenant, "grantee": grantee,
             "tickets": [_project(r) for r in covered[:cap]], "truncated": truncated}

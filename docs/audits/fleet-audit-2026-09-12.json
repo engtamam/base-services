@@ -1417,7 +1417,7 @@
       "issues": [
         {
           "id": "ticket-service-01",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "bug",
           "severity": "high",
           "file": "services/ticket-service/app/core/erasure.py",
@@ -1428,7 +1428,7 @@
         },
         {
           "id": "ticket-service-02",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "security",
           "severity": "medium",
           "file": "services/ticket-service/app/core/inbound_bridge.py",
@@ -1439,7 +1439,7 @@
         },
         {
           "id": "ticket-service-03",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "medium",
           "file": "services/ticket-service/app/core/ticket_service.py",
@@ -1450,7 +1450,7 @@
         },
         {
           "id": "ticket-service-04",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "bug",
           "severity": "medium",
           "file": "services/ticket-service/app/api/internal.py",
@@ -1461,7 +1461,7 @@
         },
         {
           "id": "ticket-service-05",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "low",
           "file": "services/ticket-service/app/core/inbound_bridge.py",
@@ -1472,7 +1472,7 @@
         },
         {
           "id": "ticket-service-06",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "low",
           "file": "services/ticket-service/app/core/ticket_service.py",

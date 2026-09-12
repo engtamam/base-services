@@ -70,6 +70,18 @@ class MemoryDataStore:
             next_cursor = _cursor.encode(last.get(field), str(last.get("id", "")))
         return copy.deepcopy(page), next_cursor
 
+    async def cas(self, collection: str, key: str, expected_version: int,
+                  value: dict[str, Any]) -> bool:
+        bucket = self._data.setdefault(collection, {})
+        current = bucket.get(key)
+        current_version = int(current.get("version", 0)) if current else 0
+        if current_version != int(expected_version):
+            return False
+        stored = copy.deepcopy(value)
+        stored["version"] = current_version + 1
+        bucket[key] = stored
+        return True
+
     async def scan_all(self, collection: str, limit: int) -> list[dict[str, Any]]:
         """Every row. Sweepers and migrations only - see the port."""
         rows = list(self._data.get(collection, {}).values())

@@ -42,6 +42,10 @@ class TicketErasure:
             if row.get("subject") != _REDACTED:
                 row["subject"] = _REDACTED
                 row["meta"] = {}            # meta may echo submitted content
+                # ref carries {kind, id} where a legacy inbound id was the raw sender (phone) — drop
+                # the id, keep the channel kind. (New tickets already store a pseudonym there.)
+                if isinstance(row.get("ref"), dict) and row["ref"].get("id"):
+                    row["ref"] = {"kind": row["ref"].get("kind", "")}
                 await self._s.put("tickets", row["id"], row)
         if tickets:
             erased.append(f"ticket_subjects:{len(tickets)}")

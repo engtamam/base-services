@@ -187,6 +187,14 @@ async def reply_ticket(request: Request, ticket_id: str, body: ReplyIn,
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
     if not operator and t.raiser_ref != svc.pseudonym(tenant, principal.subject):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    # Per-type reply capability: the workflow declares who may reply to THIS type (default
+    # "tickets.self"). It was parsed but never enforced — a non-operator raiser could reply to a type
+    # its workflow restricts. An operator (tickets.manage) is always allowed; anyone else must hold
+    # the type's declared capability.
+    if not operator:
+        needed = svc.reply_capability_for(t.type)
+        if needed and needed not in set(principal.caps or ()):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "FORBIDDEN")
     await request.app.state.auditor.record(
         "ticket.replied", actor=principal.subject, tenant=tenant, resource=f"ticket:{ticket_id}",
         ip=request.client.host if request.client else "")

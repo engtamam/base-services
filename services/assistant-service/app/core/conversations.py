@@ -254,6 +254,7 @@ class ConversationStore:
         after = ""
         convs, msgs = 0, 0
         while True:
+            # sweeper: cron retention sweep (justified in full above) — never a request path.
             rows = await self._s.scan_all(_CONVERSATIONS, page, after=after)
             if not rows:
                 break

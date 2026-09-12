@@ -101,30 +101,45 @@ class TicketService:
         await self._after(t, tt, "replied", actor_ref=actor_ref, body=body)
         return t
 
+    def reply_capability_for(self, type: str) -> str:
+        """The capability a caller must hold to add a reply to a ticket of this type (config-driven,
+        per workflow). Enforced at the reply route — it was parsed but never checked."""
+        return self._wf.require(type).reply_capability
+
     # ── transition ──────────────────────────────────────────────────────────────
     async def transition(self, *, tenant: str, ticket_id: str, to: str, actor: str,
-                         actor_caps: set[str], is_operator: bool = False) -> Ticket:
-        t = await self._fetch(tenant, ticket_id)
-        tt = self._wf.require(t.type)
-        if t.status == to:
-            return t                        # idempotent: already there, no event, no notify
-        if not tt.can_transition(t.status, to):
-            raise InvalidTransition(f"{t.type}: cannot move {t.status!r} -> {to!r}")
-        needed = tt.capability_for(to, self._operator_cap)
-        if needed not in actor_caps:
-            raise TransitionForbidden(f"transition to {to!r} requires {needed!r}")
-        actor_ref = actor if is_operator else self.pseudonym(tenant, actor)
-        frm = t.status
-        t.status = to
-        t.touch()
-        await self._tickets.save(t)
-        # `resolved` marks a move to a TERMINAL status, so a KPI read (kpis.ticket_kpis) can derive
-        # resolution time from the log without knowing this type's workflow — the log carries the fact.
-        data = {"from": frm, "to": to, "resolved": to in tt.terminal}
-        await self._events.append(tenant=tenant, ticket_id=t.id, kind="status_changed",
-                                  actor_ref=actor_ref, data=data)
-        await self._after(t, tt, "status_changed", actor_ref=actor_ref, data=data)
-        return t
+                         actor_caps: set[str], is_operator: bool = False,
+                         _max_retries: int = 5) -> Ticket:
+        # ATOMIC state move. The old path was fetch -> validate -> save (a plain put): two concurrent
+        # callers could both read status `A`, both find A->B legal, and both write B, each appending a
+        # status_changed event — the log then shows the ticket moved twice from the same base, and a
+        # capability check that was valid for one move was silently reused for another. Now the write is
+        # a compare-and-set on the row version; a lost race REFETCHES and re-validates against the NEW
+        # state, so the second mover is judged on where the ticket actually is, not where it was.
+        for _ in range(max(1, _max_retries)):
+            t = await self._fetch(tenant, ticket_id)
+            tt = self._wf.require(t.type)
+            if t.status == to:
+                return t                    # idempotent: already there, no event, no notify
+            if not tt.can_transition(t.status, to):
+                raise InvalidTransition(f"{t.type}: cannot move {t.status!r} -> {to!r}")
+            needed = tt.capability_for(to, self._operator_cap)
+            if needed not in actor_caps:
+                raise TransitionForbidden(f"transition to {to!r} requires {needed!r}")
+            actor_ref = actor if is_operator else self.pseudonym(tenant, actor)
+            frm = t.status
+            t.status = to
+            t.touch()
+            if not await self._tickets.cas_save(t):
+                continue                    # another writer moved first — refetch and re-validate
+            # `resolved` marks a move to a TERMINAL status, so a KPI read (kpis.ticket_kpis) can derive
+            # resolution time from the log without knowing this type's workflow — the log carries it.
+            data = {"from": frm, "to": to, "resolved": to in tt.terminal}
+            await self._events.append(tenant=tenant, ticket_id=t.id, kind="status_changed",
+                                      actor_ref=actor_ref, data=data)
+            await self._after(t, tt, "status_changed", actor_ref=actor_ref, data=data)
+            return t
+        raise InvalidTransition(f"{ticket_id}: concurrent transitions could not converge")
 
     # ── escalate ────────────────────────────────────────────────────────────────
     async def escalate(self, *, tenant: str, ticket_id: str, actor: str, level: str = "",
