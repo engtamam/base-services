@@ -33,14 +33,25 @@ class ZatcaInputError(ValueError):
 def _validate_invoice_input(invoice_in: dict, default_currency: str) -> None:
     """Fail a malformed payload loudly and early, before any slot is reserved.
 
-    build_ubl() coerces `amount_minor` with int() and rejects a non-3-letter currency by raising
-    ValueError mid-build — which, left uncaught, surfaced as an unhandled 500 that contradicted the
-    'finalize never fails the caller' guarantee. Checking the same shape here turns it into a clean
-    422 and, crucially, does it before allocate_slot so a bad request cannot consume an ICV.
+    build_ubl() coerces `amount_minor`, `qty` and `issued_at` with int() and rejects a non-3-letter
+    currency by raising ValueError mid-build — which, left uncaught, surfaced as an unhandled 500
+    that contradicted the 'finalize never fails the caller' guarantee AND burned the ICV that
+    allocate_slot had already reserved (zatca-r2-05). Validation must therefore cover EVERY field
+    build_ubl int()-coerces, so a payload that passes here is guaranteed to build. It runs before
+    allocate_slot, so a bad request never consumes an ICV. A missing `number` (zatca-r2-11) is a
+    clean 422 here rather than a KeyError 500 in finalize's by_number lookup.
     """
+    if invoice_in.get("number") in (None, ""):
+        raise ZatcaInputError("invoice number is required")
     cur = str(invoice_in.get("currency", default_currency) or default_currency).upper()
     if not (len(cur) == 3 and cur.isalpha()):
         raise ZatcaInputError(f"invalid currency code: {invoice_in.get('currency')!r}")
+    issued_at = invoice_in.get("issued_at")
+    if issued_at is not None:                       # build_ubl: int(inv.get('issued_at') or 0)
+        try:
+            int(issued_at)
+        except (TypeError, ValueError):
+            raise ZatcaInputError(f"issued_at is not an integer epoch: {issued_at!r}") from None
     lines = invoice_in.get("lines")
     if not isinstance(lines, list) or not lines:
         raise ZatcaInputError("invoice has no lines")
@@ -51,6 +62,11 @@ def _validate_invoice_input(invoice_in: dict, default_currency: str) -> None:
             int(ln["amount_minor"])
         except (TypeError, ValueError):
             raise ZatcaInputError(f"line {i}: amount_minor is not an integer") from None
+        if "qty" in ln:                            # build_ubl: int(lines[i].get('qty', 1))
+            try:
+                int(ln["qty"])
+            except (TypeError, ValueError):
+                raise ZatcaInputError(f"line {i}: qty is not an integer") from None
 
 
 class ZatcaService:
@@ -75,14 +91,19 @@ class ZatcaService:
 
     # ── issuance ────────────────────────────────────────────────────────────────
     async def finalize(self, invoice_in: dict, tenant: str) -> dict[str, Any]:
+        # Guard `number` presence FIRST: the by_number lookup below indexes on str(number), so a
+        # payload without one raised KeyError -> unhandled 500 before any validation (zatca-r2-11).
+        if invoice_in.get("number") in (None, ""):
+            raise ZatcaInputError("invoice number is required")
+        number = str(invoice_in["number"])
         # Validate the payload BEFORE reserving an ICV: a malformed line or currency is a permanent
         # caller error (422), and reserving a slot for one would burn a chain ICV that can never be
         # signed. Only runs on the fresh path — a retry re-enters with the draft already built.
-        if not (await self._inv.by_number(tenant, str(invoice_in["number"]))):
+        if not (await self._inv.by_number(tenant, number)):
             _validate_invoice_input(invoice_in, self._currency)
         simplified = not (invoice_in.get("buyer") or {}).get("vat_number")
         itype = "simplified" if simplified else "standard"
-        inv, _created = await self._inv.allocate_slot(tenant, str(invoice_in["number"]), itype)
+        inv, _created = await self._inv.allocate_slot(tenant, number, itype)
         if inv.status in ACCEPTED:
             return self._result(inv)                      # idempotent — already done
 
@@ -112,6 +133,15 @@ class ZatcaService:
         # immediately-preceding ICV to be signed, bind THIS invoice's PIH to that predecessor's real
         # hash (rebuilding just the PIH in the unsigned XML), and sign the corrected document. If the
         # predecessor is not signed yet, we defer — the chain is built strictly in order.
+        # Byte-safety guard (zatca-r2-02): never re-sign an invoice that a concurrent actor has
+        # already signed. A second sign of the same ICV (two overlapping sweeps, or sweep-vs-resubmit)
+        # must be a no-op on the stored bytes — the losing sign that reached here would otherwise call
+        # the SDK again and hand mark_signed a different hash. If the durable row already carries a
+        # signed body (or is terminally accepted), defer to it rather than re-signing. A 'failed' row
+        # with no signed body is still re-signable (zatca-r2-06 resubmit recovery).
+        fresh = await self._inv.get(inv.id)
+        if fresh is not None and (fresh.signed_xml or fresh.status in ACCEPTED):
+            return False
         signed_icv, signed_hash = await self._inv.signed_head(inv.tenant)
         if int(inv.icv) != signed_icv + 1:
             await self._defer(inv, f"awaiting ICV {signed_icv + 1} before signing ICV {inv.icv}")
@@ -147,11 +177,11 @@ class ZatcaService:
         inv.hash = signed["invoiceHash"]                   # this hash = next invoice's PIH
         inv.qr = signed.get("qrBase64", "")
         inv.status = "signed"
-        # Advance the signed head CONTIGUOUSLY (save + cas). We already verified icv == signed_icv+1
-        # above, so this advances the chain by exactly one link; if a concurrent sign moved it first,
-        # the invoice is still durably saved as 'signed' and the next sweep reconciles the head.
-        await self._inv.mark_signed(inv)
-        return True
+        # Advance the signed head CONTIGUOUSLY, persisting the signed body ONLY if this invoice wins
+        # the head CAS (mark_signed now does head-CAS-then-save). HONOR its return (zatca-r2-02): a
+        # losing concurrent sign gets False — its bytes were NOT persisted, so we must NOT submit them.
+        # The caller (finalize/sweep/resubmit) treats False as "defer, do not submit".
+        return await self._inv.mark_signed(inv)
 
     def _validate_ok(self, inv: ZatcaInvoice) -> bool:
         """Optional pre-submit check with the official SDK validator. Fail-OPEN if the
@@ -240,7 +270,12 @@ class ZatcaService:
         if secrets is None:
             return {"ok": False, "reason": "NOT_ONBOARDED"}
         inv.attempts = 0                                    # manual resubmit restarts the clock
-        if inv.status in ("none", "pending"):
+        # Re-sign whenever there is no signed body yet — including a 'failed' row that was capped
+        # WHILE still awaiting signing (zatca-r2-06). The old guard (status in none/pending) skipped a
+        # capped-unsigned invoice and then submitted an empty signed_xml the gateway hard-rejects,
+        # leaving it permanently unrecoverable. A row that already has signed bytes is re-submitted
+        # as-is (never re-signed — its bytes are sacrosanct).
+        if not inv.signed_xml:
             if not await self._sign(inv, secrets):
                 return {"ok": True, **self._result(inv)}
         res = await self._submit(inv, secrets)

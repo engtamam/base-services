@@ -54,5 +54,21 @@ def after(row_sort_value: Any, row_id: str, cursor: tuple[Any, str], descending:
 
 
 def _key(value: Any) -> Any:
-    """Order None consistently rather than raising when a row lacks the sort field."""
-    return "" if value is None else value
+    """A TOTAL ordering key that never raises, whatever the row's sort field holds.
+
+    A swept collection legitimately mixes a numeric sort field (a `next_retry_at` float) with rows
+    that have none yet (fresh/pending/post-crash → None). The old key returned `""` for None, so a
+    Python `sort` then compared `str` against `float` and raised TypeError on the memory adapter,
+    while postgres COALESCEs the JSON null and does not — an adapter divergence the port denies
+    having (zatca-r2-04). We return a `(rank, number, text)` tuple so:
+      • two values are only ever compared field-by-field within the SAME type, never str vs float;
+      • a missing field (None) sorts AFTER every real value in ASC (matching the retry sweep's
+        COALESCE(...'null'...) placement of not-yet-scheduled rows past the due ones).
+    """
+    if value is None:
+        return (2, 0.0, "")                 # missing sort field orders last (ASC) / first (DESC)
+    if isinstance(value, bool):             # bool is an int subclass — keep it in the numeric lane
+        return (1, float(value), "")
+    if isinstance(value, (int, float)):
+        return (1, float(value), "")
+    return (1, 0.0, str(value))

@@ -31,13 +31,26 @@ def classify(code: int, resp: dict, *, success_status: str) -> dict[str, Any]:
     warnings = messages(vr, "warningMessages")
     errors = messages(vr, "errorMessages")
     status_val = str(resp.get("clearanceStatus") or resp.get("reportingStatus") or "").upper()
-    accepted = status_val in ("CLEARED", "REPORTED") or (
-        200 <= code < 300 and "NOT_" not in status_val and not errors)
+    cleared_doc = resp.get("clearedInvoice")
+    if success_status == "cleared":
+        # CLEARANCE is a real success ONLY with BOTH a CLEARED status AND a non-empty ZATCA-stamped
+        # cleared document (zatca-r2-08). The old rule accepted any body-less 2xx, marking a standard
+        # invoice 'cleared' with cleared_xml='' — a terminal, silently non-compliant record.
+        accepted = status_val == "CLEARED" and bool(cleared_doc)
+        # A 2xx that did not clear (no status / CLEARED-without-document) is NOT hard-rejected: it is
+        # incomplete/transient, so it stays retryable rather than terminal.
+        incomplete_2xx = (200 <= code < 300 and not accepted
+                          and "NOT_" not in status_val and not errors)
+    else:
+        accepted = status_val == "REPORTED" or (
+            200 <= code < 300 and status_val != "" and "NOT_" not in status_val and not errors)
+        # A body-less 2xx (no reportingStatus at all) is ambiguous, not success — retry it.
+        incomplete_2xx = 200 <= code < 300 and not accepted and status_val == "" and not errors
     if accepted:
         outcome = success_status
-    elif code in _TRANSIENT or code == 0:      # transient / re-onboard / network → retry
+    elif code in _TRANSIENT or code == 0 or incomplete_2xx:   # transient / ambiguous 2xx → retry
         outcome = "pending"
-    else:                                       # 400 / 413 / NOT_* → hard reject
+    else:                                       # 400 / 413 / NOT_* / 2xx-with-errors → hard reject
         outcome = "rejected"
     return {
         "outcome": outcome, "code": int(code),

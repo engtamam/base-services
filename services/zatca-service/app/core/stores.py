@@ -1,6 +1,7 @@
 """Repositories over the generic DataStore — invoices (PIH/ICV chain) + sealed settings."""
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
 from typing import Any
 
@@ -57,12 +58,16 @@ class InvoiceStore:
         return (int(row.get("signed_icv", 0)), row.get("last_hash", "")) if row else (0, "")
 
     async def mark_signed(self, inv: ZatcaInvoice) -> bool:
-        """Persist a signed invoice and advance the signed head — but ONLY contiguously (icv ==
-        signed_icv + 1). Compare-and-set so two concurrent signs cannot both advance the head off the
-        same base. Returns False if this invoice is not the next link (its predecessor is not signed
-        yet); the caller must not treat it as chained. See zatca-01: the PIH/ICV chain forks when an
-        invoice is signed while an earlier ICV is still unsigned, so the head advances in strict order."""
-        await self.save(inv)
+        """Advance the signed head CONTIGUOUSLY (icv == signed_icv + 1), then — and ONLY then —
+        persist the signed body. Returns True iff THIS invoice legitimately advanced the chain.
+
+        Byte-safety (zatca-r2-02): the signed-head CAS runs BEFORE `save(inv)`, and the body is
+        persisted only when the CAS wins. The old order saved the signed body FIRST, so a losing
+        concurrent sign (a second sweep, or sweep-vs-resubmit) of the same ICV overwrote the winner's
+        already-stored signed_xml/hash with its own non-deterministic bytes — forking the chain and
+        mutating a signed invoice. Now the loser's CAS fails, it re-reads a head that has moved past
+        it, returns False, and NEVER touches the stored bytes. Returns False if this invoice is not
+        the next link (predecessor unsigned) — the caller must not treat it as chained or submit it."""
         for _ in range(64):
             row = await self._store.get(_INDEX, f"signed::{inv.tenant}")
             signed_icv = int(row.get("signed_icv", 0)) if row else 0
@@ -71,6 +76,7 @@ class InvoiceStore:
                 return False                        # not the next link — do not advance out of order
             if await self._store.cas(_INDEX, f"signed::{inv.tenant}", ver,
                                      {"signed_icv": int(inv.icv), "last_hash": inv.hash}):
+                await self.save(inv)                # WON the head — now durably persist the signed body
                 return True
         return False
 
@@ -155,14 +161,32 @@ class InvoiceStore:
         concurrent finalizes for one tenant both read reserved=N and both minted ICV N+1 — duplicate
         ICVs that corrupt the PIH/ICV chain. Now each ICV is claimed by an atomic put-if-absent on a
         unique `icv::{tenant}::{icv}` key; a loser (key taken) re-reads and tries the next ICV. The
-        head pointer stays only as an O(1) hint for where to start — the icv-claim is the authority."""
+        head pointer stays only as an O(1) hint for where to start — the icv-claim is the authority.
+
+        ATOMIC number idempotency (zatca-r2-02 / r2-01): the number claim `num::{tenant}::{number}` is
+        the authority for one-ICV-per-number and is written FIRST via put-if-absent, BEFORE any ICV is
+        minted. The old code read `by_number()` then plainly `put` the num:: row, so two concurrent
+        finalizes for the SAME number both saw None, both minted a (distinct) ICV, and both saved an
+        invoice row — a second orphan row the sweep later signed and filed under a duplicate ICV. Now
+        exactly one caller wins the create(); the loser re-reads and returns the winner's invoice
+        WITHOUT ever claiming an ICV."""
+        number = str(number)
         existing = await self.by_number(tenant, number)
         if existing is not None:
             return existing, False
+        # Claim the number FIRST. The loser of a same-number race never reaches the ICV mint below.
+        inv_id = new_id()
+        if not await self._store.create(_INDEX, f"num::{tenant}::{number}", {"id": inv_id}):
+            for _ in range(10_000):                          # a concurrent winner is mid-flight; wait for
+                existing = await self.by_number(tenant, number)   # its invoice row, then return it
+                if existing is not None:
+                    return existing, False
+                await asyncio.sleep(0)                        # yield so the winner's save() can land
+            raise RuntimeError("number claimed but invoice row never appeared")
         head = await self._store.get(_INDEX, f"head::{tenant}") or {"reserved_icv": 0, "last_hash": ""}
         icv = int(head.get("reserved_icv", 0)) + 1
         for _ in range(10_000):                              # bounded; advances past ICVs already taken
-            claimed = await self._store.create(_INDEX, f"icv::{tenant}::{icv}", {"number": str(number)})
+            claimed = await self._store.create(_INDEX, f"icv::{tenant}::{icv}", {"number": number})
             if claimed:
                 break
             icv += 1                                         # this ICV was taken by a concurrent finalize
@@ -174,10 +198,9 @@ class InvoiceStore:
         # true predecessor's hash by the time this invoice signs.
         _, signed_hash = await self.signed_head(tenant)
         pih = signed_hash if (icv > 1 and signed_hash) else GENESIS_PIH
-        inv = ZatcaInvoice(id=new_id(), tenant=tenant, number=str(number), icv=icv,
+        inv = ZatcaInvoice(id=inv_id, tenant=tenant, number=number, icv=icv,
                            pih=pih, status="pending", invoice_type=invoice_type, created=_now())
         await self.save(inv)
-        await self._store.put(_INDEX, f"num::{tenant}::{number}", {"id": inv.id})
         # Advance the head HINT if we moved it forward — re-read so we never clobber a concurrent
         # sign's last_hash (the icv-claim, not this hint, is the uniqueness authority).
         cur = await self._store.get(_INDEX, f"head::{tenant}") or {"reserved_icv": 0, "last_hash": ""}
