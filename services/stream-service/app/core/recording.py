@@ -13,15 +13,17 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 
 from app.core.models import Recording, new_id, now
 from app.core.stores import RecordingStore
 
 
 class RecordingShipper:
-    def __init__(self, *, sink, recordings: RecordingStore) -> None:
+    def __init__(self, *, sink, recordings: RecordingStore, ship_lease_seconds: float = 300.0) -> None:
         self._sink = sink
         self._recordings = recordings
+        self._lease_ttl = ship_lease_seconds
 
     async def ship_session(self, *, tenant: str, session_id: str, source_id: str,
                            output_dir: str, record_ext: str = "mp4",
@@ -42,35 +44,43 @@ class RecordingShipper:
         if not ship:
             return 0
 
-        rec = await self._get_or_create(tenant, session_id, source_id)
-        shipped = 0
-        for name in ship:
-            path = os.path.join(output_dir, name)
+        # One shipper per session at a time: two concurrent sweeps (or a sweep racing a final stop)
+        # both listed the same files and both shipped + appended, double-storing segments and losing
+        # rec.segments appends to a last-writer-wins save. The lease serializes them.
+        if not await self._recordings.acquire_ship_lease(session_id, time.time(), self._lease_ttl):
+            return 0
+        try:
+            rec = await self._get_or_create(tenant, session_id, source_id)
+            shipped = 0
+            for name in ship:
+                path = os.path.join(output_dir, name)
 
-            def _read(p: str = path) -> bytes:   # blocking disk read off the loop (segments are large)
-                with open(p, "rb") as fh:
-                    return fh.read()
+                def _read(p: str = path) -> bytes:   # blocking disk read off the loop (large segments)
+                    with open(p, "rb") as fh:
+                        return fh.read()
 
-            try:
-                data = await asyncio.to_thread(_read)
-            except OSError:
-                continue
-            seq = _seq_of(name)
-            ref = await self._sink.put_segment(
-                tenant=tenant, session_id=session_id, seq=seq, data=data,
-                content_type="video/mp4", start=now(), end=now())
-            rec.segments.append({"ref": ref.ref, "bytes": ref.bytes, "start": ref.start,
-                                 "end": ref.end, "seq": seq})
-            rec.total_bytes += ref.bytes
-            try:
-                os.remove(path)     # shipped → free the local copy (idempotent on re-run)
-            except OSError:
-                pass
-            shipped += 1
-        if final:
-            rec.ended = now()
-        await self._recordings.save(rec)
-        return shipped
+                try:
+                    data = await asyncio.to_thread(_read)
+                except OSError:
+                    continue
+                seq = _seq_of(name)
+                ref = await self._sink.put_segment(
+                    tenant=tenant, session_id=session_id, seq=seq, data=data,
+                    content_type="video/mp4", start=now(), end=now())
+                rec.segments.append({"ref": ref.ref, "bytes": ref.bytes, "start": ref.start,
+                                     "end": ref.end, "seq": seq})
+                rec.total_bytes += ref.bytes
+                try:
+                    os.remove(path)     # shipped → free the local copy (idempotent on re-run)
+                except OSError:
+                    pass
+                shipped += 1
+            if final:
+                rec.ended = now()
+            await self._recordings.save(rec)
+            return shipped
+        finally:
+            await self._recordings.release_ship_lease(session_id)
 
     async def _get_or_create(self, tenant: str, session_id: str, source_id: str) -> Recording:
         # One Recording per session, keyed by session id for idempotent lookup.

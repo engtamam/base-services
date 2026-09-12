@@ -1263,80 +1263,87 @@
       "issues": [
         {
           "id": "stream-service-01",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "security",
           "severity": "high",
           "file": "app/core/stream_service.py",
           "line": 128,
           "title": "SSRF DNS-rebinding: validated/pinned IP is discarded; ffmpeg connects by hostname",
           "detail": "validate_source_url() (app/core/ssrf.py:66) resolves the host, blocks metadata/private/loopback IPs, and RETURNS a Resolved(ip=...) so the caller can pin the connection — the module docstring explicitly promises 'the caller can PIN the connection to it (DNS-rebinding safe)'. But StreamService._check_ssrf (line 354) throws the return value away, and start_session/probe_source pass the original hostname URL (spec.source_url = url) to the engine. FfmpegStreamEngine._input_args/probe (app/adapters/stream/ffmpeg_engine.py:38,140) invoke ffmpeg/ffprobe with '-i <hostname-url>', so ffmpeg does its OWN DNS resolution at connect time. The validation and the connection resolve the name independently.",
-          "failure_scenario": "Attacker (tenant operator) registers a source at http://evil.example/. evil.example resolves to a public IP during register_source and start_session validation (passes), then flips its DNS A record to 169.254.169.254 (or 10.x internal). When ffmpeg opens the URL milliseconds later it re-resolves to the internal/metadata IP and the stream engine proxies cloud-metadata / internal services. The whole point of the SSRF guard (re-validate at connect time, rebinding-safe) is defeated because the connection is never pinned to the validated IP."
+          "failure_scenario": "Attacker (tenant operator) registers a source at http://evil.example/. evil.example resolves to a public IP during register_source and start_session validation (passes), then flips its DNS A record to 169.254.169.254 (or 10.x internal). When ffmpeg opens the URL milliseconds later it re-resolves to the internal/metadata IP and the stream engine proxies cloud-metadata / internal services. The whole point of the SSRF guard (re-validate at connect time, rebinding-safe) is defeated because the connection is never pinned to the validated IP.",
+          "resolution": "FIXED: _check_ssrf returns the Resolved and start_session connects to the PINNED IP (_pin_url rewrites the host), so ffmpeg no longer re-resolves the hostname (DNS-rebinding). Regression: test_audit_fixes.py."
         },
         {
           "id": "stream-service-02",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "security",
           "severity": "medium",
           "file": "app/core/stream_service.py",
           "line": 95,
           "title": "onvif.host is never SSRF-validated; PTZ connects to an arbitrary host",
           "detail": "register_source SSRF-validates only `url` (self._check_ssrf(url)); the caller-supplied `onvif` dict (SourceIn.onvif in app/api/v1/stream.py:63) is stored verbatim (models.py:45). PTZ routes call _ptz_source() which returns src.onvif, and OnvifPtzController._default_factory (app/adapters/stream/onvif_ptz.py:22) does ONVIFCamera(onvif.get('host'), int(onvif.get('port',80)), ...) — an HTTP client to that host:port. No validate_source_url is ever applied to onvif.host, so the SSRF guard that protects `url` is fully bypassed via the onvif field.",
-          "failure_scenario": "A tenant with stream.manage registers a source with onvif={'host':'169.254.169.254','port':80} and calls POST /sources/{id}/ptz/move or /ptz/presets. The service issues HTTP requests to the cloud-metadata endpoint (or any internal host/port), turning an authenticated operator action into an internal-network / metadata SSRF — exactly what the SSRF module exists to prevent for operator-supplied source targets."
+          "failure_scenario": "A tenant with stream.manage registers a source with onvif={'host':'169.254.169.254','port':80} and calls POST /sources/{id}/ptz/move or /ptz/presets. The service issues HTTP requests to the cloud-metadata endpoint (or any internal host/port), turning an authenticated operator action into an internal-network / metadata SSRF — exactly what the SSRF module exists to prevent for operator-supplied source targets.",
+          "resolution": "FIXED: register_source SSRF-validates the onvif.host (as http://host:port) too, so PTZ cannot be pointed at an internal/metadata host. Regression: test_audit_fixes.py."
         },
         {
           "id": "stream-service-03",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "medium",
           "file": "app/core/stream_service.py",
           "line": 349,
           "title": "Global concurrency cap (STREAM_MAX_CONCURRENT_SESSIONS_GLOBAL) is advertised but never enforced",
           "detail": "StreamConfig stores max_concurrent_global (line 63) from STREAM_MAX_CONCURRENT_SESSIONS_GLOBAL (config.py:469, wired in app/api/v1/stream.py:39), but _enforce_quota (line 349-352) only checks max_concurrent_per_tenant via count_live_for_tenant. There is no count_live_global / global check anywhere (grep confirms max_concurrent_global has no reader). The knob is a no-op.",
-          "failure_scenario": "Operator sets STREAM_MAX_CONCURRENT_SESSIONS_GLOBAL=100 expecting a fleet-wide ceiling. With N tenants each allowed their per-tenant cap, total live sessions (each an ffmpeg process) grows without bound past the intended global limit, exhausting node CPU/memory/FDs — a resource-exhaustion DoS the operator believes is capped but is not."
+          "failure_scenario": "Operator sets STREAM_MAX_CONCURRENT_SESSIONS_GLOBAL=100 expecting a fleet-wide ceiling. With N tenants each allowed their per-tenant cap, total live sessions (each an ffmpeg process) grows without bound past the intended global limit, exhausting node CPU/memory/FDs — a resource-exhaustion DoS the operator believes is capped but is not.",
+          "resolution": "FIXED: _enforce_quota now also enforces max_concurrent_global via SessionStore.count_live_global (was advertised but never checked). Regression: test_audit_fixes.py."
         },
         {
           "id": "stream-service-04",
-          "status": "OPEN",
+          "status": "NEEDS_DECISION",
           "category": "bug",
           "severity": "medium",
           "file": "app/core/stream_service.py",
           "line": 121,
           "title": "Concurrency quota is check-then-create (TOCTOU); cap can be exceeded under concurrent starts",
           "detail": "start_session calls await self._enforce_quota(tenant) (line 121), which does count_live_for_tenant(...) >= cap, and only later awaits self._sessions.create(sess) (line 149). The count and the create are separate awaits with no atomic reservation/CAS. The same non-atomic gap exists for one_session_per_source (line 122-125: list_for_tenant then create).",
-          "failure_scenario": "A tenant at cap-1 live sessions fires K concurrent POST /sessions requests. Each coroutine reads count = cap-1 (< cap) before any create commits, all pass the guard, and all create sessions — leaving cap-1+K live sessions, over the per-tenant limit (and, with one_session_per_source, two live sessions on the same camera). Quota/billing/resource limits are silently breached."
+          "failure_scenario": "A tenant at cap-1 live sessions fires K concurrent POST /sessions requests. Each coroutine reads count = cap-1 (< cap) before any create commits, all pass the guard, and all create sessions — leaving cap-1+K live sessions, over the per-tenant limit (and, with one_session_per_source, two live sessions on the same camera). Quota/billing/resource limits are silently breached.",
+          "resolution": "VERIFIED REAL. Concurrency quota is check-then-create (count then create with awaits between), so a concurrent burst can exceed the cap by a few. A correct atomic cap needs restructuring start_session into a reservation-BEFORE-engine flow (create a pending reservation, verify+evict deterministically, then start the engine), a design change on the placement path. Surfaced to Tamam; recommendation: create-then-deterministic-evict reservation. The per-tenant AND global caps are otherwise enforced (03)."
         },
         {
           "id": "stream-service-05",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "bug",
           "severity": "medium",
           "file": "app/core/recording.py",
           "line": 45,
           "title": "RecordingShipper has no lease/lock: concurrent sweeps double-ship segments and lose appends",
           "detail": "ship_session lists rec_* files, then for each: reads bytes, put_segment to the sink, appends {ref,...} to rec.segments and rec.total_bytes, os.remove(local), and finally recordings.save(rec) (lines 34-72). Dedup relies solely on os.remove having deleted the local file. The /internal/stream/sweep endpoint (api/internal.py:76) calls ship_live_recordings with no locking, and it is CronJob/multi-replica driven. Two concurrent runs list the same not-yet-removed segments, both put_segment + append, and the two RecordingStore.save() calls are last-write-wins (get→append→put, no CAS in stores.py:104).",
-          "failure_scenario": "Two sweep replicas (or an overlapping cron) run concurrently: the same segment is uploaded twice and appended twice (duplicate segments / inflated total_bytes), OR the two get→append→save races drop one run's appended segments entirely (lost recording data). Also, if os.remove fails (OSError is swallowed, line 67-68) the segment re-ships on the next run regardless."
+          "failure_scenario": "Two sweep replicas (or an overlapping cron) run concurrently: the same segment is uploaded twice and appended twice (duplicate segments / inflated total_bytes), OR the two get→append→save races drop one run's appended segments entirely (lost recording data). Also, if os.remove fails (OSError is swallowed, line 67-68) the segment re-ships on the next run regardless.",
+          "resolution": "FIXED: ship_session takes a per-session lease (cas insert-if-absent, TTL-reclaimable) so concurrent sweeps cannot double-ship a segment or lose rec.segments appends. Added cas to the datastore. Regression: test_audit_fixes.py."
         },
         {
           "id": "stream-service-06",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "perf",
           "severity": "low",
           "file": "app/core/stores.py",
           "line": 120,
           "title": "Retention sweep scans the entire non-locked recordings table every run",
           "detail": "iter_expired queries find(_RECORDINGS, {'locked': False}, sort=('started','asc')) and filters started < cutoff in Python (line 124-126). enforce_retention (stream_service.py:221-233) pages until cursor is exhausted. Because expired rows sort to the FRONT (asc), once a page crosses the cutoff every remaining row is non-expired, yet the loop keeps paging through all non-locked recordings — there is no early break when r['started'] >= cutoff.",
-          "failure_scenario": "With a large recordings table, each retention run reads the full non-locked collection page by page even though only the oldest few are expired, wasting datastore reads/latency that grows unbounded with retained history."
+          "failure_scenario": "With a large recordings table, each retention run reads the full non-locked collection page by page even though only the oldest few are expired, wasting datastore reads/latency that grows unbounded with retained history.",
+          "resolution": "FIXED: iter_expired stops paging once a non-expired row appears (rows are oldest-first) instead of scanning the whole recordings table each run. Regression: test_audit_fixes.py."
         },
         {
           "id": "stream-service-07",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "low",
           "file": "app/core/exporting.py",
           "line": 57,
           "title": "Export range limit bypassable with non-ISO start/end timestamps",
           "detail": "request() checks `end <= start` as a lexicographic string compare, then span = _span_seconds(start,end) and rejects span > max_range_seconds. _span_seconds (line 209-217) returns 0.0 on any parse failure. So non-ISO strings where end > start lexically (e.g. start='a', end='z') pass end<=start, yield span=0.0, and skip the EXPORT_MAX_RANGE_SECONDS check entirely; the row is created and enqueued.",
-          "failure_scenario": "A caller submits malformed start/end that pass the string ordering check; the range cap is silently not applied. Impact is limited (worker segment matching also uses string compare and finds no footage, producing an empty/failed export), but the documented safety limit is not enforced and unvalidated ranges reach the worker."
+          "failure_scenario": "A caller submits malformed start/end that pass the string ordering check; the range cap is silently not applied. Impact is limited (worker segment matching also uses string compare and finds no footage, producing an empty/failed export), but the documented safety limit is not enforced and unvalidated ranges reach the worker.",
+          "resolution": "FIXED: export request() parses start/end as ISO-8601 and compares instants (was a lexicographic string compare + span 0.0 on parse failure), so non-ISO strings no longer bypass max_range_seconds. Regression: test_clip_export.py."
         }
       ]
     },

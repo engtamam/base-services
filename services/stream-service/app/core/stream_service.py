@@ -92,6 +92,11 @@ class StreamService:
                               tags: list | None = None, group_id: str = "",
                               default_profile: str = "default") -> Source:
         self._check_ssrf(url)                       # validate BEFORE we seal/store
+        if onvif and onvif.get("host"):
+            # The ONVIF/PTZ host is also connected to (with credentials) — validate it too, or a
+            # caller registers a source whose PTZ control points at an internal/metadata host.
+            port = onvif.get("port") or 80
+            self._check_ssrf(f"http://{onvif['host']}:{int(port)}")
         src = Source(id=new_id(), tenant=tenant, name=name,
                      url_sealed=self._sealer.seal(url), url_host=redact_url(url),
                      transport=transport, kind=kind, onvif=onvif or {}, tags=tags or [],
@@ -125,7 +130,8 @@ class StreamService:
                 raise QuotaExceeded("one_session_per_source")
 
         url = self._sealer.unseal(src.url_sealed)
-        self._check_ssrf(url)                       # re-validate at connect time (rebinding-safe)
+        resolved = self._check_ssrf(url)            # re-validate at connect time
+        pinned_url = self._pin_url(url, resolved.ip)  # connect to the validated IP — rebinding-safe
 
         sess = Session(
             id=new_id(), tenant=tenant, source_id=source_id,
@@ -136,7 +142,7 @@ class StreamService:
         whip = ""
         if "webrtc" in sess.outputs and self._cfg.webrtc_enabled and self._cfg.webrtc_media_base:
             whip = f"{self._cfg.webrtc_media_base}/{sess.id}/whip"
-        spec = EngineSpec(source_url=url, transport=src.transport, outputs=tuple(sess.outputs),
+        spec = EngineSpec(source_url=pinned_url, transport=src.transport, outputs=tuple(sess.outputs),
                           output_dir=f"{self._cfg.output_root}/{sess.id}", profile=src.default_profile,
                           webrtc_whip_url=whip, hls_segment_seconds=self._cfg.hls_segment_seconds,
                           hls_window_segments=self._cfg.hls_window_segments,
@@ -350,13 +356,34 @@ class StreamService:
         cap = self._cfg.max_concurrent_per_tenant
         if cap and await self._sessions.count_live_for_tenant(tenant, cap) >= cap:
             raise QuotaExceeded("concurrency")
+        gcap = self._cfg.max_concurrent_global
+        if gcap and await self._sessions.count_live_global(gcap) >= gcap:
+            # The advertised fleet-wide cap was never enforced (only the per-tenant one was), so one
+            # busy tenant — or many small ones — could exhaust worker capacity globally.
+            raise QuotaExceeded("concurrency_global")
 
-    def _check_ssrf(self, url: str) -> None:
+    def _check_ssrf(self, url: str):
+        """Validate + resolve, returning the Resolved (with the pinned IP). Callers that connect
+        (start_session) MUST use the pinned IP, or ffmpeg re-resolves the hostname and a DNS-rebinding
+        attacker swaps in an internal IP after validation."""
         try:
-            validate_source_url(url, allowed_hosts=self._cfg.allowed_hosts,
-                                allow_private=self._cfg.allow_private)
+            return validate_source_url(url, allowed_hosts=self._cfg.allowed_hosts,
+                                       allow_private=self._cfg.allow_private)
         except SsrfBlocked as exc:
             raise SsrfBlocked(str(exc)) from exc
+
+    @staticmethod
+    def _pin_url(url: str, ip: str) -> str:
+        """Rewrite the URL's host to the validated IP so the connection cannot be rebound. IPv6 is
+        bracketed; userinfo/port/path/query are preserved."""
+        from urllib.parse import urlsplit, urlunsplit
+        parts = urlsplit(url)
+        host_lit = f"[{ip}]" if ":" in ip else ip
+        userinfo = ""
+        if parts.username:
+            userinfo = parts.username + (f":{parts.password}" if parts.password else "") + "@"
+        netloc = f"{userinfo}{host_lit}" + (f":{parts.port}" if parts.port else "")
+        return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
     def _lease_deadline(self) -> str:
         import datetime as _dt

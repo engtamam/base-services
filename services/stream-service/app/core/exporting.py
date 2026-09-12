@@ -54,9 +54,19 @@ class ExportService:
     # ── request (fast path) ────────────────────────────────────────────────────
     async def request(self, *, tenant: str, source_id: str, start: str, end: str,
                       fmt: str) -> Export:
-        if end <= start:
+        # Parse both timestamps to real instants FIRST. The old `end <= start` was a lexicographic
+        # STRING compare and _span_seconds returns 0.0 on a parse failure, so non-ISO strings where
+        # end sorts after start (e.g. start='a', end='z') passed the check with span 0 and bypassed
+        # the max-range limit entirely.
+        import datetime as _dt
+        try:
+            a = _dt.datetime.fromisoformat(start.replace("Z", "+00:00"))
+            b = _dt.datetime.fromisoformat(end.replace("Z", "+00:00"))
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ValueError("start/end must be ISO-8601 timestamps") from exc
+        if b <= a:
             raise ValueError("end must be after start")
-        span = self._span_seconds(start, end)
+        span = (b - a).total_seconds()
         limit = self._cfg["max_range_seconds"]
         if limit and span > limit:
             raise ValueError(

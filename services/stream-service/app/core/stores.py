@@ -82,6 +82,12 @@ class SessionStore:
                                      limit=max(1, cap) + 1, sort=("created", "asc"))
         return len(rows)
 
+    async def count_live_global(self, cap: int) -> int:
+        """Bounded count of ALL live sessions across tenants — enough to enforce the global cap."""
+        rows, _ = await self._s.find(_SESSIONS, {"status": _LIVE},
+                                     limit=max(1, cap) + 1, sort=("created", "asc"))
+        return len(rows)
+
     async def iter_live(self, limit: int = 200, after: str | None = None) -> tuple[list[Session], str | None]:
         """Live sessions across tenants — for reconcile/sweep (a bounded, off-request sweeper page)."""
         rows, cursor = await self._s.find(_SESSIONS, {"status": _LIVE}, limit=limit, after=after,
@@ -105,6 +111,22 @@ class RecordingStore:
         await self._s.put(_RECORDINGS, rec.id, rec.to_dict())
         return rec
 
+    async def acquire_ship_lease(self, session_id: str, now: float, ttl: float) -> bool:
+        """Atomically claim the right to ship this session's segments (cas insert-if-absent). Only one
+        shipper at a time — otherwise concurrent sweeps double-ship a segment and lose rec.segments
+        appends (last-writer-wins on save). A stale lease (past ttl, a crashed shipper) is re-claimable."""
+        k = f"ship:{session_id}"
+        if await self._s.cas("stream_ship_locks", k, 0, {"session": session_id, "ts": now}):
+            return True
+        row = await self._s.get("stream_ship_locks", k)
+        if row and (now - float(row.get("ts", 0) or 0)) > ttl:
+            await self._s.put("stream_ship_locks", k, {"session": session_id, "ts": now})
+            return True
+        return False
+
+    async def release_ship_lease(self, session_id: str) -> None:
+        await self._s.delete("stream_ship_locks", f"ship:{session_id}")
+
     async def delete(self, recording_id: str) -> None:
         await self._s.delete(_RECORDINGS, recording_id)
 
@@ -124,6 +146,10 @@ class RecordingStore:
         rows, cursor = await self._s.find(_RECORDINGS, {"locked": False}, limit=limit, after=after,
                                           sort=("started", "asc"))
         expired = [Recording.from_dict(r) for r in rows if r.get("started", "") < cutoff_iso]
+        # Rows are oldest-first, so once a page contains a NON-expired row (started >= cutoff) every
+        # remaining row is also non-expired — stop paging instead of scanning the whole table each run.
+        if len(expired) < len(rows):
+            cursor = None
         return expired, cursor
 
 

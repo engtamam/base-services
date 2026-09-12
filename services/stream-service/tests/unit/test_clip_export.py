@@ -310,3 +310,12 @@ def test_a_format_with_no_ARGS_entry_fails_at_boot_not_on_the_worker():
 def test_malformed_export_args_fail_at_boot():
     with pytest.raises(ValueError):
         _settings(EXPORT_ARGS="{not json").assert_export_config_ok()
+
+
+def test_non_iso_timestamps_are_rejected_not_bypassing_the_range_cap():
+    # audit stream-07: non-ISO strings where end sorts after start lexically (e.g. 'a' < 'z') used to
+    # pass the string 'end<=start' check and yield span 0.0, bypassing max_range_seconds. Now rejected.
+    import pytest
+    svc = _svc(recs=[_Rec("acme", [_seg(T0, T60)])])
+    with pytest.raises(ValueError):
+        run(svc.request(tenant="acme", source_id="cam1", start="a", end="z", fmt="mp4"))
