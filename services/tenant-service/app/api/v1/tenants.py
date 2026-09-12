@@ -37,6 +37,7 @@ def build_service(request: Request) -> TenantService:
         default_locale=s.DEFAULT_LOCALE, default_timezone=s.DEFAULT_TIMEZONE,
         default_calendar=s.DEFAULT_CALENDAR, slug_min=s.SLUG_MIN_LEN, slug_max=s.SLUG_MAX_LEN,
         delete_mode=s.TENANT_DELETE_MODE, tombstone_fields=s.tombstone_fields,
+        isolation_strategies=getattr(c, "isolation_strategies", None),
     )
 
 

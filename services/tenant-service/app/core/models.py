@@ -31,6 +31,7 @@ class Tenant:
     custom_terms: str = ""
     created_at: str = field(default_factory=now)
     updated_at: str = field(default_factory=now)
+    version: int = 0          # optimistic-lock counter — every lifecycle/config write CASes on it
     # Set only on a TOMBSTONE. Its presence is the fact a peer that missed `tenant.deleted` needs
     # to be able to READ — see TenantRepository.tombstone().
     deleted_at: str = ""
@@ -42,6 +43,7 @@ class Tenant:
             "branding": self.branding, "config": self.config,
             "custom_terms": self.custom_terms,
             "created_at": self.created_at, "updated_at": self.updated_at,
+            "version": self.version,
             "deleted_at": self.deleted_at,
         }
 
@@ -57,6 +59,7 @@ class Tenant:
             domains=list(d.get("domains") or []), branding=dict(d.get("branding") or {}),
             config=dict(d.get("config") or {}), custom_terms=d.get("custom_terms", ""),
             created_at=d.get("created_at", now()), updated_at=d.get("updated_at", now()),
+            version=int(d.get("version") or 0),
             deleted_at=d.get("deleted_at", ""),
         )
 

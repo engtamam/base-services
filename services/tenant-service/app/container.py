@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.adapters.cache.memory import MemoryCache
@@ -142,6 +142,21 @@ def _pick(registry: dict[str, Builder], driver: str, port_name: str, settings: S
     return builder(settings)
 
 
+def _build_isolation_strategies(settings: Settings) -> dict[str, Any]:
+    """Every isolation strategy that is actually CONFIGURED, so scope() can dispatch on a tenant's
+    stored mode and provision can validate against the keys (tenant-r2-04). A mode that cannot be
+    built (e.g. db isolation with no DSN template) is simply omitted — provisioning that mode is then
+    refused, which is correct: you cannot isolate by a strategy you never configured. The configured
+    default is always included (it built successfully in `isolation`)."""
+    out: dict[str, Any] = {}
+    for name, build in _ISOLATION.items():
+        try:
+            out[name] = build(settings)
+        except Exception:   # noqa: BLE001 — an unconfigured optional mode, not a fatal error
+            continue
+    return out
+
+
 @dataclass
 class Container:
     datastore: DataStore
@@ -155,6 +170,7 @@ class Container:
     telemetry: Telemetry
     audit_sink: Any = None
     isolation: Any = None
+    isolation_strategies: dict = field(default_factory=dict)   # mode -> strategy, for per-tenant scope
     domain_resolver: Any = None
 
     def describe(self) -> list[dict[str, str]]:
@@ -227,5 +243,6 @@ def build_container(settings: Settings) -> Container:
         telemetry=_pick(_TELEMETRY, settings.TELEMETRY_DRIVER, "telemetry", settings),
         audit_sink=_build_audit_sink(settings, event_bus),
         isolation=_pick(_ISOLATION, settings.ISOLATION_DRIVER, "isolation", settings),
+        isolation_strategies=_build_isolation_strategies(settings),
         domain_resolver=_build_resolver(settings, datastore),
     )

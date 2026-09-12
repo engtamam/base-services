@@ -51,7 +51,8 @@ def test_close_suspends_and_sets_a_grace_deadline():
     res = run(svc.close(t, grace_days=30, actor="owner@acme"))
     assert res["closed"] and res["status"] == SUSPENDED and res["grace_until"]
     assert "tenant.close_scheduled" in bus.events
-    assert t.config["_close"]["closed_by"] == "owner@acme"
+    # writes are lose-safe (reload → mutate → CAS), so re-read the authoritative row
+    assert run(svc.get(t.id)).config["_close"]["closed_by"] == "owner@acme"
 
 
 def test_close_is_idempotent():
@@ -74,14 +75,15 @@ def test_reactivating_within_grace_takes_the_close_back():
     t = run(svc.provision("acme", "Acme"))
     run(svc.close(t, grace_days=30))
     run(svc.reactivate(t))
-    assert "_close" not in t.config              # schedule cleared → sweep will not erase it
+    assert "_close" not in run(svc.get(t.id)).config   # schedule cleared → sweep will not erase it
 
 
 def test_sweep_erases_only_tenants_past_their_grace():
     svc = _svc()
     past = run(svc.provision("old", "Old"))
     run(svc.close(past, grace_days=30))
-    # force its grace into the past
+    # force its grace into the past (re-read the authoritative row, then persist)
+    past = run(svc.get(past.id))
     past.config["_close"]["grace_until"] = "2000-01-01T00:00:00+00:00"
     run(svc._repo.update(past))
     live = run(svc.provision("new", "New"))

@@ -72,6 +72,6 @@ def test_suspended_tenant_cannot_update_config():
     svc = _svc()
     t = run(svc.provision("acme", "Acme"))
     run(svc.close(t, grace_days=30, actor="owner"))          # -> SUSPENDED
-    assert t.status == SUSPENDED
+    assert run(svc.get(t.id)).status == SUSPENDED
     with pytest.raises(TenantInactive):
         run(svc.update_config(t, {"k": "v"}))

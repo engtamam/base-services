@@ -27,6 +27,24 @@ class TenantInactive(Exception):
     """A config/branding write was attempted on a non-ACTIVE tenant (suspended or tombstoned)."""
 
 
+class TenantTerminal(Exception):
+    """A lifecycle transition was attempted on a tenant already in the terminal DELETED state —
+    a tombstone must never be resurrected (tenant-r2-02)."""
+
+
+class ConcurrentModification(Exception):
+    """A tenant row could not be written because a concurrent writer kept winning the CAS. The caller
+    should retry the whole request; surfaced rather than silently applying a lost update."""
+
+
+class InvalidConfig(Exception):
+    """A config write carried a reserved, service-internal key (a `_`-prefixed namespace)."""
+
+
+class TenantNotFound(Exception):
+    """The tenant row vanished between load and write (e.g. a concurrent delete)."""
+
+
 class InvalidSlug(Exception):
     pass
 
@@ -47,9 +65,16 @@ class TenantService:
                  default_isolation: str, default_locale: str, default_timezone: str,
                  default_calendar: str, slug_min: int, slug_max: int,
                  delete_mode: str = "tombstone",
-                 tombstone_fields: tuple[str, ...] = ()) -> None:
+                 tombstone_fields: tuple[str, ...] = (),
+                 isolation_strategies: dict | None = None) -> None:
         self._repo = repo
         self._isolation = isolation
+        # Per-mode strategy map so scope() can honour a tenant's STORED isolation_mode instead of
+        # always returning the globally-configured one (tenant-r2-04). Its keys are also the allowlist
+        # provision validates a requested mode against.
+        self._iso_map = dict(isolation_strategies or {})
+        if default_isolation not in self._iso_map and isolation is not None:
+            self._iso_map.setdefault(default_isolation, isolation)
         self._resolver = resolver
         self._bus = event_bus
         self._default_isolation = default_isolation
@@ -69,6 +94,31 @@ class TenantService:
             raise InvalidSlug(f"invalid slug: {slug!r}")
         return slug
 
+    @staticmethod
+    def _reject_reserved(config: dict[str, Any] | None) -> None:
+        """Refuse config keys in the reserved `_`-namespace. The close-sweep's erase trigger lives in
+        config._close; without this a tenant could inject/clear it via the public config API and either
+        weaponise the sweep against another schedule or dodge its own scheduled deletion (tenant-r2-05)."""
+        for k in (config or {}):
+            if str(k).startswith("_"):
+                raise InvalidConfig(f"reserved config key not allowed: {k!r}")
+
+    async def _apply(self, tenant_id: str, mutate, *, retries: int = 8) -> Tenant:
+        """Load → mutate → CAS, retrying on a lost race. This is the ONE lose-safe write path for a
+        tenant row: a concurrent writer can no longer silently revert a status transition or config
+        change (tenant-r2-01). `mutate(tenant)` applies the change in place and may raise a guard
+        (e.g. terminal-state / inactive) BEFORE any write. Re-reads a fresh row on each attempt, so it
+        also closes the stale-snapshot window (tenant-r2-03)."""
+        for _ in range(retries):
+            cur = await self._repo.get(tenant_id)
+            if cur is None:
+                raise TenantNotFound(tenant_id)
+            expected = int(cur.version)
+            mutate(cur)
+            if await self._repo.cas_update(cur, expected):
+                return cur
+        raise ConcurrentModification(tenant_id)
+
     async def _emit(self, event_type: str, tenant: Tenant) -> None:
         try:
             await self._bus.publish(event_type, Event(
@@ -81,6 +131,11 @@ class TenantService:
                         isolation_mode: str | None = None,
                         config_overrides: dict[str, Any] | None = None) -> Tenant:
         self._validate_slug(slug)
+        self._reject_reserved(config_overrides)
+        mode = isolation_mode or self._default_isolation
+        if mode not in self._iso_map:
+            raise InvalidConfig(
+                f"unknown isolation_mode {mode!r} — allowed: {', '.join(sorted(self._iso_map))}")
         config = {
             "locale": self._default_locale, "timezone": self._default_timezone,
             "calendar": self._default_calendar, "feature_flags": {}, "limits": {},
@@ -88,7 +143,7 @@ class TenantService:
         config.update(config_overrides or {})
         tenant = Tenant(
             id=new_id(), slug=slug, name=name, status="active",
-            isolation_mode=isolation_mode or self._default_isolation,
+            isolation_mode=mode,
             domains=list(domains or []), config=config,
         )
         await self._repo.create(tenant)
@@ -115,18 +170,22 @@ class TenantService:
             raise TenantInactive(tenant.status)
 
     async def update_config(self, tenant: Tenant, config: dict[str, Any]) -> Tenant:
-        self._require_active(tenant)
-        tenant.config.update(config)
-        await self._repo.update(tenant)
-        await self._emit("tenant.updated", tenant)
-        return tenant
+        self._reject_reserved(config)
+
+        def _m(t: Tenant) -> None:
+            self._require_active(t)
+            t.config.update(config)
+        t = await self._apply(tenant.id, _m)
+        await self._emit("tenant.updated", t)
+        return t
 
     async def set_branding(self, tenant: Tenant, branding: dict[str, Any]) -> Tenant:
-        self._require_active(tenant)
-        tenant.branding.update(branding)
-        await self._repo.update(tenant)
-        await self._emit("tenant.updated", tenant)
-        return tenant
+        def _m(t: Tenant) -> None:
+            self._require_active(t)
+            t.branding.update(branding)
+        t = await self._apply(tenant.id, _m)
+        await self._emit("tenant.updated", t)
+        return t
 
     async def rename(self, tenant: Tenant, name: str) -> Tenant:
         """Change the tenant's NAME — the record-of-truth name captured once at signup and, until now,
@@ -137,26 +196,40 @@ class TenantService:
         cleaned = (name or "").strip()
         if not cleaned or len(cleaned) > 256 or _NAME_CONTROL_RE.search(cleaned):
             raise InvalidName(f"invalid tenant name: {name!r}")
-        tenant.name = cleaned
-        await self._repo.update(tenant)
-        await self._emit("tenant.updated", tenant)
-        return tenant
+
+        def _m(t: Tenant) -> None:
+            self._require_active(t)
+            t.name = cleaned
+        t = await self._apply(tenant.id, _m)
+        await self._emit("tenant.updated", t)
+        return t
 
     # ── lifecycle ──────────────────────────────────────────────────────────────
+    @staticmethod
+    def _reject_terminal(tenant: Tenant) -> None:
+        # A DELETED tombstone is terminal. Flipping it back to suspended/active would resurrect the
+        # tenant for fail-open peers and defeat the tombstone (tenant-r2-02).
+        if tenant.status == DELETED:
+            raise TenantTerminal(tenant.id)
+
     async def suspend(self, tenant: Tenant) -> Tenant:
-        tenant.status = "suspended"
-        await self._repo.update(tenant)
-        await self._emit("tenant.suspended", tenant)
-        return tenant
+        def _m(t: Tenant) -> None:
+            self._reject_terminal(t)
+            t.status = "suspended"
+        t = await self._apply(tenant.id, _m)
+        await self._emit("tenant.suspended", t)
+        return t
 
     async def reactivate(self, tenant: Tenant) -> Tenant:
-        tenant.status = "active"
-        # Reactivating a tenant that was closing is how the owner takes it back within the grace
-        # window — clear the schedule so the sweep does not erase a tenant that is live again.
-        tenant.config.pop("_close", None)
-        await self._repo.update(tenant)
-        await self._emit("tenant.reactivated", tenant)
-        return tenant
+        def _m(t: Tenant) -> None:
+            self._reject_terminal(t)
+            t.status = "active"
+            # Reactivating a tenant that was closing is how the owner takes it back within the grace
+            # window — clear the schedule so the sweep does not erase a tenant that is live again.
+            t.config.pop("_close", None)
+        t = await self._apply(tenant.id, _m)
+        await self._emit("tenant.reactivated", t)
+        return t
 
     async def close(self, tenant: Tenant, *, grace_days: int, actor: str = "") -> dict:
         """Owner self-close: suspend now, erase after grace — recoverable until then.
@@ -178,14 +251,27 @@ class TenantService:
                     "grace_until": existing["grace_until"], "closed": True, "idempotent": True}
         now_dt = _dt.datetime.now(_dt.timezone.utc)
         grace_until = (now_dt + _dt.timedelta(days=grace_days)).isoformat()
-        tenant.status = SUSPENDED
-        tenant.config["_close"] = {"scheduled_at": now_dt.isoformat(),
-                                   "grace_until": grace_until, "closed_by": actor}
-        tenant.touch()
-        await self._repo.update(tenant)
-        await self._emit("tenant.close_scheduled", tenant)
-        return {"status": SUSPENDED, "tenant_id": tenant.id, "grace_until": grace_until,
-                "closed": True}
+        out: dict[str, Any] = {}
+
+        def _m(t: Tenant) -> None:
+            self._reject_terminal(t)
+            sched = t.config.get("_close") or {}
+            if t.status == SUSPENDED and sched.get("grace_until"):
+                out["grace_until"] = sched["grace_until"]      # already closing → idempotent no-op
+                out["idempotent"] = True
+                return
+            t.status = SUSPENDED
+            t.config["_close"] = {"scheduled_at": now_dt.isoformat(),
+                                  "grace_until": grace_until, "closed_by": actor}
+            out["grace_until"] = grace_until
+        t = await self._apply(tenant.id, _m)
+        if not out.get("idempotent"):
+            await self._emit("tenant.close_scheduled", t)
+        res = {"status": SUSPENDED, "tenant_id": tenant.id, "grace_until": out["grace_until"],
+               "closed": True}
+        if out.get("idempotent"):
+            res["idempotent"] = True
+        return res
 
     async def close_sweep(self, *, now_iso: str, page: int = 200) -> dict:
         """Erase tenants whose close grace has elapsed. Driven by the platform scheduler.
@@ -194,7 +280,7 @@ class TenantService:
         catalogue — the old scan_all(limit) prefix meant a scheduled erasure for any tenant that
         sorted beyond the first `limit` rows was NEVER performed (data kept past the deletion the
         owner requested)."""
-        scanned = erased = 0
+        scanned = erased = failed = 0
         cursor = None
         while True:
             rows, cursor = await self._repo.iter_suspended(limit=page, after=cursor)
@@ -202,12 +288,26 @@ class TenantService:
             for r in rows:
                 sched = (r.get("config") or {}).get("_close") or {}
                 grace_until = sched.get("grace_until")
-                if grace_until and grace_until <= now_iso:
-                    await self.delete(Tenant.from_dict(r))
+                if not (grace_until and grace_until <= now_iso):
+                    continue
+                # RE-READ immediately before erasing (the page row is a stale snapshot): a reactivate
+                # racing the sweep may have taken the tenant back or another sweep may have erased it.
+                # Only tombstone a tenant STILL suspended with an elapsed grace (tenant-r2-03).
+                fresh = await self._repo.get(r["id"])
+                if fresh is None or fresh.status != SUSPENDED:
+                    continue
+                fsched = (fresh.config or {}).get("_close") or {}
+                fg = fsched.get("grace_until")
+                if not (fg and fg <= now_iso):
+                    continue
+                try:
+                    await self.delete(fresh)
                     erased += 1
+                except Exception:   # noqa: BLE001 — one stuck tenant must not block the rest (r2-06)
+                    failed += 1
             if not cursor:
                 break
-        return {"scanned": scanned, "erased": erased}
+        return {"scanned": scanned, "erased": erased, "failed": failed}
 
     async def delete(self, tenant: Tenant) -> dict:
         """Delete the tenant, and leave something a peer can READ that says so.
@@ -239,4 +339,8 @@ class TenantService:
         return {"tenant": tenant.to_dict(), "scope": self.scope(tenant)}
 
     def scope(self, tenant: Tenant) -> dict[str, str]:
-        return self._isolation.scope(tenant.id, tenant.slug)
+        # Honour the tenant's STORED isolation_mode (validated at provision), not just the global
+        # default — otherwise a tenant provisioned as schema/db was silently scoped as shared-row,
+        # sending its data to the wrong place (tenant-r2-04).
+        strategy = self._iso_map.get(tenant.isolation_mode, self._isolation)
+        return strategy.scope(tenant.id, tenant.slug)

@@ -81,6 +81,28 @@ def register_error_handlers(app: FastAPI) -> None:
         resp.headers["Retry-After"] = str(settings.AUDIT_RETRY_AFTER_SECONDS)
         return resp
 
+    from app.core.tenant_service import (
+        ConcurrentModification, InvalidConfig, TenantNotFound, TenantTerminal,
+    )
+
+    @app.exception_handler(TenantTerminal)
+    async def _terminal(request: Request, exc: TenantTerminal):
+        # A lifecycle transition on a DELETED tombstone — refused, never a 500 (tenant-r2-02).
+        return _json("TENANT_DELETED", 409)
+
+    @app.exception_handler(InvalidConfig)
+    async def _bad_config(request: Request, exc: InvalidConfig):
+        return _json("INVALID_CONFIG", 400)             # a reserved `_`-key (tenant-r2-05)
+
+    @app.exception_handler(ConcurrentModification)
+    async def _conflict(request: Request, exc: ConcurrentModification):
+        # The CAS kept losing under contention — retryable (tenant-r2-01).
+        return _json("CONFLICT_RETRY", 409)
+
+    @app.exception_handler(TenantNotFound)
+    async def _not_found(request: Request, exc: TenantNotFound):
+        return _json("NOT_FOUND", 404)
+
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception):
         # Log full type server-side; return a generic body to the client.

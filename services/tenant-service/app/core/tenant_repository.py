@@ -63,6 +63,23 @@ class TenantRepository:
         await self._store.put(_TENANTS, tenant.id, tenant.to_dict())
         return tenant
 
+    async def cas_update(self, tenant: Tenant, expected_version: int,
+                         *, old_domains: list[str] | None = None) -> bool:
+        """Version-checked tenant-row write. True if it won, False if another writer changed the row
+        first (the caller re-loads and re-applies). Every lifecycle/config mutation goes through this
+        so a concurrent write cannot silently revert a status transition (tenant-r2-01). Domain
+        re-indexing stays a plain put — the id-keyed row is the lifecycle authority."""
+        tenant.touch()
+        for host in map(normalize_host, old_domains or []):
+            if host not in map(normalize_host, tenant.domains):
+                await self._store.delete(_DOMAINS, host)
+        for host in map(normalize_host, tenant.domains):
+            await self._store.put(_DOMAINS, host, {"slug": tenant.slug})
+        if await self._store.cas(_TENANTS, tenant.id, int(expected_version), tenant.to_dict()):
+            tenant.version = int(expected_version) + 1
+            return True
+        return False
+
     async def list(self, limit: int = 100) -> list[dict]:
         # sweeper: this IS the tenant catalogue. There is no tenant to scope it by, and it is
         # reachable only by a platform operator. Bounded by the caller's limit.
@@ -73,7 +90,7 @@ class TenantRepository:
         filter so the sweep reaches EVERY closing tenant over its pages, not just the first N rows of
         the whole catalogue."""
         return await self._store.find(_TENANTS, {"status": SUSPENDED}, limit=limit, after=after,
-                                      sort=("created", "asc"))
+                                      sort=("created_at", "asc"))   # model field is created_at, not created
 
     async def delete(self, tenant: Tenant) -> None:
         """PURGE. The row is gone and nothing can ever learn it existed. See `tombstone()`."""
@@ -105,6 +122,9 @@ class TenantRepository:
         row["id"] = tenant.id                      # the id is the key; it is never optional
         row["status"] = DELETED
         row["deleted_at"] = _now()
+        # BUMP the version so a config/lifecycle write that loaded the pre-delete row loses its CAS and
+        # re-reads the tombstone (then refuses) instead of clobbering it back to active (tenant-r2-01/03).
+        row["version"] = int(tenant.version) + 1
 
         await self._store.put(_TENANTS, tenant.id, row)
         await self._store.delete(_SLUGS, tenant.slug)
