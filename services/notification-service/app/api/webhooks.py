@@ -103,7 +103,8 @@ async def _fan_out(bus, deliveries, data: dict, inbound=None, number_index=None,
             # which suspends WhatsApp accounts). The send path then refuses marketing to this number.
             if field == "user_preferences" and prefs is not None:
                 try:
-                    await _optout.apply_user_preferences(prefs, value)
+                    await _optout.apply_user_preferences(
+                        prefs, value, number_index=number_index)
                 except Exception:  # noqa: BLE001 — a parse hiccup must not fail the whole webhook
                     pass
             # 2) first-class receipts, RESOLVED to a delivery, so the receipt is attributable.

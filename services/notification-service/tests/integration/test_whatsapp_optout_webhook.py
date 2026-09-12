@@ -60,7 +60,10 @@ def test_optout_webhook_durably_updates_preferences(client):
     r = _post(client, _pref_webhook(phone, "stop"))
     assert r.status_code == 200 and r.json()["received"] is True
     ds = client.app.state.container.datastore
-    pref = asyncio.run(PreferenceStore(ds).get(phone))
+    # PN1 is not bound to a tenant → the opt-out is stored under the global (tenant="") scoped key
+    # (notification-r2-02), not the raw phone.
+    from app.core.whatsapp_optout import wa_pref_key
+    pref = asyncio.run(PreferenceStore(ds).get(wa_pref_key("", phone)))
     assert "marketing" in pref.opt_out_events            # persisted, not just published
 
 

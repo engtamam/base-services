@@ -28,12 +28,29 @@ _CATEGORY_TO_EVENT = {"marketing_messages": "marketing"}
 _STOP, _RESUME = "stop", "resume"
 
 
-async def apply_user_preferences(prefs, value: dict[str, Any]) -> int:
+def wa_pref_key(tenant: str, phone: str) -> str:
+    """The preference key for a WhatsApp marketing opt-out — SCOPED by (tenant, phone). Keying on the
+    phone ALONE made an opt-out global: unsubscribing from one shop silenced every shop's marketing to
+    that number, and a `resume` for one re-enabled all of them (notification-r2-02). Tenant is
+    length-prefixed so no (tenant, phone) pair can be forged to collide. An empty tenant (the number is
+    not bound to any shop) yields a GLOBAL key, which the send path also consults — the compliance-safe
+    fallback (suppress everywhere) when we cannot attribute the number."""
+    return f"{len(tenant)}:{tenant}|wa:{phone}"
+
+
+async def apply_user_preferences(prefs, value: dict[str, Any], *, number_index=None) -> int:
     """Apply one webhook change's `value` to the PreferenceStore. Returns how many entries applied.
+
+    Scoped per (tenant, phone): the tenant is resolved from value.metadata.phone_number_id via the
+    WhatsApp number index, so one shop's opt-out no longer suppresses another's (notification-r2-02).
 
     Defensive: an unknown category or an unexpected `value` is skipped, not misapplied — mislabelling
     a resume as a stop (or vice versa) is itself a compliance error.
     """
+    phone_number_id = str((value.get("metadata") or {}).get("phone_number_id", "") or "")
+    tenant = ""
+    if number_index is not None and phone_number_id:
+        tenant = (await number_index.tenant_of(phone_number_id)) or ""
     applied = 0
     for entry in (value.get("user_preferences") or []):
         wa_id = str(entry.get("wa_id", "") or "")
@@ -41,6 +58,7 @@ async def apply_user_preferences(prefs, value: dict[str, Any]) -> int:
         decision = str(entry.get("value", "") or "").lower()
         if not wa_id or not event or decision not in (_STOP, _RESUME):
             continue
-        await prefs.apply_event_opt_out(wa_id, event, opted_out=(decision == _STOP))
+        await prefs.apply_event_opt_out(wa_pref_key(tenant, wa_id), event,
+                                        opted_out=(decision == _STOP))
         applied += 1
     return applied

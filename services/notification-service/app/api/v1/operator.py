@@ -201,6 +201,24 @@ async def whatsapp_embedded_signup(request: Request, body: EmbeddedSignupIn,
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
     except OnboardingError as exc:
         return _refuse(str(exc))
+    if result.get("ok"):
+        # Bind phone_number_id → tenant, exactly like the internal twin (notification-r2-01). Without
+        # it an inbound event or operator lookup keyed only by number cannot reach this shop; the public
+        # operator route diverged from /internal by skipping this. Best-effort + first-wins: the
+        # credentials ARE stored, so a bind failure must not turn onboarding into an error, and a number
+        # already routing to ANOTHER tenant is recorded as a conflict, never silently stolen.
+        try:
+            from app.core.stores import WhatsAppNumberIndex
+            outcome = await WhatsAppNumberIndex(request.app.state.container.datastore).bind(
+                body.phone_number_id, body.tenant)
+        except Exception:  # noqa: BLE001
+            outcome = None
+        if outcome == WhatsAppNumberIndex.CONFLICT:
+            await request.app.state.auditor.record(
+                "whatsapp.number_bind_conflict", actor=_actor(principal), tenant=body.tenant or "",
+                resource=f"phone:{body.phone_number_id}",
+                ip=request.client.host if request.client else "")
+            result["number_bind"] = "conflict"
     return result
 
 

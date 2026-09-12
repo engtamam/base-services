@@ -110,7 +110,7 @@ class NotificationService:
         # even with no internal user_id, so a business-initiated send to someone who unsubscribed is
         # suppressed — the whole point of capturing the opt-out. Service replies inside the 24h window
         # (send_interactive) are contractual, not marketing, and deliberately skip this.
-        if channel == "whatsapp" and not await self._wa_recipient_allows(recipient, event):
+        if channel == "whatsapp" and not await self._wa_recipient_allows(recipient, event, tenant or ""):
             return await self._finish(idempotency_key, tenant or "", await self._record(
                 recipient, channel, template_key, "suppressed", tenant=tenant or ""))
 
@@ -294,7 +294,7 @@ class NotificationService:
         tk = template_name           # the Delivery's template_key names the Meta template, as sends do
         # WhatsApp marketing opt-out (Meta "Stop promotions"), keyed by the recipient's phone — a
         # carousel is business-initiated, so an unsubscribed customer must not receive it.
-        if not await self._wa_recipient_allows(recipient, event):
+        if not await self._wa_recipient_allows(recipient, event, tenant or ""):
             return await self._finish(idempotency_key, tenant or "", await self._record(
                 recipient, "whatsapp", tk, "suppressed", tenant=tenant or ""))
         # Consent — same rule as notify(): only a template MAPPED to a purpose is gated, and only with a
@@ -392,13 +392,21 @@ class NotificationService:
                                   error=error, attempts=attempt, next_attempt_ts=next_ts,
                                   payload=payload if state == QUEUED else {}, tenant=tenant)
 
-    async def _wa_recipient_allows(self, recipient: str, event: str | None) -> bool:
+    async def _wa_recipient_allows(self, recipient: str, event: str | None,
+                                   tenant: str = "") -> bool:
         """Whether a WhatsApp business-initiated send to this phone is allowed by its opt-out state.
 
-        The WhatsApp marketing opt-out is stored keyed by the customer's phone (see whatsapp_optout),
-        so for a WhatsApp send the recipient IS the preference key — no internal user_id needed."""
-        pref = await self._prefs.get(recipient)
-        return pref.allows("whatsapp", event)
+        The opt-out is scoped per (tenant, phone) — see whatsapp_optout.wa_pref_key (notification-r2-02).
+        We consult, and honour a stop from, ANY of: this tenant's key, the GLOBAL key (a webhook whose
+        number we could not attribute), and the LEGACY raw-phone key (opt-outs written before scoping).
+        Suppression is one-directional, so consulting the broader keys is always compliance-safe."""
+        from app.core.whatsapp_optout import wa_pref_key
+        keys = [wa_pref_key(tenant, recipient), wa_pref_key("", recipient), recipient]
+        for key in keys:
+            pref = await self._prefs.get(key)
+            if not pref.allows("whatsapp", event):
+                return False
+        return True
 
     async def _dedupe_reserve(self, idempotency_key: str | None, tenant: str) -> dict | None:
         """Atomic dedupe: return the prior result (duplicate) if a same-key send already completed;

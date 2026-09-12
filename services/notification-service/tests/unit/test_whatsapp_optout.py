@@ -25,10 +25,12 @@ def _value(wa_id: str, decision: str, category: str = "marketing_messages"):
 
 
 def test_stop_opts_the_phone_out_of_marketing():
+    from app.core.whatsapp_optout import wa_pref_key
     prefs = PreferenceStore(MemoryDataStore())
     n = run(apply_user_preferences(prefs, _value("966500000001", "stop")))
     assert n == 1
-    pref = run(prefs.get("966500000001"))
+    # no number_index → global-scoped key (tenant=""); the opt-out is stored under the (tenant, phone) key
+    pref = run(prefs.get(wa_pref_key("", "966500000001")))
     assert "marketing" in pref.opt_out_events
     assert pref.allows("whatsapp", "marketing") is False
     assert pref.allows("whatsapp", "otp") is True          # only marketing is blocked
@@ -36,9 +38,10 @@ def test_stop_opts_the_phone_out_of_marketing():
 
 def test_resume_opts_back_in():
     prefs = PreferenceStore(MemoryDataStore())
+    from app.core.whatsapp_optout import wa_pref_key
     run(apply_user_preferences(prefs, _value("966500000001", "stop")))
     run(apply_user_preferences(prefs, _value("966500000001", "resume")))
-    pref = run(prefs.get("966500000001"))
+    pref = run(prefs.get(wa_pref_key("", "966500000001")))
     assert "marketing" not in pref.opt_out_events
     assert pref.allows("whatsapp", "marketing") is True
 
