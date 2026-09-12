@@ -58,7 +58,9 @@ def test_chat_a_tool_call_is_returned_with_parsed_arguments():
 def test_chat_a_plain_text_answer_is_returned():
     out = run(_model({"choices": [{"message": {"content": "all good"}}]}).converse(
         system="s", messages=[{"role": "user", "content": "x"}], tools=TOOLS))
-    assert out == {"kind": "text", "text": "all good", "tokens_in": 0, "tokens_out": 0}
+    assert out["kind"] == "text" and out["text"] == "all good"
+    # usage omitted → estimated floor, never zero (assistant-r2-02)
+    assert out["tokens_in"] > 0 and out["tokens_out"] > 0
 
 
 def test_chat_the_transcript_maps_assistant_toolcalls_and_tool_results():

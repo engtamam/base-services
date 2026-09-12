@@ -94,7 +94,8 @@ class HttpModel:
                  transport: Transport | None = None,
                  key_resolver: KeyResolver | None = None,
                  prompt_cache: str = "off", gemini_cached_content: str = "",
-                 anthropic_version: str = "", extra_headers: dict[str, str] | None = None) -> None:
+                 anthropic_version: str = "", extra_headers: dict[str, str] | None = None,
+                 ssrf_revalidate: dict | None = None) -> None:
         if not url:
             raise ConfigError("MODEL_URL is required for the http model driver")
         if shape not in (CHAT, GENERATE, ANTHROPIC):
@@ -108,6 +109,10 @@ class HttpModel:
         self._temperature = temperature
         self._transport = transport or self._httpx_transport
         self._key_resolver = key_resolver
+        # For a per-tenant AI CONNECTION, the URL is re-validated (DNS re-resolved) at DELIVERY time,
+        # not just at write time — otherwise a tenant-controlled host could rebind to an internal IP
+        # between registration and the credential-bearing POST (assistant-r2-01).
+        self._ssrf_revalidate = ssrf_revalidate
         # PROMPT CACHING (cost). Gemini + OpenAI cache the stable PREFIX implicitly (system block first,
         # variable question last — the ordering this adapter already uses), so those are free and need
         # nothing sent. `prompt_cache="ephemeral"` adds Anthropic's explicit cache_control marker on the
@@ -230,6 +235,12 @@ class HttpModel:
                   or usage.get("input_tokens") or 0)
         tout = int(usage.get("completion_tokens") or usage.get("candidatesTokenCount")
                    or usage.get("output_tokens") or 0)
+        if tin == 0 and tout == 0 and body:
+            # Some providers OMIT usage (notably on tool-call responses). A real round trip must never
+            # meter to ZERO (free, unbilled compute — assistant-r2-02): estimate a floor from the
+            # serialized response (~4 chars/token). Under-counts the true prompt, but is never zero.
+            approx = max(1, len(json.dumps(body)) // 4)
+            tin = tout = approx
 
         if shape == ANTHROPIC:
             for block in body.get("content") or []:
@@ -390,6 +401,12 @@ class HttpModel:
                   or usage.get("input_tokens") or 0)
         tout = int(usage.get("completion_tokens") or usage.get("candidatesTokenCount")
                    or usage.get("output_tokens") or 0)
+        if tin == 0 and tout == 0 and body:
+            # Some providers OMIT usage (notably on tool-call responses). A real round trip must never
+            # meter to ZERO (free, unbilled compute — assistant-r2-02): estimate a floor from the
+            # serialized response (~4 chars/token). Under-counts the true prompt, but is never zero.
+            approx = max(1, len(json.dumps(body)) // 4)
+            tin = tout = approx
 
         if shape == ANTHROPIC:
             calls, text = [], ""
@@ -516,6 +533,14 @@ class HttpModel:
     async def _httpx_transport(self, url, headers, payload, timeout):   # pragma: no cover - live provider
         import httpx
 
+        if self._ssrf_revalidate is not None:
+            # Re-resolve + re-validate at delivery so a DNS rebind to an internal/blocked IP after
+            # write-time validation is refused before the credential leaves (assistant-r2-01).
+            from app.core import ssrf
+            try:
+                ssrf.validate(url, **self._ssrf_revalidate)
+            except ssrf.SsrfBlocked as exc:
+                raise ModelError(f"connection URL blocked at delivery: {exc}") from exc
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(url, headers=headers, json=payload)
         try:

@@ -186,11 +186,12 @@ def test_an_unparseable_body_is_a_failure():
         _ask(_model(None))
 
 
-def test_missing_usage_is_zero_rather_than_an_error():
-    # Token counts are for metering, not correctness; a provider omitting them must not fail a
-    # perfectly good answer.
+def test_missing_usage_is_estimated_not_zero():
+    # A provider omitting usage must not fail a good answer AND must not meter to ZERO (free compute).
+    # We estimate a non-zero floor from the serialized response (assistant-r2-02).
     a = _ask(_model({"choices": [{"message": {"content": "Fine [1]."}}]}))
-    assert a.tokens_in == 0 and a.tokens_out == 0 and a.text
+    assert a.text
+    assert a.tokens_in > 0 and a.tokens_out > 0        # estimated floor, never zero
 
 
 def test_the_configured_timeout_reaches_the_transport():

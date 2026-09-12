@@ -241,10 +241,18 @@ def _conn_model(request: Request, conn, priority: bool = False):
     # (x-api-key). Derived from (shape, auth), so no extra connection field is needed.
     anthropic_version = "vertex-2023-10-16" if (conn.shape == "anthropic"
                                                 and conn.auth == "vertex") else ""
+    s = get_settings()
+    ssrf_revalidate = {
+        "require_https": s.ASSISTANT_CONN_REQUIRE_HTTPS,
+        "allow_private": s.ASSISTANT_CONN_ALLOW_PRIVATE_IPS,
+        "allowed_hosts": frozenset(h.strip() for h in s.ASSISTANT_CONN_ALLOWED_HOSTS.split(",") if h.strip()),
+        "denied_hosts": frozenset(h.strip() for h in s.ASSISTANT_CONN_DENIED_HOSTS.split(",") if h.strip()),
+    }
     return HttpModel(conn.url, "", model=conn.model, shape=conn.shape,
                      temperature=conn.temperature, key_resolver=resolver,
                      anthropic_version=anthropic_version,
-                     extra_headers=_priority_headers(request, conn, priority))
+                     extra_headers=_priority_headers(request, conn, priority),
+                     ssrf_revalidate=ssrf_revalidate)   # re-validate the connection URL at delivery (r2-01)
 
 
 def _priority_headers(request: Request, conn, priority: bool) -> dict[str, str]:
