@@ -295,3 +295,86 @@ def test_integrity_unkeyed_hash_chain_allowed_with_explicit_optout():
 
 def test_integrity_hmac_chain_is_fine_in_production():
     _prod_settings(INTEGRITY_DRIVER="hmac-chain").assert_audit_config_ok()  # no raise
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Round 2 (audit-r2-02): append is now ROW-FIRST then head-cas. A crash between
+# the two leaves a harmless ORPHAN row ABOVE the head (reconcilable), never a
+# phantom head that cements an unrecoverable chain break. RED on the pre-fix
+# head-first ordering + pre-fix verify().
+# ─────────────────────────────────────────────────────────────────────────────
+from app.core.models import AuditEvent, new_id, now  # noqa: E402
+
+
+def _write_orphan_above_head(store, svc, action="orphan", partition="global"):
+    """Simulate a crash AFTER the event row is written but BEFORE the head is advanced:
+    write a correctly-chained row at seq head+1 and leave the head where it was."""
+    repo = AuditRepository(store)
+    seq, head, _ = run(repo.head_versioned(partition))
+    evt = AuditEvent(id=new_id(), seq=seq + 1, ts=now(), service="s", action=action,
+                     actor="x", prev_hash=head)
+    evt.hash = svc._integrity.seal(head, evt.to_dict())
+    run(repo.append_event(evt.to_dict(), partition))
+    return evt
+
+
+def test_orphan_row_above_head_is_tolerated_and_next_append_heals():
+    store = MemoryDataStore()
+    svc = _svc2(store)
+    run(svc.record(service="s", action="a1", actor="x"))
+    run(svc.record(service="s", action="a2", actor="x"))        # head at seq 2
+
+    orphan = _write_orphan_above_head(store, svc)               # row at seq 3, head still 2
+    # A row ABOVE the head is an in-flight/crash tail, NOT tamper: the chain is valid up to head.
+    assert run(svc.verify("global"))["ok"] is True
+
+    # The next real append reuses the seq and heals to a gapless, verifying chain.
+    ev3 = run(svc.record(service="s", action="a3", actor="x"))
+    assert ev3.seq == 3 and ev3.id != orphan.id
+    res = run(svc.verify("global"))
+    assert res["ok"] is True and res["checked"] == 3            # committed chain 1,2,3
+
+
+def test_orphan_does_not_hide_a_genuine_mid_chain_deletion():
+    store = MemoryDataStore()
+    svc = _svc2(store)
+    evts = [run(svc.record(service="s", action=f"a{i}", actor="x")) for i in range(1, 6)]  # head 5
+    _write_orphan_above_head(store, svc)                        # orphan at seq 6, head still 5
+    run(store.delete("audit_events", evts[2].id))              # delete the real seq-3 event
+    out = run(svc.verify("global"))
+    assert out["ok"] is False                                   # break below head still caught
+
+
+def test_concurrent_appends_leave_no_orphan_rows():
+    # A cas LOSS (live race, not a crash) must clean up its just-written row, so the store holds
+    # exactly one row per committed seq — no duplicate-seq siblings for verify()/purge() to carry.
+    store = _YieldStore()
+    svc = _svc2(store)
+
+    async def _race():
+        return await asyncio.gather(*[
+            svc.record(service="s", action=f"a{i}", actor="x") for i in range(8)])
+
+    run(_race())
+    rows = run(AuditRepository(store).iterate("global"))
+    assert [r["seq"] for r in rows] == list(range(1, 9))        # gapless, no leftover orphans
+    assert run(svc.verify("global"))["ok"] is True
+
+
+def test_purge_ignores_an_uncommitted_row_above_the_head():
+    # An in-flight row-first append (row visible, head not yet moved) must not be re-anchored by a
+    # concurrent purge, or the head would point at a row that later rolls back.
+    store = MemoryDataStore()
+    svc = _svc2(store)
+    ev_old = run(svc.record(service="s", action="old", actor="x"))
+    row = run(store.get("audit_events", ev_old.id))
+    row["ts"] = _old_ts(400)
+    run(store.put("audit_events", ev_old.id, row))
+    run(svc.record(service="s", action="recent", actor="x"))    # head at seq 2
+
+    _write_orphan_above_head(store, svc, action="inflight")     # row at seq 3, head still 2
+    run(svc.purge(_old_ts(200), "global"))                     # purges seq 1, keeps seq 2
+
+    assert run(svc.verify("global"))["ok"] is True
+    actions = [r["action"] for r in run(AuditRepository(store).iterate("global"))]
+    assert "old" not in actions and "recent" in actions

@@ -54,14 +54,21 @@ class AuditService:
             actor, ip, metadata = self._pii.apply(tenant=tenant, actor=actor, ip=ip,
                                                   metadata=metadata)
         partition = self._partition(tenant)
-        # ATOMIC append. head() and append() were a non-atomic read-modify-write: two concurrent
-        # record()/ingest calls to one partition both read head seq=N and both chained seq N+1 onto
-        # the same prev_hash — duplicate seqs and a prev_hash the head no longer matched, which
-        # verify() then reported as tampering with one real event orphaned. Now the head is advanced
-        # by a version compare-and-set; a lost race REFETCHES the new head and re-seals against it, so
-        # every appended event chains onto the actual immediately-preceding hash. The head is advanced
-        # BEFORE the event row is written, so a crash between the two shows as a (detectable) missing
-        # tail, never as two events sharing a seq.
+        # ATOMIC append, ROW-FIRST. head() and append() were a non-atomic read-modify-write: two
+        # concurrent record()/ingest calls to one partition both read head seq=N and both chained
+        # seq N+1 onto the same prev_hash. That is serialised by a version compare-and-set on the
+        # head; a lost race REFETCHES the new head and re-seals against it, so every appended event
+        # chains onto the actual immediately-preceding hash.
+        #
+        # ORDERING (audit-r2-02): the event ROW is written FIRST, then the head is advanced by the
+        # cas. The head advance is the single commit point. This inverts the old head-first order,
+        # whose crash/transient-error window between the two writes left the head pointing at a
+        # phantom event — the NEXT append then chained onto a head whose row was absent and cemented
+        # an unrecoverable break that read as tampering. Row-first turns that same crash into a
+        # harmless ORPHAN row ABOVE the head (seq > head_seq): verify() treats it as an in-flight
+        # tail, and the next append refetches the (unmoved) head and reuses the seq, healing the
+        # chain. A cas LOSS is not a crash — we can and do delete our just-written orphan row before
+        # retrying, so a live race leaves no duplicate-seq row behind; only a real crash does.
         for _ in range(64):
             seq, head, ver = await self._repo.head_versioned(partition)
             evt = AuditEvent(
@@ -70,10 +77,15 @@ class AuditService:
                 metadata=metadata or {}, prev_hash=head,
             )
             evt.hash = self._integrity.seal(head, evt.to_dict())
+            # ROW FIRST — a crash here (before the head moves) leaves an orphan above the head.
+            await self._repo.append_event(evt.to_dict(), partition, idempo_key=idempo_key)
+            # THEN advance the head. This cas is the commit; concurrent appends still serialise here.
             if await self._repo.advance_head(partition, ver, evt.seq, evt.hash):
-                await self._repo.append_event(evt.to_dict(), partition, idempo_key=idempo_key)
                 return evt
-            # another writer advanced the head first — refetch and re-seal against the new head
+            # Another writer advanced the head first. Our row is now an uncommitted duplicate-seq
+            # orphan — remove it (this is a live loss, not a crash) and refetch/re-seal against the
+            # new head, so the retry never leaves a stray row for verify()/purge() to reconcile.
+            await self._repo.delete(evt.id)
         raise RuntimeError(f"audit append could not converge on partition {partition!r}")
 
     async def record_idempotent(self, *, idempotency_key: str = "", stale_seconds: float = 30.0,
@@ -209,15 +221,39 @@ class AuditService:
         A tamper-evident log that verifies part of itself is worse than no log.
         """
         # A tail-vs-head DISAGREEMENT can be transient rather than tamper (audit-r2-07): record()
-        # advances the head before writing the event row, and iterate()/head() are separate reads, so
-        # a concurrent append in flight makes head_seq and the last read event legitimately diverge for
+        # writes the event row then advances the head, and iterate()/head() are separate reads, so a
+        # concurrent append in flight makes head_seq and the last read event legitimately diverge for
         # a moment. We distinguish "tail grew/settling during a busy read" from "broken" by re-reading
         # once the walk itself is clean: a REAL truncation or reorder persists across the re-read; an
         # in-flight append resolves. The prev_hash / content walk is NOT retried — a middle hole or a
         # forged hash is tamper regardless of concurrency, so it is reported on the first pass.
         for attempt in range(_VERIFY_TAIL_RETRIES):
-            events = await self._repo.iterate(partition)
+            all_events = await self._repo.iterate(partition)
             head_seq, head_hash = await self._repo.head(partition)
+
+            # ROW-FIRST append (audit-r2-02) makes an uncommitted row visible before the head moves,
+            # so the stored rows can legitimately hold entries the committed chain does not yet cover:
+            #  1) a row whose seq is ABOVE the head — an in-flight append (row written, head not yet
+            #     advanced) or a crash-orphan. Not tamper; ignore it, the chain is valid up to head.
+            #  2) a DUPLICATE-seq sibling at/below the head — a crash-orphan whose seq the recovering
+            #     append reused. The committed row is the one on the hash chain (its hash is the head
+            #     hash, or is referenced as some row's prev_hash); the sibling is the orphan. A seq
+            #     with a single row is ALWAYS kept, so a genuine deletion (which leaves the preceding
+            #     event unreferenced) is never mistaken for an orphan and is still reported below.
+            in_chain = [e for e in all_events if int(e.get("seq", 0)) <= head_seq] if head_seq else []
+            referenced = {e.get("prev_hash", "") for e in in_chain}
+            by_seq: dict[int, list[dict]] = {}
+            for e in in_chain:
+                by_seq.setdefault(int(e["seq"]), []).append(e)
+            events: list[dict] = []
+            for s in sorted(by_seq):
+                rows = by_seq[s]
+                if len(rows) == 1:
+                    events.append(rows[0])
+                    continue
+                on_chain = [r for r in rows
+                            if r.get("hash", "") == head_hash or r.get("hash", "") in referenced]
+                events.append(on_chain[0] if on_chain else rows[0])
 
             prev = ""
             bad = None
@@ -358,8 +394,14 @@ class AuditService:
         # the event rows yet — we simply retry against the now-larger tail (re-anchoring the new event
         # too). Only after the head is ours do we persist the deletes and re-sealed survivor rows.
         for _attempt in range(64):
-            _, _, ver = await self._repo.head_versioned(partition)
+            head_seq, _, ver = await self._repo.head_versioned(partition)
             events = await self._repo.iterate(partition)
+            # Operate only on the COMMITTED chain (seq <= head_seq). Row-first append (audit-r2-02)
+            # makes a not-yet-committed row visible before its head cas; such a row sits ABOVE the
+            # head and MUST NOT be re-anchored — the append either commits it (bumping our version so
+            # our set_head_versioned cas below fails and we retry) or rolls it back on a cas loss.
+            # Re-sealing an uncommitted row would leave the head pointing at a row that then vanishes.
+            events = [e for e in events if int(e.get("seq", 0)) <= head_seq]
             expired = [e for e in events if e.get("ts", "") < before_ts]
             held = ([e for e in expired if e.get("actor") in held_refs]
                     if held_refs else [])
