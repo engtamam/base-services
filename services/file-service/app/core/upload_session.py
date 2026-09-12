@@ -139,7 +139,9 @@ class UploadSessionStore:
                                  after: str | None = None) -> tuple[list[dict], str | None]:
         """Pending/scanning sessions older than `before_iso` — the sweeper's page. Filter and bound
         are pushed into the store; the cost is the page, not the table."""
-        rows, cursor = await self._store.find(_SESSIONS, {"status": PENDING}, limit=limit,
+        # BOTH pending and scanning: a session stuck in SCANNING (its scan-queue job lost, e.g. a
+        # finalize crash) would otherwise never be released by this sweeper, orphaning it.
+        rows, cursor = await self._store.find(_SESSIONS, {"status": [PENDING, SCANNING]}, limit=limit,
                                               after=after, sort=("created", "asc"))
         stale = [r for r in rows if r.get("created", "") < before_iso]
         return stale, cursor

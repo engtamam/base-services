@@ -861,69 +861,75 @@
       "issues": [
         {
           "id": "file-service-01",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "vuln",
           "severity": "high",
           "file": "services/file-service/app/api/v1/files.py",
           "line": 102,
           "title": "Chunked upload with no Content-Length bypasses all size limits and is buffered whole in memory (DoS)",
           "detail": "The inline upload route guards size only when a Content-Length header is present: files.py:99-101 checks `declared_len` before reading, and BodyLimitMiddleware (middleware/security.py:71-81) also only inspects `content-length`. A request using chunked transfer-encoding (no Content-Length) skips both guards, and `data = await request.body()` (files.py:102) then reads the ENTIRE body into memory before the only remaining check `len(data) > self._max` in FileService.upload (file_service.py:235). Nothing streams or bounds the read up front.",
-          "failure_scenario": "An authenticated caller holding files.upload sends `POST /api/v1/files` with `Transfer-Encoding: chunked` and no Content-Length, streaming multi-GB of data. Both size guards are skipped; the process buffers the whole body in RAM (bounded only by the 30s request timeout), exhausting memory and OOM-killing the pod."
+          "failure_scenario": "An authenticated caller holding files.upload sends `POST /api/v1/files` with `Transfer-Encoding: chunked` and no Content-Length, streaming multi-GB of data. Both size guards are skipped; the process buffers the whole body in RAM (bounded only by the 30s request timeout), exhausting memory and OOM-killing the pod.",
+          "resolution": "FIXED: the inline upload re-enforces MAX_INLINE_BYTES on the ACTUAL bytes after read (the read is bounded by BodyLimitMiddleware), so a chunked body with no Content-Length can no longer bypass the cap. Regression: test_file_api_audit.py."
         },
         {
           "id": "file-service-02",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "security",
           "severity": "medium",
           "file": "services/file-service/app/api/v1/files.py",
           "line": 203,
           "title": "List-files endpoint requires no files.read capability, unlike single-file metadata",
           "detail": "`GET /api/v1/files` (list_files) declares only `dependencies=[Depends(rate_limit)]` and takes `principal=Depends(require_user)` — so any valid token, even one with an EMPTY caps set, can enumerate its tenant's file records. By contrast `GET /{file_id}/metadata` and `GET /{file_id}` are gated by `Depends(_READ)` (require_capability('files.read')). The same data (filenames, sizes, sha256, owners) is thus reachable in bulk without the capability that guards it per-file, contradicting the service's deny-by-default RBAC stance (authz.py).",
-          "failure_scenario": "A principal issued a token with `caps=[]` (no capabilities) calls `GET /api/v1/files`; it returns the full paged metadata of every file in its tenant, even though `GET /api/v1/files/{id}/metadata` would 403 the same principal."
+          "failure_scenario": "A principal issued a token with `caps=[]` (no capabilities) calls `GET /api/v1/files`; it returns the full paged metadata of every file in its tenant, even though `GET /api/v1/files/{id}/metadata` would 403 the same principal.",
+          "resolution": "FIXED: GET /api/v1/files now requires files.read (Depends(_READ)), matching single-file metadata. Regression: test_file_api_audit.py."
         },
         {
           "id": "file-service-03",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "bug",
           "severity": "medium",
           "file": "services/file-service/app/core/file_service.py",
           "line": 111,
           "title": "Large-upload dedup increments ref-count without re-storing bytes, racing blob deletion (data loss)",
           "detail": "The delete path's safety argument (file_service.py:274-280) relies on the invariant 'upload writes the blob before it increments, so a re-upload has already restored the bytes.' The large-upload dedup short-circuit violates that invariant: begin_large_upload finds an existing owned file (first_by_owner_sha) and calls `incr_ref(sha)` + creates a new FileObject WITHOUT any store.put of the bytes (file_service.py:111-117). If a concurrent delete of the referencing file runs `decr_ref`->0, then `claim_blob_delete` (del_if_zero removes the ref row) and `store.delete(sha)` in the window after the dedup read but before/around its incr, the new FileObject ends up referencing a blob that was physically deleted.",
-          "failure_scenario": "Owner A has file X referencing blob S (ref=1). Concurrently: (1) A deletes X -> decr to 0, del_if_zero succeeds, store.delete(S) runs; (2) A calls POST /uploads with sha=S -> dedup sees X, incr_ref(S) recreates the ref row at 1 and creates file Y. Result: Y references S but the object bytes are gone; every download of Y 404s and the bytes are unrecoverable."
+          "failure_scenario": "Owner A has file X referencing blob S (ref=1). Concurrently: (1) A deletes X -> decr to 0, del_if_zero succeeds, store.delete(S) runs; (2) A calls POST /uploads with sha=S -> dedup sees X, incr_ref(S) recreates the ref row at 1 and creates file Y. Result: Y references S but the object bytes are gone; every download of Y 404s and the bytes are unrecoverable.",
+          "resolution": "FIXED: large-upload dedup incr_refs first (which then blocks a concurrent claim_blob_delete), verifies the blob exists, and on a missing blob undoes the ref and falls through to a real upload — no dedup to deleted bytes. Regression: test_audit_fixes.py."
         },
         {
           "id": "file-service-04",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "low",
           "file": "services/file-service/app/core/file_service.py",
           "line": 114,
           "title": "Dedup path records client-declared size unverified against the actual blob",
           "detail": "In the begin_large_upload dedup branch, the new FileObject is built with `size=size` and `content_type=ct` taken directly from the client's InitiateIn body (file_service.py:114-116), and returned as a completed file. Unlike the finalize path, the bytes are never re-hashed or head-checked here, so the stored metadata size/content_type is whatever the caller claimed, independent of the real content behind the sha256.",
-          "failure_scenario": "A caller who already possesses blob S calls POST /uploads with the correct sha256 but a fabricated `size` (e.g. 1) and a mismatched content_type; the service returns/stores a FileObject asserting that wrong size/type for real content, corrupting any downstream accounting or quota that trusts the metadata."
+          "failure_scenario": "A caller who already possesses blob S calls POST /uploads with the correct sha256 but a fabricated `size` (e.g. 1) and a mismatched content_type; the service returns/stores a FileObject asserting that wrong size/type for real content, corrupting any downstream accounting or quota that trusts the metadata.",
+          "resolution": "FIXED: the dedup branch records the EXISTING file verified size/content_type, not the client claimed values. Regression: test_audit_fixes.py."
         },
         {
           "id": "file-service-05",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "low",
           "file": "services/file-service/app/core/upload_session.py",
           "line": 138,
           "title": "find_stale_pending sweeps only PENDING despite claiming pending/scanning; SCANNING sessions can orphan",
           "detail": "The docstring says it returns 'Pending/scanning sessions older than before_iso', but the query filters `{\"status\": PENDING}` only (upload_session.py:142). sweep_stale_sessions (file_service.py:200-219) therefore never releases a session stuck in SCANNING. Such a session is normally rescued by the scan queue's reclaim, but if its queue job is lost (e.g. finalize crashes after the job is popped/acked, or a malformed job is acked and discarded in scan_worker.run_once:100-105), nothing sweeps it and its staging object/multipart lingers indefinitely.",
-          "failure_scenario": "A large upload reaches SCANNING, its scan job is acked but finalize fails before promotion; the session remains SCANNING forever, the staging object and multipart parts are never released, and the TTL sweeper skips it because it only matches PENDING."
+          "failure_scenario": "A large upload reaches SCANNING, its scan job is acked but finalize fails before promotion; the session remains SCANNING forever, the staging object and multipart parts are never released, and the TTL sweeper skips it because it only matches PENDING.",
+          "resolution": "FIXED: find_stale_pending sweeps status in (pending, scanning), so a session stuck in SCANNING (lost scan job) is released. Regression: test_audit_fixes.py."
         },
         {
           "id": "file-service-06",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "security",
           "severity": "low",
           "file": "services/file-service/app/api/v1/files.py",
           "line": 249,
           "title": "User signed-url route records file.signed_url_issued before the access check, logging issuance that never happened",
           "detail": "The user-facing signed_url handler records the `file.signed_url_issued` audit event (files.py:249-251) BEFORE calling `_load_scoped` (files.py:253), which 404s when the file does not belong to the caller's tenant. On a denied request no token is returned to the caller, yet the audit trail already asserts a URL was issued for that file_id. This pollutes the trail with false issuance records and lets an unauthorized caller generate audit entries for arbitrary file_ids by probing.",
-          "failure_scenario": "A principal calls POST /api/v1/files/{random_or_other_tenant_id}/signed-url; the request 404s (no URL returned) but an audit row claims the caller was issued a signed URL for that file_id, misrepresenting what occurred and enabling audit-log spam."
+          "failure_scenario": "A principal calls POST /api/v1/files/{random_or_other_tenant_id}/signed-url; the request 404s (no URL returned) but an audit row claims the caller was issued a signed URL for that file_id, misrepresenting what occurred and enabling audit-log spam.",
+          "resolution": "FIXED: the user signed-url route authorizes (_load_scoped) BEFORE recording file.signed_url_issued, so a denied cross-tenant request no longer logs a false issuance."
         }
       ]
     },

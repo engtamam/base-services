@@ -100,6 +100,12 @@ async def upload(request: Request, principal: Principal = Depends(require_user),
     if declared_len and declared_len.isdigit() and int(declared_len) > s.MAX_INLINE_BYTES:
         raise HTTPException(413, "PAYLOAD_TOO_LARGE")
     data = await request.body()
+    # A chunked body carries no Content-Length, so the header check above sees nothing. Re-enforce the
+    # inline cap on the ACTUAL bytes (the read itself is already bounded by BodyLimitMiddleware), so a
+    # chunked upload cannot slip past MAX_INLINE_BYTES and force the large-object path's memory cost
+    # onto the inline route.
+    if len(data) > s.MAX_INLINE_BYTES:
+        raise HTTPException(413, "PAYLOAD_TOO_LARGE")
     content_type = request.headers.get("content-type", "application/octet-stream")
     try:
         f = await svc.upload(tenant=principal.tenant or "", owner=principal.subject,
@@ -200,8 +206,8 @@ async def abort_upload(request: Request, session_id: str,
     return sess.public_dict()
 
 
-@router.get("", dependencies=[Depends(rate_limit)])
-async def list_files(request: Request, principal: Principal = Depends(require_user),
+@router.get("", dependencies=[Depends(_READ), Depends(rate_limit)])
+async def list_files(request: Request, principal: Principal = Depends(_READ),
                      limit: int = Query(default=100, ge=1, le=1000),
                      after: str | None = Query(default=None, max_length=512)) -> dict:
     """This tenant's files, newest first, keyset-paged.
@@ -243,14 +249,14 @@ async def download(request: Request, file_id: str, principal: Principal = Depend
 
 @router.post("/{file_id}/signed-url")
 async def signed_url(request: Request, file_id: str, principal: Principal = Depends(_READ)) -> dict:
-    # Write-ahead: a critical action the log cannot take must not happen at all, so this
-    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
-    # already succeeded, and leave it unrecorded.
+    svc = await build_files(request)
+    # Authorize (tenant ownership) BEFORE recording issuance: _load_scoped 404s a file that is not
+    # the caller's, and no token is returned — so recording 'signed_url_issued' first logged an
+    # issuance that never happened (a false audit entry an attacker could spray by id).
+    await _load_scoped(svc, file_id, principal)
     await request.app.state.auditor.record(
         "file.signed_url_issued", actor=principal.subject, tenant=principal.tenant, resource=f"file:{file_id}",
         ip=request.client.host if request.client else "")
-    svc = await build_files(request)
-    await _load_scoped(svc, file_id, principal)
     token = svc.signed_token(file_id)
     return {"url": f"/files/signed/{token}", "expires_in": get_settings().SIGNED_URL_TTL_SECONDS}
 

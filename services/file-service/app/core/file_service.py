@@ -110,11 +110,20 @@ class FileService:
         # they proved possession when they uploaded it the first time.
         existing = await self._repo.first_by_owner_sha(owner, sha)
         if existing is not None:
+            # incr_ref FIRST: once the ref is bumped a concurrent delete's claim_blob_delete (ref==0)
+            # can no longer remove the blob, so re-storing bytes is unnecessary AND the delete-safety
+            # invariant holds. But if the blob was ALREADY deleted before our increment, dedup would
+            # point a new file at missing bytes (data loss) — so verify it exists; if not, undo the ref
+            # and fall through to a real upload so the client re-supplies the content.
             await self._repo.incr_ref(sha)
-            f = FileObject(id=new_id(), tenant=tenant, owner=owner, filename=filename,
-                           content_type=ct, size=size, sha256=sha)
-            await self._repo.create(f)
-            return BeginResult(session=None, plan=None, deduped_file=f)
+            if await self._store.exists(sha):
+                # Use the EXISTING file's verified size/content_type, not the client's unverified
+                # claim (the bytes are not re-hashed on this path).
+                f = FileObject(id=new_id(), tenant=tenant, owner=owner, filename=filename,
+                               content_type=existing.content_type, size=existing.size, sha256=sha)
+                await self._repo.create(f)
+                return BeginResult(session=None, plan=None, deduped_file=f)
+            await self._repo.decr_ref(sha)   # blob gone — no dedup; require a fresh upload
 
         sess = UploadSession(id=new_id(), tenant=tenant, owner=owner, filename=filename,
                              content_type=ct, declared_sha256=sha, declared_size=size,
