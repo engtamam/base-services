@@ -1,0 +1,102 @@
+{
+  "service": "identity-service",
+  "round": 2,
+  "findings": [
+    {
+      "id": "identity-r2-01",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "token/caps-escalation (platform boundary)",
+      "file": "app/core/tenancy.py",
+      "line": 65,
+      "title": "Multi-tenant mint does not strip platform.*/* from caps (the '_safe_caps' last door is missing on the tenant path)",
+      "detail": "The single-tenant mint applies AuthService._safe_caps (auth_service.py:295), which strips '*' and 'platform.*' from a token whose tenant is not PLATFORM_TENANT. Its own docstring calls this 'THE LAST DOOR', because 'a capability that ended up on a User by ANY route became platform authority on login', and the gateway honours '*' as a wildcard matching every capability check. service_accounts.py:230 (token_claims) and grantable_caps() also apply _strip_platform, and service_accounts.py:80 explicitly states it holds 'the same last door AuthService._safe_caps holds for humans'. But the multi-tenant HUMAN mint (auth_service.issue_tenant_tokens, line 680) builds claims via tenancy.claims_for(), which returns {'caps': list(membership.caps if caps is None else caps)} (tenancy.py:65-69) with NO platform stripping. The resolver path is no safer: AuthzCaps.resolve/MembershipCaps.resolve UNION the membership's direct caps into the result (caps_resolver/authz.py:121, caps_resolver/membership.py:18), and neither strips. So a membership row on a customer tenant that carries 'platform.*' or '*' mints a customer-tenant access token that carries platform-wide authority verbatim — exactly the class of bug _safe_caps exists to close, reintroduced on the primary multi-tenant login/switch/refresh path.",
+      "failure_scenario": "IDENTITY_MULTI_TENANT=on, PLATFORM_TENANT='platform'. A membership for person P on customer tenant 'acme' ends up with caps=['members:write','*'] (or 'platform.admin'). Origin is legitimate-looking: seed_owner / POST /internal/tenancy/seed-owner passes caps through add_member with granter_caps=None (the internal-bootstrap exemption, caps_grant.check() no-ops), so an orchestrator or a fat-fingered provisioning call can write any cap onto the first owner; alternatively any granter whose OWN unstripped multi-tenant token already holds '*' can grant it under the subset policy. P logs in and selects 'acme'. issue_tenant_tokens -> claims_for mints an access token {tenant:'acme', caps:[...,'*']} with no stripping. At the gateway '*' matches every capability check across all 16 services -> full cross-tenant platform compromise from a customer-tenant token. The identical account on the single-tenant path (issue_tokens) would have had '*'/'platform.*' removed.",
+      "fix": "Apply the same platform-boundary filter on the multi-tenant mint. Either have claims_for() take platform_tenant and strip '*'/'platform.' when membership.tenant != platform_tenant, or filter in issue_tenant_tokens after caps resolution (mirror _safe_caps). Add a safety test asserting a membership with '*'/'platform.admin' on a non-platform tenant yields a token without them, matching the single-tenant and service-account paths."
+    },
+    {
+      "id": "identity-r2-02",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "refresh-token rotation / reuse-detection race (TOCTOU)",
+      "file": "app/core/auth_service.py",
+      "line": 720,
+      "title": "Concurrent use of the same refresh token both succeed — rotation revoke is not an atomic compare-and-swap, defeating theft detection",
+      "detail": "refresh() reads state = await self._refresh.status(jti) (line 720) and only if state=='active' proceeds to revoke(jti) (line 731) and mint a new family. Reuse detection depends on the SECOND use of a jti observing state=='revoked' (line 722) to trigger revoke_family. But status() (refresh_store.py:44) and revoke() (refresh_store.py:58) are separate get/put operations with no CAS. Two requests presenting the SAME refresh token concurrently can both read 'active' before either revoke lands; both then revoke (idempotent) and both mint fresh, independent token families. Neither is detected as reuse. The refresh_store.revoke comment ('there is no competing writer to lose to') reasons only about the same jti being written once at mint then revoked; it does not account for two concurrent ROTATIONS of the same jti, which is precisely the stolen-token-vs-legitimate-token interleaving the reuse defense targets.",
+      "failure_scenario": "An attacker steals refresh token R. The victim's client and the attacker both POST /api/v1/auth/refresh with R within the same tick. Both calls read status(R)=='active', both revoke(R), both call issue_tenant_tokens minting two live refresh families. The 'REUSED token -> revoke_family' branch never fires because neither call saw 'revoked'. The attacker now holds a self-sustaining session that survives, instead of tripping family revocation on the second use as designed (CWE-613/CWE-384).",
+      "fix": "Make rotation atomic: revoke should be a compare-and-swap that only succeeds when the row is currently active (e.g. store.cas on a version, or a conditional 'UPDATE ... SET revoked=true WHERE revoked=false'), and refresh() must treat a FAILED conditional revoke as a reuse/race signal (drop the mint, and on a losing CAS where the row is already revoked, trigger revoke_family). Only the winner of the CAS mints the new family."
+    },
+    {
+      "id": "identity-r2-03",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "concurrency / last-owner invariant (TOCTOU lost-update)",
+      "file": "app/core/auth_service.py",
+      "line": 495,
+      "title": "Sole-owner guard is check-then-act, so concurrent owner removals can strand a tenant with zero owners",
+      "detail": "_guard_last_owner (line 495) calls has_other_active_owner() (membership.py:189, a paged read) and then the caller performs revoke()/grant() as a separate write. There is no lock or CAS spanning the read and the write. delete_self (line 565), remove_member (line 529), update_member_roles (line 600) and set_member_status (line 631) all share this pattern. Two concurrent operations on the last two owners each observe the OTHER as an active owner and both proceed, removing/de-owning/suspending both. The invariant these guards exist to hold ('never leave a tenant with zero owners') is defeated under interleaving, leaving the tenant unmanageable and recoverable only by a manual datastore write (the exact outcome the guards' docstrings promise to prevent).",
+      "failure_scenario": "Tenant 'acme' has exactly two active owners, A and B. A calls DELETE /api/v1/auth/me (delete_self) while B is removed via DELETE /api/v1/tenancy/members/{B} concurrently. delete_self checks has_other_active_owner(acme, A) -> sees B -> proceeds; remove_member checks has_other_active_owner(acme, B) -> sees A -> proceeds. Both revoke. 'acme' now has no active owner: nobody can manage members, billing, or the tenant. Same result from two concurrent update_member_roles calls each dropping 'owner', or two set_member_status suspensions.",
+      "fix": "Serialize owner-count-changing writes per tenant, or make them conditional: perform the demotion/removal under a CAS and re-verify the owner count inside the same atomic step, rolling back (raise SoleOwnerError) if the write would drop the active-owner count to zero. An owner-count row updated by CAS is one option."
+    },
+    {
+      "id": "identity-r2-04",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "brute-force control divergence (single-tenant vs multi-tenant)",
+      "file": "app/core/auth_service.py",
+      "line": 329,
+      "title": "Multi-tenant person login has no per-account lockout — only per-(source-IP, identifier), so distributed credential stuffing is unthrottled",
+      "detail": "Single-tenant authenticate() keys the lockout on (tenant, username) (line 221/227), i.e. PER ACCOUNT, so N failures from ANY source lock that account. Multi-tenant authenticate_person() keys the lockout on (source, ident) where source is the caller IP (line 329, 341; api/v1/tenancy.py _source() returns request.client.host). The T5 comment justifies not keying on the person alone (to avoid a DoS that locks a consultant out of all clients), but the chosen key means an attacker credential-stuffing one account from many IPs never trips the per-account counter — there is none. The only remaining control is the route-level generic rate_limit (per IP/subject), which the login_attempts.py module docstring itself says 'does NOT stop an attacker credential-stuffing a single account from many IPs'. So the primary login path in the multi-tenant deployment is materially weaker against distributed brute force than the legacy path.",
+      "failure_scenario": "A botnet with 5,000 IPs targets victim@example.com on POST /api/v1/auth/person/login (or /auth/tenant with credentials). Each IP submits a handful of guesses; per-(IP, identifier) lockout never fires because each source stays under LOGIN_MAX_ATTEMPTS, and no per-account counter exists. Over time the 6-8 char password space is ground down with no account-level lockout ever engaging.",
+      "fix": "Add an account-scoped failure counter with a distinct, higher threshold and a graduated response (e.g. lock the ACCOUNT after M failures across all sources within a window, in ADDITION to the per-source counter), or require step-up/CAPTCHA once global failures for an identifier spike. Keep the per-source key to preserve the T5 availability property, but do not let it be the only per-account signal."
+    },
+    {
+      "id": "identity-r2-05",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "config fail-open (default posture)",
+      "file": "app/core/auth_service.py",
+      "line": 173,
+      "title": "Platform-cap stripping (_safe_caps) is disabled by default because PLATFORM_TENANT defaults to empty",
+      "detail": "_safe_caps returns caps unfiltered when platform_tenant is empty (line 173-176), and config.py:409 sets PLATFORM_TENANT: str = '' by default. So even the single-tenant 'last door' is OFF unless an operator sets PLATFORM_TENANT. Combined with identity-r2-01 (the multi-tenant path never strips at all), a default deployment provides NO platform-authority containment: any '*'/'platform.*' cap that reaches a user/membership row is minted into a token. The code logs the disablement at boot (a decision, not a silence), which is why this is low rather than high on its own, but it makes r2-01 exploitable in a stock configuration.",
+      "failure_scenario": "Operator enables multi-tenancy and RBAC but never sets PLATFORM_TENANT (the default). Every mint path emits caps verbatim; a stray 'platform.support' or '*' cap on any membership becomes cross-tenant authority with nothing to catch it.",
+      "fix": "Fail closed or loud: refuse to boot the multi-tenant/RBAC configuration without an explicit PLATFORM_TENANT (or an explicit opt-out flag), and always strip '*'/'platform.*' from any non-platform-tenant token regardless of whether PLATFORM_TENANT names the platform, deriving the platform identity from a required setting."
+    },
+    {
+      "id": "identity-r2-06",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "tenant-claim inconsistency (principal vs mint gate)",
+      "file": "app/api/auth.py",
+      "line": 30,
+      "title": "_extract_principal accepts org/tid as a tenant fallback while the mint gate reads only 'tenant'",
+      "detail": "_extract_principal (line 30) sets principal.tenant = claims.get('tenant') or claims.get('org') or claims.get('tid'), but tenancy.tenant_of() (tenancy.py:99) reads ONLY 'tenant' and fails closed if absent. principal.tenant feeds audit actor scoping and the subject_ref pseudonym in delete_me/change_password/mfa_enroll (auth/v1/auth.py:403,422,499) and the service-account _actor()/_caller_tenant() (service_accounts route:58,74). Identity itself only ever mints tokens carrying 'tenant', so this is not exploitable via identity-issued tokens; but if this verifier is ever pointed at an external IdP (JWKS driver) whose tokens carry 'org'/'tid' but no 'tenant', the two code paths disagree about which tenant the caller is in — the capability/mint gate says 'no tenant' while principal.tenant is populated from org/tid, which could mis-scope a service-account ownership check or a pseudonym.",
+      "failure_scenario": "A JWKS-verified upstream token carries {sub, org:'acme', caps:['svc.write']} and no 'tenant'. GET service-accounts flows via _caller_tenant use principal.tenant='acme' (from org) and operate on acme's machine identities, while a route that goes through tenant_of() would have rejected the same token with NO_TENANT. The two surfaces treat the same token differently.",
+      "fix": "Make the tenant source consistent: either have _extract_principal read only 'tenant' (matching the mint gate) or have tenant_of/authorization consult the same fallback set. Pick one canonical tenant claim across principal extraction, tenant_of, and service-account ownership checks."
+    },
+    {
+      "id": "identity-r2-07",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "unauthenticated resource abuse / cost (SMS)",
+      "file": "app/api/v1/otp.py",
+      "line": 57,
+      "title": "POST /api/v1/otp/request delivers a code to any identifier, including unregistered numbers, throttled only per-identifier",
+      "detail": "request_otp (line 57) issues and DELIVERS an OTP to body.identifier without any existence check (correctly, to avoid an enumeration oracle), rate-limited only PER identifier via OtpService (resend cooldown + max_per_hour, otp_service.py:75-80) plus the route rate_limit. Because the throttle is per-identifier, an attacker can fan out low-volume requests across thousands of distinct phone numbers/emails, each staying under the per-identifier cap, and cause the platform to send (and pay for) SMS/WhatsApp messages to arbitrary destinations — an SMS-pumping / toll-fraud and reputation vector. No global per-source or per-tenant delivery ceiling is enforced here.",
+      "failure_scenario": "Attacker scripts POST /api/v1/otp/request with purpose=reset over a list of 50,000 phone numbers, one request each. Per-identifier limits never trip (one message per number); the notifier dispatches 50,000 paid SMS to numbers the attacker chose (SMS pumping), driving cost and getting the sender number/brand flagged.",
+      "fix": "Add a per-source (IP) and per-tenant delivery budget in addition to the per-identifier cap, and/or gate OTP delivery for reset/login to identifiers that resolve to a known account (delivering nothing but still returning the uniform response, so no oracle is created). Consider a global circuit breaker on notifier send volume."
+    },
+    {
+      "id": "identity-r2-08",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "internal-tier default-open policy + token fallback",
+      "file": "app/core/internal_policy.py",
+      "line": 32,
+      "title": "Internal route policy is default-open and token-fallback is on by default, so a leaked flat internal token reaches every /internal route",
+      "detail": "InternalRoutePolicy.permits returns True for any route with no declared entry (default-open, internal_policy.py:35), and INTERNAL_CALLER_DRIVER defaults to 'shared' with INTERNAL_CALLER_ALLOW_TOKEN_FALLBACK=True (config.py:125,134). This is the documented non-breaking migration posture, but the practical consequence is that in a stock deployment a single shared INTERNAL_SERVICE_TOKEN authenticates an unnamed peer (caller='') that is admitted to EVERY /internal route — including high-impact ones: POST /internal/tenancy/seed-owner (can mint a first owner with arbitrary caps — see r2-01's origin), POST /internal/privacy/erase (erase any subject), POST /internal/signing-key/rotate, and POST /internal/backup/import (restore/remap tenants). There is no least-privilege separation until an operator hand-writes INTERNAL_ROUTE_POLICY_JSON per route.",
+      "failure_scenario": "The flat INTERNAL_SERVICE_TOKEN leaks (a mis-scoped k8s secret, a log, a compromised low-value peer that legitimately holds it). With default-open policy the holder can call /internal/tenancy/seed-owner to seed themselves as owner (with platform caps, which r2-01 then fails to strip), /internal/privacy/erase to delete accounts, or /internal/backup/import to overwrite tenant data — none of it gated by a per-caller allow-list because none is declared.",
+      "fix": "Ship a default DENY-by-default (or at least a restrictive default allow-list) for the destructive internal routes (seed-owner, privacy/erase, signing-key/rotate, backup/import), requiring named assertion-proven callers; and document turning INTERNAL_CALLER_ALLOW_TOKEN_FALLBACK off once callers sign. At minimum, provide a shipped INTERNAL_ROUTE_POLICY_JSON template that closes the destructive routes."
+    }
+  ]
+}

@@ -105,6 +105,11 @@ def _svc(request: Request) -> AuthService:
         lockout=LoginAttemptStore(c.datastore, max_attempts=s.LOGIN_MAX_ATTEMPTS,
                                   window_seconds=s.LOGIN_ATTEMPT_WINDOW_SECONDS,
                                   lockout_seconds=s.LOGIN_LOCKOUT_SECONDS),
+        # Account-scoped counter (across all source IPs) for the multi-tenant person login — the
+        # distributed-stuffing defence the per-source counter cannot provide on its own (r2-04).
+        account_lockout=LoginAttemptStore(c.datastore, max_attempts=s.LOGIN_ACCOUNT_MAX_ATTEMPTS,
+                                          window_seconds=s.LOGIN_ACCOUNT_WINDOW_SECONDS,
+                                          lockout_seconds=s.LOGIN_ACCOUNT_LOCKOUT_SECONDS),
         # Off (the default) => None => every path in AuthService behaves exactly as it did
         # before Phase 31. The multi-tenant routes 404 rather than half-exist.
         memberships=MembershipStore(c.datastore) if s.IDENTITY_MULTI_TENANT else None,

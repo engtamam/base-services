@@ -64,6 +64,31 @@ class RefreshStore:
             # one, so there is no competing writer to lose to.
             await self._store.put(_COLL, jti, row)
 
+    async def consume(self, jti: str) -> bool:
+        """Atomically ROTATE one refresh jti from active → revoked, returning True for the SINGLE
+        winner and False for everyone else (already revoked, expired, unknown, or a concurrent
+        caller who won the CAS).
+
+        This is the fix for the rotation TOCTOU: `revoke()` is a get-then-put with no version
+        guard, so two concurrent uses of the SAME refresh token could both read it active, both
+        revoke it, and both mint a fresh family — reuse detection never firing. `consume` flips the
+        row under a compare-and-set, so exactly one rotation wins; the loser is a concurrent reuse
+        of one token and the caller treats it as theft (revoke_family). The CAS retries only when it
+        loses to a writer that left the row still active (never seen in practice, since the only
+        transition is active→revoked), so a lost race resolves to False, not a spurious win."""
+        for _ in range(64):
+            row = await self._store.get(_COLL, jti)
+            if not row:
+                return False
+            ver = int(row.get("version", 0))
+            if row.get("revoked") or float(row.get("exp", 0)) <= _now_ts():
+                return False                       # already rotated/expired → not our win
+            row["revoked"] = True
+            row.pop("version", None)               # cas stamps the next version
+            if await self._store.cas(_COLL, jti, ver, row):
+                return True
+        return False
+
     async def revoke_family(self, user_id: str) -> int:
         """Revoke EVERY refresh token for a user - the response to a detected token reuse.
 

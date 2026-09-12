@@ -421,6 +421,14 @@ class Settings(BaseSettings):
     LOGIN_MAX_ATTEMPTS: int = 5                  # consecutive failures before lockout
     LOGIN_ATTEMPT_WINDOW_SECONDS: int = 900      # window the failures are counted in
     LOGIN_LOCKOUT_SECONDS: int = 900            # how long the account stays locked
+    # Account-scoped lockout for the multi-tenant person login: counts failures for one identifier
+    # across EVERY source IP, so distributed credential stuffing (each IP staying under the per-source
+    # cap) still trips a lock. Deliberately a HIGHER threshold and window than the per-source counter
+    # — the per-source counter stays the first line and preserves availability (one attacker source
+    # cannot lock a consultant out everywhere); this is the additional per-account signal (r2-04).
+    LOGIN_ACCOUNT_MAX_ATTEMPTS: int = 50         # failures across ALL sources before an account lock
+    LOGIN_ACCOUNT_WINDOW_SECONDS: int = 3600     # window the cross-source failures are counted in
+    LOGIN_ACCOUNT_LOCKOUT_SECONDS: int = 3600    # how long the account stays locked (all sources)
 
     # ── multi-tenant membership (Phase 31) ──────────────────────────────────
     # One person, many companies: a freelancer with two clients gets ONE login and a key to

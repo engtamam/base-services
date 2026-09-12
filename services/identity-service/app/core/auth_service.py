@@ -22,6 +22,7 @@ from app.core.membership import (
 )
 from app.core.models import User, new_id
 from app.core.refresh_store import RefreshStore
+from app.core.service_accounts import _strip_platform
 from app.core.tenancy import TenantAccessDenied, authorize_tenant, claims_for
 from app.core.user_repository import UserRepository
 from app.ports.errors import InvalidToken
@@ -34,6 +35,11 @@ DEFAULT_MIN_PASSWORD_LEN = 8  # fallback default; real value comes from config
 # How a person who does not exist yet gets a password. The PLATFORM decides; we enforce.
 INVITE, PASSWORD = "invite", "password"
 ADD_MODES = (INVITE, PASSWORD)
+
+# The sentinel "tenant" the account-scoped lockout counter is keyed under (LoginAttemptStore keys on
+# (scope, identifier)). A constant scope with the identifier means the counter is PER ACCOUNT across
+# EVERY source IP — the control the per-(source, identifier) counter cannot provide on its own.
+_ACCOUNT_LOCKOUT_SCOPE = "__account__"
 
 
 class WeakPassword(Exception):
@@ -70,10 +76,12 @@ class AuthService:
     _legal_accept_caps: tuple[str, ...] = ()
     _legal_accept_ttl = 0
     _legal_fail_mode = "open"
+    _account_lockout = None
 
     def __init__(self, *, users: UserRepository, refresh: RefreshStore, hasher,
                  issuer, verifier, mfa, identifier, access_ttl: int, refresh_ttl: int,
                  min_password_len: int = DEFAULT_MIN_PASSWORD_LEN, lockout=None,
+                 account_lockout=None,
                  memberships=None, invites=None, caps_resolver=None,
                  platform_tenant: str = "", verifications=None,
                  require_verified_email: bool = False,
@@ -95,7 +103,13 @@ class AuthService:
         self._access_ttl = access_ttl
         self._refresh_ttl = refresh_ttl
         self._min_pw = min_password_len
-        self._lockout = lockout            # LoginAttemptStore | None (per-account brute-force)
+        self._lockout = lockout            # LoginAttemptStore | None (per-source brute-force)
+        # A SECOND LoginAttemptStore, keyed on the identifier alone (across every source IP), with a
+        # distinct — typically higher — threshold. The per-source counter preserves the T5
+        # availability property (one attacker IP cannot lock a consultant out of every client), but
+        # it is defeated by DISTRIBUTED stuffing from many IPs. This account-scoped counter is the
+        # per-account signal the multi-tenant path was missing (r2-04). None => unchanged behaviour.
+        self._account_lockout = account_lockout
         # MembershipStore | None. None => IDENTITY_MULTI_TENANT is off and every path below
         # behaves exactly as it did before Phase 31. Multi-tenancy is opt-in, not a migration.
         self._memberships = memberships
@@ -326,7 +340,16 @@ class AuthService:
         if self._memberships is None:
             raise RuntimeError("IDENTITY_MULTI_TENANT is off — no membership store is wired")
         ident = self._identifier.normalize(identifier)   # the canonical key — one human, one account
+        # TWO locks, checked before any password work. The per-source counter keeps the T5
+        # availability property (one attacker source cannot lock the account everywhere); the
+        # account-scoped counter (across ALL sources, higher threshold) is what actually stops
+        # DISTRIBUTED credential stuffing that keeps every single source under the per-source cap.
+        # Either lock refuses, and — like the single-tenant path — the caller returns the same
+        # generic failure, so neither reveals whether the account exists.
         if self._lockout and await self._lockout.is_locked(source, ident):
+            return None
+        if self._account_lockout and await self._account_lockout.is_locked(
+                _ACCOUNT_LOCKOUT_SCOPE, ident):
             return None
         person = await self._memberships.person_by_identifier(ident)
         if person is None or person.password_hash == UNUSABLE_PASSWORD:
@@ -337,18 +360,27 @@ class AuthService:
             # The sentinel is checked BEFORE the hasher: a hasher handed a non-hash may raise, and
             # a 500 here would be the loudest oracle of all.
             self._hasher.verify(password, self._dummy_hash)   # equalize timing (CWE-204)
-            if self._lockout:
-                await self._lockout.record_failure(source, ident)
+            await self._record_person_failure(source, ident)
             return None
         if not self._hasher.verify(password, person.password_hash):
-            if self._lockout:
-                await self._lockout.record_failure(source, ident)
+            await self._record_person_failure(source, ident)
             return None
         if person.status != ACTIVE:
             return None
         if self._lockout:
             await self._lockout.reset(source, ident)
+        if self._account_lockout:
+            await self._account_lockout.reset(_ACCOUNT_LOCKOUT_SCOPE, ident)
         return person
+
+    async def _record_person_failure(self, source: str, ident: str) -> None:
+        """Count one failed person-login against BOTH counters: the per-source counter (T5) and the
+        account-scoped counter (distributed-stuffing defence, r2-04). Kept in one place so the two
+        can never drift apart across the two failure branches."""
+        if self._lockout:
+            await self._lockout.record_failure(source, ident)
+        if self._account_lockout:
+            await self._account_lockout.record_failure(_ACCOUNT_LOCKOUT_SCOPE, ident)
 
     # ── the directory's write side: an admin staffs a tenant ──────────────────
     async def add_member(self, tenant: str, identifier: str, *, roles=None, caps=None,
@@ -492,21 +524,31 @@ class AuthService:
             "roles": list(m.roles), "caps": list(m.caps),
         }
 
-    async def _guard_last_owner(self, tenant: str, m: "Membership", *, keeps_owner: bool) -> None:
-        """Refuse an admin action that would leave a tenant with ZERO owner memberships.
+    async def _owner_safe_write(self, tenant: str, person_id: str, *, was_active_owner: bool,
+                                keeps_owner: bool, commit, rollback) -> None:
+        """Apply an owner-affecting membership write while HOLDING the "a live tenant always has at
+        least one active owner" invariant under concurrency.
 
-        The same invariant `delete_self` enforces for `/auth/me`, but here the actor is an ADMIN
-        acting on ANOTHER member — and it was missing, so removing / de-owning / suspending the last
-        owner stranded the tenant (no one could manage billing, members or the tenant), recoverable
-        only by a manual datastore write. A member who is not an active owner cannot orphan anyone;
-        an action that keeps them an active owner (a role change that still includes `owner`) is
-        fine; only removing the LAST active owner is refused.
+        The invariant used to be a check-then-act: read `has_other_active_owner`, then (as a
+        SEPARATE write) remove / de-own / suspend. Two concurrent operations on the last two owners
+        each saw the OTHER as still active and both proceeded, stranding the tenant with zero owners
+        — a lost-update TOCTOU no single-op guard could catch (r2-03).
+
+        So the order is inverted: `commit` (a single atomic store write) runs FIRST, and the
+        owner count is re-read only AFTER it lands. Because a writer always observes its own change,
+        two concurrent last-owner removals can never both see the other as present — if both are
+        already gone, both re-reads find zero owners and both `rollback` and raise, leaving the two
+        owners intact (correctness over availability; a retry then succeeds for one). A write that
+        cannot orphan (`not was_active_owner`, or `keeps_owner`) skips the dance entirely.
         """
-        if "owner" not in m.roles or not m.active:
+        if not was_active_owner or keeps_owner:
+            await commit()
             return
-        if keeps_owner:
-            return
-        if not await self._memberships.has_other_active_owner(tenant, m.person_id):
+        await commit()
+        # After the change, is anyone ELSE still an active owner? Since this member is no longer an
+        # active owner, "another active owner exists" is exactly "the tenant still has one".
+        if not await self._memberships.has_other_active_owner(tenant, person_id):
+            await rollback()
             raise SoleOwnerError()
 
     async def remove_member(self, tenant: str, person_id: str) -> bool:
@@ -526,8 +568,17 @@ class AuthService:
         m = await self._memberships.membership(person_id, tenant)
         if m is None:
             return False
-        await self._guard_last_owner(tenant, m, keeps_owner=False)
-        await self._memberships.revoke(person_id, tenant)
+
+        async def _commit() -> None:
+            await self._memberships.revoke(person_id, tenant)
+
+        async def _rollback() -> None:
+            await self._memberships.grant(m)
+
+        await self._owner_safe_write(
+            tenant, person_id,
+            was_active_owner=("owner" in m.roles and m.active), keeps_owner=False,
+            commit=_commit, rollback=_rollback)
         return True
 
     async def delete_self(self, person_id: str, tenant: str) -> dict:
@@ -562,9 +613,19 @@ class AuthService:
         m = await self._memberships.membership(person_id, tenant)
         if m is None:
             return {"deleted": False, "reason": "NOT_FOUND"}
-        if "owner" in m.roles and not await self._memberships.has_other_active_owner(tenant, person_id):
-            raise SoleOwnerError()
-        await self._memberships.revoke(person_id, tenant)
+
+        async def _commit() -> None:
+            await self._memberships.revoke(person_id, tenant)
+
+        async def _rollback() -> None:
+            await self._memberships.grant(m)
+
+        # Same atomic last-owner invariant as the admin remove path (r2-03): a sole owner deleting
+        # their own membership strands the tenant exactly as an admin removing them would.
+        await self._owner_safe_write(
+            tenant, person_id,
+            was_active_owner=("owner" in m.roles and m.active), keeps_owner=False,
+            commit=_commit, rollback=_rollback)
         person_deleted = False
         if not await self._memberships.memberships(person_id):
             person = await self._memberships.person(person_id)
@@ -594,15 +655,27 @@ class AuthService:
         m = await self._memberships.membership(person_id, tenant)
         if m is None:
             return None
+        orig_roles, orig_caps = list(m.roles), list(m.caps)
+        was_active_owner = ("owner" in orig_roles and m.active)
         # A role change that drops `owner` from the LAST owner strands the tenant. A caps-only
-        # change (roles is None) never touches ownership, so it is always allowed.
-        if roles is not None:
-            await self._guard_last_owner(tenant, m, keeps_owner="owner" in roles)
+        # change (roles is None) never touches ownership, so it always keeps the owner.
+        keeps_owner = ("owner" in roles) if roles is not None else True
         if roles is not None:
             m.roles = list(roles)
         if caps is not None:
             m.caps = list(caps)
-        return await self._memberships.grant(m)
+
+        async def _commit() -> None:
+            await self._memberships.grant(m)
+
+        async def _rollback() -> None:
+            m.roles, m.caps = orig_roles, orig_caps
+            await self._memberships.grant(m)
+
+        await self._owner_safe_write(
+            tenant, person_id, was_active_owner=was_active_owner, keeps_owner=keeps_owner,
+            commit=_commit, rollback=_rollback)
+        return m
 
     async def set_member_status(self, tenant: str, person_id: str, status: str):
         """Suspend or reactivate a member in THIS tenant, without deleting them.
@@ -626,11 +699,23 @@ class AuthService:
         if m.status == status:
             return m                       # idempotent: already in the requested state
         # Suspending the LAST owner revokes the only access that can manage the tenant — refuse.
-        # Reactivating (status → active) restores an owner, so it never orphans and needs no guard.
-        if status == SUSPENDED:
-            await self._guard_last_owner(tenant, m, keeps_owner=False)
+        # Reactivating (status → active) restores an owner, so it never orphans: `was_active_owner`
+        # is already False (the member is currently suspended), so the helper simply commits.
+        orig_status = m.status
+        was_active_owner = ("owner" in m.roles and m.active)
         m.status = status
-        return await self._memberships.grant(m)
+
+        async def _commit() -> None:
+            await self._memberships.grant(m)
+
+        async def _rollback() -> None:
+            m.status = orig_status
+            await self._memberships.grant(m)
+
+        await self._owner_safe_write(
+            tenant, person_id, was_active_owner=was_active_owner, keeps_owner=False,
+            commit=_commit, rollback=_rollback)
+        return m
 
     async def claim_invite(self, token: str, password: str) -> Person | None:
         """The invited human sets their OWN password. Single-use; the admin never sees it."""
@@ -678,6 +763,17 @@ class AuthService:
                 roles=list(membership.roles), caps=list(membership.caps))
 
         claims = claims_for(person, membership, caps)    # raises TenantAccessDenied if not current
+        # THE LAST DOOR, on the multi-tenant path too. The single-tenant mint (`_safe_caps`) and the
+        # service-account mint (`_strip_platform`) both strip `*`/`platform.*` from a token whose
+        # tenant is not the platform tenant — but this path did not, so a customer-tenant membership
+        # carrying `*` or `platform.admin` (by a fat-fingered seed, or a granter who already held it)
+        # minted a token with verbatim cross-tenant authority the gateway honours everywhere (r2-01).
+        # Reuses the SAME helper the service-account mint uses, so there is one strip, not two that
+        # can drift. Unconditional: an empty PLATFORM_TENANT strips (fail closed) rather than waving
+        # everything through — no non-platform tenant has any business minting platform authority.
+        claims["caps"] = _strip_platform(
+            list(claims.get("caps") or []),
+            tenant=membership.tenant, platform_tenant=self._platform_tenant)
         # Same legal gate as the single-tenant mint: block raises, flag stamps. Gated on the SAME
         # subject (person.id) + tenant (membership.tenant) the token will carry, so a later accept
         # by that subject clears exactly this gate.
@@ -717,19 +813,27 @@ class AuthService:
         jti = claims.get("jti")
         if not jti:
             return None
+        sub = str(claims.get("sub", ""))
         state = await self._refresh.status(jti)
         if state == "revoked":
             # A REUSED (already-rotated) refresh token → theft signal. Revoke the whole
             # family so a stolen token can't keep minting sessions.
-            await self._refresh.revoke_family(str(claims.get("sub", "")))
+            await self._refresh.revoke_family(sub)
             return None
         if state != "active":
             return None
 
-        # Read the tenant BEFORE rotating — revoke() rewrites the row we are reading.
+        # Read the tenant BEFORE rotating — consume() rewrites the row we are reading.
         tenant = await self._refresh.tenant_of(jti)
-        await self._refresh.revoke(jti)  # rotate: old refresh can never be reused
-        sub = str(claims.get("sub", ""))
+        # ATOMIC rotation. `consume` flips the row active→revoked under a compare-and-set, so exactly
+        # ONE of two concurrent uses of the same refresh token wins. The status() check above is a
+        # fast path for the plain replay; this closes the TOCTOU where both callers read "active"
+        # before either revoke landed and both minted a fresh family (r2-02). A LOST cas is a
+        # concurrent second use of one token — indistinguishable from theft — so the loser mints
+        # nothing and nukes the family, exactly as the already-revoked branch does.
+        if not await self._refresh.consume(jti):
+            await self._refresh.revoke_family(sub)
+            return None
 
         if tenant:
             # THE MOST DANGEROUS LINE IN THIS PHASE, and it is now a check.
