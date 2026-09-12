@@ -233,6 +233,32 @@ class PostgresDataStore:
             next_cursor = _cursor.encode(last.get(field), str(last.get("id", "")))
         return page, next_cursor
 
+    async def get_many(self, collection: str, keys: list[str]) -> list[dict[str, Any]]:
+        """Keyed batch read — ONE round trip via `key = ANY($2)`, served by the (collection, key)
+        PK. Replaces a per-key SELECT loop that pinned a pool slot for the whole wide query."""
+        if not keys:
+            return []
+        pool = await self._ensure()
+        async with pool.acquire() as con:
+            rows = await con.fetch(
+                f"SELECT value FROM {_TABLE} WHERE collection=$1 AND key = ANY($2::text[])",  # nosec B608 - _TABLE is a trusted constant; values parameterized
+                collection, [str(k) for k in keys],
+            )
+        return [json.loads(r["value"]) for r in rows]
+
+    async def range_scan(self, collection: str, lo: str, hi: str,
+                         limit: int) -> list[dict[str, Any]]:
+        """Rows whose key is in [lo, hi), ordered by key — a single indexed range read on the
+        (collection, key) PK btree, bounded by the range rather than the whole collection."""
+        pool = await self._ensure()
+        async with pool.acquire() as con:
+            rows = await con.fetch(
+                f"SELECT value FROM {_TABLE} WHERE collection=$1 AND key >= $2 AND key < $3 "  # nosec B608 - _TABLE is a trusted constant; values parameterized
+                f"ORDER BY key LIMIT $4",
+                collection, str(lo), str(hi), max(0, int(limit)),
+            )
+        return [json.loads(r["value"]) for r in rows]
+
     async def scan_all(self, collection: str, limit: int) -> list[dict[str, Any]]:
         """Every row. Sweepers and migrations only — see the port.
 

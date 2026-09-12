@@ -84,6 +84,25 @@ class MemoryDataStore:
             next_cursor = _cursor.encode(last.get(field), str(last.get("id", "")))
         return copy.deepcopy(page), next_cursor
 
+    async def get_many(self, collection: str, keys: list[str]) -> list[dict[str, Any]]:
+        """Keyed batch read — one dict lookup per key, absent keys skipped. Mirrors the postgres
+        `key = ANY($1)` single round trip."""
+        bucket = self._data.get(collection, {})
+        out: list[dict[str, Any]] = []
+        for k in keys:
+            row = bucket.get(k)
+            if row is not None:
+                out.append(copy.deepcopy(row))
+        return out
+
+    async def range_scan(self, collection: str, lo: str, hi: str,
+                         limit: int) -> list[dict[str, Any]]:
+        """Rows whose key is in [lo, hi), ordered by key — the in-memory mirror of the postgres
+        btree range read. Bounded by the range, never the whole collection."""
+        bucket = self._data.get(collection, {})
+        keys = sorted(k for k in bucket if lo <= k < hi)
+        return [copy.deepcopy(bucket[k]) for k in keys[: max(0, int(limit))]]
+
     async def scan_all(self, collection: str, limit: int) -> list[dict[str, Any]]:
         """Every row. Sweepers and migrations only - see the port."""
         rows = list(self._data.get(collection, {}).values())

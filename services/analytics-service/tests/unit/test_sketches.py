@@ -185,10 +185,37 @@ def test_median_of_a_single_bucket_is_sane_and_mean_is_exact():
     assert 10.0 <= G.quantile(g, 0.5) <= 40.0
 
 
-def test_histograms_with_different_bucket_counts_refuse_to_merge():
-    import pytest
-    with pytest.raises(ValueError):
-        G.merge(G.new(64), G.new(128))
+def test_histograms_with_different_bucket_counts_down_convert_on_merge():
+    # A query spanning a HISTOGRAM_BUCKETS change must still answer, not 500. merge() folds the
+    # finer histogram into the coarser one; no event is lost (counts add) and the quantile stays
+    # inside the observed range.
+    a = G.new(64)
+    b = G.new(128)
+    for v in (1.0, 5.0, 25.0):
+        G.add(a, v)
+    for v in (2.0, 50.0, 100.0):
+        G.add(b, v)
+    merged = G.merge(a, b)
+    assert int(merged["n"]) == 64                      # down-converted to the coarser count
+    assert int(merged["count"]) == 6                   # every event survives the fold
+    assert merged["min"] == 1.0 and merged["max"] == 100.0
+    q = G.quantile(merged, 0.5)
+    assert 1.0 <= q <= 100.0                            # a real quantile, not an exception
+
+
+def test_hll_different_precision_down_converts_on_merge():
+    # Same for HLL_PRECISION: merge folds to the lower precision instead of raising, so a unique
+    # count over a range spanning the change is answerable and roughly correct.
+    lo = H.new(10)
+    hi = H.new(14)
+    for i in range(300):                                # enough to push the p=14 sketch dense
+        H.add(hi, f"u{i}")
+    for i in range(150, 450):                           # overlap 150..299, so union ~450 uniques
+        H.add(lo, f"u{i}")
+    merged = H.merge(lo, hi)
+    assert int(merged["p"]) == 10                       # folded to the lower precision
+    est = H.estimate(merged)
+    assert 350 <= est <= 550                            # ~450 distinct, within HLL error at p=10
 
 
 def test_empty_sketches_are_safe():

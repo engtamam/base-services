@@ -97,7 +97,9 @@ def test_an_event_inside_the_watermark_is_not_late():
 
 # ── cardinality guard ───────────────────────────────────────────────────────
 def test_high_cardinality_dimension_spills_to_other_instead_of_exploding_storage():
-    ing, q, _ = _env(max_cardinality=3)
+    # max_combinations high so the per-DIMENSION cap is what spills here, not the composite cap
+    # (in production MAX_DIMENSION_COMBINATIONS >> MAX_DIMENSION_CARDINALITY, so they never collide).
+    ing, q, _ = _env(max_cardinality=3, max_combinations=100)
     for i in range(10):
         run(ing.ingest(event_id=f"e{i}", tenant="t1", name="hit", event_time=BASE + 60,
                        props={"url": f"/p{i}"}))

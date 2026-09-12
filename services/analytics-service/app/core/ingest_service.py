@@ -15,13 +15,20 @@ Guarantees:
 """
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from app.core import buckets as _buckets
 from app.core import hll as _hll
 from app.core import histogram as _hist
 from app.core.models import OTHER, PII_SUSPECT, Event, Rollup, rollup_key
+from app.core.pii import subject_ref
 from app.core.stores import CardinalityStore, EventStore, RollupStore
+
+
+class IngestError(ValueError):
+    """A rejected event (non-finite value, out-of-range timestamp, missing id/name). Maps to 400 —
+    the producer sent bad data; retrying the same bytes will not help."""
 
 # We roll every event up at these granularities so any query range is answerable from rollups.
 # Single source of truth: `query.validate` refuses any granularity not in this same tuple.
@@ -41,6 +48,35 @@ class IngestService:
         # Bounded retries for the rollup compare-and-set under contention; a loser re-reads and
         # re-applies its increment so nothing is lost.
         self._cas_retries = int(config.get("cas_max_retries", 8) or 8)
+        # PII salt for pseudonymising `subject` before it is ever stored/hashed (empty only in
+        # dev/test; production is boot-guarded). Composite-cardinality cap and the future-timestamp
+        # skew allowance both fall back to existing knobs when not explicitly configured.
+        self._salt = str(config.get("pii_salt", "") or "")
+        self._max_combos = int(config.get("max_combinations",
+                                          config.get("max_cardinality", 1000)) or 1000)
+        self._future_skew = int(config.get("future_skew_seconds",
+                                           config.get("late_max_seconds", 0)) or 0)
+
+    @staticmethod
+    def _validate(event_time: float | None, value: Any, now: float, future_skew: int) -> None:
+        """Reject a poisoned event BEFORE it can touch a rollup. inf/nan `value` sums into a cell's
+        `sum` and permanently makes every query over it nan/inf; a far-future `event_time` lands in
+        a bucket no query range reaches yet consumes storage that retention never prunes."""
+        try:
+            v = float(value)
+        except (TypeError, ValueError) as e:
+            raise IngestError("VALUE_NOT_A_NUMBER") from e
+        if not math.isfinite(v):
+            raise IngestError("VALUE_NOT_FINITE")
+        if event_time is not None:
+            try:
+                et = float(event_time)
+            except (TypeError, ValueError) as e:
+                raise IngestError("EVENT_TIME_NOT_A_NUMBER") from e
+            if not math.isfinite(et) or et <= 0:
+                raise IngestError("EVENT_TIME_INVALID")
+            if et > now + max(0, future_skew):
+                raise IngestError("EVENT_TIME_IN_FUTURE")
 
     async def _bump(self, tenant: str) -> None:
         if self._cache is None:
@@ -66,35 +102,61 @@ class IngestService:
         dims: dict[str, str] = {}
         for k, v in props.items():
             ok = await self._card.admit(tenant, metric, k, v, cap)
-            dims[k] = v if ok else OTHER                  # spill the long tail
+            dims[k] = v if ok else OTHER                  # spill the long-tail VALUE
+        # Cap the COMBINATION too: k per-dim-capped properties still multiply into up to cap**k
+        # distinct cells. If this tuple is a new combination past the cap, drop the dims entirely so
+        # the event counts only into the no-dims total — storage stays bounded, the total stays exact.
+        if dims:
+            combo = ",".join(f"{k}={dims[k]}" for k in sorted(dims))
+            if not await self._card.admit_combination(tenant, metric, combo, self._max_combos):
+                return {}
         return dims
 
     async def ingest(self, *, event_id: str, tenant: str, name: str, event_time: float | None = None,
                      subject: str = "", value: float = 0.0, props: dict | None = None) -> dict:
         now = self._clock.now()
+        # Validate BEFORE the reserve so a poisoned event never consumes an idempotency claim (which
+        # would then suppress a corrected redelivery of the same id).
+        self._validate(event_time, value, now, self._future_skew)
+
         # ATOMIC reserve (was seen()->mark_seen(), a check-then-set two concurrent redeliveries both
         # passed, double-counting). If we don't win the reserve, it is a duplicate — zero more writes.
-        if not await self._events.reserve(event_id):
+        # Tenant-scoped so one tenant's event_id cannot suppress another's.
+        if not await self._events.reserve(tenant, event_id):
             return {"accepted": True, "duplicate": True, "id": event_id}
 
-        et = float(event_time) if event_time else now
-        late = _buckets.is_late(et, now, self._cfg["late_max_seconds"])
+        # Reserve-then-work is at-least-once-safe ONLY if a failed attempt frees its claim; otherwise
+        # a mid-ingest failure turns at-least-once into at-most-once (the redelivery is refused, the
+        # event lost). On any exception we release the reservation so the bus's retry reprocesses.
+        try:
+            et = float(event_time) if event_time else now
+            late = _buckets.is_late(et, now, self._cfg["late_max_seconds"])
 
-        clean_props = self._filter_props(props or {})
-        dims = await self._dims_for(tenant, name, clean_props)
+            # Pseudonymise the subject BEFORE it is stored or hashed: the raw subject may be an email
+            # or phone, and the HLL sketch stores per-subject hashes in sparse mode — an UNSALTED
+            # sha1(email) that survives erasure and is brute-forceable. A salted, tenant-scoped
+            # subject_ref is stable (unique-counts and funnels/retention still group correctly) but
+            # carries no recoverable identity.
+            subj = subject_ref(self._salt, tenant, subject) if (self._salt and subject) else subject
 
-        event = Event(id=event_id, tenant=tenant, name=name, event_time=et, ingest_time=now,
-                      subject=subject, value=float(value), props=dims)
-        await self._events.add(event)          # event_id already reserved above (atomic dedupe)
+            clean_props = self._filter_props(props or {})
+            dims = await self._dims_for(tenant, name, clean_props)
 
-        if late:
-            # Counted, never silently dropped — and never merged into a historical bucket we
-            # have already reported on.
-            await self._update_rollups(tenant, f"{name}.late", et, subject, value, dims)
-        else:
-            await self._update_rollups(tenant, name, et, subject, value, dims)
+            event = Event(id=event_id, tenant=tenant, name=name, event_time=et, ingest_time=now,
+                          subject=subj, value=float(value), props=dims)
+            await self._events.add(event)      # (tenant, event_id) already reserved above
 
-        await self._bump(tenant)
+            if late:
+                # Counted, never silently dropped — and never merged into a historical bucket we
+                # have already reported on.
+                await self._update_rollups(tenant, f"{name}.late", et, subj, value, dims)
+            else:
+                await self._update_rollups(tenant, name, et, subj, value, dims)
+
+            await self._bump(tenant)
+        except Exception:
+            await self._events.release(tenant, event_id)
+            raise
         return {"accepted": True, "duplicate": False, "id": event_id, "late": late,
                 "dimensions": dims}
 
@@ -130,8 +192,23 @@ class IngestService:
                         r.hist = _hist.add(r.hist or _hist.new(self._cfg["hist_buckets"]), float(value))
                     if await self._rollups.cas_put(r, expected):
                         break
+                else:
+                    # All retries lost the race. Do NOT fall through silently — that drops the
+                    # increment (a permanent undercount / sum drift on the hottest cells). Raise so
+                    # the caller/bus retries the whole idempotent ingest; the reservation is released
+                    # by ingest()'s handler first, so the retry reprocesses instead of being deduped.
+                    raise RuntimeError("ROLLUP_CAS_EXHAUSTED")
 
     async def ingest_batch(self, tenant: str, events: list[dict]) -> dict:
+        # Validate EVERY event up front. Without this a malformed event mid-batch 500s the request
+        # AFTER earlier events are already durably written and reserved — a partial, non-atomic
+        # batch. Rejecting the whole batch (400) before any write keeps it all-or-nothing on bad
+        # INPUT; the producer resends and idempotency dedupes anything already applied.
+        now = self._clock.now()
+        for i, e in enumerate(events):
+            if not e.get("id") or not e.get("name"):
+                raise IngestError(f"EVENT_MISSING_ID_OR_NAME:{i}")
+            self._validate(e.get("event_time"), e.get("value", 0) or 0, now, self._future_skew)
         accepted = duplicates = 0
         for e in events:
             out = await self.ingest(event_id=e["id"], tenant=tenant, name=e["name"],

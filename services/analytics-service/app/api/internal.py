@@ -16,7 +16,7 @@ from app.backup_manifest import BACKUP
 from app.core import backup as _backup
 from app.config import Settings, get_settings
 from app.core.erasure import AnalyticsErasure
-from app.core.ingest_service import IngestService
+from app.core.ingest_service import IngestError, IngestService
 from app.core.stores import CardinalityStore, EventStore, RollupStore
 from app.manifest import build_manifest
 from app.core.pii import subject_ref
@@ -26,8 +26,10 @@ router = APIRouter(prefix="/internal", tags=["internal"])
 
 def _icfg(s: Settings) -> dict[str, Any]:
     return {"pii_allowed": s.pii_allowed_properties, "max_cardinality": s.MAX_DIMENSION_CARDINALITY,
+            "max_combinations": s.MAX_DIMENSION_COMBINATIONS,
             "late_max_seconds": s.LATE_EVENT_MAX_SECONDS, "hll_precision": s.HLL_PRECISION,
-            "hist_buckets": s.HISTOGRAM_BUCKETS, "raw_retention_days": s.RAW_RETENTION_DAYS}
+            "hist_buckets": s.HISTOGRAM_BUCKETS, "raw_retention_days": s.RAW_RETENTION_DAYS,
+            "pii_salt": s.PII_SALT, "future_skew_seconds": s.EVENT_FUTURE_SKEW_SECONDS}
 
 
 def build_ingest(request: Request) -> IngestService:
@@ -90,15 +92,20 @@ async def require_internal_token(
 async def internal_ingest(body: EventIn, request: Request) -> dict:
     """Primary write path. Idempotent by `body.id` — our EventBus is at-least-once, so a
     redelivery must perform zero additional writes. Double-counted revenue is a wrong MRR."""
-    return await build_ingest(request).ingest(
-        event_id=body.id, tenant=body.tenant, name=body.name, event_time=body.event_time,
-        subject=body.subject, value=body.value, props=body.props)
+    try:
+        return await build_ingest(request).ingest(
+            event_id=body.id, tenant=body.tenant, name=body.name, event_time=body.event_time,
+            subject=body.subject, value=body.value, props=body.props)
+    except IngestError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/analytics/ingest/batch", dependencies=[Depends(require_internal_token)])
 async def internal_ingest_batch(body: BatchIn, request: Request) -> dict:
     try:
         return await build_ingest(request).ingest_batch(body.tenant, body.events)
+    except IngestError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except KeyError as e:
         raise HTTPException(status_code=400, detail="EVENT_MISSING_ID_OR_NAME") from e
 

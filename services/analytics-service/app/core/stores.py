@@ -10,9 +10,21 @@ from app.ports.datastore import DataStore
 
 _EVENTS = "events"
 _ROLLUPS = "rollups"
-_SEEN = "event_seen"        # idempotency: event_id -> 1
+_SEEN = "event_seen"        # idempotency: "<len(tenant)>:<tenant>|<event_id>" -> 1
 _CARD = "dim_cardinality"   # "<tenant>|<metric>|<dim>" -> {values: [...]}
 _REPORTS = "reports"
+
+# Highest code point — the exclusive upper bound of a key range, so a range read includes every
+# dimension cell of the LAST bucket (whose keys are "...|<bucket>|<dims>", all < this sentinel).
+_KEY_MAX = "￿"
+
+
+def seen_key(tenant: str, event_id: str) -> str:
+    """Tenant-scoped idempotency key. The dedupe record used to be keyed by the raw, caller-supplied
+    event_id ALONE, so tenant B ingesting an id tenant A had already used was silently dropped as a
+    duplicate — a cross-tenant undercount. The tenant is LENGTH-PREFIXED so no (tenant, id) pair can
+    be forged to collide with another by moving the delimiter."""
+    return f"{len(tenant)}:{tenant}|{event_id}"
 
 # Events are the highest-volume collection in the platform. Only retention may read it whole.
 _PAGE = 500
@@ -29,13 +41,22 @@ class EventStore:
         await self._store.put(_EVENTS, e.id, e.to_dict())
         return e
 
-    async def seen(self, event_id: str) -> bool:
-        return await self._store.get(_SEEN, event_id) is not None
+    async def seen(self, tenant: str, event_id: str) -> bool:
+        return await self._store.get(_SEEN, seen_key(tenant, event_id)) is not None
 
-    async def reserve(self, event_id: str) -> bool:
-        """Atomically claim event_id: True if first-seen (process it), False if already seen. Replaces
-        the non-atomic seen()->mark_seen() pair so two concurrent redeliveries cannot both count."""
-        return await self._store.cas(_SEEN, event_id, 0, {"id": event_id})
+    async def reserve(self, tenant: str, event_id: str) -> bool:
+        """Atomically claim (tenant, event_id): True if first-seen (process it), False if already
+        seen. Replaces the non-atomic seen()->mark_seen() pair so two concurrent redeliveries cannot
+        both count, and is tenant-scoped so one tenant's id cannot suppress another's (see seen_key)."""
+        k = seen_key(tenant, event_id)
+        return await self._store.cas(_SEEN, k, 0, {"id": k, "tenant": tenant, "event_id": event_id})
+
+    async def release(self, tenant: str, event_id: str) -> None:
+        """Undo a reservation whose processing FAILED. Reserve-then-work makes at-least-once safe
+        only if a failed attempt frees its claim; otherwise a crash between the claim and the counted
+        work turns at-least-once into at-most-once — the redelivery is refused and the event is lost
+        forever. On any exception mid-ingest we release so the bus's retry reprocesses it."""
+        await self._store.delete(_SEEN, seen_key(tenant, event_id))
 
     async def for_tenant_window(self, tenant: str, lo: float, hi: float,
                                 limit: int = _EXPORT_MAX) -> tuple[list[dict], bool]:
@@ -93,21 +114,33 @@ class RollupStore:
         return await self._store.cas(_ROLLUPS, r.key, expected_version, r.to_dict())
 
     async def get_many(self, keys: list[str]) -> list[Rollup]:
-        """The query hot path: keyed reads of exactly the buckets in range."""
-        out: list[Rollup] = []
-        for k in keys:
-            row = await self._store.get(_ROLLUPS, k)
-            if row:
-                out.append(Rollup.from_dict(row))
-        return out
+        """The query hot path: keyed reads of exactly the buckets in range, in ONE round trip.
 
-    async def scan_prefix(self, prefix: str, limit: int = _ROLLUP_MAX) -> list[Rollup]:
-        """Group-by needs every dim-combination in a bucket - still rollups, never raw events."""
-        # sweeper: a PREFIX match is not equality, and find() deliberately speaks equality only.
-        # Rollups are pre-aggregated (one row per bucket per dim-combination), which is exactly
-        # why the query path reads them instead of the events.
-        return [Rollup.from_dict(r) for r in await self._store.scan_all(_ROLLUPS, _ROLLUP_MAX)
-                if str(r.get("key", "")).startswith(prefix)][:limit]
+        Was a per-key `get()` loop — up to ~9600 serial point reads for a 400-day hourly query,
+        each pinning a pool slot. `store.get_many` issues a single `key = ANY(...)` batch."""
+        if not keys:
+            return []
+        return [Rollup.from_dict(r) for r in await self._store.get_many(_ROLLUPS, keys)]
+
+    async def range_cells(self, tenant: str, metric: str, granularity: str,
+                          first_bucket: str, last_bucket: str,
+                          limit: int = _ROLLUP_MAX) -> list[Rollup]:
+        """Every dimension cell in a bucket RANGE, via ONE indexed key-range read — the group-by hot
+        path. Replaces a `scan_all(_ROLLUPS, 100_000) + startswith` that (a) read the WHOLE rollup
+        collection once PER bucket and (b) truncated at 100k rows ordered by key, so a high-volume
+        early-sorting tenant could evict every later tenant's rollups from the window entirely (a
+        cross-tenant correctness bug). A tenant-pinned range read is bounded by that tenant's own
+        cells and cannot be starved by another's volume.
+
+        Keys are `tenant|metric|granularity|bucket|dims`; buckets are fixed-width and time-sortable
+        within a granularity, so [first, last] is a contiguous key range. The '|' after the bucket
+        and the tenant length-independent prefix keep a metric/tenant whose name is a prefix of
+        another (e.g. `checkout` vs `checkoutX`) from leaking in — '|' (0x7C) terminates the field."""
+        if not first_bucket or not last_bucket:
+            return []
+        lo = f"{tenant}|{metric}|{granularity}|{first_bucket}|"
+        hi = f"{tenant}|{metric}|{granularity}|{last_bucket}|{_KEY_MAX}"
+        return [Rollup.from_dict(r) for r in await self._store.range_scan(_ROLLUPS, lo, hi, limit)]
 
 
 class CardinalityStore:
@@ -116,24 +149,43 @@ class CardinalityStore:
     def __init__(self, store: DataStore) -> None:
         self._store = store
 
+    _CAS_RETRIES = 5
+
     @staticmethod
     def _key(tenant: str, metric: str, dim: str) -> str:
         return f"{tenant}|{metric}|{dim}"
 
+    async def _admit_member(self, key: str, value: str, cap: int) -> bool:
+        """True if `value` is (now) an admitted member of the set at `key`; False if the set is full.
+
+        CAS read-modify-write: two concurrent admits of DIFFERENT new values used to both read the
+        list and the second `put` dropped the first (a lost update), so a value looked un-admitted,
+        got re-admitted next event, and slipped the cap. On a lost CAS we re-read and retry; if the
+        set is genuinely full we spill (False). Retry exhaustion also spills — never a hard failure,
+        since the cap is a storage bound, not a correctness fact."""
+        for _ in range(self._CAS_RETRIES):
+            row = await self._store.get(_CARD, key)
+            values = list(row["values"]) if row else []
+            if value in values:
+                return True
+            if len(values) >= cap:
+                return False
+            values.append(value)
+            expected = int(row.get("version", 0)) if row else 0
+            if await self._store.cas(_CARD, key, expected, {"id": key, "values": values}):
+                return True
+        return False
+
     async def admit(self, tenant: str, metric: str, dim: str, value: str, cap: int) -> bool:
         """True if `value` may be stored as-is; False → the caller must use `__other__`."""
-        key = self._key(tenant, metric, dim)
-        row = await self._store.get(_CARD, key) or {"values": []}
-        values = row["values"]
-        if value in values:
-            return True
-        if len(values) >= cap:
-            return False
-        values.append(value)
-        # atomic: ok — approximate cardinality cap; a lost value under a race only mis-buckets one
-        # dimension value into __other__ (or slips the cap by one), never a correctness/money fact.
-        await self._store.put(_CARD, key, {"values": values})
-        return True
+        return await self._admit_member(self._key(tenant, metric, dim), value, cap)
+
+    async def admit_combination(self, tenant: str, metric: str, combo: str, cap: int) -> bool:
+        """Cap the number of distinct DIMENSION COMBINATIONS per (tenant, metric), not just each
+        dimension independently. Per-dimension caps let k properties each within their cap multiply
+        into up to cap**k distinct rollup rows (a storage-DoS the per-dim cap does not see); this
+        bounds the composite so the excess spills to the no-dims total instead of exploding disk."""
+        return await self._admit_member(self._key(tenant, metric, "__combo__"), combo, cap)
 
 
 class ReportStore:

@@ -47,6 +47,26 @@ class DataStore(Protocol):
         """
         ...
 
+    async def get_many(self, collection: str, keys: list[str]) -> list[dict[str, Any]]:
+        """The keyed hot path: fetch exactly `keys` in ONE round trip, skipping absent rows.
+
+        Replaces a per-key `get()` loop, which on a wide query (e.g. ~9600 hourly buckets) was
+        ~9600 sequential point reads that pinned a pool slot for the whole request. Order of the
+        returned rows is unspecified — callers key off the row contents, not position."""
+        ...
+
+    async def range_scan(self, collection: str, lo: str, hi: str,
+                         limit: int) -> list[dict[str, Any]]:
+        """Rows whose KEY is in [lo, hi), ordered by key — a single indexed range read served by
+        the primary-key btree, NOT a whole-collection scan+filter.
+
+        This is the group-by hot path: a rollup key is `tenant|metric|granularity|bucket|dims`
+        (lexicographically time-ordered within a granularity), so one range read over a bounded
+        [lo, hi) returns every dimension cell in a query's bucket range and CANNOT be evicted by
+        another tenant's volume the way a capped `scan_all` could. `lo`/`hi` must already pin the
+        tenant prefix — an unbounded range is a cross-tenant read one typo away."""
+        ...
+
     async def scan_all(self, collection: str, limit: int) -> list[dict[str, Any]]:
         """EVERY row in a collection. A sweeper or a migration — never a request path."""
         ...

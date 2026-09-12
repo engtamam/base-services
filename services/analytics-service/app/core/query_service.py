@@ -92,9 +92,14 @@ class QueryService:
     async def _grouped(self, tenant, metric, agg, granularity, bucket_keys, dimensions,
                        filters, percentile, tz) -> dict:
         groups: dict[str, list] = {}
-        for b in bucket_keys:
-            prefix = f"{tenant}|{metric}|{granularity}|{b}|"
-            for r in await self._rollups.scan_prefix(prefix):
+        # ONE indexed key-range read over the whole bucket range — not a full rollup-collection scan
+        # per bucket (which was O(all rollups) × O(buckets) and truncated at 100k, silently dropping
+        # later tenants' cells). bucket_keys is contiguous and time-sorted, so [first, last] is a
+        # contiguous key range.
+        if bucket_keys:
+            cells = await self._rollups.range_cells(tenant, metric, granularity,
+                                                    bucket_keys[0], bucket_keys[-1])
+            for r in cells:
                 if not r.dims:
                     continue
                 if not all(d in r.dims for d in dimensions):

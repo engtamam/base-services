@@ -103,15 +103,52 @@ def add(sketch: dict, value: str) -> dict:
     return sketch
 
 
+def _fold_dense(regs: list, p: int, q: int) -> list:
+    """Reduce a dense sketch from precision p to q<p (the standard HLL fold). Register j maps to
+    q-register j>>(p-q); the (p-q) low bits of j become the LEADING bits of the folded run, so the
+    folded rank is those bits' leading-zero count when they are non-zero, else the old rank + (p-q)."""
+    d = p - q
+    out = [0] * (1 << q)
+    for j, val in enumerate(regs):
+        low = j & ((1 << d) - 1)
+        if low:
+            rank = d - low.bit_length() + 1
+        elif val > 0:
+            rank = int(val) + d
+        else:
+            rank = 0
+        qi = j >> d
+        if rank > out[qi]:
+            out[qi] = rank
+    return out
+
+
+def fold(sketch: dict, target_p: int) -> dict:
+    """Down-convert a sketch to precision `target_p` (never up — precision cannot be added). Sparse
+    stores full 64-bit hashes independent of p, so folding it is a relabel; dense folds its registers."""
+    p = int(sketch["p"])
+    q = max(4, min(16, int(target_p)))
+    if q >= p:
+        return sketch
+    if is_sparse(sketch):
+        return {"p": q, "s": list(sketch["s"])}
+    return {"p": q, "r": _fold_dense(sketch["r"], p, q)}
+
+
 def merge(a: dict, b: dict) -> dict:
-    """Union two sketches. THE operation that makes uniques composable across buckets."""
+    """Union two sketches. THE operation that makes uniques composable across buckets.
+
+    If the two carry different precision (an operator raised HLL_PRECISION after some rollups were
+    already written), DOWN-CONVERT both to the lower precision rather than raising — a query whose
+    range spans the change must still answer, not 500. HLL_PRECISION is also a frozen product
+    identifier, so this only arises for data written before the freeze."""
     if a is None:
         return b
     if b is None:
         return a
-    if int(a["p"]) != int(b["p"]):
-        raise ValueError("cannot merge HLL sketches of different precision")
-    p = int(a["p"])
+    p = min(int(a["p"]), int(b["p"]))
+    a = fold(a, p)
+    b = fold(b, p)
 
     if is_sparse(a) and is_sparse(b):
         union = list(dict.fromkeys([*a["s"], *b["s"]]))   # exact, order-stable

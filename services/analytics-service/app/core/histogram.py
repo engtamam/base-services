@@ -52,14 +52,34 @@ def add(hist: dict, value: float) -> dict:
     return hist
 
 
+def _fold(hist: dict, target_n: int) -> dict:
+    """Reduce a histogram to `target_n`<n buckets by summing its top (higher-value) buckets into the
+    new clamp bucket. Buckets 0..n-2 have FIXED, n-independent value ranges (see `_index`), so the
+    lower buckets keep their meaning exactly; only the top tail loses resolution. No event is lost —
+    count/sum/min/max are unchanged."""
+    n = int(hist["n"])
+    if target_n >= n:
+        return hist
+    b = list(hist["b"])
+    folded = b[: target_n - 1] + [sum(b[target_n - 1:])]
+    return {"n": target_n, "b": folded, "count": int(hist["count"]),
+            "sum": float(hist["sum"]), "min": hist["min"], "max": hist["max"]}
+
+
 def merge(a: dict, b: dict) -> dict:
-    """Bucket-wise addition — the operation that makes percentiles composable."""
+    """Bucket-wise addition — the operation that makes percentiles composable.
+
+    Different bucket counts (an operator changed HISTOGRAM_BUCKETS after some rollups were written)
+    DOWN-CONVERT to the coarser count rather than raising — a spanning query must still answer, not
+    500. HISTOGRAM_BUCKETS is also a frozen product identifier, so this only arises for pre-freeze
+    data."""
     if a is None:
         return b
     if b is None:
         return a
-    if int(a["n"]) != int(b["n"]):
-        raise ValueError("cannot merge histograms with different bucket counts")
+    n = min(int(a["n"]), int(b["n"]))
+    a = _fold(a, n)
+    b = _fold(b, n)
     mins = [x for x in (a["min"], b["min"]) if x is not None]
     maxs = [x for x in (a["max"], b["max"]) if x is not None]
     return {"n": int(a["n"]), "b": [x + y for x, y in zip(a["b"], b["b"])],

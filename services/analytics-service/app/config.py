@@ -270,10 +270,18 @@ class Settings(BaseSettings):
 
     QUERY_CACHE_TTL_SECONDS: int = 60        # hot path: query results
     MAX_DIMENSION_CARDINALITY: int = 1000    # beyond this a dimension spills to "__other__"
+    MAX_DIMENSION_COMBINATIONS: int = 5000   # per (tenant, metric): caps distinct dim TUPLES so
+    #                                          k per-dim-capped props cannot multiply into cap**k cells
     LATE_EVENT_MAX_SECONDS: int = 172_800    # 48h — later than this is counted, not merged
+    EVENT_FUTURE_SKEW_SECONDS: int = 300     # reject event_time beyond now + this (clock skew only);
+    #                                          a far-future event lands in a bucket no query reaches
+    #                                          and retention never prunes — a silent storage leak
     DEFAULT_TIMEZONE_OFFSET_MINUTES: int = 180   # KSA = UTC+3 (rendering only; buckets are UTC)
     MAX_QUERY_RANGE_DAYS: int = 400          # cost limit
     MAX_GROUPS: int = 500                    # cost limit
+    # Treat as FROZEN product identifiers: a query spanning a change would mix sketch resolutions.
+    # hll.merge / histogram.merge now DOWN-CONVERT to the lower resolution rather than 500, so a
+    # change degrades old-vs-new accuracy instead of erroring — but keep these stable in practice.
     HLL_PRECISION: int = 12                  # 2^12 registers ≈ 1.6% error
     HISTOGRAM_BUCKETS: int = 128             # log-spaced buckets; 128 @1.25x covers 1e-3 .. 1e9
     PII_ALLOWED_PROPERTIES: str = ""         # comma list; empty = allow all non-PII-suspect keys
