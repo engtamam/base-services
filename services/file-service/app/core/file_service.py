@@ -61,7 +61,8 @@ class FileService:
                  max_page_limit: int = 100,
                  sessions: UploadSessionStore | None = None, queue: Any = None,
                  scan_queue: str = "file-scan", max_object_bytes: int = 0,
-                 part_size: int = 8 << 20, scan_policy: str = "async") -> None:
+                 part_size: int = 8 << 20, scan_policy: str = "async",
+                 presign_ttl: int = 900) -> None:
         self._repo = repo
         self._store = object_store
         self._scanner = scanner
@@ -75,6 +76,7 @@ class FileService:
         self._max_object = max_object_bytes
         self._part_size = part_size
         self._scan_policy = scan_policy
+        self._presign_ttl = int(presign_ttl)
 
     # ── large path (direct-to-bucket) ─────────────────────────────────────────
     @property
@@ -289,7 +291,7 @@ class FileService:
             blob_removed = True
         return {"deleted": True, "blob_removed": blob_removed}
 
-    async def download_redirect(self, f: FileObject, *, ttl: int = 300) -> str | None:
+    async def download_redirect(self, f: FileObject, *, ttl: int | None = None) -> str | None:
         """A presigned bucket URL to serve `f` directly, or None if the store cannot presign.
 
         Works for any size: on an s3 store even a small file is served straight from the bucket, so
@@ -298,7 +300,9 @@ class FileService:
         """
         if not getattr(self._store, "supports_presign", False):
             return None
-        return await self._store.presign_get(f.sha256, f.filename, ttl)
+        # Use the configured PRESIGN_TTL_SECONDS, not a hardcoded 300 that ignored the knob (file-r2-07).
+        return await self._store.presign_get(f.sha256, f.filename,
+                                             ttl if ttl is not None else self._presign_ttl)
 
     # ── signed URLs ────────────────────────────────────────────────────────────
     def signed_token(self, file_id: str) -> str:

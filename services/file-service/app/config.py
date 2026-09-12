@@ -416,6 +416,25 @@ class Settings(BaseSettings):
             raise ValueError(
                 "LARGE_UPLOAD_SCAN=skip is refused in production — a large file would be served "
                 "without ever being scanned. Use 'async' (scan in the worker) or 'require'.")
+        # 'async'/'require' with NO scanner wired scans nothing either — the object is still served
+        # unscanned, just without saying so. Refuse that combination in production too (file-r2-03).
+        if (self.is_production and self.LARGE_UPLOAD_SCAN in ("async", "require")
+                and self.SCANNER_DRIVER == "none"):
+            raise ValueError(
+                f"LARGE_UPLOAD_SCAN={self.LARGE_UPLOAD_SCAN!r} with SCANNER_DRIVER='none' is refused "
+                "in production — the scan policy promises a scan but no scanner is configured, so "
+                "large objects are served unscanned. Configure a real SCANNER_DRIVER.")
+
+    def assert_signed_url_secret_ok(self) -> None:
+        """Boot guard: the hmac signer must have its OWN secret in production, distinct from the
+        internal token. Falling back to INTERNAL_SERVICE_TOKEN let the internal token forge share
+        links for any file (file-r2-08)."""
+        if (self.is_production and self.SIGNED_URL_DRIVER == "hmac"
+                and not self.SIGNED_URL_SECRET):
+            raise ValueError(
+                "SIGNED_URL_SECRET is required in production for the hmac signed-url driver — it must "
+                "be a distinct key, not the internal service token (which would let the internal token "
+                "forge share links for any file).")
 
     def assert_secrets_ok(self) -> None:
         """Boot guard: a replica must never outlive the rotation that is meant to cover it."""

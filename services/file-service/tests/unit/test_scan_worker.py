@@ -112,9 +112,13 @@ def test_boot_guard_refuses_skip_in_production():
     prod = Settings(ENV="production", LARGE_UPLOAD_SCAN="skip", INTERNAL_SERVICE_TOKEN="x" * 32)
     with pytest.raises(ValueError, match="skip is refused in production"):
         prod.assert_large_scan_ok()
-    # async/require are fine in production
-    Settings(ENV="production", LARGE_UPLOAD_SCAN="async",
+    # async/require are fine in production WHEN a real scanner is configured
+    Settings(ENV="production", LARGE_UPLOAD_SCAN="async", SCANNER_DRIVER="magic",
              INTERNAL_SERVICE_TOKEN="x" * 32).assert_large_scan_ok()
+    # but async/require with NO scanner is also refused — the policy promises a scan (file-r2-03)
+    with pytest.raises(ValueError, match="SCANNER_DRIVER='none'"):
+        Settings(ENV="production", LARGE_UPLOAD_SCAN="async", SCANNER_DRIVER="none",
+                 INTERNAL_SERVICE_TOKEN="x" * 32).assert_large_scan_ok()
 
 
 def test_require_policy_refuses_a_large_upload_without_a_real_scanner():

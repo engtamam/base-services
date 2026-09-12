@@ -64,6 +64,20 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "show who removed a customer's data",
     },
     {
+        "action": "file.cross_tenant_downloaded",
+        "source": "user",
+        "critical": True,
+        "why": "a platform operator reading another tenant's file BYTES across the tenant boundary "
+               "is a privileged access that must leave a trace; the normal GET path was unaudited",
+    },
+    {
+        "action": "file.cross_tenant_signed_url",
+        "source": "user",
+        "critical": True,
+        "why": "a platform operator minting a signed URL for another tenant's file hands out an "
+               "exfiltration link across the tenant boundary; it must be recorded like the download",
+    },
+    {
         "action": "file.inspected",
         "source": "admin",
         "critical": False,

@@ -138,7 +138,13 @@ _SCANNER: dict[str, Builder] = {
     "clamav": lambda s: ClamavScanner(),
 }
 _SIGNED_URL: dict[str, Builder] = {
-    "hmac": lambda s: HmacSigner(s.SIGNED_URL_SECRET or s.INTERNAL_SERVICE_TOKEN, s.SIGNED_URL_TTL_SECONDS),
+    # SIGNED_URL_SECRET must be DISTINCT from the internal token: reusing INTERNAL_SERVICE_TOKEN let
+    # anyone holding the internal token forge share links for any file (file-r2-08). In production an
+    # empty secret is refused at boot (assert_signed_url_secret_ok); a dev/test box may fall back so it
+    # can iterate, but never in production.
+    "hmac": lambda s: HmacSigner(
+        s.SIGNED_URL_SECRET or ("" if s.is_production else s.INTERNAL_SERVICE_TOKEN),
+        s.SIGNED_URL_TTL_SECONDS),
     "s3": _s3_signer_redirect,
 }
 

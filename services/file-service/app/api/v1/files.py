@@ -43,6 +43,7 @@ async def build_files(request: Request) -> FileService:
         sessions=UploadSessionStore(c.datastore), queue=c.queue,
         scan_queue=s.FILE_SCAN_QUEUE, max_object_bytes=s.MAX_OBJECT_BYTES,
         part_size=s.MULTIPART_PART_SIZE, scan_policy=s.LARGE_UPLOAD_SCAN,
+        presign_ttl=s.PRESIGN_TTL_SECONDS,
     )
 
 
@@ -83,6 +84,12 @@ async def _load_scoped(svc: FileService, file_id: str, principal: Principal) -> 
     if not principal.tenant or f.tenant != principal.tenant:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")  # hide existence
     return f
+
+
+def _crosses_tenant(f: FileObject, principal: Principal) -> bool:
+    """True when a platform.files holder reads a file OUTSIDE its own tenant — a privileged access
+    that must be audited (file-r2-02). A normal owner read is not audited (too noisy)."""
+    return "platform.files" in principal.caps and f.tenant != (principal.tenant or "")
 
 
 @router.post("", status_code=201, dependencies=[Depends(_UPLOAD), Depends(rate_limit)])
@@ -161,7 +168,7 @@ async def initiate_large_upload(request: Request, body: InitiateIn,
     }
 
 
-@router.post("/uploads/{session_id}/complete", dependencies=[Depends(_UPLOAD)])
+@router.post("/uploads/{session_id}/complete", dependencies=[Depends(_UPLOAD), Depends(rate_limit)])
 async def complete_large_upload(request: Request, session_id: str, body: CompleteIn,
                                 principal: Principal = Depends(require_user)) -> dict:
     """Client finished the parts. We assemble, confirm the object landed, and queue the scan."""
@@ -178,7 +185,7 @@ async def complete_large_upload(request: Request, session_id: str, body: Complet
     return sess.public_dict()
 
 
-@router.get("/uploads/{session_id}", dependencies=[Depends(_READ)])
+@router.get("/uploads/{session_id}", dependencies=[Depends(_READ), Depends(rate_limit)])
 async def upload_status(request: Request, session_id: str,
                         principal: Principal = Depends(require_user)) -> dict:
     svc = await build_files(request)
@@ -190,7 +197,7 @@ async def upload_status(request: Request, session_id: str,
     return sess.public_dict()
 
 
-@router.delete("/uploads/{session_id}", dependencies=[Depends(_UPLOAD)])
+@router.delete("/uploads/{session_id}", dependencies=[Depends(_UPLOAD), Depends(rate_limit)])
 async def abort_upload(request: Request, session_id: str,
                        principal: Principal = Depends(require_user)) -> dict:
     """Cancel an in-flight upload — releases the multipart's parts in the bucket, not just the row."""
@@ -223,7 +230,7 @@ async def list_files(request: Request, principal: Principal = Depends(_READ),
     return await svc.list(principal.tenant or "", limit=limit, after=after)
 
 
-@router.get("/{file_id}/metadata")
+@router.get("/{file_id}/metadata", dependencies=[Depends(rate_limit)])
 async def metadata(request: Request, file_id: str, principal: Principal = Depends(_READ),
                    guard=Depends(get_guard)) -> dict:
     f = await _load_scoped(await build_files(request), file_id, principal)
@@ -233,12 +240,17 @@ async def metadata(request: Request, file_id: str, principal: Principal = Depend
     return body
 
 
-@router.get("/{file_id}")
+@router.get("/{file_id}", dependencies=[Depends(rate_limit)])
 async def download(request: Request, file_id: str, principal: Principal = Depends(_READ)):
     """Serve the file. On a presign-capable store the bytes come STRAIGHT from the bucket via a
     short-lived redirect (the app is never in the data path); otherwise they stream through us."""
     svc = await build_files(request)
     f = await _load_scoped(svc, file_id, principal)
+    if _crosses_tenant(f, principal):
+        await request.app.state.auditor.record(
+            "file.cross_tenant_downloaded", actor=principal.subject, tenant=f.tenant or "",
+            resource=f"file:{f.id}", ip=request.client.host if request.client else "",
+            metadata={"cross_tenant": "true", "operator_tenant": principal.tenant or ""})
     redirect = await svc.download_redirect(f)
     if redirect is not None:
         return RedirectResponse(redirect, status_code=status.HTTP_302_FOUND)
@@ -247,13 +259,18 @@ async def download(request: Request, file_id: str, principal: Principal = Depend
                     headers={"Content-Disposition": f'attachment; filename="{_safe_filename(f.filename)}"'})
 
 
-@router.post("/{file_id}/signed-url")
+@router.post("/{file_id}/signed-url", dependencies=[Depends(rate_limit)])
 async def signed_url(request: Request, file_id: str, principal: Principal = Depends(_READ)) -> dict:
     svc = await build_files(request)
     # Authorize (tenant ownership) BEFORE recording issuance: _load_scoped 404s a file that is not
     # the caller's, and no token is returned — so recording 'signed_url_issued' first logged an
     # issuance that never happened (a false audit entry an attacker could spray by id).
-    await _load_scoped(svc, file_id, principal)
+    f = await _load_scoped(svc, file_id, principal)
+    if _crosses_tenant(f, principal):
+        await request.app.state.auditor.record(
+            "file.cross_tenant_signed_url", actor=principal.subject, tenant=f.tenant or "",
+            resource=f"file:{f.id}", ip=request.client.host if request.client else "",
+            metadata={"cross_tenant": "true", "operator_tenant": principal.tenant or ""})
     await request.app.state.auditor.record(
         "file.signed_url_issued", actor=principal.subject, tenant=principal.tenant, resource=f"file:{file_id}",
         ip=request.client.host if request.client else "")
@@ -263,14 +280,16 @@ async def signed_url(request: Request, file_id: str, principal: Principal = Depe
 
 @router.delete("/{file_id}", dependencies=[Depends(_UPLOAD)])
 async def delete(request: Request, file_id: str, principal: Principal = Depends(require_user)) -> dict:
-    # Write-ahead: a critical action the log cannot take must not happen at all, so this
-    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
-    # already succeeded, and leave it unrecorded.
+    svc = await build_files(request)
+    # AUTHORIZE FIRST: _load_scoped 404s a file that is not the caller's. Recording the audit before
+    # this let any caller spray false 'file.deleted' entries for arbitrary ids/tenants (file-r2-01) —
+    # mirror the ordering signed_url already uses.
+    await _load_scoped(svc, file_id, principal)
+    # Write-ahead: a critical action the log cannot take must not happen at all, so this runs BEFORE
+    # the mutation. Recording afterwards would 503 a caller whose action had already succeeded.
     await request.app.state.auditor.record(
         "file.deleted", actor=principal.subject, tenant=principal.tenant, resource=f"file:{file_id}",
         ip=request.client.host if request.client else "")
-    svc = await build_files(request)
-    await _load_scoped(svc, file_id, principal)
     return await svc.delete(file_id)
 
 
@@ -311,7 +330,7 @@ async def operator_metadata(request: Request, file_id: str,
 
 
 # ── Public: signed URL (no auth — the token IS the grant) ────────────────────
-@public_router.get("/files/signed/{token}")
+@public_router.get("/files/signed/{token}", dependencies=[Depends(rate_limit)])
 async def signed_download(request: Request, token: str):
     svc = await build_files(request)
     f = await svc.resolve_signed_file(token)
