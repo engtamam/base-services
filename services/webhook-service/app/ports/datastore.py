@@ -17,6 +17,15 @@ class DataStore(Protocol):
 
     async def delete(self, collection: str, key: str) -> bool: ...
 
+    async def cas(self, collection: str, key: str, expected_version: int,
+                  value: dict[str, Any]) -> bool:
+        """Compare-and-set on `value["version"]`. True if written, False if someone raced us.
+
+        `expected_version=0` means "create only if absent" (an atomic insert-if-absent, for dedupe
+        reserve); a non-zero expected is an optimistic-lock transition on an existing row. The stored
+        value's version becomes expected+1. The caller re-reads and retries, or gives up, on False."""
+        ...
+
     async def find(
         self,
         collection: str,

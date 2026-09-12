@@ -2,10 +2,24 @@
 from __future__ import annotations
 
 import time
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from app.adapters.lazy import load
 from app.ports.webhook_transport import Response
+
+
+def _pin_url(url: str, pinned_ip: str) -> str:
+    """Rebuild `url` with its host replaced by the validated IP, so httpx connects to the pinned
+    address and never RE-RESOLVES the hostname (the TOCTOU/DNS-rebinding window core.ssrf closed).
+
+    Rebuilt via urlsplit/urlunsplit, not string surgery: urlsplit().hostname returns an IPv6 address
+    UNBRACKETED while the URL authority has it BRACKETED, so the old url.replace('//'+host, ...) never
+    matched an IPv6 host — the pin silently no-op'd and httpx re-resolved. An IPv6 pinned_ip must be
+    bracketed in the authority."""
+    parts = urlsplit(url)
+    host_lit = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
+    netloc = host_lit if parts.port is None else f"{host_lit}:{parts.port}"
+    return urlunsplit((parts.scheme, netloc, parts.path or "/", parts.query, parts.fragment))
 
 
 class HttpxTransport:
@@ -21,7 +35,7 @@ class HttpxTransport:
         try:
             # connect to the pinned IP while keeping Host/SNI = the original hostname
             transport = self._httpx.HTTPTransport(retries=0)
-            pinned = url.replace(f"//{host}", f"//{pinned_ip}", 1)
+            pinned = _pin_url(url, pinned_ip)
             with self._httpx.Client(transport=transport, timeout=timeout_seconds,
                                     verify=True) as client:
                 # STREAM the response and stop reading past the cap. `client.post(...).text` buffers

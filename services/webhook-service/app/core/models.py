@@ -95,6 +95,10 @@ class Delivery:
     next_retry_at: float | None = None
     created: str = ""
     updated: str = ""
+    # Optimistic-lock version for the atomic DELIVERING claim. Starts at 1 (not 0) so the first
+    # compare-and-set on an existing row uses the Postgres cas UPDATE branch — cas(expected=0) there is
+    # INSERT..ON CONFLICT DO NOTHING and would never match a row that already exists.
+    version: int = 1
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

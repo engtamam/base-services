@@ -38,6 +38,12 @@ class CountingStore(MemoryDataStore):
         self.writes += 1
         return await super().put(c, k, v)
 
+    async def cas(self, c, k, expected, v):
+        ok = await super().cas(c, k, expected, v)
+        if ok:
+            self.writes += 1      # only a SUCCESSFUL cas wrote; a losing/duplicate cas is a no-op
+        return ok
+
     async def get(self, c, k):
         self.reads += 1
         return await super().get(c, k)

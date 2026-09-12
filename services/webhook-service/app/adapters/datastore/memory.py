@@ -25,6 +25,21 @@ class MemoryDataStore:
     async def delete(self, collection: str, key: str) -> bool:
         return self._data.get(collection, {}).pop(key, None) is not None
 
+    async def cas(self, collection: str, key: str, expected_version: int,
+                  value: dict[str, Any]) -> bool:
+        """Compare-and-set on the row's `version`. Single-threaded asyncio with no await between the
+        read and the write, so the compare and the swap are one indivisible step — the atomic primitive
+        an insert-if-absent (expected_version=0) or an optimistic-lock transition needs."""
+        bucket = self._data.setdefault(collection, {})
+        current = bucket.get(key)
+        current_version = int(current.get("version", 0)) if current else 0
+        if current_version != int(expected_version):
+            return False                                  # someone else wrote first
+        stored = copy.deepcopy(value)
+        stored["version"] = current_version + 1
+        bucket[key] = stored
+        return True
+
     @staticmethod
     def _matches(row: dict[str, Any], where: dict[str, Any]) -> bool:
         """Equality only. `{f: v}` or `{f: [v1, v2]}`. No operators => nothing to inject."""

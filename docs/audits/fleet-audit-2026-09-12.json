@@ -1560,58 +1560,63 @@
       "issues": [
         {
           "id": "webhook-service-01",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "high",
           "file": "services/webhook-service/app/core/webhook_service.py",
           "line": 162,
           "title": "Circuit-open / disabled deliveries are never re-scheduled, so they permanently occupy the sweep budget (head-of-line starvation)",
           "detail": "On the early-return paths in deliver() — circuit_open (lines 162-163) and endpoint_disabled (lines 156-157) — the delivery's status stays QUEUED/FAILED and next_retry_at is left unchanged (still <= now). DeliveryStore.due() (stores.py:170-187) selects exactly the rows with status in {queued,failed} and next_retry_at <= now, sorted by created ASC, up to list_limit (default 100). So these deliveries remain 'due' on every single sweep tick forever. deliver() re-processes them and returns immediately without progress, and because they are the oldest they crowd out deliverable rows for healthy endpoints.",
-          "failure_scenario": "One customer disables an endpoint (or an endpoint's circuit opens) that has >100 QUEUED deliveries. Every /internal/webhooks/sweep tick, due() fills its entire 100-row budget with those perpetually-due, oldest-first rows; deliver() returns 'endpoint_disabled'/'circuit_open' for each and advances nothing. Deliverable webhooks for every other tenant behind them never get sent — a single dead endpoint stalls fleet-wide delivery (availability DoS) and the sweeper busy-loops on the same rows."
+          "failure_scenario": "One customer disables an endpoint (or an endpoint's circuit opens) that has >100 QUEUED deliveries. Every /internal/webhooks/sweep tick, due() fills its entire 100-row budget with those perpetually-due, oldest-first rows; deliver() returns 'endpoint_disabled'/'circuit_open' for each and advances nothing. Deliverable webhooks for every other tenant behind them never get sent — a single dead endpoint stalls fleet-wide delivery (availability DoS) and the sweeper busy-loops on the same rows.",
+          "resolution": "FIXED: circuit-open and endpoint-disabled early returns now push next_retry_at forward (recheck after circuit_reset_seconds) instead of leaving the row permanently due — no more head-of-line starvation. Regression: test_audit_fixes.py."
         },
         {
           "id": "webhook-service-02",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "vuln",
           "severity": "high",
           "file": "services/webhook-service/app/adapters/transport/httpx_transport.py",
           "line": 24,
           "title": "httpx transport IP-pinning is defeated for IPv6-resolved hosts, reopening the SSRF/DNS-rebinding window (and breaking IPv6 delivery)",
           "detail": "The pin is applied by string surgery: pinned = url.replace(f'//{host}', f'//{pinned_ip}', 1). host comes from urlsplit(url).hostname, which returns IPv6 addresses UNBRACKETED, whereas the URL authority contains them BRACKETED ('//[2001:db8::1]'). The replace therefore never matches, so pinned == the original URL and httpx connects by RE-RESOLVING the hostname itself — exactly the TOCTOU/rebinding window core.ssrf.validate() pinned an IP to close. Even for an ordinary hostname whose validated address is IPv6, the substituted authority '//2001:db8::1/...' is malformed, so the connection either misparses or fails. Contrast StdlibTransport (the default), which connects to the pinned_ip directly with correct AF_INET6 handling.",
-          "failure_scenario": "With WEBHOOK_TRANSPORT_DRIVER=httpx, an attacker registers an endpoint on a hostname that resolves to a public IPv6 at validation time, then flips DNS to an internal IPv6 (or link-local) before the delivery attempt. Because the pin is silently not applied, httpx re-resolves and connects to the attacker-controlled internal target — SSRF against internal services. Separately, legitimate IPv6-only endpoints can never receive deliveries."
+          "failure_scenario": "With WEBHOOK_TRANSPORT_DRIVER=httpx, an attacker registers an endpoint on a hostname that resolves to a public IPv6 at validation time, then flips DNS to an internal IPv6 (or link-local) before the delivery attempt. Because the pin is silently not applied, httpx re-resolves and connects to the attacker-controlled internal target — SSRF against internal services. Separately, legitimate IPv6-only endpoints can never receive deliveries.",
+          "resolution": "FIXED: httpx transport pins via urlsplit/urlunsplit (_pin_url), bracketing IPv6 — the old string replace never matched an unbracketed IPv6 host, so httpx re-resolved (SSRF/rebinding window). Regression: test_audit_fixes.py."
         },
         {
           "id": "webhook-service-03",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "medium",
           "file": "services/webhook-service/app/core/webhook_service.py",
           "line": 171,
           "title": "deliver() has no compare-and-set on the DELIVERING transition, allowing concurrent double-send of the same delivery",
           "detail": "deliver() guards only against DELIVERED/DEAD (line 149), then sets d.status=DELIVERING and saves (lines 171-173) with no atomic CAS from the prior status. Two concurrent invocations — e.g. the sweep loop and a manual POST /internal/webhooks/deliver/{id}, or two overlapping sweeps — both read the same QUEUED/FAILED row, both pass the guard, and both perform the outbound HTTP send.",
-          "failure_scenario": "A sweep tick picks delivery dlv_X (QUEUED) at the same moment an operator calls the internal deliver route for dlv_X. Both send the webhook to the customer endpoint, producing a duplicate delivery. Only the consumer's Idempotency-Key dedupe prevents a duplicate downstream side effect; the service itself provides no once-only guarantee at the transition."
+          "failure_scenario": "A sweep tick picks delivery dlv_X (QUEUED) at the same moment an operator calls the internal deliver route for dlv_X. Both send the webhook to the customer endpoint, producing a duplicate delivery. Only the consumer's Idempotency-Key dedupe prevents a duplicate downstream side effect; the service itself provides no once-only guarantee at the transition.",
+          "resolution": "FIXED: the QUEUED/FAILED->DELIVERING transition is an atomic compare-and-set (Delivery.version + DeliveryStore.claim_delivering) plus an in-progress early-bail, so two concurrent processors cannot both send. Added cas to the datastore (port+memory+postgres). Regression: test_audit_fixes.py."
         },
         {
           "id": "webhook-service-04",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "low",
           "file": "services/webhook-service/app/core/inbound_service.py",
           "line": 54,
           "title": "Inbound dedupe (seen -> record) is not atomic, so concurrent duplicate events are published twice",
           "detail": "ingest() checks store.seen() (line 54) and only later calls store.record() (line 59) and _publish() (line 60). There is no atomic reserve/insert-if-absent. Two concurrent requests carrying the same (source, provider_event_id) both observe seen()==False, both record (second overwrites the first by key) and both publish to the event bus.",
-          "failure_scenario": "A provider (or an attacker replaying within the signature tolerance window) sends the same signed event twice near-simultaneously. Both pass the dedupe check and both fire inbound.<source> onto the EventBus, so downstream subscribers process the same third-party event twice despite the documented once-only intent."
+          "failure_scenario": "A provider (or an attacker replaying within the signature tolerance window) sends the same signed event twice near-simultaneously. Both pass the dedupe check and both fire inbound.<source> onto the EventBus, so downstream subscribers process the same third-party event twice despite the documented once-only intent.",
+          "resolution": "FIXED: inbound dedupe is now an atomic reserve (cas insert-if-absent) replacing seen()->record(), so concurrent duplicates publish once; TTL re-accept preserved. Regression: test_audit_fixes.py."
         },
         {
           "id": "webhook-service-05",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "low",
           "file": "services/webhook-service/app/core/webhook_service.py",
           "line": 41,
           "title": "3xx responses are classified as retryable and retried to exhaustion instead of treated as terminal",
           "detail": "classify() (lines 31-41) returns 'delivered' only for 2xx, 'terminal' for 4xx (except 408/429), and falls through to 'retryable' for everything else — which includes 3xx. The transports do not follow redirects (httpx Client defaults follow_redirects=False; the stdlib transport issues a single request). So a customer endpoint answering 301/302/307 is retried up to RETRY_MAX_ATTEMPTS (8) with backoff and then dead-lettered, though it will never succeed.",
-          "failure_scenario": "A customer moves their endpoint and returns 301 to the new URL. Every delivery to that endpoint burns all 8 retries over the full backoff window and lands in the DLQ, wasting worker capacity and delaying the dead-letter signal, when the response is deterministically non-retryable."
+          "failure_scenario": "A customer moves their endpoint and returns 301 to the new URL. Every delivery to that endpoint burns all 8 retries over the full backoff window and lands in the DLQ, wasting worker capacity and delaying the dead-letter signal, when the response is deterministically non-retryable.",
+          "resolution": "FIXED: classify() returns terminal for 3xx (transports do not follow redirects) instead of retrying to dead-letter. Regression: test_audit_fixes.py."
         }
       ]
     },

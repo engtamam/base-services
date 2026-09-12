@@ -51,12 +51,13 @@ class InboundService:
         if not provider_event_id:
             raise InboundRejected("MISSING_EVENT_ID")
 
-        if await self._store.seen(source, provider_event_id, now=now, ttl_seconds=self._dedupe_ttl):
-            return {"accepted": True, "duplicate": True, "provider_event_id": provider_event_id}
-
         ev = InboundEvent(id=new_id("in_"), source=source, provider_event_id=provider_event_id,
                           payload=payload, received=iso(), received_ts=float(now))
-        await self._store.record(ev)                      # the ONE write
+        # ATOMIC reserve-and-store: the old seen()->record() pair had a gap where two concurrent
+        # duplicates both saw not-seen and both published. reserve() is a single insert-if-absent, so
+        # exactly one caller wins and publishes; the other is reported as a duplicate.
+        if not await self._store.reserve(ev, now=now, ttl_seconds=self._dedupe_ttl):
+            return {"accepted": True, "duplicate": True, "provider_event_id": provider_event_id}
         await self._publish(source, ev)
         return {"accepted": True, "duplicate": False, "id": ev.id,
                 "provider_event_id": provider_event_id}

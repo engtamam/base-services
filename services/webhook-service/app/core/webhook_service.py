@@ -34,6 +34,11 @@ def classify(status: int, transport_ok: bool) -> str:
         return "retryable"                       # timeout / DNS / connection reset
     if 200 <= status < 300:
         return "delivered"
+    if 300 <= status < 400:
+        # The transports do NOT follow redirects (httpx follow_redirects=False; stdlib single shot),
+        # so a 3xx will never succeed on retry — retrying to exhaustion then dead-lettering is wrong.
+        # A receiver that moved must be re-registered, not hammered. Terminal.
+        return "terminal"
     if status in _RETRYABLE_4XX:
         return "retryable"
     if 400 <= status < 500:
@@ -148,19 +153,35 @@ class WebhookService:
             return {"ok": False, "reason": "NOT_FOUND"}
         if d.status in (DELIVERED, DEAD):
             return {"ok": True, "status": d.status, "reason": "already_final"}
+        if d.status == DELIVERING:
+            # Another processor already claimed it and is mid-send. Bailing here (plus the CAS below
+            # for the truly-simultaneous case) is what stops a second outbound send of the same row.
+            return {"ok": False, "status": DELIVERING, "reason": "in_progress"}
+
+        now = now_ts()
+        recheck = float(self._cfg["circuit_reset_seconds"])   # how long to defer a non-attempt
 
         ep = await self._endpoints.get(d.endpoint_id)
         event = await self._events.get(d.event_id)
         if ep is None or event is None:
             return await self._finalize(d, DEAD, error="endpoint or event missing")
         if not ep.enabled:
+            # Push it OUT of the due window instead of leaving next_retry_at <= now: a disabled
+            # endpoint's deliveries were re-selected on every sweep tick forever, and being the oldest
+            # they starved deliverable rows for healthy endpoints (head-of-line blocking). Re-checked
+            # after `recheck` in case the endpoint is re-enabled; still QUEUED, never dropped.
+            d.next_retry_at = now + recheck
+            await self._deliveries.save(d)
             return {"ok": False, "status": d.status, "reason": "endpoint_disabled"}
 
-        now = now_ts()
         state = _circuit.state_now(circuit_state=ep.circuit_state, opened_at=ep.opened_at,
                                    now=now, reset_seconds=self._cfg["circuit_reset_seconds"])
         if not _circuit.can_attempt(state):
-            return {"ok": False, "status": QUEUED, "reason": "circuit_open"}   # queued, NOT dropped
+            # Same starvation fix for an open circuit: defer to when the breaker may half-open rather
+            # than stay permanently due. Queued, NOT dropped.
+            d.next_retry_at = now + recheck
+            await self._deliveries.save(d)
+            return {"ok": False, "status": QUEUED, "reason": "circuit_open"}
 
         # SSRF: re-validate + re-pin on EVERY attempt — DNS may have changed since the last one.
         try:
@@ -168,9 +189,15 @@ class WebhookService:
         except _ssrf.SsrfBlocked as exc:
             return await self._finalize(d, DEAD, error=f"ssrf_blocked: {exc}")  # terminal
 
-        d.status = DELIVERING
+        # ATOMIC claim of the QUEUED/FAILED -> DELIVERING transition (compare-and-set on the row's
+        # version). Without it two concurrent processors — the sweep loop and a manual deliver, or two
+        # overlapping sweeps — both read the same row, both pass the guard, and both send. Only the
+        # CAS winner proceeds; the loser stops here (the winner is already sending).
         d.attempt += 1
-        await self._deliveries.save(d)
+        claimed = await self._deliveries.claim_delivering(d)
+        if claimed is None:
+            return {"ok": False, "status": d.status, "reason": "already_claimed"}
+        d = claimed
 
         body = json.dumps({"id": event.id, "type": event.type, "created": event.created,
                            "data": event.payload}, separators=(",", ":")).encode()

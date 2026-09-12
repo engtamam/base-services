@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from app.core.models import DEAD, Delivery, Endpoint, Event, InboundEvent, iso
+from app.core.models import DEAD, DELIVERING, Delivery, Endpoint, Event, InboundEvent, iso
 from app.ports.datastore import DataStore
 
 _ENDPOINTS = "endpoints"
@@ -145,6 +145,20 @@ class DeliveryStore:
         await self._store.put(_DELIVERIES, d.id, d.to_dict())
         return d
 
+    async def claim_delivering(self, d: Delivery) -> Delivery | None:
+        """Atomically move this delivery to DELIVERING via compare-and-set on its version. Returns the
+        claimed delivery (version bumped) on success, or None if another processor won the race — the
+        guard that stops two concurrent sends of the same delivery."""
+        expected = int(getattr(d, "version", 1) or 1)
+        new = d.to_dict()
+        new["status"] = DELIVERING
+        new["updated"] = iso()
+        if not await self._store.cas(_DELIVERIES, d.id, expected, new):
+            return None
+        claimed = Delivery.from_dict(new)
+        claimed.version = expected + 1                 # the version cas just wrote
+        return claimed
+
     async def get(self, delivery_id: str) -> Delivery | None:
         row = await self._store.get(_DELIVERIES, delivery_id)
         return Delivery.from_dict(row) if row else None
@@ -215,6 +229,24 @@ class InboundStore:
     async def record(self, ev: InboundEvent) -> InboundEvent:
         await self._store.put(_INBOUND, self._key(ev.source, ev.provider_event_id), ev.to_dict())
         return ev
+
+    async def reserve(self, ev: InboundEvent, *, now: float = 0.0, ttl_seconds: int = 0) -> bool:
+        """Atomically claim (source, provider_event_id) and store the event, all in one step. Returns
+        True if THIS caller reserved it (first-seen → process), False if it was already taken (duplicate).
+
+        Replaces the non-atomic seen()->record() pair: two concurrent duplicates both saw seen()==False
+        and both published. cas(expected=0) is an insert-if-absent (Postgres INSERT..ON CONFLICT DO
+        NOTHING / memory put-if-absent), so exactly one wins. The dedupe window (ttl) is preserved: if
+        the existing row has aged out, we overwrite and re-accept."""
+        key = self._key(ev.source, ev.provider_event_id)
+        if await self._store.cas(_INBOUND, key, 0, ev.to_dict()):
+            return True                                   # first-seen — reserved
+        if ttl_seconds and now:
+            row = await self._store.get(_INBOUND, key)
+            if row and (now - float(row.get("received_ts", 0) or 0)) > ttl_seconds:
+                await self._store.put(_INBOUND, key, ev.to_dict())   # window lapsed → re-accept
+                return True
+        return False                                      # duplicate inside the window
 
     async def list(self, source: str | None = None, limit: int = 100,
                    after: str | None = None) -> list[dict]:
