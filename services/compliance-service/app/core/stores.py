@@ -271,6 +271,21 @@ class HoldStore:
             limit=limit, sort=("placed_at", "asc"))
         return [LegalHold.from_dict(r) for r in rows]
 
+    async def active_for_subject(self, tenant: str, subject: str,
+                                 limit: int = 1000) -> tuple[list[LegalHold], bool]:
+        """Active holds blocking an erasure for ONE subject, AND whether the answer is COMPLETE.
+
+        The subject-scoped sibling of active_in_tenant(). erase() decides whether it may delete a
+        subject's data from this, so the completeness flag is the whole safety argument: a silently
+        truncated list must be visible as INCOMPLETE and force a fail-CLOSED refusal, rather than
+        collapse to a false "no hold" and erase data under litigation hold. `active` is pushed down
+        to the store (never filtered in Python over a mixed active/released page), so the limit
+        budgets ACTIVE holds only."""
+        rows, cursor = await self._store.find(
+            _HOLDS, {"tenant": tenant, "subject": subject, "active": True},
+            limit=limit, sort=("placed_at", "asc"))
+        return [LegalHold.from_dict(r) for r in rows], cursor is None
+
     async def list(self, tenant: str, limit: int = 100, after: str | None = None) -> list[dict]:
         rows, _ = await self._store.find(_HOLDS, {"tenant": tenant}, limit=limit, after=after,
                                          sort=("placed_at", "desc"))

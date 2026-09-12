@@ -76,6 +76,18 @@ class HttpPrivacyTransport:
                 return EraseOutcome(status=FAILED, ack=ack,
                                     detail=(f"target does not index subject_kind={subject_kind!r} "
                                             f"(unrecognized_subject_kind) — refused, not erased"))
+            # BLOCKED BY LEGAL HOLD == the target lawfully RETAINED the subject's data under its own
+            # hold and erased nothing. It is a 200 with a truthful ack, but it is NOT an erasure — so
+            # it must NEVER be classified ACKED, or the target flips to "done" and the DSAR is derived
+            # COMPLETED and reported to the regulator as fully erased while the data is deliberately
+            # kept. Recorded FAILED (never ACKED), exactly like unrecognized_subject_kind: the target
+            # stays unacked, the DSAR stays OPEN and VISIBLE over data that was retained, not erased.
+            # Checked before already_absent: retention-under-hold is neither a real absence nor a done.
+            if ack.get("blocked_by_legal_hold"):
+                return EraseOutcome(status=FAILED, ack=ack,
+                                    detail=("target retained the subject's data under its own active "
+                                            "legal hold (blocked_by_legal_hold) — not erased; DSAR "
+                                            "stays open over retained data"))
             # TRUNCATED == the target erased only part of the subject's rows this call (a bounded
             # batch, a scan cap). It is NOT done — record it PARTIAL so the target stays unacked and
             # the erase re-dispatches idempotently until a call returns without truncated. A scanner

@@ -20,14 +20,21 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.pii import subject_ref
-from app.core.stores import ConsentStore
+from app.core.stores import ConsentStore, HoldStore
 
 
 _CONSENT = "consent"
 _PROOF = "consent_proof"
 _HOLDS = "legal_holds"
+_PROOF_SEQ = "consent_proof_seq"      # (tenant, RAW subject) -> counter; see stores.add_proof
 
 RETENTION_BASIS = "consent_proof"
+
+# Budget for the fail-CLOSED active-hold read. Completeness is what makes truncation SAFE: if a
+# subject somehow has more active holds than this, the read is reported INCOMPLETE and the erase is
+# refused, never proceeding on a page that might have hidden a hold.
+_HOLD_SCAN_LIMIT = 1000
+_PAGE = 500
 
 
 class ComplianceErasure:
@@ -48,37 +55,54 @@ class ComplianceErasure:
         # held data. A hold an erasure could delete is not a hold: under an active hold this is a
         # no-op that reports WHY nothing was erased, and does NOT pseudonymise the proof either
         # (altering data under legal hold is itself a violation).
-        import time as _time
-        now = _time.time()
-        all_holds, _ = await self._store.find(_HOLDS, {"tenant": tenant, "subject": subject},
-                                              limit=100, sort=("placed_at", "asc"))
-        active_holds = [h for h in all_holds
-                        if h.get("active", True) and (not h.get("expires_at") or now < h["expires_at"])]
-        if active_holds:
+        #
+        # FAIL CLOSED. We reuse HoldStore.active_for_subject, which pushes {"active": True} into the
+        # store (never mixing released holds into the same read budget) AND returns whether the answer
+        # is COMPLETE. A truncated hold read is treated EXACTLY like an active hold — refuse the erase —
+        # because deleting data that MIGHT be under hold is spoliation. There is no `now`/expires_at
+        # arithmetic: LegalHold has no expiry field, a hold ends only by being released (active=False),
+        # and the store answers with the same `active` flag every other hold path uses. This also
+        # removes the divergent wall clock the rest of the service never used.
+        holds_repo = HoldStore(self._store)
+        active_holds, holds_complete = await holds_repo.active_for_subject(
+            tenant, subject, limit=_HOLD_SCAN_LIMIT)
+        if active_holds or not holds_complete:
+            why = ("an active legal hold blocks erasure — all subject data is retained unaltered "
+                   "until the hold is released") if active_holds else (
+                   "the legal-hold list could not be read completely — erasure is refused (fail "
+                   "closed) rather than risk deleting data under an unread hold")
             return {
                 "service": self.service,
                 "subject_ref": ref,
                 "erased": [],
                 "retained": [{"what": f"legal_holds:{len(active_holds)}", "basis": "legal_hold",
-                              "why": "an active legal hold blocks erasure — all subject data is "
-                                     "retained unaltered until the hold is released"}],
+                              "why": why}],
                 "already_absent": False,
                 "blocked_by_legal_hold": True,
+                "hold_check_incomplete": not holds_complete,
             }
 
-        rows, _ = await self._store.find(_CONSENT, {"tenant": tenant, "subject": subject},
-                                         limit=1000, sort=("updated_at", "asc"))
         # Delete under the CANONICAL key (row['id'], the normalised tenant::subject::purpose stamped at
         # write time) — NOT a raw-purpose reconstruction. The store key normalises the purpose
         # (casefold+strip), so f"...::{raw_purpose}" misses any purpose with uppercase/whitespace and
         # the row survived while the ack still claimed it erased — the exact false-completion this
         # service exists to prevent. Count only rows actually removed so `erased`/already_absent tell
         # the truth. (Fallback to the reconstructed key for a legacy row written before id-stamping.)
+        #
+        # PAGINATED to completion, exactly like the proof loop below. A single limit=1000 read left
+        # any consent rows past the cap in place while the ack still reported success — the same
+        # bounded-read false-completion the hold path just guarded against, one collection over.
         deleted = 0
-        for r in rows:
-            key = r.get("id") or f"{tenant}::{subject}::{ConsentStore.normalise(r.get('purpose', ''))}"
-            if await self._store.delete(_CONSENT, key):
-                deleted += 1
+        cursor = None
+        while True:
+            rows, cursor = await self._store.find(_CONSENT, {"tenant": tenant, "subject": subject},
+                                                  limit=_PAGE, after=cursor, sort=("updated_at", "asc"))
+            for r in rows:
+                key = r.get("id") or f"{tenant}::{subject}::{ConsentStore.normalise(r.get('purpose', ''))}"
+                if await self._store.delete(_CONSENT, key):
+                    deleted += 1
+            if not cursor:
+                break
         if deleted:
             erased.append(f"consent:{deleted}")
 
@@ -87,7 +111,7 @@ class ComplianceErasure:
         cursor = None
         while True:
             page, cursor = await self._store.find(_PROOF, {"tenant": tenant, "subject": subject},
-                                                  limit=500, after=cursor, sort=("at", "asc"))
+                                                  limit=_PAGE, after=cursor, sort=("at", "asc"))
             for p in page:
                 p["subject"] = ref
                 await self._store.put(_PROOF, p["id"], p)
@@ -95,15 +119,17 @@ class ComplianceErasure:
             if not cursor:
                 break
 
+        # The per-subject proof SEQUENCE counter is keyed "tenant::<RAW subject>" (stores.add_proof),
+        # so it is itself a surviving raw-PII identifier — deleting the consent rows and pseudonymising
+        # the proofs but leaving this row would let the erased person's raw id persist in the store and
+        # in every sealed backup. Delete it: the counter is DERIVED and self-heals from the proof ids
+        # (see internal._rebuild_proof_seq), so nothing depends on it surviving an erasure.
+        await self._store.delete(_PROOF_SEQ, f"{tenant}::{subject}")
+
         retained = []
         if proofs:
             retained.append({"what": f"consent_proof:{proofs}", "basis": RETENTION_BASIS,
                              "why": "append-only evidence of what was agreed and when; subject pseudonymised"})
-        if all_holds:
-            # No ACTIVE hold reached here (an active one returns early above); these are released or
-            # expired holds, retained as historical record.
-            retained.append({"what": f"legal_holds:{len(all_holds)}", "basis": "legal_hold",
-                             "why": "a hold an erasure could delete is not a hold"})
 
         return {
             "service": self.service,

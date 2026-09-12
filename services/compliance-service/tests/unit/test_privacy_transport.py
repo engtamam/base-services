@@ -121,6 +121,19 @@ def test_unrecognized_subject_kind_is_failed_not_acked(monkeypatch):
     assert out.ack == ack                              # the refusal evidence is kept
 
 
+def test_blocked_by_legal_hold_is_failed_not_acked(monkeypatch):
+    # r2-02: a target that lawfully RETAINED the subject's data under its own legal hold returns 200
+    # with blocked_by_legal_hold=true and erased=[]. That is a truthful ack but NOT an erasure — it
+    # must be FAILED (never ACKED), or the target flips to "done", the DSAR is derived COMPLETED, and
+    # the regulator is told the person was erased while the data is deliberately kept.
+    ack = {**_ACK, "erased": [], "already_absent": False, "blocked_by_legal_hold": True}
+    _urlopen(monkeypatch, _Resp(200, json.dumps(ack).encode()))
+    out = run(HttpPrivacyTransport().erase(**_ARGS))
+    assert out.status == FAILED and out.is_acked is False
+    assert "blocked_by_legal_hold" in out.detail
+    assert out.ack == ack                              # the retention evidence is kept
+
+
 def test_subject_kind_travels_in_the_payload_only_when_set(monkeypatch):
     # Item 6: subject_kind is additive — sent when known so a target can refuse, and OMITTED when not,
     # so an existing target sees the exact same request body as before (additionalProperties-safe).

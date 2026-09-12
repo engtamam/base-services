@@ -1,0 +1,138 @@
+{
+  "service": "compliance-service",
+  "round": 2,
+  "findings": [
+    {
+      "id": "compliance-r2-01",
+      "severity": "critical",
+      "status": "CONFIRMED",
+      "category": "legal-hold / erasure fail-open / bounded read",
+      "file": "app/core/erasure.py",
+      "line": 53,
+      "title": "Erasure legal-hold seam reads ALL holds capped at 100 and filters `active` in Python, with no completeness guard — an active hold beyond page 100 is missed and held data is erased",
+      "detail": "erase() is documented as 'the single seam every erase path funnels through' for hold enforcement. But it calls self._store.find(_HOLDS, {\"tenant\": tenant, \"subject\": subject}, limit=100, sort=(\"placed_at\",\"asc\")) and then filters active_holds in Python (lines 55-56). This fetches active AND inactive/released holds into the same 100-row budget, unlike HoldStore.active_for() which pushes {\"active\": True} down to the store, and unlike HoldStore.active_in_tenant() which returns a completeness flag. release_hold() only sets active=False (compliance_service.py:52) and never deletes the row; retention does not purge the legal_holds collection. Released holds therefore accumulate forever. The cursor returned by find() is discarded, so truncation is silent.",
+      "failure_scenario": "A litigious subject accrues 100+ historical (released) holds over the years. A new active hold is placed today (newest placed_at). find() sorts placed_at ASC and returns the oldest 100 rows — all released — and the active hold falls beyond the page. active_holds is empty, erase() proceeds, deletes the consent rows and pseudonymises the proof for a subject who is CURRENTLY under litigation hold. This is spoliation of evidence, reached through the very seam that exists to prevent it, and via the direct /internal/privacy/erase caller it bypasses the upstream DsarService.process hold check entirely.",
+      "fix": "Push {\"active\": True} into the find (reuse HoldStore.active_for), and treat a non-None cursor as INCOMPLETE — fail CLOSED (refuse the erase, do not pseudonymise) when the hold answer may be truncated, exactly as active_in_tenant()/held_refs() already do. Never decide 'no hold' from a page that could be truncated."
+    },
+    {
+      "id": "compliance-r2-02",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "false completion / cross-service fan-out",
+      "file": "app/adapters/privacy_transport/http.py",
+      "line": 83,
+      "title": "A 200 response carrying `blocked_by_legal_hold` is classified ACKED, so a target that RETAINED data under hold flips the DSAR target to complete",
+      "detail": "erasure.py:57-67 deliberately returns HTTP 200 with {\"erased\": [], \"already_absent\": False, \"blocked_by_legal_hold\": True} when the subject is held in THAT target's own jurisdiction. HttpPrivacyTransport.erase() only special-cases unrecognized_subject_kind and truncated before falling through to ACKED (lines 75-90). blocked_by_legal_hold is not recognised, so the outcome is ACKED, PrivacyDispatcher._attempt sets dsar.targets[key]=True (privacy_dispatcher.py:105), and completion is derived as done. Reached whenever compliance-service (or any peer that adopts the same blocked-ack shape) is a target of another service's DSAR fan-out and holds its own hold on that subject.",
+      "failure_scenario": "Shop A files an erasure DSAR for a subject via the orchestrating service; compliance-service is a data-map target. compliance-service has an active local legal hold, so its /internal/privacy/erase returns 200 + blocked_by_legal_hold. The dispatcher marks the compliance target ACKED; once the other targets ack, the DSAR is derived COMPLETED and reported to the regulator as fully erased — while compliance-service lawfully retained the data. A false 'she was erased', the exact lie the service's own comments say must never happen.",
+      "fix": "Classify a 200 ack carrying blocked_by_legal_hold (or an empty erased[] with a retained legal_hold basis) as FAILED/non-ack, mirroring the unrecognized_subject_kind handling, so the target stays unacked and the DSAR stays open and visible rather than closing over retained data."
+    },
+    {
+      "id": "compliance-r2-03",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "incomplete erasure / PII residue",
+      "file": "app/core/erasure.py",
+      "line": 41,
+      "title": "erase() never touches consent_proof_seq, whose row key embeds the RAW subject — the raw identifier survives erasure and is exported in backups",
+      "detail": "add_proof (stores.py:177) keys the per-subject sequence counter as seq_key = f\"{p.tenant}::{p.subject}\" with the RAW subject. erase() deletes _CONSENT, pseudonymises _PROOF and reads _HOLDS, but never deletes or renames the _PROOF_SEQ row (grep confirms the only writers are add_proof and _rebuild_proof_seq). backup_manifest.py:46 includes consent_proof_seq in the sealed archive. pii.py is explicit that erasure must 'delete the mutable PII and destroy the LINKAGE'; here a store KEY containing the raw subject identifier persists indefinitely after erasure.",
+      "failure_scenario": "A subject (identified by e.g. email/phone/user-id as `subject`) requests erasure. Every consent row is deleted and every proof pseudonymised, and the DSAR closes COMPLETED. Yet consent_proof_seq still holds a row keyed 'tenant::alice@example.com'. A regulator inspection, a backup export, or a database dump reveals the raw personal identifier of a person the platform swore it had erased.",
+      "fix": "In erase(), after pseudonymising proofs, delete the consent_proof_seq row for (tenant, raw subject) — the counter is derived and self-heals from proof ids via _rebuild_proof_seq — or re-key it under subject_ref. Add consent_proof_seq to the erase fan-out and to an erasure-completeness test."
+    },
+    {
+      "id": "compliance-r2-04",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "bounded read / incomplete erasure",
+      "file": "app/core/erasure.py",
+      "line": 69,
+      "title": "Consent deletion in erase() is capped at limit=1000 with no pagination; survivors past the cap are left while the ack reports only the deleted count",
+      "detail": "erase() reads consent rows with self._store.find(_CONSENT, {...}, limit=1000, sort=(\"updated_at\",\"asc\")) and deletes them, but unlike the proof loop directly below it (lines 87-96, which paginates with a cursor) it never pages. If a subject has more than 1000 consent rows, only the first 1000 are seen and deleted. `erased` reports the true deleted count and already_absent=not erased, so the caller/regulator receives a success ack with no signal that rows remain.",
+      "failure_scenario": "A high-volume subject (or an abusive tenant that granted thousands of per-purpose consents) has >1000 consent rows. erase() deletes 1000, the DSAR target acks, the DSAR completes, and hundreds of consent records for the 'erased' subject silently remain in the store.",
+      "fix": "Paginate the consent deletion with the same after-cursor loop already used for proofs, or assert the page was not truncated and fail the ack (not already_absent) if it was, so incompleteness is loud rather than silent."
+    },
+    {
+      "id": "compliance-r2-05",
+      "severity": "medium",
+      "status": "SPECULATIVE",
+      "category": "atomicity / consent-proof ordering / fail-open cache",
+      "file": "app/core/consent_service.py",
+      "line": 100,
+      "title": "grant()/withdraw() persist the consent row and bump the cache AFTER add_proof; if add_proof raises, consent state changes with no immutable proof and no cache invalidation",
+      "detail": "grant() calls self._store.put(c) (line 100), then add_proof (101-104), then _bump (105). withdraw() is the same shape (116-120). add_proof retries CAS 64 times and raises RuntimeError('could not allocate a consent-proof sequence under contention') on exhaustion (stores.py:189-190), and any store error there also propagates. Because the consent row is already written and _bump happens only after add_proof, an exception leaves: (grant) a granted consent with NO ConsentProof — the 'prove they consented' evidence is missing for processing that is now permitted; (withdraw) a withdrawn row whose cache generation was never bumped, so check() keeps answering the cached 'allowed' until TTL, i.e. withdrawal is NOT immediate.",
+      "failure_scenario": "Under heavy concurrent consent writes for one subject (or a flaky datastore), add_proof exhausts its 64 CAS attempts. The withdrawal is stored but the generation is not bumped; a hot-path check() served from cache continues to return allowed:true for up to CONSENT_CACHE_TTL_SECONDS — processing continues against a subject who withdrew consent.",
+      "fix": "Bump the generation and/or write the proof before (or transactionally with) the consent mutation, or on add_proof failure roll back the consent write and surface the error. At minimum bump the cache in a finally so a persisted withdrawal always invalidates cached allows."
+    },
+    {
+      "id": "compliance-r2-06",
+      "severity": "medium",
+      "status": "SPECULATIVE",
+      "category": "TOCTOU / lost update / incomplete erasure",
+      "file": "app/core/erasure.py",
+      "line": 69,
+      "title": "erase() is not serialized against a concurrent grant(): a grant landing after the scan re-creates an un-erased consent row and a proof carrying the RAW subject",
+      "detail": "erase() reads-then-deletes consent (69-83) and reads-then-pseudonymises proofs page by page (87-96). There is no lock, no re-check, and no generation guard against a ConsentService.grant()/withdraw() running concurrently. A grant that commits after erase() has passed a given page adds (a) a fresh consent row that erase() will not revisit and (b) a ConsentProof whose subject field is the RAW subject, which the pseudonymisation pass already walked past.",
+      "failure_scenario": "A subject requests erasure at the same moment an ingest pipeline records a late consent/withdrawal for them (e.g. a queued webhook). The DSAR completes COMPLETED, but a live consent row and a proof containing the raw subject identifier remain for the 'erased' person.",
+      "fix": "Bump the consent generation at the start of erase and re-scan until a pass deletes/pseudonymises nothing, or gate consent writes for a subject with an active erasure DSAR (the ERASURE_GRACE / hold machinery could carry an 'erasing' flag). Treat erase as needing a fixed-point, not a single pass."
+    },
+    {
+      "id": "compliance-r2-07",
+      "severity": "medium",
+      "status": "SPECULATIVE",
+      "category": "retention vs legal-hold bypass / evidence destruction",
+      "file": "app/core/retention.py",
+      "line": 85,
+      "title": "RetentionEnforcer._is_held checks holds by the row's `subject`, but pseudonymised proof rows carry subject_ref while holds are keyed by the raw subject — a held proof can be age-purged",
+      "detail": "_is_held(row) calls self._holds.active_for(row['tenant'], row['subject']) (line 88). A pseudonymised consent_proof row has subject == subject_ref (an HMAC, set by erase()), whereas LegalHold rows store the RAW subject. active_for on a subject_ref matches no hold, so _is_held returns False and the proof is eligible for deletion. The shipped RETENTION_RULES example (config.py:372) is literally 'dsar=365,breaches=1825,consent_proof=2555', i.e. consent_proof IS an intended retention collection, and append-only evidence is being age-purged at all. _purge also scans with limit=max_per_run and pages nothing, so a large collection is only partially considered per run.",
+      "failure_scenario": "A subject's consent proof was pseudonymised by an earlier erasure; later a legal hold is placed (holds can be placed on any subject id). The nightly retention run sees the proof older than 2555 days, cannot match the hold (ref vs raw), and deletes evidence that is under active legal hold — spoliation via the retention path.",
+      "fix": "Resolve holds against BOTH the raw subject and its subject_ref when evaluating retention on pseudonymised collections, or exclude append-only evidence (consent_proof) from age-based purge entirely; document that proof retention, if allowed, must honour holds keyed by ref."
+    },
+    {
+      "id": "compliance-r2-08",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "cross-tenant read / PII exposure scope",
+      "file": "app/core/dsar_service.py",
+      "line": 224,
+      "title": "Cross-tenant open-DSAR officer view returns each request's raw `subject` and full `payload`, broader than needed for discovery",
+      "detail": "list_all_open() maps every tenant's open DSAR through d.public(), which strips only verification_token (models.py:205-208). The returned item includes the raw `subject` and the entire `payload` dict, which for correction/export DSARs can carry personal data (correction values, export-bundle contents). The platform.compliance cross-tenant read is legitimate-by-design and audited, but the discovery view needs identifiers and status, not payload bodies for every shop.",
+      "failure_scenario": "A platform compliance officer (or a compromised platform.compliance token) lists all open DSARs and receives, for every tenant on the platform, the raw subject identifiers and correction/export payloads — a single call that aggregates cross-tenant PII well beyond 'which requests exist'.",
+      "fix": "Return a discovery projection for the cross-tenant view (id, tenant, type, status, deadline, overdue, subject_ref) and require an explicit per-DSAR fetch (already tenant-scopable) to see payload/subject. Keep the full payload out of the aggregate list."
+    },
+    {
+      "id": "compliance-r2-09",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "clock divergence / postgres-vs-memory-vs-test",
+      "file": "app/core/erasure.py",
+      "line": 51,
+      "title": "erase() evaluates hold state with wall-clock time.time() instead of the injected clock used everywhere else",
+      "detail": "erase() does 'import time as _time; now = _time.time()' (lines 51-52) and uses it to evaluate hold expiry. Every other core path (DsarService, dispatcher, sweepers, ComplianceService, retention) takes an injected clock, which is how manual/test clocks and any deterministic time control work. This single hard-wired wall clock diverges from the rest of the system and cannot be advanced by the ManualClock the tests and any time-travel operations rely on.",
+      "failure_scenario": "A test (or an operational time-skew scenario) advances the injected clock to simulate a hold expiring; erase() ignores it and reads the host wall clock, so its hold-expiry decision disagrees with DsarService.process and with the ManualClock — masking or manufacturing a divergence that only appears in production.",
+      "fix": "Inject the container clock into ComplianceErasure and use clock.now() for the hold-time evaluation, consistent with every other module."
+    },
+    {
+      "id": "compliance-r2-10",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "dead code / misleading hold semantics",
+      "file": "app/core/erasure.py",
+      "line": 56,
+      "title": "erase() hold-expiry branch references h['expires_at'], a field LegalHold does not define — the documented time-based hold expiry is non-functional",
+      "detail": "The active-hold filter is `[h for h in all_holds if h.get('active', True) and (not h.get('expires_at') or now < h['expires_at'])]` (lines 55-56). The LegalHold model (models.py:216-223) has no expires_at field — only active/placed_at/released_at. h.get('expires_at') is therefore always falsy, so the expiry clause is dead: holds only ever end via the active flag. This is harmless today (it fails safe toward 'held') but the code advertises a time-expiry capability that does not exist, inviting a future caller to rely on it.",
+      "failure_scenario": "An operator sets an expires_at on a hold expecting it to auto-lift (the code appears to support it); nothing populates the field on the model, so the branch never fires and the behaviour silently differs from the apparent contract.",
+      "fix": "Either add expires_at to LegalHold and honour it consistently in HoldStore.active_for / active_in_tenant / hold_check, or remove the dead expires_at clause from erase() so the only hold-ending mechanism (active flag + release) is the one the code shows."
+    },
+    {
+      "id": "compliance-r2-11",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "cross-tenant action gap / audit-tenant mismatch",
+      "file": "app/api/v1/compliance.py",
+      "line": 389,
+      "title": "release_hold scopes to the caller's own tenant and ignores any tenant selector, so a platform officer cannot release a cross-tenant hold they discovered; audit tenant also mismatches the scoped tenant",
+      "detail": "Unlike verify_dsar/process_dsar (which take a tenant query param and pass _tenant(principal, tenant)), release_hold() calls release_hold(hold_id, tenant=_tenant(principal)) with no selector — a platform.compliance operator is pinned to their own reserved tenant and release returns 404 for any real shop's hold. Separately, the write-ahead audit records tenant=principal.tenant (line 387) while the scope uses _tenant(principal); for a platform op these can differ, so the audit row's tenant does not name the tenant actually acted on.",
+      "failure_scenario": "A platform compliance officer discovers an active hold via the cross-tenant list view, then cannot release it (404) — or the operation is inconsistent with place_hold, which DOES honour a body tenant. The asymmetry either blocks a legitimate release or, if later 'fixed' carelessly, opens a cross-tenant release; and the audit trail attributes the release to the wrong tenant.",
+      "fix": "Give release_hold the same tenant selector honoured only for platform.compliance (as verify/process do), pass the same scoped tenant to both the audit record and release_hold, and keep tenant-admin values ignored so cross-tenant release stays platform-only and correctly recorded."
+    }
+  ]
+}
