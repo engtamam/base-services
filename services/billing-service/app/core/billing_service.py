@@ -830,7 +830,11 @@ class BillingService:
         meta: dict[str, Any] = {"grant_minor": total, "grant_fund": fund, "topup": True}
         if force_doc:
             meta["force_doc_type"] = force_doc
-        idem = f"topup:{tenant}:{payment_token}:{total}"
+        # The GATEWAY idempotency key MUST describe the same operation identity the app claim does
+        # (topup_key, below) — `fund` included. Without it, a same-token+amount top-up to fund A then
+        # fund B is ONE charge at the gateway (deduped) but TWO app claims (different fund) → a second
+        # invoice mints and credits fund B: charged once, two funds credited (free stored value).
+        idem = f"topup:{tenant}:{payment_token}:{total}:{fund}"
         gw = self._gw                       # a top-up is a fresh charge; no per-sub gateway pinning
         try:
             charge = gw.charge(amount_minor=total, currency=currency, token=payment_token,
@@ -1639,6 +1643,14 @@ class BillingService:
         return await self._invoices._store.incr_if_below(     # noqa: SLF001 — same module family
             "invoice_settled", invoice_id, int(delta), int(total_minor))
 
+    async def _invoices_refunded_incr(self, invoice_id: str, delta: int,
+                                      total_minor: int) -> tuple[bool, int]:
+        """Atomic `refunded_minor` accumulation, bounded by the invoice total — the same primitive
+        settlement uses, so two concurrent refunds can never together return more than was charged
+        and only the delta that atomically applied is sent to the gateway."""
+        return await self._invoices._store.incr_if_below(     # noqa: SLF001 — same module family
+            "invoice_refunded", invoice_id, int(delta), int(total_minor))
+
     async def reverse_settlement(self, *, settlement_id: str, reason: str = "",
                                  actor: str = "", tenant: str | None = None) -> dict[str, Any]:
         """A recalled or bounced transfer.
@@ -1670,10 +1682,25 @@ class BillingService:
         credit_note = None
         if inv is not None:
             was_paid = inv.status == "paid"
-            inv.settled_minor = settled_after
-            inv.status = "open"          # `partially_paid` is DERIVED from the counter
-            inv.paid_at = ""
-            await self._invoices.save(inv)
+            # The COUNTER is the truth. Writing `inv.settled_minor = settled_after` from THIS call's
+            # local value is the lost update the audit flagged: two concurrent reversals (or a
+            # reversal racing a settlement) each read-modify-write the row and the last stale writer
+            # wins. Re-fetch and source settled_minor from the AUTHORITATIVE counter read instead, so
+            # the row can never be written back to a value the counter has already moved past. The
+            # row IS load-bearing (settle() bounds its pre-check on inv.settled_minor), so it must be
+            # kept — but only ever in agreement with the counter. `remaining`/status are derived from
+            # that same counter, never from a stale read.
+            counter_now = await self.settled_minor(inv.id)
+            remaining = inv.total_minor - counter_now
+            reopened = remaining > max(0, self._cfg.get("settlement_tolerance_minor", 0))
+            fresh = await self._invoices.fetch(inv.id)
+            if fresh is not None:
+                fresh.settled_minor = counter_now
+                if was_paid and reopened and fresh.status == "paid":
+                    fresh.status = "open"          # `partially_paid` is DERIVED from the counter
+                    fresh.paid_at = ""
+                await self._invoices.save(fresh)
+                inv = fresh
             if was_paid:
                 await self._ledger.record(tenant=inv.tenant, kind="refund",
                                           amount_minor=-stl.amount_minor, currency=inv.currency,
@@ -1858,6 +1885,15 @@ class BillingService:
         """The gateway a consolidated invoice will charge on. In pinned mode that is the subscription's
         OWN pinned gateway (so different-gateway subs never share one invoice); in active mode every sub
         charges the one active gateway, so they group together (key "")."""
+        # A WALLET-RENEWAL sub must NEVER share a consolidated invoice with card subs. The whole group
+        # is collected by ONE method (claimed[0]'s — _charge_invoice/_charge_from_wallet key off the
+        # representative sub), so mixing would debit a card sub's dues from the wallet, or charge a
+        # wallet-pinned sub to a card, depending purely on claim order. Opt-in is decided by
+        # payment_gateway=="wallet" INDEPENDENT of renewal MODE (_wallet_renewal_fund), so the grouping
+        # key must reflect it independent of mode too: wallet subs group on their own, and every sub in
+        # a wallet group is wallet-pinned so the single-method charge is correct for all of them.
+        if self._wallet_renewal_fund(sub) is not None:
+            return "wallet"
         if self._cfg.get("renewal_gateway_mode") == "pinned":
             return (getattr(sub, "payment_gateway", "") or "").strip()
         return ""
@@ -2067,18 +2103,33 @@ class BillingService:
             await self._dunning(pay)
             await self._payments.save(pay)
             changed = True
-        elif kind == "refund" and pay.status != "refunded":
-            pay.status = "refunded"
-            await self._payments.save(pay)
-            if inv:
-                # A gateway refund webhook carries no partial amount here, so it is a FULL refund:
-                # record the whole total as returned and void the invoice.
-                inv.refunded_minor = inv.total_minor
+        elif kind == "refund":
+            # Refund effect is AMOUNT-based, never the binary pay.status: a PARTIAL refund via the
+            # refund() API leaves the payment `succeeded` and the invoice paid, so a later gateway
+            # full-refund webhook must still be able to void. Idempotent by the amount — once
+            # refunded_minor has reached the total there is nothing left to do (a replayed webhook /
+            # a reconcile after a webhook is a no-op).
+            already = int(inv.refunded_minor or 0) if inv else 0
+            total = int(inv.total_minor) if inv else 0
+            if inv is not None and total > 0 and already < total:
+                # A gateway refund webhook carries no partial amount here → it is a FULL refund of
+                # whatever remains: bring the authoritative counter up to the total and void.
+                await self._invoices_refunded_incr(inv.id, total - already, total)
+                inv.refunded_minor = total
                 inv.status = "void"
                 inv.voided_at = iso()           # WHEN the money was fully returned — for dispute timelines
                 await self._invoices.save(inv)
                 await self._claw_back(inv)      # same reversal as a manual refund / a settlement recall
-            changed = True
+                if pay.status != "refunded":
+                    pay.status = "refunded"
+                    await self._payments.save(pay)
+                changed = True
+            elif pay.status != "refunded":
+                # No invoice, or already fully refunded by amount: at least reflect the terminal
+                # payment state (still idempotent — a second delivery finds it `refunded`).
+                pay.status = "refunded"
+                await self._payments.save(pay)
+                changed = True
         return {"changed": changed, "payment_status": pay.status}
 
     async def reconcile_payment(self, payment_id: str) -> dict[str, Any]:
@@ -2169,38 +2220,76 @@ class BillingService:
             # Never refund more than is outstanding — that would return money that was never charged
             # and drive refunded_minor past total_minor.
             return {"ok": False, "reason": "REFUND_EXCEEDS_OUTSTANDING"}
+        # ATOMIC refund identity — a retry / double-click / concurrent DUPLICATE of the SAME refund
+        # must reach the gateway EXACTLY once, or the customer is refunded twice: the outstanding
+        # guard above is a get-then-put TOCTOU (two concurrent calls both read refunded_minor, both
+        # pass, both call gw.refund). Mirror settle()/run_cycle — claim first (replay a finished one,
+        # refuse an in-flight one), bound the money through the same atomic counter, and send only the
+        # delta that atomically applied to the gateway.
+        rkey = f"refund:{payment_id}:{refund_amt}"
+        proceed, prior = await self._idempo.claim(rkey)
+        if prior is not None:
+            return {**prior, "duplicate": True}
+        if not proceed:
+            return {"ok": False, "reason": "REFUND_IN_PROGRESS"}
+        refunded_after = refund_amt
+        if inv is not None:
+            applied, refunded_after = await self._invoices_refunded_incr(
+                inv.id, refund_amt, inv.total_minor)
+            if not applied:
+                # The COUNTER (not the row read above) is the truth: a concurrent refund already took
+                # what was outstanding. Refuse deterministically — a retry of this identity replays
+                # this refusal, never a second gateway call.
+                result = {"ok": False, "reason": "REFUND_EXCEEDS_OUTSTANDING"}
+                await self._idempo.mark(rkey, result)
+                return result
         gw = await self._gw_for_refund(pay)     # pinned: refund via the gateway that CHARGED it
         charge = gw.refund(provider_id=pay.provider_id, amount_minor=refund_amt,
                            currency=pay.currency)
-        if charge.ok:
+        if not charge.ok:
+            # The gateway declined: give the counter delta back so the money is refundable again and
+            # leave the claim pending (it lapses with its lease) so a genuine retry can try once more.
+            # Nothing was recorded.
+            if inv is not None:
+                await self._invoices_refunded_incr(inv.id, -refund_amt, inv.total_minor)
+            return {"ok": False, "status": charge.status}
+        if inv:
+            # Refund EFFECT is decided from the amount-based counter vs total, never a binary flag:
+            # a PARTIAL refund keeps the invoice paid and the payment refundable (so a later gateway
+            # full-refund webhook can still void); only the counter reaching the total voids it and
+            # marks the payment fully refunded. refunded_minor is written from the AUTHORITATIVE
+            # counter value, so "what the shop kept paying" (total - refunded) stays answerable.
+            fully = refunded_after >= inv.total_minor
+            inv = await self._invoices.fetch(inv.id) or inv
+            inv.refunded_minor = refunded_after
+            inv.credit_note = True
+            if fully:
+                inv.status = "void"
+                inv.voided_at = iso()       # WHEN it fully voided — for dispute timelines
+            await self._invoices.save(inv)
+            await self._ledger.record(tenant=inv.tenant, kind="refund",
+                                      amount_minor=-refund_amt,
+                                      currency=inv.currency, invoice_id=inv.id, source="refund")
+            # Reverse the wallet grant this invoice made — else the customer keeps the credits the
+            # refunded money bought. A partial refund reverses only if the operator opted in.
+            await self._claw_back(inv, partial=not fully)
+            if fully and pay.status != "refunded":
+                pay.status = "refunded"
+                await self._payments.save(pay)
+            if self._events is not None:
+                # A consumer that granted something on payment.succeeded needs to know to take it
+                # back. Without this, a refunded customer keeps whatever the payment bought.
+                await self._events.emit(_events.PAYMENT_REFUNDED, {
+                    **_events.payment_payload(inv, payment_id=pay.id, source="refund"),
+                    "amount_minor": refund_amt,
+                })
+        else:
+            # No invoice (shouldn't happen): the claim still deduped the gateway call.
             pay.status = "refunded"
             await self._payments.save(pay)
-            if inv:
-                is_partial = refund_amt < outstanding
-                # Record the amount that went BACK, so "what the shop kept paying" is answerable
-                # (total_minor - refunded_minor). A PARTIAL refund no longer voids the whole invoice —
-                # the shop kept the rest, and voiding it charged commission on nothing or excluded a
-                # still-paid invoice; only a full refund (refunded reaching the total) voids it.
-                inv.refunded_minor = (inv.refunded_minor or 0) + refund_amt
-                inv.credit_note = True
-                if inv.refunded_minor >= inv.total_minor:
-                    inv.status = "void"
-                    inv.voided_at = iso()       # WHEN it fully voided — for dispute timelines
-                await self._invoices.save(inv)
-                await self._ledger.record(tenant=inv.tenant, kind="refund",
-                                          amount_minor=-refund_amt,
-                                          currency=inv.currency, invoice_id=inv.id, source="refund")
-                # Reverse the wallet grant this invoice made — else the customer keeps the credits
-                # the refunded money bought. A partial refund reverses only if the operator opted in.
-                await self._claw_back(inv, partial=is_partial)
-                if self._events is not None:
-                    # A consumer that granted something on payment.succeeded needs to know to take
-                    # it back. Without this, a refunded customer keeps whatever the payment bought.
-                    await self._events.emit(_events.PAYMENT_REFUNDED, {
-                        **_events.payment_payload(inv, payment_id=pay.id, source="refund"),
-                        "amount_minor": refund_amt,
-                    })
-        return {"ok": charge.ok, "status": charge.status}
+        result = {"ok": True, "status": charge.status}
+        await self._idempo.mark(rkey, result)    # a duplicate replays THIS, never a second refund
+        return result
 
     async def prepare_checkout(self, *, amount_minor: int, currency: str = "", reference: str = "",
                                return_url: str = "", metadata: dict | None = None) -> dict[str, Any]:
