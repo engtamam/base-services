@@ -325,7 +325,9 @@ def test_something_irreversible_is_recorded_not_silently_skipped():
              irreversible_reason="an email cannot be unsent"),
         Step(name="later", do=fail),
     ]).run())
-    assert out.residue == [{"step": "send_email", "why": "an email cannot be unsent"}]
+    # residue now carries the created resource REFERENCE so an operator can locate the orphan (r2-08)
+    assert out.residue == [{"step": "send_email", "why": "an email cannot be unsent",
+                            "reference": "sent"}]
 
 
 def test_a_failing_undo_produces_a_resumable_work_list():
@@ -442,7 +444,8 @@ def test_an_irreversible_step_is_recorded_as_residue():
         {"kind": "tenant"},
         {"kind": "email", "irreversible": "an email cannot be unsent"},
         {"kind": "membership"}]))
-    assert out["residue"] == [{"step": "email", "why": "an email cannot be unsent"}]
+    assert out["residue"] == [{"step": "email", "why": "an email cannot be unsent",
+                               "reference": "email-1"}]
 
 
 def test_a_failed_compensation_is_resumable_and_drains():

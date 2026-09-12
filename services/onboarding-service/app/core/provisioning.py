@@ -65,16 +65,32 @@ class ProvisioningService:
         for spec in steps:
             saga_steps.append(self._step(tenant, subject, spec))
 
-        outcome = await Saga(saga_steps, telemetry=self._telemetry).run()
-        record = {
-            "id": self._run_key(tenant, subject),
-            "tenant": tenant, "subject": subject,
-            "at": self._clock.now(),
-            **outcome.to_dict(),
-        }
-        # Persisted whether it succeeded or not: a failed run with unfinished compensation is the
-        # work list someone has to come back to, and an unrecorded failure is one nobody can find.
-        await self._store.put("provisioning_runs", record["id"], record)
+        run_key = self._run_key(tenant, subject)
+        # SERIALIZE per (tenant, subject): two concurrent /provision runs for the same subject used to
+        # interleave, and one run's compensation could tear down a resource the other had just
+        # confirmed (onboarding-r2-01). An atomic advisory lock (cas insert-if-absent) admits one; a
+        # second concurrent run is refused rather than corrupting the first.
+        if not await self._store.cas("provisioning_locks", run_key, 0,
+                                     {"id": run_key, "at": self._clock.now()}):
+            return {"ok": False, "error": "provisioning_in_progress", "completed": [],
+                    "compensated": [], "residue": [], "unfinished": []}
+        try:
+            outcome = await Saga(saga_steps, telemetry=self._telemetry).run()
+            record = {
+                "id": run_key,
+                "tenant": tenant, "subject": subject,
+                "at": self._clock.now(),
+                **outcome.to_dict(),
+            }
+            # MERGE, don't blind-overwrite: a prior run's still-unfinished compensation / residue is a
+            # work list nobody has cleared yet; a later clean run must not erase it (onboarding-r2-02).
+            # Carry forward prior entries whose step this run did not itself complete/compensate.
+            record = await self._merge_run_record(run_key, record)
+            # Persisted whether it succeeded or not: a failed run with unfinished compensation is the
+            # work list someone has to come back to, and an unrecorded failure is one nobody can find.
+            await self._store.put("provisioning_runs", record["id"], record)
+        finally:
+            await self._store.delete("provisioning_locks", run_key)
 
         if not outcome.ok and self._auditor is not None:
             await self._auditor.record(
@@ -83,6 +99,26 @@ class ProvisioningService:
                           "compensated": outcome.compensated,
                           "unfinished": [u["step"] for u in outcome.unfinished],
                           "residue": [r["step"] for r in outcome.residue]})
+        return record
+
+    async def _merge_run_record(self, run_key: str, record: dict[str, Any]) -> dict[str, Any]:
+        """Union a prior run's still-open unfinished/residue entries into this run's record, dropping
+        any whose step THIS run has since completed or compensated (onboarding-r2-02). A later clean
+        run therefore never erases an earlier run's outstanding cleanup queue."""
+        prior = await self._store.get("provisioning_runs", run_key)
+        if not prior:
+            return record
+        done = set(record.get("completed", [])) | set(record.get("compensated", []))
+
+        def _carry(field: str) -> list[dict[str, str]]:
+            merged = {e.get("step"): e for e in (prior.get(field) or []) if e.get("step") not in done}
+            for e in record.get(field) or []:          # this run's view wins for a step it touched
+                merged[e.get("step")] = e
+            return list(merged.values())
+
+        record = dict(record)
+        record["unfinished"] = _carry("unfinished")
+        record["residue"] = _carry("residue")
         return record
 
     def _step(self, tenant: str, subject: str, spec: dict[str, Any]) -> Step:

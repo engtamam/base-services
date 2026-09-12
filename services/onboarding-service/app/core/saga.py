@@ -114,6 +114,9 @@ class Saga:
                 outcome.residue.append({
                     "step": step.name,
                     "why": step.irreversible_reason or "no undo defined for this action",
+                    # The created resource's REFERENCE, so an operator can actually LOCATE the orphan
+                    # this irreversible step left behind — not just its step name (onboarding-r2-08).
+                    "reference": step.result or "",
                 })
                 continue
             try:

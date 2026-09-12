@@ -39,6 +39,7 @@ from app.ports.entitlement import ALREADY, FAILED, GRANTED, REFUSED, GrantReques
 ONCE_PER_TENANT = "tenant"
 ONCE_PER_SUBJECT = "subject"
 ONCE_PER_VERIFIED = "verified_identity"
+ONCE_PER_NONE = "none"          # "granted every time" — no uniqueness constraint (a per-call key)
 WEAK_KEYS = (ONCE_PER_TENANT, ONCE_PER_SUBJECT)
 
 
@@ -132,6 +133,11 @@ class GrantService:
         scope so this service's ledger cannot be used to test whether a given identity exists
         elsewhere on the platform.
         """
+        if once_per in ("", ONCE_PER_NONE):
+            # "granted every time": a per-call key that never collides, so the grant always issues
+            # instead of being silently refused (onboarding-r2-07) — the validator permits this case.
+            import uuid
+            return f"call:{uuid.uuid4().hex}"
         if once_per == ONCE_PER_VERIFIED:
             ref = claim_ref or await self._lookup_identity(tenant, subject)
             if not ref:
