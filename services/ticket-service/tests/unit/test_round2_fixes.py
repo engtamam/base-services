@@ -28,10 +28,13 @@ class _Interleave(MemoryDataStore):
         return await super().get(collection, key)
 
 
-def _svc(st=None):
+_TYPES_CAP = [{**_TYPES[0], "reply_capability": "tickets.agent"}]
+
+
+def _svc(st=None, types=None):
     st = st or MemoryDataStore()
     return st, TicketService(tickets=TicketStore(st), events=EventStore(st),
-                             workflow=WorkflowRegistry.from_config(_TYPES), pii_salt=SALT)
+                             workflow=WorkflowRegistry.from_config(types or _TYPES), pii_salt=SALT)
 
 
 async def _events(st, ticket_id):
@@ -99,3 +102,24 @@ def test_inbound_idempotency_is_tenant_scoped():
     b = run(bridge.ingest(InboundMessage(channel="whatsapp", tenant="globex", sender="s2",
                                          external_id="shared", text="hi", timestamp=1.0)))
     assert a == "created" and b == "created"              # tenant B not dropped as a duplicate of A
+
+
+# r2-07 — the per-type reply capability is enforced in the CORE reply(), for every caller with caps.
+def test_reply_capability_enforced_in_core():
+    from app.core.ticket_service import ReplyForbidden
+    st, svc = _svc(types=_TYPES_CAP)
+    t = run(svc.open(tenant="acme", type="support", subject="hi", body="b", raiser="cust"))
+    # a caller without the type's reply_capability is refused, wherever it calls from
+    try:
+        run(svc.reply(tenant="acme", ticket_id=t.id, author="x", body="hello",
+                      caps={"tickets.self"}))
+        assert False, "expected ReplyForbidden"
+    except ReplyForbidden:
+        pass
+    # with the capability it succeeds
+    ok = run(svc.reply(tenant="acme", ticket_id=t.id, author="x", body="hello",
+                       caps={"tickets.agent"}))
+    assert ok is not None
+    # an operator is always allowed; a caps-less trusted path (grantee/inbound) is exempt by design
+    run(svc.reply(tenant="acme", ticket_id=t.id, author="op", body="hi", is_operator=True))
+    run(svc.reply(tenant="acme", ticket_id=t.id, author="cust", body="mine", by="customer"))

@@ -313,20 +313,25 @@ async def list_shared_tickets(request: Request, tenant: str, grantee: str,
                              "reason": "no active consent grant for this grantee"}, status_code=409)
     tickets, _, _ = _stores(request)
     cap = settings.TICKET_SHARE_LIST_MAX
+    max_pages = max(1, settings.TICKET_SHARE_MAX_PAGES)
     # PAGE the tenant's tickets applying grant.covers as a post-filter, until we have cap+1 covered
-    # rows or the tenant is exhausted. The old single find(limit=cap+1) filtered ONE page: if the
-    # first cap+1 tickets were mostly outside the grant's scope, a covered ticket sitting past that
-    # page was silently invisible to the grantee (an under-read, not a leak) and `truncated` lied.
+    # rows OR the per-request page BUDGET is spent OR the tenant is exhausted. The budget keeps a
+    # narrow grant over a huge tenant from paging the WHOLE tenant per request (O(tenant rows), a DoS
+    # — ticket-r2-05); when it is hit we return `truncated` + a continuation `cursor` the caller resumes
+    # from, so coverage stays complete across requests without an unbounded single read.
     covered: list[dict] = []
-    cursor: str | None = None
-    while len(covered) <= cap:
+    cursor: str | None = request.query_params.get("cursor") or None
+    pages = 0
+    while len(covered) <= cap and pages < max_pages:
         page, cursor = await tickets.find(tenant=tenant, limit=cap + 1, after=cursor)
         covered.extend(r for r in page if grant.covers(r))
+        pages += 1
         if not cursor:
             break
-    truncated = len(covered) > cap
+    truncated = len(covered) > cap or bool(cursor)
     return {"tenant": tenant, "grantee": grantee,
-            "tickets": [_project(r) for r in covered[:cap]], "truncated": truncated}
+            "tickets": [_project(r) for r in covered[:cap]], "truncated": truncated,
+            "cursor": cursor or ""}
 
 
 @router.get("/tickets/{ticket_id}", dependencies=[Depends(require_internal_token)])

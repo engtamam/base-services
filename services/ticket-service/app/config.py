@@ -186,6 +186,11 @@ class Settings(BaseSettings):
     # Scoped ticket sharing (core/share.py): the most tickets one grantee's internal read returns per
     # tenant — a bounded read, never a scan; a `truncated` flag makes a larger history loud, not silent.
     TICKET_SHARE_LIST_MAX: int = 200
+    # Cap the pages a single shared-list read may scan when the grant scope is narrow — otherwise a
+    # grantee whose grant covers few of a large tenant's tickets pages the ENTIRE tenant per request
+    # (O(tenant rows), a DoS). Past the budget the read stops, returns `truncated` + a continuation
+    # `cursor`, and the caller resumes.
+    TICKET_SHARE_MAX_PAGES: int = 20
     # Default lifetime of a consent grant when the caller sets none. Ships as 90 days so consent
     # LAPSES by default — "forever" must be an explicit, audited choice (0), not the silent default a
     # data subject never agreed to (ticket-r2-08). A platform can still set 0 to opt into no-expiry.

@@ -40,6 +40,10 @@ class TransitionForbidden(TicketError):
     """The caller lacks the capability this transition requires."""
 
 
+class ReplyForbidden(TicketError):
+    """The caller lacks the per-type reply capability this ticket type requires."""
+
+
 class TicketNotFound(TicketError):
     """No such ticket in this tenant (same answer as 'in another tenant' — never leak existence)."""
 
@@ -101,9 +105,19 @@ class TicketService:
         raise InvalidTransition(f"{ticket_id}: concurrent updates could not converge")
 
     async def reply(self, *, tenant: str, ticket_id: str, author: str, body: str,
-                    is_operator: bool = False, by: str = "") -> Ticket:
+                    is_operator: bool = False, by: str = "",
+                    caps: set[str] | None = None) -> Ticket:
         t = await self._fetch(tenant, ticket_id)
         tt = self._wf.require(t.type)
+        # Per-type reply capability enforced HERE, in the core, so every JWT-authenticated path is
+        # judged by the same rule (ticket-r2-07) rather than only the user route. An operator is always
+        # allowed. Callers that authenticate by a JWT pass their `caps`; the grantee path (authorized by
+        # a writable consent grant) and the inbound path (the customer on their own ticket) pass
+        # caps=None and are exempt by design — their authorization is the grant / customer identity.
+        if caps is not None and not is_operator:
+            needed = tt.reply_capability
+            if needed and needed not in caps:
+                raise ReplyForbidden(f"reply to a {t.type!r} ticket requires {needed!r}")
         # ALWAYS pseudonymize the actor into the immutable, hash-chained event log — operators included
         # (ticket-r2-02). The `by` label below carries the role for KPIs, so no raw identity is needed.
         actor_ref = self.pseudonym(tenant, author)
@@ -117,11 +131,6 @@ class TicketService:
         await self._tickets.save(t)
         await self._after(t, tt, "replied", actor_ref=actor_ref, body=body)
         return t
-
-    def reply_capability_for(self, type: str) -> str:
-        """The capability a caller must hold to add a reply to a ticket of this type (config-driven,
-        per workflow). Enforced at the reply route — it was parsed but never checked."""
-        return self._wf.require(type).reply_capability
 
     # ── transition ──────────────────────────────────────────────────────────────
     async def transition(self, *, tenant: str, ticket_id: str, to: str, actor: str,

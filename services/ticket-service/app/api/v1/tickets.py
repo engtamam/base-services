@@ -20,8 +20,8 @@ from app.api.authz import require_any_capability
 from app.api.ratelimit import rate_limit
 from app.config import get_settings
 from app.core.stores import EventStore, TicketStore
-from app.core.ticket_service import (InvalidTransition, RequiredFieldMissing, TicketNotFound,
-                                     TicketService, TransitionForbidden, UnknownType)
+from app.core.ticket_service import (InvalidTransition, ReplyForbidden, RequiredFieldMissing,
+                                     TicketNotFound, TicketService, TransitionForbidden, UnknownType)
 
 from app.core.pii import subject_ref
 
@@ -200,15 +200,16 @@ async def reply_ticket(request: Request, ticket_id: str, body: ReplyIn,
     # "tickets.self"). It was parsed but never enforced — a non-operator raiser could reply to a type
     # its workflow restricts. An operator (tickets.manage) is always allowed; anyone else must hold
     # the type's declared capability.
-    if not operator:
-        needed = svc.reply_capability_for(t.type)
-        if needed and needed not in set(principal.caps or ()):
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "FORBIDDEN")
     await request.app.state.auditor.record(
         "ticket.replied", actor=_actor(principal, tenant), tenant=tenant, resource=f"ticket:{ticket_id}",
         ip=request.client.host if request.client else "")
-    t = await svc.reply(tenant=tenant, ticket_id=ticket_id, author=principal.subject,
-                        body=body.body, is_operator=operator)
+    # The per-type reply-capability rule now lives in TicketService.reply (ticket-r2-07): pass the
+    # caller's caps and let the core enforce it, so this path and any other are judged identically.
+    try:
+        t = await svc.reply(tenant=tenant, ticket_id=ticket_id, author=principal.subject,
+                            body=body.body, is_operator=operator, caps=set(principal.caps or ()))
+    except ReplyForbidden:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "FORBIDDEN")
     return t.public()
 
 
