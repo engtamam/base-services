@@ -28,13 +28,27 @@ class SearchErasure:
     service = "search-service"
     category = "search_index"
 
-    def __init__(self, *, store, index, pii_salt: str) -> None:
+    def __init__(self, *, store, index, pii_salt: str, cache=None) -> None:
         self._store = store
         # The index engine: delete(index, doc_id, tenant) scrubs the doc row AND its inverted-index
         # postings AND the meta counters. Deleting only the raw row (the old bug) left the person's
         # terms in `search_postings`, still returned by search.
         self._index = index
         self._salt = pii_salt
+        self._cache = cache
+
+    async def _bump_generation(self, tenant: str) -> None:
+        # Search results are cached per (tenant, generation). Deleting the docs is not enough: cached
+        # result pages built before the erasure keep serving the person's data until cache_ttl expires
+        # (search-r2-02). Bumping the tenant's generation invalidates every cached page at once —
+        # the same mechanism SearchService uses after an index/delete.
+        if self._cache is None:
+            return
+        try:
+            g = await self._cache.get(f"searchgen:{tenant}")
+            await self._cache.set(f"searchgen:{tenant}", str(int(g or 0) + 1), None)
+        except Exception:
+            pass
 
     async def erase(self, tenant: str, subject: str) -> dict[str, Any]:
         ref = subject_ref(self._salt, tenant, subject)
@@ -50,6 +64,8 @@ class SearchErasure:
                 # tenant is passed so a cross-tenant record under a shared (index, id) is never touched.
                 await self._index.delete(index=r["index"], doc_id=r["id"], tenant=tenant)
                 deleted += 1
+        if deleted:
+            await self._bump_generation(tenant)
 
         return {
             "service": self.service,

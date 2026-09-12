@@ -17,6 +17,13 @@ class DataStore(Protocol):
 
     async def delete(self, collection: str, key: str) -> bool: ...
 
+    async def cas(self, collection: str, key: str, expected_version: int,
+                  value: dict[str, Any]) -> bool:
+        """Compare-and-set on `value["version"]`. True if written, False if raced. expected_version=0
+        is an atomic insert-if-absent. Makes a read-modify-write (posting lists, meta counters)
+        lose-safe under concurrent indexing."""
+        ...
+
     async def find(
         self,
         collection: str,

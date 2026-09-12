@@ -27,14 +27,21 @@
       "DeleteIn": {
         "properties": {
           "id": {
+            "maxLength": 256,
+            "minLength": 1,
             "title": "Id",
             "type": "string"
           },
           "index": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._-]+$",
             "title": "Index",
             "type": "string"
           },
           "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
             "title": "Tenant",
             "type": "string"
           }

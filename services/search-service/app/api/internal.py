@@ -38,9 +38,11 @@ class BulkIn(BaseModel):
 
 
 class DeleteIn(BaseModel):
-    index: str
-    id: str
-    tenant: str
+    # Same bounds as IndexIn: an internal twin must validate identically to the user model, or an
+    # unbounded index/id/tenant slips past the checks its sibling enforces (search-r2-12).
+    index: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._-]+$")
+    id: str = Field(min_length=1, max_length=256)
+    tenant: str = Field(min_length=1, max_length=128)
 
 
 class QueryIn(BaseModel):
@@ -187,5 +189,6 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     s = get_settings()
     # The index engine so erase scrubs the doc row AND its postings AND meta (not just a raw row that
     # left the person's terms searchable) — and enforces tenant on each delete.
-    eraser = SearchErasure(store=c.datastore, index=build_search(request)._index, pii_salt=s.PII_SALT)
+    eraser = SearchErasure(store=c.datastore, index=build_search(request)._index, pii_salt=s.PII_SALT,
+                           cache=c.cache)
     return await eraser.erase(body.tenant, body.subject)

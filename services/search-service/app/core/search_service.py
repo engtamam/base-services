@@ -12,12 +12,15 @@ Security & correctness centre of the service:
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from app.core import analyzer, cursor as _cursor, query as _query, ranking
 from app.core.analyzer import edit_distance_le1
 from app.core.models import Document
 from app.ports.search_index import IndexUnavailable
+
+_log = logging.getLogger("search.cache")
 
 
 class SearchService:
@@ -46,7 +49,11 @@ class SearchService:
             g = await self._cache.get(f"searchgen:{tenant}")
             await self._cache.set(f"searchgen:{tenant}", str(int(g or 0) + 1), None)
         except Exception:
-            pass
+            # A DROPPED generation bump means writes stay invisible behind cached pages until TTL —
+            # a stale-serving window that used to be entirely silent. Never fail the write on a cache
+            # outage, but make the window OBSERVABLE (search-r2-09).
+            _log.warning("search generation bump dropped for tenant=%s — cache unavailable; "
+                         "results may be stale until cache_ttl", tenant)
 
     # ── indexing ────────────────────────────────────────────────────────────────
     async def index(self, *, index: str, doc_id: str, tenant: str, fields: dict[str, Any],
@@ -76,13 +83,22 @@ class SearchService:
         return {"deleted": True, "id": doc_id}
 
     async def bulk(self, tenant: str, docs: list[dict]) -> dict:
-        n = 0
+        # Per-document result, never an all-or-nothing 500: one bad doc (e.g. a CrossTenantConflict)
+        # used to abort the loop AFTER earlier docs were already indexed — a partial index the caller
+        # could not tell from a clean failure, and unsafe to blindly retry (search-r2-11). Now every
+        # doc is attempted and failures are reported by id, so a retry of only the failed ids is safe.
+        indexed = 0
+        errors: list[dict[str, str]] = []
         for d in docs:
-            await self.index(index=d["index"], doc_id=d["id"], tenant=tenant,
-                             fields=d.get("fields") or {}, owner=d.get("owner", ""),
-                             boosts=d.get("boosts"), created=d.get("created", 0.0))
-            n += 1
-        return {"indexed": n}
+            doc_id = str(d.get("id", ""))
+            try:
+                await self.index(index=d["index"], doc_id=doc_id, tenant=tenant,
+                                 fields=d.get("fields") or {}, owner=d.get("owner", ""),
+                                 boosts=d.get("boosts"), created=d.get("created", 0.0))
+                indexed += 1
+            except Exception as exc:  # noqa: BLE001 — report the failure, do not abort the batch
+                errors.append({"id": doc_id, "error": type(exc).__name__})
+        return {"indexed": indexed, "failed": errors}
 
     # ── search (HOT PATH) ────────────────────────────────────────────────────────
     async def search(self, *, index: str, tenant: str, text: str = "", filters: Any = None,
@@ -131,6 +147,11 @@ class SearchService:
             doc_freq[term] = len(postings)
             for doc_id, tf in postings.items():
                 candidate_tf.setdefault(doc_id, {})[term] = tf
+                # Check the cap INSIDE the inner loop: a single high-frequency term's posting list can
+                # be huge, and the old outer-only check let ONE such term add every doc_id (then one
+                # get per candidate below) before the cap was consulted — an unbounded fan-out DoS.
+                if len(candidate_tf) >= cap:
+                    break
             if len(candidate_tf) >= cap:
                 break
 
@@ -207,10 +228,11 @@ class SearchService:
         p = pterms[-1]
         typo = self._cfg["typo_tolerance"]
         seen: set[str] = set()
-        # scan candidate docs (bounded by list_limit) — cheap for a control-panel autocomplete
-        docs = await self._index.iter_docs(index=index, limit=self._cfg["list_limit"])
+        # tenant-scoped candidate docs (O(this tenant's rows), not a global window that a hot other
+        # tenant could starve — search-r2-05)
+        docs = await self._index.iter_docs(index=index, tenant=tenant, limit=self._cfg["list_limit"])
         for rec in docs:
-            if rec.get("tenant") != tenant:                # tenant-scoped suggestions too
+            if rec.get("tenant") != tenant:                # defence in depth: engine already scoped
                 continue
             for value in (rec.get("fields") or {}).values():
                 if not isinstance(value, str):

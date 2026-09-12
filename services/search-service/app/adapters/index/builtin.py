@@ -28,6 +28,7 @@ class CrossTenantConflict(ValueError):
 
 class BuiltinIndex:
     driver = "builtin"
+    _CAS_RETRIES = 8
 
     def __init__(self, store: DataStore) -> None:
         self._store = store
@@ -40,6 +41,29 @@ class BuiltinIndex:
     def _pk(index: str, term: str) -> str:
         return f"{index}:{term}"
 
+    @staticmethod
+    def _docs_of(row: dict | None) -> dict[str, float]:
+        """The {doc_id: tf} map of a posting row. Rows are stored as {"docs": {...}, "version": n};
+        a legacy flat row ({doc_id: tf, ...}) is read by stripping the reserved `version` field."""
+        if not row:
+            return {}
+        if "docs" in row:
+            return dict(row["docs"])
+        return {k: v for k, v in row.items() if k != "version"}
+
+    async def _cas_update(self, collection: str, key: str, mutate, default: dict) -> None:
+        """Atomic read-modify-write via the store CAS. `mutate(current)` returns the new value (minus
+        the version, which the CAS assigns). Retries on a lost race; without this two concurrent
+        indexers each read a posting/meta row and the second overwrote the first — a document silently
+        dropped from a term (search-r2-03) or n_docs/total_len drift skewing BM25 (search-r2-04)."""
+        for _ in range(self._CAS_RETRIES):
+            row = await self._store.get(collection, key)
+            expected = int(row.get("version", 0)) if row else 0
+            new = mutate(row if row is not None else dict(default))
+            if await self._store.cas(collection, key, expected, new):
+                return
+        raise RuntimeError(f"{collection}:{key} CAS exhausted under contention")
+
     async def _remove_existing(self, index: str, doc_id: str, *, tenant: str | None = None) -> None:
         old = await self._store.get(_DOCS, self._dk(index, doc_id))
         if not old:
@@ -50,14 +74,17 @@ class BuiltinIndex:
         if tenant is not None and old.get("tenant") != tenant:
             return
         for term in (old.get("_terms") or []):
-            row = await self._store.get(_POST, self._pk(index, term)) or {}
-            if doc_id in row:
-                del row[doc_id]
-                await self._store.put(_POST, self._pk(index, term), row)
-        meta = await self._store.get(_META, index) or {"n_docs": 0, "total_len": 0.0}
-        meta["n_docs"] = max(0, int(meta["n_docs"]) - 1)
-        meta["total_len"] = max(0.0, float(meta["total_len"]) - float(old.get("doc_len", 0)))
-        await self._store.put(_META, index, meta)
+            await self._cas_update(
+                _POST, self._pk(index, term),
+                lambda row: {"docs": {k: v for k, v in self._docs_of(row).items() if k != doc_id}},
+                {"docs": {}})
+        dl = float(old.get("doc_len", 0))
+        await self._cas_update(
+            _META, index,
+            lambda m: {**{k: v for k, v in m.items() if k != "version"}, "index": index,
+                       "n_docs": max(0, int(m.get("n_docs", 0)) - 1),
+                       "total_len": max(0.0, float(m.get("total_len", 0)) - dl)},
+            {"n_docs": 0, "total_len": 0.0})
         await self._store.delete(_DOCS, self._dk(index, doc_id))
 
     async def upsert(self, *, index: str, doc_id: str, record: dict[str, Any],
@@ -71,14 +98,17 @@ class BuiltinIndex:
         stored = {**record, "_terms": sorted(weighted_tf.keys())}
         await self._store.put(_DOCS, self._dk(index, doc_id), stored)
         for term, tf in weighted_tf.items():
-            row = await self._store.get(_POST, self._pk(index, term)) or {}
-            row[doc_id] = tf
-            await self._store.put(_POST, self._pk(index, term), row)
-        meta = await self._store.get(_META, index) or {"n_docs": 0, "total_len": 0.0}
-        meta["index"] = index                          # carry the name so indexes can be enumerated
-        meta["n_docs"] = int(meta["n_docs"]) + 1
-        meta["total_len"] = float(meta["total_len"]) + float(record.get("doc_len", 0))
-        await self._store.put(_META, index, meta)
+            await self._cas_update(
+                _POST, self._pk(index, term),
+                lambda row, tf=tf: {"docs": {**self._docs_of(row), doc_id: tf}},
+                {"docs": {}})
+        dl = float(record.get("doc_len", 0))
+        await self._cas_update(
+            _META, index,
+            lambda m: {**{k: v for k, v in m.items() if k != "version"}, "index": index,
+                       "n_docs": int(m.get("n_docs", 0)) + 1,
+                       "total_len": float(m.get("total_len", 0)) + dl},
+            {"n_docs": 0, "total_len": 0.0})
 
     async def delete(self, *, index: str, doc_id: str, tenant: str | None = None) -> None:
         # tenant, when given, guards against deleting another tenant's doc under a shared (index, id).
@@ -88,19 +118,22 @@ class BuiltinIndex:
         return await self._store.get(_DOCS, self._dk(index, doc_id))
 
     async def postings(self, *, index: str, term: str) -> dict[str, float]:
-        return await self._store.get(_POST, self._pk(index, term)) or {}
+        return self._docs_of(await self._store.get(_POST, self._pk(index, term)))
 
     async def stats(self, *, index: str) -> dict[str, Any]:
         return await self._store.get(_META, index) or {"n_docs": 0, "total_len": 0.0}
 
-    async def iter_docs(self, *, index: str, limit: int) -> list[dict[str, Any]]:
-        # BOUNDED best-effort for autocomplete. This was `list(_DOCS, 1_000_000)` — a full scan of
-        # EVERY index and tenant (up to a million rows) on every keystroke suggest, then filtered in
-        # Python. There is no per-index doc index in the generic kv store, so suggest scans; bounding
-        # the read at `_SUGGEST_SCAN` caps the cost. Suggest is a convenience, so best-effort coverage
-        # of a hot index is the right trade — never a million-row read behind an autocomplete.
-        rows = [r for r in await self._store.list(_DOCS, _SUGGEST_SCAN) if r.get("index") == index]
-        return rows[:limit]
+    async def iter_docs(self, *, index: str, tenant: str, limit: int) -> list[dict[str, Any]]:
+        # Autocomplete corpus for ONE (index, tenant). Was a global `list(_DOCS)` window filtered by
+        # index only, with the tenant filter applied AFTER — so a hot index shared across tenants
+        # filled the scan window with another tenant's rows and starved a small tenant's suggestions
+        # to empty (search-r2-05). A tenant-scoped equality find() is O(that tenant's rows) and cannot
+        # be starved by another tenant's volume.
+        rows, _ = await self._store.find(_DOCS, {"index": index, "tenant": tenant},
+                                         limit=min(int(limit) if limit else _SUGGEST_SCAN,
+                                                   _SUGGEST_SCAN),
+                                         sort=("id", "asc"))
+        return rows
 
     async def list_indexes(self, *, limit: int) -> list[dict[str, Any]]:
         # The meta collection holds one small row per index; enumerating it IS the catalogue read,

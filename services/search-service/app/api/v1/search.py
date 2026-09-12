@@ -43,7 +43,11 @@ def build_search(request: Request) -> SearchService:
 
 def _tenant(p: Principal) -> str:
     # HARD isolation: the search tenant ALWAYS comes from the caller's identity, never the body.
-    return p.tenant or "__none__"
+    # A principal with no resolved tenant is REFUSED, not collapsed into a shared "__none__" scope
+    # where every tenantless caller would read and write one another's documents (search-r2-10).
+    if not p.tenant:
+        raise HTTPException(status_code=403, detail="NO_TENANT_SCOPE")
+    return p.tenant
 
 
 class SearchIn(BaseModel):
