@@ -24,13 +24,47 @@ from app.ports.fatoora_client import FatooraUnavailable
 from app.ports.zatca_signer import SignerUnavailable
 
 
+class ZatcaInputError(ValueError):
+    """The invoice payload is malformed (a bad line amount or currency). A PERMANENT caller error the
+    route maps to 422 — distinct from a transient signer/gateway failure, which stays retryable. It is
+    raised BEFORE an ICV slot is allocated, so a malformed request never burns a chain slot."""
+
+
+def _validate_invoice_input(invoice_in: dict, default_currency: str) -> None:
+    """Fail a malformed payload loudly and early, before any slot is reserved.
+
+    build_ubl() coerces `amount_minor` with int() and rejects a non-3-letter currency by raising
+    ValueError mid-build — which, left uncaught, surfaced as an unhandled 500 that contradicted the
+    'finalize never fails the caller' guarantee. Checking the same shape here turns it into a clean
+    422 and, crucially, does it before allocate_slot so a bad request cannot consume an ICV.
+    """
+    cur = str(invoice_in.get("currency", default_currency) or default_currency).upper()
+    if not (len(cur) == 3 and cur.isalpha()):
+        raise ZatcaInputError(f"invalid currency code: {invoice_in.get('currency')!r}")
+    lines = invoice_in.get("lines")
+    if not isinstance(lines, list) or not lines:
+        raise ZatcaInputError("invoice has no lines")
+    for i, ln in enumerate(lines):
+        if not isinstance(ln, dict) or "amount_minor" not in ln:
+            raise ZatcaInputError(f"line {i}: missing amount_minor")
+        try:
+            int(ln["amount_minor"])
+        except (TypeError, ValueError):
+            raise ZatcaInputError(f"line {i}: amount_minor is not an integer") from None
+
+
 class ZatcaService:
     def __init__(self, *, invoices: InvoiceStore, settings: SettingsStore, signer, fatoora,
                  qr, vat_rate: str, currency: str, retry: dict[str, int], list_limit: int = 100,
-                 validate_before_submit: bool = False) -> None:
+                 validate_before_submit: bool = False, signer_provider=None) -> None:
         self._inv = invoices
         self._set = settings
         self._signer = signer
+        # Resolve the signer PER TENANT at sign time. The old design built one signer from the
+        # request's tenant (or "") and reused it for every invoice — so a multi-tenant sweep signed
+        # every tenant with one token, and a per-tenant ZATCA_SIGNER_TOKEN set by an operator was
+        # never consulted. With a provider, each invoice is signed with ITS tenant's credential.
+        self._signer_provider = signer_provider
         self._fatoora = fatoora
         self._qr = qr
         self._vat_rate = vat_rate
@@ -41,6 +75,11 @@ class ZatcaService:
 
     # ── issuance ────────────────────────────────────────────────────────────────
     async def finalize(self, invoice_in: dict, tenant: str) -> dict[str, Any]:
+        # Validate the payload BEFORE reserving an ICV: a malformed line or currency is a permanent
+        # caller error (422), and reserving a slot for one would burn a chain ICV that can never be
+        # signed. Only runs on the fresh path — a retry re-enters with the draft already built.
+        if not (await self._inv.by_number(tenant, str(invoice_in["number"]))):
+            _validate_invoice_input(invoice_in, self._currency)
         simplified = not (invoice_in.get("buyer") or {}).get("vat_number")
         itype = "simplified" if simplified else "standard"
         inv, _created = await self._inv.allocate_slot(tenant, str(invoice_in["number"]), itype)
@@ -69,9 +108,17 @@ class ZatcaService:
 
     async def _sign(self, inv: ZatcaInvoice, secrets: dict) -> bool:
         d = inv.draft
+        # Per-tenant signer: resolve this invoice's tenant credential rather than a request-wide one.
+        signer = self._signer
+        if self._signer_provider is not None:
+            try:
+                signer = await self._signer_provider(inv.tenant)
+            except Exception:  # noqa: BLE001 — a credential resolution failure must not 500 a filing
+                await self._defer(inv, "signer credential unavailable")
+                return False
         try:
             signed = await asyncio.to_thread(                 # blocking SDK signer OFF the event loop
-                self._signer.sign,
+                signer.sign,
                 invoice_xml=d["unsigned_xml"], certificate_pem=secrets["certificate_pem"],
                 private_key_pem=secrets["private_key_pem"], seller_name=d["seller_name"],
                 vat_number=d["vat_number"], invoice_total=d["invoice_total"],

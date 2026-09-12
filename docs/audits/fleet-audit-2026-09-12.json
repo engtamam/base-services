@@ -1690,7 +1690,7 @@
       "issues": [
         {
           "id": "zatca-service-01",
-          "status": "OPEN",
+          "status": "NEEDS_DECISION",
           "category": "correctness",
           "severity": "high",
           "file": "app/core/stores.py",
@@ -1701,7 +1701,7 @@
         },
         {
           "id": "zatca-service-02",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "medium",
           "file": "app/api/v1/zatca.py",
@@ -1712,7 +1712,7 @@
         },
         {
           "id": "zatca-service-03",
-          "status": "OPEN",
+          "status": "NEEDS_DECISION",
           "category": "perf",
           "severity": "medium",
           "file": "app/core/stores.py",
@@ -1723,7 +1723,7 @@
         },
         {
           "id": "zatca-service-04",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "bug",
           "severity": "low",
           "file": "app/api/internal.py",

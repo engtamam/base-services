@@ -34,17 +34,25 @@ async def build_zatca(request: Request, tenant: str = "") -> ZatcaService:
     c = request.app.state.container
     s = get_settings()
     signer = c.zatca_signer
+    signer_provider = None
     creds = getattr(request.app.state, "signer_credentials", None)
     if creds is not None:
         from app.container import rebuild_signer
+        # `signer` is resolved for the request tenant (onboarding, which is single-tenant). For
+        # ISSUANCE, hand the service a PROVIDER so each invoice is signed with its OWN tenant's
+        # credential — a sweep spans tenants and finalize is per-invoice; a single request-tenant
+        # signer signed everyone with one token and ignored per-tenant operator overrides (audit-02).
         signer = rebuild_signer(s, await creds.token(tenant), c.zatca_signer)
+
+        async def signer_provider(t: str, _s=s, _creds=creds, _base=c.zatca_signer):
+            return rebuild_signer(_s, await _creds.token(t), _base)
     return ZatcaService(
         invoices=InvoiceStore(c.datastore), settings=SettingsStore(c.datastore, s.seal_key),
         signer=signer, fatoora=c.fatoora_client, qr=c.qr_renderer,
         vat_rate=s.VAT_RATE, currency=s.CURRENCY,
         retry={"base_ms": s.ZATCA_RETRY_BASE_MS, "max_ms": s.ZATCA_RETRY_MAX_MS,
                "max_attempts": s.ZATCA_RETRY_MAX_ATTEMPTS}, list_limit=s.ZATCA_LIST_LIMIT,
-        validate_before_submit=s.ZATCA_VALIDATE_BEFORE_SUBMIT)
+        validate_before_submit=s.ZATCA_VALIDATE_BEFORE_SUBMIT, signer_provider=signer_provider)
 
 
 def op_tenant(principal: Principal, body_tenant: str | None = None) -> str:
@@ -95,7 +103,7 @@ async def onboard_compliance(request: Request, body: OnboardIn, principal: Princ
         "zatca.onboarded_compliance", actor=principal.subject,
         tenant=op_tenant(principal, body.tenant), resource="csid",   # the tenant ACTUALLY onboarded
         ip=request.client.host if request.client else "")
-    svc = (await build_zatca(request))
+    svc = (await build_zatca(request, op_tenant(principal, body.tenant)))   # tenant signer credential
     try:
         return await svc.onboard_compliance(op_tenant(principal, body.tenant),
                                             otp=body.otp, csr_meta=body.csr_meta)
@@ -113,7 +121,8 @@ async def onboard_production(request: Request, principal: Principal = Depends(_A
     await request.app.state.auditor.record(
         "zatca.onboarded_production", actor=principal.subject, tenant=principal.tenant, resource="csid",
         ip=request.client.host if request.client else "")
-    return await (await build_zatca(request)).onboard_production(op_tenant(principal, tenant))
+    return await (await build_zatca(request, op_tenant(principal, tenant))).onboard_production(
+        op_tenant(principal, tenant))
 
 
 # ── invoices ──────────────────────────────────────────────────────────────────
