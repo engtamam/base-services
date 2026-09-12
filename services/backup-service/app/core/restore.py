@@ -290,12 +290,23 @@ class RestoreOrchestrator:
         try:
             status, body = await asyncio.to_thread(   # BLOCKING urlopen off the loop (see v0.18.3)
                 post_json, f"{base}/internal/backup/import",
-                {"archive": archive, "overwrite": True},
+                # prune: authoritative rollback. Overwrite alone restores changed rows but leaves the
+                # rows the wrong restore INSERTED; prune deletes keys absent from the snapshot so the
+                # target returns EXACTLY to its pre-restore state.
+                {"archive": archive, "overwrite": True, "prune": True},
                 token, allowed_hosts=allowed, timeout_seconds=timeout)
         except TargetUnreachable as exc:
             return TargetRestore(service, FAILED, reason=f"target unreachable during undo: {exc}")
         if not (200 <= status < 300):
             return TargetRestore(service, FAILED, reason=f"undo import returned {status}")
+        # A true rollback must also DELETE the rows the wrong restore inserted (prune). If the target
+        # ran an older import that silently ignored `prune` (no "pruned" field in the reply), the undo
+        # left those rows behind — it is NOT authoritative, so say so rather than report a clean undo.
+        if "pruned" not in body:
+            return TargetRestore(
+                service, FAILED, snapshot_key=snapshot_key,
+                reason="target does not support authoritative undo (prune): rows the restore "
+                       "inserted were not removed — upgrade the target's backup import")
         return TargetRestore(service, RESTORED, snapshot_key=snapshot_key,
                              inserted=int(body.get("inserted", 0)),
                              overwritten=int(body.get("overwritten", 0)))

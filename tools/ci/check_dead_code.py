@@ -96,6 +96,11 @@ ALLOWLIST: dict[str, str] = {
                                    "the service signs its outbound internal calls",
     "app/core/inbound_credentials.py": "defines the stored-name convention; tests construct with "
                                        "it and the pool parses it, so the pair cannot drift",
+    # _NoRedirect.redirect_request overrides urllib's HTTPRedirectHandler hook; the opener calls it
+    # DYNAMICALLY when a 3xx arrives, so no static caller exists — but removing it re-enables the
+    # default redirect-follow that leaks the internal token to an un-allowlisted host (backup-r2-03).
+    "app/core/internal_http.py": "redirect_request is urllib's redirect hook, called dynamically by "
+                                 "the opener; it fails closed on 3xx to stop token exfiltration",
 
     # ── the replicated operator-credential core ──────────────────────────────────────────────
     # secret_store.py and runtime_config.py are copied verbatim into every service that gains

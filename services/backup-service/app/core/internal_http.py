@@ -30,6 +30,22 @@ _METADATA_HOSTS = frozenset({"169.254.169.254", "fd00:ec2::254", "100.100.100.20
                              "metadata.google.internal"})
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse to follow 3xx. Only the INITIAL url is checked against the egress allowlist; the
+    default opener would then transparently follow a redirect to a NEW host — sending the internal
+    token (and the resolved operator secret in the assertion header) to an unchecked, possibly
+    attacker-controlled destination (SSRF / secret exfiltration). Fail closed."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401,A002
+        raise TargetUnreachable(
+            f"refused a {code} redirect to {newurl!r}: a token-bearing egress call must not follow "
+            f"redirects — the new host was never allow-listed")
+
+
+# One opener, redirects disabled, reused for every token-bearing call.
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def _check_host(url: str, allowed_hosts: frozenset[str]) -> str:
     parts = urllib.parse.urlparse(url)
     scheme = (parts.scheme or "").lower()
@@ -64,10 +80,12 @@ def post_json(url: str, payload: dict, token: str, *, allowed_hosts: frozenset[s
                  "Accept": "application/json", "X-Internal-Token": token,
                  **assertion_headers_for_url(url)})
     try:
-        with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:  # nosec B310 - allowlisted host
+        with _OPENER.open(req, timeout=timeout_seconds) as resp:  # nosec B310 - allowlisted host, redirects refused
             return resp.status, _parse(resp.read())
     except urllib.error.HTTPError as exc:
         return exc.code, _parse(exc.read())
+    except TargetUnreachable:
+        raise                                   # a refused redirect — keep its specific reason
     except Exception as exc:  # noqa: BLE001 — DNS, connect, timeout: all "unreachable this run"
         raise TargetUnreachable(f"{url}: {type(exc).__name__}") from exc
 

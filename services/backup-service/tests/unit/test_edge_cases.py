@@ -183,9 +183,16 @@ def test_a_per_tenant_export_pages_via_find_and_never_scans(monkeypatch):
 
     monkeypatch.setattr(st, "scan_all", _no_scan)
     seal, _ = B.make_sealer("k")
+    # Under a sufficient cap: every row, PAGED via find, without a scan_all.
     archive = run(B.export(st, _DECL, service="s", version="1", taken_at="t", seal=seal,
-                           tenant="big", scan_cap=100))
-    assert archive["row_counts"]["widgets"] == 1200    # every row, paged, without a scan
+                           tenant="big", scan_cap=2000))
+    assert archive["row_counts"]["widgets"] == 1200
+
+    # r2-05: the tenant path is BOUNDED too — over the cap it FAILS loudly rather than sealing a
+    # silently-truncated archive.
+    with pytest.raises(B.BackupError):
+        run(B.export(st, _DECL, service="s", version="1", taken_at="t", seal=seal,
+                     tenant="big", scan_cap=100))
 
 
 # ── 8. backup corrupted at rest: caught by the checksum, not the customer ─────

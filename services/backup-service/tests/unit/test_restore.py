@@ -78,7 +78,8 @@ def _register(st, service="billing"):
                                       token_ref="r")))
 
 
-def _fleet(*, on_import=lambda p: (200, {"inserted": 2, "overwritten": 0, "skipped": 0}),
+def _fleet(*, on_import=lambda p: (200, {"inserted": 2, "overwritten": 0, "skipped": 0,
+                                         "pruned": 0}),   # an upgraded target reports pruned
            on_export=lambda p: (200, _archive())):
     calls = []
 
@@ -223,9 +224,23 @@ def test_undo_reapplies_the_pre_restore_snapshot_with_overwrite():
 
     undo = run(_orch(st, objects, fleet).undo(restored["id"]))
     assert undo["restored"] == ["billing"] and undo["undoes"] == restored["id"]
-    # The undo import forces overwrite — it is putting back exactly what was there before.
+    # The undo import forces overwrite AND prune — putting back EXACTLY the prior state, including
+    # deleting rows the wrong restore inserted (backup-r2-01).
     undo_imports = [p for u, p in fleet.calls if u.endswith("/backup/import")]
     assert undo_imports[-1]["overwrite"] is True
+    assert undo_imports[-1]["prune"] is True
+
+
+def test_undo_against_a_target_that_ignores_prune_is_reported_as_failed_not_a_clean_undo():
+    # backup-r2-01: a target running an OLD import that silently ignores prune leaves the inserted
+    # rows behind. undo must NOT report a clean rollback — it fails loudly so the operator knows.
+    st, objects = MemoryDataStore(), _Objects()
+    _seed_run(st, objects, service="billing", verified=True)
+    _register(st, "billing")
+    old_target = _fleet(on_import=lambda p: (200, {"inserted": 2, "overwritten": 0}))  # no "pruned"
+    restored = run(_orch(st, objects, old_target).restore("run_1"))
+    undo = run(_orch(st, objects, old_target).undo(restored["id"]))
+    assert undo["restored"] == [] and undo["failed"] == ["billing"]
 
 
 def test_undo_of_an_unknown_restore_raises():
