@@ -17,6 +17,11 @@ class DataStore(Protocol):
 
     async def delete(self, collection: str, key: str) -> bool: ...
 
+    async def cas(self, collection: str, key: str, expected_version: int,
+                  value: dict[str, Any]) -> bool:
+        """Compare-and-set on value["version"]; expected_version=0 is atomic insert-if-absent."""
+        ...
+
     async def find(
         self,
         collection: str,

@@ -34,6 +34,7 @@ class Flag:
     archived: bool = False
     created: str = ""
     last_evaluated: float = 0.0            # drives stale-flag cleanup
+    version: int = 0                       # optimistic-lock counter for the write CAS (see FlagStore)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

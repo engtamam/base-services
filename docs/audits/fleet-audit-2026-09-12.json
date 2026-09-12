@@ -796,58 +796,63 @@
       "issues": [
         {
           "id": "feature-flag-service-01",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "perf",
           "severity": "high",
           "file": "app/core/flag_service.py",
           "line": 209,
           "title": "Blocking synchronous entitlement HTTP call on the async hot evaluation path freezes the event loop",
           "detail": "FlagService._entitled() calls self._ent.allowed(...) synchronously inside the async _resolve(). For the billing driver (BillingHttpEntitlement.allowed at app/adapters/entitlement/billing_http.py:25) this runs app/adapters/flag_http.py get_json -> urllib.request.urlopen with TIMEOUT=10 (flag_http.py:26). It is NOT offloaded via asyncio.to_thread/run_in_threadpool, so it blocks the single-worker event loop for up to 10s on the platform's highest-QPS path. This is the exact bug class the audit sink was already fixed for (audit_sink/http.py wraps urlopen in asyncio.to_thread; MEMORY 'Blocking sync in async'). The entitlement result is also not cached, so every evaluation of an entitlement-gated flag re-issues the blocking call, and evaluate_all() (flag_service.py:230) multiplies it by one blocking call per gated flag in the catalogue.",
-          "failure_scenario": "A tenant has an entitlement-gated flag and billing-service is slow/unreachable. A single POST /flags/evaluate (or /internal/flags/evaluate) with billing latency at the 10s timeout blocks the event loop for 10s per gated flag, stalling ALL concurrent requests (including /healthz) on that worker; evaluate_all with N gated flags serializes N such blocking calls in one request."
+          "failure_scenario": "A tenant has an entitlement-gated flag and billing-service is slow/unreachable. A single POST /flags/evaluate (or /internal/flags/evaluate) with billing latency at the 10s timeout blocks the event loop for 10s per gated flag, stalling ALL concurrent requests (including /healthz) on that worker; evaluate_all with N gated flags serializes N such blocking calls in one request.",
+          "resolution": "FIXED: _entitled offloads the blocking billing entitlement HTTP via asyncio.to_thread, off the async evaluation hot path. Enforced by safety:async-blocking."
         },
         {
           "id": "feature-flag-service-02",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "security",
           "severity": "medium",
           "file": "app/api/v1/flags.py",
           "line": 176,
           "title": "user-scope overrides are not tenant-restricted while tenant-scope overrides are, letting a non-platform admin override any user cross-tenant",
           "detail": "In set_override (flags.py:177-179) and clear_override (flags.py:197-199) the code deliberately clamps subject to the caller's own tenant for scope=='tenant' unless the caller holds 'platform.flags'. No equivalent restriction exists for scope=='user': any holder of flags.manage may set/clear an override for an ARBITRARY user id on a globally-shared flag. The presence of the tenant guard shows overrides are meant to be tenant-scoped for non-platform admins, so the missing user guard is an authorization gap. (Related: archive_flag, upsert_flag, put_config and set_maintenance require only _ADMIN=flags.manage with no tenant scoping at all, so a tenant-level flags.manage admin can also globally kill flags / mutate global config.)",
-          "failure_scenario": "A tenant admin holding flags.manage (no platform.flags) calls POST /flags/{key}/overrides with scope=user, subject=<a user id belonging to another tenant>, value=true — the override is accepted and applied to the shared flag, changing that other user's evaluation."
+          "failure_scenario": "A tenant admin holding flags.manage (no platform.flags) calls POST /flags/{key}/overrides with scope=user, subject=<a user id belonging to another tenant>, value=true — the override is accepted and applied to the shared flag, changing that other user's evaluation.",
+          "resolution": "FIXED: user-scope overrides now require platform.flags (a user id carries no tenant, so a tenant admin cannot be confined to their own users) — the missing half of the tenant-scope guard. Regression: test_flags_api_audit.py."
         },
         {
           "id": "feature-flag-service-03",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "medium",
           "file": "app/core/stores.py",
           "line": 112,
           "title": "ConfigStore.put increments the version with a non-atomic read-modify-write, losing a config version under concurrency",
           "detail": "put() reads the head (get _CONFIG), computes version = head.version + 1, then writes both _CONFIG_VERSIONS[key::env::version] and the head. There is no CAS/optimistic-concurrency check and the datastore put is last-writer-wins (memory.py put / postgres.py INSERT..ON CONFLICT DO UPDATE). Two concurrent puts (or a client retry racing the original) both read version N, both compute N+1, and both write to the SAME _CONFIG_VERSIONS key N+1 — one silently overwrites the other. This breaks the documented append-only/'never rewrites history' invariant and loses a config change while the caller receives a 200.",
-          "failure_scenario": "Two admins (or one admin's retried request) PUT /config/{key} concurrently: both read head version 3, both write config_versions key '<key>::<env>::4'; the second clobbers the first. History shows a single version 4 holding only one of the two values; the other change is lost with no error."
+          "failure_scenario": "Two admins (or one admin's retried request) PUT /config/{key} concurrently: both read head version 3, both write config_versions key '<key>::<env>::4'; the second clobbers the first. History shows a single version 4 holding only one of the two values; the other change is lost with no error.",
+          "resolution": "FIXED: ConfigStore.put CAS-retries the head (cas the head, then write the immutable version row), so concurrent puts never lose a version or collide. Added cas to the datastore. Regression: test_audit_fixes.py."
         },
         {
           "id": "feature-flag-service-04",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "low",
           "file": "app/core/flag_service.py",
           "line": 121,
           "title": "Flag override/upsert use whole-document read-modify-write with no CAS, dropping concurrent writes",
           "detail": "set_override/clear_override/upsert/archive all do store.get(flag) -> mutate the dataclass -> store.save(flag) (flag_service.py:121-145, 91-119) over FlagStore.save which is an unconditional put (stores.py:26-28). There is no version/etag check, so two concurrent writes to the same flag are last-writer-wins over the ENTIRE flag document: e.g. one admin adds a user override while another edits rollout_pct — whichever saves last discards the other's change, including silently reverting an override just added by a concurrent request.",
-          "failure_scenario": "Admin A POSTs an override for user X and admin B PUTs a new rollout_pct on the same flag at the same time. Both read the same base row; B saves last, so A's override is dropped (or vice versa) with a 200 returned to both."
+          "failure_scenario": "Admin A POSTs an override for user X and admin B PUTs a new rollout_pct on the same flag at the same time. Both read the same base row; B saves last, so A's override is dropped (or vice versa) with a 200 returned to both.",
+          "resolution": "FIXED: flag write paths (upsert/set_override/clear_override/archive) CAS-retry on Flag.version instead of whole-document last-writer-wins, so concurrent edits both land. Regression: test_audit_fixes.py."
         },
         {
           "id": "feature-flag-service-05",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "security",
           "severity": "low",
           "file": "app/api/v1/flags.py",
           "line": 206,
           "title": "POST /flags/evaluate accepts an arbitrary tenant/user context with no scoping to the principal",
           "detail": "The evaluate route requires only _READ (flags.read) and takes body.tenant/body.user verbatim (flags.py:207-212). The principal's tenant is never used to constrain the evaluation context, so any flags.read holder can evaluate flags as any tenant/user and observe that tenant's decisions — including whether a tenant/user override exists (the reason field returns 'tenant_override'/'user_override'). This is a minor cross-tenant information disclosure through the debug reasons.",
-          "failure_scenario": "A caller with flags.read for tenant A sends {tenant: 'B', user: 'someone'} and reads back reason='tenant_override' / variant assignment, inferring another tenant's targeting configuration and override membership."
+          "failure_scenario": "A caller with flags.read for tenant A sends {tenant: 'B', user: 'someone'} and reads back reason='tenant_override' / variant assignment, inferring another tenant's targeting configuration and override membership.",
+          "resolution": "FIXED: /flags/evaluate scopes the context tenant to the caller unless platform.flags, so a flags.read holder can no longer evaluate as any tenant and observe its decisions/overrides. Regression: test_flags_api_audit.py."
         }
       ]
     },

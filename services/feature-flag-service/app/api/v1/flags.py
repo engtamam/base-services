@@ -176,6 +176,11 @@ async def set_override(request: Request, key: str, body: OverrideIn,
     subject = body.subject
     if body.scope == "tenant" and "platform.flags" not in principal.caps:
         subject = principal.tenant or "__none__"        # can only override your own tenant
+    if body.scope == "user" and "platform.flags" not in principal.caps:
+        # A user override targets a global user id that carries no tenant, so a tenant admin cannot be
+        # confined to their own users — it is a cross-tenant override. Platform-only, matching the
+        # tenant-scope guard above (the missing half of that restriction).
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "USER_OVERRIDE_REQUIRES_PLATFORM")
     flag = await build_flags(request).set_override(key, scope=body.scope, subject=subject,
                                                    value=body.value, actor=principal.subject)
     if flag is None:
@@ -196,6 +201,8 @@ async def clear_override(request: Request, key: str, scope: str, subject: str,
         raise HTTPException(422, "BAD_SCOPE")
     if scope == "tenant" and "platform.flags" not in principal.caps:
         subject = principal.tenant or "__none__"
+    if scope == "user" and "platform.flags" not in principal.caps:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "USER_OVERRIDE_REQUIRES_PLATFORM")
     flag = await build_flags(request).clear_override(key, scope=scope, subject=subject,
                                                      actor=principal.subject)
     if flag is None:
@@ -204,9 +211,13 @@ async def clear_override(request: Request, key: str, scope: str, subject: str,
 
 
 @router.post("/flags/evaluate", dependencies=[Depends(_READ)])
-async def evaluate(request: Request, body: EvalIn) -> dict:
+async def evaluate(request: Request, body: EvalIn, principal: Principal = Depends(_READ)) -> dict:
     svc = build_flags(request)
-    ctx = {"tenant": body.tenant, "user": body.user, "attrs": body.attrs}
+    # Scope the evaluation to the caller's tenant unless they are a platform operator — otherwise any
+    # flags.read holder could evaluate as any tenant and observe that tenant's decisions (and whether a
+    # tenant/user override exists). platform.flags may target a specific tenant for support.
+    tenant = body.tenant if "platform.flags" in principal.caps else (principal.tenant or "__none__")
+    ctx = {"tenant": tenant, "user": body.user, "attrs": body.attrs}
     if body.keys:
         return {"flags": {k: await svc.evaluate(k, ctx) for k in body.keys}}
     return {"flags": await svc.evaluate_all(ctx)}

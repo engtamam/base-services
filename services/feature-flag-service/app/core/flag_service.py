@@ -11,6 +11,7 @@ is identical whichever provider you plug in. A provider outage is fail-safe (def
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -89,13 +90,21 @@ class FlagService:
 
     # ── admin CRUD (E6: change audit with actor + before/after) ─────────────────
     async def upsert(self, *, actor: str = "", **kw) -> Flag:
-        existing = await self._store.get(kw["key"])
-        before = existing.to_dict() if existing else None
-        base = before.copy() if before else Flag(key=kw["key"], created=iso()).to_dict()
-        base.update({k: v for k, v in kw.items() if v is not None})
-        _rollout.validate_variants(base.get("variants") or {})       # raises ValueError
-        flag = Flag.from_dict(base)
-        await self._store.save(flag)
+        # CAS-retry: two concurrent upserts/overrides on one flag were last-writer-wins over the WHOLE
+        # document (one admin's user-override lost to another's rollout edit). Re-read and re-apply on
+        # a lost race so both changes land.
+        for _ in range(8):
+            existing = await self._store.get(kw["key"])
+            before = existing.to_dict() if existing else None
+            expected = int(existing.version) if existing else 0
+            base = before.copy() if before else Flag(key=kw["key"], created=iso()).to_dict()
+            base.update({k: v for k, v in kw.items() if v is not None})
+            _rollout.validate_variants(base.get("variants") or {})       # raises ValueError
+            flag = Flag.from_dict(base)
+            if await self._store.cas_save(flag, expected):
+                break
+        else:
+            raise RuntimeError("flag write contention")
         await self._invalidate(flag.key)
         await self._emit("flag.changed", {"key": flag.key, "actor": actor,
                                           "before": before, "after": flag.to_dict()})
@@ -107,42 +116,42 @@ class FlagService:
     async def list(self, include_archived: bool = False) -> list[dict]:
         return await self._store.list(self._limit, include_archived)
 
-    async def archive(self, key: str, *, actor: str = "") -> Flag | None:
-        flag = await self._store.get(key)
-        if flag is None:
-            return None
-        before = flag.to_dict()
-        flag.archived = True
-        await self._store.save(flag)
+    async def _mutate(self, key: str, apply, event: str, actor: str) -> Flag | None:
+        """CAS-retry a whole-document flag mutation so concurrent writers don't clobber each other.
+        `apply(flag)` mutates the flag in place; re-read and re-apply on a lost race."""
+        for _ in range(8):
+            flag = await self._store.get(key)
+            if flag is None:
+                return None
+            before = flag.to_dict()
+            expected = int(flag.version)
+            apply(flag)
+            if await self._store.cas_save(flag, expected):
+                break
+        else:
+            raise RuntimeError("flag write contention")
         await self._invalidate(key)
-        await self._emit("flag.archived", {"key": key, "actor": actor, "before": before})
+        payload = {"key": key, "actor": actor, "before": before}
+        if event == "flag.changed":
+            payload["after"] = flag.to_dict()
+        await self._emit(event, payload)
         return flag
+
+    async def archive(self, key: str, *, actor: str = "") -> Flag | None:
+        def _apply(f):
+            f.archived = True
+        return await self._mutate(key, _apply, "flag.archived", actor)
 
     async def set_override(self, key: str, *, scope: str, subject: str, value: bool,
                            actor: str = "") -> Flag | None:
-        flag = await self._store.get(key)
-        if flag is None:
-            return None
-        before = flag.to_dict()
-        target = flag.user_overrides if scope == "user" else flag.tenant_overrides
-        target[subject] = bool(value)
-        await self._store.save(flag)
-        await self._invalidate(key)
-        await self._emit("flag.changed", {"key": key, "actor": actor,
-                                          "before": before, "after": flag.to_dict()})
-        return flag
+        def _apply(f):
+            (f.user_overrides if scope == "user" else f.tenant_overrides)[subject] = bool(value)
+        return await self._mutate(key, _apply, "flag.changed", actor)
 
     async def clear_override(self, key: str, *, scope: str, subject: str, actor: str = "") -> Flag | None:
-        flag = await self._store.get(key)
-        if flag is None:
-            return None
-        before = flag.to_dict()
-        (flag.user_overrides if scope == "user" else flag.tenant_overrides).pop(subject, None)
-        await self._store.save(flag)
-        await self._invalidate(key)
-        await self._emit("flag.changed", {"key": key, "actor": actor,
-                                          "before": before, "after": flag.to_dict()})
-        return flag
+        def _apply(f):
+            (f.user_overrides if scope == "user" else f.tenant_overrides).pop(subject, None)
+        return await self._mutate(key, _apply, "flag.changed", actor)
 
     async def stale(self, days: int | None = None) -> list[dict]:
         cutoff = now_ts() - (days if days is not None else self._stale_days) * 86400
@@ -201,12 +210,15 @@ class FlagService:
                 return False
         return True
 
-    def _entitled(self, flag: dict, tenant: str) -> bool | None:
+    async def _entitled(self, flag: dict, tenant: str) -> bool | None:
         req = flag.get("requires_entitlement")
         if not req:
             return None
         try:
-            return bool(self._ent.allowed(tenant=tenant, key=req))
+            # OFFLOAD: the billing entitlement driver does blocking urllib I/O (a 10s-timeout HTTP
+            # call). Called inline on the async evaluation hot path it froze the single-worker event
+            # loop for the whole round-trip, stalling every concurrent flag evaluation.
+            return bool(await asyncio.to_thread(self._ent.allowed, tenant=tenant, key=req))
         except Exception:
             return False                                   # fail-closed on a checker error
 
@@ -214,7 +226,7 @@ class FlagService:
         seen = seen or set()
         now = now_ts()
         prereqs_ok = await self._prereqs_ok(flag, ctx, depth, seen)
-        entitled = self._entitled(flag, str(ctx.get("tenant") or ""))
+        entitled = await self._entitled(flag, str(ctx.get("tenant") or ""))
         in_seg = await self._in_segment(flag, ctx.get("attrs") or {})
         return _eval.evaluate(flag, ctx, salt=self._salt, entitled=entitled, now=now,
                               prereqs_ok=prereqs_ok, in_segment=in_seg)

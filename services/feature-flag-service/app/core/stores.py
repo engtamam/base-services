@@ -27,6 +27,12 @@ class FlagStore:
         await self._store.put(_FLAGS, flag.key, flag.to_dict())
         return flag
 
+    async def cas_save(self, flag: Flag, expected_version: int) -> bool:
+        """Version-checked write: True if this write won, False if another writer changed the flag
+        first (the caller re-reads and retries). Prevents a whole-document last-writer-wins that drops
+        one admin's concurrent edit. (Flag.version is the optimistic-lock counter.)"""
+        return await self._store.cas(_FLAGS, flag.key, expected_version, flag.to_dict())
+
     async def get(self, key: str) -> Flag | None:
         row = await self._store.get(_FLAGS, key)
         return Flag.from_dict(row) if row else None
@@ -110,12 +116,21 @@ class ConfigStore:
         return f"{key}::{env}"
 
     async def put(self, key: str, value: Any, *, env: str = "", actor: str = "") -> ConfigEntry:
-        head = await self._store.get(_CONFIG, self._head(key, env))
-        version = int(head["version"]) + 1 if head else 1
-        entry = ConfigEntry(key=key, value=value, version=version, env=env, actor=actor, created=iso())
-        await self._store.put(_CONFIG_VERSIONS, f"{key}::{env}::{version}", entry.to_dict())
-        await self._store.put(_CONFIG, self._head(key, env), entry.to_dict())
-        return entry
+        # CAS the head so a concurrent put cannot lose a version. The old read-then-write let two puts
+        # both read version N, both compute N+1, and both overwrite — one version silently lost and the
+        # two version rows colliding. cas the head FIRST (claims the version), then write the immutable
+        # version row; a loser re-reads the (now advanced) head and retries with the next version.
+        head_key = self._head(key, env)
+        for _ in range(8):
+            head = await self._store.get(_CONFIG, head_key)
+            expected = int(head["version"]) if head else 0
+            version = expected + 1
+            entry = ConfigEntry(key=key, value=value, version=version, env=env, actor=actor,
+                                created=iso())
+            if await self._store.cas(_CONFIG, head_key, expected, entry.to_dict()):
+                await self._store.put(_CONFIG_VERSIONS, f"{key}::{env}::{version}", entry.to_dict())
+                return entry
+        raise RuntimeError("config head contention: too many concurrent writers")
 
     async def get(self, key: str, *, env: str = "") -> ConfigEntry | None:
         """Env-scoped entry wins over global ("")."""
