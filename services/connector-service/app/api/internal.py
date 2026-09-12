@@ -29,6 +29,11 @@ class SyncIn(BaseModel):
     resource: str = Field(min_length=1, max_length=128)
     direction: str = Field(default="pull", pattern="^(pull|push)$")
     records: list[dict[str, Any]] = Field(default_factory=list)
+    # At-least-once pull (audit-07): when true the watermark advances only on the next pull that
+    # echoes `ack_cursor` (the `cursor` returned by the prior pull), so a dropped response re-delivers
+    # instead of silently skipping. Default false keeps the at-most-once auto-advance behaviour.
+    at_least_once: bool = False
+    ack_cursor: str = Field(default="", max_length=1024)
 
 _HEADER = "X-Internal-Token"
 _ASSERTION_HEADER = "X-Internal-Assertion"
@@ -81,7 +86,8 @@ async def internal_sync(request: Request, body: SyncIn) -> dict:
     field_map = spec.get("field_map") or {}
     if body.direction == "pull":
         result = await engine.pull(connection_id=conn.id, resource=body.resource, spec=spec,
-                                   field_map=field_map)
+                                   field_map=field_map, ack_cursor=body.ack_cursor,
+                                   at_least_once=body.at_least_once)
     else:
         result = await engine.push(connection_id=conn.id, resource=body.resource,
                                    records=body.records, spec=spec, field_map=field_map)

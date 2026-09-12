@@ -50,6 +50,12 @@ class SessionStore:
     def __init__(self, store) -> None:
         self._s = store
 
+    @property
+    def store(self):
+        """The underlying datastore — used by the service's atomic concurrency-quota counters, which
+        live in a sibling collection to the sessions."""
+        return self._s
+
     async def create(self, sess: Session) -> Session:
         await self._s.put(_SESSIONS, sess.id, sess.to_dict())
         return sess

@@ -82,7 +82,20 @@ class SyncEngine:
 
     # ── pull ────────────────────────────────────────────────────────────────────
     async def pull(self, *, connection_id: str, resource: str, spec: dict[str, Any],
-                   field_map: dict | None = None) -> dict[str, Any]:
+                   field_map: dict | None = None, ack_cursor: str = "",
+                   at_least_once: bool = False) -> dict[str, Any]:
+        """Incremental pull.
+
+        DELIVERY MODES (audit-07):
+          • Default (at_least_once=False): the watermark advances as soon as the batch is fetched and
+            returned. Correct for a consumer that writes into a durable, deduplicating target — but if
+            the HTTP response is lost in transit the caller never sees the batch, and the advanced
+            watermark means it is never re-fetched (at-most-once → silent loss on a dropped response).
+          • at_least_once=True: the watermark is NOT advanced by this call. The caller durably processes
+            the returned records (deduping on the returned idempotency `keys`) and, on its NEXT pull,
+            passes `ack_cursor` = the `cursor` it received here — only then does the watermark advance.
+            A lost response means no ack, so the same batch is re-delivered: at-least-once, no loss.
+        """
         conn = await self._conns.get(connection_id)
         if conn is None:
             return {"ok": False, "reason": "NOT_FOUND"}
@@ -90,6 +103,12 @@ class SyncEngine:
         state = await self._guard_circuit(conn)
         if not _circuit.can_attempt(state):
             return {"ok": False, "reason": "circuit_open"}
+
+        # ACK the previously delivered batch (at-least-once mode): the caller confirms it durably
+        # processed up to `ack_cursor`, so it is now safe to advance the watermark past it.
+        if ack_cursor and conn.watermarks.get(resource, "") != ack_cursor:
+            conn.watermarks[resource] = ack_cursor
+            await self._conns.save(conn)
 
         now = self._clock.now()
         run = SyncRun(id=new_id("run_"), tenant=conn.tenant, connection_id=conn.id,
@@ -118,17 +137,23 @@ class SyncEngine:
         mapped, failed = [], 0
         for rec in page.records:
             key = self._idem_key(conn.id, resource, rec)
-            # ATOMIC reserve (was seen()->mark(), a check-then-set two concurrent runs could both
-            # pass). A reserved record is committed; a mapping failure keeps the reservation so the
-            # poison record is NOT reprocessed forever.
-            if not await self._seen.reserve(key):
-                continue                                  # already committed on a prior/concurrent run
+            # In at-least-once mode a batch is RE-DELIVERED until acked, so a delivery reservation
+            # (which would skip a record on the retry) must NOT gate it — the consumer dedupes on the
+            # returned key. In the default mode the reserve is the atomic at-most-once gate (was
+            # seen()->mark(), a check-then-set two concurrent runs could both pass).
+            if not at_least_once:
+                if not await self._seen.reserve(key):
+                    continue                              # already committed on a prior/concurrent run
             try:
                 out = _mapping.apply(field_map or {}, rec) if field_map else dict(rec)
                 out[ORIGIN_FIELD] = conn.provider          # echo-loop marker
                 mapped.append((key, out))
             except Exception as exc:
                 failed += 1
+                # Reserve the poison key so a re-fetch (retry, or an at-least-once re-delivery before
+                # ack) does not re-DLQ the same unmappable record every time.
+                if at_least_once:
+                    await self._seen.reserve(key)
                 await self._dlq.add(SyncRecord(
                     id=new_id("dlq_"), tenant=conn.tenant, connection_id=conn.id, run_id=run.id,
                     resource=resource, idempotency_key=key, record=rec,
@@ -140,12 +165,17 @@ class SyncEngine:
         run.records_out = len(mapped)
         run.records_failed = failed
 
-        # ── watermark advances whenever the provider gave a next cursor ──────────
-        # Failures no longer block it: an unmappable record is durably DLQ'd AND reserved, so advancing
-        # cannot lose it, and NOT advancing froze all progress for the resource forever (poison-pill).
-        if page.next_cursor:
-            conn.watermarks[resource] = page.next_cursor
-            run.watermark_after = page.next_cursor
+        # ── watermark advancement ────────────────────────────────────────────────
+        # Default mode: advance whenever the provider gave a next cursor (an unmappable record is
+        # durably DLQ'd AND reserved, so advancing cannot lose it, and NOT advancing froze progress
+        # forever — the poison-pill stall). At-least-once mode: DO NOT advance here — the caller acks
+        # the returned cursor on its next pull, and only that advances the watermark (deliver-then-mark).
+        next_cursor = page.next_cursor or ""
+        if at_least_once:
+            run.watermark_after = run.watermark_before     # unchanged until the caller acks
+        elif next_cursor:
+            conn.watermarks[resource] = next_cursor
+            run.watermark_after = next_cursor
         else:
             run.watermark_after = run.watermark_before
         await self._conns.save(conn)
@@ -157,6 +187,10 @@ class SyncEngine:
         status = "succeeded" if failed == 0 else "partial"
         out = await self._finish(run, status)
         out["records"] = [r for _k, r in mapped]
+        # The cursor to ACK on the next pull (at-least-once), and the per-record idempotency keys the
+        # consumer dedupes on across a re-delivery. Returned in both modes; only ack mode requires them.
+        out["cursor"] = next_cursor
+        out["keys"] = [k for k, _r in mapped]
         return out
 
     # ── push ────────────────────────────────────────────────────────────────────

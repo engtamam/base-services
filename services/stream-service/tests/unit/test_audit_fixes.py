@@ -86,3 +86,60 @@ def test_iter_expired_stops_at_first_non_expired():
     expired, cursor = run(rs.iter_expired("2025-01-01", limit=100))
     assert {r.id for r in expired} == {"r0", "r1"}          # only the truly-expired
     assert cursor is None                                    # stopped — did not page the whole table
+
+
+# ── 04: concurrent starts cannot breach the per-tenant concurrency cap ─────────
+class _YieldStore(MemoryDataStore):
+    """Yields the loop inside get(), so concurrent start_session coroutines actually interleave and
+    exercise the reservation race (a plain MemoryDataStore never awaits internally)."""
+
+    async def get(self, collection, key):
+        await asyncio.sleep(0)
+        return await super().get(collection, key)
+
+
+def test_concurrent_starts_do_not_exceed_the_per_tenant_cap():
+    ds = _YieldStore()
+    svc, _ = _svc(ds=ds, max_concurrent_per_tenant=2, max_concurrent_global=100)
+    srcs = [run(svc.register_source(tenant="t1", name=f"c{i}", url=f"rtsp://10.0.0.{i}:554/s"))
+            for i in range(5)]
+
+    async def _race():
+        return await asyncio.gather(
+            *[svc.start_session(tenant="t1", source_id=s.id) for s in srcs],
+            return_exceptions=True)
+
+    results = run(_race())
+    ok = [r for r in results if not isinstance(r, Exception)]
+    refused = [r for r in results if isinstance(r, QuotaExceeded)]
+    assert len(ok) == 2 and len(refused) == 3               # cap held under concurrency (pre-fix: >2)
+    live = run(svc._sessions.count_live_for_tenant("t1", 10))
+    assert live == 2                                         # exactly cap live sessions committed
+
+
+def test_a_stopped_session_frees_a_concurrency_slot():
+    svc, _ = _svc(max_concurrent_per_tenant=1)
+    a = run(svc.register_source(tenant="t1", name="a", url="rtsp://10.0.0.5:554/s"))
+    b = run(svc.register_source(tenant="t1", name="b", url="rtsp://10.0.0.6:554/s"))
+    s1, _ = run(svc.start_session(tenant="t1", source_id=a.id))
+    with pytest.raises(QuotaExceeded):
+        run(svc.start_session(tenant="t1", source_id=b.id))  # cap 1 — full
+    run(svc.stop_session(s1.id, tenant="t1"))                # releases the slot
+    s2, _ = run(svc.start_session(tenant="t1", source_id=b.id))
+    assert s2.status == "live"                               # slot reused after release
+
+
+def test_one_session_per_source_is_atomic():
+    ds = _YieldStore()
+    svc, _ = _svc(ds=ds, one_session_per_source=True, max_concurrent_per_tenant=100)
+    src = run(svc.register_source(tenant="t1", name="cam", url="rtsp://10.0.0.5:554/s"))
+
+    async def _race():
+        return await asyncio.gather(
+            svc.start_session(tenant="t1", source_id=src.id),
+            svc.start_session(tenant="t1", source_id=src.id),
+            return_exceptions=True)
+
+    results = run(_race())
+    ok = [r for r in results if not isinstance(r, Exception)]
+    assert len(ok) == 1                                      # one camera, one live session (pre-fix: 2)

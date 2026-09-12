@@ -239,40 +239,6 @@
         "title": "SpecIn",
         "type": "object"
       },
-      "SyncIn": {
-        "properties": {
-          "connection_id": {
-            "title": "Connection Id",
-            "type": "string"
-          },
-          "direction": {
-            "default": "pull",
-            "pattern": "^(pull|push)$",
-            "title": "Direction",
-            "type": "string"
-          },
-          "records": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Records",
-            "type": "array"
-          },
-          "resource": {
-            "maxLength": 128,
-            "minLength": 1,
-            "title": "Resource",
-            "type": "string"
-          }
-        },
-        "required": [
-          "connection_id",
-          "resource"
-        ],
-        "title": "SyncIn",
-        "type": "object"
-      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -311,6 +277,85 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "app__api__internal__SyncIn": {
+        "properties": {
+          "ack_cursor": {
+            "default": "",
+            "maxLength": 1024,
+            "title": "Ack Cursor",
+            "type": "string"
+          },
+          "at_least_once": {
+            "default": false,
+            "title": "At Least Once",
+            "type": "boolean"
+          },
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "direction": {
+            "default": "pull",
+            "pattern": "^(pull|push)$",
+            "title": "Direction",
+            "type": "string"
+          },
+          "records": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Records",
+            "type": "array"
+          },
+          "resource": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Resource",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "resource"
+        ],
+        "title": "SyncIn",
+        "type": "object"
+      },
+      "app__api__v1__connectors__SyncIn": {
+        "properties": {
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "direction": {
+            "default": "pull",
+            "pattern": "^(pull|push)$",
+            "title": "Direction",
+            "type": "string"
+          },
+          "records": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Records",
+            "type": "array"
+          },
+          "resource": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Resource",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "resource"
+        ],
+        "title": "SyncIn",
         "type": "object"
       }
     }
@@ -790,7 +835,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SyncIn"
+                "$ref": "#/components/schemas/app__api__v1__connectors__SyncIn"
               }
             }
           },
@@ -1215,7 +1260,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SyncIn"
+                "$ref": "#/components/schemas/app__api__internal__SyncIn"
               }
             }
           },

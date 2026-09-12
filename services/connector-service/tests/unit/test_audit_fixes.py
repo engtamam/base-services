@@ -1,7 +1,7 @@
 """Regression tests for the 2026-09-12 fleet-audit findings on connector-service (#01, #05).
 
 (#02 poison-pill and #06 circuit are covered in test_sync_engine.py; #03/#04 blocking-offload are
-enforced by the safety:async-blocking gate; #07 is a delivery-contract decision surfaced to Tamam.)
+enforced by the safety:async-blocking gate; #07 at-least-once pull delivery is covered below.)
 """
 from __future__ import annotations
 
@@ -92,3 +92,53 @@ def test_concurrent_push_of_same_record_sends_once():
 
     run(_race())
     assert len(prov.pushed) == 1                                    # atomic reserve prevented a double send
+
+
+# ── 07: at-least-once pull re-delivers an unacked batch (no loss on a dropped response) ─
+from app.adapters.provider.recording import RecordingConnector as _RC   # noqa: E402
+from app.ports.connector_provider import Page as _Page                  # noqa: E402
+
+
+class _CursorProvider(_RC):
+    """Serves a fixed page per cursor (not a pop-queue), so a re-pull at the same watermark returns
+    the SAME batch — the shape needed to prove at-least-once re-delivery."""
+
+    def __init__(self):
+        super().__init__()
+        self.by_cursor: dict[str, _Page] = {}
+
+    def fetch(self, *, access_token, resource, cursor, limit, spec):
+        return self.by_cursor.get(cursor, _Page(records=[], next_cursor=""))
+
+
+def test_at_least_once_pull_redelivers_until_acked():
+    prov = _CursorProvider()
+    prov.by_cursor[""] = _Page(records=[{"id": "1"}, {"id": "2"}], next_cursor="CUR2")
+    prov.by_cursor["CUR2"] = _Page(records=[{"id": "3"}], next_cursor="")
+    se, conns, _, _ = _env(provider=prov)
+
+    r1 = run(se.pull(connection_id="cn_1", resource="c", spec={}, field_map=IDMAP,
+                     at_least_once=True))
+    assert [x["id"] for x in r1["records"]] == ["1", "2"] and r1["cursor"] == "CUR2"
+    assert run(conns.get("cn_1")).watermarks.get("c", "") == ""      # NOT advanced yet
+
+    # Response was "lost": the caller retries the same pull WITHOUT acking -> same batch re-delivered.
+    r2 = run(se.pull(connection_id="cn_1", resource="c", spec={}, field_map=IDMAP,
+                     at_least_once=True))
+    assert [x["id"] for x in r2["records"]] == ["1", "2"]            # pre-fix: would have skipped to ["3"]
+    assert run(conns.get("cn_1")).watermarks.get("c", "") == ""
+
+    # Now the caller acks CUR2: the watermark advances and the next batch is delivered.
+    r3 = run(se.pull(connection_id="cn_1", resource="c", spec={}, field_map=IDMAP,
+                     at_least_once=True, ack_cursor="CUR2"))
+    assert [x["id"] for x in r3["records"]] == ["3"]
+    assert run(conns.get("cn_1")).watermarks.get("c", "") == "CUR2"
+
+
+def test_default_pull_still_auto_advances():
+    prov = _CursorProvider()
+    prov.by_cursor[""] = _Page(records=[{"id": "1"}], next_cursor="CUR2")
+    se, conns, _, _ = _env(provider=prov)
+    r = run(se.pull(connection_id="cn_1", resource="c", spec={}, field_map=IDMAP))
+    assert r["watermark_after"] == "CUR2"                            # default mode unchanged
+    assert run(conns.get("cn_1")).watermarks["c"] == "CUR2"

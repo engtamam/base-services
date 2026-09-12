@@ -123,12 +123,6 @@ class StreamService:
         if not src.enabled:
             raise SourceNotFound(source_id)         # a disabled source refuses new sessions
 
-        await self._enforce_quota(tenant)
-        if self._cfg.one_session_per_source:
-            live, _ = await self._sessions.list_for_tenant(tenant, status=LIVE, limit=1)
-            if any(s.source_id == source_id for s in live):
-                raise QuotaExceeded("one_session_per_source")
-
         url = self._sealer.unseal(src.url_sealed)
         resolved = self._check_ssrf(url)            # re-validate at connect time
         pinned_url = self._pin_url(url, resolved.ip)  # connect to the validated IP — rebinding-safe
@@ -139,16 +133,28 @@ class StreamService:
             outputs=outputs or list(self._cfg.default_outputs),
             profile=profile or src.default_profile,
             guards=self._resolve_guards(guards), status=LIVE, started_at=self._now_iso())
-        whip = ""
-        if "webrtc" in sess.outputs and self._cfg.webrtc_enabled and self._cfg.webrtc_media_base:
-            whip = f"{self._cfg.webrtc_media_base}/{sess.id}/whip"
-        spec = EngineSpec(source_url=pinned_url, transport=src.transport, outputs=tuple(sess.outputs),
-                          output_dir=f"{self._cfg.output_root}/{sess.id}", profile=src.default_profile,
-                          webrtc_whip_url=whip, hls_segment_seconds=self._cfg.hls_segment_seconds,
-                          hls_window_segments=self._cfg.hls_window_segments,
-                          record_segment_seconds=self._cfg.record_segment_seconds,
-                          record_format=self._cfg.record_format)
-        placement = await self._placer.start(sess.id, spec)
+
+        # ATOMIC quota reservation. The old count-then-create was a TOCTOU: K concurrent starts each
+        # read count<cap before any create committed, so all passed and the cap was breached. Now each
+        # cap is a compare-and-set counter (per-source is a claim), incremented BEFORE the session is
+        # created; only `cap` concurrent increments can win, so the cap holds. Reservations are released
+        # when the session leaves LIVE, and a counter that drifts high (a crashed session that never
+        # released) self-heals against the real live count on the next reservation.
+        reserved = await self._reserve_quota(sess)   # raises QuotaExceeded before anything is created
+        try:
+            whip = ""
+            if "webrtc" in sess.outputs and self._cfg.webrtc_enabled and self._cfg.webrtc_media_base:
+                whip = f"{self._cfg.webrtc_media_base}/{sess.id}/whip"
+            spec = EngineSpec(source_url=pinned_url, transport=src.transport, outputs=tuple(sess.outputs),
+                              output_dir=f"{self._cfg.output_root}/{sess.id}", profile=src.default_profile,
+                              webrtc_whip_url=whip, hls_segment_seconds=self._cfg.hls_segment_seconds,
+                              hls_window_segments=self._cfg.hls_window_segments,
+                              record_segment_seconds=self._cfg.record_segment_seconds,
+                              record_format=self._cfg.record_format)
+            placement = await self._placer.start(sess.id, spec)
+        except BaseException:
+            await self._release_quota(reserved, sess)   # nothing durable started — free the reservation
+            raise
         sess.placement = {"placer": placement.placer, "worker_id": placement.worker_id,
                           "handle_id": placement.handle.id, "output_dir": spec.output_dir}
         sess.lease_expires_at = self._lease_deadline()
@@ -206,9 +212,9 @@ class StreamService:
         for sid in res.dead_sessions:
             sess = await self._sessions.get(sid)
             if sess and sess.is_live:
-                sess.status = ERROR
-                sess.reason = "error"
-                await self._sessions.save(sess)
+                # Route through _stop so the concurrency reservation is released (was a bare status
+                # write that left the tenant's counter permanently consuming a slot for a dead session).
+                await self._stop(sess, "error")
                 dead += 1
         return {"stopped": stopped, "reaped_dead": dead,
                 "killed_orphans": len(res.killed_orphans)}
@@ -331,6 +337,9 @@ class StreamService:
         sess.status = STOPPED if reason != "error" else ERROR
         sess.reason = reason
         await self._sessions.save(sess)
+        # Release the concurrency reservation exactly once (the is_terminal guard above makes _stop
+        # idempotent, so this never double-decrements).
+        await self._release_quota(self._release_map(), sess)
         await self._emit("stream.session.stopped", sess)
         return sess
 
@@ -352,15 +361,87 @@ class StreamService:
         g.max_size_bytes = _clamp(g.max_size_bytes or self._cfg.max_size_bytes, self._cfg.max_size_bytes)
         return g
 
-    async def _enforce_quota(self, tenant: str) -> None:
-        cap = self._cfg.max_concurrent_per_tenant
-        if cap and await self._sessions.count_live_for_tenant(tenant, cap) >= cap:
-            raise QuotaExceeded("concurrency")
-        gcap = self._cfg.max_concurrent_global
-        if gcap and await self._sessions.count_live_global(gcap) >= gcap:
-            # The advertised fleet-wide cap was never enforced (only the per-tenant one was), so one
-            # busy tenant — or many small ones — could exhaust worker capacity globally.
-            raise QuotaExceeded("concurrency_global")
+    # ── atomic concurrency reservation (cas counters + per-source claim) ──────────
+    _QUOTA = "stream_quota"
+
+    async def _reserve_quota(self, sess: Session) -> dict[str, bool]:
+        """Reserve the concurrency slots this session needs, atomically, BEFORE it is created. Raises
+        QuotaExceeded (having rolled back anything already taken) if a cap is full. Returns which slots
+        were taken, so the caller can release exactly those if a later step fails."""
+        taken: dict[str, bool] = {}
+        try:
+            cap = self._cfg.max_concurrent_per_tenant
+            if cap and not await self._incr(f"t::{sess.tenant}", cap):
+                raise QuotaExceeded("concurrency")
+            taken["tenant"] = bool(cap)
+            gcap = self._cfg.max_concurrent_global
+            if gcap and not await self._incr("__global__", gcap):
+                raise QuotaExceeded("concurrency_global")
+            taken["global"] = bool(gcap)
+            if self._cfg.one_session_per_source:
+                if not await self._claim_source(sess.tenant, sess.source_id):
+                    raise QuotaExceeded("one_session_per_source")
+                taken["source"] = True
+            return taken
+        except QuotaExceeded:
+            await self._release_quota(taken, sess)      # undo whatever we already took
+            raise
+
+    async def _release_quota(self, taken: dict[str, bool], sess: Session) -> None:
+        if taken.get("tenant"):
+            await self._decr(f"t::{sess.tenant}")
+        if taken.get("global"):
+            await self._decr("__global__")
+        if taken.get("source"):
+            await self._sessions.store.delete(self._QUOTA, f"src::{sess.tenant}::{sess.source_id}")
+
+    def _release_map(self) -> dict[str, bool]:
+        """What a live session holds, per config — used to release on teardown without per-session state."""
+        return {"tenant": bool(self._cfg.max_concurrent_per_tenant),
+                "global": bool(self._cfg.max_concurrent_global),
+                "source": bool(self._cfg.one_session_per_source)}
+
+    async def _incr(self, key: str, cap: int) -> bool:
+        """Atomically bump a live-count counter iff below cap. Pure compare-and-set: concurrent
+        increments serialise on the version, so at most `cap` can ever win — the cap holds no matter
+        how many starts race. The counter is a RESERVATION count (bumped before the session row is
+        created), so it is NOT reconciled here against live session rows — during a burst those rows do
+        not exist yet, and a reconcile would wrongly reset the count and let the cap be breached. Every
+        reservation is released on the session's LIVE->non-LIVE transition (incl. reaper-detected
+        death via _stop), so drift is bounded to genuinely in-flight work."""
+        for _ in range(128):
+            row = await self._sessions.store.get(self._QUOTA, key)
+            live = int(row.get("live", 0)) if row else 0
+            ver = int(row.get("version", 0)) if row else 0
+            if live >= cap:
+                return False
+            if await self._sessions.store.cas(self._QUOTA, key, ver, {"key": key, "live": live + 1}):
+                return True
+        return False
+
+    async def _decr(self, key: str) -> None:
+        for _ in range(128):
+            row = await self._sessions.store.get(self._QUOTA, key)
+            if not row:
+                return
+            ver = int(row.get("version", 0))
+            live = max(0, int(row.get("live", 0)) - 1)
+            if await self._sessions.store.cas(self._QUOTA, key, ver, {"key": key, "live": live}):
+                return
+
+    async def _claim_source(self, tenant: str, source_id: str) -> bool:
+        """Claim the single live slot for a source (atomic insert-if-absent). The claim IS the
+        reservation and is released on the holder's LIVE->non-LIVE transition (incl. reaper death),
+        so a crashed session's claim is freed when its session is reaped — no live-count reconcile
+        here, which during a concurrent claim would see zero live sessions (created later) and hand the
+        camera to two starts at once."""
+        key = f"src::{tenant}::{source_id}"
+        for _ in range(8):
+            if await self._sessions.store.cas(self._QUOTA, key, 0, {"key": key}):
+                return True                         # won the insert
+            if await self._sessions.store.get(self._QUOTA, key) is not None:
+                return False                        # a claim already exists — someone else holds it
+        return False
 
     def _check_ssrf(self, url: str):
         """Validate + resolve, returning the Resolved (with the pinned IP). Callers that connect
