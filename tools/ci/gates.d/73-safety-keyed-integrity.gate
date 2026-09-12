@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+gate_name="safety:keyed-integrity"
+gate_desc="a tamper-evidence / integrity chain driver must default to a KEYED variant"
+gate_protects="audit-service's INTEGRITY_DRIVER defaulted to an UNKEYED sha256 hash-chain. A hash
+chain is tamper-evident only against someone who cannot recompute the hashes — but the
+threat model for an audit log IS an attacker with backend access, who can delete their
+own events and re-anchor the chain with public sha256 so verify() passes clean. Only an
+HMAC keyed with a secret held OUTSIDE the datastore resists that. This gate keeps any
+integrity/tamper-evidence driver from defaulting to an unkeyed option (hash-chain, none,
+sha256, or empty) — a deploy without a key must fail closed, not run an unprovable log."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_keyed_integrity.py"
+gate_units=1
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_keyed_integrity.py; }
+
+# Mutation-tested: the keyed default passes, an unkeyed default fails, a marker re-exempts.
+gate_selftest() { "$PY" tools/ci/selftest_keyed_integrity.py >/dev/null 2>&1; }
