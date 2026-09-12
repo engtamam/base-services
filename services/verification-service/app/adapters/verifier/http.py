@@ -139,7 +139,13 @@ class HttpVerifier:
         value = str(raw).strip()
         reference = str(_dig(payload, self._p.get("reference_path", "")) or "")
 
-        if value == self._p.get("verdict_ok", "").strip():
+        # An UNCONFIGURED success value can never mean VERIFIED. Without this guard an empty
+        # verdict_ok ("") equals an empty provider value (""), so a provider answering 200 with an
+        # empty verdict field would be read as VERIFIED — a fail-open the file's own invariant forbids
+        # ("Unrecognised never falls through to yes"). The boot guard requires verdict_path but not
+        # verdict_ok, so this must fail closed here: no configured success value => nothing verifies.
+        ok = self._p.get("verdict_ok", "").strip()
+        if ok and value == ok:
             return Outcome(status=VERIFIED, provider=self._name, reference=reference)
         if value in _csv(self._p.get("verdict_refused", "")):
             return Outcome(status=REFUSED, provider=self._name, reference=reference,

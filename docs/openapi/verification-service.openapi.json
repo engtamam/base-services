@@ -145,6 +145,34 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "ResolveIn": {
+        "properties": {
+          "detail": {
+            "default": "",
+            "title": "Detail",
+            "type": "string"
+          },
+          "reference": {
+            "default": "",
+            "title": "Reference",
+            "type": "string"
+          },
+          "verification_id": {
+            "title": "Verification Id",
+            "type": "string"
+          },
+          "verified": {
+            "title": "Verified",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "verification_id",
+          "verified"
+        ],
+        "title": "ResolveIn",
+        "type": "object"
+      },
       "SecretIn": {
         "properties": {
           "name": {
@@ -1320,6 +1348,84 @@
           }
         },
         "summary": "Identity Seen",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/verification/resolve": {
+      "post": {
+        "description": "A provider's ASYNC callback: settle a PENDING verification the provider answered later.\n\nNafath-style providers push a prompt to a phone and answer minutes later \u2014 `pending` is a real\nverdict whose only legitimate way forward is this callback. Without a route wired to\nVerificationService.resolve(), a pending verification could ONLY ever lapse to EXPIRED via the\nsweep, so no async check could ever succeed (audit verification-02).\n\nInternal tier because the caller is the provider integration (a service), not a user. IDEMPOTENT:\nresolve() only moves a still-PENDING record, so a retried callback changes nothing. 404 when the\nid is unknown; 409 when it had already lapsed/settled (the returned verdict says which).",
+        "operationId": "resolve_verification_internal_verification_resolve_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Resolve Verification Internal Verification Resolve Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve Verification",
         "tags": [
           "internal"
         ]

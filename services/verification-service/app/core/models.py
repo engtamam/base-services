@@ -93,6 +93,9 @@ class Verification:
     provider_state: dict[str, Any] = field(default_factory=dict)   # opaque, for the callback
     created_at: float = 0.0
     updated_at: float = 0.0
+    # Optimistic-lock counter for compare-and-set on a decision. Seeded to 1 on first write so a
+    # version-pinned update is well-defined; each successful cas advances it.
+    version: int = 1
 
     def is_trusted(self, now: float) -> bool:
         """Can a caller rely on this RIGHT NOW?
@@ -115,6 +118,7 @@ class Verification:
         d = asdict(self)
         d.pop("claim_ref", None)
         d.pop("provider_state", None)
+        d.pop("version", None)          # the lock counter is internal, not part of the API shape
         return d
 
     def to_dict(self) -> dict[str, Any]:

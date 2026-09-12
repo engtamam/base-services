@@ -35,6 +35,17 @@ class VerificationStore:
         await self._store.put(_VERIFICATIONS, record.id, record.to_dict())
         return record
 
+    async def cas_put(self, record: Verification) -> bool:
+        """Persist `record` ONLY if the stored row is still at `record.version`. Returns True and
+        advances `record.version` on success, False if another writer moved it first. This is the
+        atomic seam a manual decision needs: two concurrent reviews of one PENDING record can no
+        longer both pass the settled-check and both write, losing a two-eyes tally or double-settling.
+        """
+        ok = await self._store.cas(_VERIFICATIONS, record.id, record.version, record.to_dict())
+        if ok:
+            record.version += 1
+        return ok
+
     async def get(self, verification_id: str) -> Verification | None:
         row = await self._store.get(_VERIFICATIONS, verification_id)
         return Verification.from_dict(row) if row else None
@@ -77,22 +88,35 @@ class IdentityRegistry:
     def __init__(self, store) -> None:
         self._store = store
 
-    async def remember(self, claim_ref: str, now: float) -> dict[str, Any]:
+    async def remember(self, claim_ref: str, now: float, *, _max_retries: int = 8) -> dict[str, Any]:
         """Record that this identity has been verified, and say whether we had seen it before.
 
         The return value is what an onboarding grant checks: `first_seen` False means this
         registration has already collected whatever is given once per identity.
-        """
-        existing = await self._store.get(_SEEN, claim_ref)
-        if existing:
-            existing["times"] = int(existing.get("times", 1)) + 1
-            existing["last_at"] = now
-            await self._store.put(_SEEN, claim_ref, existing)
-            return {"first_seen": False, "record": existing}
 
-        row = {"id": claim_ref, "first_at": now, "last_at": now, "times": 1}
-        await self._store.put(_SEEN, claim_ref, row)
-        return {"first_seen": True, "record": row}
+        ATOMIC: the old get-then-put let two concurrent verifications of the SAME identity both read
+        "absent" and both write a fresh row with first_seen=True/times=1 — one clobbering the other,
+        so a repeat registration reads as first-seen and the once-per-identity grant fires twice. Now
+        the first writer wins an insert-if-absent (cas expected_version=0) and every other writer
+        takes the increment path under a version-pinned cas, retrying on a lost race so the `times`
+        count is never lost.
+        """
+        for _ in range(max(1, _max_retries)):
+            existing = await self._store.get(_SEEN, claim_ref)
+            if existing:
+                updated = dict(existing)
+                updated["times"] = int(existing.get("times", 1)) + 1
+                updated["last_at"] = now
+                if await self._store.cas(_SEEN, claim_ref, int(existing.get("version", 0)), updated):
+                    return {"first_seen": False, "record": updated}
+                continue                    # another writer moved first — refetch and re-increment
+            row = {"id": claim_ref, "first_at": now, "last_at": now, "times": 1}
+            if await self._store.cas(_SEEN, claim_ref, 0, row):
+                return {"first_seen": True, "record": row}
+            continue                        # someone inserted between our get and cas — count them
+        # Extremely contended identity: fall back to a best-effort read so we never spin forever.
+        existing = await self._store.get(_SEEN, claim_ref)
+        return {"first_seen": existing is None, "record": existing or {"id": claim_ref}}
 
     async def seen(self, claim_ref: str) -> bool:
         return await self._store.get(_SEEN, claim_ref) is not None

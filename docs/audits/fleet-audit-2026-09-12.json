@@ -1488,7 +1488,7 @@
       "issues": [
         {
           "id": "verification-service-01",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "security",
           "severity": "high",
           "file": "app/adapters/verifier/http.py",
@@ -1499,7 +1499,7 @@
         },
         {
           "id": "verification-service-02",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "medium",
           "file": "app/core/verification_service.py",
@@ -1510,7 +1510,7 @@
         },
         {
           "id": "verification-service-03",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "perf",
           "severity": "medium",
           "file": "app/adapters/datastore/postgres.py",
@@ -1521,7 +1521,7 @@
         },
         {
           "id": "verification-service-04",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "medium",
           "file": "app/core/stores.py",
@@ -1532,7 +1532,7 @@
         },
         {
           "id": "verification-service-05",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "low",
           "file": "app/core/review.py",

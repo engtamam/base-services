@@ -65,45 +65,57 @@ class ReviewService:
         could approve/refuse another tenant's claim by id (a cross-tenant IDOR) — the review capability
         is tenant-scoped, so the record must be too. A cross-tenant or missing id is an identical 404.
         """
-        record = await self._store.get(verification_id)
-        if record is None or record.tenant != tenant:
-            raise ReviewNotFound("no such verification")
-        if record.verdict in (VERIFIED, REFUSED):
-            # Settled. Re-deciding would rewrite a decision someone already relied on; a change of
-            # mind is a NEW verification, which keeps both decisions in the history.
-            raise ReviewRefused(
-                f"this verification is already {record.verdict}; start a new one to re-check")
-        if not reviewer:
-            raise ReviewRefused("a review must name its reviewer")
-        if reviewer == record.subject:
-            # The check that gets left out of a first version.
-            raise ReviewRefused("a reviewer cannot decide their own claim")
+        # ATOMIC read-decide-write. The old path read the record, checked it was unsettled, then
+        # put() with no version check: two concurrent decisions on one PENDING record both passed the
+        # settled-check and both wrote (double-settle), and under two-eyes each concurrent first
+        # approval read reviewers=[] and wrote its own single-element list, losing the other. Now every
+        # write is a version compare-and-set; a lost race REFETCHES and re-validates against the new
+        # state, so a settled record correctly refuses and a two-eyes tally accumulates.
+        for _ in range(8):
+            record = await self._store.get(verification_id)
+            if record is None or record.tenant != tenant:
+                raise ReviewNotFound("no such verification")
+            if record.verdict in (VERIFIED, REFUSED):
+                # Settled. Re-deciding would rewrite a decision someone already relied on; a change of
+                # mind is a NEW verification, which keeps both decisions in the history.
+                raise ReviewRefused(
+                    f"this verification is already {record.verdict}; start a new one to re-check")
+            if not reviewer:
+                raise ReviewRefused("a review must name its reviewer")
+            if reviewer == record.subject:
+                # The check that gets left out of a first version.
+                raise ReviewRefused("a reviewer cannot decide their own claim")
 
-        now = self._clock.now()
-        prior = list(record.provider_state.get("reviewers") or [])
+            now = self._clock.now()
+            prior = list(record.provider_state.get("reviewers") or [])
 
-        if approve and self._two_eyes:
-            # The control is TWO PEOPLE, not two clicks. Written as `reviewer not in prior` alone,
-            # a reviewer approving a second time fell through to the decision — one pair of eyes
-            # satisfying a two-eyes rule, which is the whole thing it exists to prevent.
-            if reviewer in prior or not prior:
-                if reviewer not in prior:
-                    prior = prior + [reviewer]
-                # One signature is not a decision when the platform has said it needs two.
-                record.provider_state = {**record.provider_state, "reviewers": prior}
-                record.updated_at = now
-                await self._store.put(record)
-                return record
-            # A second, DIFFERENT reviewer: the decision completes below.
+            if approve and self._two_eyes:
+                # The control is TWO PEOPLE, not two clicks. Written as `reviewer not in prior` alone,
+                # a reviewer approving a second time fell through to the decision — one pair of eyes
+                # satisfying a two-eyes rule, which is the whole thing it exists to prevent.
+                if reviewer in prior or not prior:
+                    if reviewer not in prior:
+                        prior = prior + [reviewer]
+                    # One signature is not a decision when the platform has said it needs two.
+                    record.provider_state = {**record.provider_state, "reviewers": prior}
+                    record.updated_at = now
+                    if not await self._store.cas_put(record):
+                        continue            # another reviewer wrote first — refetch and re-tally
+                    return record
+                # A second, DIFFERENT reviewer: the decision completes below.
 
-        record.evidence = Evidence(provider=MANUAL, reference=document_id, checked_at=now,
-                                   detail=note, reviewer=reviewer).to_dict()
-        record.verdict = VERIFIED if approve else REFUSED
-        record.expires_at = self._expiry_for(record.claim_type, now) if approve else 0.0
-        record.pending_until = 0.0
-        record.provider_state = {}
-        record.updated_at = now
-        await self._store.put(record)
+            record.evidence = Evidence(provider=MANUAL, reference=document_id, checked_at=now,
+                                       detail=note, reviewer=reviewer).to_dict()
+            record.verdict = VERIFIED if approve else REFUSED
+            record.expires_at = self._expiry_for(record.claim_type, now) if approve else 0.0
+            record.pending_until = 0.0
+            record.provider_state = {}
+            record.updated_at = now
+            if not await self._store.cas_put(record):
+                continue                    # lost the race — refetch; the winner may have settled it
+            break
+        else:
+            raise ReviewRefused("this verification is being decided concurrently; retry")
 
         if self._auditor is not None:
             # Both directions are audited here, unlike automated checks: a human refusing someone

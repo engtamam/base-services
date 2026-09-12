@@ -116,6 +116,44 @@ async def identity_seen(request: Request, claim_ref: str) -> dict:
     return {"seen": await registry.seen(claim_ref)}
 
 
+class ResolveIn(BaseModel):
+    verification_id: str
+    verified: bool
+    reference: str = ""
+    detail: str = ""
+
+
+@router.post("/verification/resolve", dependencies=[Depends(require_internal_token)])
+async def resolve_verification(request: Request, body: ResolveIn) -> dict:
+    """A provider's ASYNC callback: settle a PENDING verification the provider answered later.
+
+    Nafath-style providers push a prompt to a phone and answer minutes later — `pending` is a real
+    verdict whose only legitimate way forward is this callback. Without a route wired to
+    VerificationService.resolve(), a pending verification could ONLY ever lapse to EXPIRED via the
+    sweep, so no async check could ever succeed (audit verification-02).
+
+    Internal tier because the caller is the provider integration (a service), not a user. IDEMPOTENT:
+    resolve() only moves a still-PENDING record, so a retried callback changes nothing. 404 when the
+    id is unknown; 409 when it had already lapsed/settled (the returned verdict says which).
+    """
+    from app.core.stores import IdentityRegistry, VerificationStore
+    from app.core.verification_service import VerificationService
+
+    c = request.app.state.container
+    s = get_settings()
+    svc = VerificationService(
+        store=VerificationStore(c.datastore),
+        verifiers=await request.app.state.provider_pool.get(),
+        clock=c.clock, registry=IdentityRegistry(c.datastore), pii_salt=s.PII_SALT,
+        ttl_days=s.verify_ttl_days, pending_ttl=s.VERIFY_PENDING_TTL_SECONDS,
+        auditor=request.app.state.auditor, event_bus=c.event_bus)
+    record = await svc.resolve(body.verification_id, verified=body.verified,
+                               reference=body.reference, detail=body.detail)
+    if record is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    return record.public()
+
+
 @router.post("/verification/sweep-pending", dependencies=[Depends(require_internal_token)])
 async def sweep_pending(request: Request) -> dict:
     """Lapse verification prompts nobody answered. Called by the sweep CronJob.
