@@ -280,8 +280,16 @@ class Settings(BaseSettings):
     CWE_STEP_MAP_FILE: str = ""
 
     # ── audit-service (Phase 10) — all config-driven ───────────────────────
-    INTEGRITY_DRIVER: str = "hash-chain"     # none | hash-chain | hmac-chain
-    INTEGRITY_HMAC_KEY: str = ""             # required for hmac-chain
+    # KEYED by default. An unkeyed sha256 hash-chain is tamper-EVIDENT only against someone who
+    # cannot recompute the hashes — but the threat model for an audit log IS an attacker with backend
+    # access, who can delete their own events and re-anchor the whole chain with public sha256 so
+    # verify() passes clean (exactly what purge() does). Only an HMAC keyed with a secret held OUTSIDE
+    # the datastore resists that. hmac-chain requires INTEGRITY_HMAC_KEY (>=16 chars), so a deploy
+    # that has not provisioned one FAILS CLOSED at boot rather than running a log that cannot actually
+    # prove its own integrity. `hash-chain` remains selectable for a threat model that genuinely
+    # excludes backend access.
+    INTEGRITY_DRIVER: str = "hmac-chain"     # none | hash-chain | hmac-chain
+    INTEGRITY_HMAC_KEY: str = ""             # REQUIRED for hmac-chain (the default); held outside the DB
     EXPORTER_DEFAULT: str = "json"           # json | csv | ndjson
     AUDIT_PARTITION: str = "global"          # global | tenant
     RETENTION_DAYS: int = 0                  # 0 = keep forever

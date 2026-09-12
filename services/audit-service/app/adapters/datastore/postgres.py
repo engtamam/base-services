@@ -146,6 +146,29 @@ class PostgresDataStore:
             )
         return res.strip().endswith("1")
 
+    async def cas(self, collection: str, key: str, expected_version: int,
+                  value: dict[str, Any]) -> bool:
+        """Compare-and-set on the row's `version`. See the port. expected_version=0 -> INSERT ...
+        ON CONFLICT DO NOTHING (insert-if-absent); otherwise a version-pinned UPDATE that matches only
+        when the stored `version` equals `expected_version`. New version (expected+1) is stamped here."""
+        stored = dict(value)
+        stored["version"] = int(expected_version) + 1
+        pool = await self._ensure()
+        async with pool.acquire() as con:
+            if int(expected_version) == 0:
+                res = await con.execute(
+                    f"INSERT INTO {_TABLE} (collection, key, value) VALUES ($1,$2,$3) "  # nosec B608 - _TABLE is a trusted constant; all values are parameterized
+                    "ON CONFLICT (collection, key) DO NOTHING",
+                    collection, key, json.dumps(stored),
+                )
+            else:
+                res = await con.execute(
+                    f"UPDATE {_TABLE} SET value=$3 WHERE collection=$1 AND key=$2 "  # nosec B608 - _TABLE is a trusted constant; all values are parameterized
+                    "AND (value->>'version')::bigint = $4",
+                    collection, key, json.dumps(stored), int(expected_version),
+                )
+        return res.strip().endswith("1")
+
     async def delete(self, collection: str, key: str) -> bool:
         pool = await self._ensure()
         async with pool.acquire() as con:

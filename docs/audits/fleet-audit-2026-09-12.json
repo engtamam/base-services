@@ -406,7 +406,7 @@
       "issues": [
         {
           "id": "audit-service-01",
-          "status": "NEEDS_DECISION",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "high",
           "file": "services/audit-service/app/core/audit_service.py",
@@ -430,7 +430,7 @@
         },
         {
           "id": "audit-service-03",
-          "status": "NEEDS_DECISION",
+          "status": "FIXED",
           "category": "security",
           "severity": "medium",
           "file": "services/audit-service/app/config.py",
@@ -466,7 +466,7 @@
         },
         {
           "id": "audit-service-06",
-          "status": "NEEDS_DECISION",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "medium",
           "file": "services/audit-service/app/core/audit_service.py",

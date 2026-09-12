@@ -47,15 +47,27 @@ class AuditService:
             actor, ip, metadata = self._pii.apply(tenant=tenant, actor=actor, ip=ip,
                                                   metadata=metadata)
         partition = self._partition(tenant)
-        seq, head = await self._repo.head(partition)
-        evt = AuditEvent(
-            id=new_id(), seq=seq + 1, ts=now(), service=service, action=action,
-            actor=actor, resource=resource, tenant=tenant, ip=ip,
-            metadata=metadata or {}, prev_hash=head,
-        )
-        evt.hash = self._integrity.seal(head, evt.to_dict())
-        await self._repo.append(evt.to_dict(), partition)
-        return evt
+        # ATOMIC append. head() and append() were a non-atomic read-modify-write: two concurrent
+        # record()/ingest calls to one partition both read head seq=N and both chained seq N+1 onto
+        # the same prev_hash — duplicate seqs and a prev_hash the head no longer matched, which
+        # verify() then reported as tampering with one real event orphaned. Now the head is advanced
+        # by a version compare-and-set; a lost race REFETCHES the new head and re-seals against it, so
+        # every appended event chains onto the actual immediately-preceding hash. The head is advanced
+        # BEFORE the event row is written, so a crash between the two shows as a (detectable) missing
+        # tail, never as two events sharing a seq.
+        for _ in range(64):
+            seq, head, ver = await self._repo.head_versioned(partition)
+            evt = AuditEvent(
+                id=new_id(), seq=seq + 1, ts=now(), service=service, action=action,
+                actor=actor, resource=resource, tenant=tenant, ip=ip,
+                metadata=metadata or {}, prev_hash=head,
+            )
+            evt.hash = self._integrity.seal(head, evt.to_dict())
+            if await self._repo.advance_head(partition, ver, evt.seq, evt.hash):
+                await self._repo.append_event(evt.to_dict(), partition)
+                return evt
+            # another writer advanced the head first — refetch and re-seal against the new head
+        raise RuntimeError(f"audit append could not converge on partition {partition!r}")
 
     async def record_idempotent(self, *, idempotency_key: str = "", stale_seconds: float = 30.0,
                                 **fields: Any) -> tuple[dict[str, Any], bool]:
@@ -98,7 +110,11 @@ class AuditService:
             # committing), in which case we reclaim it and append. Otherwise tell the caller to retry.
             if ts - float(cur.get("ts", 0)) < stale_seconds:
                 raise IngestInProgress()
-            await self._repo.idempo_take_over(ns_key, ts)
+            # Reclaim the stale entry ATOMICALLY, pinned to the version we observed. If a second
+            # concurrent retry beats us to the take-over, our cas fails — treat it exactly like a live
+            # reserver (tell the caller to retry) rather than appending a duplicate event.
+            if not await self._repo.idempo_take_over(ns_key, int(cur.get("version", 0)), ts):
+                raise IngestInProgress()
 
         evt = await self.record(**fields)
         receipt = {"id": evt.id, "seq": evt.seq, "hash": evt.hash}

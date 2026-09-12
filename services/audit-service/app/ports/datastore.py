@@ -23,6 +23,18 @@ class DataStore(Protocol):
         a second event to the tamper-evident chain."""
         ...
 
+    async def cas(self, collection: str, key: str, expected_version: int,
+                  value: dict[str, Any]) -> bool:
+        """Compare-and-set on the row's `version`: write `value` only if the stored row's version
+        equals `expected_version`, returning True on success and False on a mismatch (a lost race).
+        The stored `version` is stamped here (expected+1); callers never set it. expected_version=0
+        means insert-if-absent — a row under optimistic locking seeds version>=1 on first write.
+
+        This is what serialises the tamper-evident chain head: two concurrent appends to one partition
+        both read head version V, both seal an event chained to the same prev_hash, and only one may
+        advance the head from V to V+1 — the loser refetches the new head and re-seals against it."""
+        ...
+
     async def delete(self, collection: str, key: str) -> bool: ...
 
     async def find(

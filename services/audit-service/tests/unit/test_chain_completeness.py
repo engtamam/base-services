@@ -48,8 +48,9 @@ def _chain(store, n, partition="global"):
         e = {"id": f"evt_{seq:05d}", "seq": seq, "prev_hash": prev, "service": "s", "action": "a",
              "ts": f"2026-01-01T00:00:{seq % 60:02d}"}
         e["hash"] = integ.seal(prev, e)
-        run(repo.append(e, partition))
+        run(repo.append_event(e, partition))    # event row; head advanced once below
         prev = e["hash"]
+    run(repo.set_head(partition, n, prev))
     return repo
 
 

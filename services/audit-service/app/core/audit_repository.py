@@ -36,11 +36,27 @@ class AuditRepository:
         m = await self._store.get(_META, partition)
         return (int(m["seq"]), m["head_hash"]) if m else (0, "")
 
-    async def append(self, event: dict[str, Any], partition: str) -> None:
+    async def head_versioned(self, partition: str) -> tuple[int, str, int]:
+        """Head plus the optimistic-lock version, for an atomic advance. A missing head is version 0
+        so the very first append advances it with an insert-if-absent (cas expected_version=0)."""
+        m = await self._store.get(_META, partition)
+        if not m:
+            return 0, "", 0
+        return int(m["seq"]), m["head_hash"], int(m.get("version", 0))
+
+    async def advance_head(self, partition: str, expected_version: int, seq: int,
+                           head_hash: str) -> bool:
+        """Atomically move the chain head from `expected_version` to the next version. Returns False
+        if another writer advanced it first — the caller then refetches and re-seals against the new
+        head, so two concurrent appends can never chain onto the same prev_hash."""
+        return await self._store.cas(_META, partition, expected_version,
+                                     {"partition": partition, "seq": seq, "head_hash": head_hash})
+
+    async def append_event(self, event: dict[str, Any], partition: str) -> None:
+        """Write the event row ONLY. The head is advanced separately by an atomic advance_head(),
+        which is what serialises the chain — so this never touches _META."""
         stored = {**event, "_partition": partition, "_seq_key": seq_key(event["seq"])}
         await self._store.put(_EVENTS, event["id"], stored)
-        await self._store.put(_META, partition,
-                              {"partition": partition, "seq": event["seq"], "head_hash": event["hash"]})
 
     async def partitions(self) -> list[str]:
         """From the tiny _META collection — one row per partition — never from the events.
@@ -86,11 +102,16 @@ class AuditRepository:
         await self._store.delete(_EVENTS, event_id)
 
     async def set_head(self, partition: str, seq: int, head_hash: str) -> None:
-        # Carry `partition` in the row, exactly as append() does — the row shape is
-        # {partition, seq, head_hash} everywhere, so partitions() and a backup key template can
-        # rely on it rather than on which write path last touched the row.
-        await self._store.put(_META, partition,
-                              {"partition": partition, "seq": seq, "head_hash": head_hash})
+        # Retention purge re-anchors the head. BUMP the version (read-then-cas-loop) so any append
+        # holding an older head version fails its cas and refetches — a purge and a concurrent append
+        # can never both write the head from the same base. Carry `partition` in the row, exactly as
+        # append_event does, so partitions() and the backup key template can rely on the row shape.
+        for _ in range(100):
+            _, _, ver = await self.head_versioned(partition)
+            if await self._store.cas(_META, partition, ver,
+                                     {"partition": partition, "seq": seq, "head_hash": head_hash}):
+                return
+        raise RuntimeError("could not set audit head under contention")
 
     # ── idempotency ────────────────────────────────────────────────────────────────────────────
     # The row carries its own `key` so idempo_prune (which reads VALUES via scan_all) can delete it.
@@ -98,13 +119,18 @@ class AuditRepository:
         return await self._store.get(_IDEMPO, key)
 
     async def idempo_reserve(self, key: str, ts: float) -> bool:
-        """Atomically claim an idempotency key for an in-flight append. True iff we won the claim."""
-        return await self._store.put_if_absent(_IDEMPO, key, {"key": key, "state": "pending", "ts": ts})
+        """Atomically claim an idempotency key for an in-flight append. True iff we won the claim.
+        A cas insert-if-absent seeds version 1, so a later take-over can pin that version."""
+        return await self._store.cas(_IDEMPO, key, 0, {"key": key, "state": "pending", "ts": ts})
 
-    async def idempo_take_over(self, key: str, ts: float) -> None:
-        """Re-claim a STALE pending key whose reserver never committed (crashed mid-append). Safe as
-        a plain put: staleness means there is no live competitor to race."""
-        await self._store.put(_IDEMPO, key, {"key": key, "state": "pending", "ts": ts})
+    async def idempo_take_over(self, key: str, expected_version: int, ts: float) -> bool:
+        """Re-claim a STALE pending key whose reserver never committed (crashed mid-append).
+
+        ATOMIC now: the old plain put let two retries that both judged the entry stale each take over
+        and each append, defeating the idempotency guard. This cas pins the version the caller
+        observed, so exactly one concurrent take-over wins; the loser is told to retry."""
+        return await self._store.cas(_IDEMPO, key, expected_version,
+                                     {"key": key, "state": "pending", "ts": ts})
 
     async def idempo_commit(self, key: str, receipt: dict[str, Any], ts: float) -> None:
         await self._store.put(_IDEMPO, key, {"key": key, "state": "done", "ts": ts, **receipt})

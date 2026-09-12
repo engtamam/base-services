@@ -43,6 +43,9 @@ ENV = {
     "INTERNAL_SERVICE_TOKEN": "x" * 40,
     "ENV": "test",
     "PII_SALT": "s" * 32,
+    # audit-service now defaults to the HMAC-keyed integrity chain (fails closed without a key), so a
+    # zero-infra boot needs one. Harmless to services that do not read it.
+    "INTEGRITY_HMAC_KEY": "openapi-boot-integrity-key-not-a-real-one",
 }
 
 # ── routes that only exist when a feature is switched on ──────────────────────
