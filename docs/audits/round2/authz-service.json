@@ -1,0 +1,90 @@
+{
+  "service": "authz-service",
+  "round": 2,
+  "findings": [
+    {
+      "id": "authz-r2-01",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "privilege-escalation",
+      "file": "app/api/v1/authz.py",
+      "line": 47,
+      "title": "No caps<=granter check: a tenant admin can grant capabilities it does not itself hold (default-open allowlist)",
+      "detail": "_guard_caps() (app/api/v1/authz.py:47-66) is the ONLY gate a tenant-scoped `authz.manage` caller passes when creating a role, updating a role, or setting a subject's direct capabilities. It calls forbidden_caps() (app/core/cap_policy.py:27-58), which rejects a cap ONLY if it (a) matches a denied prefix (`platform.` by default), (b) is a reserved cap (`authz.manage` by default), or (c) is outside a configured allowlist. The allowlist ships EMPTY (config.py:308 AUTHZ_TENANT_ASSIGNABLE_CAPS=\"\"), and an empty allowlist is treated as 'no positive restriction' (cap_policy.py:52 `bool(allowlist) and c not in allowlist`). There is NO comparison against the caller's own capability set (grep confirms principal.caps is only consulted for the platform.authz/operator branch). So with the shipped default config, a caller holding only `authz.manage` can mint a role containing high-value caps it has never held (e.g. `wallet.payout`, `billing.refund`, `compliance.erase`) and assign it to itself via PUT /subjects/{subject}/roles, then obtain those caps in its next token from GET /internal/authz/effective (_subject_caps resolves assignment role IDs).",
+      "failure_scenario": "A tenant owner is provisioned with role caps=[authz.manage]. They POST /api/v1/roles {name:'x', capabilities:['wallet.payout','billing.refund']} (passes: neither is platform.* nor authz.manage, allowlist empty). They PUT /api/v1/subjects/<self>/roles {roles:['x']}. Identity's next /internal/authz/effective mints them a token carrying wallet.payout. They now drain wallet funds and issue refunds they were never granted — capabilities strictly above their own.",
+      "fix": "Enforce caps<=granter for a tenant-scoped caller: reject any assigned capability not present in principal.caps (with wildcard expansion consistent with the RBAC engine), independent of the allowlist. Keep the denylist/allowlist as an additional narrowing. Alternatively ship a non-empty curated AUTHZ_TENANT_ASSIGNABLE_CAPS default and add a boot guard that refuses self-service tenant role management while the allowlist is empty."
+    },
+    {
+      "id": "authz-r2-02",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "privilege-escalation",
+      "file": "app/api/v1/authz.py",
+      "line": 69,
+      "title": "ALLOW-policy vector inherits the same default-open gap: tenant admin can grant sensitive actions tenant-wide",
+      "detail": "_guard_policy() (app/api/v1/authz.py:69-88) correctly refuses wildcard action/resource for a tenant caller and runs the action through _guard_caps([action]). But because _guard_caps is default-open (see authz-r2-01) and does not compare against the caller's own caps, a tenant `authz.manage` holder can create {effect:'allow', action:'wallet.payout', resource:'wallet:*-but-not-literal-*'} style policies for any concrete, non-platform action. The CombinedEngine (app/adapters/policy/combined.py:16-25) treats a matching ABAC allow (AbacEngine, empty condition always holds) as equivalent to holding the capability, so the policy grants that action to any subject in the tenant whose request matches — a capability grant by another name, above the granter's own power.",
+      "failure_scenario": "Tenant admin (caps=[authz.manage]) POSTs /api/v1/policies {effect:'allow', action:'compliance.erase', resource:'subject:x'}. resource is not '*', action is not platform.*/authz.manage, allowlist empty -> accepted. Any request for compliance.erase on that resource now allows, granting an action the admin never held.",
+      "fix": "Same root fix as authz-r2-01: gate the policy's action (and ideally resource scope) against the caller's own effective capabilities, not merely the denylist. Consider also refusing broad non-'*' resource globs (e.g. containing '?' or prefix matches) for tenant callers."
+    },
+    {
+      "id": "authz-r2-03",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "config-fail-open",
+      "file": "app/config.py",
+      "line": 301,
+      "title": "platform.* denial depends entirely on a mutable config prefix with no boot guard",
+      "detail": "The 'safe by default' claim in cap_policy.py rests on AUTHZ_TENANT_DENIED_CAP_PREFIXES containing 'platform.' (config.py:301) and AUTHZ_TENANT_DENIED_CAPS containing 'authz.manage' (config.py:304). Both are plain env strings with no validator/boot guard asserting the platform. prefix (or authz.manage) is present. An operator who sets AUTHZ_TENANT_DENIED_CAP_PREFIXES=\"\" (e.g. to add a different prefix and fat-fingering it, or clearing it) silently removes the platform.* wall for every tenant-scoped caller, turning authz-r2-01 into a full platform-privilege escalation with zero startup warning.",
+      "failure_scenario": "Operator edits the denied-prefixes env to add a new prefix but leaves it empty/typo'd. Service boots healthy. A tenant admin now assigns platform.authz to itself via POST /api/v1/roles + PUT /subjects/self/roles, becoming a platform operator across all tenants.",
+      "fix": "Add an assert in Settings (like assert_pii_config_ok) that refuses to start in production unless authz_tenant_denied_cap_prefixes contains 'platform.' and authz_tenant_denied_caps contains 'authz.manage' (or an explicit override flag acknowledges the risk)."
+    },
+    {
+      "id": "authz-r2-04",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "audit-integrity",
+      "file": "app/api/v1/authz.py",
+      "line": 249,
+      "title": "set_roles records the audit event under principal.tenant, not the resolved write tenant",
+      "detail": "In set_roles (app/api/v1/authz.py:240-256) the write-ahead audit at line 248-253 uses tenant=principal.tenant, but the assignment is actually written to tenant=_op_tenant(principal) computed at line 254. For a platform operator whose token carries no tenant claim, principal.tenant is None while _op_tenant() resolves to 'global' (app/api/v1/authz.py:34-37), so the assignment.roles_assigned event is recorded under a tenant (None) different from where the grant landed ('global'). This is exactly the class of tenant-mislabeling the create_role handler was explicitly fixed for (see its comment at lines 128-130: 'Record under the tenant the role is ACTUALLY written to'), but the fix was not applied here.",
+      "failure_scenario": "A platform operator (no tenant claim) assigns roles; the grant lands in 'global' but the immutable audit row is stamped with an empty/None tenant, so a later 'who was granted what in global' query misses the event.",
+      "fix": "Compute tenant = _op_tenant(principal) BEFORE the audit call and pass that tenant to auditor.record(), matching create_role/update_role."
+    },
+    {
+      "id": "authz-r2-05",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "concurrency-toctou",
+      "file": "app/api/internal.py",
+      "line": 172,
+      "title": "bootstrap_tenant TOCTOU: concurrent retries can create duplicate same-name roles",
+      "detail": "bootstrap_tenant (app/api/internal.py:136-195) reads existing roles into a dict keyed by name (line 172), then for each requested role either updates the matched id or creates a new one (lines 175-184). There is no uniqueness constraint on (tenant, name) in the datastore and no lock, so two concurrent bootstrap calls for the same fresh tenant (a provisioning saga retried, or fired twice) can both observe name absent and both create() a role with the same name and distinct ids. RoleStore.by_name (app/core/stores.py:25-38) then returns whichever the store's (name asc, id/key) ordering yields first, so subsequent name-based resolution becomes nondeterministic, and the owner may be assigned one id while later name lookups resolve the other.",
+      "failure_scenario": "Provisioning saga retries bootstrap concurrently. Two 'owner-admin' roles are created with the same name. The owner is assigned role id A; a later name-keyed reconcile updates role id B's capabilities, leaving the owner on the stale role A.",
+      "fix": "Make bootstrap idempotency robust to concurrency: enforce a unique (collection,tenant,name) at the store level for roles, or perform create-if-absent through an atomic upsert keyed on (tenant,name), or serialize bootstrap per tenant. At minimum, de-duplicate by name after the read and before create."
+    },
+    {
+      "id": "authz-r2-06",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "dos-unbounded-input",
+      "file": "app/api/internal.py",
+      "line": 84,
+      "title": "internal_effective `roles` query and CheckIn.extra_caps are unbounded, each driving per-item store/cache lookups",
+      "detail": "GET /internal/authz/effective (app/api/internal.py:83-108) accepts `roles` as an unbounded comma-separated query string; each token drives a _resolve_role() -> store find/get plus a cache round-trip in _role_caps (app/core/authz_service.py:194-219). Similarly CheckIn.extra_caps (app/api/internal.py:31) has no max_items. A caller (or a compromised internal peer) passing tens of thousands of role refs forces a proportional number of datastore reads on a single-worker event loop. Internal-token gated, so exposure is limited to authenticated service callers, but there is no per-request fan-out cap.",
+      "failure_scenario": "A buggy or hostile internal caller issues GET /internal/authz/effective?roles=<50000 comma-separated names>. Each unresolved name (REJECT mode still evaluates them until the first miss, IGNORE mode evaluates all) triggers store lookups, saturating the DB pool and stalling the PDP hot path for every tenant.",
+      "fix": "Bound the number of roles parsed per request (e.g. cap at a configured limit and 400 beyond it) and add max_items to CheckIn.extra_caps and the roles input."
+    },
+    {
+      "id": "authz-r2-07",
+      "severity": "info",
+      "status": "CONFIRMED",
+      "category": "consistency",
+      "file": "app/api/authz.py",
+      "line": 32,
+      "title": "PAP admin gate ignores wildcard caps while the PDP honors them (fail-closed, but inconsistent)",
+      "detail": "require_any_capability (app/api/authz.py:32-41) uses exact membership (`c in held`), so a principal with caps=['*'] or ['platform.*'] is REFUSED at every PAP route, whereas the RbacEngine (app/adapters/policy/rbac.py:9-16) treats '*' and 'x.*' as granting. A genuine super-admin token expressed with a wildcard cannot administer authz. This is fail-closed (safe) but is a latent surprise: the service's own authorization does not follow the wildcard semantics it hands out to the rest of the platform, and an operator may 'grant' platform.* to an admin and find them locked out of authz management.",
+      "failure_scenario": "Operator mints an admin token with caps=['*'] expecting full access; every /api/v1/roles call returns 403, and the misconfiguration reads as a bug rather than a policy choice.",
+      "fix": "Either document that PAP gates require the exact platform.authz/authz.manage strings, or apply the same cap_matches() wildcard expansion used by the RBAC engine so wildcard admins behave consistently."
+    }
+  ]
+}

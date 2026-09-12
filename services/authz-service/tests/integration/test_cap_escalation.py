@@ -43,8 +43,10 @@ def _tok(caps, tenant="tenant-A", sub="owner"):
                        "tenant": tenant, "caps": caps}, SECRET, algorithm="HS256")
 
 
-def _tenant_admin():
-    return {"Authorization": "Bearer " + _tok(["authz.manage"])}
+def _tenant_admin(extra_caps=()):
+    # A tenant admin can only hand out capabilities it itself holds (caps<=granter), so tests that
+    # assign benign caps must give the admin those caps too.
+    return {"Authorization": "Bearer " + _tok(["authz.manage", *extra_caps])}
 
 
 def _operator():
@@ -82,7 +84,7 @@ def test_tenant_admin_cannot_update_a_role_to_add_a_platform_cap(env_guard):
 # ── legitimate cases still work ───────────────────────────────────────────────
 def test_tenant_admin_may_assign_ordinary_tenant_caps(env_guard):
     app = _make_app()
-    r = app.post("/api/v1/roles", headers=_tenant_admin(),
+    r = app.post("/api/v1/roles", headers=_tenant_admin(["billing.self", "tickets.write"]),
                  json={"name": "support", "capabilities": ["billing.self", "tickets.write"]})
     assert r.status_code == 201
 
@@ -95,12 +97,81 @@ def test_operator_is_unrestricted(env_guard):
     assert r.status_code == 201
 
 
+# ── caps<=granter: the subset rule (authz-r2-01) ──────────────────────────────
+def test_tenant_admin_cannot_grant_a_cap_it_does_not_hold(env_guard):
+    # Caller holds {a,b}; granting {a,c} must be refused for c (a caller can never grant above itself).
+    app = _make_app()
+    hdr = _tenant_admin(["wallet.read", "billing.self"])  # holds a=wallet.read, b=billing.self
+    r = app.post("/api/v1/roles", headers=hdr,
+                 json={"name": "escalate", "capabilities": ["wallet.read", "wallet.payout"]})
+    # Refused because wallet.payout is not held; wallet.read (held) alone would have been fine.
+    # (The 403 body is scrubbed to a generic FORBIDDEN by middleware, so we assert on status only.)
+    assert r.status_code == 403
+
+
+def test_tenant_admin_can_grant_exactly_what_it_holds(env_guard):
+    app = _make_app()
+    hdr = _tenant_admin(["wallet.read", "billing.self"])
+    r = app.post("/api/v1/roles", headers=hdr,
+                 json={"name": "ok", "capabilities": ["wallet.read", "billing.self"]})
+    assert r.status_code == 201
+
+
+def test_tenant_admin_wildcard_holding_grants_within_it(env_guard):
+    # Holding files.* lets the caller grant files.read, but not wallet.payout.
+    app = _make_app()
+    hdr = _tenant_admin(["files.*"])
+    ok = app.post("/api/v1/roles", headers=hdr,
+                  json={"name": "f", "capabilities": ["files.read", "files.write"]})
+    assert ok.status_code == 201
+    bad = app.post("/api/v1/roles", headers=hdr,
+                   json={"name": "b", "capabilities": ["wallet.payout"]})
+    assert bad.status_code == 403
+
+
+def test_direct_subject_grant_is_subset_gated(env_guard):
+    app = _make_app()
+    hdr = _tenant_admin(["billing.self"])
+    r = app.put("/api/v1/subjects/x/roles", headers=hdr,
+                json={"roles": [], "capabilities": ["billing.refund"]})
+    assert r.status_code == 403
+
+
+def test_denylist_beats_subset_even_if_caller_holds_the_platform_cap(env_guard):
+    # A tenant caller that somehow holds platform.foo (but not platform.authz, so not an operator)
+    # still cannot hand it out: the platform.* wall refuses it independent of the subset rule.
+    app = _make_app()
+    hdr = {"Authorization": "Bearer " + _tok(["authz.manage", "platform.foo"])}
+    r = app.post("/api/v1/roles", headers=hdr,
+                 json={"name": "sneaky", "capabilities": ["platform.foo"]})
+    assert r.status_code == 403
+
+
+# ── ALLOW-policy vector inherits the subset gate (authz-r2-02) ─────────────────
+def test_tenant_admin_cannot_allow_an_action_it_does_not_hold(env_guard):
+    app = _make_app()
+    hdr = _tenant_admin(["billing.self"])
+    r = app.post("/api/v1/policies", headers=hdr,
+                 json={"effect": "allow", "action": "compliance.erase", "resource": "subject:x"})
+    assert r.status_code == 403
+
+
+def test_tenant_admin_may_allow_an_action_it_holds(env_guard):
+    app = _make_app()
+    hdr = _tenant_admin(["reports.export"])
+    r = app.post("/api/v1/policies", headers=hdr,
+                 json={"effect": "allow", "action": "reports.export", "resource": "report:1"})
+    assert r.status_code == 201
+
+
 # ── the optional positive allowlist ───────────────────────────────────────────
 def test_a_configured_allowlist_rejects_anything_outside_it(env_guard):
     app = _make_app(AUTHZ_TENANT_ASSIGNABLE_CAPS="billing.self,tickets.write")
-    ok = app.post("/api/v1/roles", headers=_tenant_admin(),
+    # Caller holds both caps, so the subset rule passes and the ALLOWLIST is what decides.
+    hdr = _tenant_admin(["billing.self", "reports.export"])
+    ok = app.post("/api/v1/roles", headers=hdr,
                   json={"name": "ok", "capabilities": ["billing.self"]})
     assert ok.status_code == 201
-    bad = app.post("/api/v1/roles", headers=_tenant_admin(),
+    bad = app.post("/api/v1/roles", headers=hdr,
                    json={"name": "bad", "capabilities": ["reports.export"]})
     assert bad.status_code == 403

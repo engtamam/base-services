@@ -1,7 +1,7 @@
 """cap_policy.forbidden_caps — the pure rule behind the escalation guard."""
 from __future__ import annotations
 
-from app.core.cap_policy import forbidden_caps
+from app.core.cap_policy import caps_exceeding_granter, forbidden_caps
 
 PREFIXES = ("platform.",)
 DENIED = frozenset({"authz.manage"})
@@ -44,3 +44,30 @@ def test_result_is_deduplicated_and_order_preserving():
 
 def test_blank_caps_are_ignored():
     assert _f(["", "  "]) == []
+
+
+# ── caps_exceeding_granter — the caps<=granter subset rule ─────────────────────
+def test_subset_refuses_a_cap_the_granter_does_not_hold():
+    # caller holds {a,b}, grants {a,c} -> only c is refused
+    assert caps_exceeding_granter(["a", "c"], frozenset({"a", "b"})) == ["c"]
+
+
+def test_subset_allows_exactly_the_held_caps():
+    assert caps_exceeding_granter(["a", "b"], frozenset({"a", "b"})) == []
+
+
+def test_subset_star_grants_anything():
+    assert caps_exceeding_granter(["wallet.payout", "x"], frozenset({"*"})) == []
+
+
+def test_subset_wildcard_prefix_grants_within_namespace():
+    assert caps_exceeding_granter(["files.read", "files.write"], frozenset({"files.*"})) == []
+    assert caps_exceeding_granter(["wallet.payout"], frozenset({"files.*"})) == ["wallet.payout"]
+
+
+def test_subset_empty_granter_refuses_everything():
+    assert caps_exceeding_granter(["a", "b"], frozenset()) == ["a", "b"]
+
+
+def test_subset_is_deduplicated_and_order_preserving():
+    assert caps_exceeding_granter(["c", "c", "d"], frozenset({"a"})) == ["c", "d"]

@@ -306,6 +306,12 @@ class Settings(BaseSettings):
     #     above (so this guard is safe-by-default without bricking benign tenant roles). Set it to a
     #     curated tenant-safe set before enabling customer self-service role management.
     AUTHZ_TENANT_ASSIGNABLE_CAPS: str = ""
+    #   ALLOW_UNSAFE_TENANT_CAPS — the explicit, audited override that lets the service boot in
+    #     production WITHOUT the platform.* prefix wall and the authz.manage reserved deny. Default
+    #     False: a fat-fingered or emptied denylist must refuse to START, not silently drop the wall
+    #     (the subset caps<=granter rule still holds regardless, but the denylist is defence in depth
+    #     and losing it silently is unacceptable). Set True only with eyes open.
+    AUTHZ_ALLOW_UNSAFE_TENANT_CAPS: bool = False
 
     # ── Derived helpers ─────────────────────────────────────────────────────
     @property
@@ -392,6 +398,36 @@ class Settings(BaseSettings):
         if self.AUDIT_SERVICE_URL and not self.AUDIT_SERVICE_URL.startswith(("http://", "https://")):
             raise ValueError(
                 f"AUDIT_SERVICE_URL {self.AUDIT_SERVICE_URL!r} must start with http:// or https://"
+            )
+
+    def assert_authz_caps_config_ok(self) -> None:
+        """Boot guard. Refuse to start production with the platform.* capability wall missing.
+
+        The tenant escalation guard has two layers: the caps<=granter SUBSET rule (needs no config,
+        always on) and this config-driven DENYLIST — the platform.* prefix wall plus the authz.manage
+        reserved deny. The denylist is defence in depth, and it is only as good as two env strings.
+
+        An operator editing AUTHZ_TENANT_DENIED_CAP_PREFIXES to add a prefix and emptying/typo'ing it,
+        or clearing AUTHZ_TENANT_DENIED_CAPS, would drop the wall for every tenant-scoped caller with
+        zero startup warning — turning a delegated tenant admin one PUT away from platform.authz. A
+        misconfiguration this consequential must refuse to START, not fail open silently.
+
+        Fail CLOSED: production requires 'platform.' among the denied prefixes and 'authz.manage' among
+        the denied caps, unless AUTHZ_ALLOW_UNSAFE_TENANT_CAPS explicitly acknowledges the risk.
+        """
+        if not self.is_production or self.AUTHZ_ALLOW_UNSAFE_TENANT_CAPS:
+            return
+        missing: list[str] = []
+        if "platform." not in self.authz_tenant_denied_cap_prefixes:
+            missing.append("AUTHZ_TENANT_DENIED_CAP_PREFIXES must contain 'platform.'")
+        if "authz.manage" not in self.authz_tenant_denied_caps:
+            missing.append("AUTHZ_TENANT_DENIED_CAPS must contain 'authz.manage'")
+        if missing:
+            raise ValueError(
+                "authz tenant-capability wall is not safe by default in production: "
+                + "; ".join(missing)
+                + ". A tenant admin could then be granted platform-scoped power. Restore the denylist, "
+                "or set AUTHZ_ALLOW_UNSAFE_TENANT_CAPS=true to acknowledge the risk explicitly."
             )
 
     @field_validator("INTERNAL_SERVICE_TOKEN")

@@ -12,7 +12,7 @@ from app.api.auth import Principal
 from app.api.authz import require_any_capability
 from app.config import get_settings
 from app.core.authz_service import AuthzService
-from app.core.cap_policy import forbidden_caps
+from app.core.cap_policy import caps_exceeding_granter, forbidden_caps
 from app.core.stores import AssignmentStore, PolicyStore, RoleStore
 from app.core.pii import subject_ref
 
@@ -47,19 +47,37 @@ def _guard_tenant(principal: Principal, obj_tenant: str) -> None:
 def _guard_caps(principal: Principal, caps: list[str] | None) -> None:
     """Refuse a tenant-scoped caller assigning capabilities that escalate beyond their tenant.
 
-    Isolating the ROW to the tenant (`_op_tenant`) is not isolating the POWER the row grants: without
-    this, an `authz.manage` holder could put `platform.*` / `authz.manage` in a role and assign it to
-    themselves. A platform operator (`platform.authz`) is unrestricted — delegated administration is
-    their job. Enforced server-side, at every route that accepts `capabilities`.
+    Isolating the ROW to the tenant (`_op_tenant`) is not isolating the POWER the row grants. TWO
+    independent rules, both applied to a tenant-scoped caller (a platform operator — `platform.authz`
+    — is unrestricted, delegated administration is their job):
+
+      1. SUBSET (caps<=granter): every capability handed out must already be held by the granting
+         principal (`principal.caps`, with the same wildcard expansion the RBAC engine decides with).
+         A caller can NEVER grant a capability it does not itself hold — the core anti-escalation rule.
+         It needs no config, so it cannot be silently switched off by a mis-set env prefix.
+      2. DENYLIST/ALLOWLIST: the config-driven platform.* wall and optional positive allowlist, an
+         ADDITIONAL narrowing on top of (1) — e.g. it refuses `authz.manage` even to a holder of it,
+         so a tenant admin cannot mint the grant-further-roles power by proxy.
+
+    Enforced server-side, at every route that accepts `capabilities`.
     """
     if caps is None:
         return
+    is_operator = "platform.authz" in principal.caps
     s = get_settings()
     bad = forbidden_caps(
-        caps, is_operator="platform.authz" in principal.caps,
+        caps, is_operator=is_operator,
         denied_prefixes=s.authz_tenant_denied_cap_prefixes,
         denied_caps=s.authz_tenant_denied_caps,
         allowlist=s.authz_tenant_assignable_caps)
+    if not is_operator:
+        # Subset rule, independent of the config denylist above. Merge (order-preserving, de-duped)
+        # so the 403 names every refused cap once.
+        seen = set(bad)
+        for c in caps_exceeding_granter(caps, principal.caps):
+            if c not in seen:
+                seen.add(c)
+                bad.append(c)
     if bad:
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
@@ -242,16 +260,19 @@ async def set_roles(request: Request, subject: str, body: AssignIn,
                     principal: Principal = Depends(_ADMIN)) -> dict:
     # The most direct escalation vector: a DIRECT capability grant to a subject, no role in between.
     _guard_caps(principal, body.capabilities)
+    # Record under the tenant the assignment is ACTUALLY written to (a platform operator with no
+    # tenant claim writes to 'global', not to a None tenant), matching create_role/update_role — a
+    # later "who was granted what in <tenant>" query must find this event where the grant landed.
+    tenant = _op_tenant(principal)
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
-        "subject.roles_assigned", actor=principal.subject, tenant=principal.tenant, resource=f"subject:{subject_ref(get_settings().PII_SALT, principal.tenant, subject)}",
+        "subject.roles_assigned", actor=principal.subject, tenant=tenant, resource=f"subject:{subject_ref(get_settings().PII_SALT, tenant, subject)}",
         ip=request.client.host if request.client else "",
         # WHAT was granted — a dispute over "who could do X, and since when" needs the grant itself,
         # not just that some assignment happened. This is the set_roles REPLACE, so it is the new state.
         metadata={"roles": body.roles, "capabilities": body.capabilities})
-    tenant = _op_tenant(principal)
     a = await build_authz(request).set_subject_roles(subject, tenant, body.roles, body.capabilities)
     return a.to_dict()
 

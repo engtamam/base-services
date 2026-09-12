@@ -24,6 +24,47 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 
+def _granter_holds(cap: str, granter_caps: frozenset[str], wildcard: bool) -> bool:
+    """True if `granter_caps` already grants `cap` — the SAME semantics the RbacEngine decides with
+    (app/adapters/policy/rbac.py:cap_matches), so a caller can grant exactly what its own token can
+    already do and nothing more. `*` grants anything; `x.*` grants `x.<anything>`; otherwise an exact
+    match. Kept here (not imported from the adapter) so this core rule has no upward dependency."""
+    if cap in granter_caps or "*" in granter_caps:
+        return True
+    if wildcard:
+        for held in granter_caps:
+            if held.endswith(".*") and cap.startswith(held[:-1]):  # "files.*" -> "files."
+                return True
+    return False
+
+
+def caps_exceeding_granter(
+    caps: Iterable[str],
+    granter_caps: frozenset[str],
+    *,
+    wildcard: bool = True,
+) -> list[str]:
+    """The subset gate: capabilities the granter does NOT itself hold, and therefore may not hand out.
+
+    This is the caps<=granter rule (a caller can never grant a capability above its own power). It is
+    DELIBERATELY independent of the platform.* denylist / allowlist in `forbidden_caps` — the denylist
+    is a coarse, config-driven wall that can be misconfigured; this check needs no config at all and so
+    cannot be silently disabled. The two are applied together at the user tier.
+
+    Order-preserving and de-duplicated so a 403 can name exactly what was refused.
+    """
+    bad: list[str] = []
+    seen: set[str] = set()
+    for cap in caps:
+        c = (cap or "").strip()
+        if not c or c in seen:
+            continue
+        if not _granter_holds(c, granter_caps, wildcard):
+            seen.add(c)
+            bad.append(c)
+    return bad
+
+
 def forbidden_caps(
     caps: Iterable[str],
     *,
