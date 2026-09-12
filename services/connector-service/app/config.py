@@ -257,6 +257,10 @@ class Settings(BaseSettings):
     RATELIMIT_URL: str = ""
     RATELIMIT_MAX: int = 100
     RATELIMIT_WINDOW_SECONDS: int = 60
+    # TTL for the per-record idempotency ledger (sync_seen). Sized to the widest provider replay
+    # window; the scheduled prune deletes rows older than this so the ledger cannot grow forever
+    # (connector-r2-04). Dedup still holds within the window.
+    SYNC_SEEN_TTL_SECONDS: int = 1_209_600     # 14 days
     RATELIMIT_DEGRADE: str = "local"            # local | closed | open
     RATELIMIT_KEY_PARTS: str = "subject,ip"     # subject | ip | tenant | route (comma list)
     RATELIMIT_ROUTES: str = ""                  # JSON: [{"prefix","class","limit","window_s","cost"}]

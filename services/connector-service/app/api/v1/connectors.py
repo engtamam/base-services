@@ -104,6 +104,11 @@ class SyncIn(BaseModel):
     resource: str = Field(min_length=1, max_length=128)
     direction: str = Field(default="pull", pattern="^(pull|push)$")
     records: list[dict[str, Any]] = Field(default_factory=list)
+    # Opt-in at-least-once for user-driven pulls (connector-r2-08): default remains at-most-once
+    # (auto-advance). A caller wanting no-loss delivery sets at_least_once and echoes the returned
+    # cursor as ack_cursor on the next pull — the same protocol the scheduled/internal path uses.
+    at_least_once: bool = False
+    ack_cursor: str = ""
 
 
 # ── provider specs (make a provider config, not code) ──────────────────────────
@@ -241,7 +246,8 @@ async def sync(request: Request, body: SyncIn, principal: Principal = Depends(_A
         metadata={"direction": body.direction, "resource": body.resource})
     if body.direction == "pull":
         return await engine.pull(connection_id=conn.id, resource=body.resource, spec=spec,
-                                 field_map=field_map)
+                                 field_map=field_map, at_least_once=body.at_least_once,
+                                 ack_cursor=body.ack_cursor)
     return await engine.push(connection_id=conn.id, resource=body.resource,
                              records=body.records, spec=spec, field_map=field_map)
 

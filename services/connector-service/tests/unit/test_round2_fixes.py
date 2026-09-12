@@ -102,3 +102,21 @@ def test_evict_lock_removes_the_connection_lock():
     _tm.evict_lock("cn_x")
     assert "cn_x" not in _tm._LOCKS
     _tm.evict_lock("cn_x")                              # idempotent
+
+
+# r2-04 — the sync_seen idempotency ledger is pruned by TTL (bounded growth).
+def test_sync_seen_prune_removes_old_rows_keeps_recent():
+    from app.adapters.datastore.memory import MemoryDataStore
+    from app.core.stores import SeenStore
+    st = MemoryDataStore()
+    seen = SeenStore(st)
+    run(seen.reserve("old-key"))
+    run(seen.reserve("new-key"))
+    # backdate one row so it falls outside the TTL window
+    row = run(st.get("sync_seen", "old-key"))
+    row["ts"] = 1000.0
+    run(st.put("sync_seen", "old-key", row))
+    removed = run(seen.prune(older_than_seconds=100, now=2000.0))
+    assert removed == 1
+    assert run(seen.seen("old-key")) is False        # pruned
+    assert run(seen.seen("new-key")) is True          # within the window, kept

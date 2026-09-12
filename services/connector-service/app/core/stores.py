@@ -1,6 +1,8 @@
 """Repositories over the generic DataStore + a per-tenant cache generation."""
 from __future__ import annotations
 
+import time as _time
+
 from app.core.models import Connection, ProviderSpec, SyncRecord, SyncRun
 from app.ports.datastore import DataStore
 
@@ -100,10 +102,25 @@ class SeenStore:
     async def reserve(self, key: str) -> bool:
         """Atomically claim `key`: True if WE reserved it (first-seen → process), False if it was
         already taken. Replaces the non-atomic seen()->mark() pair so two concurrent syncs cannot both
-        process the same record (double-write). cas(expected=0) is an insert-if-absent."""
-        return await self._store.cas(_SEEN, key, 0, {"k": key})
+        process the same record (double-write). cas(expected=0) is an insert-if-absent. Each row is
+        stamped with `ts` so the prune sweep can bound the collection's growth (connector-r2-04)."""
+        return await self._store.cas(_SEEN, key, 0, {"k": key, "ts": _time.time()})
 
     async def release(self, key: str) -> None:
         """Undo a reservation whose work then FAILED (e.g. a push whose provider call errored), so a
         retry may process the record again — otherwise a failed send would be skipped forever."""
         await self._store.delete(_SEEN, key)
+
+    async def prune(self, *, older_than_seconds: int, now: float | None = None,
+                    cap: int = 100_000) -> int:
+        """Delete idempotency rows older than `older_than_seconds`. The sync_seen collection grew one
+        permanent row per record forever (connector-r2-04); a TTL sized to the provider's max replay
+        window bounds it while keeping dedup within the window. sweeper: a bounded page per run."""
+        cutoff = (now if now is not None else _time.time()) - max(0, int(older_than_seconds))
+        removed = 0
+        # sweeper: a retention pass over the idempotency ledger — a full read IS the operation.
+        for row in await self._store.scan_all(_SEEN, cap):
+            if float(row.get("ts", 0)) < cutoff:
+                await self._store.delete(_SEEN, row.get("k") or row.get("id", ""))
+                removed += 1
+        return removed

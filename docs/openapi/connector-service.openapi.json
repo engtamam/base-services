@@ -326,6 +326,16 @@
       },
       "app__api__v1__connectors__SyncIn": {
         "properties": {
+          "ack_cursor": {
+            "default": "",
+            "title": "Ack Cursor",
+            "type": "string"
+          },
+          "at_least_once": {
+            "default": false,
+            "title": "At Least Once",
+            "type": "boolean"
+          },
           "connection_id": {
             "title": "Connection Id",
             "type": "string"
@@ -1213,6 +1223,74 @@
           }
         },
         "summary": "Backup Verify",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/connectors/prune-seen": {
+      "post": {
+        "description": "Retention for the per-record idempotency ledger (connector-r2-04): a scheduler calls this to\ndelete sync_seen rows older than SYNC_SEEN_TTL_SECONDS, bounding the collection's growth.",
+        "operationId": "internal_prune_seen_internal_connectors_prune_seen_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Internal Prune Seen Internal Connectors Prune Seen Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Internal Prune Seen",
         "tags": [
           "internal"
         ]

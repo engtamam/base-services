@@ -133,6 +133,17 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     return await eraser.erase(body.tenant, body.subject)
 
 
+@router.post("/connectors/prune-seen", dependencies=[Depends(require_internal_token)])
+async def internal_prune_seen(request: Request) -> dict:
+    """Retention for the per-record idempotency ledger (connector-r2-04): a scheduler calls this to
+    delete sync_seen rows older than SYNC_SEEN_TTL_SECONDS, bounding the collection's growth."""
+    from app.core.stores import SeenStore
+    s = get_settings()
+    removed = await SeenStore(request.app.state.container.datastore).prune(
+        older_than_seconds=s.SYNC_SEEN_TTL_SECONDS)
+    return {"pruned": removed}
+
+
 # ── Backup (backup-service orchestrates; this service produces sealed archives) ──────────────
 # What this service holds is declared in app/backup_manifest.py; how it is read lives in
 # core/backup.py. backup-service never opens this database — it calls export/verify/import over the
