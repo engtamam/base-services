@@ -302,6 +302,16 @@ class Settings(BaseSettings):
     # an uncached resolve would put a datastore read and an AES open on every clearance.
     SIGNER_CREDENTIAL_REFRESH_SECONDS: int = 30
     ZATCA_LIST_LIMIT: int = 100
+    # Stuck-tail alarm: how far the RESERVED ICV head may lead the contiguously-SIGNED head before
+    # the chain tail is reported "stuck". A permanently-unsignable predecessor defers every later
+    # ICV (strict in-order signing), so a growing gap between reserved and signed is the earliest
+    # visible symptom — surfaced on /internal/zatca/head-lag so an operator sees it fast and can
+    # correct-and-resign or release the tail before a whole day of invoices piles up behind one.
+    ZATCA_STUCK_TAIL_THRESHOLD: int = 5
+    # Bounds the sweep-side orphan reconcile + a tail-release scan: the highest ICV either walks up
+    # to. A taxpayer's reserved head is far below this; it exists only so a corrupt head hint can
+    # never turn a reconcile into an unbounded loop.
+    ZATCA_RECONCILE_MAX_SCAN: int = 100_000
 
     @property
     def seal_key(self) -> str:

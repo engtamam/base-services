@@ -36,6 +36,24 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "critical": False,
     },
     {
+        "action": "zatca.tail_released",
+        "source": "admin",
+        "critical": True,
+        "resource": "invoice",
+        "why": "releasing a reserved ICV deletes the invoice row and frees the number for reuse; "
+               "the row is gone the moment it happens, so an unrecorded release cannot be "
+               "reconstructed and an unattributable one is indistinguishable from tampering with "
+               "the tax number sequence",
+    },
+    {
+        "action": "zatca.invoice_corrected",
+        "source": "admin",
+        "critical": False,
+        "resource": "invoice",
+        "why": "correct-and-resign rebuilds a stuck unsigned invoice's draft before signing; the "
+               "record shows who supplied the corrected data that was filed under that ICV",
+    },
+    {
         "action": "zatca.onboarded_compliance",
         "source": "admin",
         "critical": True,

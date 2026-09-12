@@ -99,6 +99,17 @@ async def internal_sweep(request: Request) -> dict:
     return result
 
 
+@router.get("/zatca/head-lag", dependencies=[Depends(require_internal_token)])
+async def internal_head_lag(request: Request, tenant: str) -> dict:
+    """Stuck-tail observability: the gap between the RESERVED and contiguously-SIGNED ICV heads for
+    a tenant, plus a `stuck` flag when it exceeds ZATCA_STUCK_TAIL_THRESHOLD. A permanently-stuck
+    ICV defers every later one, so a growing lag is the earliest symptom — this is what a monitor
+    polls to alert before a whole day of valid invoices piles up behind one bad predecessor."""
+    if not tenant:
+        raise HTTPException(422, "MISSING_TENANT")
+    return await (await build_zatca(request, tenant)).head_lag(tenant)
+
+
 @router.get("/manifest", dependencies=[Depends(require_internal_token)])
 async def internal_manifest(
     request: Request, settings: Settings = Depends(get_settings)

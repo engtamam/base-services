@@ -52,7 +52,9 @@ async def build_zatca(request: Request, tenant: str = "") -> ZatcaService:
         vat_rate=s.VAT_RATE, currency=s.CURRENCY,
         retry={"base_ms": s.ZATCA_RETRY_BASE_MS, "max_ms": s.ZATCA_RETRY_MAX_MS,
                "max_attempts": s.ZATCA_RETRY_MAX_ATTEMPTS}, list_limit=s.ZATCA_LIST_LIMIT,
-        validate_before_submit=s.ZATCA_VALIDATE_BEFORE_SUBMIT, signer_provider=signer_provider)
+        validate_before_submit=s.ZATCA_VALIDATE_BEFORE_SUBMIT, signer_provider=signer_provider,
+        stuck_tail_threshold=s.ZATCA_STUCK_TAIL_THRESHOLD,
+        reconcile_max_scan=s.ZATCA_RECONCILE_MAX_SCAN)
 
 
 def op_tenant(principal: Principal, body_tenant: str | None = None) -> str:
@@ -197,6 +199,63 @@ async def invoice_qr(request: Request, invoice_id: str, data_uri: bool = False,
         return {"data_uri": f"data:{content_type};base64,{base64.b64encode(data).decode()}",
                 "content_type": content_type}
     return Response(content=data, media_type=content_type)
+
+
+class CorrectIn(BaseModel):
+    invoice: dict[str, Any]   # corrected {issued_at, seller, buyer?, lines[], currency?, vat_rate?}
+
+
+@router.post("/invoices/{invoice_id}/release-tail")
+async def release_tail(request: Request, invoice_id: str,
+                       principal: Principal = Depends(_ADMIN)) -> dict:
+    """Abandon a stuck reserved ICV so the number is REUSED — only when it is the tenant's highest
+    reserved ICV and unsigned. Refused (422) when a higher ICV exists: a mid-chain number cannot be
+    skipped; correct-and-resign it or issue a cancellation document instead. Never releases a signed
+    invoice."""
+    svc = (await build_zatca(request))
+    inv = await svc._inv.get(invoice_id)
+    if inv is None or (
+            "platform.zatca" not in principal.caps and inv.tenant != (principal.tenant or "__none__")):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    tenant = inv.tenant
+    # Write-ahead: releasing a slot deletes the row, so an unrecorded release is unreconstructable.
+    await request.app.state.auditor.record(
+        "zatca.tail_released", actor=principal.subject, tenant=tenant,
+        resource=f"invoice:{invoice_id}", ip=request.client.host if request.client else "")
+    res = await svc.release_tail(invoice_id)
+    if not res.get("ok"):
+        raise HTTPException(422, res.get("reason", "UNPROCESSABLE"))
+    return res
+
+
+@router.post("/invoices/{invoice_id}/correct-and-resign")
+async def correct_and_resign(request: Request, invoice_id: str, body: CorrectIn,
+                             principal: Principal = Depends(_ADMIN)) -> dict:
+    """Rebuild a stuck/unsigned reserved ICV's draft from corrected data (SAME ICV) and sign it —
+    filling the same number so the chain stays gapless. Refused for an already-signed invoice."""
+    from app.core.zatca_service import ZatcaInputError
+    svc = (await build_zatca(request))
+    inv = await svc._inv.get(invoice_id)
+    if inv is None or (
+            "platform.zatca" not in principal.caps and inv.tenant != (principal.tenant or "__none__")):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    await request.app.state.auditor.record(
+        "zatca.invoice_corrected", actor=principal.subject, tenant=inv.tenant,
+        resource=f"invoice:{invoice_id}", ip=request.client.host if request.client else "")
+    try:
+        res = await svc.correct_and_resign(invoice_id, body.invoice)
+    except ZatcaInputError as exc:
+        raise HTTPException(422, f"INVALID_INVOICE: {exc}") from exc
+    if not res.get("ok"):
+        raise HTTPException(422, res.get("reason", "UNPROCESSABLE"))
+    return res
+
+
+@router.get("/chain/head-lag")
+async def chain_head_lag(request: Request, principal: Principal = Depends(_ADMIN)) -> dict:
+    """How far the reserved ICV head leads the contiguously-signed head, and whether it is past the
+    stuck-tail threshold — a stuck predecessor made visible before a day of invoices piles up."""
+    return await (await build_zatca(request)).head_lag(op_tenant(principal))
 
 
 @router.get("/chain/verify")

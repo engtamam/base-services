@@ -72,7 +72,8 @@ def _validate_invoice_input(invoice_in: dict, default_currency: str) -> None:
 class ZatcaService:
     def __init__(self, *, invoices: InvoiceStore, settings: SettingsStore, signer, fatoora,
                  qr, vat_rate: str, currency: str, retry: dict[str, int], list_limit: int = 100,
-                 validate_before_submit: bool = False, signer_provider=None) -> None:
+                 validate_before_submit: bool = False, signer_provider=None,
+                 stuck_tail_threshold: int = 5, reconcile_max_scan: int = 100_000) -> None:
         self._inv = invoices
         self._set = settings
         self._signer = signer
@@ -88,6 +89,8 @@ class ZatcaService:
         self._retry = retry
         self._limit = list_limit
         self._validate = validate_before_submit
+        self._stuck_tail_threshold = stuck_tail_threshold
+        self._reconcile_max_scan = reconcile_max_scan
 
     # ── issuance ────────────────────────────────────────────────────────────────
     async def finalize(self, invoice_in: dict, tenant: str) -> dict[str, Any]:
@@ -248,6 +251,15 @@ class ZatcaService:
     # ── retry sweep / resubmit ──────────────────────────────────────────────────
     async def sweep(self) -> dict[str, Any]:
         due = await self._inv.due_for_retry(time.time(), self._limit)
+        # ORPHAN RECONCILE (zatca-r2-07): before working the backlog, free any `icv::` claim a
+        # crash left with no invoice behind it, so the gap it would otherwise leave is refilled by
+        # the next finalize. An orphan mid-chain defers every later ICV, so its tenant is already
+        # present in the due set — reconciling those tenants is bounded and self-contained (there is
+        # no tenant registry to walk). Idempotent: a claim a real invoice occupies is never touched.
+        reclaimed = 0
+        for tenant in dict.fromkeys(inv.tenant for inv in due):     # de-duped, order-preserving
+            res = await self._inv.reconcile_orphans(tenant, max_scan=self._reconcile_max_scan)
+            reclaimed += res["count"]
         processed = 0
         for inv in due:
             secrets = await self._set.load_secrets(inv.tenant)
@@ -258,7 +270,83 @@ class ZatcaService:
                     continue
             await self._submit(inv, secrets)
             processed += 1
-        return {"processed": processed, "due": len(due)}
+        return {"processed": processed, "due": len(due), "orphans_reclaimed": reclaimed}
+
+    # ── stuck-invoice recovery (zatca-r2-03 / r2-07) ────────────────────────────
+    async def reconcile_orphans(self, tenant: str) -> dict[str, Any]:
+        """Free crash-orphaned `icv::` claims for one tenant (see InvoiceStore.reconcile_orphans)."""
+        return await self._inv.reconcile_orphans(tenant, max_scan=self._reconcile_max_scan)
+
+    async def head_lag(self, tenant: str) -> dict[str, Any]:
+        """How far the reserved ICV head leads the contiguously-signed head, and whether that gap is
+        past the stuck-tail threshold — the earliest visible symptom of a permanently-stuck ICV."""
+        lag = await self._inv.head_lag(tenant)
+        threshold = self._stuck_tail_threshold
+        return {**lag, "threshold": threshold, "stuck": lag["lag"] > threshold}
+
+    async def release_tail(self, invoice_id: str) -> dict[str, Any]:
+        """Abandon a reserved ICV — ONLY when it is the tenant's HIGHEST reserved ICV and unsigned.
+
+        Deletes the invoice row and frees the `icv::`/`num::` claims so the next invoice REUSES that
+        number. Refused (never silently skipped) when a higher ICV already exists: a mid-chain ICV
+        cannot be skipped without gapping the chain, so the operator must correct-and-resign it or
+        issue a cancellation document. Refused for anything already signed — signed bytes and the
+        numbers behind them are sacrosanct (a wrong ISSUED invoice is a credit note, not a deletion).
+        """
+        inv = await self._inv.get(invoice_id)
+        if inv is None:
+            return {"ok": False, "reason": "NOT_FOUND"}
+        if inv.signed_xml or inv.status in ACCEPTED or inv.status in ("signed", "submitted"):
+            return {"ok": False, "reason": "ALREADY_SIGNED",
+                    "message": "a signed/issued invoice cannot be released; issue a credit note"}
+        top = await self._inv.highest_reserved_above(inv.tenant, int(inv.icv),
+                                                     max_scan=self._reconcile_max_scan)
+        if top:
+            return {"ok": False, "reason": "HIGHER_ICV_EXISTS", "highest_reserved": top,
+                    "message": f"ICV {inv.icv} is mid-chain (ICV {top} is reserved above it); a "
+                               f"number cannot be skipped — correct-and-resign it or issue a "
+                               f"cancellation document instead"}
+        await self._inv.release_tail_slot(inv, max_scan=self._reconcile_max_scan)
+        return {"ok": True, "released_icv": int(inv.icv), "number": inv.number,
+                "invoice_id": inv.id}
+
+    async def correct_and_resign(self, invoice_id: str, invoice_in: dict) -> dict[str, Any]:
+        """Rebuild a stuck/unsigned reserved ICV's draft from corrected data — SAME ICV — and sign.
+
+        Fills the same number so the chain stays gapless (the zatca-r2-03 recovery for a mid-chain
+        stuck predecessor that cannot be released). The correct sign-time PIH is (re)bound in _sign.
+        Refused for an already-signed invoice — its bytes are never altered."""
+        inv = await self._inv.get(invoice_id)
+        if inv is None:
+            return {"ok": False, "reason": "NOT_FOUND"}
+        if inv.signed_xml or inv.status in ACCEPTED:
+            return {"ok": False, "reason": "ALREADY_SIGNED",
+                    "message": "a signed invoice is immutable; issue a credit note to correct it"}
+        _validate_invoice_input(invoice_in, self._currency)          # ZatcaInputError -> route 422
+        simplified = not (invoice_in.get("buyer") or {}).get("vat_number")
+        itype = "simplified" if simplified else "standard"
+        built = _ubl.build_ubl({**invoice_in, "number": inv.number,
+                                "vat_rate": invoice_in.get("vat_rate", self._vat_rate),
+                                "currency": invoice_in.get("currency", self._currency)},
+                               icv=inv.icv, pih=inv.pih, invoice_type=itype)
+        inv.uuid = built["uuid"]
+        inv.invoice_type = itype
+        inv.draft = {"unsigned_xml": built["xml"],
+                     "seller_name": (invoice_in.get("seller") or {}).get("name", ""),
+                     "vat_number": (invoice_in.get("seller") or {}).get("vat_number", ""),
+                     "invoice_total": built["tax_inclusive"], "vat_total": built["vat"],
+                     "simplified": simplified}
+        inv.status = "pending"
+        inv.attempts = 0
+        inv.next_retry_at = None
+        inv.warnings, inv.errors, inv.message = [], [], ""
+        await self._inv.save(inv)
+        secrets = await self._set.load_secrets(inv.tenant)
+        if secrets is None:
+            return {"ok": True, **await self._defer(inv, "not onboarded (no CSID); staying pending")}
+        if not await self._sign(inv, secrets):
+            return {"ok": True, **self._result(inv)}
+        return {"ok": True, **await self._submit(inv, secrets)}
 
     async def resubmit(self, invoice_id: str) -> dict[str, Any]:
         inv = await self._inv.get(invoice_id)

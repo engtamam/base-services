@@ -89,6 +89,20 @@
         "title": "ConfigIn",
         "type": "object"
       },
+      "CorrectIn": {
+        "properties": {
+          "invoice": {
+            "additionalProperties": true,
+            "title": "Invoice",
+            "type": "object"
+          }
+        },
+        "required": [
+          "invoice"
+        ],
+        "title": "CorrectIn",
+        "type": "object"
+      },
       "EraseIn": {
         "properties": {
           "subject": {
@@ -321,6 +335,30 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/zatca/chain/head-lag": {
+      "get": {
+        "description": "How far the reserved ICV head leads the contiguously-signed head, and whether it is past the\nstuck-tail threshold \u2014 a stuck predecessor made visible before a day of invoices piles up.",
+        "operationId": "chain_head_lag_api_v1_zatca_chain_head_lag_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Chain Head Lag Api V1 Zatca Chain Head Lag Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Chain Head Lag",
+        "tags": [
+          "zatca"
+        ]
+      }
+    },
     "/api/v1/zatca/chain/verify": {
       "get": {
         "operationId": "chain_verify_api_v1_zatca_chain_verify_get",
@@ -481,6 +519,61 @@
         ]
       }
     },
+    "/api/v1/zatca/invoices/{invoice_id}/correct-and-resign": {
+      "post": {
+        "description": "Rebuild a stuck/unsigned reserved ICV's draft from corrected data (SAME ICV) and sign it \u2014\nfilling the same number so the chain stays gapless. Refused for an already-signed invoice.",
+        "operationId": "correct_and_resign_api_v1_zatca_invoices__invoice_id__correct_and_resign_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invoice_id",
+            "required": true,
+            "schema": {
+              "title": "Invoice Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CorrectIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Correct And Resign Api V1 Zatca Invoices  Invoice Id  Correct And Resign Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Correct And Resign",
+        "tags": [
+          "zatca"
+        ]
+      }
+    },
     "/api/v1/zatca/invoices/{invoice_id}/qr": {
       "get": {
         "operationId": "invoice_qr_api_v1_zatca_invoices__invoice_id__qr_get",
@@ -526,6 +619,51 @@
           }
         },
         "summary": "Invoice Qr",
+        "tags": [
+          "zatca"
+        ]
+      }
+    },
+    "/api/v1/zatca/invoices/{invoice_id}/release-tail": {
+      "post": {
+        "description": "Abandon a stuck reserved ICV so the number is REUSED \u2014 only when it is the tenant's highest\nreserved ICV and unsigned. Refused (422) when a higher ICV exists: a mid-chain number cannot be\nskipped; correct-and-resign it or issue a cancellation document instead. Never releases a signed\ninvoice.",
+        "operationId": "release_tail_api_v1_zatca_invoices__invoice_id__release_tail_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invoice_id",
+            "required": true,
+            "schema": {
+              "title": "Invoice Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Release Tail Api V1 Zatca Invoices  Invoice Id  Release Tail Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Release Tail",
         "tags": [
           "zatca"
         ]
@@ -1589,6 +1727,83 @@
           }
         },
         "summary": "Finalize",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/zatca/head-lag": {
+      "get": {
+        "description": "Stuck-tail observability: the gap between the RESERVED and contiguously-SIGNED ICV heads for\na tenant, plus a `stuck` flag when it exceeds ZATCA_STUCK_TAIL_THRESHOLD. A permanently-stuck\nICV defers every later one, so a growing lag is the earliest symptom \u2014 this is what a monitor\npolls to alert before a whole day of valid invoices piles up behind one bad predecessor.",
+        "operationId": "internal_head_lag_internal_zatca_head_lag_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Internal Head Lag Internal Zatca Head Lag Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Internal Head Lag",
         "tags": [
           "internal"
         ]

@@ -209,6 +209,107 @@ class InvoiceStore:
             await self._store.put(_INDEX, f"head::{tenant}", cur)
         return inv, True
 
+    async def reserved_head(self, tenant: str) -> int:
+        """The highest ICV ever RESERVED for the tenant (the allocation head hint)."""
+        row = await self._store.get(_INDEX, f"head::{tenant}")
+        return int(row.get("reserved_icv", 0)) if row else 0
+
+    async def head_lag(self, tenant: str) -> dict[str, int]:
+        """How far the RESERVED head leads the contiguously-SIGNED head.
+
+        A permanently-unsignable ICV defers every later one (strict in-order signing), so this gap
+        growing is the earliest symptom of a stuck tail (zatca-r2-03). reserved_icv - signed_icv is
+        the number of ICVs waiting behind the signed head."""
+        reserved = await self.reserved_head(tenant)
+        signed_icv, _ = await self.signed_head(tenant)
+        return {"reserved_icv": reserved, "signed_icv": signed_icv,
+                "lag": max(0, reserved - signed_icv)}
+
+    async def _invoice_at_icv(self, tenant: str, icv: int) -> ZatcaInvoice | None:
+        """The invoice row occupying ICV `icv` for the tenant, or None. Equality-scoped read."""
+        rows, _ = await self._store.find(_INVOICES, {"tenant": tenant, "icv": icv}, limit=1)
+        return ZatcaInvoice.from_dict(rows[0]) if rows else None
+
+    async def reconcile_orphans(self, tenant: str, *, max_scan: int = _TENANT_MAX) -> dict[str, Any]:
+        """Free `icv::` claims that no invoice row stands behind (a crash mid-allocate_slot).
+
+        allocate_slot is three non-transactional steps — claim `icv::{tenant}::{n}`, save the
+        invoice row, advance the head hint — so a crash after the claim but before the save leaves
+        `icv::{tenant}::{n}` (and the `num::` claim written before it) with NO invoice behind them.
+        A later finalize probes upward from the head and skips the taken `icv::n`, minting n+1 —
+        leaving a PERMANENT gap at n that verify_chain reports as icv_gap forever (zatca-r2-07).
+
+        This walks every reserved ICV, and for any `icv::` claim with no matching invoice row frees
+        that claim (and the dangling `num::` claim it names, only when that number's id resolves to
+        no invoice) so the next finalize REUSES n. It NEVER touches a claim a real invoice occupies —
+        gapless is preserved by reclaiming the hole, never by skipping it."""
+        reserved = await self.reserved_head(tenant)
+        reclaimed: list[int] = []
+        # Walk every reserved ICV, and KEEP walking past the head hint while claims still exist: a
+        # crash orphans the claim AFTER minting it but BEFORE the head advances (its last step), so
+        # the orphan sits at reserved+1 — above the hint. Stop at the first absent claim beyond the
+        # head. Bounded by max_scan so a corrupt hint can never make this unbounded.
+        n = 0
+        while n < int(max_scan):
+            n += 1
+            claim = await self._store.get(_INDEX, f"icv::{tenant}::{n}")
+            if claim is None:
+                if n > reserved:
+                    break                                    # past the head, no more claims — done
+                continue                                     # a hole below the head (reclaimed/never set)
+            if await self._invoice_at_icv(tenant, n) is not None:
+                continue                                     # a real invoice occupies it — untouchable
+            # Orphan: the claim survived a crash the invoice never did. Free it so n is reused.
+            number = claim.get("number")
+            await self._store.delete(_INDEX, f"icv::{tenant}::{n}")
+            if number is not None:
+                num_row = await self._store.get(_INDEX, f"num::{tenant}::{number}")
+                # Free the number ONLY when it too is dangling (its id resolves to no invoice) — a
+                # number a real invoice owns must never be released.
+                if num_row and not await self.get(num_row.get("id", "")):
+                    await self._store.delete(_INDEX, f"num::{tenant}::{number}")
+            reclaimed.append(n)
+        return {"tenant": tenant, "reclaimed": reclaimed, "count": len(reclaimed)}
+
+    async def release_tail_slot(self, inv: ZatcaInvoice, *, max_scan: int = _TENANT_MAX) -> None:
+        """Delete a TAIL invoice row and free its `icv::`/`num::` claims so the number is reused.
+
+        Precondition (enforced by the caller): `inv` is the HIGHEST reserved ICV and unsigned. This
+        deletes the invoice row, frees `icv::{tenant}::{inv.icv}` and `num::{tenant}::{inv.number}`,
+        and ROLLS THE RESERVED HEAD BACK to inv.icv-1 — so the next allocate_slot starts at inv.icv
+        and refills the same number. The signed head (`signed::`) is never touched: nothing signed
+        chains through a tail that was never signed. Gapless holds — the released number is the
+        highest, so no gap opens beneath it."""
+        await self._store.delete(_INVOICES, inv.id)
+        await self._store.delete(_INDEX, f"icv::{inv.tenant}::{inv.icv}")
+        num_row = await self._store.get(_INDEX, f"num::{inv.tenant}::{inv.number}")
+        if num_row and num_row.get("id") == inv.id:
+            await self._store.delete(_INDEX, f"num::{inv.tenant}::{inv.number}")
+        # Roll the reserved-head hint back so the next allocation refills inv.icv rather than
+        # probing from inv.icv+1 and re-opening the very gap this closes. Re-read so a concurrent
+        # sign's last_hash is preserved (the icv-claim, now freed, was the authority).
+        cur = await self._store.get(_INDEX, f"head::{inv.tenant}")
+        if cur and int(cur.get("reserved_icv", 0)) >= inv.icv:
+            cur["reserved_icv"] = inv.icv - 1
+            await self._store.put(_INDEX, f"head::{inv.tenant}", cur)
+
+    async def highest_reserved_above(self, tenant: str, icv: int, *, max_scan: int = _TENANT_MAX) -> int:
+        """The highest ICV at or above `icv+1` that is still RESERVED (claim or invoice row) — 0 if
+        none. Used to prove a slot is the true tail before releasing it: any reservation above means
+        a higher ICV would be orphaned by a release, so the release must be refused."""
+        reserved = await self.reserved_head(tenant)
+        top = 0
+        n = icv
+        while n < int(max_scan):
+            n += 1
+            if await self._store.get(_INDEX, f"icv::{tenant}::{n}") is not None:
+                top = n
+            elif await self._invoice_at_icv(tenant, n) is not None:
+                top = n
+            elif n > reserved:
+                break                                        # past the head, nothing reserved above
+        return top
+
 
 class SettingsStore:
     """Per-tenant ZATCA settings + SEALED CSID material (never returned in views)."""
