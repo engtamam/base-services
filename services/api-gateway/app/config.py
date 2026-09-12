@@ -243,6 +243,11 @@ class Settings(BaseSettings):
     RATELIMIT_KEY_PARTS: str = "subject,ip"     # subject | ip | tenant | route (comma list)
     RATELIMIT_ROUTES: str = ""                  # JSON: [{"prefix","class","limit","window_s","cost"}]
     RATELIMIT_COUNT_STATUSES: str = ""          # e.g. "401" for a login surface; comma list
+    # How many TRUSTED reverse proxies sit in front of the gateway (k3s ingress, LB). The real client
+    # IP is read from X-Forwarded-For that many hops from the right; 0 = trust none, use the socket
+    # peer. Behind an ingress this MUST be set (usually 1), or every client collapses into one shared
+    # source IP (the ingress) and one tenant's burst rate-limits the whole fleet. Per-platform choice.
+    GATEWAY_TRUSTED_PROXY_HOPS: int = 0
 
     TELEMETRY_DRIVER: str = "stdout"
 

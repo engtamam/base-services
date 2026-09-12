@@ -11,6 +11,7 @@ from __future__ import annotations
 from fastapi import Depends, HTTPException, status
 
 from app.api.auth import Principal, require_user
+from app.core.capmatch import holds, holds_any
 
 
 def effective_caps(principal: Principal) -> frozenset[str]:
@@ -18,11 +19,14 @@ def effective_caps(principal: Principal) -> frozenset[str]:
 
 
 def require_capability(*caps: str):
-    """Require ALL of the given capabilities."""
+    """Require ALL of the given capabilities — wildcard-aware, via the SHARED matcher the catalog
+    filters with, so enforcement can never diverge from what the catalog showed (a held `platform.*`
+    or `*` grant satisfies a listed `platform.audit`). The old exact `c in held` denied a caller the
+    catalog told them they could act."""
 
     async def dep(principal: Principal = Depends(require_user)) -> Principal:
         held = effective_caps(principal)
-        if not all(c in held for c in caps):
+        if not all(holds(held, c) for c in caps):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="FORBIDDEN")
         return principal
 
@@ -30,11 +34,11 @@ def require_capability(*caps: str):
 
 
 def require_any_capability(*caps: str):
-    """Require AT LEAST ONE of the given capabilities."""
+    """Require AT LEAST ONE of the given capabilities — wildcard-aware (see require_capability)."""
 
     async def dep(principal: Principal = Depends(require_user)) -> Principal:
         held = effective_caps(principal)
-        if not any(c in held for c in caps):
+        if not holds_any(held, caps):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="FORBIDDEN")
         return principal
 

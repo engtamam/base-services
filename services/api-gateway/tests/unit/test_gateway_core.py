@@ -44,15 +44,16 @@ class FakeTable:
 class FakeForwarder:
     driver = "fake"
 
-    def __init__(self, status=200, body=b"OK", raise_error=False):
+    def __init__(self, status=200, body=b"OK", raise_error=False, resp_headers=None):
         self.status, self.body, self.raise_error = status, body, raise_error
+        self._resp_headers = resp_headers or {"content-type": "text/plain"}
         self.last = None
 
     async def forward(self, method, url, headers, body, params):
         if self.raise_error:
             raise UpstreamError("boom")
         self.last = {"method": method, "url": url, "headers": headers}
-        return self.status, {"content-type": "text/plain"}, self.body
+        return self.status, dict(self._resp_headers), self.body
 
     async def close(self):
         pass
@@ -75,9 +76,15 @@ class FakeLimiter:
 
     def __init__(self, allow=True):
         self._allow = allow
+        self.checks = []          # (key, cost, limit, window_s) for each policy check
 
     async def allow(self, key):
         return self._allow
+
+    async def check(self, key, *, cost=1, limit=None, window_s=None):
+        from app.ports.rate_limiter import Verdict
+        self.checks.append((key, cost, limit, window_s))
+        return Verdict(allowed=self._allow, limit=limit or 0, remaining=0, retry_after_s=0, reset_s=0)
 
 
 class FakeCache:
@@ -197,3 +204,79 @@ def test_cache_hit_second_call():
     assert first.status_code == 200 and "X-Gateway-Cache" not in first.headers
     second = run(gw.handle(make_request()))
     assert second.headers.get("X-Gateway-Cache") == "HIT"
+
+
+# ── audit fixes (api-gateway-01/02/04/05) ────────────────────────────────────────────────
+from app.core.ratelimit_policy import RateLimitPolicy  # noqa: E402
+
+
+def _policy():
+    return RateLimitPolicy.from_config(
+        key_parts="subject,ip,route",
+        routes_json='[{"prefix":"/echo","class":"echo","limit":5,"window_s":60,"cost":2}]',
+        default_limit=100, default_window_s=60)
+
+
+def test_policy_limit_uses_route_budget_and_the_real_client_ip():
+    # audit #02: the proxy path must apply the per-route policy (limit/window/cost) and bucket by the
+    # REAL client IP from X-Forwarded-For (trusted hops), not the shared socket/ingress IP.
+    r = Route(prefix="/echo", upstream="http://up")
+    lim = FakeLimiter(allow=True)
+    gw = Gateway(route_table=FakeTable(r), forwarder=FakeForwarder(), token_verifier=FakeVerifier(),
+                 rate_limiter=lim, cache=FakeCache(), internal_token="I", default_cache_ttl=0,
+                 policy=_policy(), trusted_proxy_hops=1)
+    run(gw.handle(make_request(headers={"X-Forwarded-For": "1.1.1.1, 2.2.2.2"})))
+    assert lim.checks, "the policy check was not applied on the proxy path"
+    key, cost, limit, window = lim.checks[0]
+    assert (cost, limit, window) == (2, 5, 60)          # per-route budget honored
+    assert "i:2.2.2.2" in key                            # real client (1 trusted hop = last entry)
+    assert "1.1.1.1" not in key                          # the untrusted, spoofable left entry
+
+
+def test_optional_route_with_identity_is_never_cached():
+    # audit #01: an authenticated caller on an optional-auth route gets per-user data; it must not be
+    # stored under the identity-less shared key (which would replay it to the next caller).
+    r = Route(prefix="/echo", upstream="http://up", auth="optional", cache_ttl=60)
+    cache = FakeCache()
+    gw = _gw(r, verifier=FakeVerifier(claims={"sub": "u", "tenant": "t", "caps": ["read"]}),
+             cache=cache, ttl=60)
+    resp = run(gw.handle(make_request(headers={"Authorization": "Bearer x"})))
+    assert resp.status_code == 200
+    assert cache.data == {}                              # nothing shared
+
+
+def test_optional_route_anonymous_is_cached():
+    r = Route(prefix="/echo", upstream="http://up", auth="optional", cache_ttl=60)
+    cache = FakeCache()
+    gw = _gw(r, cache=cache, ttl=60)                     # no token → anonymous
+    run(gw.handle(make_request()))
+    assert cache.data != {}                              # anonymous responses may be shared
+
+
+def test_response_with_set_cookie_is_not_cached():
+    # audit #04: honor the upstream's own caching directives.
+    r = Route(prefix="/echo", upstream="http://up", auth="none", cache_ttl=60)
+    cache = FakeCache()
+    fwd = FakeForwarder(resp_headers={"content-type": "text/plain", "set-cookie": "sid=1"})
+    gw = _gw(r, forwarder=fwd, cache=cache, ttl=60)
+    run(gw.handle(make_request()))
+    assert cache.data == {}
+
+
+def test_response_with_private_cache_control_is_not_cached():
+    r = Route(prefix="/echo", upstream="http://up", auth="none", cache_ttl=60)
+    cache = FakeCache()
+    fwd = FakeForwarder(resp_headers={"cache-control": "private, max-age=0"})
+    gw = _gw(r, forwarder=fwd, cache=cache, ttl=60)
+    run(gw.handle(make_request()))
+    assert cache.data == {}
+
+
+def test_require_capability_honors_wildcard_grant():
+    # audit #05: enforcement must be wildcard-aware like the catalog filter, or the panel shows an
+    # action it then 403s. A held platform.* satisfies a required platform.audit.
+    from app.api.auth import Principal
+    from app.api.authz import require_capability
+    dep = require_capability("platform.audit")
+    holder = Principal(subject="u", caps=frozenset({"platform.*"}))
+    assert run(dep(principal=holder)) is holder

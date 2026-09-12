@@ -282,58 +282,63 @@
       "issues": [
         {
           "id": "api-gateway-01",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "security",
           "severity": "high",
           "file": "services/api-gateway/app/core/gateway.py",
           "line": 106,
           "title": "Response cache leaks per-user (auth=optional) responses to other callers",
           "detail": "cacheable = request.method == 'GET' and route.auth != 'required' and ttl > 0. This includes auth=='optional' routes. On an optional-auth route the gateway DOES verify the bearer token and forwards identity to the upstream (X-User-Id/X-Tenant-Id/X-Caps, lines 151-154), so the upstream returns per-user/per-tenant data. But the cache key (line 107: 'gw:{method}:{path}?{query}') contains NO identity, and the 2xx response is stored (lines 129-130) and replayed verbatim to any subsequent caller of the same path (including anonymous ones), together with all upstream response headers (Set-Cookie included). The response cache does not vary on Authorization/user/tenant.",
-          "failure_scenario": "A route configured auth='optional', cache_ttl>0. User A (Bearer token) GETs /api/v1/<res>/me -> upstream returns A's private data -> gateway caches it under 'gw:GET:/api/v1/<res>/me?'. User B (or an anonymous client) GETs the same path within TTL -> served A's cached private data (and any Set-Cookie) from cache. Cross-user/cross-tenant data disclosure + cache poisoning."
+          "failure_scenario": "A route configured auth='optional', cache_ttl>0. User A (Bearer token) GETs /api/v1/<res>/me -> upstream returns A's private data -> gateway caches it under 'gw:GET:/api/v1/<res>/me?'. User B (or an anonymous client) GETs the same path within TTL -> served A's cached private data (and any Set-Cookie) from cache. Cross-user/cross-tenant data disclosure + cache poisoning.",
+          "resolution": "FIXED: an identity-carrying request (auth=optional with a valid token) never reads or writes the shared response cache — only anonymous (identity None) GETs on non-required routes are cached. Regression: test_gateway_core.py."
         },
         {
           "id": "api-gateway-02",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "security",
           "severity": "high",
           "file": "services/api-gateway/app/core/gateway.py",
           "line": 72,
           "title": "Proxy hot path bypasses the rate-limit policy; buckets by socket IP only",
           "detail": "The catch-all proxy (api/proxy.py:38-40) carries no rate_limit dependency, and grep confirms the policy-driven limiter (api/ratelimit.py:rate_limit) is never attached to any route — main.py only wires register_ratelimit_refund + build_policy. So on the gateway's PRIMARY traffic path, rate limiting is only Gateway.handle's rl_key = f'ip:{client.host}' (lines 72-73) with the default budget; RATELIMIT_KEY_PARTS, RATELIMIT_ROUTES (per-route class/limit/cost), and RATELIMIT_COUNT_STATUSES config are entirely unread for proxied traffic. request.client.host is the socket peer (no X-Forwarded-For handling anywhere), which behind a k3s ingress/NAT collapses all clients into one shared source IP.",
-          "failure_scenario": "Deployed behind an ingress: every proxied request presents the ingress pod IP, so all tenants share ONE bucket keyed 'ip:<ingress-ip>'. One noisy client exhausts RATELIMIT_MAX (default 100/60s) and every other customer gets 429 (fail-closed at lines 77-78 makes any limiter error 429 everyone too). Simultaneously per-endpoint stricter classes (e.g. auth limit 10) and subject/tenant fairness never apply. Availability + ineffective abuse protection on the money/auth platform edge."
+          "failure_scenario": "Deployed behind an ingress: every proxied request presents the ingress pod IP, so all tenants share ONE bucket keyed 'ip:<ingress-ip>'. One noisy client exhausts RATELIMIT_MAX (default 100/60s) and every other customer gets 429 (fail-closed at lines 77-78 makes any limiter error 429 everyone too). Simultaneously per-endpoint stricter classes (e.g. auth limit 10) and subject/tenant fairness never apply. Availability + ineffective abuse protection on the money/auth platform edge.",
+          "resolution": "FIXED: the proxy path now applies the policy limiter (classify + composite subject/ip/tenant/route key + per-route limit/window/cost) and derives the real client IP from X-Forwarded-For (GATEWAY_TRUSTED_PROXY_HOPS). Regression: test_gateway_core.py."
         },
         {
           "id": "api-gateway-03",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "vuln",
           "severity": "medium",
           "file": "services/api-gateway/app/middleware/security.py",
           "line": 71,
           "title": "Body-size limit bypassed by chunked requests (no Content-Length)",
           "detail": "BodyLimitMiddleware only enforces max_bytes when the Content-Length header is present (line 71: 'if content_length is not None'). A request using Transfer-Encoding: chunked (no Content-Length) skips the check entirely, and Gateway.handle then does body = await request.body() (gateway.py:121), buffering the entire request body into memory before forwarding.",
-          "failure_scenario": "Attacker sends a chunked POST with a multi-GB body and no Content-Length to any proxied route. BodyLimitMiddleware waves it through; the gateway reads the whole stream into RAM, exhausting the single-worker pod's memory (OOM / DoS). The advertised body cap provides no protection against the streaming case."
+          "failure_scenario": "Attacker sends a chunked POST with a multi-GB body and no Content-Length to any proxied route. BodyLimitMiddleware waves it through; the gateway reads the whole stream into RAM, exhausting the single-worker pod's memory (OOM / DoS). The advertised body cap provides no protection against the streaming case.",
+          "resolution": "FIXED fleet-wide: BodyLimitMiddleware converted to pure-ASGI (counts chunked bodies). See safety:body-limit gate."
         },
         {
           "id": "api-gateway-04",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "medium",
           "file": "services/api-gateway/app/core/gateway.py",
           "line": 129,
           "title": "Gateway cache ignores upstream Cache-Control / Set-Cookie / Vary",
           "detail": "For a cacheable route the gateway caches any 2xx GET response (lines 129-130) with no regard for the upstream's own caching directives. It does not honor Cache-Control: no-store/private/no-cache, does not skip responses carrying Set-Cookie, and does not apply Vary. The upstream's explicit instruction that a response must not be shared/stored is silently overridden.",
-          "failure_scenario": "An upstream returns a GET response marked 'Cache-Control: private, no-store' (or with a Set-Cookie) on an auth=none/optional cached route. The gateway caches and replays it to other clients for the full TTL, defeating the upstream's caching contract and potentially sharing per-request state."
+          "failure_scenario": "An upstream returns a GET response marked 'Cache-Control: private, no-store' (or with a Set-Cookie) on an auth=none/optional cached route. The gateway caches and replays it to other clients for the full TTL, defeating the upstream's caching contract and potentially sharing per-request state.",
+          "resolution": "FIXED: a 2xx response is stored only if _is_storable — no Set-Cookie, no Cache-Control no-store/private/no-cache, no Vary. Regression: test_gateway_core.py."
         },
         {
           "id": "api-gateway-05",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "low",
           "file": "services/api-gateway/app/api/authz.py",
           "line": 23,
           "title": "require_capability uses exact match, disagreeing with wildcard-aware catalog filter",
           "detail": "require_capability (authz.py:23-27) gates with exact membership 'all(c in held for c in caps)' and has no wildcard support, whereas the admin/app catalog filters actions with capmatch.holds (wildcard-aware: '*' and 'a.b.*'). The admin panel's open-gate _cap_gate() = require_capability(ADMIN_CATALOG_CAP) (admin.py:30-31,44) therefore diverges from the catalog's own filtering. This is the exact catalog-vs-enforcement drift the codebase introduced capmatch to prevent (see gateway.py:96-102, which was migrated to holds_any for this reason) but authz.py was not migrated.",
-          "failure_scenario": "A platform operator whose token grants 'platform.*' (or '*') opens the admin panel. capmatch.holds({'platform.*'}, ADMIN_CATALOG_CAP) is True so build_catalog would show them every action, but require_capability(ADMIN_CATALOG_CAP) does 'ADMIN_CATALOG_CAP in {\"platform.*\"}' -> False -> 403, locking a legitimately-privileged admin out of the panel."
+          "failure_scenario": "A platform operator whose token grants 'platform.*' (or '*') opens the admin panel. capmatch.holds({'platform.*'}, ADMIN_CATALOG_CAP) is True so build_catalog would show them every action, but require_capability(ADMIN_CATALOG_CAP) does 'ADMIN_CATALOG_CAP in {\"platform.*\"}' -> False -> 403, locking a legitimately-privileged admin out of the panel.",
+          "resolution": "FIXED: require_capability/require_any_capability use the wildcard-aware capmatch (holds/holds_any), matching the catalog filter, so enforcement no longer diverges. Regression: test_gateway_core.py."
         }
       ]
     },

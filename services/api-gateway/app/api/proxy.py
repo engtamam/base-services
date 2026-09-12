@@ -20,10 +20,18 @@ _METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
 def build_gateway(request: Request) -> Gateway:
     c = request.app.state.container
     s = get_settings()
+    # The policy-driven limiter (per-route class/limit/cost, composite key) is built once on app.state;
+    # the proxy hot path must apply it, not a flat per-IP default. Fall back to building it if absent.
+    policy = getattr(request.app.state, "ratelimit_policy", None)
+    if policy is None:
+        from app.api.ratelimit import build_policy
+        policy = build_policy(s)
+        request.app.state.ratelimit_policy = policy
     return Gateway(
         route_table=c.route_table, forwarder=c.forwarder, token_verifier=c.token_verifier,
         rate_limiter=c.rate_limiter, cache=c.cache,
         internal_token=s.INTERNAL_SERVICE_TOKEN, default_cache_ttl=s.DEFAULT_CACHE_TTL,
+        policy=policy, trusted_proxy_hops=s.GATEWAY_TRUSTED_PROXY_HOPS,
     )
 
 
