@@ -29,6 +29,7 @@ class CountingStore(MemoryDataStore):
         super().__init__()
         self.writes = self.reads = 0
         self.scans: dict[str, int] = {}
+        self.finds: dict[str, int] = {}
 
     async def put(self, c, k, v):
         self.writes += 1
@@ -47,6 +48,10 @@ class CountingStore(MemoryDataStore):
     async def scan_all(self, c, limit=100):
         self.scans[c] = self.scans.get(c, 0) + 1
         return await super().scan_all(c, limit)
+
+    async def find(self, c, where, **kw):
+        self.finds[c] = self.finds.get(c, 0) + 1
+        return await super().find(c, where, **kw)
 
 
 def _svc(st):
@@ -79,9 +84,11 @@ def test_claim_reads_due_index_not_the_job_table():
     for i in range(200):
         run(j.enqueue(queue="q", tenant=f"t{i % 5}", type="x"))
     st.scans = {}
+    st.finds = {}
     run(j.claim(worker="w", batch=10))
     assert st.scans.get("jobs", 0) == 0, "claim scanned the whole job table"
-    assert st.scans.get("jobs_due", 0) >= 1          # it read the small index instead
+    assert st.scans.get("jobs_due", 0) == 0, "claim scanned the whole due-index"
+    assert st.finds.get("jobs_due", 0) >= 1          # bounded, indexed due-page read (job-r2-03)
 
 
 def test_claim_is_bounded_by_batch_not_table_size():

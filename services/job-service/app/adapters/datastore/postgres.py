@@ -38,6 +38,10 @@ _INDEXES = (
     # before '9' and mis-ordered every 'oldest-first' priority view.
     f"CREATE INDEX IF NOT EXISTS kv_created_at_desc ON {_TABLE} "
     f"(collection, COALESCE(value->'created_at', 'null'::jsonb) DESC, key DESC)",
+    # next_run_at ASC serves the claim/stats due-page keyset (jobs_due), so the worker reads a bounded
+    # oldest-first window off the index instead of scanning the whole due-index (job-r2-02/03).
+    f"CREATE INDEX IF NOT EXISTS kv_next_run_at_asc ON {_TABLE} "
+    f"(collection, COALESCE(value->'next_run_at', 'null'::jsonb) ASC, key ASC)",
 )
 
 

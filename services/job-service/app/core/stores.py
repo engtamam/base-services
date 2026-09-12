@@ -70,33 +70,49 @@ class JobStore:
     async def dead_letters(self, tenant: str | None = None, limit: int = 100) -> list[dict]:
         return await self.list(tenant=tenant, status=DEAD, limit=limit)
 
-    async def counts(self, *, tenant: str | None = None) -> dict[str, int]:
-        """How many jobs in each status. tenant=None counts across all tenants (operator view); a
-        tenant value counts only that tenant's jobs."""
-        out: dict[str, int] = {}
-        # sweeper: counting every job IS the operation. Not on any request path - the
-        # metrics endpoint calls it on a timer.
+    _STATUSES = ("queued", "leased", "done", "dead", "canceled")
+
+    async def counts(self, *, tenant: str | None = None, cap: int = 10_000) -> dict[str, int]:
+        """How many jobs in each status. A tenant value counts ONLY that tenant's jobs via bounded,
+        INDEXED per-status finds (O(that tenant's jobs), capped) — not a scan of every tenant's jobs
+        (job-r2-02). tenant=None is the operator fleet aggregate: a capped whole-table scan, gated to
+        platform.jobs and rate-limited at the route."""
+        if tenant is not None:
+            out: dict[str, int] = {}
+            for st in self._STATUSES:
+                rows, _ = await self._store.find(_JOBS, {"tenant": tenant, "status": st},
+                                                 limit=cap + 1, sort=("created", "desc"))
+                if rows:
+                    out[st] = len(rows)
+            return out
+        out = {}
+        # sweeper: the fleet-wide operator aggregate — a capped whole-collection count.
         for r in await self._store.scan_all(_JOBS, _INDEX_MAX):
-            if tenant is not None and r.get("tenant", "") != tenant:
-                continue
             out[r.get("status", "?")] = out.get(r.get("status", "?"), 0) + 1
         return out
 
     # ── due-index (the claim hot path) ──────────────────────────────────────────
     async def index_due(self, job: Job) -> None:
-        await self._store.put(_DUE, job.id, {"id": job.id, "next_run_at": job.next_run_at,
+        # `due: True` is the constant filter that lets due_page() page the index with an indexed
+        # WHERE + ORDER BY next_run_at (find needs a non-empty where), instead of scanning it whole.
+        await self._store.put(_DUE, job.id, {"id": job.id, "due": True, "next_run_at": job.next_run_at,
                                              "priority": job.priority, "tenant": job.tenant,
                                              "queue": job.queue})
 
     async def unindex_due(self, job_id: str) -> None:
         await self._store.delete(_DUE, job_id)
 
-    async def due_index(self) -> list[dict]:
-        """The claimable set. In a KV store this lists the SMALL index, not the job table;
-        a SQL adapter would serve this from an index on (queue, next_run_at, priority)."""
-        # sweeper: `jobs_due` holds one row per CLAIMABLE job and is emptied as jobs are
-        # claimed. Reading it whole is how the worker finds work; it is not the job table.
-        return await self._store.scan_all(_DUE, _INDEX_MAX)
+    async def due_page(self, *, limit: int, tenant: str | None = None) -> list[dict]:
+        """A BOUNDED, oldest-first page of the claimable set, served by the next_run_at index — the
+        claim/stats hot path reads at most `limit` rows instead of the whole due-index (job-r2-02/03).
+        Oldest-first (next_run_at asc) so a backlog drains fairly; the caller re-orders the small
+        window by priority."""
+        where: dict = {"due": True}
+        if tenant is not None:
+            where["tenant"] = tenant
+        rows, _ = await self._store.find(_DUE, where, limit=max(1, int(limit)),
+                                         sort=("next_run_at", "asc"))
+        return rows
 
     async def index_leased(self, job: Job) -> None:
         await self._store.put(_LEASED, job.id, {"job_id": job.id, "lease_expires": job.lease_expires})

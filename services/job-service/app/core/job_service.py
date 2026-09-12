@@ -70,7 +70,10 @@ class JobService:
     async def claim(self, *, worker: str, queue: str | None = None, batch: int = 1) -> list[dict]:
         batch = max(1, min(int(batch), self._cfg["claim_batch_max"]))
         now = self._clock.now()
-        candidates = [d for d in await self._jobs.due_index()
+        # BOUNDED oldest-first page off the next_run_at index — not a scan+sort of the whole due-index
+        # (job-r2-03). A window a few multiples of the batch leaves room after the due/queue filter.
+        window = min(self._cfg["claim_batch_max"], max(batch * 8, 100))
+        candidates = [d for d in await self._jobs.due_page(limit=window)
                       if float(d.get("next_run_at", 0)) <= now
                       and (queue is None or d.get("queue") == queue)]
         candidates = self._order(candidates)                  # priority + tenant fairness
@@ -245,8 +248,8 @@ class JobService:
         # tenant=None is the platform-operator view (fleet-wide); a tenant caller sees ONLY its own
         # counts — otherwise /stats leaked global cross-tenant job counts to any jobs.read holder.
         counts = await self._jobs.counts(tenant=tenant)
-        due = [d for d in await self._jobs.due_index()
-               if tenant is None or d.get("tenant", "") == tenant]
+        # BOUNDED due page (indexed), tenant-scoped when applicable — not a whole due-index scan.
+        due = await self._jobs.due_page(limit=self._cfg.get("stats_due_cap", 10_000), tenant=tenant)
         now = self._clock.now()
         oldest = min((float(d.get("next_run_at", now)) for d in due), default=now)
         return {"by_status": counts, "due_now": sum(1 for d in due if float(d.get("next_run_at", 0)) <= now),

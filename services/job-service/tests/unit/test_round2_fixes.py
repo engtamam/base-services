@@ -52,3 +52,23 @@ def test_reclaim_does_not_resurrect_a_concurrently_finished_job():
     out = run(svc.reclaim())
     assert out["reclaimed"] == 0                          # the CAS lost → reclaim skipped it
     assert run(svc.get(job.id)).status == "done"          # stays DONE, not resurrected to QUEUED
+
+
+# r2-02 — a tenant's /stats counts via bounded INDEXED finds, never a scan of the whole job table.
+def test_tenant_stats_does_not_scan_the_job_table():
+    class _Counting(MemoryDataStore):
+        def __init__(self):
+            super().__init__()
+            self.scans = {}
+        async def scan_all(self, c, limit=100):
+            self.scans[c] = self.scans.get(c, 0) + 1
+            return await super().scan_all(c, limit)
+
+    st = _Counting()
+    svc = JobService(jobs=JobStore(st), clock=ManualClock(1000.0), config=CFG)
+    for i in range(10):
+        run(svc.enqueue(queue="q", tenant="t1", type="x"))
+    st.scans = {}
+    out = run(svc.stats(tenant="t1"))
+    assert st.scans.get("jobs", 0) == 0            # no whole-job-table scan for a tenant caller
+    assert out["by_status"].get("queued", 0) == 10
