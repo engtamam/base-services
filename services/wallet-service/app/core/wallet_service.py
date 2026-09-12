@@ -635,11 +635,29 @@ class WalletService:
             return {"hold_id": hold_id, "tenant": hold.tenant, "state": hold.state, "idempotent": True}
         if hold.state == HOLD_CONFIRMED:
             raise WalletError("HOLD_ALREADY_CONFIRMED")     # that needs refund(), not release()
+        # ATOMIC dedup keyed by the hold (audit wallet-r2-01): the state read above is NOT enough —
+        # two concurrent releases both see ACTIVE and each decrement held. The _mutate CAS stops a
+        # lost update, but BOTH signed held_deltas still apply and the new_held<0 clamp then masks the
+        # corruption: held under-counts and the freed money raids another hold's reservation. The claim
+        # lets exactly one proceed; the other replays or is told to retry. Mirrors confirm(). The
+        # sweeper's expiry path takes the SAME claim, so a release racing a sweep cannot double-free.
+        proceed, prior = await self._claim(hold.tenant, "release", hold_id)
+        if prior is not None:
+            return prior
+        if not proceed:
+            raise Conflict("WALLET_OP_IN_PROGRESS")
+        hold = await self._hold(hold_id)                    # re-read under the claim
+        if hold.state in (HOLD_RELEASED, HOLD_EXPIRED):
+            return {"hold_id": hold_id, "tenant": hold.tenant, "state": hold.state, "idempotent": True}
+        if hold.state == HOLD_CONFIRMED:
+            raise WalletError("HOLD_ALREADY_CONFIRMED")
         if hold.counted:
             await self._mutate(hold.tenant, held_delta={k: -v for k, v in hold.applied.items()})
         hold.state = HOLD_RELEASED
         await self._store.put(_HOLDS, hold.id, hold.to_dict())
-        return {"hold_id": hold.id, "tenant": hold.tenant, "state": HOLD_RELEASED, "freed": hold.amount}
+        result = {"hold_id": hold.id, "tenant": hold.tenant, "state": HOLD_RELEASED, "freed": hold.amount}
+        await self._finalize(hold.tenant, "release", hold_id, result)
+        return result
 
     # ── refund ──────────────────────────────────────────────────────────────────
     async def refund(self, *, tenant: str, seq: int, source: str = "",
@@ -660,6 +678,12 @@ class WalletService:
             return prior
         if not proceed:
             raise Conflict("WALLET_OP_IN_PROGRESS")
+        # Flush any ledger row the last CAS staged but never landed BEFORE reading it (audit
+        # wallet-r2-07). ledger()/reconcile() already do this; refund read _LEDGER raw, so if the spend
+        # being refunded was the latest op and the process died between its wallet CAS and the ledger
+        # put, refund would raise LEDGER_ENTRY_NOT_FOUND after taking the claim — a spurious refusal
+        # that blocks a legitimate retry for the whole claim lease. The flush replays the staged row.
+        await self._flush(await self._wallet(tenant))
         row = await self._store.get(_LEDGER, _ledger_key(tenant, seq))
         if not row:
             raise WalletError("LEDGER_ENTRY_NOT_FOUND")
@@ -713,11 +737,23 @@ class WalletService:
             if float(row.get("expires_at", 0)) > now:
                 continue
             hold = Hold.from_dict(row)
+            # Take the SAME claim release() uses (audit wallet-r2-01): a sweep racing a release —
+            # or an overlapping sweep — would otherwise both decrement held for the one hold and
+            # under-count reserved money. A lost/finished claim means another path owns this hold.
+            proceed, prior = await self._claim(hold.tenant, "release", hold.id)
+            if not proceed:
+                continue
+            hold = await self._hold(hold.id)                 # re-read under the claim
+            if hold.state != HOLD_ACTIVE:
+                continue
             if hold.counted:
                 await self._mutate(hold.tenant,
                                    held_delta={k: -v for k, v in hold.applied.items()})
             hold.state = HOLD_EXPIRED
             await self._store.put(_HOLDS, hold.id, hold.to_dict())
+            await self._finalize(hold.tenant, "release", hold.id,
+                                 {"hold_id": hold.id, "tenant": hold.tenant,
+                                  "state": HOLD_EXPIRED, "freed": hold.amount})
             swept += 1
             freed += hold.amount
         return {"swept": swept, "freed": freed, "limit": limit}
@@ -780,6 +816,23 @@ class WalletService:
                     extended += 1
                 continue
 
+            # MONEY-MOVING expiry (forfeit/dormant): serialize concurrent sweeps on THIS grant (audit
+            # wallet-r2-04). Two overlapping runs (cron interval < a slow sweep, or a manual sweep during
+            # the scheduled one) would both read the grant active+expired and each debit -remaining;
+            # the _mutate CAS stops a lost update but BOTH debits still apply — a forfeit over-claws and
+            # a dormant debits twice while reclaim restores once (net customer loss). The claim lets one
+            # proceed. Placed AFTER the extend branch, so an extend grant (which stays active and expires
+            # again) never consumes an idempotency slot; forfeit/dormant transition permanently, so
+            # finalizing here is safe. The re-read below is the durable guard.
+            proceed_sweep, prior_sweep = await self._claim(grant.tenant, "sweep", grant.id)
+            if not proceed_sweep:
+                continue                              # another run owns / already handled this grant
+            grant = Grant.from_dict(await self._store.get(_GRANTS, grant.id))   # re-read under claim
+            if grant.state != "active" or not grant.expires_at or float(grant.expires_at) > now:
+                await self._finalize(grant.tenant, "sweep", grant.id,
+                                     {"grant_id": grant.id, "state": grant.state, "swept": 0})
+                continue
+
             w = await self._wallet(grant.tenant)
             # Never touch money currently reserved for an in-flight action.
             spare = int(w.funds.get(grant.fund, 0)) - int(w.held.get(grant.fund, 0))
@@ -815,6 +868,8 @@ class WalletService:
             grant.state = "dormant" if behavior == "dormant" else "expired"
             grant.swept = remaining
             await self._store.put(_GRANTS, grant.id, grant.to_dict())
+            await self._finalize(grant.tenant, "sweep", grant.id,
+                                 {"grant_id": grant.id, "state": grant.state, "swept": remaining})
             await self._emit(_events.GRANT_EXPIRED, {
                 "tenant": grant.tenant, "fund": grant.fund, "grant_id": grant.id,
                 "amount": remaining, "behavior": behavior, "reclaimable": behavior == "dormant"})
@@ -860,19 +915,30 @@ class WalletService:
         # slot; only a dormant (or already-reclaimed, for idempotency) grant proceeds.
         if grant.state not in ("dormant", "reclaimed"):
             raise WalletError("GRANT_NOT_DORMANT")
-        amount = int(grant.swept)
-        src = source or f"reclaim:{grant.id}"
-        proceed, prior = await self._claim(grant.tenant, RECLAIM, src)
+        # Key the claim on the GRANT, never the caller's source (audit wallet-r2-02). Keying on source
+        # let two reclaims of ONE grant from DISTINCT sources (jobA/jobB) both win their own claim and,
+        # each reading the stale pre-claim state="dormant", both credit — minting a second copy of the
+        # balance. One grant reclaims at most once, whoever asks. The ledger row still carries the
+        # caller's source for traceability; only the idempotency slot is grant-scoped.
+        claim_key = f"reclaim:{grant.id}"
+        src = source or claim_key
+        proceed, prior = await self._claim(grant.tenant, RECLAIM, claim_key)
         if prior is not None:
-            return prior                                   # same source replayed → the stored result
+            return prior                                   # replay → the stored result
         if not proceed:
             raise Conflict("WALLET_OP_IN_PROGRESS")
+        # Re-read grant state UNDER the claim: a concurrent reclaim may have moved it to reclaimed
+        # between the pre-claim read and winning the claim. Never credit off a stale read.
+        grant = Grant.from_dict(await self._store.get(_GRANTS, grant_id))
+        amount = int(grant.swept)
         if grant.state == "reclaimed":
-            # Already reclaimed under a DIFFERENT source — never credit a dormant grant twice.
+            # Already reclaimed — never credit a dormant grant twice.
             result = {"reclaimed": 0, "fund": grant.fund, "grant_id": grant.id, "already": True,
                       "funds": (await self._wallet(grant.tenant)).funds}
-            await self._finalize(grant.tenant, RECLAIM, src, result)
+            await self._finalize(grant.tenant, RECLAIM, claim_key, result)
             return result
+        if grant.state != "dormant":
+            raise WalletError("GRANT_NOT_DORMANT")
         out = {"funds": (await self._wallet(grant.tenant)).funds}
         if amount > 0:
             entry = self._entry(grant.tenant, RECLAIM, {grant.fund: amount}, +1,
@@ -882,7 +948,7 @@ class WalletService:
         grant.state = "reclaimed"
         await self._store.put(_GRANTS, grant.id, grant.to_dict())
         result = {"reclaimed": amount, "fund": grant.fund, "grant_id": grant.id, **out}
-        await self._finalize(grant.tenant, RECLAIM, src, result)
+        await self._finalize(grant.tenant, RECLAIM, claim_key, result)
         await self._emit(_events.GRANT_RECLAIMED,
                          {"tenant": grant.tenant, "fund": grant.fund, "grant_id": grant.id,
                           "amount": amount})
