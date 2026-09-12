@@ -1,0 +1,54 @@
+"""Round-2 fixes (job-service). Maps to docs/audits/round2/job-service.json."""
+from __future__ import annotations
+
+import asyncio
+
+from app.adapters.clock.manual import ManualClock
+from app.adapters.datastore.memory import MemoryDataStore
+from app.core.job_service import JobService
+from app.core.stores import JobStore
+
+CFG = dict(lease_seconds=60, claim_batch_max=50, heartbeat_extend=60, retry_base_seconds=10,
+           retry_max_seconds=3600, retry_max_attempts=5, retry_jitter=True, unique_ttl=86400,
+           fairness=True, list_limit=100)
+
+
+def run(c):
+    return asyncio.run(c)
+
+
+class _RaceStore(MemoryDataStore):
+    """Simulate a concurrent ack landing BETWEEN reclaim's read of a leased job and its write: the
+    first time reclaim reads the target job (still LEASED), we finish it (DONE, version bumped) in the
+    store but hand reclaim the stale LEASED snapshot — the exact window job-r2-01 describes."""
+    def __init__(self):
+        super().__init__()
+        self.target = None
+        self._raced = False
+
+    async def get(self, collection, key):
+        row = await super().get(collection, key)
+        if (collection == "jobs" and key == self.target and not self._raced
+                and row and row.get("status") == "leased"):
+            self._raced = True
+            done = {**row, "status": "done", "lease_token": "",
+                    "version": int(row.get("version", 0)) + 1}
+            await super().put(collection, key, done)   # concurrent ack commits
+            return dict(row)                            # reclaim still sees the pre-ack LEASED snapshot
+        return row
+
+
+# r2-01 — reclaim must NOT resurrect a job a concurrent ack already finished (no re-execution).
+def test_reclaim_does_not_resurrect_a_concurrently_finished_job():
+    clk = ManualClock(1000.0)
+    st = _RaceStore()
+    svc = JobService(jobs=JobStore(st), clock=clk, config=CFG)
+    job, _ = run(svc.enqueue(type="x"))
+    claimed = run(svc.claim(worker="w1", batch=1))
+    assert claimed and claimed[0]["status"] == "leased"
+    st.target = job.id
+    clk.set(5000.0)                                       # lease long expired
+
+    out = run(svc.reclaim())
+    assert out["reclaimed"] == 0                          # the CAS lost → reclaim skipped it
+    assert run(svc.get(job.id)).status == "done"          # stays DONE, not resurrected to QUEUED

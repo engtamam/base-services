@@ -179,20 +179,28 @@ class JobService:
             # A crashed worker: make the job claimable AGAIN IMMEDIATELY (visibility-timeout
             # expiry, like SQS) — but count the attempt, so a job that keeps crashing workers
             # still reaches the dead-letter queue instead of looping forever.
+            expected = int(job.version)
             job.attempt += 1
             job.error = "lease_expired"
             job.lease_token = ""
-            await self._jobs.unindex_leased(job.id)
             if job.attempt >= job.max_attempts:
                 job.status, job.updated = DEAD, now
-                await self._jobs.save(job)
+            else:
+                job.status, job.next_run_at, job.updated = QUEUED, now, now  # immediately claimable
+            # ATOMIC LEASED->QUEUED/DEAD. The old blind save could RESURRECT a job a concurrent
+            # ack/nack/cancel had already finished (re-execution — job-r2-01): between the get above and
+            # the write, that op moved the job out of LEASED, and the blind save overwrote it. The CAS
+            # (expected version) fails if anything changed, so the reaper skips a job that is no longer
+            # the stale-leased one it read.
+            if not await self._jobs.cas_save(job, expected):
+                continue
+            await self._jobs.unindex_leased(job.id)
+            if job.status == DEAD:
                 await self._emit("job.dead_lettered", job)
                 dead += 1
-                continue
-            job.status, job.next_run_at, job.updated = QUEUED, now, now   # immediately claimable
-            await self._jobs.save(job)
-            await self._jobs.index_due(job)
-            reclaimed += 1
+            else:
+                await self._jobs.index_due(job)
+                reclaimed += 1
         return {"reclaimed": reclaimed, "dead_lettered": dead}
 
     # ── admin ────────────────────────────────────────────────────────────────────
