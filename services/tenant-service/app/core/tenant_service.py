@@ -10,7 +10,7 @@ import datetime as _dt
 import re
 from typing import Any
 
-from app.core.models import DELETED, SUSPENDED, Tenant, new_id
+from app.core.models import ACTIVE, DELETED, SUSPENDED, Tenant, new_id
 from app.ports.errors import ConfigError
 
 # How a delete behaves. The PLATFORM decides; we enforce. `tombstone` is the default because the
@@ -21,6 +21,10 @@ from app.core.tenant_repository import TenantRepository
 from app.ports.event_bus import Event
 
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$")
+
+
+class TenantInactive(Exception):
+    """A config/branding write was attempted on a non-ACTIVE tenant (suspended or tombstoned)."""
 
 
 class InvalidSlug(Exception):
@@ -102,13 +106,23 @@ class TenantService:
         return await self._repo.list(limit)
 
     # ── config / branding ─────────────────────────────────────────────────────
+    @staticmethod
+    def _require_active(tenant: Tenant) -> None:
+        """Self-service config/branding writes are only for a LIVE tenant. A SUSPENDED tenant (incl.
+        one in owner-close grace) must not keep mutating, and a DELETED/tombstoned one must not be
+        partially rewritten."""
+        if tenant.status != ACTIVE:
+            raise TenantInactive(tenant.status)
+
     async def update_config(self, tenant: Tenant, config: dict[str, Any]) -> Tenant:
+        self._require_active(tenant)
         tenant.config.update(config)
         await self._repo.update(tenant)
         await self._emit("tenant.updated", tenant)
         return tenant
 
     async def set_branding(self, tenant: Tenant, branding: dict[str, Any]) -> Tenant:
+        self._require_active(tenant)
         tenant.branding.update(branding)
         await self._repo.update(tenant)
         await self._emit("tenant.updated", tenant)
@@ -173,21 +187,27 @@ class TenantService:
         return {"status": SUSPENDED, "tenant_id": tenant.id, "grace_until": grace_until,
                 "closed": True}
 
-    async def close_sweep(self, *, now_iso: str, limit: int = 200) -> dict:
+    async def close_sweep(self, *, now_iso: str, page: int = 200) -> dict:
         """Erase tenants whose close grace has elapsed. Driven by the platform scheduler.
 
-        A bounded read (never a platform-wide scan), so a deployment with more closing tenants than
-        `limit` in one window simply finishes them on the next pass rather than doing an unbounded
-        read on a schedule."""
-        rows = await self._repo.list(limit)
-        erased = 0
-        for r in rows:
-            sched = (r.get("config") or {}).get("_close") or {}
-            grace_until = sched.get("grace_until")
-            if r.get("status") == SUSPENDED and grace_until and grace_until <= now_iso:
-                await self.delete(Tenant.from_dict(r))
-                erased += 1
-        return {"scanned": len(rows), "erased": erased}
+        Pages through the SUSPENDED tenants (a pushed-down filter), not the first N of the whole
+        catalogue — the old scan_all(limit) prefix meant a scheduled erasure for any tenant that
+        sorted beyond the first `limit` rows was NEVER performed (data kept past the deletion the
+        owner requested)."""
+        scanned = erased = 0
+        cursor = None
+        while True:
+            rows, cursor = await self._repo.iter_suspended(limit=page, after=cursor)
+            scanned += len(rows)
+            for r in rows:
+                sched = (r.get("config") or {}).get("_close") or {}
+                grace_until = sched.get("grace_until")
+                if grace_until and grace_until <= now_iso:
+                    await self.delete(Tenant.from_dict(r))
+                    erased += 1
+            if not cursor:
+                break
+        return {"scanned": scanned, "erased": erased}
 
     async def delete(self, tenant: Tenant) -> dict:
         """Delete the tenant, and leave something a peer can READ that says so.

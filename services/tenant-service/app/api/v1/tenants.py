@@ -14,7 +14,7 @@ from app.api.deps import get_guard
 from app.api.ratelimit import rate_limit
 from app.config import get_settings
 from app.core.tenant_repository import DomainTaken, SlugTaken, TenantRepository
-from app.core.tenant_service import InvalidSlug, TenantService
+from app.core.tenant_service import InvalidSlug, TenantInactive, TenantService
 
 admin_router = APIRouter(prefix="/api/v1/tenants", tags=["tenants"])
 self_router = APIRouter(prefix="/api/v1/tenant", tags=["tenant-self"])
@@ -105,7 +105,10 @@ async def get_tenant(request: Request, tenant_id: str) -> dict:
 async def update_config(request: Request, tenant_id: str, body: ConfigIn,
                         principal: Principal = Depends(_PLATFORM)) -> dict:
     svc, tenant = await _load(request, tenant_id)
-    updated = await svc.update_config(tenant, body.config)
+    try:
+        updated = await svc.update_config(tenant, body.config)
+    except TenantInactive as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"TENANT_NOT_ACTIVE:{exc}") from exc
     await request.app.state.auditor.record(
         "tenant.config_updated", actor=principal.subject, tenant=principal.tenant,
         resource=f"tenant:{tenant_id}", ip=request.client.host if request.client else "")
@@ -116,7 +119,10 @@ async def update_config(request: Request, tenant_id: str, body: ConfigIn,
 async def set_branding(request: Request, tenant_id: str, body: BrandingIn,
                        principal: Principal = Depends(_PLATFORM)) -> dict:
     svc, tenant = await _load(request, tenant_id)
-    updated = await svc.set_branding(tenant, body.branding)
+    try:
+        updated = await svc.set_branding(tenant, body.branding)
+    except TenantInactive as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"TENANT_NOT_ACTIVE:{exc}") from exc
     await request.app.state.auditor.record(
         "tenant.branding_updated", actor=principal.subject, tenant=principal.tenant,
         resource=f"tenant:{tenant_id}", ip=request.client.host if request.client else "")
@@ -135,11 +141,14 @@ async def suspend(request: Request, tenant_id: str,
     # it is the most consequential thing an operator can do here and it WILL be disputed. An
     # entry that says it happened but not who did it answers the one question an audit log
     # exists to answer. `dependencies=[Depends(...)]` authorizes identically and leaves no name.
+    # Authorize existence BEFORE recording: _load 404s an unknown tenant, and recording first
+    # persisted a 'tenant.suspended' entry for a tenant that was never mutated (a probe-able false
+    # audit). Still write-ahead of the mutation, which is what the invariant requires.
+    svc, tenant = await _load(request, tenant_id)
     await request.app.state.auditor.record(
         "tenant.suspended", actor=principal.subject, tenant=principal.tenant,
         resource=f"tenant:{tenant_id}",
         ip=request.client.host if request.client else "")
-    svc, tenant = await _load(request, tenant_id)
     return (await svc.suspend(tenant)).public()
 
 
@@ -149,11 +158,11 @@ async def reactivate(request: Request, tenant_id: str,
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
+    svc, tenant = await _load(request, tenant_id)   # 404 before any audit — see suspend()
     await request.app.state.auditor.record(
         "tenant.reactivated", actor=principal.subject, tenant=principal.tenant,
         resource=f"tenant:{tenant_id}",
         ip=request.client.host if request.client else "")
-    svc, tenant = await _load(request, tenant_id)
     return (await svc.reactivate(tenant)).public()
 
 
@@ -163,11 +172,11 @@ async def delete(request: Request, tenant_id: str,
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
+    svc, tenant = await _load(request, tenant_id)   # 404 before any audit — see suspend()
     await request.app.state.auditor.record(
         "tenant.deleted", actor=principal.subject, tenant=principal.tenant,
         resource=f"tenant:{tenant_id}",
         ip=request.client.host if request.client else "")
-    svc, tenant = await _load(request, tenant_id)
     return await svc.delete(tenant)
 
 
@@ -198,7 +207,10 @@ async def my_tenant(request: Request, principal: Principal = Depends(require_use
 async def my_config(request: Request, body: ConfigIn,
                     principal: Principal = Depends(require_user)) -> dict:
     svc, tenant = await _own(request, principal)
-    updated = await svc.update_config(tenant, body.config)
+    try:
+        updated = await svc.update_config(tenant, body.config)
+    except TenantInactive as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"TENANT_NOT_ACTIVE:{exc}") from exc
     # The same declared action, witnessed whoever makes the change — a tenant editing its own config
     # is as auditable as the platform doing it, and the actor is what tells the two apart.
     await request.app.state.auditor.record(
@@ -211,7 +223,10 @@ async def my_config(request: Request, body: ConfigIn,
 async def my_branding(request: Request, body: BrandingIn,
                       principal: Principal = Depends(require_user)) -> dict:
     svc, tenant = await _own(request, principal)
-    updated = await svc.set_branding(tenant, body.branding)
+    try:
+        updated = await svc.set_branding(tenant, body.branding)
+    except TenantInactive as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"TENANT_NOT_ACTIVE:{exc}") from exc
     await request.app.state.auditor.record(
         "tenant.branding_updated", actor=principal.subject, tenant=principal.tenant,
         resource=f"tenant:{principal.tenant}", ip=request.client.host if request.client else "")

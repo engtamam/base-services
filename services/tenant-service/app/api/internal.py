@@ -80,6 +80,10 @@ def _internal_view(tenant, svc) -> dict:
     allowed = get_settings().internal_fields
     row = tenant.to_dict()
     out = {k: v for k, v in row.items() if k in allowed}
+    if "config" in out and isinstance(out["config"], dict):
+        # Strip service-internal keys (leading underscore, e.g. _close) — they carry the close
+        # schedule and closed_by actor, which are not a peer's to see.
+        out["config"] = {k: v for k, v in out["config"].items() if not str(k).startswith("_")}
     out["id"] = tenant.id                       # never optional: it is what was asked for
     out["status"] = tenant.status               # never optional: it is the answer
     out["isolation"] = svc.scope(tenant)

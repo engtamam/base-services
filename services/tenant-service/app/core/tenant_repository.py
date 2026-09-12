@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from app.adapters.resolver.resolvers import normalize_host
-from app.core.models import DELETED, Tenant, now as _now
+from app.core.models import DELETED, SUSPENDED, Tenant, now as _now
 from app.ports.datastore import DataStore
 
 _TENANTS = "tenants"
@@ -23,15 +23,21 @@ class TenantRepository:
         self._store = store
 
     async def create(self, tenant: Tenant) -> Tenant:
-        if await self._store.get(_SLUGS, tenant.slug) is not None:
+        # ATOMICALLY reserve the slug and each domain (cas insert-if-absent). The old check-then-put
+        # had an await gap, so two concurrent provisions of the same slug/domain both passed the get
+        # and both put — two tenants sharing a slug/domain. On any conflict we roll back what we
+        # reserved so a failed provision leaves no orphaned index rows.
+        if not await self._store.cas(_SLUGS, tenant.slug, 0, {"id": tenant.id}):
             raise SlugTaken(f"slug already taken: {tenant.slug}")
+        reserved: list[str] = []
         for host in map(normalize_host, tenant.domains):
-            if await self._store.get(_DOMAINS, host) is not None:
+            if not await self._store.cas(_DOMAINS, host, 0, {"slug": tenant.slug}):
+                await self._store.delete(_SLUGS, tenant.slug)
+                for h in reserved:
+                    await self._store.delete(_DOMAINS, h)
                 raise DomainTaken(f"domain already mapped: {host}")
+            reserved.append(host)
         await self._store.put(_TENANTS, tenant.id, tenant.to_dict())
-        await self._store.put(_SLUGS, tenant.slug, {"id": tenant.id})
-        for host in map(normalize_host, tenant.domains):
-            await self._store.put(_DOMAINS, host, {"slug": tenant.slug})
         return tenant
 
     async def get(self, tenant_id: str) -> Tenant | None:
@@ -61,6 +67,13 @@ class TenantRepository:
         # sweeper: this IS the tenant catalogue. There is no tenant to scope it by, and it is
         # reachable only by a platform operator. Bounded by the caller's limit.
         return await self._store.scan_all(_TENANTS, limit)
+
+    async def iter_suspended(self, limit: int = 200, after: str | None = None):
+        """A page of SUSPENDED tenants (the close-sweep's candidate set) — pushed into the store as a
+        filter so the sweep reaches EVERY closing tenant over its pages, not just the first N rows of
+        the whole catalogue."""
+        return await self._store.find(_TENANTS, {"status": SUSPENDED}, limit=limit, after=after,
+                                      sort=("created", "asc"))
 
     async def delete(self, tenant: Tenant) -> None:
         """PURGE. The row is gone and nothing can ever learn it existed. See `tombstone()`."""

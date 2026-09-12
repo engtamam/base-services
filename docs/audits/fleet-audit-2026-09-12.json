@@ -1352,58 +1352,63 @@
       "issues": [
         {
           "id": "tenant-service-01",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "high",
           "file": "app/core/tenant_service.py",
           "line": 176,
           "title": "close_sweep reads only the first `limit` tenants, so scheduled tenant erasures beyond that window are NEVER performed",
           "detail": "close_sweep() calls self._repo.list(limit) which is store.scan_all('tenants', limit) — a bounded read of the FIRST `limit` rows in a deterministic order (postgres: ORDER BY key; memory: insertion order), NOT a query for tenants that are actually closing. It then filters that fixed prefix for status==SUSPENDED with an elapsed grace_until. The internal route POST /internal/tenants/close-sweep (app/api/internal.py:148-154) invokes it with the default limit=200 and no cursor/pagination. The docstring claims a deployment with more closing tenants than `limit` 'simply finishes them on the next pass', but every pass re-reads the SAME first `limit` rows, so a closing tenant whose key sorts after position `limit` is read on no pass and is never erased. Owner self-close (svc.close) promises erasure after the grace window; this silently breaks that guarantee and leaves suspended tenants' data retained indefinitely — a GDPR/data-retention failure that no test or metric surfaces.",
-          "failure_scenario": "Platform has 500 active tenants (keys sorted). Tenant whose key sorts at position 300 self-closes; grace elapses. Every scheduled close-sweep reads tenants at key-positions 1-200 only, never sees the closed tenant, returns erased=0 for it forever. Its data is retained permanently despite the completed close request."
+          "failure_scenario": "Platform has 500 active tenants (keys sorted). Tenant whose key sorts at position 300 self-closes; grace elapses. Every scheduled close-sweep reads tenants at key-positions 1-200 only, never sees the closed tenant, returns erased=0 for it forever. Its data is retained permanently despite the completed close request.",
+          "resolution": "FIXED: close_sweep pages through the SUSPENDED tenants (pushed-down filter) instead of the first N rows of the whole catalogue, so a scheduled erasure never gets stranded beyond the window. Regression: test_audit_fixes.py."
         },
         {
           "id": "tenant-service-02",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "medium",
           "file": "app/core/tenant_repository.py",
           "line": 25,
           "title": "Slug/domain uniqueness is check-then-put with an await gap (TOCTOU), so concurrent provisions of the same slug/domain both succeed",
           "detail": "create() does `if await store.get(_SLUGS, slug) is not None: raise SlugTaken` and then, after several awaits, `store.put(_SLUGS, slug, {id})`. There is no atomic put-if-absent / CAS. Between the get and the put the event loop yields, so two concurrent provision calls (POST /api/v1/tenants or POST /internal/tenants) for the same slug can both observe the slug as free, both write distinct tenant rows under new ids, and both write the slug index — the second overwrites the first. Result: two tenant rows exist for one slug, the slug index resolves to only one, and the other tenant row is orphaned (unreachable by slug/domain). The same race applies to the domain index (domain hijack: two tenants both claim a custom host). The comment in api/internal.py claims 'slug uniqueness IS the idempotency', but this non-atomic check cannot enforce it under concurrency.",
-          "failure_scenario": "Onboarding retries fire two concurrent POST /internal/tenants with slug='acme'. Both pass the get()==None check, both put tenant rows (id A, id B), both put tenant_slugs['acme']; B wins. Tenant A is now an orphaned, billable-but-unroutable registry row; the domain index can likewise be reassigned to a second tenant."
+          "failure_scenario": "Onboarding retries fire two concurrent POST /internal/tenants with slug='acme'. Both pass the get()==None check, both put tenant rows (id A, id B), both put tenant_slugs['acme']; B wins. Tenant A is now an orphaned, billable-but-unroutable registry row; the domain index can likewise be reassigned to a second tenant.",
+          "resolution": "FIXED: create() atomically reserves the slug and each domain (cas insert-if-absent) with rollback on conflict, closing the check-then-put TOCTOU that let two tenants share a slug/domain. Added cas to the datastore. Regression: test_audit_fixes.py."
         },
         {
           "id": "tenant-service-03",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "low",
           "file": "app/api/v1/tenants.py",
           "line": 160,
           "title": "Lifecycle audit is written ahead of the existence check, recording delete/suspend/reactivate events for tenants that were never mutated",
           "detail": "delete() (line 160-171), suspend() (126-143) and reactivate() (146-157) call auditor.record(...) BEFORE _load(), which is the call that 404s on a missing/unknown tenant_id. When the tenant does not exist, the audit sink has already persisted a 'tenant.deleted' / 'tenant.suspended' / 'tenant.reactivated' entry attributing a destructive action that never happened to the operator, and the request then returns 404. Because these actions are critical and fail-closed, this also lets an attacker with platform.tenants generate audit-log noise / false attribution for arbitrary tenant_ids without any state change. The write-ahead rationale (do not 503 a caller whose mutation already succeeded) does not require recording before confirming the target even exists.",
-          "failure_scenario": "Operator (or a compromised platform token) calls DELETE /api/v1/tenants/does-not-exist. Audit log gains a 'tenant.deleted resource=tenant:does-not-exist actor=<operator>' entry; the endpoint returns 404 and nothing was deleted. The audit trail now shows deletions that never occurred."
+          "failure_scenario": "Operator (or a compromised platform token) calls DELETE /api/v1/tenants/does-not-exist. Audit log gains a 'tenant.deleted resource=tenant:does-not-exist actor=<operator>' entry; the endpoint returns 404 and nothing was deleted. The audit trail now shows deletions that never occurred.",
+          "resolution": "FIXED: delete/suspend/reactivate authorize existence (_load, 404) BEFORE recording the lifecycle audit, so a missing tenant no longer produces a false destructive-action entry."
         },
         {
           "id": "tenant-service-04",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "low",
           "file": "app/core/tenant_service.py",
           "line": 105,
           "title": "Self config/branding updates have no tenant-status guard; a suspended tenant keeps mutating, and a tombstoned tenant is partially rewritten",
           "detail": "update_config() and set_branding() unconditionally merge into tenant.config/branding and call repo.update(), with no check on tenant.status. The self routes (PUT /api/v1/tenant/config and /branding) reach these for any principal holding tenant.manage whose token is still valid. A SUSPENDED tenant (including one suspended by owner-close within the grace window) can therefore keep editing its own config/branding despite being off the platform. Worse, if the token outlives a tombstone, _own -> _load returns the tombstone Tenant (status=deleted, config stripped to keep-fields) and update_config re-populates and re-persists config onto the deleted marker via repo.update(), writing attacker-controlled data back onto a record whose whole purpose is to be a minimal erasure marker.",
-          "failure_scenario": "Owner self-closes tenant (status=suspended, grace pending). With the still-valid session token they PUT /api/v1/tenant/config; the change is accepted and persisted even though access was supposed to have stopped, and the config write is not gated by the suspended state."
+          "failure_scenario": "Owner self-closes tenant (status=suspended, grace pending). With the still-valid session token they PUT /api/v1/tenant/config; the change is accepted and persisted even though access was supposed to have stopped, and the config write is not gated by the suspended state.",
+          "resolution": "FIXED: update_config/set_branding require the tenant to be ACTIVE (TenantInactive -> 409), so a suspended/tombstoned tenant cannot keep mutating its config/branding. Regression: test_audit_fixes.py."
         },
         {
           "id": "tenant-service-05",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "security",
           "severity": "low",
           "file": "app/api/internal.py",
           "line": 77,
           "title": "Internal tenant view exposes the full config blob (including internal _close scheduling and closed_by actor) to any internal caller",
           "detail": "_internal_view() returns fields listed in TENANT_INTERNAL_FIELDS, whose default (app/config.py:314) includes 'config'. tenant.config carries the service-internal '_close' object written by close() (app/core/tenant_service.py:168), which contains scheduled_at, grace_until and closed_by — the subject id of the operator/owner who closed the tenant. Any peer holding only the shared internal token (the default-open internal tier) reading GET /internal/tenants/{id} or /internal/tenants/resolve therefore receives internal lifecycle scheduling and an actor identifier that is not part of the tenant's public/business data. Least-privilege intent of the field allowlist is undercut because '_close' rides inside the broad 'config' field rather than being an explicitly chosen exposure.",
-          "failure_scenario": "A render/peer service calls GET /internal/tenants/{id} to fetch branding; the response also includes config._close.closed_by, leaking who closed the tenant and its erasure schedule to a service that had no need for it."
+          "failure_scenario": "A render/peer service calls GET /internal/tenants/{id} to fetch branding; the response also includes config._close.closed_by, leaking who closed the tenant and its erasure schedule to a service that had no need for it.",
+          "resolution": "FIXED: the internal tenant view strips service-internal config keys (leading underscore, e.g. _close with grace/closed_by) so a peer cannot read the close schedule/actor."
         }
       ]
     },
