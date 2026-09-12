@@ -120,7 +120,8 @@ _ROUTE_TABLE: dict[str, Builder] = {
     "static": lambda s: StaticRouteTable(s.GATEWAY_ROUTES, s.GATEWAY_ROUTES_FILE),
 }
 _FORWARDER: dict[str, Builder] = {
-    "httpx": lambda s: HttpxForwarder(s.UPSTREAM_TIMEOUT_SECONDS),
+    "httpx": lambda s: HttpxForwarder(s.UPSTREAM_TIMEOUT_SECONDS,
+                                      max_response_bytes=s.MAX_RESPONSE_BYTES),
 }
 
 

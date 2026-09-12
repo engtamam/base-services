@@ -17,7 +17,9 @@ def test_readyz_ready_with_no_deps(client):
 
 
 def test_metrics_prometheus(client):
-    r = client.get("/metrics")
+    # /metrics is now internal-tier: unauthenticated is refused (api-gateway-r2-09).
+    assert client.get("/metrics").status_code == 401
+    r = client.get("/metrics", headers={"X-Internal-Token": INTERNAL_TOKEN})
     assert r.status_code == 200
     assert "text/plain" in r.headers["content-type"]
 

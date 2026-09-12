@@ -41,6 +41,22 @@ def _err(code: str, status: int) -> JSONResponse:
     return JSONResponse({"error": code}, status_code=status)
 
 
+def _abnormal_path(request: Request) -> bool:
+    """True if the request path is a dot-segment / encoded-traversal form that would NORMALIZE
+    differently downstream than it reads here. The gateway decides routing/auth/caps/rate-limit on
+    request.url.path, but httpx COLLAPSES '.'/'..' when it builds the upstream URL — so `/public/../admin`
+    could be authorized as the public route yet fetched as the admin one (auth bypass, api-gateway-r2-01).
+    Rather than re-implement RFC-3986 collapsing, we REJECT any such path: a '.'/'..' segment, or an
+    encoded dot/slash/backslash (%2e/%2f/%5c) in the raw target, so the decided path is byte-for-byte
+    what is forwarded."""
+    raw = request.scope.get("raw_path") or b""
+    raw_target = (bytes(raw).decode("latin-1", "replace") if raw else request.url.path)
+    low = raw_target.split("?", 1)[0].lower()
+    if "%2e" in low or "%2f" in low or "%5c" in low:
+        return True
+    return any(seg in (".", "..") for seg in request.url.path.split("/"))
+
+
 class Gateway:
     def __init__(self, *, route_table, forwarder, token_verifier, rate_limiter, cache,
                  internal_token: str, default_cache_ttl: int, policy=None,
@@ -56,6 +72,10 @@ class Gateway:
         self._trusted_hops = max(0, int(trusted_proxy_hops))
 
     async def handle(self, request: Request) -> Response:
+        # Reject dot-segment / encoded-traversal paths BEFORE any routing/auth/rate-limit decision, so
+        # the path we authorize is exactly the path forwarded (api-gateway-r2-01).
+        if _abnormal_path(request):
+            return _err("BAD_REQUEST", 400)
         path = request.url.path
         # THE EDGE NEVER PROXIES THE INTERNAL TIER — unconditionally, whatever the route table says.
         # The gateway injects the fleet's internal token into every forwarded request, so a single

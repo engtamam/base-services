@@ -266,6 +266,9 @@ class Settings(BaseSettings):
     GATEWAY_ROUTES: str = "[]"
     GATEWAY_ROUTES_FILE: str = ""            # path to a JSON routes file (overrides inline)
     UPSTREAM_TIMEOUT_SECONDS: int = 15
+    # Cap the upstream RESPONSE body the edge will buffer. Without it a compromised/hostile upstream (or
+    # a huge legitimate export) could read an unbounded body into RAM (api-gateway-r2-05). 0 = no cap.
+    MAX_RESPONSE_BYTES: int = 16_777_216  # 16 MiB
     DEFAULT_CACHE_TTL: int = 0               # per-route cache_ttl overrides this
 
     # ── admin control panel (Phase 33) — the catalog aggregator ─────────────
