@@ -83,10 +83,14 @@ class MemoryDataStore:
             next_cursor = _cursor.encode(last.get(field), str(last.get("id", "")))
         return copy.deepcopy(page), next_cursor
 
-    async def scan_all(self, collection: str, limit: int) -> list[dict[str, Any]]:
-        """Every row. Sweepers and migrations only - see the port."""
-        rows = list(self._data.get(collection, {}).values())
-        return copy.deepcopy(rows[: max(0, int(limit))])
+    async def scan_all(self, collection: str, limit: int, after: str = "") -> list[dict[str, Any]]:
+        """Every row, ordered by KEY (matching postgres) so a paged sweep is deterministic. `after`
+        returns only keys strictly greater than it — a cursor that lets a sweeper page through the
+        WHOLE collection over calls, instead of forever re-reading the same lowest-key prefix."""
+        items = sorted(self._data.get(collection, {}).items())
+        if after:
+            items = [(k, v) for k, v in items if k > after]
+        return copy.deepcopy([v for _k, v in items[: max(0, int(limit))]])
 
     async def list(self, collection: str, limit: int = 100) -> list[dict[str, Any]]:
         return await self.scan_all(collection, limit)

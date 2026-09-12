@@ -32,30 +32,10 @@ class EventStore:
     async def seen(self, event_id: str) -> bool:
         return await self._store.get(_SEEN, event_id) is not None
 
-    async def mark_seen(self, event_id: str) -> None:
-        await self._store.put(_SEEN, event_id, {"id": event_id})
-
     async def reserve(self, event_id: str) -> bool:
         """Atomically claim event_id: True if first-seen (process it), False if already seen. Replaces
         the non-atomic seen()->mark_seen() pair so two concurrent redeliveries cannot both count."""
         return await self._store.cas(_SEEN, event_id, 0, {"id": event_id})
-
-    async def for_tenant(self, tenant: str, limit: int = _EXPORT_MAX) -> list[dict]:
-        """One tenant's raw events, oldest first - funnels / retention / export only.
-
-        Never a metric query: those are served from the rollups. It used to read every tenant's
-        events to answer for one, and past the cap it answered with an arbitrary subset - a
-        funnel computed over a random sample of the wrong customers' events.
-        """
-        out: list[dict] = []
-        cursor = None
-        while len(out) < limit:
-            rows, cursor = await self._store.find(_EVENTS, {"tenant": tenant}, limit=_PAGE,
-                                                  after=cursor, sort=("event_time", "asc"))
-            out.extend(rows)
-            if not cursor:
-                break
-        return out[:limit]
 
     async def for_tenant_window(self, tenant: str, lo: float, hi: float,
                                 limit: int = _EXPORT_MAX) -> tuple[list[dict], bool]:

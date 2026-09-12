@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from app.ports.model import Passage
+from app.ports.model import ModelError, Passage
 
 
 def _generative(model: Any) -> bool:
@@ -54,7 +54,10 @@ async def triage(model: Any, *, current_type: str, subject: str, body: str,
         f"Candidate types: {types}.")
     passage = Passage(ref="ticket", title=subject or "ticket",
                       text=f"Subject: {subject}\n\n{body}")
-    ans = await model.answer(question=question, passages=(passage,), lang=lang)
+    try:
+        ans = await model.answer(question=question, passages=(passage,), lang=lang)
+    except ModelError:
+        return {}          # ADVISORY: a provider outage must not 500 the ticket — a shrug, not a fault
     obj = _json_object(ans.text or "")
     if not obj:
         return {}
@@ -77,7 +80,10 @@ async def draft(model: Any, *, subject: str, thread: list[dict], lang: str = "en
                 "Reply with ONLY the message text — no preamble, no signature placeholder.")
     passage = Passage(ref="thread", title=subject or "ticket",
                       text=f"Subject: {subject}\n\n{convo}")
-    ans = await model.answer(question=question, passages=(passage,), lang=lang)
+    try:
+        ans = await model.answer(question=question, passages=(passage,), lang=lang)
+    except ModelError:
+        return {}          # ADVISORY: a failed suggestion must never fail the ticket
     text = (ans.text or "").strip()
     if not text:
         return {}

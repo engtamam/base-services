@@ -160,6 +160,14 @@ class Settings(BaseSettings):
     # `extractive` needs no API key and cannot hallucinate: it quotes the retrieved passages. It is
     # the default because a help assistant that requires a key before it does anything is a feature
     # an adopter evaluates later and never switches on.
+    # SSRF guard for tenant-supplied AI-connection URLs (the service POSTs a credential to them).
+    # https required by default; private/link-local/metadata addresses blocked unless a platform opts
+    # in (single-node/dev). allow/deny host lists are CSV. "كل منصة تختار."
+    ASSISTANT_CONN_REQUIRE_HTTPS: bool = True
+    ASSISTANT_CONN_ALLOW_PRIVATE_IPS: bool = False
+    ASSISTANT_CONN_ALLOWED_HOSTS: str = ""    # CSV allowlist; empty = any public host
+    ASSISTANT_CONN_DENIED_HOSTS: str = ""     # CSV denylist
+
     MODEL_DRIVER: str = "extractive"          # extractive | http
     # One adapter, several vendors, no SDK: the wire format is a JSON POST returning a string, and
     # a vendor SDK per provider is a large amount of supply chain for a small convenience.

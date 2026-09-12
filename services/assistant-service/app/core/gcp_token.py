@@ -61,7 +61,9 @@ class VertexTokenSource:
             self._sa = sa
         # No key → metadata-server (Workload Identity) mode.
 
-    async def token(self) -> str:
+    async def token(self, tenant: str = "") -> str:
+        # `tenant` is accepted to satisfy the KeyResolver signature and deliberately ignored: a Vertex
+        # access token is platform-scoped (one service account), not per-tenant.
         now = self._now()
         if self._token and now < self._exp:
             return self._token

@@ -99,14 +99,21 @@ async def ask(request: Request, body: AskIn,
     # before it is ranked. Redacting later would mean the raw text had already left the process.
     cleaned = redact(body.question, enabled=s.REDACT_PII, max_chars=s.REDACT_MAX_CHARS)
     kb = build_kb(request)
-    answer, hits = await kb.ask(
-        question=cleaned.text,
-        surface=body.surface,
-        caps=principal.caps,          # from the verified token, never from the body
-        lang=body.lang or s.DEFAULT_LANGUAGE,
-        not_found_text=s.ASSISTANT_NOT_FOUND_TEXT,
-        unavailable_text=s.ASSISTANT_UNAVAILABLE_TEXT,
-    )
+    from app.adapters.model.http_provider import current_tenant
+    # Bind the caller's tenant for the shared model singleton, so the key resolver can serve (and bill)
+    # a tenant that configured its own model key instead of always the platform key.
+    _tok = current_tenant.set(principal.tenant or "")
+    try:
+        answer, hits = await kb.ask(
+            question=cleaned.text,
+            surface=body.surface,
+            caps=principal.caps,          # from the verified token, never from the body
+            lang=body.lang or s.DEFAULT_LANGUAGE,
+            not_found_text=s.ASSISTANT_NOT_FOUND_TEXT,
+            unavailable_text=s.ASSISTANT_UNAVAILABLE_TEXT,
+        )
+    finally:
+        current_tenant.reset(_tok)
     if answer.abstained:
         # Refunded: an abstention did no work worth paying for, and charging for one would mean a
         # user burns their day discovering a gap in the knowledge base.

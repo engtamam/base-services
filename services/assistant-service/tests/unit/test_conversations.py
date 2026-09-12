@@ -173,10 +173,13 @@ def test_retention_removes_messages_with_their_conversation():
     assert msgs == []
 
 
-def test_retention_is_bounded_per_run():
-    # One enormous backlog must degrade into several runs, not one run that is killed halfway.
+def test_retention_purges_all_expired_across_pages():
+    # Retention must PAGE THROUGH THE WHOLE collection, not stop at the first key-ordered prefix —
+    # a small page size (limit) is the batch size, not a coverage cap. The old single-pass left every
+    # conversation beyond the prefix un-purged (PII kept past policy). With 5 expired rows and a page
+    # of 2, all 5 are still purged over the paged loop.
     cs = _store()
     for _ in range(5):
         _seed(cs)
     out = run(cs.enforce_retention(cutoff_iso="2030-01-01T00:00:00Z", limit=2))
-    assert out["conversations"] <= 2
+    assert out["conversations"] == 5

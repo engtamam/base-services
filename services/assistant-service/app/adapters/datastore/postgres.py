@@ -237,19 +237,24 @@ class PostgresDataStore:
             next_cursor = _cursor.encode(last.get(field), str(last.get("id", "")))
         return page, next_cursor
 
-    async def scan_all(self, collection: str, limit: int) -> list[dict[str, Any]]:
-        """Every row. Sweepers and migrations only — see the port.
-
-        Ordered by key, so a truncated read is at least DETERMINISTIC. The old `list()` had no
-        ORDER BY: past the limit it returned whatever the heap yielded, and a tenant could see
-        an arbitrary subset of its own rows.
+    async def scan_all(self, collection: str, limit: int, after: str = "") -> list[dict[str, Any]]:
+        """Every row, ordered by key (DETERMINISTIC). `after` returns only keys strictly greater than
+        it, so a sweeper can page through the WHOLE collection over successive calls instead of forever
+        re-reading the same lowest-key prefix.
         """
         pool = await self._ensure()
         async with pool.acquire() as con:
-            rows = await con.fetch(
-                f"SELECT value FROM {_TABLE} WHERE collection=$1 ORDER BY key LIMIT $2",  # nosec B608 - _TABLE is a trusted constant; values parameterized
-                collection, max(0, int(limit)),
-            )
+            if after:
+                rows = await con.fetch(
+                    f"SELECT value FROM {_TABLE} WHERE collection=$1 AND key > $3 "  # nosec B608 - _TABLE is a trusted constant; values parameterized
+                    "ORDER BY key LIMIT $2",
+                    collection, max(0, int(limit)), after,
+                )
+            else:
+                rows = await con.fetch(
+                    f"SELECT value FROM {_TABLE} WHERE collection=$1 ORDER BY key LIMIT $2",  # nosec B608 - _TABLE is a trusted constant; values parameterized
+                    collection, max(0, int(limit)),
+                )
         return [json.loads(r["value"]) for r in rows]
 
     async def list(self, collection: str, limit: int = 100) -> list[dict[str, Any]]:

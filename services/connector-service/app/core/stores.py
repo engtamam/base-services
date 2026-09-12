@@ -97,9 +97,6 @@ class SeenStore:
     async def seen(self, key: str) -> bool:
         return await self._store.get(_SEEN, key) is not None
 
-    async def mark(self, key: str) -> None:
-        await self._store.put(_SEEN, key, {"k": key})
-
     async def reserve(self, key: str) -> bool:
         """Atomically claim `key`: True if WE reserved it (first-seen → process), False if it was
         already taken. Replaces the non-atomic seen()->mark() pair so two concurrent syncs cannot both

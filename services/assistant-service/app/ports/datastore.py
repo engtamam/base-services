@@ -51,8 +51,9 @@ class DataStore(Protocol):
         """
         ...
 
-    async def scan_all(self, collection: str, limit: int) -> list[dict[str, Any]]:
-        """EVERY row in a collection. A sweeper or a migration — never a request path."""
+    async def scan_all(self, collection: str, limit: int, after: str = "") -> list[dict[str, Any]]:
+        """EVERY row in a collection, ordered by key. A sweeper or a migration — never a request path.
+        `after` pages past a key so a sweep can cover the whole collection over successive calls."""
         ...
 
     async def list(self, collection: str, limit: int = 100) -> list[dict[str, Any]]:

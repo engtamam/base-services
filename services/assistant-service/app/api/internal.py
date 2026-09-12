@@ -130,19 +130,29 @@ async def internal_triage(request: Request, body: TriageIn) -> dict:
     empty object means 'no suggestion' (no generative model wired, or nothing usable back), which the
     caller (ticket-service) treats as a shrug. Enabled only when MODEL_DRIVER is a real LLM."""
     from app.core import support
-    return await support.triage(
-        request.app.state.container.model, current_type=body.current_type, subject=body.subject,
-        body=body.body, candidate_types=tuple(body.candidate_types),
-        lang=get_settings().DEFAULT_LANGUAGE)
+    from app.adapters.model.http_provider import current_tenant
+    tok = current_tenant.set(body.tenant or "")   # so a tenant's own model key is used, if configured
+    try:
+        return await support.triage(
+            request.app.state.container.model, current_type=body.current_type, subject=body.subject,
+            body=body.body, candidate_types=tuple(body.candidate_types),
+            lang=get_settings().DEFAULT_LANGUAGE)
+    finally:
+        current_tenant.reset(tok)
 
 
 @router.post("/assistant/draft", dependencies=[Depends(require_internal_token)])
 async def internal_draft(request: Request, body: DraftIn) -> dict:
     """Customer-service AI: draft a reply an agent reviews before sending. ADVISORY (see triage)."""
     from app.core import support
-    return await support.draft(
-        request.app.state.container.model, subject=body.subject, thread=body.thread,
-        lang=get_settings().DEFAULT_LANGUAGE)
+    from app.adapters.model.http_provider import current_tenant
+    tok = current_tenant.set(body.tenant or "")
+    try:
+        return await support.draft(
+            request.app.state.container.model, subject=body.subject, thread=body.thread,
+            lang=get_settings().DEFAULT_LANGUAGE)
+    finally:
+        current_tenant.reset(tok)
 
 
 @router.post("/privacy/erase", dependencies=[Depends(require_internal_token)])
@@ -283,10 +293,26 @@ class ConnIn(BaseModel):
     credential: str = Field(default="", max_length=16000)
 
 
+def _validate_conn_url(url: str) -> None:
+    """SSRF guard (CWE-918): the service POSTs the connection's credential to this URL, so a
+    tenant-supplied http://169.254.169.254/ or an internal host must be refused at write time."""
+    from app.core import ssrf
+    s = get_settings()
+    try:
+        ssrf.validate(
+            url, require_https=s.ASSISTANT_CONN_REQUIRE_HTTPS,
+            allow_private=s.ASSISTANT_CONN_ALLOW_PRIVATE_IPS,
+            allowed_hosts=frozenset(h.strip() for h in s.ASSISTANT_CONN_ALLOWED_HOSTS.split(",") if h.strip()),
+            denied_hosts=frozenset(h.strip() for h in s.ASSISTANT_CONN_DENIED_HOSTS.split(",") if h.strip()))
+    except ssrf.SsrfBlocked as exc:
+        raise HTTPException(422, f"URL_NOT_ALLOWED: {exc}") from exc
+
+
 @router.post("/assistant/connections", dependencies=[Depends(require_internal_token)])
 async def create_connection(request: Request, body: ConnIn) -> dict:
     """Declare a new isolated AI line for a tenant. Its credential is sealed in the secret store."""
     from app.core.connections import ConnectionError
+    _validate_conn_url(body.url)
     try:
         conn = await _connections(request).create(
             tenant=body.tenant, name=body.name, url=body.url, shape=body.shape, model=body.model,
@@ -341,6 +367,8 @@ async def update_connection(request: Request, cid: str, body: ConnUpdateIn) -> d
     lives in the secret store; recreate the connection to rotate it."""
     from app.core.connections import ConnectionError
     changes = body.model_dump(exclude={"tenant"}, exclude_none=True)
+    if changes.get("url"):
+        _validate_conn_url(changes["url"])          # re-guard SSRF on any URL change
     try:
         conn = await _connections(request).update(body.tenant, cid, changes)
     except ConnectionError as exc:

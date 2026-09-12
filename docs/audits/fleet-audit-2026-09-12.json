@@ -353,47 +353,51 @@
       "issues": [
         {
           "id": "assistant-service-01",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "medium",
           "file": "app/core/conversations.py",
           "line": 247,
           "title": "Retention sweeper scans only a fixed key-ordered prefix, so old rows past it are never purged",
           "detail": "enforce_retention() does a single `rows = await self._s.scan_all(_CONVERSATIONS, limit)` (default limit=500) with NO pagination loop. Both datastore backends implement scan_all deterministically: postgres is `SELECT value ... ORDER BY key LIMIT $2`, memory takes the first N by insertion. So every cron run examines the SAME lowest-key prefix. Rows within the prefix that are newer than the cutoff are skipped and permanently occupy prefix slots; any conversation whose key sorts beyond that prefix is never read and therefore never deleted, no matter how old it gets. CONVERSATION_RETENTION_DAYS is silently not enforced for those rows — personal data retained past policy, the exact compliance defect the module docstring claims to prevent.",
-          "failure_scenario": "A tenant accumulates >500 conversations; 500 recent (within-retention) rows have the lowest uuid keys. A conversation older than 90 days whose key sorts at position 600 is examined by no run and is retained indefinitely, while the audit line reports the purge 'succeeded'."
+          "failure_scenario": "A tenant accumulates >500 conversations; 500 recent (within-retention) rows have the lowest uuid keys. A conversation older than 90 days whose key sorts at position 600 is examined by no run and is retained indefinitely, while the audit line reports the purge 'succeeded'.",
+          "resolution": "FIXED: enforce_retention pages through the WHOLE collection with a key cursor (scan_all now takes after=), deleting expired rows, instead of forever re-reading the lowest-key prefix. Regression: test_conversations.py."
         },
         {
           "id": "assistant-service-02",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "medium",
           "file": "app/main.py",
           "line": 126,
           "title": "Per-tenant model credential is silently ignored on the /ask path",
           "detail": "container.model.use_key_resolver(app.state.model_credentials.get) wires ModelCredentials.get (signature `async def get(self, tenant='')`) as the adapter's KeyResolver, which HttpModel._credential() invokes with NO arguments (`await self._key_resolver()`). So get() always runs with tenant='' and SecretStore.get() only ever checks the platform-wide row then the env fallback, never the tenant-scoped row. The operator panel (operator.py set_secret / SecretIn.tenant) accepts a tenant, reports success, audits it, and _invalidate() clears that tenant's cache entry — but the KB /ask path never reads it. A tenant that configured its own MODEL_API_KEY keeps being served and billed on the platform key.",
-          "failure_scenario": "Operator PUTs /operator/secrets {name: MODEL_API_KEY, value: <tenantB key>, tenant: tenantB}; response says set + rotating. Every /ask from tenantB still authenticates with the platform key (or env), so tenantB's provider key is dead and its usage bills the platform account."
+          "failure_scenario": "Operator PUTs /operator/secrets {name: MODEL_API_KEY, value: <tenantB key>, tenant: tenantB}; response says set + rotating. Every /ask from tenantB still authenticates with the platform key (or env), so tenantB's provider key is dead and its usage bills the platform account.",
+          "resolution": "FIXED: the model key resolver now receives the request-scoped tenant (contextvar set at /ask + triage/draft), so a tenant that configured its own MODEL_API_KEY is served on it, not the platform key. Regression: test_audit_fixes.py."
         },
         {
           "id": "assistant-service-03",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "medium",
           "file": "app/api/internal.py",
           "line": 128,
           "title": "Advisory triage/draft can 500 the caller on a provider failure",
           "detail": "internal_triage and internal_draft call support.triage/support.draft, which call model.answer(...). HttpModel.answer raises ModelError on any transport/HTTP-non-200/empty-text condition (http_provider.py lines 481-494). Neither support.py nor the internal routes catch ModelError, so a provider outage/rate-limit propagates as an unhandled 500. This violates the stated contract (support.py docstring: 'ADVISORY ... a failed suggestion must never fail the ticket'; the caller is documented to treat a null/empty result as a shrug). The sibling connection route (invoke_connection) correctly wraps ModelError -> 502, showing the intended handling is missing here.",
-          "failure_scenario": "ticket-service POSTs /internal/assistant/triage while the LLM endpoint returns HTTP 429; model.answer raises ModelError, it bubbles out of internal_triage as a 500, and the ticket-service call fails instead of proceeding with 'no suggestion'."
+          "failure_scenario": "ticket-service POSTs /internal/assistant/triage while the LLM endpoint returns HTTP 429; model.answer raises ModelError, it bubbles out of internal_triage as a 500, and the ticket-service call fails instead of proceeding with 'no suggestion'.",
+          "resolution": "FIXED: support.triage/draft catch ModelError and return {} (advisory), so a provider outage never 500s the ticket. Regression: test_audit_fixes.py."
         },
         {
           "id": "assistant-service-04",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "security",
           "severity": "low",
           "file": "app/api/internal.py",
           "line": 234,
           "title": "AI-connection URL is unvalidated (SSRF) and requests carry a credential to it",
           "detail": "create_connection/update_connection accept an arbitrary conn.url (only length-bounded) and _conn_model builds HttpModel(conn.url, ...) which POSTs to it with the connection's Authorization/x-api-key header (and, for auth=vertex, a freshly minted GCP OAuth token). There is no scheme allowlist, no host allowlist, and no block on link-local/metadata/private addresses (e.g. http://169.254.169.254/, http://<internal-svc>). The invoke response body is parsed and returned. This is gated behind internal-tier auth and the creator supplies the credential, which limits blast radius, but any principal that can reach the /internal tier can make the service issue outbound requests to arbitrary internal/cloud endpoints.",
-          "failure_scenario": "An internal caller creates a connection with url=http://internal-admin.svc.cluster.local/ and invokes it; assistant-service issues the request from inside the cluster and returns whatever parses as a model response, reaching services not otherwise exposed."
+          "failure_scenario": "An internal caller creates a connection with url=http://internal-admin.svc.cluster.local/ and invokes it; assistant-service issues the request from inside the cluster and returns whatever parses as a model response, reaching services not otherwise exposed.",
+          "resolution": "FIXED: AI-connection URLs are SSRF-validated (core/ssrf) at create/update — scheme/host allowlist, private/link-local/metadata blocked (config-driven). Regression: test_audit_fixes.py."
         }
       ]
     },

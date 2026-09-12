@@ -31,10 +31,19 @@ from app.ports.model import ModelAnswer, ModelError, Passage
 
 # transport(url, headers, payload, timeout) -> (status, json)
 Transport = Callable[[str, dict, dict, float], Awaitable[tuple[int, Any]]]
-# () -> the credential to authenticate this call with. Asked per call rather than captured at
+# (tenant) -> the credential to authenticate this call with. Asked per call rather than captured at
 # construction, which is what lets an operator rotate the key without a redeploy; the resolver
-# owns the caching so this stays off the hot path.
-KeyResolver = Callable[[], Awaitable[str]]
+# owns the caching so this stays off the hot path. The tenant lets a resolver return a TENANT-scoped
+# key (a tenant that configured its own MODEL_API_KEY) and fall back to the platform key — a resolver
+# that ignores tenant (e.g. Vertex) simply accepts and drops it.
+KeyResolver = Callable[..., Awaitable[str]]
+
+# Request-scoped tenant for the shared model singleton. Set by the entry points (KB /ask, support
+# triage/draft) so _credential can hand the tenant to the key resolver WITHOUT threading it through
+# every answering/kb layer. contextvars are per-asyncio-task, so concurrent requests never bleed.
+import contextvars as _contextvars  # noqa: E402
+current_tenant: "_contextvars.ContextVar[str]" = _contextvars.ContextVar(
+    "assistant_model_tenant", default="")
 
 CHAT, GENERATE, ANTHROPIC = "chat", "generate", "anthropic"
 # Anthropic requires max_tokens; when a caller passes 0 we send this so a request never 400s on it.
@@ -153,10 +162,12 @@ class HttpModel:
         self._key_resolver = resolver
 
     async def _credential(self) -> str:
-        """The key for THIS call. The configured value when nothing overrides it."""
+        """The key for THIS call. The configured value when nothing overrides it. The resolver is
+        given the request-scoped tenant so a tenant that set its own key is served (and billed) on it,
+        not silently on the platform key."""
         if self._key_resolver is None:
             return self._key
-        return await self._key_resolver() or ""
+        return await self._key_resolver(current_tenant.get()) or ""
 
     # ── prompt ────────────────────────────────────────────────────────────────
     @staticmethod

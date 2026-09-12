@@ -244,16 +244,30 @@ class ConversationStore:
         # would silently skip any tenant missing from it. Bounded by `limit` so one large backlog
         # degrades into several runs rather than one run that is killed halfway, leaving messages
         # whose conversation is already gone. This is a cron caller, never a request path.
-        rows = await self._s.scan_all(_CONVERSATIONS, limit)
+        # PAGE THROUGH THE WHOLE COLLECTION with a key cursor, deleting expired rows. The old
+        # single fixed-prefix scan_all(limit) re-read the same lowest-key rows every run, so any
+        # conversation whose key sorted beyond that prefix was NEVER visited and its retention was
+        # silently not enforced (PII kept past policy). `limit` is now the PAGE size; the cursor
+        # (the last key seen, whether kept or deleted — key==conversation id) advances past kept rows
+        # so a page is never re-read.
+        page = max(1, int(limit))
+        after = ""
         convs, msgs = 0, 0
-        for r in rows:
-            # ISO-8601 UTC compares correctly as a string, which is why it is stored that way.
-            if (r.get("updated") or "") >= cutoff_iso:
-                continue
-            msgs += await self._purge_messages(tenant=r.get("tenant", ""),
-                                               conversation_id=r["id"])
-            await self._s.delete(_CONVERSATIONS, r["id"])
-            convs += 1
+        while True:
+            rows = await self._s.scan_all(_CONVERSATIONS, page, after=after)
+            if not rows:
+                break
+            for r in rows:
+                after = r["id"]      # advance the key cursor regardless of whether we delete this row
+                # ISO-8601 UTC compares correctly as a string, which is why it is stored that way.
+                if (r.get("updated") or "") >= cutoff_iso:
+                    continue
+                msgs += await self._purge_messages(tenant=r.get("tenant", ""),
+                                                   conversation_id=r["id"])
+                await self._s.delete(_CONVERSATIONS, r["id"])
+                convs += 1
+            if len(rows) < page:
+                break
         return {"conversations": convs, "messages": msgs}
 
 
