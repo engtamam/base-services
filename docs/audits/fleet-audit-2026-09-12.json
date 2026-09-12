@@ -1044,36 +1044,39 @@
       "issues": [
         {
           "id": "notification-service-01",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "vuln",
           "severity": "high",
           "file": "app/core/erasure.py",
           "line": 70,
           "title": "DSAR erasure never strips delivery records — recipient PII retained forever after erasure",
           "detail": "erase() strips deliveries with find(_DELIVERIES, {\"tenant\": tenant, \"to\": subject}, sort=(\"created\",\"asc\")) and then sets r[\"to\"]/r[\"body\"]/r[\"subject_line\"]. But the Delivery model (app/core/models.py:105-113) stores the recipient under the field name \"recipient\", never \"to\", and has no \"body\"/\"subject_line\" fields at all (message content/PII also lives in Delivery.payload, which contains 'recipient' and 'variables'). Both datastores do pure equality matching (memory.py:29-38 `_matches`; postgres.py:169 `value @> {\"to\": subject}`), so the where clause `{\"to\": subject}` matches ZERO delivery rows for any real subject. Result: on a compliance DSAR erasure, the customer's raw phone/email in Delivery.recipient and Delivery.payload is NEVER pseudonymised or stripped — it is retained indefinitely. The module docstring and ack claim the recipient is pseudonymised and content stripped, so the DSAR is answered falsely.",
-          "failure_scenario": "compliance-service calls POST /internal/privacy/erase for a WhatsApp customer whose only data is delivery rows (no prefs/feed). The delivery strip loop matches nothing (field 'to' does not exist; real field is 'recipient'), stripped stays 0, retained=[], already_absent=True is returned. The customer's raw phone number and message variables remain in the 'deliveries' collection permanently, and the DSAR reports the subject as already absent."
+          "failure_scenario": "compliance-service calls POST /internal/privacy/erase for a WhatsApp customer whose only data is delivery rows (no prefs/feed). The delivery strip loop matches nothing (field 'to' does not exist; real field is 'recipient'), stripped stays 0, retained=[], already_absent=True is returned. The customer's raw phone number and message variables remain in the 'deliveries' collection permanently, and the DSAR reports the subject as already absent.",
+          "resolution": "FIXED: DSAR erasure now targets the ACTUAL delivery fields — filters by recipient (not the non-existent to), strips recipient->pseudonym and payload->{} (the content). The old field names matched nothing, so recipient address + content survived erasure. Regression: test_audit_fixes.py."
         },
         {
           "id": "notification-service-02",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "medium",
           "file": "app/core/stores.py",
           "line": 209,
           "title": "Idempotency dedupe is a read-then-write TOCTOU with no atomic put-if-absent — concurrent duplicate sends",
           "detail": "notify()/send_interactive()/send_carousel() dedupe by calling DeliveryStore.idempotent_get() at the start and DeliveryStore.remember_idempotent() only after a terminal success (notifier.py:92-96, _finish at 409-417). idempotent_get does store.get and remember_idempotent does store.put; there is no atomic compare-and-set primitive in the DataStore port (datastore.py exposes only get/put/find, no put_if_absent). Two concurrent requests carrying the same idempotency_key both miss the get, both proceed to _deliver, and both create a distinct Delivery (new_id per _record) and send. The dedupe only protects a *sequential* retry, not concurrent at-least-once callers, which is exactly the scenario (a caller retry racing the original, or two pods) the dedupe was added to stop.",
-          "failure_scenario": "A caller sends two /internal/notify requests with the same idempotency_key within the send latency window (retry fires before the first completes). Both pass idempotent_get (nothing stored yet), both send the OTP SMS/WhatsApp — the customer receives two messages and the tenant is billed twice, defeating the stated 'duplicate OTP SMS costs money' guarantee."
+          "failure_scenario": "A caller sends two /internal/notify requests with the same idempotency_key within the send latency window (retry fires before the first completes). Both pass idempotent_get (nothing stored yet), both send the OTP SMS/WhatsApp — the customer receives two messages and the tenant is billed twice, defeating the stated 'duplicate OTP SMS costs money' guarantee.",
+          "resolution": "FIXED: notify/send_interactive/send_carousel atomically RESERVE the idempotency slot (cas insert-if-absent) before sending; a concurrent duplicate is refused, only a remembered dedupe-state result suppresses a resend, and a non-remembered result releases the slot for retry. Added cas to the datastore. Regression: test_audit_fixes.py."
         },
         {
           "id": "notification-service-03",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "perf",
           "severity": "medium",
           "file": "app/adapters/datastore/postgres.py",
           "line": 33,
           "title": "Append-only catch-up logs sort on fields the shipped btree index does not cover — each page scans the whole log",
           "detail": "The only ordering index shipped is kv_created_desc on (collection, COALESCE(value->>'created','') DESC, key DESC). The append-only, unbounded-growth catch-up logs order by other fields: DeliveryStore.changed_since sorts ('receipt_ts','asc') over {'kind':'receipt'} (stores.py:195), InboundStore.changed_since sorts ('timestamp','asc') (stores.py:256), and the three CoexistenceStore *_since / purge_expired sort ('timestamp'|'expires_at') (stores.py:333-353). Each of these filters on a CONSTANT partition key (kind), so the GIN containment matches EVERY row in the log, and because the ORDER BY expression (value->>'receipt_ts' etc.) does not match the btree index expression (value->>'created'), Postgres cannot seek: it reads all matching rows and top-N sorts them for every cursor page — the exact O(all rows) pathology the adapter's own comment (lines 24-30) warns about. As the receipt/inbound/coexistence logs grow, every consumer catch-up page and every retention purge degrades linearly.",
-          "failure_scenario": "A high-volume tenant accumulates millions of receipt rows. A consumer paging /internal/notifications/receipts (limit 200) causes Postgres to bitmap-scan and sort all receipt rows on each page instead of a keyset seek, so catch-up reconciliation latency grows with total log size and can time out / starve the pool."
+          "failure_scenario": "A high-volume tenant accumulates millions of receipt rows. A consumer paging /internal/notifications/receipts (limit 200) causes Postgres to bitmap-scan and sort all receipt rows on each page instead of a keyset seek, so catch-up reconciliation latency grows with total log size and can time out / starve the pool.",
+          "resolution": "FIXED: added kv_receipt_ts / kv_timestamp jsonb-ordering indexes so the append-only receipt/inbound catch-up logs page by their own sort field instead of sorting the whole log."
         }
       ]
     },

@@ -217,6 +217,25 @@ class DeliveryStore:
     async def remember_idempotent(self, key: str, result: dict, now: float, *, tenant: str) -> None:
         await self._store.put(_IDEMPO, self._idempo_key(tenant, key), {"result": result, "ts": now})
 
+    async def reserve_idempotent(self, key: str, now: float, *, tenant: str, ttl: int = 0) -> bool:
+        """Atomically claim the idempotency slot (cas insert-if-absent) BEFORE sending, so two
+        concurrent same-key sends cannot both dispatch (duplicate OTP/email). True = we reserved (send
+        now); False = a send is already in flight or done. An expired slot (past ttl) is re-claimable."""
+        k = self._idempo_key(tenant, key)
+        if await self._store.cas(_IDEMPO, k, 0, {"result": None, "ts": now}):
+            return True
+        if ttl and now:
+            row = await self._store.get(_IDEMPO, k)
+            if row and (now - float(row.get("ts", 0) or 0)) > ttl:
+                await self._store.put(_IDEMPO, k, {"result": None, "ts": now})
+                return True
+        return False
+
+    async def release_idempotent(self, key: str, *, tenant: str) -> None:
+        """Free a reservation whose send then FAILED terminally, so a retry may send again (only a
+        successful send is remembered, matching the pre-atomic behaviour)."""
+        await self._store.delete(_IDEMPO, self._idempo_key(tenant, key))
+
 
 class InboundStore:
     """A durable, replayable log of INBOUND WhatsApp messages — the missed-delivery counterpart to

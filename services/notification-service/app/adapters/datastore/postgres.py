@@ -38,6 +38,12 @@ _INDEXES = (
     # before '9' and mis-ordered every 'oldest-first' priority view.
     f"CREATE INDEX IF NOT EXISTS kv_created_at_desc ON {_TABLE} "
     f"(collection, COALESCE(value->'created_at', 'null'::jsonb) DESC, key DESC)",
+    # The append-only catch-up logs (receipts, inbound) page by their own timestamp fields, which the
+    # 'created' index does not cover — so each page Sorted the whole growing log. Index them.
+    f"CREATE INDEX IF NOT EXISTS kv_receipt_ts_asc ON {_TABLE} "
+    f"(collection, COALESCE(value->'receipt_ts', 'null'::jsonb) ASC, key ASC)",
+    f"CREATE INDEX IF NOT EXISTS kv_timestamp_asc ON {_TABLE} "
+    f"(collection, COALESCE(value->'timestamp', 'null'::jsonb) ASC, key ASC)",
 )
 
 
@@ -133,6 +139,30 @@ class PostgresDataStore:
         async with pool.acquire() as con:
             res = await con.execute(
                 f"DELETE FROM {_TABLE} WHERE collection=$1 AND key=$2", collection, key  # nosec B608 - _TABLE is a trusted constant; values parameterized
+            )
+        return res.endswith("1")
+
+    async def cas(self, collection: str, key: str, expected_version: int,
+                  value: dict[str, Any]) -> bool:
+        """CAS decided by the DATABASE. expected_version=0 is INSERT..ON CONFLICT DO NOTHING (atomic
+        insert-if-absent); otherwise a single version-pinned UPDATE."""
+        pool = await self._ensure()
+        expected = int(expected_version)
+        stored = dict(value)
+        stored["version"] = expected + 1
+        payload = json.dumps(stored)
+        async with pool.acquire() as con:
+            if expected == 0:
+                res = await con.execute(
+                    f"INSERT INTO {_TABLE} (collection, key, value) VALUES ($1,$2,$3) "  # nosec B608 - _TABLE is a trusted constant; values parameterized
+                    "ON CONFLICT (collection, key) DO NOTHING",
+                    collection, key, payload,
+                )
+                return res.endswith("1")
+            res = await con.execute(
+                f"UPDATE {_TABLE} SET value=$3 WHERE collection=$1 AND key=$2 "  # nosec B608 - _TABLE is a trusted constant; values parameterized
+                "AND COALESCE((value->>'version')::bigint, 0) = $4",
+                collection, key, payload, expected,
             )
         return res.endswith("1")
 

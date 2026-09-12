@@ -63,16 +63,18 @@ class NotificationErasure:
         if co:
             erased.append(f"coexistence:{co}")
 
-        # deliveries: keep the FACT, strip the CONTENT, replace the recipient with the pseudonym
+        # deliveries: keep the FACT, strip the CONTENT, replace the recipient with the pseudonym.
+        # The recipient is stored under `recipient` (NOT `to`) and the message content lives in
+        # `payload` (there is no `body`/`subject_line`) — the old field names matched nothing, so a
+        # completed DSAR left the recipient address and message content in every delivery row.
         stripped = 0
         cursor = None
         while True:
-            rows, cursor = await self._store.find(_DELIVERIES, {"tenant": tenant, "to": subject},
-                                                  limit=500, after=cursor, sort=("created", "asc"))
+            rows, cursor = await self._store.find(_DELIVERIES, {"tenant": tenant, "recipient": subject},
+                                                  limit=500, after=cursor, sort=("ts", "asc"))
             for r in rows:
-                r["to"] = ref
-                r["body"] = ""
-                r["subject_line"] = ""
+                r["recipient"] = ref
+                r["payload"] = {}
                 await self._store.put(_DELIVERIES, r["id"], r)
                 stripped += 1
             if not cursor:

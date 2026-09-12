@@ -89,11 +89,9 @@ class NotificationService:
                      flow_action_data: dict[str, Any] | None = None) -> dict:
         # Dedupe FIRST: a retried call with the same key must not re-send (duplicate OTP
         # SMS costs money; duplicate emails erode trust). Returns the original result.
-        if idempotency_key:
-            prior = await self._deliveries.idempotent_get(
-                idempotency_key, tenant=tenant or "", now=time.time(), ttl=self._dedupe_ttl)
-            if prior is not None:
-                return {**prior, "duplicate": True}
+        dup = await self._dedupe_reserve(idempotency_key, tenant or "")
+        if dup is not None:
+            return dup
 
         if channel not in CHANNELS:
             return await self._finish(idempotency_key, tenant or "", await self._record(
@@ -254,11 +252,9 @@ class NotificationService:
         reply's webhook still matches, and the audit. This is the seam that lets a caller stop
         calling Cloud API directly — one audited, rate-limited peer for interactive sends too.
         """
-        if idempotency_key:
-            prior = await self._deliveries.idempotent_get(
-                idempotency_key, tenant=tenant or "", now=time.time(), ttl=self._dedupe_ttl)
-            if prior is not None:
-                return {**prior, "duplicate": True}
+        dup = await self._dedupe_reserve(idempotency_key, tenant or "")
+        if dup is not None:
+            return dup
         wa = whatsapp_override if whatsapp_override is not None else self._whatsapp
         tk = f"interactive:{kind}"           # the Delivery's template_key slot names the message type
         if wa is None:
@@ -292,11 +288,9 @@ class NotificationService:
         shared plumbing — idempotent dedupe, per-tenant/branch provider, the tenant-scoped Delivery
         carrying the wamid, the audit. The components are built + validated upstream (whatsapp_carousel).
         """
-        if idempotency_key:
-            prior = await self._deliveries.idempotent_get(
-                idempotency_key, tenant=tenant or "", now=time.time(), ttl=self._dedupe_ttl)
-            if prior is not None:
-                return {**prior, "duplicate": True}
+        dup = await self._dedupe_reserve(idempotency_key, tenant or "")
+        if dup is not None:
+            return dup
         tk = template_name           # the Delivery's template_key names the Meta template, as sends do
         # WhatsApp marketing opt-out (Meta "Stop promotions"), keyed by the recipient's phone — a
         # carousel is business-initiated, so an unsubscribed customer must not receive it.
@@ -406,6 +400,27 @@ class NotificationService:
         pref = await self._prefs.get(recipient)
         return pref.allows("whatsapp", event)
 
+    async def _dedupe_reserve(self, idempotency_key: str | None, tenant: str) -> dict | None:
+        """Atomic dedupe: return the prior result (duplicate) if a same-key send already completed;
+        else atomically RESERVE the slot and return None so THIS caller sends. If the reservation is
+        lost, a concurrent send is in flight — return an in-progress duplicate rather than sending
+        again (the old read-then-write let two concurrent duplicates both dispatch)."""
+        if not idempotency_key:
+            return None
+        now = time.time()
+        prior = await self._deliveries.idempotent_get(
+            idempotency_key, tenant=tenant, now=now, ttl=self._dedupe_ttl)
+        if prior is not None:
+            return {**prior, "duplicate": True}
+        if await self._deliveries.reserve_idempotent(idempotency_key, now, tenant=tenant,
+                                                     ttl=self._dedupe_ttl):
+            return None                                    # we own this send
+        prior = await self._deliveries.idempotent_get(
+            idempotency_key, tenant=tenant, now=now, ttl=self._dedupe_ttl)
+        if prior is not None:
+            return {**prior, "duplicate": True}
+        return {"duplicate": True, "in_progress": True, "status": "in_progress"}
+
     async def _finish(self, idempotency_key: str | None, tenant: str, result: dict) -> dict:
         """Remember a terminal-success result so a retry with the same key won't re-send.
 
@@ -414,6 +429,11 @@ class NotificationService:
         if idempotency_key and result.get("status") in self._dedupe_states:
             await self._deliveries.remember_idempotent(
                 idempotency_key, result, time.time(), tenant=tenant or "")
+        elif idempotency_key:
+            # NOT a dedupe (remembered) state — free the reservation so a retry can send again. This
+            # keeps dedupe_states configurable (a status the operator did not list is re-sendable)
+            # while the reservation still blocks a CONCURRENT duplicate for the in-flight window.
+            await self._deliveries.release_idempotent(idempotency_key, tenant=tenant or "")
         return result
 
     async def _record(self, recipient: str, channel: str, template_key: str, status: str,
