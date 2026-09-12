@@ -291,6 +291,9 @@ class InvoiceStore:
         cur = await self._store.get(_INDEX, f"head::{inv.tenant}")
         if cur and int(cur.get("reserved_icv", 0)) >= inv.icv:
             cur["reserved_icv"] = inv.icv - 1
+            # atomic: ok — head:: is only an allocation HINT (the icv:: claim is the uniqueness
+            # authority); a lost update here at worst probes from a stale point and self-heals via
+            # allocate_slot's bounded advance-past-taken loop, never a gap. Same as allocate_slot's put.
             await self._store.put(_INDEX, f"head::{inv.tenant}", cur)
 
     async def highest_reserved_above(self, tenant: str, icv: int, *, max_scan: int = _TENANT_MAX) -> int:
