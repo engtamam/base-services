@@ -34,6 +34,12 @@ class CountingStore(MemoryDataStore):
         self.writes += 1
         return await super().put(c, k, v)
 
+    async def cas(self, c, k, expected, v):
+        ok = await super().cas(c, k, expected, v)
+        if ok:
+            self.writes += 1      # a successful cas is a write (enqueue reserve + claim use it)
+        return ok
+
     async def get(self, c, k):
         self.reads += 1
         return await super().get(c, k)

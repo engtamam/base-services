@@ -979,58 +979,63 @@
       "issues": [
         {
           "id": "job-service-01",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "security",
           "severity": "high",
           "file": "services/job-service/app/api/v1/jobs.py",
           "line": 79,
           "title": "GET /api/v1/jobs/schedules leaks every tenant's schedules to any tenant reader (cross-tenant IDOR)",
           "detail": "list_schedules is guarded by _READ (platform.jobs, jobs.manage, OR jobs.read) and calls build_scheduler(request).list(limit). Scheduler.list -> ScheduleStore.list (stores.py:136) does scan_all(_SCHEDULES) with NO tenant filter. Unlike list_jobs/dead_letters which pass _tenant(principal), this route never scopes by tenant. So a non-operator caller holding jobs.read for tenant A receives all schedules across all tenants, including their name, cron, type, and payload dict (which may carry recipient identifiers/args). Every other admin read path in this file scopes by tenant; this one does not.",
-          "failure_scenario": "A tenant-scoped user with only jobs.read for tenant 'acme' calls GET /api/v1/jobs/schedules and receives schedules belonging to tenants 'globex', 'initech', etc., including their payloads."
+          "failure_scenario": "A tenant-scoped user with only jobs.read for tenant 'acme' calls GET /api/v1/jobs/schedules and receives schedules belonging to tenants 'globex', 'initech', etc., including their payloads.",
+          "resolution": "FIXED: GET /jobs/schedules is tenant-scoped (Scheduler.list/ScheduleStore.list filter by the caller tenant unless platform.jobs) — no more cross-tenant schedule enumeration. Regression: test_jobs_api_audit.py."
         },
         {
           "id": "job-service-02",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "high",
           "file": "services/job-service/app/core/job_service.py",
           "line": 75,
           "title": "claim() lease is not atomic — concurrent claims double-lease the same job (double execution)",
           "detail": "The module docstring promises 'no double-execution — a claim atomically moves a job queued->leased'. But claim() does `job = await self._jobs.get(...)` then checks `job.status != QUEUED` then `await self._jobs.save(job)` with a fresh lease_token. There are await points between the read and the conditional write, and JobStore.save -> DataStore.put is an unconditional overwrite (no compare-and-swap; see memory.py:22 and postgres.py:116 put, and datastore port has no CAS/SELECT FOR UPDATE). Two /internal/jobs/claim requests (two workers, the intended topology) interleave: both get() the same QUEUED job, both pass the status check, both save LEASED with different lease_tokens, both append it to their claimed list. Two workers now hold valid-looking leases on one job and both execute it. The fencing token does not help — each worker got a token from its own successful save.",
-          "failure_scenario": "Two worker processes call POST /internal/jobs/claim concurrently while one due job exists; both receive that job with distinct lease_tokens and both run it (e.g. a 'charge customer' job runs twice)."
+          "failure_scenario": "Two worker processes call POST /internal/jobs/claim concurrently while one due job exists; both receive that job with distinct lease_tokens and both run it (e.g. a 'charge customer' job runs twice).",
+          "resolution": "FIXED: claim() moves QUEUED->LEASED via an atomic CAS (Job.version + JobStore.cas_save); a losing worker skips the candidate, so no double-lease/double-execution. Added cas to the datastore. Regression: test_audit_fixes.py."
         },
         {
           "id": "job-service-03",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "medium",
           "file": "services/job-service/app/core/job_service.py",
           "line": 43,
           "title": "enqueue() idempotency/unique check is racy — concurrent same-key enqueues create duplicate jobs",
           "detail": "enqueue() does unique_get(key) (returns None if absent) then later unique_put(key, job.id). There is no atomic put-if-absent; unique_put (stores.py:113) is an unconditional overwrite. Two concurrent enqueues with the same idempotency_key both see unique_get -> None, both create a new Job with a new id, both save, both index_due, and the second unique_put simply overwrites the first mapping. The stated guarantee 'a retried enqueue (same idempotency_key) returns the existing job, not a duplicate' fails under concurrency, producing two jobs for one intended unit of work.",
-          "failure_scenario": "A caller retries POST /internal/jobs/enqueue with idempotency_key=X while the first request is still in flight; both succeed and two identical jobs are queued and executed."
+          "failure_scenario": "A caller retries POST /internal/jobs/enqueue with idempotency_key=X while the first request is still in flight; both succeed and two identical jobs are queued and executed.",
+          "resolution": "FIXED: enqueue() atomically reserves the idempotency/unique key (cas insert-if-absent) BEFORE creating the job, so concurrent same-key enqueues create one job. Regression: test_audit_fixes.py."
         },
         {
           "id": "job-service-04",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "security",
           "severity": "medium",
           "file": "services/job-service/app/api/v1/jobs.py",
           "line": 138,
           "title": "GET /api/v1/jobs/stats returns global cross-tenant counts to any tenant reader",
           "detail": "The /stats route is guarded by _READ (includes jobs.read) but calls build_jobs(request).stats() with no tenant argument. JobService.stats (job_service.py:224) calls JobStore.counts() which scan_all's the entire jobs table across all tenants, plus due_index totals. A tenant-scoped reader thus learns fleet-wide job counts by status, dead-letter totals, and oldest-pending age for the whole platform, not just their own tenant.",
-          "failure_scenario": "A user with jobs.read for one tenant calls GET /api/v1/jobs/stats and infers other tenants' backlog/failure volume from the global by_status and dead_letters counts."
+          "failure_scenario": "A user with jobs.read for one tenant calls GET /api/v1/jobs/stats and infers other tenants' backlog/failure volume from the global by_status and dead_letters counts.",
+          "resolution": "FIXED: GET /jobs/stats is tenant-scoped for a non-platform reader (counts/due filtered by tenant); platform sees fleet-wide. Regression: test_jobs_api_audit.py."
         },
         {
           "id": "job-service-05",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "medium",
           "file": "services/job-service/app/api/v1/jobs.py",
           "line": 118,
           "title": "replay/cancel record a success-shaped audit event before (and regardless of) the actual outcome, under the operator's own tenant",
           "detail": "replay (line 118) and cancel (line 131) call auditor.record('job.replayed'/'job.cancelled') BEFORE invoking the service, and the service call may return {ok:false, reason:'not_found'|'not_dead'|'not_cancelable'} without mutating anything. So an audit record asserting the action happened is written even when it did not — a tenant caller can probe arbitrary job_ids and generate 'job.replayed'/'job.cancelled' audit entries for jobs that don't exist or that they don't own (the ownership check lives inside the service and returns not_found silently). Additionally, the audit uses tenant=principal.tenant: when a platform operator (is_operator=True) replays/cancels another tenant's job, the event is logged under the operator's own tenant (or None), not the job's tenant, so the cross-tenant action is misattributed. Same misattribution in delete_schedule (line 90).",
-          "failure_scenario": "A tenant user POSTs /api/v1/jobs/<random_id>/cancel; an audit 'job.cancelled' event is recorded although the service returns not_found and nothing changed, polluting the audit trail with fabricated actions."
+          "failure_scenario": "A tenant user POSTs /api/v1/jobs/<random_id>/cancel; an audit 'job.cancelled' event is recorded although the service returns not_found and nothing changed, polluting the audit trail with fabricated actions.",
+          "resolution": "FIXED: replay/cancel record their audit event only AFTER a successful outcome, so a no-op (not_found/not_dead/not_cancelable) no longer logs an action that did not happen (and cannot be used to probe job ids)."
         }
       ]
     },

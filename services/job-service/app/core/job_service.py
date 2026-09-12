@@ -51,11 +51,18 @@ class JobService:
                   max_attempts=max_attempts or self._cfg["retry_max_attempts"],
                   unique_key=unique_key, idempotency_key=idempotency_key,
                   schedule_id=schedule_id, created=now, updated=now)
+        # ATOMICALLY reserve the keys BEFORE creating the job. The old unique_get->unique_put pair had
+        # a gap where two concurrent same-key enqueues both saw "absent" and both created a job. If a
+        # reserve loses, another enqueue won the key concurrently — return that job (or, for a
+        # non-active unique match, fall through as the existing logic allowed).
+        for key in (idempotency_key, unique_key):
+            if key and not await self._jobs.unique_reserve(key, job.id, now, ttl=ttl):
+                existing_id = await self._jobs.unique_get(key, now=now, ttl=ttl)
+                existing = await self._jobs.get(existing_id) if existing_id else None
+                if existing and (key == idempotency_key or existing.status in ACTIVE):
+                    return existing, False
         await self._jobs.save(job)
         await self._jobs.index_due(job)                       # 1 index write — no scan
-        for key in (idempotency_key, unique_key):
-            if key:
-                await self._jobs.unique_put(key, job.id, now)
         await self._emit("job.enqueued", job)
         return job, True
 
@@ -76,11 +83,16 @@ class JobService:
             if job is None or job.status != QUEUED or job.next_run_at > now:
                 await self._jobs.unindex_due(cand.get("id", ""))   # stale index entry
                 continue
+            expected = int(job.version)
             job.status = LEASED
             job.lease_token = new_id("lt_")
             job.lease_expires = now + self._cfg["lease_seconds"]
             job.updated = now
-            await self._jobs.save(job)
+            # ATOMIC QUEUED->LEASED: only the CAS winner leases. Without it two workers both read the
+            # job QUEUED and both saved a lease (double-execution) — the exact guarantee the docstring
+            # makes. A loser skips this candidate; the job is already leased by the winner.
+            if not await self._jobs.cas_save(job, expected):
+                continue
             await self._jobs.unindex_due(job.id)              # invisible while leased
             await self._jobs.index_leased(job)
             claimed.append({**job.to_dict()})                 # worker needs the lease_token
@@ -221,9 +233,12 @@ class JobService:
     async def get(self, job_id: str) -> Job | None:
         return await self._jobs.get(job_id)
 
-    async def stats(self) -> dict[str, Any]:
-        counts = await self._jobs.counts()
-        due = await self._jobs.due_index()
+    async def stats(self, *, tenant: str | None = None) -> dict[str, Any]:
+        # tenant=None is the platform-operator view (fleet-wide); a tenant caller sees ONLY its own
+        # counts — otherwise /stats leaked global cross-tenant job counts to any jobs.read holder.
+        counts = await self._jobs.counts(tenant=tenant)
+        due = [d for d in await self._jobs.due_index()
+               if tenant is None or d.get("tenant", "") == tenant]
         now = self._clock.now()
         oldest = min((float(d.get("next_run_at", now)) for d in due), default=now)
         return {"by_status": counts, "due_now": sum(1 for d in due if float(d.get("next_run_at", 0)) <= now),

@@ -35,6 +35,7 @@ class Job:
     schedule_id: str = ""             # set when a scheduler run created it
     created: float = 0.0
     updated: float = 0.0
+    version: int = 0                  # optimistic-lock counter for the atomic claim CAS
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

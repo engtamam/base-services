@@ -67,8 +67,9 @@ class Scheduler:
     async def get(self, schedule_id: str) -> Schedule | None:
         return await self._schedules.get(schedule_id)
 
-    async def list(self, limit: int = 100) -> list[dict]:
-        return await self._schedules.list(limit)
+    async def list(self, limit: int = 100, *, tenant: str | None = None,
+                   is_operator: bool = False) -> list[dict]:
+        return await self._schedules.list(limit, tenant=None if is_operator else tenant)
 
     async def tick(self) -> dict[str, Any]:
         """Fire every schedule whose time has come. Idempotent per (schedule, fire-time)."""

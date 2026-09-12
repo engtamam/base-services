@@ -75,8 +75,10 @@ async def create_schedule(request: Request, body: ScheduleIn, principal: Princip
 
 
 @router.get("/schedules", dependencies=[Depends(_READ)])
-async def list_schedules(request: Request) -> dict:
-    return {"schedules": await build_scheduler(request).list(get_settings().JOB_LIST_LIMIT)}
+async def list_schedules(request: Request, principal: Principal = Depends(_READ)) -> dict:
+    return {"schedules": await build_scheduler(request).list(
+        get_settings().JOB_LIST_LIMIT, tenant=_tenant(principal),
+        is_operator="platform.jobs" in principal.caps)}
 
 
 @router.delete("/schedules/{schedule_id}")
@@ -112,32 +114,37 @@ async def dead_letters(request: Request, principal: Principal = Depends(_READ)) 
 @router.post("/{job_id}/replay")
 async def replay(request: Request, job_id: str,
                  principal: Principal = Depends(_ADMIN)) -> dict:
-    # Write-ahead: a critical action the log cannot take must not happen at all, so this
-    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
-    # already succeeded, and leave it unrecorded.
-    await request.app.state.auditor.record(
-        "job.replayed", actor=principal.subject, tenant=principal.tenant, resource=f"job:{job_id}",
-        ip=request.client.host if request.client else "")
-    return await build_jobs(request).replay(
+    # Record only a replay that ACTUALLY happened: replay() returns {ok:false} (not_found/not_dead)
+    # without mutating, so a write-ahead audit here logged an action that never occurred and let a
+    # caller probe arbitrary job ids. Record after a successful outcome.
+    result = await build_jobs(request).replay(
         job_id, tenant=principal.tenant, is_operator="platform.jobs" in principal.caps)
+    if result.get("ok"):
+        await request.app.state.auditor.record(
+            "job.replayed", actor=principal.subject, tenant=principal.tenant, resource=f"job:{job_id}",
+            ip=request.client.host if request.client else "")
+    return result
 
 
 @router.post("/{job_id}/cancel")
 async def cancel(request: Request, job_id: str,
                  principal: Principal = Depends(_ADMIN)) -> dict:
-    # Write-ahead: a critical action the log cannot take must not happen at all, so this
-    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
-    # already succeeded, and leave it unrecorded.
-    await request.app.state.auditor.record(
-        "job.cancelled", actor=principal.subject, tenant=principal.tenant, resource=f"job:{job_id}",
-        ip=request.client.host if request.client else "")
-    return await build_jobs(request).cancel(
+    # Record only a cancel that ACTUALLY happened (see replay): cancel() returns {ok:false} without
+    # mutating for a not_found/not_cancelable job.
+    result = await build_jobs(request).cancel(
         job_id, tenant=principal.tenant, is_operator="platform.jobs" in principal.caps)
+    if result.get("ok"):
+        await request.app.state.auditor.record(
+            "job.cancelled", actor=principal.subject, tenant=principal.tenant, resource=f"job:{job_id}",
+            ip=request.client.host if request.client else "")
+    return result
 
 
 @router.get("/stats", dependencies=[Depends(_READ)])
-async def stats(request: Request) -> dict:
-    return await build_jobs(request).stats()
+async def stats(request: Request, principal: Principal = Depends(_READ)) -> dict:
+    # a platform operator sees fleet-wide stats; a tenant reader sees only its own.
+    tenant = None if "platform.jobs" in principal.caps else _tenant(principal)
+    return await build_jobs(request).stats(tenant=tenant)
 
 
 # Registered LAST so the literal GET routes (/dead-letters, /stats) are matched before this

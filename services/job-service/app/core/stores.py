@@ -35,6 +35,12 @@ class JobStore:
         await self._store.put(_JOBS, job.id, job.to_dict())
         return job
 
+    async def cas_save(self, job: Job, expected_version: int) -> bool:
+        """Version-checked write for the atomic claim: True if this write won, False if another worker
+        changed the job first. The QUEUED->LEASED transition must go through this so two workers cannot
+        both lease (double-execute) the same job."""
+        return await self._store.cas(_JOBS, job.id, expected_version, job.to_dict())
+
     async def get(self, job_id: str) -> Job | None:
         row = await self._store.get(_JOBS, job_id)
         return Job.from_dict(row) if row else None
@@ -64,12 +70,15 @@ class JobStore:
     async def dead_letters(self, tenant: str | None = None, limit: int = 100) -> list[dict]:
         return await self.list(tenant=tenant, status=DEAD, limit=limit)
 
-    async def counts(self) -> dict[str, int]:
-        """Operator metrics: how many jobs in each status, across all tenants."""
+    async def counts(self, *, tenant: str | None = None) -> dict[str, int]:
+        """How many jobs in each status. tenant=None counts across all tenants (operator view); a
+        tenant value counts only that tenant's jobs."""
         out: dict[str, int] = {}
         # sweeper: counting every job IS the operation. Not on any request path - the
         # metrics endpoint calls it on a timer.
         for r in await self._store.scan_all(_JOBS, _INDEX_MAX):
+            if tenant is not None and r.get("tenant", "") != tenant:
+                continue
             out[r.get("status", "?")] = out.get(r.get("status", "?"), 0) + 1
         return out
 
@@ -110,8 +119,18 @@ class JobStore:
             return None
         return row.get("job_id")
 
-    async def unique_put(self, key: str, job_id: str, now: float) -> None:
-        await self._store.put(_UNIQUE, key, {"job_id": job_id, "ts": now})
+    async def unique_reserve(self, key: str, job_id: str, now: float, *, ttl: int = 0) -> bool:
+        """Atomically claim a unique/idempotency key (cas insert-if-absent). True if WE reserved it,
+        False if it is already held. Replaces the racy unique_get->unique_put pair so two concurrent
+        same-key enqueues cannot both create a job. An expired reservation (past ttl) is re-claimable."""
+        if await self._store.cas(_UNIQUE, key, 0, {"job_id": job_id, "ts": now}):
+            return True
+        if ttl:
+            row = await self._store.get(_UNIQUE, key)
+            if row and (now - float(row.get("ts", 0) or 0)) > ttl:
+                await self._store.put(_UNIQUE, key, {"job_id": job_id, "ts": now})
+                return True
+        return False
 
     async def unique_clear(self, key: str) -> None:
         if key:
@@ -133,9 +152,14 @@ class ScheduleStore:
     async def delete(self, schedule_id: str) -> None:
         await self._store.delete(_SCHEDULES, schedule_id)
 
-    async def list(self, limit: int = 100) -> list[dict]:
-        # sweeper: the schedule catalogue is global and small - one row per cron entry.
-        return (await self._store.scan_all(_SCHEDULES, _SCHEDULE_MAX))[:limit]
+    async def list(self, limit: int = 100, *, tenant: str | None = None) -> list[dict]:
+        # sweeper: the schedule catalogue is global and small - one row per cron entry. A tenant
+        # caller sees ONLY its own schedules (cross-tenant IDOR otherwise); tenant=None is the
+        # platform-operator view of every tenant.
+        rows = await self._store.scan_all(_SCHEDULES, _SCHEDULE_MAX)
+        if tenant is not None:
+            rows = [r for r in rows if r.get("tenant", "") == tenant]
+        return rows[:limit]
 
     async def enabled(self) -> list[Schedule]:
         """The schedules the ticker must consider. Runs on a timer, not on a request."""
