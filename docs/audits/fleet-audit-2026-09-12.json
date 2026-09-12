@@ -211,69 +211,75 @@
       "issues": [
         {
           "id": "analytics-service-01",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "high",
           "file": "app/core/ingest_service.py",
           "line": 105,
           "title": "Rollup read-modify-write has no CAS/lock: concurrent ingests lose increments (undercount)",
           "detail": "_update_rollups does `r = await self._rollups.get(key) or new(...)`, mutates r.count/r.sum/r.hll/r.hist, then `await self._rollups.put(r)` (stores.RollupStore.put is a plain overwrite). There is an await between the read and the write, so on the single-worker event loop two ingests targeting the same (tenant, metric, granularity, bucket, dims) cell interleave: both read the same base rollup, both increment from it, and the second put overwrites the first. Increments (and HLL/histogram merges) are silently lost. No optimistic-concurrency check, version, or lock exists anywhere in the path.",
-          "failure_scenario": "Two 'checkout.completed' events for the same tenant/hour arrive concurrently (normal for an at-least-once bus draining a backlog). Both read count=10, both write count=11. Final count is 11 instead of 12; a revenue `sum` rollup similarly undercounts, so reported totals/MRR are lower than reality."
+          "failure_scenario": "Two 'checkout.completed' events for the same tenant/hour arrive concurrently (normal for an at-least-once bus draining a backlog). Both read count=10, both write count=11. Final count is 11 instead of 12; a revenue `sum` rollup similarly undercounts, so reported totals/MRR are lower than reality.",
+          "resolution": "FIXED: rollup read-modify-write is now a CAS-retry loop (Rollup.version + RollupStore.cas_put), so concurrent ingests into the same cell no longer lose increments. Added cas to the datastore. Regression: test_audit_fixes.py."
         },
         {
           "id": "analytics-service-02",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "high",
           "file": "app/core/ingest_service.py",
           "line": 72,
           "title": "Idempotency check and mark_seen are not atomic: concurrent redelivery double-counts",
           "detail": "ingest() does `if await self._events.seen(event_id): return duplicate` at line 72, but only calls `mark_seen(event_id)` at line 84 after add() and before _update_rollups. seen() is a get on the `event_seen` collection and mark_seen is a separate put; there is no atomic test-and-set. Two concurrent deliveries of the SAME event_id both evaluate seen()==False, both proceed, and both run _update_rollups, defeating the module's stated 'a duplicate performs zero additional writes' guarantee.",
-          "failure_scenario": "The at-least-once EventBus redelivers a payment event (same id) twice within the same window (retry + original). Both requests pass the seen() gate, both increment the count and add `value` to the sum rollup, double-counting revenue -> wrong MRR, exactly the failure the file header warns against."
+          "failure_scenario": "The at-least-once EventBus redelivers a payment event (same id) twice within the same window (retry + original). Both requests pass the seen() gate, both increment the count and add `value` to the sum rollup, double-counting revenue -> wrong MRR, exactly the failure the file header warns against.",
+          "resolution": "FIXED: ingest reserves event_id atomically (EventStore.reserve = cas insert-if-absent) instead of seen()->mark_seen(), so concurrent redeliveries count once. Regression: test_audit_fixes.py."
         },
         {
           "id": "analytics-service-03",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "medium",
           "file": "app/core/stores.py",
           "line": 38,
           "title": "Funnel/retention silently truncate at 100k events, computing over an arbitrary subset",
           "detail": "QueryService.funnel and QueryService.retention call self._events.for_tenant(tenant), which caps at _EXPORT_MAX=100_000 rows (oldest-first) and returns out[:limit] with no signal that data was cut off. Unlike QueryService.query, the funnel/retention routes never call query.validate, so the request time range is not bounded either. For a tenant with more than 100k events, the funnel/retention is computed over only the oldest 100k events, ignoring everything after — a wrong conversion/retention number returned as if authoritative.",
-          "failure_scenario": "A busy tenant has 250k events in the requested range. run_funnel loads only the oldest 100k, so subjects whose journey lives in the newer 150k are dropped; the funnel reports far fewer entrants/conversions than actually occurred, with no error or truncation flag."
+          "failure_scenario": "A busy tenant has 250k events in the requested range. run_funnel loads only the oldest 100k, so subjects whose journey lives in the newer 150k are dropped; the funnel reports far fewer entrants/conversions than actually occurred, with no error or truncation flag.",
+          "resolution": "FIXED: funnel/retention read a WINDOW-scoped event set (for_tenant_window) and return truncated=True when the window exceeds the cap, instead of silently computing over the oldest 100k of all time. Regression: test_audit_fixes.py."
         },
         {
           "id": "analytics-service-04",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "perf",
           "severity": "medium",
           "file": "app/api/v1/analytics.py",
           "line": 105,
           "title": "Funnel/retention routes have no time-range cap and load up to 100k rows per request into memory",
           "detail": "run_query enforces MAX_QUERY_RANGE_DAYS via query.validate, but run_funnel (line 105) and run_retention (line 113) pass start/end straight through with no range validation. Their service methods read the whole per-tenant event set (for_tenant, up to 100k rows deep-copied by the memory store / full paginated find on postgres), then sort and group in Python per subject. These are authenticated read routes reachable by any principal with analytics.read.",
-          "failure_scenario": "A caller repeatedly posts /funnel or /retention with a wide range against a large tenant; each call pulls and deep-copies ~100k event dicts and does O(events log events) Python work, pinning the single-worker event loop and starving other requests (DoS-by-cost)."
+          "failure_scenario": "A caller repeatedly posts /funnel or /retention with a wide range against a large tenant; each call pulls and deep-copies ~100k event dicts and does O(events log events) Python work, pinning the single-worker event loop and starving other requests (DoS-by-cost).",
+          "resolution": "FIXED: funnel/retention now validate the requested range against max_range_days (RANGE_TOO_LARGE -> 400) and read only the window, not the whole per-tenant event set. Regression: test_audit_fixes.py."
         },
         {
           "id": "analytics-service-05",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "bug",
           "severity": "medium",
           "file": "app/api/v1/analytics.py",
           "line": 197,
           "title": "Export audit record logs the caller's own tenant, not the tenant whose data was exported",
           "detail": "export_query records the audit event with `tenant=p.tenant` (line 197), but the actual export runs against `_tenant(p, body.tenant)` (line 202). For a platform principal (`platform.analytics` in caps) `_tenant` returns the requested body.tenant, so a platform operator can export tenant X's analytics while the audit trail attributes the export to the operator's own tenant (or None). The write-ahead audit therefore misrecords which tenant's data left the system.",
-          "failure_scenario": "A platform support user exports tenant 'acme' data via /export with body.tenant='acme'. The audit log stores tenant=<operator tenant or empty>, so a later compliance review of who exported acme's data finds no record against acme — a cross-tenant data-egress event is mis-attributed."
+          "failure_scenario": "A platform support user exports tenant 'acme' data via /export with body.tenant='acme'. The audit log stores tenant=<operator tenant or empty>, so a later compliance review of who exported acme's data finds no record against acme — a cross-tenant data-egress event is mis-attributed.",
+          "resolution": "FIXED: export audit records under the exported tenant (_tenant(p, body.tenant)) not the operator tenant."
         },
         {
           "id": "analytics-service-06",
-          "status": "OPEN",
+          "status": "WONTFIX",
           "category": "correctness",
           "severity": "low",
           "file": "app/core/ingest_service.py",
           "line": 111,
           "title": "Monetary value stored and summed as float, accumulating rounding error in revenue rollups",
           "detail": "Event.value is a float, and _update_rollups does `r.sum += float(value)` accumulated across every event in a bucket, with the `sum`/`avg`/`percentile` aggregations returning floats directly. On a money/billing platform, summing binary floats over many events introduces representation/rounding drift in revenue-style metrics (the codebase's own standards flag float money as a defect class).",
-          "failure_scenario": "A tenant records many currency `value`s (e.g. 0.10, 0.20, ...) into one rollup bucket; the accumulated float `sum` diverges from the exact decimal total, so exported/queried revenue figures are off by fractions that compound at scale and never reconcile against the source-of-truth ledger."
+          "failure_scenario": "A tenant records many currency `value`s (e.g. 0.10, 0.20, ...) into one rollup bucket; the accumulated float `sum` diverges from the exact decimal total, so exported/queried revenue figures are off by fractions that compound at scale and never reconcile against the source-of-truth ledger.",
+          "resolution": "Analytics is a GENERIC numeric aggregator; value may legitimately be fractional (rates, durations), so it stays float. Per the platform money rule a monetary metric must be sent as an INTEGER in minor units, and float summation of integers is EXACT up to 2**53 — so revenue rollups carry no drift when that rule is followed. The fix is the contract (documented in-code at _update_rollups), not a type change that would break fractional metrics."
         }
       ]
     },

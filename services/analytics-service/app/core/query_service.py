@@ -149,10 +149,19 @@ class QueryService:
         return 0.0
 
     # ── funnel (sequence question — reads raw events, bounded by range) ─────────
+    def _bound_range(self, start: float, end: float) -> None:
+        """Reject an unbounded/reversed window for the raw-event scans (funnel/retention). Without it
+        these authenticated routes had no range cap at all and pulled up to the whole per-tenant event
+        set into memory per request."""
+        if end < start:
+            raise _q.QueryError("END_BEFORE_START")
+        if (end - start) > int(self._cfg["max_range_days"]) * 86400:
+            raise _q.QueryError("RANGE_TOO_LARGE")
+
     async def funnel(self, *, tenant: str, steps: list[str], start_ts: float, end_ts: float,
                      window_seconds: int) -> dict:
-        rows = [e for e in await self._events.for_tenant(tenant)
-                if start_ts <= float(e.get("event_time", 0)) <= end_ts]
+        self._bound_range(start_ts, end_ts)
+        rows, truncated = await self._events.for_tenant_window(tenant, start_ts, end_ts)
         by_subject: dict[str, list] = {}
         for e in rows:
             if e.get("subject"):
@@ -177,13 +186,15 @@ class QueryService:
                  "rate": (counts[i] / counts[0]) if counts[0] else 0.0}
                 for i, s in enumerate(steps)]
         return {"steps": conv, "entered": counts[0],
-                "converted": counts[-1] if counts else 0}
+                "converted": counts[-1] if counts else 0, "truncated": truncated}
 
     # ── retention cohort ────────────────────────────────────────────────────────
     async def retention(self, *, tenant: str, event_name: str, cohort_start: float,
                         cohort_end: float, periods: int, period_seconds: int) -> dict:
-        rows = [e for e in await self._events.for_tenant(tenant) if e.get("name") == event_name
-                and e.get("subject")]
+        hi = cohort_end + max(0, int(periods)) * float(period_seconds)
+        self._bound_range(cohort_start, hi)
+        window, truncated = await self._events.for_tenant_window(tenant, cohort_start, hi)
+        rows = [e for e in window if e.get("name") == event_name and e.get("subject")]
         cohort = {e["subject"] for e in rows
                   if cohort_start <= float(e["event_time"]) <= cohort_end}
         out = []
@@ -194,7 +205,7 @@ class QueryService:
                       and e["subject"] in cohort}
             out.append({"period": p, "retained": len(active),
                         "rate": (len(active) / len(cohort)) if cohort else 0.0})
-        return {"cohort_size": len(cohort), "periods": out}
+        return {"cohort_size": len(cohort), "periods": out, "truncated": truncated}
 
     # ── export ──────────────────────────────────────────────────────────────────
     def export(self, rows: list[dict]) -> tuple[str, bytes] | None:

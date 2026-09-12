@@ -38,6 +38,9 @@ class IngestService:
         self._cfg = config
         self._cache = cache
         self._bus = event_bus
+        # Bounded retries for the rollup compare-and-set under contention; a loser re-reads and
+        # re-applies its increment so nothing is lost.
+        self._cas_retries = int(config.get("cas_max_retries", 8) or 8)
 
     async def _bump(self, tenant: str) -> None:
         if self._cache is None:
@@ -69,8 +72,10 @@ class IngestService:
     async def ingest(self, *, event_id: str, tenant: str, name: str, event_time: float | None = None,
                      subject: str = "", value: float = 0.0, props: dict | None = None) -> dict:
         now = self._clock.now()
-        if await self._events.seen(event_id):
-            return {"accepted": True, "duplicate": True, "id": event_id}   # 0 additional writes
+        # ATOMIC reserve (was seen()->mark_seen(), a check-then-set two concurrent redeliveries both
+        # passed, double-counting). If we don't win the reserve, it is a duplicate — zero more writes.
+        if not await self._events.reserve(event_id):
+            return {"accepted": True, "duplicate": True, "id": event_id}
 
         et = float(event_time) if event_time else now
         late = _buckets.is_late(et, now, self._cfg["late_max_seconds"])
@@ -80,8 +85,7 @@ class IngestService:
 
         event = Event(id=event_id, tenant=tenant, name=name, event_time=et, ingest_time=now,
                       subject=subject, value=float(value), props=dims)
-        await self._events.add(event)
-        await self._events.mark_seen(event_id)
+        await self._events.add(event)          # event_id already reserved above (atomic dedupe)
 
         if late:
             # Counted, never silently dropped — and never merged into a historical bucket we
@@ -96,24 +100,36 @@ class IngestService:
 
     async def _update_rollups(self, tenant: str, metric: str, event_time: float, subject: str,
                               value: float, dims: dict[str, str]) -> None:
+        # MONEY CONTRACT: this is a generic numeric aggregator; `value` may legitimately be fractional
+        # (a rate, a duration), so it stays a float. Per the platform money rule, a MONETARY metric
+        # must be sent as an INTEGER in minor units (halalas) — and float summation of integers is
+        # EXACT up to 2**53, so revenue rollups carry no rounding drift when that rule is followed. The
+        # fix for audit-06 is this contract, not a type change that would break fractional metrics.
         # Roll up both the total (no dims) and the dimensioned cell, at each granularity.
         dim_sets = [{}] + ([dims] if dims else [])
         for granularity in GRANULARITIES:
             bucket = _buckets.bucket_key(event_time, granularity)
             for dset in dim_sets:
                 key = rollup_key(tenant, metric, granularity, bucket, dset)
-                r = await self._rollups.get(key) or Rollup(
-                    key=key, tenant=tenant, metric=metric, granularity=granularity,
-                    bucket=bucket, dims=dset,
-                    hll=_hll.new(self._cfg["hll_precision"]),
-                    hist=_hist.new(self._cfg["hist_buckets"]))
-                r.count += 1
-                r.sum += float(value)
-                if subject:
-                    r.hll = _hll.add(r.hll or _hll.new(self._cfg["hll_precision"]), subject)
-                if value:
-                    r.hist = _hist.add(r.hist or _hist.new(self._cfg["hist_buckets"]), float(value))
-                await self._rollups.put(r)
+                # CAS-retry: read the cell, apply the increment/merges, write only if the version is
+                # unchanged. Without this the read-modify-write raced — two ingests on the same cell
+                # both read the base and the second overwrote the first, silently losing increments
+                # (undercount). On a lost race we re-read and re-apply, so no increment is dropped.
+                for _attempt in range(self._cas_retries):
+                    r = await self._rollups.get(key) or Rollup(
+                        key=key, tenant=tenant, metric=metric, granularity=granularity,
+                        bucket=bucket, dims=dset,
+                        hll=_hll.new(self._cfg["hll_precision"]),
+                        hist=_hist.new(self._cfg["hist_buckets"]))
+                    expected = int(r.version)
+                    r.count += 1
+                    r.sum += float(value)
+                    if subject:
+                        r.hll = _hll.add(r.hll or _hll.new(self._cfg["hll_precision"]), subject)
+                    if value:
+                        r.hist = _hist.add(r.hist or _hist.new(self._cfg["hist_buckets"]), float(value))
+                    if await self._rollups.cas_put(r, expected):
+                        break
 
     async def ingest_batch(self, tenant: str, events: list[dict]) -> dict:
         accepted = duplicates = 0

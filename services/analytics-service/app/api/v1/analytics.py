@@ -105,17 +105,23 @@ async def run_query(body: QueryIn, request: Request, p: Principal = Depends(_REA
 @router.post("/funnel", dependencies=[Depends(rate_limit)])
 async def run_funnel(body: FunnelIn, request: Request, p: Principal = Depends(_READ)) -> dict:
     """Sequence question — reads raw events, bounded by the range. Not the hot path."""
-    return await build_query(request).funnel(
-        tenant=_tenant(p, body.tenant), steps=body.steps, start_ts=body.start_ts,
-        end_ts=body.end_ts, window_seconds=body.window_seconds)
+    try:
+        return await build_query(request).funnel(
+            tenant=_tenant(p, body.tenant), steps=body.steps, start_ts=body.start_ts,
+            end_ts=body.end_ts, window_seconds=body.window_seconds)
+    except QueryError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/retention", dependencies=[Depends(rate_limit)])
 async def run_retention(body: RetentionIn, request: Request, p: Principal = Depends(_READ)) -> dict:
-    return await build_query(request).retention(
-        tenant=_tenant(p, body.tenant), event_name=body.event_name,
-        cohort_start=body.cohort_start, cohort_end=body.cohort_end,
-        periods=body.periods, period_seconds=body.period_seconds)
+    try:
+        return await build_query(request).retention(
+            tenant=_tenant(p, body.tenant), event_name=body.event_name,
+            cohort_start=body.cohort_start, cohort_end=body.cohort_end,
+            periods=body.periods, period_seconds=body.period_seconds)
+    except QueryError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 # ── saved reports ───────────────────────────────────────────────────────────
@@ -190,16 +196,19 @@ async def delete_report(report_id: str, request: Request, p: Principal = Depends
 @router.post("/export", dependencies=[Depends(rate_limit)])
 async def export_query(body: QueryIn, request: Request, p: Principal = Depends(_READ)) -> Response:
     """Run a query and hand it to the configured Warehouse port (CSV by default)."""
+    # Record under the tenant whose data is ACTUALLY exported (a platform operator may export another
+    # tenant via body.tenant); attributing it to the operator's own tenant misrecords whose data left.
+    export_tenant = _tenant(p, body.tenant)
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
-        "analytics.exported", actor=p.subject, tenant=p.tenant, resource="analytics_export",
+        "analytics.exported", actor=p.subject, tenant=export_tenant, resource="analytics_export",
         ip=request.client.host if request.client else "")
     svc = build_query(request)
     try:
         result = await svc.query(
-            tenant=_tenant(p, body.tenant), metric=body.metric, agg=body.agg,
+            tenant=export_tenant, metric=body.metric, agg=body.agg,
             granularity=body.granularity, start_ts=body.start_ts, end_ts=body.end_ts,
             dimensions=body.dimensions, filters=body.filters, percentile=body.percentile,
             tz_offset_minutes=body.tz_offset_minutes)

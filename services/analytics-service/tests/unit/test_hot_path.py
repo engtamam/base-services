@@ -42,6 +42,12 @@ class CountingStore(MemoryDataStore):
         self.touched.append(c)
         return await super().get(c, k)
 
+    async def cas(self, c, k, expected, v):
+        ok = await super().cas(c, k, expected, v)
+        if ok:
+            self.writes += 1      # a successful cas is a write (ingest reserve + rollup updates use it)
+        return ok
+
     async def put(self, c, k, v):
         self.writes += 1
         self.touched.append(c)

@@ -54,6 +54,7 @@ class Rollup:
     sum: float = 0.0
     hll: dict[str, Any] | None = None
     hist: dict[str, Any] | None = None
+    version: int = 0          # optimistic-lock version for the concurrent read-modify-write CAS
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
