@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+gate_name="safety:atomic-cas"
+gate_desc="a same-key read-modify-write must use compare-and-set, not get-then-put"
+gate_protects="The recurring concurrency class in the 2026-09-12 fleet audit (ticket-05/06,
+verification-04/05, audit-01/06, stream-04, zatca-01): a get(coll,key) … put(coll,key,…)
+in one function with no atomic guard, so two concurrent callers both read the same state
+and both write — a lost update: a breached quota, a forked hash chain, a double-counted
+anti-abuse row, a hijacked routing map, a duplicate account. The datastore exposes cas() /
+create() / put_if_absent() to close it. This gate flags any unguarded same-key
+read-modify-write in app/core; a genuine single-writer path opts out with an in-line
+'# atomic: ok — reason' on the put or its def. backup.py (single-writer restore) and
+secret_store.py (bounded per-service config) are skipped structurally."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_atomic_cas.py"
+gate_units=1
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_atomic_cas.py; }
+
+# Mutation-tested: a get-then-put fails, cas() passes, a marker re-exempts.
+gate_selftest() { "$PY" tools/ci/selftest_atomic_cas.py >/dev/null 2>&1; }

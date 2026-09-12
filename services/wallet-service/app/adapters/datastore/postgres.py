@@ -39,6 +39,9 @@ _INDEXES = (
     # before '9' and mis-ordered every 'oldest-first' priority view.
     f"CREATE INDEX IF NOT EXISTS kv_created_at_desc ON {_TABLE} "
     f"(collection, COALESCE(value->'created_at', 'null'::jsonb) DESC, key DESC)",
+    # grants swept by expires_at (audit sort-index)
+    f"CREATE INDEX IF NOT EXISTS kv_expires_at_desc ON {_TABLE} "
+    f"(collection, COALESCE(value->'expires_at', 'null'::jsonb) DESC, key DESC)",
 )
 
 

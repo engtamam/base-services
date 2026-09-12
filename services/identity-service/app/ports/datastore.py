@@ -15,6 +15,14 @@ class DataStore(Protocol):
 
     async def put(self, collection: str, key: str, value: dict[str, Any]) -> None: ...
 
+    async def cas(self, collection: str, key: str, expected_version: int,
+                  value: dict[str, Any]) -> bool:
+        """Compare-and-set on the row's `version`: write only if the stored version equals
+        `expected_version` (returns True), stamping version = expected+1. expected_version=0 is
+        insert-if-absent — the atomic primitive for a unique claim (username/identifier/index) and a
+        lost-update-free counter."""
+        ...
+
     async def delete(self, collection: str, key: str) -> bool: ...
 
     async def find(

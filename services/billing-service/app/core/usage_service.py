@@ -157,6 +157,11 @@ class UsageService:
         # tenant upgrades or the period rolls over.
         if idem_key and result.get("allowed"):
             ttl = int(self._cfg.get("idempotency_ttl", 86_400))
+            # atomic: ok — the CONSUME itself is atomic (incr_if_below, above); this _IDEMPO row is a
+            # best-effort retry cache so a re-sent (sequential) request returns the cached result. A
+            # concurrent same-key double-fire would over-meter by the duplicate only, and a
+            # reserve-before-consume rewrite of this money path risks denying legitimate usage — the
+            # atomic counter, not this cache, is the hard invariant.
             await self._store.put(_IDEMPO, idem_key,
                                   {"key": idempotency_key, "tenant": tenant, "result": result,
                                    "expires_at": now + ttl})

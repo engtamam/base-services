@@ -95,7 +95,7 @@ class ConsentStore:
             await self._store.delete(_CONSENT, legacy)
         return c
 
-    async def migrate_purpose_keys(self, limit: int = 1000) -> dict[str, Any]:
+    async def migrate_purpose_keys(self, limit: int = 1000) -> dict[str, Any]:  # atomic: ok — one-shot migration, single runner
         """Rewrite pre-normalisation rows under their normalised key. Run once, deliberately.
 
         The lazy fallback in get() is NOT sufficient, and a test is what proved it: it only finds
@@ -175,9 +175,19 @@ class ConsentStore:
         was written in.
         """
         seq_key = f"{p.tenant}::{p.subject}"
-        row = await self._store.get(_PROOF_SEQ, seq_key)
-        seq = int((row or {}).get("n", 0)) + 1
-        await self._store.put(_PROOF_SEQ, seq_key, {"n": seq})
+        # ATOMIC per-subject counter. The get-then-put let two concurrent proofs for one subject both
+        # read n=N and both write n=N+1 — the SAME insertion-order key on both, so the tamper-evident
+        # order the regulator relies on (grant-before-withdraw) forks. cas retries on a lost race so
+        # each proof gets a distinct, monotonic sequence.
+        seq = 1
+        for _ in range(64):
+            row = await self._store.get(_PROOF_SEQ, seq_key)
+            ver = int(row.get("version", 0)) if row else 0
+            seq = int((row or {}).get("n", 0)) + 1
+            if await self._store.cas(_PROOF_SEQ, seq_key, ver, {"n": seq}):
+                break
+        else:
+            raise RuntimeError("could not allocate a consent-proof sequence under contention")
         p.id = f"{seq:0{_SEQ_WIDTH}d}::{p.id}"
         await self._store.put(_PROOF, p.id, p.to_dict())
         return p

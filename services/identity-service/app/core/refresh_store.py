@@ -59,6 +59,9 @@ class RefreshStore:
         row = await self._store.get(_COLL, jti)
         if row:
             row["revoked"] = True
+            # atomic: ok — a jti row is written once at mint then only ever revoked; revoke is
+            # idempotent (sets revoked=True), and rotation mints a NEW jti rather than rewriting this
+            # one, so there is no competing writer to lose to.
             await self._store.put(_COLL, jti, row)
 
     async def revoke_family(self, user_id: str) -> int:

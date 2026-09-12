@@ -38,6 +38,12 @@ _INDEXES = (
     # before '9' and mis-ordered every 'oldest-first' priority view.
     f"CREATE INDEX IF NOT EXISTS kv_created_at_desc ON {_TABLE} "
     f"(collection, COALESCE(value->'created_at', 'null'::jsonb) DESC, key DESC)",
+    # expiring items swept by expires_at (audit sort-index)
+    f"CREATE INDEX IF NOT EXISTS kv_expires_at_desc ON {_TABLE} "
+    f"(collection, COALESCE(value->'expires_at', 'null'::jsonb) DESC, key DESC)",
+    # inbound log ordered by ts (audit sort-index)
+    f"CREATE INDEX IF NOT EXISTS kv_ts_desc ON {_TABLE} "
+    f"(collection, COALESCE(value->'ts', 'null'::jsonb) DESC, key DESC)",
     # The append-only catch-up logs (receipts, inbound) page by their own timestamp fields, which the
     # 'created' index does not cover — so each page Sorted the whole growing log. Index them.
     f"CREATE INDEX IF NOT EXISTS kv_receipt_ts_asc ON {_TABLE} "

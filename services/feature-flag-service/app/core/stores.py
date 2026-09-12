@@ -62,6 +62,8 @@ class FlagStore:
         if row is None:
             return False
         row["last_evaluated"] = when
+        # atomic: ok — best-effort hour-grain "last evaluated" stamp for stale-flag cleanup; a lost
+        # write under a race just defers a staleness check by one window, never a flag value.
         await self._store.put(_FLAGS, key, row)
         return True
 

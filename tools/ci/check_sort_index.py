@@ -31,6 +31,11 @@ SERVICES = ROOT / "services"
 # <field> — reason` marker in its postgres.py.
 _STRUCTURAL = {"id", "key"}
 
+# Copied infra whose sorts are over a BOUNDED or filter-narrowed, rare set — not a growing request
+# listing: `secret_store.py` is a per-service handful of secrets; `erasure.py` is a DSAR path bounded
+# by (tenant, subject) and run rarely. Skipped structurally rather than tagged in ~20 copied lines.
+_SKIP_FILES = {"secret_store.py", "erasure.py"}
+
 _INDEX_FIELD = re.compile(r"value->'([A-Za-z0-9_]+)'")
 _SORT_LITERAL = re.compile(r"""sort\s*=\s*\(\s*["']([A-Za-z0-9_]+)["']""")
 _ALLOW = re.compile(r"#\s*sort-index:\s*ok\s+([A-Za-z0-9_]+)")
@@ -47,6 +52,8 @@ def _sort_fields(app_dir: pathlib.Path) -> dict[str, list[str]]:
     """field -> the files that sort by it (app code only, tests excluded)."""
     used: dict[str, list[str]] = {}
     for py in app_dir.rglob("*.py"):
+        if py.name in _SKIP_FILES:
+            continue
         rel = str(py.relative_to(ROOT))
         for field in _SORT_LITERAL.findall(py.read_text(encoding="utf-8")):
             used.setdefault(field, []).append(rel)

@@ -138,10 +138,13 @@ class MembershipStore:
         # who happen to share an email must NOT be merged into one login (T7) — that hands one of
         # them the other's employer. Refuse; a refusal is an operator's afternoon, a merge is a
         # breach nobody notices.
-        if await self._store.get(_PERSON_INDEX, p.identifier) is not None:
+        # ATOMIC global-uniqueness claim. The get-then-put let two concurrent registrations of the
+        # SAME identifier both pass the check and both write — the exact T7 merge the comment above
+        # warns against (one human handed another's login). cas(expected_version=0) is
+        # insert-if-absent: one wins the index, the other is refused.
+        if not await self._store.cas(_PERSON_INDEX, p.identifier, 0, {"id": p.id}):
             raise PersonExists(f"identifier already registered: {p.identifier}")
         await self._store.put(_PERSONS, p.id, p.to_dict())
-        await self._store.put(_PERSON_INDEX, p.identifier, {"id": p.id})
         return p
 
     async def person(self, person_id: str) -> Person | None:

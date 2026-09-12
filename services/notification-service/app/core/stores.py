@@ -424,17 +424,26 @@ class WhatsAppNumberIndex:
         """
         if not phone_number_id or not tenant:
             return self.NOOP
+        # id == the key (the phone_number_id), so the row satisfies the backup key==id invariant and
+        # this routing map survives a restore rather than silently emptying (and breaking inbound
+        # attribution) until every shop happens to re-register.
+        row = {"id": phone_number_id, "phone_number_id": phone_number_id, "tenant": tenant}
         existing = await self._store.get(_WA_NUMBER_INDEX, phone_number_id)
         owner = (existing or {}).get("tenant")
         if owner and owner != tenant:
             return self.CONFLICT                          # incumbent kept; caller records the collision
-        # id == the key (the phone_number_id), so the row satisfies the backup key==id invariant and
-        # this routing map survives a restore rather than silently emptying (and breaking inbound
-        # attribution) until every shop happens to re-register.
-        await self._store.put(_WA_NUMBER_INDEX, phone_number_id,
-                              {"id": phone_number_id, "phone_number_id": phone_number_id,
-                               "tenant": tenant})
-        return self.UNCHANGED if owner == tenant else self.BOUND
+        if existing is None:
+            # ATOMIC first-bind. The get-then-put let two tenants both read "unowned" and both write —
+            # the second silently HIJACKED the number's routing, the very thing this refuses to do.
+            # cas(expected_version=0) is insert-if-absent: one wins.
+            if await self._store.cas(_WA_NUMBER_INDEX, phone_number_id, 0, row):
+                return self.BOUND
+            # lost the race — someone bound it concurrently; re-read and treat as an incumbent.
+            owner = (await self._store.get(_WA_NUMBER_INDEX, phone_number_id) or {}).get("tenant")
+            return self.UNCHANGED if owner == tenant else self.CONFLICT
+        # same tenant re-binding its own number — idempotent refresh (no owner change to race).
+        await self._store.put(_WA_NUMBER_INDEX, phone_number_id, row)
+        return self.UNCHANGED
 
     async def tenant_of(self, phone_number_id: str) -> str | None:
         if not phone_number_id:
@@ -477,5 +486,7 @@ class InAppStore:
         if not row or row.get("user") != user:
             return False
         row["read"] = True
+        # atomic: ok — idempotent flag flip (read=True); concurrent mark_read calls converge to the
+        # same state, and nothing else writes an in-app item after creation.
         await self._store.put(_INAPP, item_id, row)
         return True

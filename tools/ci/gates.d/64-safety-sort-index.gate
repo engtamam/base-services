@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+gate_name="safety:sort-index"
+gate_desc="every keyset sort field must have a matching postgres ordering index"
+gate_protects="verification-service sorted every query by created_at while the only index was on
+created, so the index was never used and Postgres bitmap-scanned + top-N sorted every
+matching row — O(tenant-rows), not O(page). The generic adapter orders by
+COALESCE(value->'<field>',...), which only an index on the SAME expression can serve.
+This gate flags any sort=('<field>', ...) in a service's app/ that has no matching index
+in its postgres.py; a bounded/narrow-filter collection opts out with a
+'# sort-index: ok <field> — reason' marker. secret_store.py (bounded config) and
+erasure.py (a rare DSAR path bounded by tenant+subject) are skipped structurally."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_sort_index.py"
+gate_units=1
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_sort_index.py; }
+
+# Mutation-tested: an indexed sort passes, removing the index fails, a marker re-exempts.
+gate_selftest() { "$PY" tools/ci/selftest_sort_index.py >/dev/null 2>&1; }

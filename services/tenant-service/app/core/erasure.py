@@ -46,6 +46,8 @@ class TenantErasure:
                 branding[k] = ""
             if hits:
                 row["branding"] = branding
+                # atomic: ok — DSAR erasure of one subject's branding strings; rare, idempotent
+                # (re-erasing finds no hits), and not a concurrent request path.
                 await self._store.put(_TENANTS, tenant, row)
                 cleared = len(hits)
 

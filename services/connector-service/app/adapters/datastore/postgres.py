@@ -38,6 +38,9 @@ _INDEXES = (
     # before '9' and mis-ordered every 'oldest-first' priority view.
     f"CREATE INDEX IF NOT EXISTS kv_created_at_desc ON {_TABLE} "
     f"(collection, COALESCE(value->'created_at', 'null'::jsonb) DESC, key DESC)",
+    # sync runs ordered by started_at (audit sort-index)
+    f"CREATE INDEX IF NOT EXISTS kv_started_at_desc ON {_TABLE} "
+    f"(collection, COALESCE(value->'started_at', 'null'::jsonb) DESC, key DESC)",
 )
 
 

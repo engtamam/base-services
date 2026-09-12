@@ -34,6 +34,12 @@ class CountingStore(MemoryDataStore):
         self.writes += 1
         return await super().put(c, k, v)
 
+    async def cas(self, c, k, expected_version, v):
+        ok = await super().cas(c, k, expected_version, v)
+        if ok:                                  # a successful cas is a durable write, like put
+            self.writes += 1
+        return ok
+
     async def scan_all(self, c, limit=100):
         self.reads += 1
         return await super().scan_all(c, limit)

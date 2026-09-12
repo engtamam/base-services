@@ -38,6 +38,10 @@ _INDEXES = (
     # before '9' and mis-ordered every 'oldest-first' priority view.
     f"CREATE INDEX IF NOT EXISTS kv_created_at_desc ON {_TABLE} "
     f"(collection, COALESCE(value->'created_at', 'null'::jsonb) DESC, key DESC)",
+    # sort-index: ok seq — per-ticket event history, bounded by ticket_id
+    # operator tenant-wide ticket listing ordered by updated (audit sort-index)
+    f"CREATE INDEX IF NOT EXISTS kv_updated_desc ON {_TABLE} "
+    f"(collection, COALESCE(value->'updated', 'null'::jsonb) DESC, key DESC)",
 )
 
 

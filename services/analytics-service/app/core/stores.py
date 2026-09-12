@@ -130,6 +130,8 @@ class CardinalityStore:
         if len(values) >= cap:
             return False
         values.append(value)
+        # atomic: ok — approximate cardinality cap; a lost value under a race only mis-buckets one
+        # dimension value into __other__ (or slips the cap by one), never a correctness/money fact.
         await self._store.put(_CARD, key, {"values": values})
         return True
 

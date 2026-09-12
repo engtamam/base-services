@@ -38,6 +38,12 @@ _INDEXES = (
     # before '9' and mis-ordered every 'oldest-first' priority view.
     f"CREATE INDEX IF NOT EXISTS kv_created_at_desc ON {_TABLE} "
     f"(collection, COALESCE(value->'created_at', 'null'::jsonb) DESC, key DESC)",
+    # role listing ordered by name (audit sort-index)
+    f"CREATE INDEX IF NOT EXISTS kv_name_desc ON {_TABLE} "
+    f"(collection, COALESCE(value->'name', 'null'::jsonb) DESC, key DESC)",
+    # subject-caps listing ordered by subject (audit sort-index)
+    f"CREATE INDEX IF NOT EXISTS kv_subject_desc ON {_TABLE} "
+    f"(collection, COALESCE(value->'subject', 'null'::jsonb) DESC, key DESC)",
 )
 
 

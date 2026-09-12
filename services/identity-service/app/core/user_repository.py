@@ -29,10 +29,12 @@ class UserRepository:
 
     async def create(self, user: User) -> User:
         idx = self._index_key(user.tenant, user.username)
-        if await self._store.get(_INDEX, idx) is not None:
+        # ATOMIC uniqueness claim. The get-then-put let two concurrent creates of the same username
+        # both read "absent" and both write — two accounts for one identity. cas(expected_version=0)
+        # is insert-if-absent: exactly one creator wins the index, the other is refused.
+        if not await self._store.cas(_INDEX, idx, 0, {"id": user.id}):
             raise UserExists(f"username already taken in tenant: {user.username}")
         await self._store.put(_USERS, user.id, user.to_dict())
-        await self._store.put(_INDEX, idx, {"id": user.id})
         return user
 
     async def get(self, user_id: str) -> User | None:

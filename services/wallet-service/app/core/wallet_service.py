@@ -109,6 +109,9 @@ class WalletService:
             return
         key = _ledger_key(w.tenant, int(w.pending["seq"]))
         if await self._store.get(_LEDGER, key) is None:
+            # atomic: ok — replay of the ledger row already committed by the last CAS in _mutate;
+            # deterministic key + identical content make writing it twice a no-op. The money mutation
+            # itself is the CAS in _mutate, not this replay.
             await self._store.put(_LEDGER, key, w.pending)
 
     async def _mutate(self, tenant: str, *, funds_delta: dict[str, int] | None = None,
@@ -283,6 +286,9 @@ class WalletService:
         # branch, which matches and re-claims correctly.
         prior = await self._store.get(_IDEMPO, key)
         version = int(prior.get("version", 0)) if prior else 0
+        # atomic: ok — only the caller that WON the claim's CAS reaches here (a late loser replays the
+        # finished result before re-claiming), so there is no competing writer; the version is carried
+        # forward so a post-TTL re-claim stays on the CAS UPDATE branch (see the comment above).
         await self._store.put(_IDEMPO, key,
                               {"result": result,
                                "version": version,

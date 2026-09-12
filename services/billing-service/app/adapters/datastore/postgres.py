@@ -39,6 +39,9 @@ _INDEXES = (
     # before '9' and mis-ordered every 'oldest-first' priority view.
     f"CREATE INDEX IF NOT EXISTS kv_created_at_desc ON {_TABLE} "
     f"(collection, COALESCE(value->'created_at', 'null'::jsonb) DESC, key DESC)",
+    # payment/invoice history ordered by paid_at (audit sort-index)
+    f"CREATE INDEX IF NOT EXISTS kv_paid_at_desc ON {_TABLE} "
+    f"(collection, COALESCE(value->'paid_at', 'null'::jsonb) DESC, key DESC)",
 )
 
 

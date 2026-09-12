@@ -38,6 +38,27 @@ _INDEXES = (
     # before '9' and mis-ordered every 'oldest-first' priority view.
     f"CREATE INDEX IF NOT EXISTS kv_created_at_desc ON {_TABLE} "
     f"(collection, COALESCE(value->'created_at', 'null'::jsonb) DESC, key DESC)",
+    # listing ordered by at (audit sort-index)
+    f"CREATE INDEX IF NOT EXISTS kv_at_desc ON {_TABLE} "
+    f"(collection, COALESCE(value->'at', 'null'::jsonb) DESC, key DESC)",
+    # findings ordered by discovered_at (audit sort-index)
+    f"CREATE INDEX IF NOT EXISTS kv_discovered_at_desc ON {_TABLE} "
+    f"(collection, COALESCE(value->'discovered_at', 'null'::jsonb) DESC, key DESC)",
+    # doc listing ordered by doc_id (audit sort-index)
+    f"CREATE INDEX IF NOT EXISTS kv_doc_id_desc ON {_TABLE} "
+    f"(collection, COALESCE(value->'doc_id', 'null'::jsonb) DESC, key DESC)",
+    # listing ordered by name (audit sort-index)
+    f"CREATE INDEX IF NOT EXISTS kv_name_desc ON {_TABLE} "
+    f"(collection, COALESCE(value->'name', 'null'::jsonb) DESC, key DESC)",
+    # holds ordered by placed_at (audit sort-index)
+    f"CREATE INDEX IF NOT EXISTS kv_placed_at_desc ON {_TABLE} "
+    f"(collection, COALESCE(value->'placed_at', 'null'::jsonb) DESC, key DESC)",
+    # findings ordered by service (audit sort-index)
+    f"CREATE INDEX IF NOT EXISTS kv_service_desc ON {_TABLE} "
+    f"(collection, COALESCE(value->'service', 'null'::jsonb) DESC, key DESC)",
+    # DSAR/consent listing ordered by updated_at (audit sort-index)
+    f"CREATE INDEX IF NOT EXISTS kv_updated_at_desc ON {_TABLE} "
+    f"(collection, COALESCE(value->'updated_at', 'null'::jsonb) DESC, key DESC)",
 )
 
 
@@ -127,6 +148,28 @@ class PostgresDataStore:
                 "ON CONFLICT (collection, key) DO UPDATE SET value=EXCLUDED.value",
                 collection, key, json.dumps(value),
             )
+
+    async def cas(self, collection: str, key: str, expected_version: int,
+                  value: dict[str, Any]) -> bool:
+        """Compare-and-set on the row's `version`. expected_version=0 -> INSERT ON CONFLICT DO NOTHING
+        (insert-if-absent); otherwise a version-pinned UPDATE. New version stamped into the jsonb."""
+        stored = dict(value)
+        stored["version"] = int(expected_version) + 1
+        pool = await self._ensure()
+        async with pool.acquire() as con:
+            if int(expected_version) == 0:
+                res = await con.execute(
+                    f"INSERT INTO {_TABLE} (collection, key, value) VALUES ($1,$2,$3) "  # nosec B608 - _TABLE is a trusted constant; all values are parameterized
+                    "ON CONFLICT (collection, key) DO NOTHING",
+                    collection, key, json.dumps(stored),
+                )
+            else:
+                res = await con.execute(
+                    f"UPDATE {_TABLE} SET value=$3 WHERE collection=$1 AND key=$2 "  # nosec B608 - _TABLE is a trusted constant; all values are parameterized
+                    "AND (value->>'version')::bigint = $4",
+                    collection, key, json.dumps(stored), int(expected_version),
+                )
+        return res.endswith("1")
 
     async def delete(self, collection: str, key: str) -> bool:
         pool = await self._ensure()

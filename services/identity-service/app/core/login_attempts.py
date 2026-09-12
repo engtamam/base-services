@@ -41,15 +41,23 @@ class LoginAttemptStore:
         """Count a failed attempt; lock the account if the threshold is reached. Returns locked?"""
         t = now if now is not None else _now()
         key = self._key(tenant, username)
-        row = await self._store.get(_COLL, key) or {"failures": 0, "first_ts": t, "locked_until": 0}
-        # a fresh window resets the counter
-        if t - float(row.get("first_ts", t) or t) > self._window:
-            row = {"failures": 0, "first_ts": t, "locked_until": 0}
-        row["failures"] = int(row.get("failures", 0)) + 1
-        locked = row["failures"] >= self._max
-        if locked:
-            row["locked_until"] = t + self._lockout
-        await self._store.put(_COLL, key, row)
+        # ATOMIC increment. The get-then-put let two concurrent failed logins both read failures=N and
+        # both write N+1 — one increment lost, so an attacker gets more attempts than the threshold
+        # before lockout (a weakened brute-force control). cas retries on a lost race so every failure
+        # counts.
+        locked = False
+        for _ in range(64):
+            cur = await self._store.get(_COLL, key)
+            ver = int(cur.get("version", 0)) if cur else 0
+            row = dict(cur) if cur else {"failures": 0, "first_ts": t, "locked_until": 0}
+            if t - float(row.get("first_ts", t) or t) > self._window:
+                row = {"failures": 0, "first_ts": t, "locked_until": 0}   # a fresh window resets
+            row["failures"] = int(row.get("failures", 0)) + 1
+            locked = row["failures"] >= self._max
+            row["locked_until"] = t + self._lockout if locked else row.get("locked_until", 0)
+            row.pop("version", None)                                       # cas stamps the version
+            if await self._store.cas(_COLL, key, ver, row):
+                return locked
         return locked
 
     async def reset(self, tenant: str, username: str) -> None:
