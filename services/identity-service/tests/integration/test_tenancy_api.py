@@ -20,6 +20,9 @@ SIGNING = {
     "TOKEN_SIGNING_SECRET": SECRET,
     "TOKEN_VERIFIER_DRIVER": "hs256",
     "TOKEN_HS256_SECRET": SECRET,
+    # A multi-tenant deployment must name the platform tenant so the '*'/'platform.*' strip is
+    # well-defined (boot guard, audit identity-r2-05). Overridable per _set() call.
+    "PLATFORM_TENANT": "platform",
 }
 
 

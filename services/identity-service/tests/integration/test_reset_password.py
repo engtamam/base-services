@@ -32,6 +32,7 @@ def _make():
     from app.config import get_settings
     os.environ.update(
         ENV="test", INTERNAL_SERVICE_TOKEN=ITOKEN, IDENTITY_MULTI_TENANT="true",
+        PLATFORM_TENANT="platform",
         IDENTITY_LOGIN_FIELD="phone", OTP_TEMPLATE="otp_reset", RATELIMIT_MAX="1000",
         TOKEN_ISSUER_DRIVER="hs256", TOKEN_SIGNING_SECRET=SECRET,
         TOKEN_VERIFIER_DRIVER="hs256", TOKEN_HS256_SECRET=SECRET)

@@ -407,6 +407,13 @@ class Settings(BaseSettings):
     # convention and never a boundary — nothing refused a platform.* cap on a customer's token.
     # Empty disables the check, which is the pre-existing behaviour and is logged at boot.
     PLATFORM_TENANT: str = ""
+    # Deliberate opt-out for a genuinely single-tenant deployment that RUNS multi-tenant membership
+    # but intends '*'/'platform.*' to remain usable (there is no customer to fence off from the
+    # platform, because there is only one tenant). Default False makes the ambiguous case —
+    # multi-tenant membership on, PLATFORM_TENANT unset — fail closed at boot rather than fail open
+    # at mint (r2-05): the platform boundary the mint strip depends on would otherwise be undecidable.
+    # Setting this True is the operator saying, in writing, "'*' is meant to work here."
+    IDENTITY_ALLOW_UNBOUNDED_PLATFORM: bool = False
 
     @property
     def registration_default_roles(self) -> list[str]:
@@ -693,6 +700,36 @@ class Settings(BaseSettings):
                 f"not exceed SECRETS_ROTATION_WINDOW_SECONDS "
                 f"({self.SECRETS_ROTATION_WINDOW_SECONDS}) — otherwise a rotation leaves a window "
                 f"where replicas authenticate with a credential authz no longer accepts")
+
+    def assert_platform_boundary_ok(self) -> None:
+        """Boot guard for the platform-capability boundary. Checked in every environment.
+
+        The mint-time strip of '*'/'platform.*' (AuthService._safe_caps on the single-tenant path,
+        tenancy.claims_for on the multi-tenant path) is only well-defined when the service knows
+        which tenant IS the platform — i.e. PLATFORM_TENANT names it. With PLATFORM_TENANT empty the
+        strip has no reference tenant and fails OPEN: every mint emits caps verbatim, so a stray '*'
+        or 'platform.*' on any membership becomes cross-tenant authority with nothing to catch it
+        (r2-05, which makes r2-01 exploitable in a stock config).
+
+        A genuinely single-tenant deployment (no membership) is unaffected: there is one tenant, no
+        customer to fence off, and '*' is meant to be usable — nothing here fires. Only the ambiguous
+        case fails closed: multi-tenant membership ON and PLATFORM_TENANT UNSET, where the boundary is
+        undecidable. IDENTITY_ALLOW_UNBOUNDED_PLATFORM=true is the explicit, documented opt-out for an
+        operator who runs multi-tenant membership yet deliberately wants '*' usable.
+        """
+        if not self.IDENTITY_MULTI_TENANT:
+            return
+        if self.PLATFORM_TENANT:
+            return
+        if self.IDENTITY_ALLOW_UNBOUNDED_PLATFORM:
+            return
+        raise ValueError(
+            "IDENTITY_MULTI_TENANT is on but PLATFORM_TENANT is empty: the platform-capability "
+            "boundary is undecidable, so the mint-time strip of '*'/'platform.*' fails open and any "
+            "such cap on a membership becomes cross-tenant authority (audit identity-r2-05). Set "
+            "PLATFORM_TENANT to the tenant that IS the platform to enforce the boundary, or set "
+            "IDENTITY_ALLOW_UNBOUNDED_PLATFORM=true to deliberately keep '*' usable in a "
+            "single-tenant deployment.")
 
     def assert_legal_enforcement_ok(self) -> None:
         """Boot guard for legal-acceptance enforcement. Checked in every environment.

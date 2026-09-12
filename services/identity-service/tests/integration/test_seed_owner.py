@@ -17,7 +17,7 @@ ITOKEN = "t" * 40
 def _make(multi_tenant="true"):
     from app.config import get_settings
     os.environ.update(ENV="test", INTERNAL_SERVICE_TOKEN=ITOKEN,
-                      IDENTITY_MULTI_TENANT=multi_tenant)
+                      IDENTITY_MULTI_TENANT=multi_tenant, PLATFORM_TENANT="platform")
     get_settings.cache_clear()
     from app.main import create_app
     return TestClient(create_app(), raise_server_exceptions=False)

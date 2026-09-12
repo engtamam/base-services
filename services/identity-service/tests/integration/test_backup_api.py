@@ -21,7 +21,7 @@ KEK = "backup-key-for-tests"
 def client(monkeypatch):
     for k, v in {"ENV": "test", "INTERNAL_SERVICE_TOKEN": ITOKEN,
                  "IDENTITY_MULTI_TENANT": "true", "RATELIMIT_MAX": "1000",
-                 "BACKUP_KEK": KEK}.items():
+                 "PLATFORM_TENANT": "platform", "BACKUP_KEK": KEK}.items():
         monkeypatch.setenv(k, v)
     from app.config import get_settings
     get_settings.cache_clear()
@@ -67,7 +67,8 @@ def test_import_requires_the_internal_token(client):
 # ── no key ────────────────────────────────────────────────────────────────────
 def test_without_a_backup_key_export_refuses(monkeypatch):
     for k, v in {"ENV": "test", "INTERNAL_SERVICE_TOKEN": ITOKEN,
-                 "IDENTITY_MULTI_TENANT": "true", "BACKUP_KEK": ""}.items():
+                 "IDENTITY_MULTI_TENANT": "true", "PLATFORM_TENANT": "platform",
+                 "BACKUP_KEK": ""}.items():
         monkeypatch.setenv(k, v)
     from app.config import get_settings
     get_settings.cache_clear()

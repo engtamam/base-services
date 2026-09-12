@@ -67,6 +67,10 @@ def create_app() -> FastAPI:
     # And a service that demands a proven address must be able to ask for proof.
     settings.assert_email_verification_ok()
     settings.assert_operator_config_ok()
+    # The platform-capability boundary must be decidable: multi-tenant membership without a
+    # PLATFORM_TENANT (and without an explicit opt-out) fails the mint-time '*'/'platform.*' strip
+    # open, so refuse to boot rather than mint cross-tenant authority (audit identity-r2-05).
+    settings.assert_platform_boundary_ok()
     # Enabling signing-key rotation without its prerequisites (rs256, a KEK, a seed key, an overlap
     # that outlives the refresh TTL) must stop the service, not degrade quietly.
     settings.assert_signing_rotation_ok()

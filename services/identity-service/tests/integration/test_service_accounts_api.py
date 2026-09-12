@@ -27,7 +27,7 @@ def _make_app(enabled: bool = True, **env_over) -> TestClient:
         "TOKEN_ISSUER": ISS, "TOKEN_AUDIENCE": AUD, "RATELIMIT_MAX": "1000",
         "TOKEN_ISSUER_DRIVER": "hs256", "TOKEN_SIGNING_SECRET": TOKEN_SECRET,
         "PII_SALT": "s" * 32,
-        "IDENTITY_MULTI_TENANT": "true",
+        "IDENTITY_MULTI_TENANT": "true", "PLATFORM_TENANT": "platform",
         "SERVICE_ACCOUNTS_ENABLED": "true" if enabled else "false",
     }
     env.update(env_over)
