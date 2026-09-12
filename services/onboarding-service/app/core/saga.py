@@ -121,8 +121,11 @@ class Saga:
                 step.state = COMPENSATED
                 outcome.compensated.append(step.name)
             except Exception as exc:
-                # Loud, and resumable. This is the list a retry works from.
-                outcome.unfinished.append({"step": step.name, "error": str(exc)})
+                # Loud, and resumable. This is the list a retry works from — it MUST carry the
+                # created resource's reference (step.result), or resume() calls undo() with an empty
+                # reference and silently abandons the cleanup, orphaning the resource.
+                outcome.unfinished.append({"step": step.name, "error": str(exc),
+                                           "reference": step.result})
 
         return outcome
 

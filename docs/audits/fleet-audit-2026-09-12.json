@@ -1085,69 +1085,75 @@
       "issues": [
         {
           "id": "onboarding-service-01",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "bug",
           "severity": "high",
           "file": "app/adapters/entitlement/wallet.py",
           "line": 58,
           "title": "Welcome-credit expiry is silently dropped — promo grants never lapse",
           "detail": "The adapter only sets an expiry via body['expires_at'] = request.metadata.get('expires_at'), but GrantService.issue() builds the GrantRequest with metadata={'once_per': once_per} and never puts 'expires_at' in metadata (grants.py:99). The configured `days` (spec.get('days')) is used only as the gate `if request.days:` and is never converted to an absolute instant anywhere. So whenever a grant has days>0 configured, the wallet credit is sent with expires_at=None (or omitted), meaning wallet-service's sweep-grants job can never reclaim it. The docstring's promise ('expires_at makes it a grant rather than a gift ... computing it here keeps the expiry in one place') is unimplemented.",
-          "failure_scenario": "A flow grants a 90-day welcome credit (spec has amount+days=90). Customer claims it. The wallet Grant is created with no expires_at, so it never lapses and the nightly sweep never claws back the unspent remainder. Every welcome credit becomes a permanent, unbounded promotional liability — the exact drain the design set out to prevent."
+          "failure_scenario": "A flow grants a 90-day welcome credit (spec has amount+days=90). Customer claims it. The wallet Grant is created with no expires_at, so it never lapses and the nightly sweep never claws back the unspent remainder. Every welcome credit becomes a permanent, unbounded promotional liability — the exact drain the design set out to prevent.",
+          "resolution": "FIXED: the wallet adapter derives an absolute expires_at from request.days (was reading metadata[expires_at] which issue() never set, so promo grants never lapsed). Regression: test_audit_fixes.py."
         },
         {
           "id": "onboarding-service-02",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "bug",
           "severity": "high",
           "file": "app/core/saga.py",
           "line": 125,
           "title": "Resume of failed compensation loses the reference and silently abandons cleanup",
           "detail": "When an undo raises, _compensate records only {'step': step.name, 'error': str(exc)} — it drops step.result (the created resource's reference). ProvisioningService.resume() then calls provisioner.undo(request, entry.get('reference', '')) with an EMPTY reference (provisioning.py:147). HttpProvisioner.undo returns ProvisionResult(status=CREATED, detail='nothing was created') when reference is empty (provisioner/http.py:57-58), whose .ok is True (ports/provisioner.py:55). resume() therefore treats the undo as successful and drops the entry from the still-unfinished list, marking the run clean while the downstream resource (tenant/membership) was never actually deleted.",
-          "failure_scenario": "Provisioning creates a tenant then a membership; membership create fails; the tenant undo fails because wallet/tenant-service is briefly down, so the tenant lands in 'unfinished' (without its reference). Operator later calls /admin/resume/{subject}. resume passes an empty reference, undo no-ops as 'nothing was created', resume reports resumed=True with empty unfinished — and the orphan tenant survives forever, with the record now claiming rollback is complete."
+          "failure_scenario": "Provisioning creates a tenant then a membership; membership create fails; the tenant undo fails because wallet/tenant-service is briefly down, so the tenant lands in 'unfinished' (without its reference). Operator later calls /admin/resume/{subject}. resume passes an empty reference, undo no-ops as 'nothing was created', resume reports resumed=True with empty unfinished — and the orphan tenant survives forever, with the record now claiming rollback is complete.",
+          "resolution": "FIXED: a failed compensation records step.result as reference in the resumable work list, so resume() can undo the created resource instead of calling undo with an empty reference. Regression: test_onboarding.py."
         },
         {
           "id": "onboarding-service-03",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "bug",
           "severity": "medium",
           "file": "app/adapters/entitlement/wallet.py",
           "line": 58,
           "title": "Grant scope default diverges between issue (tenant) and satisfaction check (user)",
           "detail": "claim_grant issues with scope=spec.get('scope','tenant') (api/v1/onboarding.py:112) and GrantService.mark_granted stores the local fact under a tenant-scoped key when scope=='tenant' (local_facts.py:52). But LocalFacts.check resolves scope with `tenant if req.get('scope')=='tenant' else f'{tenant}:{subject}'` (local_facts.py:38), defaulting to SUBJECT scope. For a grant requirement that declares no explicit scope, the grant fact is WRITTEN at key 'req::tenant' but READ at key 'req::tenant:subject' — the two never meet.",
-          "failure_scenario": "A flow has a requirement with grants set but no scope field. Customer claims the grant: the wallet credit is issued and the ledger records it, mark_granted writes the tenant-scoped key. On the next /next call the requirement is re-evaluated, LocalFacts.check reads the subject-scoped key, finds nothing, and reports it UNSATISFIED. The flow permanently shows the gift as outstanding; re-claiming hits the ledger dedupe (ALREADY) but still never flips the requirement satisfied."
+          "failure_scenario": "A flow has a requirement with grants set but no scope field. Customer claims the grant: the wallet credit is issued and the ledger records it, mark_granted writes the tenant-scoped key. On the next /next call the requirement is re-evaluated, LocalFacts.check reads the subject-scoped key, finds nothing, and reports it UNSATISFIED. The flow permanently shows the gift as outstanding; re-claiming hits the ledger dedupe (ALREADY) but still never flips the requirement satisfied.",
+          "resolution": "FIXED: LocalFacts.check defaults scope to tenant (matching issue spec.get(scope,tenant)); it defaulted to user, so a tenant-scoped grant written under the tenant key was looked up under the user key and never satisfied. Regression: test_audit_fixes.py."
         },
         {
           "id": "onboarding-service-04",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "medium",
           "file": "app/core/erasure.py",
           "line": 63,
           "title": "DSAR erasure never matches onboarding_grants rows — subject data silently retained",
           "detail": "erase() filters onboarding_grants with where={'tenant':tenant,'subject':subject}, but LocalFacts.mark_granted writes rows containing only {'id','reference','at'} — no 'tenant' and no 'subject' fields (local_facts.py:53). Both MemoryDataStore.find and PostgresDataStore.find match on row field equality/containment, so the filter matches zero rows. The granted local facts (whose key embeds subject for user-scoped grants) are never deleted, never listed under erased[], and never declared under retained[] — exactly the silent-hide the erasure contract forbids.",
-          "failure_scenario": "A subject with user-scoped onboarding grants requests erasure via /internal/privacy/erase. The onboarding_grants rows are left in place, the ack omits them from both 'erased' and 'retained', and if there were also no forced rows the response reports already_absent=true — a false 'she was erased' while personal-data-linked rows remain."
+          "failure_scenario": "A subject with user-scoped onboarding grants requests erasure via /internal/privacy/erase. The onboarding_grants rows are left in place, the ack omits them from both 'erased' and 'retained', and if there were also no forced rows the response reports already_absent=true — a false 'she was erased' while personal-data-linked rows remain.",
+          "resolution": "FIXED: mark_granted stores tenant+subject on the grant row so DSAR find({tenant,subject}) matches and erasure removes it (the row previously had only id/reference/at). Regression: test_audit_fixes.py."
         },
         {
           "id": "onboarding-service-05",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "security",
           "severity": "medium",
           "file": "app/adapters/requirement_source/http.py",
           "line": 39,
           "title": "Unencoded tenant/subject/fact interpolated into internal requirement-check URL",
           "detail": "check() builds the URL by raw string substitution: path.replace('{fact}',fact).replace('{tenant}',tenant).replace('{subject}',subject) then base+path, with no URL/percent encoding (requirement_source/http.py:39-41). subject is attacker-influenced on the admin tier (/admin/inspect takes subject as a caller-supplied query param), and generally comes from token claims. A value containing '/', '?', '#', or '..' rewrites the request path or appends query params to the owning service's internal endpoint (CWE-88/CWE-918-adjacent request-path injection).",
-          "failure_scenario": "An operator (or a crafted subject claim) with value like '../admin/verified?force=1' or 'x?override=true' is substituted directly into the verification-service internal URL, redirecting the requirement check to a different internal path/query than intended and potentially returning a satisfied answer for a requirement that is not actually met."
+          "failure_scenario": "An operator (or a crafted subject claim) with value like '../admin/verified?force=1' or 'x?override=true' is substituted directly into the verification-service internal URL, redirecting the requirement check to a different internal path/query than intended and potentially returning a satisfied answer for a requirement that is not actually met.",
+          "resolution": "FIXED: the requirement-check URL percent-encodes fact/tenant/subject before interpolation, closing path traversal / parameter injection via the caller-influenced subject. Regression: test_audit_fixes.py."
         },
         {
           "id": "onboarding-service-06",
-          "status": "OPEN",
+          "status": "FIXED",
           "category": "correctness",
           "severity": "low",
           "file": "app/adapters/datastore/postgres.py",
           "line": 200,
           "title": "Keyset pagination cursor uses value['id'] but ORDER BY tie-breaks on row key",
           "detail": "find() orders and compares by (COALESCE(value->>field,''), key) — the row's primary-key column — but encodes the next cursor from last.get('id') taken from the JSON value (postgres.py:200; MemoryDataStore has the same shape at memory.py:70). When a row's stored 'id' field is not identical to its storage key, the cursor's tie-break value no longer matches the ORDER BY tie-break column, so the tuple comparison on the next page can skip or duplicate rows sharing a sort-field value.",
-          "failure_scenario": "A collection is paginated where key != value['id'] and several rows share the same sort field (e.g. same 'created'); the second page's cursor comparison against `key` uses the mismatched id, dropping or repeating rows at the page boundary during a sweep or export."
+          "failure_scenario": "A collection is paginated where key != value['id'] and several rows share the same sort field (e.g. same 'created'); the second page's cursor comparison against `key` uses the mismatched id, dropping or repeating rows at the page boundary during a sweep or export.",
+          "resolution": "FIXED: the postgres find cursor tie-break is encoded from the ROW KEY (what ORDER BY/the comparison use), not value[id], so a row whose id differs from its key is not dropped/repeated at a page boundary."
         }
       ]
     },

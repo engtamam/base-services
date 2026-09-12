@@ -14,6 +14,7 @@ import asyncio
 
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -36,8 +37,12 @@ class HttpRequirementSource:
         self._timeout = timeout
 
     async def check(self, *, fact: str, tenant: str, subject: str) -> Answer:
-        path = (self._path.replace("{fact}", fact).replace("{tenant}", tenant)
-                .replace("{subject}", subject))
+        # Percent-encode each value before it goes into the path: subject is caller-influenced
+        # (/admin/inspect takes it as a query param), so a raw '../', '?', '#' or '/' would rewrite
+        # the request target (path traversal / parameter injection against an internal endpoint).
+        q = lambda v: urllib.parse.quote(str(v), safe="")  # noqa: E731
+        path = (self._path.replace("{fact}", q(fact)).replace("{tenant}", q(tenant))
+                .replace("{subject}", q(subject)))
         url = self._base + path
         req = urllib.request.Request(url, method="GET",
                                      headers={"X-Internal-Token": self._token} if self._token else {})

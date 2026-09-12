@@ -34,8 +34,11 @@ class LocalFacts:
                                  f"{forced.get('reason', '')}")
         if fact == "granted":
             # Scoped by the requirement's own id, so two grants in one flow do not satisfy each
-            # other. Tenant-scoped grants are answered for the tenant, not the person.
-            scope = tenant if req.get("scope") == "tenant" else f"{tenant}:{subject}"
+            # other. Tenant-scoped grants are answered for the tenant, not the person. The DEFAULT is
+            # tenant, matching issue() (spec.get('scope','tenant')) — defaulting to user here meant a
+            # tenant-scoped grant was written under the tenant key but looked up under the user key,
+            # so the requirement was never satisfied.
+            scope = f"{tenant}:{subject}" if req.get("scope") == "user" else tenant
             row = await self._store.get(_GRANTS, f"{req.get('id', fact)}::{scope}")
             return Answer(status=SATISFIED if row else UNSATISFIED)
         return Answer(status=UNSATISFIED, detail=f"unknown local fact {fact!r}")
@@ -50,8 +53,11 @@ class LocalFacts:
     async def mark_granted(self, *, requirement: str, tenant: str, subject: str,
                            scope: str, reference: str) -> None:
         key = f"{requirement}::{tenant if scope == 'tenant' else f'{tenant}:{subject}'}"
-        await self._store.put(_GRANTS, key, {"id": key, "reference": reference,
-                                             "at": self._clock.now()})
+        # Store tenant + subject as fields so DSAR erasure's find({tenant, subject}) actually matches
+        # (the row previously carried only id/reference/at, so erase matched nothing and the fact was
+        # retained after erasure).
+        await self._store.put(_GRANTS, key, {"id": key, "tenant": tenant, "subject": subject,
+                                             "reference": reference, "at": self._clock.now()})
 
     @staticmethod
     def _key(tenant: str, subject: str, requirement: str) -> str:

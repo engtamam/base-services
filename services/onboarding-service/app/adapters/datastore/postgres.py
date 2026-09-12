@@ -199,11 +199,15 @@ class PostgresDataStore:
         async with pool.acquire() as con:
             rows = await con.fetch(sql, *args)
 
-        page = [json.loads(r["value"]) for r in rows[:limit]]
+        page_rows = rows[:limit]
+        page = [json.loads(r["value"]) for r in page_rows]
         next_cursor = None
         if len(rows) > limit and page:
-            last = page[-1]
-            next_cursor = _cursor.encode(last.get(field), str(last.get("id", "")))
+            # Tie-break the cursor on the ROW KEY — the same column the ORDER BY and the WHERE
+            # comparison above use. Encoding value['id'] instead was wrong when a row's stored id
+            # differs from its storage key: the next page compared the cursor's id against `key`,
+            # dropping or repeating a row at a boundary where the sort field ties.
+            next_cursor = _cursor.encode(page[-1].get(field), str(page_rows[-1]["key"]))
         return page, next_cursor
 
     async def scan_all(self, collection: str, limit: int) -> list[dict[str, Any]]:

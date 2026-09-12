@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 
 import json
+import time
 import urllib.error
 import urllib.request
 
@@ -53,9 +54,10 @@ class WalletEntitlement:
             "reason": f"onboarding:{request.kind}",
         }
         if request.days:
-            # Relative to now, resolved by the caller's clock rather than ours — wallet stores an
-            # absolute instant, and computing it here keeps the expiry in one place.
-            body["expires_at"] = request.metadata.get("expires_at")
+            # Wallet stores an ABSOLUTE instant, so convert the configured relative `days` here. The
+            # old code read metadata['expires_at'], which GrantService.issue() never sets, so promo
+            # grants were sent with expires_at=None and NEVER lapsed. Compute it from days.
+            body["expires_at"] = time.time() + int(request.days) * DAY_SECONDS
 
         req = urllib.request.Request(
             self._url, data=json.dumps(body).encode(), method="POST",

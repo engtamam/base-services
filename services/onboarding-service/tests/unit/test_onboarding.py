@@ -339,7 +339,8 @@ def test_a_failing_undo_produces_a_resumable_work_list():
         raise RuntimeError("boom")
 
     out = run(Saga([Step(name="grant", do=do, undo=bad_undo), Step(name="later", do=fail)]).run())
-    assert out.unfinished == [{"step": "grant", "error": "wallet unreachable"}]
+    # the work list carries the created resource's reference so resume() can retry the undo
+    assert out.unfinished == [{"step": "grant", "error": "wallet unreachable", "reference": "x"}]
 
 
 # ── declaration validation ────────────────────────────────────────────────────
