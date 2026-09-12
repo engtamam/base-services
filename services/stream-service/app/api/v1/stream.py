@@ -282,7 +282,9 @@ async def _ptz_source(request: Request, source_id: str, tenant: str) -> dict:
     except SourceNotFound:
         raise HTTPException(404, "NOT_FOUND")
     # The plaintext (unsealed) creds/host are needed to reach the camera — never returned to a client.
-    return {"onvif": src.onvif, "url": svc._sealer.unseal(src.url_sealed)}
+    # Re-validate + PIN the ONVIF host to its resolved IP at connect time (DNS-rebinding-safe), since
+    # this call carries the camera credentials (stream-r2-02).
+    return {"onvif": svc.pin_onvif(src.onvif), "url": svc._sealer.unseal(src.url_sealed)}
 
 
 @router.post("/sources/{source_id}/ptz/move", dependencies=[Depends(_MANAGE)])

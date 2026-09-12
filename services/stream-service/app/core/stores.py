@@ -70,6 +70,17 @@ class SessionStore:
         await self._s.put(_SESSIONS, sess.id, sess.to_dict())
         return sess
 
+    async def cas_save(self, sess: Session, expected_version: int) -> bool:
+        """Version-checked save: True if this write won, False if another writer changed the session
+        first. Used to make the LIVE->terminal transition atomic so exactly one concurrent _stop
+        releases the concurrency reservation (stream-r2-01)."""
+        from app.core.models import now
+        sess.updated = now()
+        if await self._s.cas(_SESSIONS, sess.id, int(expected_version), sess.to_dict()):
+            sess.version = int(expected_version) + 1
+            return True
+        return False
+
     async def delete(self, session_id: str) -> None:
         await self._s.delete(_SESSIONS, session_id)
 

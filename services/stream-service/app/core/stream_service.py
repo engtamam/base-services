@@ -112,8 +112,11 @@ class StreamService:
     async def probe_source(self, source_id: str, *, tenant: str):
         src = await self.get_source(source_id, tenant=tenant)
         url = self._sealer.unseal(src.url_sealed)
-        self._check_ssrf(url)
-        return await self._engine.probe(url, transport=src.transport)
+        # Probe the PINNED ip, not the hostname: validating the host then connecting by name reopens a
+        # DNS-rebinding window (the name can resolve to a blocked IP between the check and the connect),
+        # exactly what _check_ssrf's own contract forbids. Mirrors start_session (stream-r2-03).
+        resolved = self._check_ssrf(url)
+        return await self._engine.probe(self._pin_url(url, resolved.ip), transport=src.transport)
 
     # ── sessions ────────────────────────────────────────────────────────────────
     async def start_session(self, *, tenant: str, source_id: str, mode: str | None = None,
@@ -141,6 +144,10 @@ class StreamService:
         # when the session leaves LIVE, and a counter that drifts high (a crashed session that never
         # released) self-heals against the real live count on the next reservation.
         reserved = await self._reserve_quota(sess)   # raises QuotaExceeded before anything is created
+        # Record exactly what was reserved ON the session, so teardown releases this set even if the
+        # cap config is toggled meanwhile (stream-r2-04).
+        sess.reserved = dict(reserved)
+        placement = None
         try:
             whip = ""
             if "webrtc" in sess.outputs and self._cfg.webrtc_enabled and self._cfg.webrtc_media_base:
@@ -152,13 +159,21 @@ class StreamService:
                               record_segment_seconds=self._cfg.record_segment_seconds,
                               record_format=self._cfg.record_format)
             placement = await self._placer.start(sess.id, spec)
+            sess.placement = {"placer": placement.placer, "worker_id": placement.worker_id,
+                              "handle_id": placement.handle.id, "output_dir": spec.output_dir}
+            sess.lease_expires_at = self._lease_deadline()
+            # create() is INSIDE the rollback: if the session row fails to persist, the reservation
+            # (and the started placement) would otherwise leak — a slot held by a session that does
+            # not exist (stream-r2-05).
+            await self._sessions.create(sess)
         except BaseException:
-            await self._release_quota(reserved, sess)   # nothing durable started — free the reservation
+            if placement is not None:
+                try:
+                    await self._placer.stop(placement)
+                except Exception:   # noqa: BLE001 — best-effort teardown; the reservation MUST be freed
+                    pass
+            await self._release_quota(reserved, sess)
             raise
-        sess.placement = {"placer": placement.placer, "worker_id": placement.worker_id,
-                          "handle_id": placement.handle.id, "output_dir": spec.output_dir}
-        sess.lease_expires_at = self._lease_deadline()
-        await self._sessions.create(sess)
         await self._emit("stream.session.started", sess)
         return sess, self._playback(sess)
 
@@ -316,6 +331,17 @@ class StreamService:
     async def _stop(self, sess: Session, reason: str) -> Session:
         if sess.is_terminal:
             return sess
+        # ATOMIC claim of the LIVE->terminal transition. The old `if is_terminal` guard was a
+        # non-atomic read-modify-write: two concurrent stops (a user stop + a reaper, say) both saw
+        # LIVE and both released the reservation, so the concurrency counter under-counted and the cap
+        # could later be breached. CAS the session status; only the caller that WINS releases the
+        # quota. A loser reloads and returns without touching the counter (stream-r2-01).
+        expected = int(sess.version)
+        sess.status = STOPPED if reason != "error" else ERROR
+        sess.reason = reason
+        if not await self._sessions.cas_save(sess, expected):
+            return await self._sessions.get(sess.id) or sess
+
         # Ship the final recording segment(s) before tearing down — ffmpeg has closed them now.
         if self._shipper is not None and "record" in sess.outputs and sess.placement.get("output_dir"):
             try:
@@ -334,12 +360,10 @@ class StreamService:
                 await self._placer.stop(p)
         except Exception:   # noqa: BLE001 — a process already gone is fine; we still mark stopped
             pass
-        sess.status = STOPPED if reason != "error" else ERROR
-        sess.reason = reason
-        await self._sessions.save(sess)
-        # Release the concurrency reservation exactly once (the is_terminal guard above makes _stop
-        # idempotent, so this never double-decrements).
-        await self._release_quota(self._release_map(), sess)
+        # Release EXACTLY what this session reserved at start (stream-r2-04) — not a set recomputed
+        # from the CURRENT config, which a cap toggle would make leak or steal slots. Fall back to the
+        # config-derived map only for legacy sessions created before `reserved` was persisted.
+        await self._release_quota(sess.reserved or self._release_map(), sess)
         await self._emit("stream.session.stopped", sess)
         return sess
 
@@ -452,6 +476,21 @@ class StreamService:
                                        allow_private=self._cfg.allow_private)
         except SsrfBlocked as exc:
             raise SsrfBlocked(str(exc)) from exc
+
+    def pin_onvif(self, onvif: dict) -> dict:
+        """Re-validate the ONVIF host against the SSRF policy and PIN it to the resolved IP at every
+        PTZ/capability call. The stored host was validated at registration, but connecting by name
+        later reopens a DNS-rebinding window (the name can now resolve to an internal IP) — and the
+        connection carries the camera credentials. Returns a copy of `onvif` with host set to the
+        validated IP (stream-r2-02)."""
+        onvif = dict(onvif or {})
+        host = onvif.get("host")
+        if not host:
+            return onvif
+        port = int(onvif.get("port") or 80)
+        resolved = self._check_ssrf(f"http://{host}:{port}")
+        onvif["host"] = resolved.ip
+        return onvif
 
     @staticmethod
     def _pin_url(url: str, ip: str) -> str:

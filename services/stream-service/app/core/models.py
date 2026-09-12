@@ -113,9 +113,13 @@ class Session:
     stats: dict[str, Any] = field(default_factory=dict)
     lease_expires_at: str = ""
     reason: str = ""
+    # The concurrency slots actually reserved for THIS session at start time, so teardown releases
+    # exactly what was taken even if the cap config changed since (stream-r2-04).
+    reserved: dict[str, bool] = field(default_factory=dict)
     started_at: str = ""
     created: str = field(default_factory=now)
     updated: str = field(default_factory=now)
+    version: int = 0          # optimistic-lock counter for the atomic LIVE->terminal transition
 
     @property
     def is_live(self) -> bool:
@@ -132,13 +136,17 @@ class Session:
                 "placement": self.placement, "viewers": self.viewers,
                 "last_viewer_at": self.last_viewer_at, "stats": self.stats,
                 "lease_expires_at": self.lease_expires_at, "reason": self.reason,
-                "started_at": self.started_at, "created": self.created, "updated": self.updated}
+                "reserved": self.reserved,
+                "started_at": self.started_at, "created": self.created, "updated": self.updated,
+                "version": self.version}
 
     def public_dict(self) -> dict[str, Any]:
         d = self.to_dict()
         d.pop("placement", None)          # how we find the process is not the client's business
         d.pop("last_viewer_at", None)
         d.pop("lease_expires_at", None)
+        d.pop("reserved", None)           # internal quota bookkeeping
+        d.pop("version", None)            # internal optimistic-lock counter
         return d
 
     @classmethod
@@ -150,8 +158,10 @@ class Session:
                    placement=dict(d.get("placement") or {}), viewers=int(d.get("viewers") or 0),
                    last_viewer_at=d.get("last_viewer_at", ""), stats=dict(d.get("stats") or {}),
                    lease_expires_at=d.get("lease_expires_at", ""), reason=d.get("reason", ""),
+                   reserved=dict(d.get("reserved") or {}),
                    started_at=d.get("started_at", ""),
-                   created=d.get("created", now()), updated=d.get("updated", now()))
+                   created=d.get("created", now()), updated=d.get("updated", now()),
+                   version=int(d.get("version") or 0))
 
 
 @dataclass
