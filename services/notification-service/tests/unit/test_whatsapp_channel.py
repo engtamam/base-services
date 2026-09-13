@@ -36,7 +36,7 @@ class _P:
         self.calls = []
 
     def send(self, to, template_name, language, variables, biz_opaque_callback_data="",
-             flow_token="", flow_action_data=None):
+             flow_token="", flow_action_data=None, header_media_id=""):
         self.calls.append((to, template_name, language, tuple(variables)))
         return self._mid
 
@@ -135,3 +135,22 @@ def test_meta_send_flow_omits_action_data_when_empty(monkeypatch):
     MetaWhatsApp("tok", "pnid").send("+96650", "book", "en", [], flow_token="t1", flow_action_data={})
     btn = next(c for c in calls[-1][1]["template"]["components"] if c.get("type") == "button")
     assert "flow_action_data" not in btn["parameters"][0]["action"]
+
+
+def test_meta_send_with_header_media_id_adds_an_image_header_component(monkeypatch):
+    # A single-message (non-carousel) campaign template with an image header. Same header shape the
+    # carousel path builds per card: {"type":"header","parameters":[{"type":"image","image":{"id":…}}]}.
+    calls = _capture_meta(monkeypatch)
+    MetaWhatsApp("tok", "pnid").send("+96650", "promo", "en", ["Ahmed"], header_media_id="MEDIA-9")
+    comps = calls[-1][1]["template"]["components"]
+    hdr = next(c for c in comps if c.get("type") == "header")
+    assert hdr["parameters"][0] == {"type": "image", "image": {"id": "MEDIA-9"}}
+    # header comes first, before the body, matching Meta's component order
+    assert comps[0]["type"] == "header" and any(c["type"] == "body" for c in comps)
+
+
+def test_meta_send_without_header_media_id_has_no_header_component(monkeypatch):
+    calls = _capture_meta(monkeypatch)
+    MetaWhatsApp("tok", "pnid").send("+96650", "promo", "en", ["Ahmed"])
+    comps = calls[-1][1]["template"].get("components", [])
+    assert not any(c.get("type") == "header" for c in comps)

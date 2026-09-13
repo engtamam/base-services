@@ -86,7 +86,8 @@ class NotificationService:
                      idempotency_key: str | None = None,
                      biz_opaque_callback_data: str | None = None,
                      whatsapp_override=None, flow_token: str | None = None,
-                     flow_action_data: dict[str, Any] | None = None) -> dict:
+                     flow_action_data: dict[str, Any] | None = None,
+                     header_media_id: str | None = None) -> dict:
         # Dedupe FIRST: a retried call with the same key must not re-send (duplicate OTP
         # SMS costs money; duplicate emails erode trust). Returns the original result.
         dup = await self._dedupe_reserve(idempotency_key, tenant or "")
@@ -160,7 +161,8 @@ class NotificationService:
                 recipient=recipient, tenant=tenant or "", template_key=template_key,
                 language=locale or self._default_locale, variables=variables or {},
                 biz_opaque=biz_opaque_callback_data or "", whatsapp_override=whatsapp_override,
-                flow_token=flow_token or "", flow_action_data=flow_action_data))
+                flow_token=flow_token or "", flow_action_data=flow_action_data,
+                header_media_id=header_media_id or ""))
 
         # 2) template (with locale fallback)
         tmpl = await self._templates.get(template_key, locale or self._default_locale, self._default_locale)
@@ -194,7 +196,8 @@ class NotificationService:
     async def _deliver_whatsapp(self, *, recipient: str, tenant: str, template_key: str,
                                 language: str, variables: dict, biz_opaque: str = "",
                                 whatsapp_override=None, flow_token: str = "",
-                                flow_action_data: dict | None = None) -> dict:
+                                flow_action_data: dict | None = None,
+                                header_media_id: str = "") -> dict:
         """Resolve the APPROVED template, substitute variables in declared order, send, record.
 
         `whatsapp_override` sends from a SPECIFIC number (a branch's), bypassing the tenant's default
@@ -228,7 +231,7 @@ class NotificationService:
         try:
             ok, provider, message_id = await asyncio.to_thread(
                 wa.send, recipient, template_key, language, ordered, biz_opaque,
-                flow_token, flow_action_data)
+                flow_token, flow_action_data, header_media_id)
         except Exception as exc:  # noqa: BLE001
             return await rec(recipient, "whatsapp", template_key, "failed",
                                       error=f"{type(exc).__name__}: {exc}")

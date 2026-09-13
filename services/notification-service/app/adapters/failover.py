@@ -47,13 +47,13 @@ class FailoverWhatsApp:
 
     def send(self, to: str, template_name: str, language: str, variables: list,
              biz_opaque_callback_data: str = "", flow_token: str = "",
-             flow_action_data: dict | None = None) -> tuple[bool, str, str]:
+             flow_action_data: dict | None = None, header_media_id: str = "") -> tuple[bool, str, str]:
         """Try each provider; return (ok, winning driver, provider_message_id). The message id is the
         wamid the receipt will echo — carried up so the delivery can be matched to its receipt."""
         for p in self._providers:
             try:
                 mid = p.send(to, template_name, language, variables, biz_opaque_callback_data,
-                             flow_token, flow_action_data)
+                             flow_token, flow_action_data, header_media_id)
                 if mid:                       # non-empty == success (and carries the wamid)
                     return True, p.driver, mid
             except Exception:

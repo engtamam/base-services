@@ -28,9 +28,16 @@ class MetaWhatsApp:
 
     def send(self, to: str, template_name: str, language: str, variables: list[str],
              biz_opaque_callback_data: str = "", flow_token: str = "",
-             flow_action_data: dict | None = None) -> str:
+             flow_action_data: dict | None = None, header_media_id: str = "") -> str:
         template: dict = {"name": template_name, "language": {"code": language or "en"}}
         components: list[dict] = []
+        if header_media_id:
+            # An image header on an ordinary (single-message) template — the same shape the carousel
+            # path builds per card (core/whatsapp_carousel), here for a text+image+button campaign
+            # message that needs no carousel. Header goes first, matching Meta's component order.
+            # Declared only when supplied, exactly like flow_token below.
+            components.append({"type": "header",
+                               "parameters": [{"type": "image", "image": {"id": header_media_id}}]})
         if variables:
             components.append({
                 "type": "body",

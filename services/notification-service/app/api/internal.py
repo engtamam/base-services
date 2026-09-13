@@ -54,6 +54,11 @@ class NotifyIn(BaseModel):
     # flow_action_data seeds the first screen (omitted when empty). Both ignored for ordinary templates.
     flow_token: str | None = Field(default=None, max_length=256)
     flow_action_data: dict | None = Field(default=None)
+    # WhatsApp only: an image header on an ordinary (single-message) template — a media_id already
+    # uploaded via /internal/whatsapp/media/upload-id. Builds the same header component the carousel
+    # path builds per card, for a text+image+button campaign message that needs no carousel. Ignored
+    # for non-WhatsApp channels and for templates with no header. Declared only when supplied.
+    header_media_id: str | None = Field(default=None, max_length=256)
     # WhatsApp only: which of the tenant's NUMBERS to send from — a WABA holds many (one per branch).
     # It is the branch's phone-number-id. Resolved to a number this tenant is entitled to send from;
     # an UNKNOWN identity is REFUSED (a message from another branch's number is worse than none sent),
@@ -156,6 +161,7 @@ async def internal_notify(request: Request, body: NotifyIn) -> dict:
         user_id=body.user_id, event=body.event, idempotency_key=body.idempotency_key,
         biz_opaque_callback_data=body.biz_opaque_callback_data, whatsapp_override=whatsapp_override,
         flow_token=body.flow_token, flow_action_data=body.flow_action_data,
+        header_media_id=body.header_media_id,
     )
 
 
