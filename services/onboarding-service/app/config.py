@@ -169,6 +169,14 @@ class Settings(BaseSettings):
     ONBOARDING_SOURCE_PATHS: str = ""
     ONBOARDING_SOURCE_ANSWER_PATH: str = "satisfied"   # where the yes/no lives in the reply
     ONBOARDING_SOURCE_TIMEOUT_SECONDS: int = 5
+    # once_per: verified_identity dedup (onboarding-r2-03). To grant a welcome gift once per real
+    # person, this service must derive a per-identity uniqueness key WITHOUT ever learning the
+    # cross-tenant identity hash (which would let it correlate the same person across tenants). When
+    # a "verification" source and a claim type are both configured, the identity lookup asks
+    # verification-service for a PURPOSE-SCOPED one-way token (HMAC over its claim_ref, never the
+    # claim_ref itself). Left blank, the lookup is null: a verified_identity grant fails CLOSED
+    # (withheld) rather than issuing on an unproven claim of uniqueness.
+    ONBOARDING_IDENTITY_CLAIM_TYPE: str = ""    # e.g. "commercial_registration"
     # How a grant is actually delivered. A platform with no wallet picks trial_period or plan.
     ONBOARDING_ENTITLEMENT: str = "null"      # null | wallet | trial | plan
     ONBOARDING_WALLET_URL: str = ""

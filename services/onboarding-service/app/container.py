@@ -32,6 +32,8 @@ from app.adapters.entitlement.null import NullEntitlement
 from app.adapters.entitlement.wallet import WalletEntitlement
 from app.adapters.provisioner.http import HttpProvisioner
 from app.adapters.requirement_source.http import HttpRequirementSource
+from app.adapters.identity_lookup.http import HttpIdentityLookup
+from app.adapters.identity_lookup.null import NullIdentityLookup
 from app.adapters.audit_sink.eventbus import EventBusAuditSink
 from app.adapters.audit_sink.http import HttpAuditSink
 from app.adapters.audit_sink.null import NullAuditSink
@@ -211,6 +213,22 @@ def _build_sources(settings: Settings) -> dict:
     return out
 
 
+def _build_identity_lookup(settings: Settings):
+    """The seam that turns `once_per: verified_identity` into a real per-person key.
+
+    Wired ONLY when a "verification" source and a claim type are both configured — then the lookup
+    asks verification-service for a purpose-scoped one-way token (never the raw claim_ref, so this
+    service can never correlate a person across tenants). Otherwise a null lookup that yields "",
+    which makes a verified_identity grant fail CLOSED (withheld) rather than issue on an unproven
+    claim of uniqueness."""
+    base = settings.onboarding_sources.get("verification", "")
+    claim_type = settings.ONBOARDING_IDENTITY_CLAIM_TYPE.strip()
+    if base and claim_type:
+        return HttpIdentityLookup(base, settings.INTERNAL_SERVICE_TOKEN, claim_type,
+                                  timeout=settings.ONBOARDING_SOURCE_TIMEOUT_SECONDS)
+    return NullIdentityLookup()
+
+
 def build_container(settings: Settings) -> Container:
     """Resolve every port from config. Fail-fast on any unknown driver."""
     event_bus = _pick(_EVENTBUS, settings.EVENTBUS_DRIVER, "event_bus", settings)
@@ -226,6 +244,7 @@ def build_container(settings: Settings) -> Container:
         telemetry=_pick(_TELEMETRY, settings.TELEMETRY_DRIVER, "telemetry", settings),
         audit_sink=_build_audit_sink(settings, event_bus),
         requirement_sources=_build_sources(settings),
+        identity_lookup=_build_identity_lookup(settings),
         entitlement=(
             WalletEntitlement(settings.ONBOARDING_WALLET_URL, settings.INTERNAL_SERVICE_TOKEN)
             if settings.ONBOARDING_ENTITLEMENT == "wallet" and settings.ONBOARDING_WALLET_URL
