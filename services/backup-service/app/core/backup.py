@@ -167,15 +167,21 @@ async def import_archive(datastore, archive: dict[str, Any], *,
             "archive could not be decrypted — the backup key does not match the one it was sealed "
             "with. Restore with the key the backup was taken under.") from exc
 
-    # into_tenant remaps rows into one tenant — only safe for a SINGLE-tenant archive. A whole-service
-    # archive (body tenant empty) holds every tenant's rows; remapping them all into one comingles
-    # unrelated customers' data under a single tenant (a tenant IDOR). Refuse it.
+    # into_tenant remaps rows into one tenant — only safe when the archive holds a SINGLE source
+    # tenant. A clone from a MULTI-tenant archive would remap every tenant's rows into one, comingling
+    # unrelated customers under a single tenant (a tenant IDOR). A whole-service archive that happens
+    # to hold just one tenant's data is fine (that is the common per-tenant clone).
     src_tenant = str(body.get("tenant", "")).strip()
-    if into_tenant and not src_tenant:
-        raise BackupError(
-            "into_tenant refused: this is a whole-service archive (no single source tenant), so "
-            "remapping would comingle every tenant's rows into one. Capture a per-tenant archive to "
-            "clone a tenant.")
+    if into_tenant:
+        _src_tenants = {str(r.get("tenant", "")).strip()
+                        for _rows in (body.get("collections") or {}).values()
+                        for r in _rows if str(r.get("tenant", "")).strip()}
+        if len(_src_tenants) > 1:
+            raise BackupError(
+                "into_tenant refused: the archive spans multiple source tenants, so remapping would "
+                "comingle unrelated customers under one tenant. Clone from a single-tenant archive.")
+        if not src_tenant:
+            src_tenant = next(iter(_src_tenants), "")
 
     inserted = skipped = overwritten = remapped = 0
     for name, rows in (body.get("collections") or {}).items():

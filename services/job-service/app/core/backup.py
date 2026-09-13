@@ -90,11 +90,24 @@ async def _read_collection(datastore, name: str, tenant_scoped: bool, tenant: st
             rows, cursor = await datastore.find(name, {"tenant": tenant}, limit=_PAGE,
                                                 after=cursor, sort=("id", "asc"))
             out.extend(rows)
+            # Bound the tenant path too: an unbounded accumulate could pull a whole huge tenant into
+            # one request's memory. FAIL loudly at the cap rather than sealing a short archive.
+            if len(out) > scan_cap:
+                raise BackupError(
+                    f"collection {name!r} for tenant {tenant!r} exceeds scan_cap ({scan_cap}); "
+                    f"refusing to seal a truncated backup")
             if not cursor:
                 return out
     # sweeper: a whole-collection read IS the backup operation, not a shortcut around an index.
-    # Bounded by scan_cap so a runaway collection fails the backup rather than exhausting memory.
-    return await datastore.scan_all(name, scan_cap)
+    # Read ONE past the cap so truncation is DETECTED: scan_all silently returns the first scan_cap
+    # rows ordered by key, so a runaway collection would otherwise seal a knowingly-incomplete archive
+    # that still passes checksum/verify/drill — the exact lie this phase exists to kill.
+    rows = await datastore.scan_all(name, scan_cap + 1)
+    if len(rows) > scan_cap:
+        raise BackupError(
+            f"collection {name!r} exceeds scan_cap ({scan_cap}); refusing to seal a truncated "
+            f"backup — raise BACKUP_SCAN_CAP or make the collection tenant-scoped")
+    return rows
 
 
 async def export(datastore, declaration: dict[str, Any], *, service: str, version: str,
@@ -161,7 +174,8 @@ def verify(archive: dict[str, Any]) -> None:
 
 async def import_archive(datastore, archive: dict[str, Any], *,
                          unseal: Callable[[str], str], overwrite: bool = False,
-                         into_tenant: str = "", declaration: dict[str, Any] | None = None) -> dict[str, Any]:
+                         into_tenant: str = "", declaration: dict[str, Any] | None = None,
+                         prune: bool = False, scan_cap: int = 0) -> dict[str, Any]:
     """Restore an archive, idempotently and without clobbering newer rows.
 
     `unseal` reverses `seal`; if the backup key does not match the one the archive was sealed with,
@@ -177,6 +191,13 @@ async def import_archive(datastore, archive: dict[str, Any], *,
     left as-is, because it is not one tenant's to move. The key is rebuilt from the REMAPPED row, so
     a tenant-keyed collection lands under the destination tenant's key, and no-clobber still protects
     whatever already exists there. Empty means restore in place.
+
+    `prune` makes the restore AUTHORITATIVE: after applying the archive, every key present in a
+    restored collection but ABSENT from the archive is deleted, so the target ends up EXACTLY as the
+    archive describes. This is what makes `undo` a true rollback — overwrite alone puts back changed
+    rows but leaves the rows a wrong restore INSERTED. Only used with a whole-service snapshot
+    (into_tenant empty); requires `scan_cap` to bound the current-key read and refuses to prune a
+    collection whose current size exceeds it rather than delete on a truncated view.
     """
     verify(archive)
     templates = _key_templates(declaration)
@@ -189,11 +210,34 @@ async def import_archive(datastore, archive: dict[str, Any], *,
             "archive could not be decrypted — the backup key does not match the one it was sealed "
             "with. Restore with the key the backup was taken under.") from exc
 
+    # into_tenant remaps rows into one tenant — only safe when the archive holds a SINGLE source
+    # tenant. A clone from a MULTI-tenant archive would remap every tenant's rows into one, comingling
+    # unrelated customers under a single tenant (a tenant IDOR). A whole-service archive that happens
+    # to hold just one tenant's data is fine (that is the common per-tenant clone).
+    src_tenant = str(body.get("tenant", "")).strip()
+    if into_tenant:
+        _src_tenants = {str(r.get("tenant", "")).strip()
+                        for _rows in (body.get("collections") or {}).values()
+                        for r in _rows if str(r.get("tenant", "")).strip()}
+        if len(_src_tenants) > 1:
+            raise BackupError(
+                "into_tenant refused: the archive spans multiple source tenants, so remapping would "
+                "comingle unrelated customers under one tenant. Clone from a single-tenant archive.")
+        if not src_tenant:
+            src_tenant = next(iter(_src_tenants), "")
+
     inserted = skipped = overwritten = remapped = 0
     for name, rows in (body.get("collections") or {}).items():
         template = templates.get(name, _DEFAULT_KEY)
         for row in rows:
             if into_tenant and "tenant" in row:
+                # Defence in depth: every remapped row must belong to the declared source tenant, so
+                # a mislabelled archive cannot smuggle another tenant's row into the clone.
+                row_tenant = str(row.get("tenant", "")).strip()
+                if row_tenant and row_tenant != src_tenant:
+                    raise BackupError(
+                        f"{name}: row tenant {row_tenant!r} does not match the archive's source "
+                        f"tenant {src_tenant!r}; refusing into_tenant to avoid comingling")
                 # Reassign only rows that were tenant-partitioned; the key is rebuilt from the
                 # remapped row below, so a tenant-keyed collection lands under the new tenant.
                 row = {**row, "tenant": into_tenant}
@@ -213,9 +257,37 @@ async def import_archive(datastore, archive: dict[str, Any], *,
                 # was written after the backup, and re-running a half-finished restore must be a
                 # no-op on what already landed.
                 skipped += 1
+
+    pruned = 0
+    if prune:
+        # AUTHORITATIVE restore (undo): delete every key present now but ABSENT from the archive, so
+        # the target ends up EXACTLY as the archive describes — this removes the rows a wrong restore
+        # inserted. Refuse on a clone (into_tenant): a clone is additive, never authoritative.
+        if into_tenant:
+            raise BackupError("prune is not allowed with into_tenant: a clone must not delete the "
+                              "destination tenant's rows")
+        cap = int(scan_cap)
+        if cap <= 0:
+            raise BackupError("prune requires a positive scan_cap to bound the current-key read")
+        for name, rows in (body.get("collections") or {}).items():
+            template = templates.get(name, _DEFAULT_KEY)
+            archived = {_row_key(template, name, r) for r in rows}
+            # sweeper: an authoritative restore reconciles the WHOLE collection against the
+            # archive to find rows to delete — a full read is the operation, not a request scan.
+            current = await datastore.scan_all(name, cap + 1)
+            if len(current) > cap:
+                raise BackupError(
+                    f"prune refused for {name!r}: current size exceeds scan_cap ({cap}); a partial "
+                    f"prune cannot guarantee an authoritative rollback")
+            for existing in current:
+                ekey = _row_key(template, name, existing)
+                if ekey not in archived:
+                    await datastore.delete(name, ekey)
+                    pruned += 1
+
     return {"service": body.get("service"), "tenant": body.get("tenant", ""),
             "into_tenant": into_tenant, "inserted": inserted, "overwritten": overwritten,
-            "skipped": skipped, "remapped": remapped}
+            "skipped": skipped, "remapped": remapped, "pruned": pruned}
 
 def _canon(row: dict[str, Any]) -> str:
     """A dict's order-independent fingerprint, so a re-serialised row compares equal to its origin."""

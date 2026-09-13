@@ -110,6 +110,9 @@ class BackupImportIn(BaseModel):
     # Empty = restore in place. A value REMAPS the restore into that tenant (restore-as-clone):
     # only rows that carry a tenant are reassigned; a global dataset is left alone.
     into_tenant: str = ""
+    # AUTHORITATIVE undo: also delete rows present now but absent from the archive
+    # (backup-r2-01). Set only by the undo path; never combined with into_tenant.
+    prune: bool = False
 
 
 def _sealer(settings: Settings):
@@ -175,7 +178,8 @@ async def backup_import(request: Request, body: BackupImportIn,
     try:
         return await _backup.import_archive(
             request.app.state.container.datastore, body.archive,
-            unseal=unseal, overwrite=body.overwrite, into_tenant=body.into_tenant)
+            unseal=unseal, overwrite=body.overwrite, into_tenant=body.into_tenant,
+            prune=body.prune, scan_cap=settings.BACKUP_MAX_ROWS_PER_COLLECTION)
     except _backup.BackupError as exc:
         # A bad archive is the caller's problem, not a 500: the checksum failed, the key did not
         # match, or a row had no identity. Say which, so an operator can act.

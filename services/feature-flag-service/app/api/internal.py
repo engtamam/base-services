@@ -170,6 +170,9 @@ class BackupImportIn(BaseModel):
     archive: dict
     overwrite: bool = False
     into_tenant: str = ""
+    # AUTHORITATIVE undo: also delete rows present now but absent from the archive
+    # (backup-r2-01). Set only by the undo path; never combined with into_tenant.
+    prune: bool = False
 
 
 @router.post("/backup/export", dependencies=[Depends(require_internal_token)])
@@ -207,6 +210,7 @@ async def backup_import(request: Request, body: BackupImportIn,
         return await _backup.import_archive(
             request.app.state.container.datastore, body.archive,
             unseal=unseal, overwrite=body.overwrite, into_tenant=body.into_tenant,
-            declaration=BACKUP)
+            declaration=BACKUP, prune=body.prune,
+            scan_cap=settings.BACKUP_MAX_ROWS_PER_COLLECTION)
     except _backup.BackupError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc

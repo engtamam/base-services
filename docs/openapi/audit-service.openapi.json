@@ -85,6 +85,11 @@
             "default": false,
             "title": "Overwrite",
             "type": "boolean"
+          },
+          "prune": {
+            "default": false,
+            "title": "Prune",
+            "type": "boolean"
           }
         },
         "required": [
