@@ -144,6 +144,41 @@ def test_submit_without_a_footer_sends_no_footer_component(monkeypatch):
     assert all(c["type"] != "FOOTER" for c in sent["payload"]["components"])
 
 
+def test_submit_builds_a_flat_media_header_and_button(monkeypatch):
+    # A FLAT (non-carousel) template: a top-level media HEADER + a single QUICK_REPLY button, in
+    # Meta's component order HEADER, BODY, BUTTONS. Same shapes a carousel card uses, at top level.
+    sent = _capture(monkeypatch)
+    _mgr().submit(name="promo", language="en", category="MARKETING", body="Big sale {{1}}",
+                  variables=["pct"], examples=["20%"],
+                  header={"format": "IMAGE", "example_handle": "H1"},
+                  button={"type": "QUICK_REPLY", "text": "Shop now"})
+    comps = sent["payload"]["components"]
+    hdr = next(c for c in comps if c["type"] == "HEADER")
+    assert hdr == {"type": "HEADER", "format": "IMAGE", "example": {"header_handle": ["H1"]}}
+    btns = next(c for c in comps if c["type"] == "BUTTONS")
+    assert btns["buttons"] == [{"type": "QUICK_REPLY", "text": "Shop now"}]
+    types = [c["type"] for c in comps]
+    assert types.index("HEADER") < types.index("BODY") < types.index("BUTTONS")
+
+
+def test_submit_builds_a_flat_url_button(monkeypatch):
+    sent = _capture(monkeypatch)
+    _mgr().submit(name="promo", language="en", category="MARKETING", body="Hi", variables=[],
+                  examples=[], button={"type": "URL", "text": "Open", "url": "https://x/{{1}}",
+                                       "url_example": ["https://x/a"]})
+    btn = next(c for c in sent["payload"]["components"] if c["type"] == "BUTTONS")["buttons"][0]
+    assert btn == {"type": "URL", "text": "Open", "url": "https://x/{{1}}",
+                   "example": ["https://x/a"]}
+
+
+def test_submit_without_header_or_button_sends_neither(monkeypatch):
+    sent = _capture(monkeypatch)
+    _mgr().submit(name="plain", language="en", category="UTILITY", body="Hi {{1}}",
+                  variables=["n"], examples=["Sam"])
+    types = [c["type"] for c in sent["payload"]["components"]]
+    assert "HEADER" not in types and "BUTTONS" not in types
+
+
 def test_paused_and_disabled_are_distinct_statuses_not_pending(monkeypatch):
     # The single failure a messaging product most needs to surface: a live template Meta has muted.
     for meta_status, ours in (("PAUSED", "paused"), ("DISABLED", "disabled"),

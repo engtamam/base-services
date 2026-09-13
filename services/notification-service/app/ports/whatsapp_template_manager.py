@@ -78,7 +78,9 @@ class WhatsAppTemplateManager(Protocol):
                variables: list[str], examples: list[str],
                flow_button: dict[str, Any] | None = None,
                carousel: dict[str, Any] | None = None,
-               footer: str = "") -> SubmitResult: ...
+               footer: str = "",
+               header: dict[str, Any] | None = None,
+               button: dict[str, Any] | None = None) -> SubmitResult: ...
 
     def status(self, *, provider_template_id: str, name: str, language: str) -> StatusResult: ...
 

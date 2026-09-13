@@ -69,6 +69,14 @@ class WhatsAppTemplate:
     # variables and caps it at 60 chars (verified against Meta's template-components docs, Sep 2026).
     # Empty for a template with no footer.
     footer: str = ""
+    # Optional FLAT (non-carousel) media HEADER — one card's worth of "image/video + text", for a
+    # template that always attaches a SINGLE service (a carousel needs 2+ cards). Empty for none.
+    # Shape: {"format": "IMAGE"|"VIDEO", "example_handle": "<resumable-upload handle>"}.
+    header: dict[str, Any] = field(default_factory=dict)
+    # Optional FLAT single button (QUICK_REPLY | URL) on a non-carousel template. Empty for none.
+    # Shape: {"type": "QUICK_REPLY"|"URL", "text", "url"?, "url_example"?}. Mutually exclusive with
+    # flow_button (a template has at most one BUTTONS component) and with carousel.
+    button: dict[str, Any] = field(default_factory=dict)
     created: str = field(default_factory=_now)
     updated: str = field(default_factory=_now)
 
@@ -77,6 +85,7 @@ class WhatsAppTemplate:
                 "category": self.category, "body": self.body, "variables": self.variables,
                 "examples": self.examples, "flow_button": self.flow_button,
                 "carousel": self.carousel, "footer": self.footer,
+                "header": self.header, "button": self.button,
                 "status": self.status, "provider_template_id": self.provider_template_id,
                 "rejection_reason": self.rejection_reason, "created": self.created,
                 "updated": self.updated}
@@ -90,6 +99,8 @@ class WhatsAppTemplate:
                    flow_button=dict(d.get("flow_button") or {}),
                    carousel=dict(d.get("carousel") or {}),
                    footer=str(d.get("footer") or ""),
+                   header=dict(d.get("header") or {}),
+                   button=dict(d.get("button") or {}),
                    status=d.get("status", PENDING),
                    provider_template_id=d.get("provider_template_id", ""),
                    rejection_reason=d.get("rejection_reason", ""),
@@ -115,6 +126,55 @@ def _validate_footer(footer: str) -> str:
     if len(f) > _FOOTER_MAX:
         raise TemplateError(f"a footer is at most {_FOOTER_MAX} characters ({len(f)} given)")
     return f
+
+
+# A FLAT template's media header + single button (verified against Meta's template-components docs,
+# Sep 2026): header format IMAGE/VIDEO with a resumable-upload handle; a button label is 25 chars max
+# and a URL 2000. Enforced here so a bad component is a clean 422, never a burned template name.
+_FLAT_HEADER_FORMATS = ("IMAGE", "VIDEO")
+_FLAT_BUTTON_TYPES = ("QUICK_REPLY", "URL")
+_BUTTON_TEXT_MAX = 25
+_BUTTON_URL_MAX = 2000
+
+
+def _validate_flat_header(header: dict[str, Any]) -> dict[str, Any]:
+    """Normalise + validate a flat media header, or raise TemplateError. Returns {} for none."""
+    h = dict(header or {})
+    if not h:
+        return {}
+    fmt = str(h.get("format", "")).strip().upper()
+    if fmt not in _FLAT_HEADER_FORMATS:
+        raise TemplateError(f"a header format must be one of {_FLAT_HEADER_FORMATS}, got {h.get('format')!r}")
+    handle = str(h.get("example_handle", "")).strip()
+    if not handle:
+        raise TemplateError("a media header needs an example_handle (a resumable-upload media handle)")
+    return {"format": fmt, "example_handle": handle}
+
+
+def _validate_flat_button(button: dict[str, Any]) -> dict[str, Any]:
+    """Normalise + validate a flat single button, or raise TemplateError. Returns {} for none."""
+    b = dict(button or {})
+    if not b:
+        return {}
+    bt = str(b.get("type", "")).strip().upper()
+    if bt not in _FLAT_BUTTON_TYPES:
+        raise TemplateError(f"a button type must be one of {_FLAT_BUTTON_TYPES}, got {b.get('type')!r}")
+    text = str(b.get("text", "")).strip()
+    if not text:
+        raise TemplateError("a button needs text")
+    if len(text) > _BUTTON_TEXT_MAX:
+        raise TemplateError(f"a button label is at most {_BUTTON_TEXT_MAX} characters ({len(text)} given)")
+    out: dict[str, Any] = {"type": bt, "text": text}
+    if bt == "URL":
+        url = str(b.get("url", "")).strip()
+        if not url:
+            raise TemplateError("a URL button needs a url")
+        if len(url) > _BUTTON_URL_MAX:
+            raise TemplateError(f"a button url is at most {_BUTTON_URL_MAX} characters ({len(url)} given)")
+        out["url"] = url
+        if b.get("url_example"):
+            out["url_example"] = [str(e) for e in b["url_example"]]
+    return out
 
 
 _CAROUSEL_MIN, _CAROUSEL_MAX = 2, 10
@@ -220,7 +280,9 @@ class WhatsAppTemplateRegistry:
                        examples: list[str] | None = None,
                        flow_button: dict[str, Any] | None = None,
                        carousel: dict[str, Any] | None = None,
-                       footer: str = "") -> WhatsAppTemplate:
+                       footer: str = "",
+                       header: dict[str, Any] | None = None,
+                       button: dict[str, Any] | None = None) -> WhatsAppTemplate:
         if not tenant or not name or not language:
             raise TemplateError("tenant, name and language are required")
         cat = (category or "").strip().upper()
@@ -233,6 +295,17 @@ class WhatsAppTemplateRegistry:
             raise TemplateError("a flow_button needs flow_id or flow_name")
         car = _validate_carousel(dict(carousel or {}))
         ftr = _validate_footer(footer)
+        hdr = _validate_flat_header(dict(header or {}))
+        btn = _validate_flat_button(dict(button or {}))
+        # A template has at most one BUTTONS component and one HEADER: a carousel owns its own cards'
+        # headers+buttons, so it cannot combine with a flat header/button/flow_button; and a flat
+        # button and a flow_button would be two BUTTONS components. Refuse the impossible combos here
+        # rather than let Meta reject and burn the (unreusable) template name.
+        if car and (hdr or btn or fb):
+            raise TemplateError("a carousel cannot be combined with a header, button or flow_button")
+        if btn and fb:
+            raise TemplateError("a template can carry a flow_button OR a button, not both "
+                                "(a template has at most one BUTTONS component)")
         existing = await self._store.get(tenant, name, language)
         # register() is an upsert, and it is the natural home of "make sure this tenant has the
         # library" — run over the whole set whenever one template is added. So it must NOT move an
@@ -243,12 +316,14 @@ class WhatsAppTemplateRegistry:
         unchanged = (existing is not None and existing.body == body and existing.variables == vs
                      and existing.examples == exs and existing.category == cat
                      and existing.flow_button == fb and existing.carousel == car
-                     and existing.footer == ftr)
+                     and existing.footer == ftr and existing.header == hdr
+                     and existing.button == btn)
         status = existing.status if unchanged else PENDING
         t = WhatsAppTemplate(
             id=existing.id if existing else uuid.uuid4().hex,
             tenant=tenant, name=name, language=language, category=cat, body=body, variables=vs,
-            examples=exs, flow_button=fb, carousel=car, footer=ftr, status=status,
+            examples=exs, flow_button=fb, carousel=car, footer=ftr, header=hdr, button=btn,
+            status=status,
             provider_template_id=existing.provider_template_id if existing else "",
             rejection_reason=existing.rejection_reason if (unchanged and existing) else "",
             created=existing.created if existing else _now())
@@ -270,7 +345,7 @@ class WhatsAppTemplateRegistry:
             raise TemplateError("no such template to submit")
         res = manager.submit(name=t.name, language=t.language, category=t.category, body=t.body,
                              variables=t.variables, examples=t.examples, flow_button=t.flow_button,
-                             carousel=t.carousel, footer=t.footer)
+                             carousel=t.carousel, footer=t.footer, header=t.header, button=t.button)
         if res.provider_template_id:
             t.provider_template_id = res.provider_template_id
         t.status = res.status or PENDING

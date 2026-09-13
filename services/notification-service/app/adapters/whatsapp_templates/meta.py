@@ -143,6 +143,37 @@ def _carousel_component(carousel: dict | None) -> dict | None:
     return {"type": "CAROUSEL", "cards": out_cards}
 
 
+def _flat_header_component(header: dict | None) -> dict | None:
+    """A top-level media HEADER (IMAGE/VIDEO) on a FLAT (non-carousel) template, or None when absent.
+
+    Verified against Meta's template-components docs (Sep 2026): the SAME shape a carousel card's own
+    header uses, just at the top level instead of inside `cards` —
+    {"type":"HEADER","format":"IMAGE"|"VIDEO","example":{"header_handle":[<handle>]}}. The registry
+    already validated the format + example handle before we get here."""
+    h = dict(header or {})
+    if not h:
+        return None
+    return {"type": "HEADER", "format": str(h.get("format", "")).upper(),
+            "example": {"header_handle": [str(h.get("example_handle", ""))]}}
+
+
+def _flat_button_component(button: dict | None) -> dict | None:
+    """A top-level BUTTONS component carrying ONE quick-reply or URL button on a FLAT template, or
+    None when absent. Same button shape `_carousel_component` builds per card, at the top level.
+    Verified against Meta's docs (Sep 2026): QUICK_REPLY {"type","text"}; URL {"type","text","url",
+    "example":[…]}. The registry already validated type/text/url + limits before we get here."""
+    b = dict(button or {})
+    if not b:
+        return None
+    bt = str(b.get("type", "")).upper()
+    btn: dict = {"type": bt, "text": str(b.get("text", ""))}
+    if bt == "URL":
+        btn["url"] = str(b.get("url", ""))
+        if b.get("url_example"):
+            btn["example"] = [str(e) for e in b["url_example"]]
+    return {"type": "BUTTONS", "buttons": [btn]}
+
+
 def _footer_component(footer: str) -> dict | None:
     """Meta's FOOTER component, or None when there is no footer.
 
@@ -166,8 +197,13 @@ class MetaTemplateManager:
         self._headers = bearer(access_token)
 
     def submit(self, *, name, language, category, body, variables, examples=None,
-               flow_button=None, carousel=None, footer="") -> SubmitResult:
+               flow_button=None, carousel=None, footer="", header=None,
+               button=None) -> SubmitResult:
         components = []
+        # HEADER leads, matching Meta's required component order (HEADER, BODY, FOOTER, BUTTONS).
+        header_comp = _flat_header_component(header)
+        if header_comp:
+            components.append(header_comp)
         if body:
             comp = {"type": "BODY", "text": body}
             ex = _body_example(variables, examples)
@@ -180,9 +216,14 @@ class MetaTemplateManager:
         footer_comp = _footer_component(footer)
         if footer_comp:
             components.append(footer_comp)
+        # BUTTONS: a template has at most ONE BUTTONS component, so a flow button and a flat button are
+        # mutually exclusive (the registry enforces this) — whichever is set becomes that component.
         flow_comp = _flow_button_component(flow_button)
         if flow_comp:
             components.append(flow_comp)
+        button_comp = _flat_button_component(button)
+        if button_comp:
+            components.append(button_comp)
         carousel_comp = _carousel_component(carousel)
         if carousel_comp:
             components.append(carousel_comp)

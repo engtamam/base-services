@@ -144,6 +144,75 @@ def test_changing_the_footer_resets_an_approved_template_to_pending():
     assert changed.status == PENDING               # different footer → re-review
 
 
+def test_register_stores_a_flat_header_and_button():
+    reg = _reg()
+    t = run(reg.register(tenant="acme", name="promo", language="en", category="MARKETING",
+                         body="Sale", header={"format": "image", "example_handle": "H1"},
+                         button={"type": "quick_reply", "text": "Shop"}))
+    assert t.header == {"format": "IMAGE", "example_handle": "H1"}     # normalised (upper) + stored
+    assert t.button == {"type": "QUICK_REPLY", "text": "Shop"}
+    got = run(reg.get("acme", "promo", "en"))
+    assert got.header == t.header and got.button == t.button           # round-trips
+
+
+def test_flat_header_needs_a_valid_format_and_handle():
+    reg = _reg()
+    with pytest.raises(TemplateError):
+        run(reg.register(tenant="acme", name="a", language="en", category="MARKETING",
+                         header={"format": "AUDIO", "example_handle": "h"}))
+    with pytest.raises(TemplateError):     # missing handle
+        run(reg.register(tenant="acme", name="b", language="en", category="MARKETING",
+                         header={"format": "IMAGE"}))
+
+
+def test_flat_button_validates_type_text_and_url():
+    reg = _reg()
+    with pytest.raises(TemplateError):     # bad type
+        run(reg.register(tenant="acme", name="a", language="en", category="MARKETING",
+                         button={"type": "FLOW", "text": "x"}))
+    with pytest.raises(TemplateError):     # label over 25
+        run(reg.register(tenant="acme", name="b", language="en", category="MARKETING",
+                         button={"type": "QUICK_REPLY", "text": "z" * 26}))
+    with pytest.raises(TemplateError):     # URL button with no url
+        run(reg.register(tenant="acme", name="c", language="en", category="MARKETING",
+                         button={"type": "URL", "text": "Open"}))
+
+
+def test_flat_components_are_mutually_exclusive_with_carousel_and_flow_button():
+    reg = _reg()
+    car = {"cards": [
+        {"header_format": "IMAGE", "header_example_handle": "h0",
+         "buttons": [{"type": "QUICK_REPLY", "text": "Book"}]},
+        {"header_format": "IMAGE", "header_example_handle": "h1",
+         "buttons": [{"type": "QUICK_REPLY", "text": "Book"}]}]}
+    with pytest.raises(TemplateError):     # carousel + flat header
+        run(reg.register(tenant="acme", name="a", language="en", category="MARKETING",
+                         carousel=car, header={"format": "IMAGE", "example_handle": "h"}))
+    with pytest.raises(TemplateError):     # flow_button + flat button = two BUTTONS
+        run(reg.register(tenant="acme", name="b", language="en", category="MARKETING",
+                         flow_button={"flow_id": "1", "text": "Book"},
+                         button={"type": "QUICK_REPLY", "text": "Shop"}))
+    # header alongside a flow_button is allowed (HEADER + one BUTTONS — distinct components)
+    t = run(reg.register(tenant="acme", name="c", language="en", category="MARKETING",
+                         header={"format": "IMAGE", "example_handle": "h"},
+                         flow_button={"flow_id": "1", "text": "Book"}))
+    assert t.header and t.flow_button
+
+
+def test_changing_a_flat_header_resets_an_approved_template_to_pending():
+    st = WhatsAppTemplateStore(MemoryDataStore())
+    reg = WhatsAppTemplateRegistry(st)
+    run(reg.register(tenant="acme", name="promo", language="en", category="MARKETING",
+                     body="Sale", header={"format": "IMAGE", "example_handle": "H1"}))
+    t = run(reg.get("acme", "promo", "en")); t.status = APPROVED; run(st.save(t))
+    same = run(reg.register(tenant="acme", name="promo", language="en", category="MARKETING",
+                            body="Sale", header={"format": "IMAGE", "example_handle": "H1"}))
+    assert same.status == APPROVED         # identical → no-op
+    changed = run(reg.register(tenant="acme", name="promo", language="en", category="MARKETING",
+                               body="Sale", header={"format": "IMAGE", "example_handle": "H2"}))
+    assert changed.status == PENDING       # new handle → re-review
+
+
 def _carousel(n=2, header="IMAGE", body=None):
     card = lambda i: {   # noqa: E731 — terse test factory
         "header_format": header, "header_example_handle": f"h{i}",
