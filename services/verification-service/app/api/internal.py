@@ -11,10 +11,14 @@ from pydantic import BaseModel
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
+import hashlib
+import hmac
+
 from app.backup_manifest import BACKUP
 from app.core import backup as _backup
 from app.config import Settings, get_settings
 from app.core.erasure import VerificationErasure
+from app.core.models import VERIFIED
 from app.core.stores import IdentityRegistry, VerificationStore
 from app.manifest import build_manifest
 from app.core.pii import subject_ref
@@ -114,6 +118,30 @@ async def identity_seen(request: Request, claim_ref: str) -> dict:
     """
     registry = IdentityRegistry(request.app.state.container.datastore)
     return {"seen": await registry.seen(claim_ref)}
+
+
+@router.get("/verification/identity-grant-token",
+            dependencies=[Depends(require_internal_token)])
+async def identity_grant_token(request: Request, tenant: str, subject: str,
+                               claim_type: str) -> dict:
+    """A PURPOSE-SCOPED, one-way uniqueness token for onboarding's once-per-verified-identity grants.
+
+    onboarding needs a stable, deletion-surviving, cross-tenant key so a welcome grant issues once per
+    real person — but it must NEVER receive the claim_ref itself, because that stable hash would let it
+    correlate the same person across tenants (the exact linkage the hashing hides). So this returns
+    HMAC(PII_SALT, "onboarding-grant|<claim_ref>") instead: unique per verified identity (dedup works),
+    stable (same person → same token, survives deletion like the claim_ref), but one-way and bound to
+    THIS purpose — it cannot be reversed to the claim_ref or matched against the claim_ref used
+    anywhere else. Empty token when the subject has no VERIFIED verification of this identity claim,
+    so a grant gated on it fails CLOSED (withheld, never issued on an unverified claim)."""
+    rec = await VerificationStore(request.app.state.container.datastore).latest(
+        tenant, subject, claim_type)
+    if rec is None or rec.verdict != VERIFIED or not rec.claim_ref:
+        return {"token": ""}
+    salt = get_settings().PII_SALT
+    token = hmac.new(salt.encode("utf-8"), f"onboarding-grant|{rec.claim_ref}".encode("utf-8"),
+                     hashlib.sha256).hexdigest()
+    return {"token": token}
 
 
 class ResolveIn(BaseModel):
