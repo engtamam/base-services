@@ -297,6 +297,65 @@ def test_customer_identity_from_init_seed_reaches_options_and_reserve():
     assert bk.calls[0]["customer"] == "cust_42"                 # and reserve() was told who it is for
 
 
+# ── INIT pre-seed of the first selection step ────────────────────────────────
+def test_init_pre_seeds_the_first_selection_step_and_skips_it():
+    # A campaign that already named the service seeds it at INIT; the customer lands on the SECOND
+    # dimension (staff), not the service picker they were just told about.
+    st = MemoryDataStore()
+    avail, bk = _Avail(), _Booking()
+    e = BookingEngine(definitions=_Defs(_defn()), availability=avail, booking=bk,
+                      sessions=SessionStore(st, clock=_Clock()))
+    r = run(e.handle({"action": "INIT", "flow_token": TOK,
+                      "data": {"customer": "cust_42", "service": "cut"}}, tenant="t1"))
+    assert r["screen"] == SELECT and r["data"]["dimension"] == "staff"   # skipped straight to staff
+    # the seeded service flows to the provider (staff options depend on it) and into reserve
+    assert avail.seen_customer[0] == "cust_42"
+    _submit(e, SELECT, {"selection": "dr_cut"})
+    _submit(e, CALENDAR, {"date": "2026-09-09"})
+    _submit(e, TIME, {"time": "2026-09-09T10:00"})
+    _submit(e, CONFIRM, {})
+    assert bk.calls[0]["selection"]["service"] == "cut"
+
+
+def test_back_after_a_seed_returns_to_the_seeded_first_step():
+    # BACK from staff must land on the service picker (step 0) and clear the seeded choice, so the
+    # customer can still change what was pre-seeded — re-pick stays fully functional.
+    e = _engine()
+    run(e.handle({"action": "INIT", "flow_token": TOK, "data": {"service": "cut"}}, tenant="t1"))
+    back = run(e.handle({"action": "BACK", "flow_token": TOK}, tenant="t1"))
+    assert back["screen"] == SELECT and back["data"]["dimension"] == "service"
+    r = _submit(e, SELECT, {"selection": "color"})     # change it
+    assert r["screen"] == SELECT and r["data"]["dimension"] == "staff"
+
+
+def test_init_without_a_seed_is_identical_to_today():
+    e = _engine()
+    r = _init(e)
+    assert r["screen"] == SELECT and r["data"]["dimension"] == "service"   # first step still rendered
+
+
+def test_init_ignores_a_seed_for_a_non_first_dimension():
+    # Only the FIRST step is seedable. A seed for "staff" (step 1) is ignored; the service picker shows.
+    e = _engine()
+    r = run(e.handle({"action": "INIT", "flow_token": TOK, "data": {"staff": "dr_x"}}, tenant="t1"))
+    assert r["screen"] == SELECT and r["data"]["dimension"] == "service"
+
+
+def test_init_ignores_a_seed_when_the_first_step_is_multi():
+    defn = FlowDefinition(steps=(
+        {"dimension": "service", "multi": True}, {"dimension": "date"}, {"dimension": "time"},
+        {"dimension": "confirm"}))
+    e = _engine(defn=defn)
+    r = run(e.handle({"action": "INIT", "flow_token": TOK, "data": {"service": "cut"}}, tenant="t1"))
+    assert r["screen"] == SELECT_MULTI and r["data"]["dimension"] == "service"   # not seeded
+
+
+def test_init_blank_seed_is_no_seed():
+    e = _engine()
+    r = run(e.handle({"action": "INIT", "flow_token": TOK, "data": {"service": "  "}}, tenant="t1"))
+    assert r["screen"] == SELECT and r["data"]["dimension"] == "service"
+
+
 # ── BACK ─────────────────────────────────────────────────────────────────────
 def test_back_returns_to_the_prior_step_and_clears_its_choice():
     e = _engine()

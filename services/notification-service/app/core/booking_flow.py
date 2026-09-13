@@ -281,6 +281,22 @@ class BookingEngine:
             # every later call (parity with the reschedule/loyalty flows) — a real per-customer backend
             # needs the identity to scope options and to attribute the reservation.
             state = {"chosen": {}, "step": 0, "customer": str(data.get("customer") or "")}
+            # Optional PRE-SEED of the first step: a campaign/reminder that already named the service
+            # (or staff/branch) can pass data={"customer":.., "<dimension>":"<id>"} so the customer is
+            # not asked to re-pick what the message just promised. The seed is under the dimension's own
+            # name (like "customer"), placed straight into `chosen`, and `step` advanced past it — the
+            # same effect the _render skip-loop has when a dimension doesn't apply. Trusted: the sender
+            # controls both the message and the seed. STRICTLY the first step, and only a single-select
+            # selection dimension (never date/time/confirm, a text step, or a multi step) — anything
+            # else means NO seed and behaviour is 100% identical to today (BACK/re-pick untouched).
+            first = defn.steps[0]
+            fdim = first.get("dimension", "")
+            if self._is_selection(fdim) and not _is_text_step(first) and not first.get("multi"):
+                seed = data.get(fdim)
+                seed = str(seed).strip() if seed not in (None, "") else ""
+                if seed:
+                    state["chosen"][fdim] = seed
+                    state["step"] = 1
             await self._sessions.save(tenant, token, state)
             return await self._render(defn, tenant, token, state)
 
