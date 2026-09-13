@@ -195,6 +195,11 @@ class InteractiveNotifyIn(BaseModel):
     footer: str = Field(default="", max_length=1024)
     # button messages:
     buttons: list[_ButtonIn] = Field(default_factory=list)
+    # Optional MEDIA header on a button message (an alternative to the text `header`): a photo/video
+    # above "text + one quick-reply button", outside a template, in the 24h window. media_id from a
+    # prior /internal/whatsapp/media/upload-id. Mutually exclusive with a text header.
+    header_media_id: str = Field(default="", max_length=256)
+    header_media_type: Literal["image", "video", "document"] = "image"
     # list messages:
     button_text: str = Field(default="", max_length=256)
     sections: list[_SectionIn] = Field(default_factory=list)
@@ -237,8 +242,11 @@ async def internal_notify_interactive(request: Request, body: InteractiveNotifyI
         return refusal
     try:
         if body.type == "button":
+            header_media = ({"type": body.header_media_type, "media_id": body.header_media_id}
+                            if body.header_media_id else None)
             interactive = build_button(body=body.body, header=body.header, footer=body.footer,
-                                       buttons=[(b.id, b.title) for b in body.buttons])
+                                       buttons=[(b.id, b.title) for b in body.buttons],
+                                       header_media=header_media)
         elif body.type == "flow":
             interactive = build_flow(
                 body=body.body, header=body.header, footer=body.footer,

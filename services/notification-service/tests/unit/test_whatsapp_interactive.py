@@ -38,6 +38,37 @@ def test_button_shape_matches_the_cloud_api():
         {"type": "reply", "reply": {"id": "cancel", "title": "Cancel"}}]
 
 
+def test_button_with_an_image_media_header():
+    obj = build_button(body="This week's cut", buttons=[("book", "Book")],
+                       header_media={"type": "image", "media_id": "MID-1"})
+    assert obj["header"] == {"type": "image", "image": {"id": "MID-1"}}
+
+
+def test_button_with_a_video_media_header():
+    obj = build_button(body="Watch", buttons=[("book", "Book")],
+                       header_media={"type": "video", "media_id": "V9"})
+    assert obj["header"] == {"type": "video", "video": {"id": "V9"}}
+
+
+def test_button_media_header_and_text_header_are_mutually_exclusive():
+    with pytest.raises(InteractiveError):
+        build_button(body="x", buttons=[("id", "ok")], header="Title",
+                     header_media={"type": "image", "media_id": "M"})
+
+
+def test_button_media_header_validates_type_and_media_id():
+    with pytest.raises(InteractiveError):     # bad media type
+        build_button(body="x", buttons=[("id", "ok")],
+                     header_media={"type": "audio", "media_id": "M"})
+    with pytest.raises(InteractiveError):     # missing media_id
+        build_button(body="x", buttons=[("id", "ok")], header_media={"type": "image"})
+
+
+def test_button_without_a_header_media_is_unchanged():
+    obj = build_button(body="x", buttons=[("id", "ok")])
+    assert "header" not in obj                 # identical to today when neither header is given
+
+
 def test_button_limits_and_uniqueness():
     with pytest.raises(InteractiveError):
         build_button(body="x", buttons=[("a", "1"), ("b", "2"), ("c", "3"), ("d", "4")])  # >3

@@ -38,11 +38,29 @@ def _capped(name: str, value: str, maxlen: int) -> str:
     return value
 
 
-def _envelope(body: str, header: str, footer: str) -> dict[str, Any]:
+# An interactive header may be TEXT or a MEDIA object; a caller sends one or the other, never both.
+# Media shape (verified against Meta's interactive-message docs, Sep 2026): {"type":"image","image":
+# {"id":<media_id>}} — likewise "video"/"document". The media_id comes from a prior upload.
+_HEADER_MEDIA_TYPES = ("image", "video", "document")
+
+
+def _envelope(body: str, header: str, footer: str,
+              header_media: dict[str, Any] | None = None) -> dict[str, Any]:
     if not body or not body.strip():
         raise InteractiveError("body text is required")
     block: dict[str, Any] = {"body": {"text": _capped("body", body, _BODY_MAX)}}
-    if header:
+    hm = dict(header_media or {})
+    if hm and header:
+        raise InteractiveError("an interactive header is text OR media, not both")
+    if hm:
+        mtype = str(hm.get("type", "")).lower()
+        if mtype not in _HEADER_MEDIA_TYPES:
+            raise InteractiveError(f"a media header type must be one of {_HEADER_MEDIA_TYPES}")
+        media_id = str(hm.get("media_id", "")).strip()
+        if not media_id:
+            raise InteractiveError("a media header needs a media_id")
+        block["header"] = {"type": mtype, mtype: {"id": media_id}}
+    elif header:
         block["header"] = {"type": "text", "text": _capped("header", header, _HEADER_MAX)}
     if footer:
         block["footer"] = {"text": _capped("footer", footer, _FOOTER_MAX)}
@@ -50,11 +68,17 @@ def _envelope(body: str, header: str, footer: str) -> dict[str, Any]:
 
 
 def build_button(*, body: str, buttons: list[tuple[str, str]],
-                 header: str = "", footer: str = "") -> dict[str, Any]:
+                 header: str = "", footer: str = "",
+                 header_media: dict[str, Any] | None = None) -> dict[str, Any]:
     """A reply-buttons interactive object. `buttons` is [(id, title), …], at most three.
 
     The `id` of each button is what comes back in the customer's reply webhook — it is the anchor a
     state change keys on, so ids must be present and unique.
+
+    `header_media` optionally puts an IMAGE/VIDEO/DOCUMENT at the top instead of a text `header`
+    ({"type":"image"|"video"|"document","media_id":"<id>"}) — for "photo + text + one button" outside
+    a template, in the 24h window (a single photographed service; 2+ go through the carousel route).
+    Text header and media header are mutually exclusive.
     """
     if not buttons:
         raise InteractiveError("a button message needs at least one button")
@@ -71,7 +95,8 @@ def build_button(*, body: str, buttons: list[tuple[str, str]],
         action.append({"type": "reply", "reply": {
             "id": _capped("button id", bid, _BTN_ID_MAX),
             "title": _capped("button title", title, _BTN_TITLE_MAX)}})
-    return {"type": "button", **_envelope(body, header, footer), "action": {"buttons": action}}
+    return {"type": "button", **_envelope(body, header, footer, header_media),
+            "action": {"buttons": action}}
 
 
 def build_list(*, body: str, button_text: str, sections: list[dict[str, Any]],

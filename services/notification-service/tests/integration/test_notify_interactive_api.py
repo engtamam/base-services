@@ -56,6 +56,25 @@ def test_button_send_is_recorded_as_a_tenant_scoped_delivery(client):
     assert any(d["template_key"] == "interactive:button" and d["status"] == "sent" for d in rows)
 
 
+def test_button_send_with_a_media_header_succeeds(client):
+    # "photo + text + one quick-reply button" outside a template — the media_id from a prior upload.
+    r = client.post("/internal/notify/whatsapp/interactive", headers=_tok(),
+                    json={"recipient": "+966500000002", "tenant": "acme", "type": "button",
+                          "body": "This week's cut", "header_media_id": "MID-1",
+                          "header_media_type": "image",
+                          "buttons": [{"id": "book", "title": "Book"}]})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "sent"
+
+
+def test_button_media_header_with_a_text_header_is_a_422(client):
+    r = client.post("/internal/notify/whatsapp/interactive", headers=_tok(),
+                    json={"recipient": "+966", "type": "button", "body": "x",
+                          "header": "Title", "header_media_id": "M",
+                          "buttons": [{"id": "ok", "title": "OK"}]})
+    assert r.status_code == 422 and "media" in r.json()["reason"].lower()
+
+
 def test_list_send_succeeds(client):
     r = client.post("/internal/notify/whatsapp/interactive", headers=_tok(),
                     json={"recipient": "+966", "tenant": "acme", "type": "list", "body": "Pick a slot",
