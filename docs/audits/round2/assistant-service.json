@@ -1,0 +1,90 @@
+{
+  "service": "assistant-service",
+  "round": 2,
+  "findings": [
+    {
+      "id": "assistant-r2-01",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "SSRF / TOCTOU (CWE-918, CWE-367)",
+      "file": "app/adapters/model/http_provider.py",
+      "line": 516,
+      "title": "AI-connection URL is SSRF-validated only at write time; the delivery transport re-resolves DNS and never pins the validated IP",
+      "detail": "`_validate_conn_url` (app/api/internal.py:296-308) calls `ssrf.validate()` on create/update, which resolves the host and returns a `Target` carrying the ONE validated IP to connect to (ssrf.py:96). That `Target.ip` is thrown away. At invoke time `_conn_model` builds `HttpModel(conn.url, ...)` (internal.py:244) and the default transport `_httpx_transport` (http_provider.py:516-524) does `httpx.AsyncClient(...).post(url, ...)` against the raw hostname URL — a fresh DNS resolution, with NO re-validation and NO IP pin. The ssrf module's own docstring (ssrf.py:12-14) mandates both 'pin the connection to one validated IP (the transport never re-resolves)' and 'Re-run validate() on every delivery attempt' — neither is done for connection invocation. converse()/complete()/answer() all post to self._url the same way.",
+      "failure_scenario": "A tenant registers a connection with url=https://rebind.attacker.example whose A record is a public IP at create time (passes validate). The attacker then repoints the record to an internal host (e.g. an internal admin/metrics service reachable over HTTPS, or with ASSISTANT_CONN_ALLOW_PRIVATE_IPS/require_https relaxed, 169.254.169.254 / 127.0.0.1). On POST /internal/assistant/connections/{cid}/invoke, httpx re-resolves to the internal IP and issues the request; the response JSON is parsed and returned to the caller as the connection's `text` (or tool_call) result, exfiltrating internal responses, and the connection's credential (Bearer / minted GCP OAuth token) header is delivered to the rebind target. Classic DNS-rebinding SSRF the pinning was designed to close.",
+      "fix": "Pin at delivery: have `_validate_conn_url`/`ssrf.validate()` return the Target and pass the validated IP into the transport (connect to the IP with the original Host/SNI preserved), OR re-run ssrf.validate() inside `_conn_model`/the transport on every call and connect to the returned pinned IP. Do not let httpx re-resolve the hostname."
+    },
+    {
+      "id": "assistant-r2-02",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "Metering / revenue integrity",
+      "file": "app/adapters/model/http_provider.py",
+      "line": 388,
+      "title": "Per-round-trip metering silently bills zero when a provider omits usage on tool-call responses",
+      "detail": "`_extract_converse` (http_provider.py:385-434) reads token counts only from body.usage/usageMetadata; if absent, tin=tout=0. `invoke_conversation` (connections.py:240-242) then computes cost via cost_micros(0,0,...) = 0 and records a call with zero tokens/zero cost. Several providers omit or zero the usage block on function-call (tool_call) turns, and a tool-calling conversation can run many such round trips before the final text turn.",
+      "failure_scenario": "A tenant configures a tool-declaring connection against a provider that returns tool_calls without a usage block. Every tool-call round trip is metered as calls+1 but tokens_in=tokens_out=cost_micros=0, so the platform performs (and pays the upstream provider for) real model work while the per-connection usage ledger under-counts and the tenant is under-billed — a money leak that scales with tool-call depth.",
+      "fix": "Detect a 200 response with a tool_call but no usage and either fail closed, estimate tokens from the serialized request/response, or flag the round trip as unmetered so billing can reconcile. Do not treat missing usage as zero cost."
+    },
+    {
+      "id": "assistant-r2-03",
+      "severity": "medium",
+      "status": "SPECULATIVE",
+      "category": "Cross-tenant authorization / IDOR (internal tier)",
+      "file": "app/api/internal.py",
+      "line": 410,
+      "title": "Any authenticated internal caller can invoke/list/read any tenant's AI connection because tenant comes from the request body and routes are default-open",
+      "detail": "The connection routes (create/list/get/update/delete/invoke/usage, internal.py:311-445) take `tenant` straight from the body/query and are guarded only by `require_internal_token`, whose per-route policy is default-open (internal.py:40-55: 'A route with no policy admits any authenticated caller'). There is no binding between the calling service identity and which tenants it may act for. `invoke_connection` spends the target tenant's stored credential and meters against it; `list_connections` returns every connection row (url + system_prompt) for an arbitrary tenant.",
+      "failure_scenario": "A lower-trust or compromised internal service that holds a valid X-Internal-Token (or is on the shared-token default) calls POST /internal/assistant/connections/{cid}/invoke with tenant=<victim> and any known/enumerated cid, burning the victim tenant's model credential and reading its system prompts and connection URLs — cross-tenant use with no allow-list stopping it. Severity depends entirely on INTERNAL_CALLER_POLICY being configured; default-open leaves it wide.",
+      "fix": "Add an explicit internal-policy allow-list for the /internal/assistant/connections/* routes and/or derive/authorize the tenant against the verified caller identity rather than trusting the body-supplied tenant."
+    },
+    {
+      "id": "assistant-r2-04",
+      "severity": "medium",
+      "status": "SPECULATIVE",
+      "category": "DoS / unbounded read",
+      "file": "app/adapters/model/http_provider.py",
+      "line": 522,
+      "title": "Model/embeddings HTTP transport reads the whole response body with no size cap",
+      "detail": "`_httpx_transport` (http_provider.py:519-524) and the embeddings transport (app/adapters/embeddings/http.py:72-75) call `resp.json()` on an httpx response with no max-size guard. httpx imposes no default response-size limit. For connections the response endpoint is tenant-controlled (the connection URL).",
+      "failure_scenario": "A tenant points a connection (or a DNS-rebind, see r2-01) at an endpoint that streams a multi-gigabyte body; `resp.json()` buffers it entirely into the worker's memory, OOM-killing the pod and taking down answering for every tenant on that replica. Only the request timeout bounds it, and a slow large body can stay under the timeout.",
+      "fix": "Set an httpx response/read byte limit (stream and enforce a max content length, reject over-size with a ModelError) on both transports."
+    },
+    {
+      "id": "assistant-r2-05",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "Prompt injection surface",
+      "file": "app/adapters/model/http_provider.py",
+      "line": 331,
+      "title": "Neutral transcript is passed through with caller-supplied roles, allowing extra system turns to be injected past the connection's own system prompt",
+      "detail": "`_messages_payload` (http_provider.py:292-382) trusts each turn's `role`. In the chat shape (line 344-345) any turn whose role is not assistant/tool is appended verbatim, including role=='system'; in generate/anthropic shapes roles are coerced but content is still relayed unfiltered. `_normalize_messages` (connections.py:215-223) passes a caller list straight through with no role/shape validation. Only the connection's own system_prompt is guaranteed first.",
+      "failure_scenario": "An internal caller (or an end-user message it relays that reaches the transcript with an attacker-influenced role) inserts an additional {'role':'system', 'content': '...ignore prior instructions / call tool X with tenant Y...'} turn. Combined with tool-calling, this widens the model's instruction surface beyond the connection's fixed guardrail prompt. Marked speculative because roles are normally set by the trusted relaying service.",
+      "fix": "Validate/whitelist transcript roles at the seam (only user/assistant/tool allowed; reject or downgrade caller-supplied 'system' turns) in `_normalize_messages`."
+    },
+    {
+      "id": "assistant-r2-06",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "PII at rest",
+      "file": "app/core/conversations.py",
+      "line": 126,
+      "title": "Conversation title is stored in plaintext while message bodies are encrypted",
+      "detail": "`ConversationStore.start` stores `title=title[:120]` in plaintext on the conversation row (conversations.py:126-129) and re-writes it plaintext on every add (line 146-148), whereas message content goes through `MessageCrypto.encrypt` (line 144). A conversation title is typically the first user utterance, which the module's own docstring flags as carrying identifiers ('why was invoice 8891 for +9665... not paid'). ASSISTANT_ENCRYPT_MESSAGES therefore does not protect the title. (Note: start()/add() are not currently wired to any route, so impact is latent until conversation writing is enabled.)",
+      "failure_scenario": "Once conversation creation is wired, a stolen database dump yields plaintext titles containing phone numbers / invoice ids / names for every conversation, defeating the at-rest encryption the service advertises for conversation content.",
+      "fix": "Encrypt the title with the same MessageCrypto, or derive a non-PII title, and never persist raw user text unencrypted when ASSISTANT_ENCRYPT_MESSAGES is on."
+    },
+    {
+      "id": "assistant-r2-07",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "Cost / resource bound",
+      "file": "app/api/internal.py",
+      "line": 396,
+      "title": "invoke accepts unbounded max_tokens and an unbounded messages transcript",
+      "detail": "`ConnInvokeIn` (internal.py:396-407) bounds prompt to 100000 chars but sets no ceiling on `max_tokens` (ge=0 only) and no length/size cap on the `messages` list. `invoke_conversation` forwards both to the provider.",
+      "failure_scenario": "A caller sets max_tokens to a very large value or supplies an enormous messages transcript, inflating the upstream provider cost billed to the connection's credential and the outbound payload size, with no service-side guard.",
+      "fix": "Clamp max_tokens to a configured ceiling and cap the number/total size of transcript turns."
+    }
+  ]
+}

@@ -1,0 +1,102 @@
+{
+  "service": "verification-service",
+  "round": 2,
+  "findings": [
+    {
+      "id": "verification-r2-01",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "concurrency/TOCTOU",
+      "file": "app/core/verification_service.py",
+      "line": 147,
+      "title": "resolve() settles with a plain put(), not a CAS — a late/concurrent callback overwrites a settled REFUSED with VERIFIED",
+      "detail": "Round 1 made decide() and remember() atomic via cas_put/cas, but resolve() was NOT converted. resolve() reads the record, checks `record.verdict != PENDING` (lines 130-131), then writes with `await self._store.put(record)` (lines 139 and 147) — a version-blind overwrite. The PENDING guard is a read that is not atomic with the write. Two writers that both observed PENDING both proceed and last-writer-wins. The verify() creation path also uses put() (line 75), which is fine (create), but every SETTLEMENT via resolve bypasses the optimistic lock the rest of the service now relies on.",
+      "failure_scenario": "A record is PENDING (async Nafath prompt). Reviewer refuses it through ReviewService.decide() which cas_puts verdict=REFUSED and bumps version. Concurrently (or slightly earlier, having already read the row as PENDING) a provider/attacker callback hits POST /internal/verification/resolve with verified=true; resolve() had read verdict==PENDING, builds a VERIFIED outcome and put()s it, clobbering the refusal with no version check. The result is the exact 'a replay overwrote a refusal with an approval' outcome resolve()'s own docstring (lines 121-126) claims to prevent. The same race applies resolve-vs-resolve (one verified, one refused -> nondeterministic settle) and resolve-vs-sweep_pending (sweep put()s EXPIRED, resolve put()s VERIFIED — either can win and stomp the other).",
+      "fix": "Make resolve() and sweep_pending() use store.cas_put() with a bounded refetch/retry loop exactly like ReviewService.decide(): on a lost CAS, refetch and re-evaluate (a record no longer PENDING must abort and return unchanged). Never settle a verdict with a version-blind put()."
+    },
+    {
+      "id": "verification-r2-02",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "spoofed callback / broken authentication of async resolve",
+      "file": "app/api/internal.py",
+      "line": 126,
+      "title": "resolve callback is authenticated only as 'some internal caller' — it never binds the callback to the provider/correlation token stored in provider_state, and is not tenant-scoped",
+      "detail": "When a provider answers PENDING, HttpVerifier stores state={\"reference\": reference} and VerificationService._apply copies it into record.provider_state (verification_service.py:108). resolve() (lines 119-149) accepts verification_id + verified + reference + detail and moves any still-PENDING record to VERIFIED/REFUSED WITHOUT ever comparing body.reference against record.provider_state['reference'] or otherwise proving the caller is the provider that owns this prompt. The comment 'the correlation token has done its job' (line 146) clears provider_state but the token is never actually checked. The /internal/verification/resolve route has no per-verification and no tenant check, and INTERNAL_ROUTE_POLICY_JSON defaults to empty => default-open for any authenticated internal caller (internal.py:55, config.py:138).",
+      "failure_scenario": "Any caller that can reach the internal tier (a compromised/over-broad internal peer, an SSRF pivot, or a misconfigured allow-list) marks ANY pending verification VERIFIED by supplying its verification_id — which is handed to the end user in the submit_claim response (record.public() includes `id`). A user submits an async individual claim, never approves on their phone, then (or a colluding service) calls resolve(verification_id, verified=true) and is verified without Nafath ever confirming. No tenant scoping means it works cross-tenant.",
+      "fix": "Bind the callback to the prompt: require the provider's correlation token/reference and compare it in constant time against record.provider_state before settling; reject a mismatch as 404/401. Preferably also verify per-caller identity (INTERNAL_CALLER_DRIVER=static/jwks) and add /internal/verification/resolve to INTERNAL_ROUTE_POLICY_JSON so only the provider-integration service may call it."
+    },
+    {
+      "id": "verification-r2-03",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "once-per-identity anti-abuse bypass",
+      "file": "app/core/review.py",
+      "line": 42,
+      "title": "Manual-review approvals never write identity_seen — the day-one default verification path defeats once-per-identity anti-abuse",
+      "detail": "VerificationService._announce writes the anti-abuse row via registry.remember() only on its own VERIFIED path (verification_service.py:194-203). ReviewService (review.py) has NO registry: __init__ takes none (lines 43-49), build_review does not pass one (verification.py:51-56), and decide() sets verdict=VERIFIED (line 109) then audits and returns without ever calling remember(). So every manually approved identity is verified but NEVER recorded in identity_seen — even though the record already carries claim_ref. Manual/document review is described as the fallback 'every platform can run on day one' (review.py:5-7).",
+      "failure_scenario": "A platform using manual/document verification (the default with no provider contract) approves a business. identity_seen is never populated. The fraudster deletes the tenant, signs up again with the same commercial registration, is manually approved again, and onboarding-service's registry.seen() check returns False every time — the once-per-identity welcome grant is collected repeatedly. This is precisely the fraud stores.py/erasure.py claim identity_seen exists to stop.",
+      "fix": "Give ReviewService an IdentityRegistry and call remember(record.claim_ref, now) on every approval (and only on approval), mirroring VerificationService._announce; wire it in build_review()."
+    },
+    {
+      "id": "verification-r2-04",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "authority conflation / dead-or-repurposed feature",
+      "file": "app/core/verification_service.py",
+      "line": 60,
+      "title": "Manual/document claims cannot be created, so the review queue only surfaces async provider prompts a human can then approve without the provider answering",
+      "detail": "verify() looks up self._verifiers.get(claim_type) and raises UnsupportedClaim when absent (lines 60-64). _build_verifiers gives manual/document providers NO entry (container.py:257-258). Therefore a claim_type answered by manual/document is always rejected at submit — there is no code path that creates a manual-review record. The review queue (stores.pending_reviews, verdict==PENDING) can therefore only return records left PENDING by an ASYNC provider. ReviewService.decide() will happily settle those to VERIFIED.",
+      "failure_scenario": "A user submits an async (Nafath-style) claim; it sits PENDING awaiting the user's own phone approval. It appears in the human review-queue, and any holder of verification.review approves it via decide(), granting VERIFIED without the phone-holder ever confirming and without the provider's callback — a human silently overrides the 'a verdict is only ever what a provider said' invariant, and (per r2-03) without recording identity_seen. Separately, the manual/document review feature is effectively unreachable, so a platform relying on it has no working verification at all.",
+      "fix": "Decide the model explicitly: either add a submit path that creates manual/document claims as a distinct review-pending state (separate from async-callback PENDING), and make decide() refuse records that belong to an async provider awaiting its own callback; or remove the manual review surface. Do not let one PENDING state mean both 'awaiting the provider's phone answer' and 'awaiting a human'."
+    },
+    {
+      "id": "verification-r2-05",
+      "severity": "medium",
+      "status": "SPECULATIVE",
+      "category": "config fail-open / silent anti-abuse gap",
+      "file": "app/core/verification_service.py",
+      "line": 198,
+      "title": "identity_seen write failure is swallowed; the claimed fail-closed on the grant side is not enforced here",
+      "detail": "In _announce, registry.remember() is wrapped in try/except Exception: pass (lines 198-203). The comment asserts 'the grant side refuses rather than assuming', but nothing in this service enforces that — the verdict is still returned VERIFIED and the anti-abuse row is silently absent. Whether the once-per-identity grant fails open depends entirely on onboarding-service's behaviour when seen() returns False for an identity that was actually verified.",
+      "failure_scenario": "A transient datastore/CAS-exhaustion error during remember() (remember() itself falls back to a best-effort read after 8 contended retries, stores.py:117-119, but a raised exception is swallowed here) leaves an identity VERIFIED but not in identity_seen. onboarding-service calls /internal/verification/identity/{claim_ref}/seen, gets seen=false, and grants the once-per-identity gift; a repeat registration is also unseen and gifted again.",
+      "fix": "Do not silently swallow: on a remember() failure either fail the verification settlement (so it can be retried) or emit a loud WARN + metric and a durable outbox retry, so a missing anti-abuse key is observable rather than invisible. At minimum stop claiming a fail-closed the code does not implement."
+    },
+    {
+      "id": "verification-r2-06",
+      "severity": "medium",
+      "status": "SPECULATIVE",
+      "category": "SSRF / CWE-918 defense-in-depth",
+      "file": "app/adapters/verifier/http.py",
+      "line": 69,
+      "title": "HttpVerifier POSTs to the profile URL without consulting EGRESS_ALLOWED_HOSTS, and VERIFY_PROVIDERS is runtime-overridable per tenant",
+      "detail": "HttpVerifier.verify() builds the request straight from self._p['url'] (lines 64-69) with the comment 'config only — never from a request, so no SSRF surface'. The URL is indeed not taken from the HTTP request body. But the service ships an SSRF allowlist EGRESS_ALLOWED_HOSTS (config.py:311-319) that this egress path never enforces, and provider selection (VERIFY_PROVIDERS) is overridable at RUNTIME per tenant through the operator surface (verifier_pool._providers_spec via RuntimeConfig; operator.py set_config with key VERIFY_PROVIDERS). The boot guard validates profile URLs are http(s) only in production (config.py:433) and does not re-validate runtime overrides against an allowlist.",
+      "failure_scenario": "An operator (or an attacker who has reached platform.config) repoints a claim type at a provider profile whose url targets an internal metadata endpoint or an internal service; every verification for that claim type then makes the pod issue an authenticated POST to that host. Because the egress allowlist is never checked on this path, there is no defense-in-depth catch. Note VERIFY_PROFILES itself is not shown to be runtime-settable, which limits the URL an override can reach; hence SPECULATIVE.",
+      "fix": "Enforce settings.egress_allowed_hosts against the resolved profile URL host inside HttpVerifier (or at pool build), returning ERROR for a host not on the allowlist; re-run the URL/host validation on any runtime VERIFY_PROVIDERS/VERIFY_PROFILES override, not only at boot."
+    },
+    {
+      "id": "verification-r2-07",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "verdict integrity / missing lapse check",
+      "file": "app/core/review.py",
+      "line": 78,
+      "title": "decide() never checks pending_until, so a human can approve an async prompt that has already lapsed",
+      "detail": "resolve() refuses a lapsed prompt (verification_service.py:134-140: now >= pending_until -> EXPIRED, not approval). decide() only refuses records already VERIFIED/REFUSED (review.py:78) and ignores pending_until entirely. A PENDING record whose pending_until has passed but which the sweep has not yet marked EXPIRED can still be approved to VERIFIED by a reviewer.",
+      "failure_scenario": "An async Nafath prompt lapses (nobody answered within VERIFY_PENDING_TTL_SECONDS). Before sweep_pending runs, a reviewer approves it via decide(); the claim becomes VERIFIED on a prompt that expired unanswered — the 'a late yes cannot be trusted to have come from the right person' rule (verification_service.py:135-136) is bypassed on the review path.",
+      "fix": "In decide(), treat a record with pending_until and now >= pending_until as EXPIRED and refuse the decision (or require it be explicitly re-opened as a new verification), consistent with resolve()."
+    },
+    {
+      "id": "verification-r2-08",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "concurrency / erasure durability",
+      "file": "app/core/erasure.py",
+      "line": 66,
+      "title": "Erasure writes with a version-blind put(), racing a concurrent resolve/decide and re-linking or losing state",
+      "detail": "VerificationErasure.erase() sets record.subject='' / provider_state={} and calls store.put(record) (erasure.py:59-66) with no CAS. A concurrent resolve() (also put(), per r2-01) or decide() (cas_put) can interleave: the erasure put and the settlement put race with last-writer-wins, so a settlement can resurrect a subject the erasure just cleared, or the erasure can overwrite a just-settled verdict with a stale copy read before settlement.",
+      "failure_scenario": "A DSAR erase runs while an in-flight provider callback resolves the same subject's record. The erasure reads the record, the resolve settles+writes, then the erasure put() writes back its stale copy (subject='' but old verdict/version), or vice-versa the resolve writes back subject-bearing data after erasure — the subject link the DSAR reported as severed is still present.",
+      "fix": "Perform erasure writes through cas_put with refetch-on-conflict, or serialize erasure against settlement; ensure the erasure's write is the terminal state under the optimistic lock."
+    }
+  ]
+}

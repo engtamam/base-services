@@ -1,0 +1,126 @@
+{
+  "service": "api-gateway",
+  "round": 2,
+  "findings": [
+    {
+      "id": "api-gateway-r2-01",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "path-traversal / prefix-confusion / auth bypass",
+      "file": "app/core/gateway.py",
+      "line": 58,
+      "title": "Auth, capability and rate-limit decisions use the non-normalized inbound path while the upstream receives the httpx-normalized (dot-segment-collapsed) path",
+      "detail": "handle() decides routing (self._routes.match(path)), auth mode, capabilities (holds_any) and the rate-limit class (policy.classify(path)) from request.url.path, which uvicorn/httptools does NOT collapse of '..' or decoded '%2e%2e'. build_url() (app/core/models.py:45) then appends the raw remainder to the fixed upstream and hands it to HttpxForwarder, and httpx.AsyncClient normalizes RFC-3986 dot-segments before sending. Verified: Route(prefix='/public').build_url('/public/../admin/secret') => 'http://up:8000/../admin/secret', and httpx.URL(...) collapses it to 'http://up:8000/admin/secret'. So the gateway authorizes the request as if it were '/public/...' (auth=none, no caps, default/loose rate-limit class) but the upstream actually serves '/admin/secret'. Test suites miss this because the httpx-based Starlette TestClient normalizes the URL client-side before it ever reaches the app.",
+      "failure_scenario": "Operator maps two prefixes on one service to differing policy, e.g. route {'/api/v1/shop' auth=none} and {'/api/v1/shop/admin' auth=required caps=[shop.admin]}, both -> http://shop:8000. An anonymous attacker requests GET /api/v1/shop/..%2fadmin/orders (or /api/v1/shop/../admin/orders). The gateway matches the auth=none route, skips the JWT/caps check, forwards, and httpx delivers /admin/orders to the shop service with the trusted X-Internal-Token but NO identity headers. Separately, a brute-force attacker dodges the strict login rate-limit class: /somepublic/../api/v1/auth/login is classified under the loose default class because it does not startswith '/api/v1/auth', yet is delivered to the auth login upstream. The internal tier itself stays protected (the 'internal' segment survives in the pre-normalization string that _targets_internal inspects), but every other cross-prefix policy boundary on a shared upstream is bypassable.",
+      "fix": "Normalize/reject dot-segments BEFORE any routing/auth/rate-limit decision: collapse '.'/'..' and reject any path that escapes (contains '..' after decode) with 400, and reject raw '%2e'/'%2f' encoded separators. Apply the exact same normalized path to match(), classify(), the auth check AND build_url() so the authorized path and the forwarded path are byte-identical. A canonicalization helper run once at the top of handle() (and used to build the forward URL) closes the divergence."
+    },
+    {
+      "id": "api-gateway-r2-02",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "DoS / unbounded memory (default driver)",
+      "file": "app/adapters/cache/memory.py",
+      "line": 29,
+      "title": "Response cache (default memory driver) has no size bound or proactive eviction; attacker-varied query strings grow it without limit",
+      "detail": "MemoryCache._data is a plain dict; entries are only removed lazily when that exact key is read again (_expired) or on close(). The gateway cache key is 'gw:{method}:{path}?{query}' (app/core/gateway.py:128) and an anonymous GET on any auth!=required route with cache_ttl>0 is stored (lines 150-151). CACHE_DRIVER defaults to 'memory'.",
+      "failure_scenario": "On a deployment that enables a cache_ttl for a public GET route, an unauthenticated attacker issues GET /public/thing?x=<random> with a unique query string on every request. Each distinct key is stored for the full TTL with the full response body base64-encoded in RAM, and nothing evicts keys except a later hit on the same (never-repeated) key. The process RSS climbs until OOM-kill — a single-source memory-exhaustion DoS that needs no auth.",
+      "fix": "Bound the memory cache (max entries + LRU eviction, or a periodic sweep of expired keys), and/or refuse to cache when the query string is present/over a length. At minimum cap entry count and evict oldest. Same lazy-only-eviction issue affects MemoryRateLimiter._tats (app/adapters/rate_limiter/memory.py) — see r2-06."
+    },
+    {
+      "id": "api-gateway-r2-03",
+      "severity": "medium",
+      "status": "SPECULATIVE",
+      "category": "header trust boundary / spoofing",
+      "file": "app/core/gateway.py",
+      "line": 178,
+      "title": "Only 4 client headers are stripped before forwarding; client-supplied X-Forwarded-For / X-Real-IP / Forwarded pass through to upstreams",
+      "detail": "_forward_headers() drops only _HOP_BY_HOP + _STRIP_FROM_CLIENT ({x-internal-token, x-user-id, x-tenant-id, x-caps}). Every other client header, including X-Forwarded-For, X-Real-IP, Forwarded, X-Original-URL, X-Rewrite-URL, is copied verbatim to the upstream. The gateway itself reads XFF correctly via trusted_proxy_hops, but it does not sanitize or overwrite XFF on the way out.",
+      "failure_scenario": "An upstream service that trusts X-Forwarded-For / X-Real-IP for its own rate-limiting, audit 'ip' field, or IP allow-listing receives whatever the client forged, because the gateway forwarded the client's value unchanged. An attacker sets X-Forwarded-For: <trusted-internal-IP> or spoofs the source IP recorded in a downstream audit log. Also X-Original-URL/X-Rewrite-URL can confuse some frameworks' routing.",
+      "fix": "After computing the real client IP, set a canonical X-Forwarded-For (append the real peer) and X-Real-IP yourself and strip inbound copies; add X-Forwarded-Proto/Host from the gateway's view. Consider an allowlist of forwardable headers rather than a denylist so a new sensitive header is safe by default."
+    },
+    {
+      "id": "api-gateway-r2-04",
+      "severity": "medium",
+      "status": "SPECULATIVE",
+      "category": "cache correctness / stale-auth",
+      "file": "app/core/gateway.py",
+      "line": 126,
+      "title": "Shared anonymous response cache keyed only on method+path+query ignores Accept/Accept-Language and other representation-selecting request headers",
+      "detail": "cacheable responses are keyed as 'gw:{method}:{path}?{query}'. _is_storable() refuses responses carrying Vary, Set-Cookie, or no-store/private/no-cache, which mitigates the classic case. But an upstream that content-negotiates (returns JSON vs HTML by Accept, or localized bodies by Accept-Language) WITHOUT emitting a Vary header will have the first anonymous representation cached and replayed to every subsequent anonymous caller regardless of their request headers.",
+      "failure_scenario": "Anonymous client A requests a public endpoint with Accept-Language: ar and the upstream (not emitting Vary) returns Arabic. It is cached. Anonymous client B with Accept-Language: en receives the cached Arabic body for the TTL. Not a data-leak (anonymous only) but a correctness/cache-poisoning issue; an attacker can also 'pin' an unusual representation for all users by racing the first request.",
+      "fix": "Include the negotiated request headers the gateway is willing to serve from cache in the cache key (or refuse to cache unless the upstream sets an explicit public Cache-Control). Given the gateway cannot know the upstream's Vary intent, defaulting to cache only when upstream explicitly opts in (public/max-age present) is safer than caching on absence of directives."
+    },
+    {
+      "id": "api-gateway-r2-05",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "DoS / unbounded response buffering",
+      "file": "app/adapters/forwarder/httpx_forwarder.py",
+      "line": 29,
+      "title": "Upstream responses are fully buffered into memory (resp.content); no response-size cap",
+      "detail": "HttpxForwarder.forward returns resp.content, reading the entire upstream body into RAM, and the gateway then builds Response(content=resp_body). BODY_LIMIT_BYTES caps the REQUEST body but nothing caps the RESPONSE. follow_redirects=False is good (prevents redirect-driven SSRF). The upstream is config-fixed and generally trusted, hence low severity.",
+      "failure_scenario": "A compromised or buggy upstream, or an upstream endpoint that streams a very large/unbounded body (e.g. an export), makes the gateway buffer the whole payload per concurrent request; enough concurrent large responses exhaust gateway memory. Also negates streaming for large legitimate downloads.",
+      "fix": "Stream the upstream response (httpx stream + StreamingResponse) and enforce a max response size, aborting with 502 when exceeded; only buffer when caching a small response."
+    },
+    {
+      "id": "api-gateway-r2-06",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "DoS / unbounded memory",
+      "file": "app/adapters/rate_limiter/memory.py",
+      "line": 33,
+      "title": "MemoryRateLimiter._tats grows unbounded with distinct keys (no eviction of expired TATs)",
+      "detail": "_tats maps every seen key to its TAT and is only pruned on reset(); expired keys are never swept. Keys are composite (class|subject/ip/tenant). This is also the fallback used by the redis driver during a Redis outage.",
+      "failure_scenario": "An attacker able to generate many distinct key components (distinct subjects via many tokens, or distinct IPs when GATEWAY_TRUSTED_PROXY_HOPS>0 and XFF is attacker-influenced within the untrusted left portion — though the trusted index mitigates) grows the dict without bound. More realistically, over a long uptime with many legitimate subjects the dict only grows. Memory pressure over time / during a Redis outage when the local fallback absorbs the whole fleet's key space.",
+      "fix": "Add TTL-based eviction (drop a key once its TAT is in the past) via a periodic sweep or an OrderedDict/LRU with a max-entries cap; this matches the redis driver's self-evicting PX TTL."
+    },
+    {
+      "id": "api-gateway-r2-07",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "config fail-open / internal trust",
+      "file": "app/api/internal.py",
+      "line": 52,
+      "title": "Internal-tier per-route caller policy is default-OPEN and token fallback is default-ON",
+      "detail": "require_internal_token() authorizes a caller against INTERNAL_ROUTE_POLICY_JSON, but a route absent from that map 'admits any authenticated caller (default-open)' (config.py:135-138), and INTERNAL_CALLER_ALLOW_TOKEN_FALLBACK defaults True so a request with only the shared flat token (no signed assertion) is accepted as an unnamed peer even under the static/jwks drivers. This is a documented migration posture, but it means the strongest per-caller controls are opt-in and the default trusts anyone holding the one shared token.",
+      "failure_scenario": "If the shared INTERNAL_SERVICE_TOKEN leaks (it is injected into every forwarded upstream request as X-Internal-Token, so it is present on a very wide blast radius), any party holding it reaches every /internal route on the gateway (e.g. POST /internal/privacy/erase, GET /internal/routes revealing the full upstream map) because no per-route allow-list is configured by default and no per-caller assertion is required. Defense-in-depth degrades to a single shared secret.",
+      "fix": "Ship a default-deny INTERNAL_ROUTE_POLICY for sensitive routes (privacy/erase, routes, assistant-catalog) and plan to flip INTERNAL_CALLER_ALLOW_TOKEN_FALLBACK off once callers sign; document the flip as a hardening milestone, not an option."
+    },
+    {
+      "id": "api-gateway-r2-08",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "timeout / resource cleanup",
+      "file": "app/middleware/security.py",
+      "line": 125,
+      "title": "TimeoutMiddleware (BaseHTTPMiddleware + asyncio.wait_for) cancels the handler but the in-flight upstream request may keep running",
+      "detail": "TimeoutMiddleware wraps call_next in asyncio.wait_for. On timeout it returns 408, cancelling the downstream task. With BaseHTTPMiddleware, cancellation of a task blocked in the httpx upstream call is not guaranteed to promptly release the upstream connection, and BaseHTTPMiddleware has known interactions with cancellation/anyio task groups that can surface as secondary errors. REQUEST_TIMEOUT_MS (30s) is also larger than UPSTREAM_TIMEOUT_SECONDS (15s), so normally the forwarder times out first (good), but a slow limiter/verify path under the 30s budget can still be cut mid-flight.",
+      "failure_scenario": "Under load with slow upstreams, requests that hit the 30s wall-clock are cancelled at the middleware while the httpx request continues to completion in the background, transiently holding upstream connections/pool slots beyond the client-visible 408; repeated, this amplifies connection pressure during exactly the incident the timeout exists to contain.",
+      "fix": "Rely on the forwarder's own timeout as the primary control and/or implement the wall-clock timeout as pure-ASGI with explicit cancellation of the upstream request; ensure UPSTREAM_TIMEOUT_SECONDS < REQUEST_TIMEOUT_MS (currently true) is asserted at boot."
+    },
+    {
+      "id": "api-gateway-r2-09",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "info disclosure",
+      "file": "app/api/metrics.py",
+      "line": 15,
+      "title": "/metrics is exposed with no authentication",
+      "detail": "The /metrics route serves the full Prometheus registry (including prometheus_fastapi_instrumentator RED metrics grouped by route template) with no token or network guard at the app layer. Comment explicitly states 'public, no auth'.",
+      "failure_scenario": "If the gateway's /metrics is reachable from outside the cluster (misconfigured ingress/NetworkPolicy), an attacker enumerates route templates, request volumes, latency and error patterns — operational reconnaissance (which endpoints exist, which are failing/under attack). Typically mitigated by NetworkPolicy, but the app provides no defense of its own.",
+      "fix": "Bind /metrics to the internal tier (require X-Internal-Token) or a separate admin port, or document a hard NetworkPolicy requirement that scrapers are the only reachable clients."
+    },
+    {
+      "id": "api-gateway-r2-10",
+      "severity": "info",
+      "status": "SPECULATIVE",
+      "category": "internal-guard robustness",
+      "file": "app/core/gateway.py",
+      "line": 32,
+      "title": "_targets_internal is case-sensitive and matches only the literal segment 'internal'",
+      "detail": "_targets_internal('/Internal/audit') returns False (verified). The guard relies on downstream services mounting the internal tier at lowercase '/internal' and on HTTP path case-sensitivity, which holds for the current fleet (Starlette/FastAPI route matching is case-sensitive, so an upstream would not serve '/Internal/...' either). No exploit found, but the guard's safety depends on an assumption about every present and future upstream's path-matching being case-sensitive.",
+      "failure_scenario": "A future or third-party upstream (a customer's own product service added via ADMIN_SERVICES / route table) that matches paths case-insensitively, or normalizes case, could serve its internal tier for a '/Internal/...' request that this guard let through as a non-internal path. No such upstream exists today.",
+      "fix": "Lower-case the path before the segment test (p.lower()), and treat any segment equal to 'internal' case-insensitively; cheap and removes the dependence on upstream case behavior."
+    }
+  ]
+}

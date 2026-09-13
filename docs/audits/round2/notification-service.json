@@ -1,0 +1,78 @@
+{
+  "service": "notification-service",
+  "round": 2,
+  "findings": [
+    {
+      "id": "notification-r2-01",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "tenant-isolation/number-routing",
+      "file": "app/api/v1/operator.py",
+      "line": 196,
+      "title": "Public operator Embedded-Signup route never binds phone_number_id -> tenant (diverges from the internal twin)",
+      "detail": "The internal onboarding route (app/api/internal.py:360-377) and the register route (internal.py:1002-1015) both call WhatsAppNumberIndex.bind(phone_number_id, tenant) after a successful exchange and audit a CONFLICT on first-wins collision. The human/operator route whatsapp_embedded_signup() calls onboarding.exchange() (operator.py:196-198) and returns the result WITHOUT ever binding the number in the routing index and without any conflict check. WhatsAppOnboarding.exchange() itself (app/core/whatsapp_onboarding.py:99-129) only writes the sealed credentials; it does not touch WhatsAppNumberIndex. Grep confirms operator.py contains no bind/number_index reference at all.",
+      "failure_scenario": "A shop onboarded through the operator UI has WHATSAPP_ACCESS_TOKEN/PHONE_NUMBER_ID/WABA_ID stored but wa_number_index has NO row for its phone_number_id. Every subsequent inbound webhook (app/api/webhooks.py:128-132 and _tenant_of) resolves tenant_of(phone_id) -> None -> tenant=\"\", so inbound messages, message_echoes, history and contacts are recorded and fanned out with an empty tenant: the shop's customer replies are unattributable and a fast-path bus consumer cannot tell whose message it is. Separately, because this path skips the first-wins CONFLICT check, two tenants onboarding the same number via the operator route both silently 'succeed' with no whatsapp.number_bind_conflict audit trail -- the exact silent-collision gap round 1 closed on the internal path is still open on the human path.",
+      "fix": "After a successful exchange in whatsapp_embedded_signup(), call WhatsAppNumberIndex(datastore).bind(body.phone_number_id, body.tenant) and audit whatsapp.number_bind_conflict on CONFLICT, mirroring internal.py:360-377. Better: move the bind+conflict-audit inside WhatsAppOnboarding.exchange() (or a shared helper) so no onboarding entrypoint can forget it."
+    },
+    {
+      "id": "notification-r2-02",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "tenant-isolation/consent",
+      "file": "app/core/whatsapp_optout.py",
+      "line": 44,
+      "title": "WhatsApp marketing opt-out is stored and enforced GLOBALLY by phone, not per-tenant",
+      "detail": "apply_user_preferences() writes the opt-out via prefs.apply_event_opt_out(wa_id, event, ...) keyed only by the customer's wa_id (whatsapp_optout.py:44). The webhook value carries value.metadata.phone_number_id (resolvable to the owning tenant via WhatsAppNumberIndex) but it is discarded. The send path enforces it the same way: notifier._wa_recipient_allows() (app/core/notifier.py:395-401) does prefs.get(recipient) keyed on the bare phone with no tenant. PreferenceStore.get/set (stores.py:56-62) is keyed by `user` only. So the opt-out record is one global row per phone number across the whole platform.",
+      "failure_scenario": "A customer messages Shop A's WhatsApp number 'Stop promotions'. Meta posts user_preferences for Shop A's phone_number_id. The service records marketing opt-out for that phone GLOBALLY. Shop B (a different tenant the same person is a consented customer of) now has its legitimate, consented marketing template sends to that number silently suppressed at notifier.py:113-115. One tenant's inbound opt-out cross-suppresses every other tenant's marketing to that recipient -- a tenant-isolation break (and an availability/revenue hit for the other shops), the inverse of the per-tenant idempotency reasoning already applied elsewhere in this service.",
+      "fix": "Scope the marketing opt-out by (tenant, phone). Resolve the tenant from value.metadata.phone_number_id in apply_user_preferences (or pass it through the webhook fan-out) and key the Preference row per-tenant (e.g. the same len(tenant)+'|'+phone scheme used by CoexistenceStore.record_contact and the idempotency key). Pass the tenant into _wa_recipient_allows on the send path so the check reads the same per-tenant key."
+    },
+    {
+      "id": "notification-r2-03",
+      "severity": "medium",
+      "status": "SPECULATIVE",
+      "category": "tenant-idor/pii-leak",
+      "file": "app/api/internal.py",
+      "line": 415,
+      "title": "Inbound-message and receipt catch-up feeds return ALL tenants' data (incl. customer PII/message bodies) to any internal-token holder, with no tenant filter",
+      "detail": "GET /whatsapp/inbound (internal.py:415-...) and GET /notifications/receipts (internal.py:401-412) call InboundStore.changed_since / DeliveryStore.changed_since, which query on a constant kind with NO tenant filter (stores.py:272-276, 187-196) and return the full row including message body, sender phone, tenant, etc. The default internal-caller driver is `shared` (a single flat bearer token, require_internal_token internal.py:67-95) with default-open policy, so every product service that holds the shared token can poll these endpoints and read every OTHER tenant's inbound WhatsApp messages and delivery metadata. There is no `tenant` query parameter to constrain the read.",
+      "failure_scenario": "A product service legitimately provisioned with the shared X-Internal-Token for its own tenant's onboarding polls GET /whatsapp/inbound and receives the raw inbound messages (customer phone numbers + message content) of every shop on the platform. A compromised or over-privileged internal caller exfiltrates cross-tenant customer PII. Marked SPECULATIVE because this is presented as a deliberate platform reconciliation feed and may be gated by deployment-time NetworkPolicy/per-caller RS256 policy; still, out of the box it is an all-tenant PII feed behind one shared secret.",
+      "fix": "Offer a tenant-scoped variant (accept a `tenant` param and push it into the find where-clause) and/or restrict these feeds via a named internal-policy allow-list rather than default-open, so only the platform reconciliation caller -- not every internal peer -- can read the cross-tenant feed."
+    },
+    {
+      "id": "notification-r2-04",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "concurrency/toctou",
+      "file": "app/core/stores.py",
+      "line": 172,
+      "title": "apply_receipt uses non-atomic read-modify-write on the delivery row; concurrent receipts can regress receipt_status",
+      "detail": "apply_receipt() reads the delivery via by_provider_message_id(), compares ts >= d.receipt_ts in Python, then puts the mutated row (stores.py:172-177). This is a get-then-put with no CAS/version pin, unlike the number-index bind that round 1 correctly hardened. The monotonic guarantee ('a later read is not overwritten by an out-of-order delivered') holds only within a single webhook POST where statuses are applied sequentially.",
+      "failure_scenario": "Meta delivers a 'delivered' status in one webhook POST and a 'read' status in a near-simultaneous retry/second POST for the same wamid. Both handlers read the delivery with receipt_ts=0, both pass the ts>=receipt_ts guard, and whichever put() lands last wins by wall-clock rather than by receipt timestamp -- so a 'delivered' put arriving after the 'read' put silently regresses the delivery snapshot from read back to delivered. The append-only _RECEIPTS event log stays correct (each state is its own row), so only the delivery.receipt_status projection is affected, which bounds the impact.",
+      "fix": "Make the receipt-status update a CAS/version-pinned or conditional update (only advance if the stored receipt_ts is still < ts), or accept the event log as source of truth and derive the snapshot from it. At minimum document that the delivery.receipt_status field is best-effort under concurrent receipts."
+    },
+    {
+      "id": "notification-r2-05",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "webhook-replay",
+      "file": "app/api/webhooks.py",
+      "line": 205,
+      "title": "Webhook accepts any correctly-signed body with no timestamp/nonce freshness check (replayable)",
+      "detail": "receive() verifies X-Hub-Signature-256 over the raw body (webhooks.py:210-212) but performs no freshness/replay check -- no timestamp window, no nonce/event-id de-dup at the webhook layer. A captured, validly-signed POST body replays cleanly through _fan_out.",
+      "failure_scenario": "An attacker who observes a signed webhook body (e.g. via a logging/proxy leak) can re-POST it repeatedly; each replay re-emits the bus events. Impact is bounded because the durable stores are idempotent (InboundStore keyed by wamid, receipts keyed by a deterministic eid, opt-outs are last-writer-wins toggles), so replays converge to the same state; the residual risk is duplicate at-most-once bus events and, for opt-out toggles, re-application of a resume that a later stop should have won. Marked SPECULATIVE/low given the strong downstream idempotency.",
+      "fix": "If Meta supplies a per-event id/timestamp usable here, add a short freshness window and/or a webhook-level seen-id cache to reject stale replays before fan-out; otherwise document that idempotency at the stores is the intended replay defense."
+    },
+    {
+      "id": "notification-r2-06",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "correctness/join-key",
+      "file": "app/adapters/whatsapp/meta.py",
+      "line": 108,
+      "title": "Send returns literal 'wamid:unparsed' sentinel as the provider_message_id join key on unparseable-but-accepted responses",
+      "detail": "_post() returns the string 'wamid:unparsed' when Meta accepts a send (2xx) but the body cannot be parsed for messages[0].id (meta.py:104-108). That sentinel is stored as the delivery's provider_message_id and is the join key receipts match on via DeliveryStore.by_provider_message_id (stores.py:154-160, limit=1).",
+      "failure_scenario": "If two different sends both hit the unparseable-body branch, both deliveries carry provider_message_id='wamid:unparsed'. A later receipt (unlikely, since a real receipt carries a real wamid, but a mis-shaped/status webhook or a future code path calling apply_receipt with the sentinel) would resolve by_provider_message_id('wamid:unparsed') to whichever single row the store returns, attributing a receipt to an arbitrary one of the colliding deliveries. Low likelihood because real receipts carry real wamids; flagged as a latent non-unique join key.",
+      "fix": "Return an empty wamid (falsey) on unparseable bodies and mark the delivery 'sent-without-id', or generate a unique local sentinel per send (e.g. 'wamid:unparsed:'+uuid) so the join key is never shared across deliveries."
+    }
+  ]
+}

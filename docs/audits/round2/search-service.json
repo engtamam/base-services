@@ -1,0 +1,150 @@
+{
+  "service": "search-service",
+  "round": 2,
+  "findings": [
+    {
+      "id": "search-r2-01",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "dos-unbounded-query",
+      "file": "app/core/search_service.py",
+      "line": 129,
+      "title": "max_candidates cap is ineffective for a single high-frequency term (full posting-list load + one get per candidate)",
+      "detail": "In _run, `for term in set(terms): postings = await self._index.postings(index, term)` loads the ENTIRE posting list for each term into memory, then merges every doc_id into candidate_tf. The cost guard `if len(candidate_tf) >= cap: break` is only evaluated AFTER a whole term's postings are absorbed. A single very common term whose posting list already exceeds `cap` (SEARCH_MAX_CANDIDATES=10000) blows straight past it: candidate_tf can hold the term's full list (potentially the whole per-index corpus across ALL tenants, since postings are keyed by (index,term) and shared across tenants), and the subsequent ranking loop (line 140) issues ONE datastore get per candidate before the tenant/filter check. The advertised 'documented cost ceiling' does not bound the two most expensive operations (the posting-list read and the per-candidate get) for the exact pathological query it claims to defend against.",
+      "failure_scenario": "A tenant on a shared index name (e.g. 'products') submits a query containing one term present in most documents (a stopword-surviving common word, or a term the attacker first mass-indexed). BuiltinIndex.postings returns a dict of every doc_id carrying that term across every tenant sharing the index; _run then performs that many datastore.get calls plus an in-memory BM25 rank. At 100 req/min/subject (RATELIMIT_MAX) with cost=1 per request, a handful of subjects drive millions of datastore reads, saturating the connection pool (pool_max default 5) and starving every other request — a self-inflicted DoS the cap was written to prevent.",
+      "fix": "Bound the work BEFORE materialising a term's full list: cap the number of postings consumed per term and in aggregate (e.g. request/slice postings with a limit, or check the cap inside the inner `for doc_id, tf in postings.items()` loop and break). Also cap total datastore.get calls in the ranking loop. Consider ordering terms by doc_freq ascending so rare (cheap, selective) terms are consumed first."
+    },
+    {
+      "id": "search-r2-02",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "pii-erasure-cache-leak",
+      "file": "app/core/erasure.py",
+      "line": 44,
+      "title": "DSAR erasure deletes docs but never invalidates the result cache — erased PII keeps being served for cache_ttl",
+      "detail": "SearchErasure.erase() calls self._index.delete(...) (the raw index engine) directly and never bumps the per-tenant search generation. Cache invalidation lives ONLY in SearchService._bump(tenant) (search_service.py:42), which is called by SearchService.index/delete but NOT by the erasure path. The search result cache key (search_service.py:96) is keyed by `g` = the tenant generation; if the generation is not bumped, previously-cached result pages that contain the erased subject's documents continue to be returned verbatim (with `cached: True`) until SEARCH_CACHE_TTL_SECONDS (default 30s) expires.",
+      "failure_scenario": "compliance-service fans out a DSAR to POST /internal/privacy/erase. The subject's documents are removed from the index and the ack reports success, but any query whose result page was cached before the erase keeps returning the person's name/fields for up to 30s afterward. A DSAR that reports 'erased' while the data is still searchable is a PDPL/GDPR compliance failure, and the window is trivially observable.",
+      "fix": "Have the erasure path bump the tenant's search generation after deletions (inject SearchService or the cache and call the same generation-bump used by index/delete), so cached pages for that tenant are invalidated immediately rather than after TTL."
+    },
+    {
+      "id": "search-r2-03",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "concurrency-lost-update",
+      "file": "app/adapters/index/builtin.py",
+      "line": 73,
+      "title": "Posting-list read-modify-write is a lost update under concurrent indexing — a document can silently become unsearchable",
+      "detail": "upsert() updates each term's posting row with a non-atomic read-modify-write: `row = await self._store.get(_POST, pk) or {}; row[doc_id] = tf; await self._store.put(_POST, pk, row)`. Both DataStore adapters make this racy: the memory adapter deep-copies on get/put (memory.py:18-23), and the postgres adapter does a plain SELECT then a separate INSERT..ON CONFLICT DO UPDATE overwriting the whole `value` (postgres.py:113-129). The `await` points between get and put let a concurrent coroutine/request interleave. Two documents indexed concurrently that share a term each read the same posting row, each add only their own doc_id to a stale copy, and the second put overwrites the first — the first document's posting for that term is lost, so it will not match a search for that term.",
+      "failure_scenario": "Two peer-service index calls (POST /internal/search/index) for docA and docB, both containing the word 'riyadh', are processed concurrently. Both read search_postings['idx:riyadh'] before either writes. docA writes {docA:tf}; docB writes {docB:tf}, clobbering docA. A later search for 'riyadh' never returns docA — a silent correctness/data-integrity loss with no error surfaced.",
+      "fix": "Make the posting update atomic: a JSONB merge in postgres (e.g. `value = value || $delta` or `jsonb_set` in a single statement), a row-level lock (SELECT ... FOR UPDATE within a transaction), or a store-level atomic mutate primitive. At minimum serialise writes per (index) or per (index,term)."
+    },
+    {
+      "id": "search-r2-04",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "concurrency-lost-update",
+      "file": "app/adapters/index/builtin.py",
+      "line": 77,
+      "title": "meta counters (n_docs / total_len) drift under concurrent indexing, skewing BM25 relevance",
+      "detail": "Both _remove_existing (lines 57-60) and upsert (lines 77-81) do read-modify-write on the per-index meta row (n_docs, total_len) with awaits between the get and the put. Concurrent indexing produces lost updates and double counting: two concurrent NEW-doc upserts each read existing=None (skip remove) and each increment n_docs, but the last put wins so one increment is lost — or, symmetrically, concurrent re-indexes double-decrement. n_docs and total_len feed idf() and avg_doc_len in ranking (search_service.py:116-117, ranking.py:16-33), so drift degrades ranking quality for the whole index over time.",
+      "failure_scenario": "A bulk import runs many concurrent /internal/search/index calls into one index. n_docs settles well below (or above) the true document count; avg_doc_len and idf are computed from wrong totals, so relevance scoring is systematically off and pagination totals reported to callers are inaccurate.",
+      "fix": "Update meta atomically (single SQL statement doing the arithmetic, or a transaction with row lock), or derive n_docs/total_len from an authoritative count rather than an incrementally maintained counter."
+    },
+    {
+      "id": "search-r2-05",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "tenant-scoping-correctness",
+      "file": "app/adapters/index/builtin.py",
+      "line": 96,
+      "title": "suggest() scans a global, non-tenant-scoped row window before filtering by tenant — a tenant's suggestions can be starved to empty",
+      "detail": "iter_docs() reads up to _SUGGEST_SCAN (10000) rows of the shared search_docs collection filtered only by `index` (r.get('index') == index), and the tenant filter is applied afterward in SearchService.suggest (search_service.py:213). On a hot index shared by many tenants, the first 10000 rows the store returns may belong entirely to OTHER tenants, so the calling tenant receives zero suggestions even though it has matching documents — and the full scan cost is paid regardless on every keystroke. This is the same shared-index shape that the postings DoS (search-r2-01) exploits: cost is not tenant-proportional.",
+      "failure_scenario": "Tenant B has 50 documents in the 'contacts' index but tenants A and C together have >10000 documents ordered ahead of B's in the store. Every /api/v1/search/suggest call from B scans 10000 of A/C's rows, matches none for B, and returns [] — a broken autocomplete plus a per-keystroke 10000-row read that does no useful work for the caller.",
+      "fix": "Maintain a per-(tenant,index) document index/collection so suggest reads only the caller's rows, or store postings/terms per-tenant so autocomplete is tenant-scoped and O(tenant rows), not O(scan window)."
+    },
+    {
+      "id": "search-r2-06",
+      "severity": "medium",
+      "status": "SPECULATIVE",
+      "category": "pii-erasure-coverage",
+      "file": "app/core/erasure.py",
+      "line": 45,
+      "title": "Erasure matches only owner==subject; PII in fields of documents whose owner is unset/different is never erased (silent DSAR no-op)",
+      "detail": "erase() finds documents with find(_DOCS, {'tenant': tenant, 'owner': subject}). The `owner` field is optional at index time (IndexIn.owner default '', Document.owner default '', search_service.index owner=''). Any document that embeds the subject's PII in its `fields` (name, phone, email) but was indexed without owner set — or with a different owner (e.g. the record's own id) — is not matched, so it is never scrubbed while the ack still reports success (already_absent or a partial count). The service has no way to detect that PII survived.",
+      "failure_scenario": "A peer indexes an order document with fields={customer_name, customer_phone} and owner left blank (or owner=order_id). A DSAR erases the customer: erase() finds zero owner-matching rows, acks {already_absent: true}, and the customer remains fully searchable by name/phone — a PDPL breach that looks like a successful erasure.",
+      "fix": "Define and enforce the owner contract for indexed documents that contain personal data (reject/flag PII-bearing docs without an owner), or erase by additionally matching subject identifiers within indexed fields. At minimum document that erasure coverage depends entirely on callers setting owner correctly, and surface it in the ack."
+    },
+    {
+      "id": "search-r2-07",
+      "severity": "medium",
+      "status": "SPECULATIVE",
+      "category": "access-control-cross-tenant",
+      "file": "app/api/internal.py",
+      "line": 90,
+      "title": "Default-open internal route policy + single fleet-wide shared token lets any internal caller read/erase/index ANY tenant",
+      "detail": "The internal tier authenticates with a shared flat token (INTERNAL_CALLER_DRIVER default 'shared') and authorises via a per-route allow-list that is DEFAULT-OPEN: 'A route with no policy admits any authenticated caller' (require_internal_token, lines 90-91; config INTERNAL_ROUTE_POLICY_JSON default ''). /internal/search/query and /internal/search/suggest take `tenant` from the request body (QueryIn.tenant), and /internal/privacy/erase performs a destructive per-subject deletion for an arbitrary body-supplied tenant. With no INTERNAL_ROUTE_POLICY_JSON configured, any service (or anything) holding the shared token can read every tenant's documents and erase any subject in any tenant, with no per-caller restriction.",
+      "failure_scenario": "A lower-trust service that legitimately needs to index its own entities holds the same shared INTERNAL_SERVICE_TOKEN (fleet secret). Because the token is shared and the route policy is empty by default, that service (or a compromised pod/leaked token) can POST /internal/search/query for a competitor tenant's data, or POST /internal/privacy/erase to destroy another tenant's indexed documents. Nothing in the default configuration constrains caller-to-tenant.",
+      "fix": "Ship a non-empty default route policy for the sensitive internal routes (query/suggest/index/bulk/delete/erase) or require per-caller RS256 assertions (static/jwks driver) in production via a boot guard; bind erase/query to the caller's authorised tenant set rather than trusting the body tenant unconditionally."
+    },
+    {
+      "id": "search-r2-08",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "stored-xss-output-encoding",
+      "file": "app/core/search_service.py",
+      "line": 191,
+      "title": "Highlights embed unescaped user field content wrapped in <em> — HTML-injection/XSS if a consumer renders them as HTML",
+      "detail": "_highlight() builds highlight strings by wrapping matching words as f'<em>{word}</em>' and joining the raw, unescaped words of the field value (lines 191-199). The words come straight from indexed document fields (attacker-controllable via the indexing path). The service returns these as strings in the JSON `highlights` map. If any consumer (operator panel, client app) renders highlight snippets as HTML (the conventional use of <em> highlighting), embedded markup/script in a field value executes.",
+      "failure_scenario": "A document field contains `<img src=x onerror=alert(document.cookie)>` and a searched term. The highlight string returned includes that markup verbatim; a panel that renders search highlights as HTML executes it — stored XSS reaching an operator's session.",
+      "fix": "HTML-escape each word before wrapping (escape then insert <em> around the escaped match), or document that highlights are HTML and must be sanitised/escaped by the caller. Prefer emitting match offsets rather than pre-marked HTML."
+    },
+    {
+      "id": "search-r2-09",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "config-fail-open",
+      "file": "app/core/search_service.py",
+      "line": 34,
+      "title": "Cache generation read/bump fail open silently — a flaky cache can serve stale results after writes",
+      "detail": "_gen() returns '0' on any cache exception (lines 39-40) and _bump() swallows all exceptions (lines 48-49). If the cache backend (redis) intermittently fails, a write's generation bump can be silently dropped while reads still hit a cached page under the old generation key, serving stale results. The degradation is invisible (no metric/log at the call site).",
+      "failure_scenario": "During a redis blip, an index update's _bump() throws and is swallowed; subsequent searches read the still-valid cached page (generation unchanged) and return pre-update results with cached:true until TTL. Combined with search-r2-02, a write that should have refreshed results does not.",
+      "fix": "Distinguish 'cache unavailable' from 'generation 0' (e.g. skip the cache entirely / mark degraded when the backend errors), and emit a metric/log when a bump is dropped so stale-serving windows are observable."
+    },
+    {
+      "id": "search-r2-10",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "tenant-scoping",
+      "file": "app/api/v1/search.py",
+      "line": 44,
+      "title": "Tenantless principals collapse into a shared '__none__' tenant scope",
+      "detail": "_tenant() returns `p.tenant or '__none__'`. Any authenticated principal whose token carries no tenant/org/tid claim (auth.py:_extract_principal sets tenant=None) is mapped to the literal tenant '__none__'. All such principals share one search scope: they can see each other's documents indexed under tenant '__none__', and cannot be isolated from one another.",
+      "failure_scenario": "Two different tenantless service/user tokens (misissued without a tenant claim) both search index 'x'; each sees any document indexed with tenant '__none__', because the isolation key collapses them together. Isolation silently degrades to 'all tenantless callers are one tenant' rather than failing closed.",
+      "fix": "Reject a search from a principal without a resolved tenant (401/403) instead of substituting a shared sentinel, or ensure '__none__' can never be an indexing tenant so the read scope is provably empty."
+    },
+    {
+      "id": "search-r2-11",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "idempotency-partial-write",
+      "file": "app/core/search_service.py",
+      "line": 78,
+      "title": "bulk() is non-atomic and non-idempotent — a mid-batch CrossTenantConflict leaves a partial index and 500s the caller",
+      "detail": "bulk() loops over docs calling self.index() sequentially with no batch idempotency key and no rollback. If any document triggers BuiltinIndex.CrossTenantConflict (builtin.py:66-69) or any store error mid-batch, earlier documents are already indexed, the exception propagates unhandled (internal.py:112 has no try/except) producing a 500, and the returned count is never sent. A retry re-runs the whole batch. Individual upserts are idempotent, but the meta counters are not (see search-r2-04), so retries compound counter drift.",
+      "failure_scenario": "A peer submits a 1000-doc bulk where doc #500 shares an (index,id) with another tenant's document. Docs 1-499 are indexed, doc 500 raises, the caller gets a 500 with no result, retries the full batch, and n_docs is inflated by the re-indexed prefix.",
+      "fix": "Make bulk report per-doc success/failure without aborting the batch (collect errors), or process the batch transactionally; add a batch idempotency key so retries are safe."
+    },
+    {
+      "id": "search-r2-12",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "input-validation",
+      "file": "app/api/internal.py",
+      "line": 40,
+      "title": "Internal DeleteIn / QueryIn tenant and id fields lack the length/pattern bounds the user and IndexIn models enforce",
+      "detail": "DeleteIn (lines 40-43) declares index/id/tenant as bare `str` with no min/max length or pattern, unlike IndexIn (lines 25-32) and SearchIn (search.py:49-56) which constrain index with pattern ^[A-Za-z0-9._-]+$ and cap lengths. An internal caller can pass arbitrarily large or oddly-shaped index/id/tenant strings to /internal/search/delete, which become datastore keys (builtin _dk 'index:doc_id'). Not a direct injection (postgres uses parameterised queries), but unbounded key sizes and inconsistent validation across twins are a hardening gap.",
+      "failure_scenario": "A buggy or hostile internal caller sends a multi-megabyte `id` to /internal/search/delete; it is used unbounded as part of a datastore key with no rejection, inflating storage/index key size and diverging from the validated user-facing contract.",
+      "fix": "Give DeleteIn (and re-check QueryIn) the same Field(min_length/max_length/pattern) constraints as IndexIn/SearchIn so all twins validate identically."
+    }
+  ]
+}

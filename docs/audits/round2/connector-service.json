@@ -1,0 +1,114 @@
+{
+  "service": "connector-service",
+  "round": 2,
+  "findings": [
+    {
+      "id": "connector-r2-01",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "sync-semantics / duplication / liveness",
+      "file": "app/core/sync_engine.py",
+      "line": 173,
+      "title": "at-least-once tail page is re-delivered on every poll forever (terminal/empty cursor is unackable)",
+      "detail": "In at_least_once mode records are intentionally NOT reserved (line 144 gates reserve behind `if not at_least_once`), and the watermark advances ONLY when a subsequent pull echoes a non-empty ack_cursor (line 109 `if ack_cursor and ...` ignores empty). The final page of a resource returns `next_cursor=\"\"` (line 173 `next_cursor = page.next_cursor or \"\"`), so `out[\"cursor\"]=\"\"` (line 192). The consumer's next pull passes ack_cursor=\"\", which line 109 skips, so the watermark stays at the previous cursor Cn-1. fetch(cursor=Cn-1) returns the same tail page again. Default mode survives this because the per-record reserve (line 145) skips already-seen records; at_least_once has no such gate.",
+      "failure_scenario": "Resource has 2 pages. Pull1(alo,ack=\"\"): wm=W0, fetch W0 -> page1, returns cursor=C1. Pull2(alo,ack=C1): wm->C1, fetch C1 -> page2, next_cursor=\"\" returns cursor=\"\". Pull3(alo,ack=\"\"): empty ack ignored, wm stays C1, fetch C1 -> page2 AGAIN. Every subsequent poll re-delivers the entire last page. Steady-state = continuous duplicate delivery; the consumer must retain the dedup key-set for that page indefinitely, and the watermark can NEVER advance to the tail once caught up. A busy connector re-emits its newest batch on every scheduler tick.",
+      "fix": "Advance the watermark on a terminal fetch even in at_least_once mode once the batch has been returned+acked, OR treat an empty returned cursor as 'ack of the last non-empty cursor' (carry a monotonic delivered-cursor so the consumer can ack the tail). Alternatively keep a lightweight per-record delivered-mark in alo mode that is cleared on ack, so a re-poll of an already-delivered-but-unacked tail does not re-emit records the consumer has not yet had a chance to ack."
+    },
+    {
+      "id": "connector-r2-02",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "poison-pill / DLQ amplification / DoS",
+      "file": "app/core/sync_engine.py",
+      "line": 155,
+      "title": "at-least-once poison record is re-dead-lettered on every re-delivery (reserve is set but never checked in alo mode)",
+      "detail": "On a mapping failure in at_least_once mode the code reserves the key (line 155-156 `if at_least_once: await self._seen.reserve(key)`) and DLQs the record (line 157). The comments at lines 152-154 and 161-162 claim the reservation prevents a re-fetch from re-DLQ'ing the same record ('the poison-pill stall'). But the reserve CHECK that would skip the record on re-delivery is guarded by `if not at_least_once` (line 144), so in alo mode it is NEVER consulted. On the next re-delivery of the same un-acked batch the poison record is re-mapped, fails again, `reserve(key)` returns False (ignored), and `self._dlq.add(...)` runs AGAIN, appending a NEW dlq_ row each time.",
+      "failure_scenario": "A batch's newest page contains one unmappable record. Because of connector-r2-01 the tail page is re-fetched on every poll; each poll re-DLQs the poison record with a fresh id (new_id('dlq_')). The sync_dlq collection grows by one row per poison record per poll, unbounded, until the batch is acked (which for a tail page never happens). Dead-letter counts become meaningless, operator alerting floods, and the DLQ store fills. If the consumer never fully processes the batch (e.g. downstream keeps failing) growth is truly unbounded.",
+      "fix": "In at_least_once mode consult the reservation before mapping/DLQ: `if await self._seen.seen(key): continue` for records already durably dead-lettered (a poison marker), OR key the DLQ row by idempotency_key (put(_DLQ, key, ...)) so re-DLQ is an idempotent overwrite rather than an append. Make the code match the comment."
+    },
+    {
+      "id": "connector-r2-03",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "input validation / data loss / ack contract",
+      "file": "app/core/sync_engine.py",
+      "line": 109,
+      "title": "ack_cursor is trusted blindly — watermark set to any caller-supplied string with no proof it was ever issued",
+      "detail": "`if ack_cursor and conn.watermarks.get(resource, \"\") != ack_cursor: conn.watermarks[resource] = ack_cursor` (lines 109-111). The ack value is accepted verbatim from the request body (internal.py:36 `ack_cursor: str = Field(default=\"\", max_length=1024)`) and written straight into the durable watermark. There is no check that ack_cursor equals the `cursor` the service actually returned on a prior pull, no monotonicity check, and no binding to a run id. Whoever holds the internal token (job-service, or any caller that can reach /internal/connectors/sync) can move the watermark to an arbitrary position.",
+      "failure_scenario": "For providers with human-legible cursors (HubSpot timestamp `after`, Salesforce SystemModstamp) a caller (buggy scheduler, replayed/duplicated job, or a compromised internal peer) sends ack_cursor far in the future. The watermark jumps forward and every record between the real position and that cursor is never fetched — silent, unrecoverable data loss for that resource. A stale/duplicated job could equally move it backward, forcing a full re-scan and duplicate processing.",
+      "fix": "Bind the ack to something the service issued: persist the last delivered cursor per (connection,resource) at pull time and reject/ignore an ack_cursor that does not match it; or make ack a distinct step that references the run id whose cursor is being acknowledged. At minimum reject an ack_cursor the service has no record of having returned."
+    },
+    {
+      "id": "connector-r2-04",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "unbounded growth / DoS / cost",
+      "file": "app/core/stores.py",
+      "line": 100,
+      "title": "SeenStore (sync_seen) grows without bound — one permanent row per record, no TTL or pruning",
+      "detail": "Every default-mode pull record (sync_engine.py:145 reserve) and every push record (sync_engine.py:224 reserve) inserts a row into the `sync_seen` collection (stores.py:104 cas insert-if-absent). Rows are only ever deleted by release() on a failed push (line 109). Successfully processed records' reservations are kept forever (by design, for idempotency), and there is no TTL, watermark-based compaction, or sweeper. The rows also carry no tenant field (value is `{\"k\": key}`), so backup/erasure cannot scope or prune them.",
+      "failure_scenario": "A connector syncing 1M records/day accrues ~365M permanent sync_seen rows/year. On the memory datastore this is an unbounded process-memory leak (OOM); on postgres it is unbounded table growth that eventually degrades cas latency on the sync hot path and inflates every backup. There is no operational lever to reclaim the space.",
+      "fix": "Prune reservations below the durable watermark (once the watermark has advanced past a record, its idempotency key can never be re-fetched), or attach a TTL to sync_seen rows sized to the max provider re-delivery window. Add a tenant field so erasure/backup can scope them."
+    },
+    {
+      "id": "connector-r2-05",
+      "severity": "medium",
+      "status": "SPECULATIVE",
+      "category": "concurrency / lost-update / circuit breaker",
+      "file": "app/core/sync_engine.py",
+      "line": 67,
+      "title": "connection read-modify-write is not CAS-guarded — concurrent runs lose circuit-breaker and counter updates",
+      "detail": "Each pull/push loads `conn` once (`self._conns.get`, line 99/199) and later persists mutations with a plain `save()` (ConnectionStore.save -> DataStore.put, an unconditional overwrite; stores.py:18-19). `_record_failure` (line 67-74) reads `conn.consecutive_failures` from that snapshot, computes new circuit state, and saves; `_record_success` (line 76-81) resets it. cas() exists on the datastore but is NOT used for connection saves. Two runs on the same connection (scheduler tick overlapping a slow run, or user /sync concurrent with internal /sync) each hold their own snapshot.",
+      "failure_scenario": "Run A and Run B both load conn with consecutive_failures=4 (threshold=5). Both fail: each computes 5 and saves 5 (not 6); last-writer-wins, so two failures count as one and the breaker trips a cycle late. Worse: Run A records a failure (sets opened_at/state) while Run B records a success on its stale snapshot and saves last, erasing A's trip so a dead provider keeps consuming workers. sync_count/failure_count/watermark updates from the losing writer are also dropped.",
+      "fix": "Persist connection state mutations via cas() with a version check and retry on conflict, or serialize per-connection run execution (advisory lock / single-flight keyed by connection_id) so counters and circuit state are read-modify-written atomically."
+    },
+    {
+      "id": "connector-r2-06",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "PII / secret leakage at rest and in API",
+      "file": "app/core/sync_engine.py",
+      "line": 157,
+      "title": "DLQ stores the full raw provider record and the dead-letters endpoint returns it verbatim",
+      "detail": "Both pull (line 157 `record=rec`) and push (line 242 `record=rec`) dead-letter the complete, unredacted provider payload. `GET /api/v1/connectors/dead-letters` (connectors.py:253-256) returns `DlqStore.list(...)` rows to any caller with connectors.read, and each row includes `record` (SyncRecord.to_dict). Provider records routinely contain PII (contact emails, phones, names) and can contain secrets. This data sits at rest in sync_dlq (retained until manually removed) and is exposed through a read API.",
+      "failure_scenario": "A HubSpot/Salesforce contact fails mapping and is dead-lettered with its full PII body. A connectors.read principal (or a leaked read token) pulls /dead-letters and harvests every failed record's PII across the tenant. Because DLQ rows have no per-subject index, the /internal/privacy/erase path (erasure over text_keys) may also miss them, leaving PII after an erasure request.",
+      "fix": "Store only what reprocessing needs (idempotency_key + a sealed/pointer reference to the payload, or a redacted projection), seal the record body at rest, and redact/omit `record` from the dead-letters read response (return counts + keys + error, fetch the body only via an audited admin path). Ensure DLQ payloads are in erasure scope."
+    },
+    {
+      "id": "connector-r2-07",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "resource leak",
+      "file": "app/core/token_manager.py",
+      "line": 31,
+      "title": "process-wide _LOCKS dict grows one asyncio.Lock per connection id, never evicted",
+      "detail": "`_LOCKS: dict[str, asyncio.Lock] = {}` (line 31) is populated by `_LOCKS.setdefault(conn.id, asyncio.Lock())` (line 114) on every refresh path and never cleaned, even on disconnect. Over the lifetime of a long-running process every connection that ever refreshed retains a Lock object.",
+      "failure_scenario": "A tenant that churns through many short-lived connections (connect/disconnect cycles, or many connections over months) slowly grows _LOCKS unbounded, a small but permanent memory leak. Not exploitable, but unbounded.",
+      "fix": "Evict the lock on disconnect, or use a bounded/weak mapping (e.g. keyed cleanup when a connection is revoked) so the lock table tracks live connections."
+    },
+    {
+      "id": "connector-r2-08",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "sync-semantics / design gap",
+      "file": "app/api/v1/connectors.py",
+      "line": 240,
+      "title": "user-facing /sync cannot opt into at-least-once — user pulls are at-most-once with silent loss on a dropped response",
+      "detail": "The v1 SyncIn model (connectors.py:102-106) has no at_least_once / ack_cursor fields, and the pull call (line 241-242) never passes them, so user-driven pulls always run the default at-most-once path. As the pull() docstring warns (sync_engine.py:89-98), if the HTTP response carrying the batch is lost in transit the watermark has already advanced and those records are never re-fetched. Only the internal tier (internal.py:35-36, 88-90) can request at-least-once.",
+      "failure_scenario": "A tenant integration calls POST /api/v1/connectors/sync (pull); the connection succeeds, the watermark advances, but the response is lost (client timeout, LB reset). The caller retries, gets the NEXT batch, and the first batch is silently gone. The safer delivery mode exists but is unreachable to the user-facing caller.",
+      "fix": "Expose at_least_once/ack_cursor on the v1 SyncIn (or document that user pulls must be treated as at-most-once and steer integrators to the internal/scheduled path). Even a returned cursor the caller could re-submit would let a user integration recover a dropped response."
+    },
+    {
+      "id": "connector-r2-09",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "oauth / token rotation / cross-replica race",
+      "file": "app/core/token_manager.py",
+      "line": 113,
+      "title": "single-flight refresh is per-process only; two replicas can both refresh and one rotated refresh token is lost",
+      "detail": "The refresh lock is a module-global keyed by conn.id (line 31, 114), so single-flight holds only within one process. The comment (lines 28-30, 139-149) acknowledges cross-replica races and relies on the CredentialInvalid recovery (re-read latest conn) to heal. But if the provider permits brief refresh-token reuse, replica B's concurrent refresh with the OLD refresh token can SUCCEED and return a different rotated token (RT3), which store_tokens overwrites A's RT2 with. Whether the connection survives depends entirely on provider-side reuse tolerance and timing.",
+      "failure_scenario": "Replica A and B both see the token expiring and refresh concurrently against a provider that rotates refresh tokens. A stores RT2; B (using RT1 within a reuse window) stores RT3, invalidating RT2. If the provider then rejects RT3 (or a further refresh uses the now-dead RT2 from a stale cache), the connection lands in NEEDS_REAUTH — a spurious re-auth for a healthy integration under load.",
+      "fix": "Add a cross-process guard for refresh (a short datastore/redis lock keyed by connection_id, or a cas on a 'refreshing' marker) so only one replica refreshes; keep the existing re-read recovery as the fallback."
+    }
+  ]
+}

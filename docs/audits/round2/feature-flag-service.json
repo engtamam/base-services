@@ -1,0 +1,150 @@
+{
+  "service": "feature-flag-service",
+  "round": 2,
+  "findings": [
+    {
+      "id": "feature-flag-r2-01",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "authorization / cross-tenant DoS",
+      "file": "app/api/v1/flags.py",
+      "line": 268,
+      "title": "Any flags.manage holder can enable GLOBAL maintenance mode (platform-wide DoS)",
+      "detail": "PUT /api/v1/maintenance is guarded only by _ADMIN = require_any_capability('platform.flags','flags.manage'). MaintenanceIn.module defaults to 'global' and there is NO tenant/module scoping in set_maintenance. Maintenance is a global catalogue keyed only by module (app/core/stores.py:167 MaintenanceStore, one row per module, not per tenant), and MaintenanceService.status() reports the global window as active for every module and every caller. The override endpoints in this same file (lines 177-183, 202-205) go out of their way to confine a 'flags.manage'-only (non-platform) caller to their OWN tenant, which is direct evidence that flags.manage is a tenant-delegatable capability. Yet maintenance has no such guard.",
+      "failure_scenario": "A tenant administrator holding flags.manage (but not platform.flags) sends PUT /api/v1/maintenance {\"module\":\"global\",\"enabled\":true}. Every service and the gateway that poll GET /internal/maintenance now receive active=true and serve a maintenance/503 response to ALL tenants. One tenant took the whole platform down.",
+      "fix": "Require platform.flags (not merely flags.manage) for set_maintenance, or restrict a flags.manage-only caller to a tenant-namespaced module and forbid module='global'. Mirror the tenant-scope guard already applied to overrides."
+    },
+    {
+      "id": "feature-flag-r2-02",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "authorization / cross-tenant flag tamper",
+      "file": "app/api/v1/flags.py",
+      "line": 103,
+      "title": "flags.manage holder can overwrite/kill ANY global flag definition (missing-half authorization)",
+      "detail": "POST /api/v1/flags (upsert_flag) and DELETE /api/v1/flags/{key} (archive_flag) are guarded only by _ADMIN (platform.flags OR flags.manage) with NO tenant scoping. Flags are a single global catalogue keyed by flag key (app/core/stores.py:9-17, FlagStore over collection 'flags'); there is no per-tenant flag ownership. upsert merges the request into the EXISTING document for that key (app/core/flag_service.py:98-104), so any flags.manage caller can flip enabled (the kill-switch), default, rollout_pct, rules, requires_entitlement, start/end on a flag owned/used by other tenants. The override handlers in the same router deliberately scope a non-platform (flags.manage) caller to their own tenant (lines 177-183), proving flags.manage is tenant-delegatable — but that restriction was never applied to full flag CRUD.",
+      "failure_scenario": "A tenant admin with flags.manage POSTs /api/v1/flags {\"key\":\"billing.enforce_entitlement\",\"enabled\":false}. The evaluation engine now returns kill_switch/OFF for that flag for EVERY tenant (evaluate.py:48-49), turning a platform-wide security/billing control off. Or they set rollout_pct=100/default=true to force a gated feature on for all users.",
+      "fix": "Gate flag create/edit/archive on platform.flags, or introduce per-tenant flag ownership and enforce it in upsert/archive the same way overrides are scoped. Do not let a tenant-delegated cap mutate the global catalogue."
+    },
+    {
+      "id": "feature-flag-r2-03",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "authorization / cross-tenant targeting tamper",
+      "file": "app/api/v1/flags.py",
+      "line": 141,
+      "title": "flags.manage holder can create/delete GLOBAL segments other tenants' flags target",
+      "detail": "POST /api/v1/segments and DELETE /api/v1/segments/{key} are guarded only by _ADMIN with no scoping. Segments are a global, reusable catalogue referenced by name from any flag (app/core/stores.py:88-108 SegmentStore; app/core/flag_service.py:184-192 _in_segment resolves flag['segments'] names against the shared SegmentStore). Deleting or redefining a segment silently changes the targeting outcome of every flag across every tenant that references it.",
+      "failure_scenario": "Flag 'premium_ui' targets segment 'paying_customers'. A tenant admin with flags.manage DELETEs segment 'paying_customers'. _in_segment now returns False for all callers, so segment_match (evaluate.py:72-73) never fires and the flag falls through to rollout/default for everyone platform-wide. Or they redefine the segment's rules to broaden the audience.",
+      "fix": "Require platform.flags for segment mutation, or namespace segments per tenant and enforce ownership on write/delete."
+    },
+    {
+      "id": "feature-flag-r2-04",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "authorization / cross-tenant config tamper",
+      "file": "app/api/v1/flags.py",
+      "line": 227,
+      "title": "flags.manage holder can write/rollback GLOBAL versioned config",
+      "detail": "PUT /api/v1/config/{key} and POST /api/v1/config/{key}/rollback are guarded only by _ADMIN. ConfigService/ConfigStore are env-scoped (CONFIG_ENV) but NOT tenant-scoped (app/core/config_service.py:22-39, app/core/stores.py:110-164). Any flags.manage caller can overwrite or roll back platform configuration keys used by other services/tenants. GET /internal/config/{key} then serves these values fleet-wide.",
+      "failure_scenario": "A tenant admin PUTs /api/v1/config/{some_platform_key} with a value that changes another service's behaviour (a URL, a limit, a feature toggle stored as config), or rolls a key back to an older value, affecting all tenants.",
+      "fix": "Require platform.flags for config writes/rollbacks, or scope config keys per tenant and enforce ownership."
+    },
+    {
+      "id": "feature-flag-r2-05",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "config fail-open / control-off default",
+      "file": "app/config.py",
+      "line": 271,
+      "title": "requires_entitlement is silently a no-op under the default 'null' entitlement driver (fail-open gate)",
+      "detail": "ENTITLEMENT_CHECKER_DRIVER defaults to 'null' (app/config.py:271). NullEntitlement.allowed() unconditionally returns True (app/adapters/entitlement/null.py:8-9). In evaluate.py:57 the entitlement gate only denies when entitled is False; with the null driver entitled is always True, so 'requires_entitlement' never blocks. The billing driver is correctly fail-CLOSED, but it is opt-in. A deployment that ships defaults (or forgets to set ENTITLEMENT_CHECKER_DRIVER=billing-http + creds) treats every tenant as entitled to every gated feature.",
+      "failure_scenario": "A flag gating a paid or security-sensitive capability sets requires_entitlement='pro_plan'. On a deployment still on the default null driver, every tenant — including free/unpaid ones — evaluates the flag as entitled and receives the gated feature. The control that was supposed to be enforced by billing is off, silently.",
+      "fix": "Make the entitlement gate fail-closed by default when a flag declares requires_entitlement but no real checker is configured (e.g. treat null-driver + requires_entitlement as denied, or refuse to start with a warning), or default the driver to billing-http in production profiles and log loudly when a requires_entitlement flag is evaluated under the null driver."
+    },
+    {
+      "id": "feature-flag-r2-06",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "DoS / read+HTTP amplification on hot path",
+      "file": "app/core/flag_service.py",
+      "line": 242,
+      "title": "evaluate_all does per-flag entitlement HTTP + per-flag uncached segment reads (no per-request memoization)",
+      "detail": "evaluate_all iterates every flag and calls _resolve per flag (flag_service.py:242-252). _resolve calls _entitled (line 229) which, for every flag with requires_entitlement, runs a blocking billing HTTP call via asyncio.to_thread (lines 219-221), and _in_segment (line 230) which does an uncached SegmentStore.get datastore round-trip for each referenced segment name (lines 184-192). Nothing memoizes entitlement results or segment lookups within a single evaluate_all call. With N flags (up to FLAG_LIST_LIMIT=500) each requiring the same entitlement key and/or referencing segments, one evaluate_all fans out to N billing HTTP calls (threadpool saturation) and N*M segment reads. Reachable by any flags.read holder (POST /api/v1/flags/evaluate with no keys) and by any internal caller (POST /internal/flags/evaluate).",
+      "failure_scenario": "A caller POSTs /api/v1/flags/evaluate with an empty keys list against a catalogue where 50 flags share requires_entitlement='pro'. Each request issues 50 blocking 10s-timeout billing calls through the threadpool; a burst of such requests exhausts the threadpool and stalls all flag evaluation across the process (the very failure the to_thread offload was meant to avoid, just moved up a level).",
+      "fix": "Memoize entitlement results per (tenant,key) and segment membership per (segment,attrs) for the duration of one evaluate_all call; consider a short-TTL cache for segment definitions like the flag-definition cache."
+    },
+    {
+      "id": "feature-flag-r2-07",
+      "severity": "medium",
+      "status": "SPECULATIVE",
+      "category": "cross-tenant information disclosure",
+      "file": "app/api/v1/flags.py",
+      "line": 219,
+      "title": "/flags/evaluate scopes tenant but not user — arbitrary global user ids can be probed",
+      "detail": "In the evaluate endpoint the tenant is forced to the caller's own tenant for non-platform callers (line 219), but body.user is passed through unchanged (line 220). User overrides and per-user rollout bucketing key on a GLOBAL user id (the code itself notes at lines 180-182 that a user override targets a global user id carrying no tenant). A flags.read holder can therefore evaluate flags as any arbitrary user id and observe the decision and the reason string ('user_override', 'segment_match', 'rule_match', 'variant_rollout').",
+      "failure_scenario": "A tenant-A operator with flags.read POSTs /api/v1/flags/evaluate {\"user\":\"<a user id belonging to tenant B>\"} and reads back reason='user_override' plus the enabled value and variant, learning that a platform-level override exists for that user and what it resolves to — cross-tenant leakage of targeting/experiment state.",
+      "fix": "Either require the evaluated user to belong to the caller's tenant, or accept that user ids are opaque but suppress override-existence reasons for non-platform callers. At minimum document that user is caller-supplied and unscoped."
+    },
+    {
+      "id": "feature-flag-r2-08",
+      "severity": "medium",
+      "status": "SPECULATIVE",
+      "category": "information disclosure / PII-secret exposure",
+      "file": "app/api/v1/flags.py",
+      "line": 239,
+      "title": "GET /config/{key} exposes global config to any flags.read holder (no scoping)",
+      "detail": "GET /api/v1/config/{key} is guarded by _READ (platform.flags OR flags.manage OR flags.read) and returns the full ConfigEntry value with no tenant scoping (config is global/env-scoped, app/core/config_service.py:27-28). If any config key stores sensitive platform values (URLs with tokens, limits, credentials, or PII), a low-privileged flags.read holder in any tenant can read them by key. Severity depends on what operators store in config.",
+      "failure_scenario": "An operator stores an integration setting containing a secret under config key 'x'. A tenant user with only flags.read GETs /api/v1/config/x and reads the secret. There is no per-tenant or sensitivity gating.",
+      "fix": "Scope config reads (require platform.flags for global config, or namespace per tenant), and/or mark keys as sensitive and redact on read for non-platform callers."
+    },
+    {
+      "id": "feature-flag-r2-09",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "privacy / cache staleness + lost-update",
+      "file": "app/core/erasure.py",
+      "line": 39,
+      "title": "DSAR erasure does not invalidate the flag cache and bypasses CAS",
+      "detail": "FeatureFlagErasure.erase removes the subject from user_overrides and writes via self._store.put directly (erasure.py:39-44). It does NOT invalidate the FlagService definition cache (flag:<key> / flags:all), so an erased user's override keeps influencing evaluation and remains readable from cache for up to FLAG_CACHE_TTL_SECONDS after the DSAR acks. The direct put also bypasses the version CAS used everywhere else (FlagStore.cas_save), so a concurrent admin override edit and the erasure can clobber each other (last-writer-wins), potentially resurrecting the erased entry.",
+      "failure_scenario": "compliance-service calls /internal/privacy/erase for a subject. The ack says erased, but for the next cache-TTL window flag evaluations still apply that person's cached user_override, and a concurrent set_override on the same flag can re-add the erased subject (lost update).",
+      "fix": "Invalidate the flag caches for touched keys after erasure (reuse FlagService._invalidate), and perform the override removal through the CAS-retry mutate path instead of a raw put."
+    },
+    {
+      "id": "feature-flag-r2-10",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "predictability / weak default",
+      "file": "app/config.py",
+      "line": 274,
+      "title": "ROLLOUT_SALT defaults to a public constant, making rollout buckets predictable",
+      "detail": "ROLLOUT_SALT defaults to the literal 'base-services' (app/config.py:274). Bucketing is sha256(salt:key:subject) mod 10000 (app/core/rollout.py:14-25) and the flag key is discoverable. With the default salt an attacker can compute, for any subject id they control, whether they fall below the rollout threshold for a given flag key, and can grind user/tenant ids until they land in the enabled bucket.",
+      "failure_scenario": "A flag with rollout_pct=5 gates early access to a sensitive feature. Knowing the default salt and the flag key, an attacker enumerates candidate user ids offline, finds one whose bucket < 500, and uses it to force themselves into the 5% rollout for the gated capability.",
+      "fix": "Require ROLLOUT_SALT to be set to a per-deployment secret (fail startup on the default in production), and treat it as a secret rather than a config constant."
+    },
+    {
+      "id": "feature-flag-r2-11",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "postgres-vs-memory divergence / pagination correctness",
+      "file": "app/adapters/datastore/postgres.py",
+      "line": 230,
+      "title": "Cursor pagination tie-breaks on absent 'id' field, causing boundary-row duplication in stale() on postgres",
+      "detail": "find() encodes the next cursor from last.get('id','') (postgres.py:230, memory.py:84), but the flag/config/segment models have NO 'id' field (app/core/models.py) — only 'key'. The postgres find WHERE tie-break compares (value->field, key) against (cursor_value, cursor_id) where cursor_id is '' (postgres.py:201-213), while ordering/keying is on the real 'key' column. For the boundary row where value->'key' == key == last_key, the comparison (last_key, last_key) > (last_key, '') is TRUE, so the previous page's last row is re-returned on the next page. The in-memory datastore does not exhibit this because its tie-break degenerates identically for both sides. This diverges memory vs postgres and yields duplicate entries in the paginated FlagStore.stale() sweep (app/core/stores.py:70-85).",
+      "failure_scenario": "On postgres with >500 live flags, GET /api/v1/flags/stale returns the page-boundary flag twice per page turn, inflating and duplicating the cleanup worklist; results differ from the in-memory test/dev backend which is clean, so tests miss it.",
+      "fix": "Encode the cursor tie-break from the actual key column (r['key']/the sort key), not a non-existent 'id' JSON field, and use a strict boundary comparison so the last returned row is excluded from the next page. Align memory and postgres on the same tie-break field."
+    },
+    {
+      "id": "feature-flag-r2-12",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "evaluation precedence design",
+      "file": "app/core/evaluate.py",
+      "line": 72,
+      "title": "segment_match forces enabled=True, overriding a targeting rule that would disable",
+      "detail": "In the precedence chain, a segment match (evaluate.py:72-73) returns decision(True,'segment_match') unconditionally and sits ABOVE targeting rules (line 75) and rollout. A flag whose intent is 'in this audience, evaluate the rule/variant' cannot express 'in this segment but rule says off' — segment membership always forces ON. Combined with cross-tenant segment editability (finding 03), this makes segment membership a hard on-switch.",
+      "failure_scenario": "An operator adds a segment to a flag expecting it to scope the audience for the rules/rollout below, but every segment member now gets enabled=True regardless of the flag's rules — a gated feature turns on for the whole segment unexpectedly.",
+      "fix": "Document that segment_match is an on-switch, or let a segment feed into (rather than short-circuit above) rule/rollout evaluation; consider a per-flag flag for segment semantics."
+    }
+  ]
+}

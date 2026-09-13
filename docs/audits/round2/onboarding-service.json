@@ -1,0 +1,102 @@
+{
+  "service": "onboarding-service",
+  "round": 2,
+  "findings": [
+    {
+      "id": "onboarding-r2-01",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "concurrency/TOCTOU",
+      "file": "app/core/provisioning.py",
+      "line": 49,
+      "title": "Concurrent /provision runs are unserialized: one request's compensation can tear down resources another request confirmed",
+      "detail": "ProvisioningService.provision() (and the /onboarding/provision route, onboarding.py:118) take no lock or dedup on (tenant, subject). Two concurrent calls for the same signup both run the Saga forward. Every step key is derived (prv_ hash of tenant|subject|kind), so downstream services dedupe: the second create returns 409/EXISTS which ProvisionResult.ok treats as success (ports/provisioner.py:52). Nothing coordinates the two sagas or their compensations.",
+      "failure_scenario": "Customer double-clicks Provision (or a client retries on timeout). Request A: create tenant -> ref T (ok); create membership -> transient downstream 500 -> A begins compensation, DELETEs membership then DELETEs tenant T. Request B, interleaved: create tenant -> 409 EXISTS ref T (ok); create membership -> succeeds; B returns HTTP 200 {ok:true}. But A's rollback has already deleted tenant T. The customer is told provisioning succeeded while the tenant (and the just-created membership hanging off it) has been destroyed. No error surfaces to B.",
+      "fix": "Serialize provisioning per (tenant, subject): take an advisory lock / row lock on the provisioning_runs id for the duration of the saga, or make provision() a no-op short-circuit when a prior run with ok=true and no unfinished work already exists. At minimum treat a run as a single-writer critical section so a rollback cannot race a concurrent forward run."
+    },
+    {
+      "id": "onboarding-r2-02",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "concurrency/data-loss",
+      "file": "app/core/provisioning.py",
+      "line": 77,
+      "title": "provisioning_runs record is blind-overwritten: a later clean run erases an earlier run's unfinished/residue cleanup queue",
+      "detail": "provision() writes the run record with self._store.put('provisioning_runs', record['id'], record) using the fixed _run_key(tenant, subject). The write is a full replace, not a merge. resume() (line 127) treats record['unfinished'] as THE cleanup queue.",
+      "failure_scenario": "Run A fails mid-saga and records unfinished=[{step:'tenant', reference:T, error:...}] (wallet-service was down during rollback). Before an operator resumes, run B (a retry) executes, its forward steps all return EXISTS, ok=true, unfinished=[], and put() overwrites A's record. resume()/admin/resume now finds nothing outstanding and returns 'nothing to resume', while resource T is still orphaned and the queue that would have cleaned it is gone. The self-healing invariant the file is built around ('the unfinished list IS the queue') is silently defeated.",
+      "fix": "Merge rather than replace: when writing a run record, union any pre-existing unfinished/residue entries not addressed by this run, or refuse to overwrite a record that still has unfinished work. Alternatively key runs by attempt and aggregate outstanding work across attempts."
+    },
+    {
+      "id": "onboarding-r2-03",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "config/anti-abuse-dead-control",
+      "file": "app/container.py",
+      "line": 147,
+      "title": "identity_lookup is never wired, so every once_per=verified_identity grant is permanently REFUSED (the headline welcome credit can never issue)",
+      "detail": "Container.identity_lookup defaults to None (container.py:147) and build_container() never assigns it (it sets clock, local_facts, grant_ledger at 251-253 but no identity_lookup). claim_grant builds GrantService with identity_lookup=c.identity_lookup (=None) and calls issue() WITHOUT claim_ref. In grants._uniqueness_key, once_per=='verified_identity' -> ref = claim_ref('') or _lookup_identity(); _lookup_identity returns '' because self._identity is None (grants.py:147-148) -> key None -> GrantOutcome REFUSED (grants.py:82-87).",
+      "failure_scenario": "The shipped b2b_self_serve flow's welcome_credit uses once_per='verified_identity' (onboarding_flows.py:106). In any real deployment every /claim-grant for it returns status=REFUSED ('no verified identity is on record') even for a fully business-verified tenant. The flagship gift never pays out, AND the once-per-verified-identity anti-abuse mechanism the whole grants.py module exists for is dead/untested code in production. Fail-closed for money, but the strongest control in the design is not actually exercised.",
+      "fix": "Wire an identity_lookup adapter (verification-service claim_ref_for) into build_container and pass it through, OR have claim_grant/evaluator supply claim_ref from the verification requirement's answer so _uniqueness_key can key on the verified identity."
+    },
+    {
+      "id": "onboarding-r2-04",
+      "severity": "medium",
+      "status": "SPECULATIVE",
+      "category": "concurrency/idempotency",
+      "file": "app/core/grants.py",
+      "line": 91,
+      "title": "Grant issuance is check-then-act on a non-atomic ledger; the 'one grant when raced' guarantee is fully delegated to the backend",
+      "detail": "GrantService.issue does existing = await ledger.find(key) (91) then, if absent, entitlement.issue() then ledger.record() (114). find/record are separate store ops with no compare-and-set or unique-insert. The route docstring (onboarding.py:92) and grants.py header claim racing yields one grant, but onboarding's own ledger provides NO such guarantee. The only real dedup is the entitlement backend's idempotency on source=key. WalletEntitlement relies on wallet-service deduping on source (wallet.py:53); NullEntitlement/any future 'trial'|'plan' backend (config.py:173 lists these) may not.",
+      "failure_scenario": "ONBOARDING_ENTITLEMENT is later pointed at a non-idempotent grant backend. Two concurrent /claim-grant calls (same key) both find() empty, both call entitlement.issue(), both succeed -> the customer is granted twice. Even with wallet, if wallet's dedup window or source handling ever changes, onboarding has no second line of defense.",
+      "fix": "Make the ledger the authority: insert the ledger row with a unique-key/CAS BEFORE calling the backend (reserve-then-issue), or use an atomic put-if-absent so a concurrent second caller sees ALREADY without reaching the backend. Do not depend solely on downstream idempotency for a money control."
+    },
+    {
+      "id": "onboarding-r2-05",
+      "severity": "medium",
+      "status": "SPECULATIVE",
+      "category": "idempotency/provisioning",
+      "file": "app/api/v1/onboarding.py",
+      "line": 118,
+      "title": "/provision has no self-idempotency; safety rests entirely on every downstream create being idempotent on the derived key",
+      "detail": "The route re-runs the full forward saga on every call with no check that a prior run already completed successfully (contrast provisioning_run/resume which DO read the record). The docstring 'Safe to call twice' is true only because HttpProvisioner maps 409->EXISTS on the downstream's dedup of the prv_ key (provisioner/http.py:40).",
+      "failure_scenario": "A provisioner kind is added whose downstream does NOT dedupe on idempotency_key (or ignores the key), or a downstream that returns 200+new-id instead of 409 on replay. Re-pressing Provision then creates a second tenant/membership/resource, the exact orphan/duplication class the module was built to prevent, with no guard in onboarding itself.",
+      "fix": "Before running the saga, load the run record; if a prior run is ok=true with no unfinished work, return it as a no-op. Keep the derived-key downstream dedup as defense-in-depth, not the sole mechanism."
+    },
+    {
+      "id": "onboarding-r2-06",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "trust/config-injection",
+      "file": "app/adapters/provisioner/http.py",
+      "line": 34,
+      "title": "Flow-declared provisioning attributes are spread into the request body after the fixed identity keys and can override them",
+      "detail": "create() builds body = {'tenant': request.tenant, 'subject': request.subject, 'idempotency_key': request.key, **request.attributes}. Because **attributes is spread LAST, an attributes entry named tenant/subject/idempotency_key silently overrides the caller-derived values. attributes come from flow config (onboarding_flows.py provisions[].attributes), which is deployment-trusted, but there is no guard.",
+      "failure_scenario": "A flow author (or a compromised/mistyped flow declaration) sets provisions:[{kind:'tenant', attributes:{tenant:'victim', idempotency_key:'fixed'}}]. Every customer's tenant creation is then sent with tenant='victim' or a constant idempotency key, collapsing all customers onto one downstream record or targeting another tenant. Blast radius is limited to whoever can edit flow config, but the identity keys should not be silently overridable.",
+      "fix": "Build attributes first and overlay the fixed keys last, or reject attributes keys that collide with tenant/subject/idempotency_key at flow validation time (flows.validate)."
+    },
+    {
+      "id": "onboarding-r2-07",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "correctness/config-consistency",
+      "file": "app/core/grants.py",
+      "line": 144,
+      "title": "A grant declared without once_per is silently REFUSED at issue, contradicting the validator that permits it as a 'granted every time' case",
+      "detail": "flows.validate (flows.py:70-74) treats grants-without-once_per as a non-fatal WARNING, documenting that a platform may legitimately grant something on every flow (tutorial flag, welcome email). But claim_grant passes once_per=spec.get('once_per','') and _uniqueness_key returns None for any once_per not in {verified_identity, tenant, subject} (grants.py:144), so issue() returns REFUSED. Such a grant can therefore NEVER be issued.",
+      "failure_scenario": "An operator declares a repeatable tutorial-flag grant relying on the validator's stated allowance. The flow boots (only a warning), onboarding reports the grant REFUSED on every claim, and the intended per-flow grant is never delivered while every check looks green.",
+      "fix": "Either make 'granted every time' explicit (e.g. once_per='none' producing a per-call key) and honor it in _uniqueness_key, or make the validator reject grants without once_per so the behavior matches the documentation."
+    },
+    {
+      "id": "onboarding-r2-08",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "operability/orphan-visibility",
+      "file": "app/core/saga.py",
+      "line": 114,
+      "title": "Irreversible-step residue records only the step name, not the created resource reference, so operators cannot locate the orphan",
+      "detail": "In _compensate, an undo-less step appends residue = {step: name, why: reason} but omits step.result (the created resource id). By contrast the unfinished branch (line 127) correctly carries reference=step.result. An irreversible step that nevertheless created something (e.g. an emitted external resource) leaves the operator its NAME but not its id.",
+      "failure_scenario": "A signup includes an irreversible step that produced a resource with an id. The saga fails later, residue lists the step but not the reference. An operator reading /admin/provisioning/{subject} sees 'residue: [that step]' with no id, and cannot find or manually reconcile the created artifact.",
+      "fix": "Include reference=step.result (and irreversible_reason) in the residue dict, mirroring the unfinished entry, so operators can locate what the world is still carrying."
+    }
+  ]
+}

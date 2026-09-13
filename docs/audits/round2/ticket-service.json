@@ -1,0 +1,138 @@
+{
+  "service": "ticket-service",
+  "round": 2,
+  "findings": [
+    {
+      "id": "ticket-r2-01",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "pii-leak-at-rest",
+      "file": "app/api/v1/tickets.py",
+      "line": 118,
+      "title": "Raw principal.subject written as audit `actor` into the immutable hash-chained audit log on every ticket route",
+      "detail": "Every user-facing ticket route calls request.app.state.auditor.record(..., actor=principal.subject, ...) with the RAW JWT `sub` claim (an email or user id — auth.py:32 `subject=str(claims.get(\"sub\",\"\"))`). Auditor.record (app/core/audit.py:68-103) does NOT pseudonymize `actor`; it stores it verbatim in the AuditEvent (audit.py:79) which is emitted into an append-only, hash-chained sink. This directly contradicts (a) the project rule captured in memory ('audit resource= takes subject_ref not a raw person'), (b) operator.py which carefully pseudonymizes with _actor() (operator.py:50-56) before every operator.* audit call, and (c) internal.py grantee routes which audit with the pseudonymous gref. Affected calls: ticket.created (tickets.py:118), ticket.replied (199), ticket.status_changed (323), ticket.escalated (347), ticket.assigned (363).",
+      "failure_scenario": "A customer opens a ticket. Their email (JWT sub) is written raw into the immutable audit chain as the actor of ticket.created. Because the chain is tamper-evident, the value can never be redacted without breaking verify(). A later DSAR erase (internal.py:85 -> erasure.py) only touches the `tickets` and `ticket_events` collections and matches by pseudonym, so the raw email persists in the audit log forever — an un-erasable PII record and a GDPR/PDPL right-to-erasure failure.",
+      "fix": "Pseudonymize before auditing exactly as operator.py does: pass actor=subject_ref(PII_SALT, tenant, principal.subject) (or a shared helper) for every auditor.record call in tickets.py. Alternatively make Auditor.record pseudonymize actor centrally, but the per-call helper keeps the pattern uniform with operator.py/internal.py."
+    },
+    {
+      "id": "ticket-r2-02",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "pii-leak-at-rest",
+      "file": "app/core/ticket_service.py",
+      "line": 92,
+      "title": "Operator raw identity stored in the immutable ticket_events.actor_ref (reply/transition/escalate/assign)",
+      "detail": "In reply() `actor_ref = author if is_operator else self.pseudonym(...)` (ticket_service.py:92); transition() `actor_ref = actor if is_operator else ...` (line 129); escalate() same (line 152); assign() appends actor_ref=actor raw (line 167). For operator actions the RAW principal.subject is persisted into ticket_events, an append-only 'HISTORY IS THE TRUTH' log. The TicketEvent model doc claims actor_ref is 'pseudonym of who acted (raiser or operator)' (models.py:111) — the code violates its own contract. DSAR erasure (erasure.py:64) redacts event bodies only where actor_ref == subject_ref(...) i.e. a pseudonym, so a raw operator id is never matched and never redacted.",
+      "failure_scenario": "An operator (agent email in JWT sub) replies to and resolves a ticket. Their raw email is written into ticket_events.actor_ref for the replied/status_changed events. If that operator later exercises their own erasure right, erasure.erase() computes their pseudonym and matches zero events, returning already_absent while their raw email remains in the immutable log.",
+      "fix": "Always pseudonymize the actor into actor_ref for the log (operator identities included), keeping a separate non-PII role label (the existing `by`/is_operator flag) for KPI classification. If an operator's real handle must be shown in an operator UI, resolve it at read time from a reversible store, never persist it raw in the event log."
+    },
+    {
+      "id": "ticket-r2-03",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "concurrency-lost-update",
+      "file": "app/core/ticket_service.py",
+      "line": 161,
+      "title": "assign/tag/rate/escalate use plain save() and clobber a concurrent CAS status transition",
+      "detail": "Round 1 made transition() atomic via cas_save (ticket_service.py:133, TicketStore.cas_save stores version-pinned). But assign() (line 165), tag() (line 174), rate() (line 187) and escalate() (line 154) all call self._tickets.save(t) -> DataStore.put (stores.py:21-23), an unconditional upsert that writes the whole row (including the stale status and the stale version read before the mutation). put ignores the optimistic-lock version entirely.",
+      "failure_scenario": "Concurrent paths: operator A POSTs /tickets/{id}/status open->resolved (cas succeeds, row now version N+1, status=resolved); operator B POSTs /tickets/{id}/assign at the same time, having fetched the row at version N/status=open. B sets assignee and calls save()->put, overwriting the row with status=open, no resolution, and version=N. The status_changed event still exists in the log but the projection every read uses has silently reverted to open — the ticket looks un-resolved, and the version counter is rolled back so a subsequent stale CAS could also misfire. The atomicity round 1 added is defeated by any sibling mutator.",
+      "fix": "Route all mutations that persist the ticket row through the same CAS-retry loop transition() uses (fetch -> mutate -> cas_save -> retry on False), or restrict save() to inserts only and make every projection update version-checked."
+    },
+    {
+      "id": "ticket-r2-04",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "concurrency-toctou",
+      "file": "app/core/inbound_bridge.py",
+      "line": 92,
+      "title": "Inbound thread-grouping index is get-then-put (TOCTOU) — concurrent messages open duplicate tickets for one customer",
+      "detail": "The external-id idempotency claim is atomic (cas on _INGESTED, inbound_bridge.py:83), but the per-customer thread GROUPING is not: idx = await self._store.get(_THREAD, tkey) (line 92), then on a miss open() a ticket and self._store.put(_THREAD, tkey, {ticket_id}) (line 103). There is no CAS/lock on the thread key. Two DISTINCT external_ids from the same (tenant, channel, sender) each pass their own idempotency claim and race this read-modify-write.",
+      "failure_scenario": "Concurrent paths: a scheduled poll batch (ingest_batch) plus a retry, or two pods, process two different inbound messages from the same phone number within the same window. Both call get(_THREAD, tkey) -> empty, both call svc.open(), producing TWO open tickets, then both put the thread index (last writer wins). The documented invariant 'one open ticket per customer per channel' (module docstring, lines 12-14) is violated, and one of the two tickets is orphaned from the thread index so future replies never append to it.",
+      "fix": "Reserve the thread slot atomically: cas(_THREAD, tkey, 0, {\"ticket_id\": placeholder}) as an insert-if-absent before opening, then update it with the real ticket_id; the loser of the race re-reads and appends to the winner's ticket. Alternatively serialize per (tenant,channel,sender)."
+    },
+    {
+      "id": "ticket-r2-05",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "dos-unbounded-read",
+      "file": "app/api/internal.py",
+      "line": 320,
+      "title": "Shared-tickets list pages the ENTIRE tenant when the grant scope is narrow (O(tenant rows) per request)",
+      "detail": "list_shared_tickets loops `while len(covered) <= cap:` calling tickets.find(tenant=tenant, limit=cap+1, after=cursor) and post-filtering with grant.covers, breaking only when cap+1 covered rows are found OR the tenant is exhausted (internal.py:320-326). The comment acknowledges this was chosen over a single page to fix an under-read, but it converts a bounded read into a scan of the whole tenant whenever the grant's scope matches few tickets.",
+      "failure_scenario": "A tenant with 1,000,000 tickets grants a partner a scope of {\"type\":[\"vip\"]} that matches 3 tickets. Each GET /internal/tickets?tenant&grantee pages through all ~1M rows (≈5000 find() round trips at cap=200) before returning. A grantee (or an internal caller holding the shared token) can repeat this cheaply, exhausting the DB pool (postgres pool_max is small, postgres.py:75) and starving every other request — a request-path amplification/DoS.",
+      "fix": "Cap total pages scanned per request (e.g. a max_pages / max_rows budget) and return `truncated=true` with a continuation cursor when the budget is hit, so the read stays O(budget). Better: push the scope filter (type/status allowlists) into the find() where-clause so the datastore returns only covered rows."
+    },
+    {
+      "id": "ticket-r2-06",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "tenant-idempotency",
+      "file": "app/core/inbound_bridge.py",
+      "line": 77,
+      "title": "Inbound idempotency key is not tenant-scoped",
+      "detail": "ikey = f\"{msg.channel}:{msg.external_id}\" (inbound_bridge.py:77) keys the dedupe claim on channel+external_id only, omitting tenant — despite the thread key being carefully length-prefixed with tenant (line 54) and the project's own 'tenant-scoped idempotency' lesson ('a global key = cross-tenant unbilled usage'). external_id is trusted to be globally unique (a WhatsApp wamid is), but the primitive is documented as channel-agnostic ('any channel tomorrow'), and a channel whose external ids are only unique PER tenant (an incrementing per-account id, a per-shop reference) would collide.",
+      "failure_scenario": "A future/second inbound channel issues sender-scoped or tenant-scoped message ids. Tenant A ingests message id 42 (claims 'chan:42'). Tenant B legitimately receives its own message id 42; ingest() finds the claim present and returns 'skipped', silently dropping tenant B's customer message — a cross-tenant message loss and a support gap.",
+      "fix": "Length-prefix the tenant into ikey exactly as _thread_key does: f\"{len(tenant)}:{tenant}|{channel}:{external_id}\"."
+    },
+    {
+      "id": "ticket-r2-07",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "authorization-divergence",
+      "file": "app/api/internal.py",
+      "line": 447,
+      "title": "Grantee write routes bypass the per-type reply_capability enforcement",
+      "detail": "Round 1 added reply-capability enforcement — but only in the user-facing route (tickets.py:194-197 checks svc.reply_capability_for(t.type) for non-operators). TicketService.reply() itself performs no capability check (ticket_service.py:88-102). The internal grantee reply route (internal.py:447 reply_as_grantee -> svc.reply) and grantee open (internal.py:415) call the core directly with is_operator=False and never consult reply_capability_for. Enforcement therefore lives in the route, not the core, contradicting the service docstring's claim that rules are 'ENFORCED here, in the core, not trusted from the client' (ticket_service.py:2-7).",
+      "failure_scenario": "A tenant configures a ticket type with reply_capability set to a restricted capability (e.g. 'billing.agent'). A write-consented grantee replies via POST /internal/tickets/{id}/replies; the reply is accepted regardless of the type's reply_capability because only the grant's write flag is checked. The consent model (write) is the intended authority here, so impact is limited, but the per-type reply restriction is silently unenforced for grantees and any future non-HTTP caller.",
+      "fix": "Move the reply_capability check into TicketService.reply (accept the caller's capability set / class) so every path — HTTP, grantee, inbound — is judged by the same core rule, or explicitly document that grant.write supersedes reply_capability and assert that intent in a test."
+    },
+    {
+      "id": "ticket-r2-08",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "consent-config-fail-open",
+      "file": "app/config.py",
+      "line": 191,
+      "title": "Consent share grants never expire by default",
+      "detail": "TICKET_SHARE_DEFAULT_TTL_SECONDS defaults to 0 (config.py:191). grant_share computes expires_at = (time.time()+ttl) if ttl>0 else 0.0 (internal.py:263,269), and ShareGrant.is_active treats expires_at==0 as 'never' (share.py:82-84). So unless a caller explicitly passes ttl_seconds, a grant is perpetual — contradicting the share.py module doc that consent is 'time-boxed by nature' (share.py:16-17).",
+      "failure_scenario": "A platform records a partner share without specifying a TTL (the easy default). The partner retains scoped read/write access to the tenant's tickets indefinitely, surviving until someone remembers to explicitly revoke. Consent that outlives its purpose is a privacy-minimization failure.",
+      "fix": "Ship a non-zero default TTL (e.g. 90 days) or refuse a grant with no effective expiry, so 'forever' is an explicit, audited choice rather than the default."
+    },
+    {
+      "id": "ticket-r2-09",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "pii-pseudonymization-bypass",
+      "file": "app/core/pii.py",
+      "line": 51,
+      "title": "is_subject_ref self-fold lets a subject shaped like a pseudonym be stored unpseudonymized",
+      "detail": "subject_ref() returns the input unchanged when is_subject_ref(subject) is true (pii.py:51-52), i.e. any string starting with 'sub_' and exactly 36 chars long (pii.py:59-61). The idempotence is intended so erasure can re-hash a ref without double-wrapping, but it means a raw subject that happens to match that shape is persisted verbatim as if it were already a pseudonym.",
+      "failure_scenario": "A caller-controlled identifier that reaches pseudonym()/subject_ref — a grantee handle (_grantee_ref folds 'grantee:<handle>' which won't match, so safe), or a token `sub` claim, or a future channel sender — that is literally 'sub_' + 32 hex chars would be stored as-is in raiser_ref/actor_ref, defeating pseudonymization for that record and making it non-erasable (erasure recomputes a different hash). Low likelihood given current inputs (phone numbers, emails, uuid subs), hence speculative.",
+      "fix": "Only treat a value as an existing pseudonym when the caller asserts it is one (a typed wrapper or an explicit already_ref flag), rather than inferring from a guessable prefix+length shape; or namespace the pseudonym prefix with a per-product secret component."
+    },
+    {
+      "id": "ticket-r2-10",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "dsar-erasure-completeness",
+      "file": "app/core/erasure.py",
+      "line": 41,
+      "title": "Erasure does not clear ticket tags or event data that may carry derived content",
+      "detail": "erase() redacts ticket subject/meta/ref.id (erasure.py:44-49) and event body (line 68), but leaves ticket `tags` and event `data` intact. The suggester can auto-tag tickets from message content (referenced in tickets.py:48-50 SUGGEST_AUTOTAG_MIN_CONFIDENCE; tag() persists tags), so a tag string could echo a fragment of what the person wrote.",
+      "failure_scenario": "An AI auto-tag derived from a customer message body (e.g. a tag containing an order number, a name, or a quoted phrase) survives a DSAR erase because tags are never redacted. Whether any current suggester actually emits content-bearing tags was not confirmed in this pass, hence speculative.",
+      "fix": "If auto-tags can embed submitted content, clear tags (or a designated content-derived subset) during erase alongside subject/meta; confirm the suggester's tag vocabulary is a closed, non-PII set and document it."
+    },
+    {
+      "id": "ticket-r2-11",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "postgres-vs-memory-divergence",
+      "file": "app/core/models.py",
+      "line": 22,
+      "title": "Event ordering seq is a per-process global; multi-pod/postgres appends order only by wall clock",
+      "detail": "seq_now() maintains a module-global _last_seq seeded from time.time_ns() and forced strictly increasing within one process (models.py:22-37). History reads sort by seq (stores.py:93-96). In the memory adapter (single process, tests) ordering is perfectly total. Under postgres with multiple pods, each process has its own _last_seq, so cross-pod ordering falls back to unsynchronized wall clocks; two events appended on different pods within the same tick (or under clock skew) can read back in the wrong relative order.",
+      "failure_scenario": "Two operators on two pods act on the same ticket near-simultaneously (a reply and a status change). Their events get seq values from independent clocks; the history/KPI derivation (first_response_at, resolution) may order them incorrectly, mis-stating 'who did what and when' — the exact property the log promises (models.py:3-6). Impact is a subtle KPI/ordering inaccuracy, not access control, hence low/speculative.",
+      "fix": "Use a datastore-side monotonic sequence (a per-ticket append counter via CAS, or a DB sequence/serial column) so ordering is globally total independent of pod-local state and wall-clock skew."
+    }
+  ]
+}

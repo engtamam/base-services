@@ -1,0 +1,114 @@
+{
+  "service": "job-service",
+  "round": 2,
+  "findings": [
+    {
+      "id": "job-r2-01",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "concurrency/TOCTOU-lost-update",
+      "file": "app/core/job_service.py",
+      "line": 193,
+      "title": "reclaim() blind non-CAS save can resurrect a job that a concurrent ack/nack/cancel already finished (re-execution)",
+      "detail": "claim() moves QUEUED->LEASED through cas_save() with an optimistic-lock version (line 94) precisely so two writers cannot both win. reclaim() does NOT: after get() (line 175) it mutates the in-memory Job and calls the plain save() (line 193) with no version check and no re-read. There are multiple `await` points between the get() and the save() (unindex_leased at line 185, etc.), so on the single asyncio loop another coroutine can run to completion in that window. _held() (line 118-119) checks only status==LEASED and token match; it does NOT check lease_expires, so a worker whose lease has just expired can still successfully ack/nack.",
+      "failure_scenario": "Job J is LEASED, lease expired. Worker W (lease expired but still alive) sends ack(J, token). reclaim() runs concurrently: it get()s J (still LEASED/expired), passes its guards, then awaits unindex_leased. During that await the ack coroutine runs fully: J -> DONE, save, unindex_leased, unique_clear, emit job.done. reclaim() then resumes with its stale in-memory J (still LEASED), sets attempt+=1, status=QUEUED, next_run_at=now, and save()s -> the DONE job is overwritten back to QUEUED and re-indexed as due. A worker claims and RE-EXECUTES an already-completed job (double side effects: duplicate email/charge). The mirror case (reclaim lands first) is safe because the token is cleared, but the interleaving above is not.",
+      "fix": "Make reclaim() transition through cas_save(job, expected_version) exactly like claim(), skipping the candidate when the CAS loses; and/or re-check job.status==LEASED and lease_expires<=now immediately before the save. Also make ack/nack/heartbeat reject an expired lease in _held() (compare lease_expires to clock.now()) so a worker that has lost the race cannot mutate at all."
+    },
+    {
+      "id": "job-r2-02",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "unbounded-read/DoS-on-request-path",
+      "file": "app/core/job_service.py",
+      "line": 239,
+      "title": "GET /api/v1/jobs/stats scans the ENTIRE job table (scan_all up to 50k) per request, despite the code claiming it is timer-only",
+      "detail": "stats() (line 236-246) calls counts() (stores.py line 79) which does scan_all(_JOBS, _INDEX_MAX=50_000) over EVERY job ever enqueued and aggregates in Python, plus a second full scan of due_index (line 240). The stores.counts() comment asserts 'Not on any request path - the metrics endpoint calls it on a timer', but the /stats route (api/v1/jobs.py line 143-147) is reachable by any holder of jobs.read / jobs.manage / platform.jobs and invokes it synchronously on the request.",
+      "failure_scenario": "A tenant reader with jobs.read repeatedly calls GET /api/v1/jobs/stats. Each call reads up to 50,000 job rows from the datastore (a full JSONB table scan on postgres, no WHERE), deserializes and aggregates them in Python inside the request. A handful of concurrent callers, or one caller in a loop, saturates the DB pool and event loop -> latency spike / DoS for the whole service, including the claim/ack hot path.",
+      "fix": "Serve status counts from maintained counters or a cheap indexed aggregate rather than a full scan on the request; or move /stats behind platform.jobs only and rate-limit it; at minimum stop asserting in the comment that counts() is off the request path when it is not."
+    },
+    {
+      "id": "job-r2-03",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "unbounded-read/hot-path-divergence",
+      "file": "app/core/job_service.py",
+      "line": 73,
+      "title": "claim() reads and Python-sorts the WHOLE due-index (up to 50k) on every poll, not 'bounded by batch' as documented",
+      "detail": "The module docstring (lines 13-14) states 'claim reads the small due-index (bounded by batch), never the whole job table.' In fact claim() calls due_index() (stores.py line 99 -> scan_all(_DUE, 50_000)), materializes ALL claimable rows, list-filters them, then _order() sorts the full list up to twice (job_service.py line 104 and 113) on EVERY claim call, regardless of batch. The bound is the index size (50k), not batch.",
+      "failure_scenario": "One tenant enqueues tens of thousands of immediately-due jobs. Every worker's claim poll (many workers, high frequency) now reads all ~50k due rows and sorts them in Python just to lease 1. CPU and DB egress scale with the backlog, not with the work leased -> claim latency collapses fleet-wide and one tenant's flood degrades every other tenant's claims (a cross-tenant DoS the fairness sort cannot help with because the cost is paid before fairness is applied).",
+      "fix": "Push the due query into the datastore with ORDER BY (queue, priority, next_run_at) LIMIT (batch * small_factor) and a WHERE next_run_at<=now, so claim reads O(batch) rows, not the whole index. Correct the docstring to match reality."
+    },
+    {
+      "id": "job-r2-04",
+      "severity": "medium",
+      "status": "SPECULATIVE",
+      "category": "secret/PII-leakage",
+      "file": "app/core/models.py",
+      "line": 43,
+      "title": "Job.public() returns the full payload and result to any jobs.read holder; results are known to hold personal data outright",
+      "detail": "Job.public() (line 43-46) strips only lease_token and returns everything else, including payload and result. GET /api/v1/jobs/{id}, GET /api/v1/jobs (list) and GET /api/v1/jobs/dead-letters all return .public() to any holder of the broad jobs.read cap (api/v1/jobs.py lines 104, 111, 162). The erasure module's own docstring (core/erasure.py lines 4-5) states a payload 'holds the recipient's address' and 'the result of an export job may hold their data outright' - i.e. payload/result routinely carry PII and can carry secrets (API tokens, callback credentials) passed by enqueuers.",
+      "failure_scenario": "A low-privilege support user granted jobs.read to triage failures opens GET /api/v1/jobs/{id} or the DLQ listing and reads the raw payload/result of an export or 'send credential' job - full personal data or a secret token - even though their role only needed status/error/attempt to decide a replay. Scoping is per-tenant only, so it is an intra-tenant over-exposure, not cross-tenant.",
+      "fix": "Add a redacted projection for read endpoints (status, attempts, error, type, timestamps; payload/result omitted or key-masked) and gate raw payload/result behind a stronger cap (jobs.manage or platform.jobs) or a dedicated jobs.read.payload cap. The get_job docstring should stop advertising payload as part of the ordinary read."
+    },
+    {
+      "id": "job-r2-05",
+      "severity": "medium",
+      "status": "SPECULATIVE",
+      "category": "exactly-once-vs-at-least-once",
+      "file": "app/core/job_service.py",
+      "line": 3,
+      "title": "Delivery is at-least-once (visibility-timeout reclaim), but the docstring advertises 'no double-execution'",
+      "detail": "The module docstring (line 3-10) claims 'no double-execution'. The CAS fencing genuinely prevents two workers both winning the CLAIM and prevents a lost-lease worker from MUTATING the job. It does not prevent duplicate SIDE EFFECTS: reclaim() (line 169-196) returns an expired-lease job to the queue immediately (next_run_at=now, line 192) while the original worker may still be executing its handler. Two handlers then run the same job body concurrently; only the DB write of the loser is rejected by fencing. There is no execution-dedup key that a handler can consult to make its side effect idempotent.",
+      "failure_scenario": "A slow handler exceeds LEASE_SECONDS (default 60s). reclaim() requeues the job; a second worker claims and runs it. Both send the email / call the payment gateway. The first worker's eventual ack fails fencing, but the external side effect already happened twice. Callers that trusted the 'no double-execution' wording built non-idempotent handlers.",
+      "fix": "Document the real guarantee (at-least-once; handlers must be idempotent) prominently, and/or expose a per-attempt execution token workers can use for downstream idempotency. Consider not resetting next_run_at to now on reclaim without a small grace so a briefly-overrunning worker can still heartbeat."
+    },
+    {
+      "id": "job-r2-06",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "idempotency-correctness",
+      "file": "app/core/job_service.py",
+      "line": 58,
+      "title": "enqueue() can orphan one reservation and temporarily break idempotency when idempotency_key wins but unique_key loses (or vice versa)",
+      "detail": "enqueue() reserves BOTH idempotency_key and unique_key in a loop (lines 58-63) before save() (line 64). If the first key (idempotency_key) is reserved successfully but the second (unique_key) loses to a concurrent enqueue, the function returns the existing job (line 63) and NEVER saves the new job - but the idempotency_key reservation created at line 59 now points at job.id that was never persisted. unique_get later returns that id, get() returns None, so the (key==idempotency_key) branch's `existing and ...` guard is False and the code falls through to create yet another job, re-reserving over the orphan only if TTL expired.",
+      "failure_scenario": "Two enqueues share unique_key U but have distinct idempotency_key I1/I2. Enqueue A reserves I1 then loses U to B; A returns B's job without saving. I1 now maps to a non-existent job id for the whole UNIQUE_DEDUPE_TTL window. A genuine idempotent retry with I1 no longer dedupes to a real job -> a duplicate job is created, defeating the idempotency guarantee for I1 until TTL expiry.",
+      "fix": "Reserve both keys, and if any reservation loses, release the reservations THIS call created (unique_clear on the ones it won) before returning the existing job, so no key is left pointing at an unsaved job id."
+    },
+    {
+      "id": "job-r2-07",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "concurrency/non-CAS-writes",
+      "file": "app/core/job_service.py",
+      "line": 182,
+      "title": "reclaim() double-counts attempts / duplicates work if two reclaim sweepers run concurrently (non-CAS)",
+      "detail": "reclaim() reads leased_index and blind-save()s each requeue (lines 182-194) with no version check. Two concurrent reclaim invocations (two pods, or an operator manual /internal/scheduler-style trigger plus the cron) both read the same expired-lease row, both increment attempt from the same base, and both index_due -> the attempt counter advances by only 1 while two due-index writes occur (idempotent on key), or, combined with finding job-r2-01, a save races an ack.",
+      "failure_scenario": "Two reclaimer instances tick simultaneously. A job near max_attempts is evaluated by both from attempt=N; both compute N+1; the dead-letter decision (line 186) is taken on stale state, so a job that should dead-letter is instead requeued once more, or attempt accounting drifts. Low likelihood with a single cron, higher with HA reclaimers.",
+      "fix": "Route reclaim's requeue/dead-letter transition through cas_save(expected_version) so only one sweeper wins per job, matching claim()."
+    },
+    {
+      "id": "job-r2-08",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "input-validation/DoS",
+      "file": "app/api/internal.py",
+      "line": 26,
+      "title": "Internal /jobs/enqueue does not bound payload size, priority, delay_seconds, or max_attempts",
+      "detail": "EnqueueIn (lines 26-35) caps only type/unique_key/idempotency_key string lengths. payload is an unbounded dict, priority an unbounded int, delay_seconds an unbounded float, max_attempts an unbounded int. A buggy or compromised peer holding the internal token can enqueue multi-megabyte payloads (stored verbatim in JSONB and returned by every read/backup), a priority that starves all fairness tiers, or a delay far in the future that pins a due-index/leased row.",
+      "failure_scenario": "A peer service with a bug posts a 10MB payload per job in a loop; the job table and every backup archive balloon, scan-based paths (stats/counts/due_index) slow, and memory spikes on reads. Trusted-tier, so severity is low, but there is no server-side guard.",
+      "fix": "Add max payload byte-size, a bounded priority range, and sane ceilings on delay_seconds/max_attempts in EnqueueIn (or in enqueue())."
+    },
+    {
+      "id": "job-r2-09",
+      "severity": "info",
+      "status": "CONFIRMED",
+      "category": "SSRF-scope-note",
+      "file": "app/core/job_service.py",
+      "line": 33,
+      "title": "No SSRF surface inside job-service: it stores callback/HTTP targets in payloads but never dereferences them",
+      "detail": "The FOCUS hint asked about SSRF on job callback/HTTP targets. job-service is a queue/scheduler: enqueue stores payload verbatim, claim hands it to external workers, and there is no code path in this service that fetches a URL taken from a job payload. The only outbound HTTP is the audit sink (adapters/audit_sink/http.py) and the internal client, both configured from settings, not from job payloads. SSRF, if any, lives in the WORKER services that execute jobs, which are out of this audit's scope.",
+      "failure_scenario": "N/A - documented as no-finding so a future reviewer does not re-open it; the risk, if realized, is in job executors elsewhere, which should be audited to validate/allow-list any URL they take from a payload.",
+      "fix": "No change in job-service. Ensure worker services that consume payloads apply egress allow-listing / SSRF guards on any URL fields."
+    }
+  ]
+}

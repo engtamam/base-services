@@ -1,0 +1,138 @@
+{
+  "service": "stream-service",
+  "round": 2,
+  "findings": [
+    {
+      "id": "stream-r2-01",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "concurrency/double-release/quota-bypass",
+      "file": "app/core/stream_service.py",
+      "line": 316,
+      "title": "Concurrent _stop double-releases the concurrency reservation -> per-tenant/global cap can be breached",
+      "detail": "_stop() guards idempotency with `if sess.is_terminal: return sess` (line 317) but the LIVE->terminal transition is a non-atomic read-modify-write: sess is loaded, status is set in memory (line 337) and persisted with `self._sessions.save(sess)` (line 339) which is a plain put() (SessionStore.save -> store.put, last-writer-wins) NOT a CAS. Two callers that each load the same still-LIVE session both pass the is_terminal guard and both run `_release_quota(self._release_map(), sess)` (line 342), decrementing the tenant and global counters TWICE for a single session teardown. _decr() floors at 0 but that does not help: a live session's slot is freed while OTHER sessions are still live, so the counted `live` value under-counts real live sessions by 1 per race, and the next start_session sees room below cap that does not exist.",
+      "failure_scenario": "Concurrent paths: (a) user POST /sessions/{id}/stop and the CronJob POST /internal/stream/sweep enforce_and_reconcile() reaching the same session in the same window; or (b) two racing user stop/kill calls; or (c) a guard-breach stop in the sweep loop plus a reconcile-dead stop in the same run for a session that is both. Each double-decrement permanently lowers the tenant counter by 1 relative to reality. Repeating the race N times lets a tenant hold cap+N concurrent sessions, defeating STREAM_MAX_CONCURRENT_SESSIONS_PER_TENANT and STREAM_MAX_CONCURRENT_SESSIONS_GLOBAL (resource-exhaustion / cost DoS). This is the exact TOCTOU class the round-1 reservation code set out to close, reopened on the release side.",
+      "fix": "Make the LIVE->terminal transition atomic and release exactly once only for the caller that wins it. E.g. CAS the session status (store.cas on the session row's version) and release the quota only when the CAS succeeds; a loser returns the already-terminal session without touching counters. Alternatively key the reservation to the session id and make _release idempotent per session (delete-if-present of a per-session reservation marker before decrementing)."
+    },
+    {
+      "id": "stream-r2-02",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "ssrf/dns-rebinding",
+      "file": "app/adapters/stream/onvif_ptz.py",
+      "line": 18,
+      "title": "ONVIF PTZ connects to the stored host with no re-validation and no IP pinning (DNS-rebinding SSRF with camera credentials)",
+      "detail": "_default_factory() builds `ONVIFCamera(onvif.get('host'), int(onvif.get('port',80)), user, password)` (lines 21-24) straight from the stored source dict, and _ptz() (line 35) then opens ONVIF/media/PTZ services against it. The ONVIF host is SSRF-validated ONLY once, at register_source (stream_service.py:95-99). Nothing re-validates or pins the host at PTZ time. move()/stop()/presets()/goto()/capability() are all reached via /api/v1/sources/{id}/ptz/* (api/v1/stream.py:288-329) using src.onvif from _ptz_source(). The source URL path was hardened with re-validate + _pin_url at start_session; the ONVIF host path was not.",
+      "failure_scenario": "Attacker (a stream.manage caller) registers a source whose onvif.host is a domain they control resolving to a public IP (passes register-time _check_ssrf). After registration they repoint DNS to 169.254.169.254 (cloud metadata) or an internal 10.x/172.16.x host. An operator (or the attacker) issues POST /sources/{id}/ptz/move; ONVIFCamera re-resolves the hostname at connect and the SOAP requests (carrying any configured camera credentials) hit the internal/metadata endpoint -> the service becomes an authenticated proxy into the cluster / cloud metadata (CWE-918).",
+      "fix": "Re-run _check_ssrf on the ONVIF host at every PTZ/capability call and pin the connection to the validated IP (pass the resolved IP to ONVIFCamera instead of the hostname, mirroring _pin_url for the source URL). If python-onvif-zeep cannot accept a pinned IP with the original Host header, resolve+pin at the socket layer or reject hostnames that resolve to more than the validated address."
+    },
+    {
+      "id": "stream-r2-03",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "ssrf/dns-rebinding",
+      "file": "app/core/stream_service.py",
+      "line": 112,
+      "title": "probe_source validates then connects by hostname (unpinned) — DNS-rebinding window, violating the code's own pinning rule",
+      "detail": "probe_source() unseals the URL, calls self._check_ssrf(url) (line 115), then passes the ORIGINAL url to self._engine.probe(url, transport=...) (line 116). It does NOT use the resolved/pinned IP. _check_ssrf's own docstring (lines 446-449) states: 'Callers that connect (start_session) MUST use the pinned IP, or ffmpeg re-resolves the hostname and a DNS-rebinding attacker swaps in an internal IP after validation.' probe_source is a connecting caller and breaks this contract; start_session correctly pins via _pin_url (line 128) but probe does not.",
+      "failure_scenario": "Attacker registers a source at http(s)/rtsp://attacker-domain/... resolving to a benign public IP. They call POST /api/v1/sources/{id}/probe; between _check_ssrf's getaddrinfo and ffprobe's own resolution the domain is rebound to 169.254.169.254 or an internal service. ffprobe connects to the internal target (CWE-918), and probe metadata/errors can leak internal responses.",
+      "fix": "Return the Resolved from _check_ssrf and probe the pinned IP: `resolved = self._check_ssrf(url); await self._engine.probe(self._pin_url(url, resolved.ip), transport=src.transport)`, exactly as start_session does."
+    },
+    {
+      "id": "stream-r2-04",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "config-divergence/quota-integrity",
+      "file": "app/core/stream_service.py",
+      "line": 398,
+      "title": "Reservation release uses CURRENT config, not what was actually reserved — a cap toggle leaks or steals slots",
+      "detail": "_release_map() (lines 398-402) reconstructs 'what a live session holds' from the CURRENT StreamConfig (max_concurrent_per_tenant, max_concurrent_global, one_session_per_source) rather than from the `taken` map recorded at reservation time. _reserve_quota only increments a dimension when its cap was truthy at start (lines 373-384: `if cap and ...`). If config changes between a session's start and its stop, the release no longer matches the reservation.",
+      "failure_scenario": "Cap raised 0 -> N (or one_session_per_source false -> true) after sessions were started: those sessions took NO tenant/source reservation, but _stop now sees the dimension enabled and calls _decr, decrementing a counter this session never incremented — stealing a live slot from another session and letting the cap be BREACHED. Cap lowered N -> 0 (feature disabled): sessions that DID reserve are stopped with _release_map returning false, so _decr is never called and the counter permanently retains phantom `live` counts; re-enabling the cap leaves every tenant with a reduced effective ceiling (self-DoS). Config changes are routine (redeploys/panel edits), so this is not exotic.",
+      "fix": "Persist the `taken` map on the session (e.g. sess.placement['reserved'] or a dedicated field) at start_session and release exactly that set in _stop, instead of recomputing from live config. Reservations must be released against what was taken, not against present configuration."
+    },
+    {
+      "id": "stream-r2-05",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "concurrency/reservation-leak",
+      "file": "app/core/stream_service.py",
+      "line": 155,
+      "title": "Reservation leaks when session-row creation fails after placement (create is outside the rollback try/except)",
+      "detail": "In start_session the try/except BaseException (lines 144-157) wraps ONLY self._placer.start(); the reservation rollback _release_quota(reserved, sess) fires only if placer.start raises. The subsequent self._sessions.create(sess) (line 161) is OUTSIDE that block. If create() fails (datastore error, pool exhaustion), the exception propagates with the quota already reserved AND the engine already placed, but NO session row exists.",
+      "failure_scenario": "Datastore hiccup at line 161: tenant/global counters stay incremented (and the source claim held) with no session row. The reaper's placer.reconcile(seen) will kill the orphan engine handle (killed_orphans), but nothing ever calls _stop for a non-existent session, so the reservation is never released -> permanent slot consumption. Repeated occurrences erode the tenant/global cap toward zero.",
+      "fix": "Extend the rollback to cover session creation: put _sessions.create inside the try, or wrap reserve+place+create so any failure runs _release_quota(reserved, sess). Also stop the placement on create failure to avoid the orphan engine."
+    },
+    {
+      "id": "stream-r2-06",
+      "severity": "medium",
+      "status": "SPECULATIVE",
+      "category": "secret-reuse/privilege-separation",
+      "file": "app/container.py",
+      "line": 204,
+      "title": "Playback HMAC key falls back to INTERNAL_SERVICE_TOKEN with no production boot guard — internal token holders can forge cross-tenant playback tokens",
+      "detail": "_playback_secret() returns `s.PLAYBACK_SIGNING_SECRET or s.INTERNAL_SERVICE_TOKEN` (container.py:204-205). PLAYBACK_SIGNING_SECRET defaults to '' (config.py:479) and assert_stream_config_ok (config.py:534-544) has NO guard requiring it in production (unlike SEAL_KEY at line 539). HmacSignedPlayback.sign is a deterministic HMAC over {tenant,session,output,exp} (signed_playback.py:33-38). When the fallback is used, the service-to-service auth secret doubles as the media-token signing key.",
+      "failure_scenario": "In a production deployment where PLAYBACK_SIGNING_SECRET is left unset, any party that knows INTERNAL_SERVICE_TOKEN (every peer service authorized to call /internal/*, plus anything that logs/leaks it) can locally compute a valid playback token for ANY tenant+session+output and pull live HLS/snapshot media, bypassing tenant isolation on the media plane. Blast radius couples S2S auth compromise to media-access forgery.",
+      "fix": "Require a dedicated PLAYBACK_SIGNING_SECRET in production (add to assert_stream_config_ok) and refuse the INTERNAL_SERVICE_TOKEN fallback outside dev/test, matching the SEAL_KEY posture."
+    },
+    {
+      "id": "stream-r2-07",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "authz/token-scope/revocation",
+      "file": "app/adapters/stream/signed_playback.py",
+      "line": 40,
+      "title": "Playback tokens are stateless with no revocation — media stays fetchable after a session is stopped or erased for the full TTL",
+      "detail": "verify() only checks signature + exp (lines 45-53); there is no binding to session liveness. _playback (stream_service.py:474-489) issues tokens with ttl = PLAYBACK_URL_TTL_SECONDS. Once minted, a token remains valid until exp regardless of stop_session / erase / retention delete. TTL defaults to 60s but is operator-configurable to larger values.",
+      "failure_scenario": "A session is stopped (user or guard) or its footage erased for a privacy request; a token already handed to a viewer keeps working until exp. With a raised PLAYBACK_URL_TTL_SECONDS the exposure window widens accordingly. Combined with stream-r2-06 (forgeable tokens) the window is unbounded.",
+      "fix": "Keep the TTL short and documented as the hard revocation ceiling; if stronger revocation is needed, have the media origin check the session is still LIVE (or maintain a short deny-list of stopped session ids) before serving. At minimum, cap PLAYBACK_URL_TTL_SECONDS in config validation."
+    },
+    {
+      "id": "stream-r2-08",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "ssrf/filter-bypass",
+      "file": "app/core/ssrf.py",
+      "line": 58,
+      "title": "SSRF metadata/loopback checks may be bypassed by an IPv4-mapped IPv6 address on allow_private deployments",
+      "detail": "The block list is a string-exact _METADATA set plus addr.is_loopback/is_link_local/is_private checks (lines 58-65). A resolver returning an IPv4-mapped IPv6 form such as ::ffff:169.254.169.254 will not string-match '169.254.169.254', and Python's ipaddress classifiers for IPv6 do not consistently delegate to the embedded IPv4 for is_link_local. On an on-prem deployment with STREAM_ALLOW_PRIVATE=true, the is_private branch (the only one that would catch the mapped range) is skipped, leaving link-local/metadata reachable via the mapped form.",
+      "failure_scenario": "Attacker-controlled DNS returns ::ffff:169.254.169.254 (or a mapped link-local) for a registered source/ONVIF host on an allow_private deployment; validation passes and ffmpeg/ffprobe connects to metadata/link-local. Requires the resolver/getaddrinfo to yield the mapped form, so exploitability is environment-dependent.",
+      "fix": "Normalize each resolved address before classification: if addr is an IPv6Address with .ipv4_mapped, re-check the embedded IPv4 against all rules (metadata set, loopback, link-local, private). Reject mapped forms outright unless explicitly needed."
+    },
+    {
+      "id": "stream-r2-09",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "concurrency/reservation-leak/DoS",
+      "file": "app/core/stream_service.py",
+      "line": 404,
+      "title": "Hard crash between _incr and session-row creation leaks a reservation the reaper can never reclaim",
+      "detail": "_incr (lines 404-420) documents that the reservation counter is deliberately NOT reconciled against live session rows, because during a start burst the rows do not exist yet. Reservations are bumped before _sessions.create (line 161) and are only ever released on a session's LIVE->non-LIVE transition via _stop. If the process is killed (OOM, SIGKILL, node loss) after _incr commits but before/without a session row, there is no row for the reaper to _stop and no reconcile path -> the counted slot is orphaned permanently.",
+      "failure_scenario": "Under memory pressure or rolling restarts, starts that were mid-flight at kill time each leak one tenant+global slot. Because postgres persists the stream_quota counters across restarts, the leak survives the restart and accumulates, slowly starving the tenant/global concurrency caps until legitimate starts get 429. No operator-visible signal ties the drift to the cause.",
+      "fix": "Add a bounded, off-request reconciliation that (safely) rebuilds the reservation counters from the authoritative live-session count during a quiescent sweep window, or attach a short TTL/heartbeat to reservation rows so an orphaned reservation with no corresponding session row expires. Emit a metric for counter-vs-live drift."
+    },
+    {
+      "id": "stream-r2-10",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "authz/missing-ownership-binding",
+      "file": "app/api/internal.py",
+      "line": 102,
+      "title": "heartbeat has no session-ownership binding — any authorized internal caller can refresh any session's lease and inject arbitrary stats",
+      "detail": "POST /internal/stream/sessions/{session_id}/heartbeat (internal.py:102-108) is guarded only by require_internal_token and passes session_id + attacker-supplied stats straight into StreamService.heartbeat (stream_service.py:181-193), which loads the session by id with NO tenant/source/engine-identity check. heartbeat resets lease_expires_at (line 188) and stores stats verbatim (line 187).",
+      "failure_scenario": "A compromised or over-broadly-scoped internal caller (the internal tier is default-open per require_internal_token unless a per-route policy is configured) can (a) indefinitely refresh the lease of any session id, defeating the missed-heartbeat zombie-reaping backstop in _guard_breached (line 259), and (b) inject arbitrary stats including bytes_out to force a spurious max_size stop (line 191-192) of another tenant's session. Session ids are random UUIDs, so this needs a known/leaked id, bounding severity.",
+      "fix": "Bind the heartbeat to the placement/engine identity for that session (e.g. verify a per-session engine token or the placement handle id) and/or scope it by tenant. Constrain the internal-tier policy so only the media/engine caller may reach the heartbeat route."
+    },
+    {
+      "id": "stream-r2-11",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "concurrency/lost-update",
+      "file": "app/core/stream_service.py",
+      "line": 175,
+      "title": "playback() and heartbeat()/motion save the full session via last-writer-wins put, clobbering concurrent field updates",
+      "detail": "SessionStore.save() is a plain store.put of the whole session row (stores.py:67-71), not a field-level or CAS update. playback() sets last_viewer_at then save() (stream_service.py:177-178); heartbeat() sets lease/stats then save() (188-193); poll_motion sets stats then save() (286-287). Concurrent calls load-modify-write the entire row, so overlapping updates lose each other's fields.",
+      "failure_scenario": "A viewer poll (updating last_viewer_at) racing an engine heartbeat (updating lease_expires_at/stats) each read the same snapshot and write back their whole copy; the later write drops the other's change. E.g. a heartbeat's fresh lease is overwritten by a slightly older playback save that carried a stale lease, making a live session look lease-expired and get reaped early — or an idle-timeout viewer bump is lost so an active session is stopped as idle. Not a direct security breach but affects the guard/quota correctness the round-1 work depends on.",
+      "fix": "Apply targeted CAS/field updates for the hot mutable fields (last_viewer_at, lease_expires_at, stats) instead of whole-row put, or serialize per-session mutations, so concurrent heartbeat/playback/motion updates compose rather than clobber."
+    }
+  ]
+}

@@ -1,0 +1,126 @@
+{
+  "service": "tenant-service",
+  "round": 2,
+  "findings": [
+    {
+      "id": "tenant-r2-01",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "concurrency/lost-update",
+      "file": "app/core/tenant_repository.py",
+      "line": 63,
+      "title": "Tenant row writes use full-object put() with NO optimistic concurrency (CAS) — lifecycle state silently reverts",
+      "detail": "create() atomically reserves the slug/domain indexes with cas() (round-1 fix), but EVERY mutation of the tenant row itself goes through repo.update()/tombstone() which call self._store.put(_TENANTS, tenant.id, tenant.to_dict()) (repository.py:63, :109) — a blind whole-record overwrite. There is no version field on the tenant row and no compare-and-set. Each API route (tenants.py) independently _load()s a fresh snapshot, mutates its in-memory copy, then puts the ENTIRE object back, so two overlapping writers each clobber the other's fields, not just the one they intended to change.",
+      "failure_scenario": "Operator POST /api/v1/tenants/{id}/suspend and the tenant's own PUT /api/v1/tenant/config run concurrently. Both _load the tenant while status=='active'. suspend() puts status='suspended'. update_config() (which already passed _require_active on its stale active snapshot) then puts its copy with status=='active' — the suspension is silently reverted and the abusive tenant stays live. The same race lets a concurrent update_config/set_branding wipe a close() (dropping status='suspended' and the config._close schedule), so an owner-requested close never gets swept.",
+      "fix": "Give the tenant row a monotonic version and route all lifecycle/config writes through store.cas() with the loaded version, retrying (re-load + re-apply) on a CAS miss; or apply status transitions as a store-side conditional update rather than read-modify-put of the whole document."
+    },
+    {
+      "id": "tenant-r2-02",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "lifecycle/state-machine",
+      "file": "app/core/tenant_service.py",
+      "line": 146,
+      "title": "suspend()/reactivate() have no terminal-state guard — a DELETED tombstone can be flipped back to suspended/active, defeating the tombstone and resurrecting the tenant for fail-open peers",
+      "detail": "suspend() (line 146) sets status='suspended' unconditionally and reactivate() (line 152) sets status='active' unconditionally; neither rejects a tenant already in the terminal DELETED state. update_config/set_branding/rename are protected by _require_active (raises TenantInactive), but the lifecycle transitions are not. The admin routes POST /{id}/suspend and /{id}/reactivate (tenants.py:132,155) load the tombstone row (status=='deleted') and call straight through.",
+      "failure_scenario": "An operator issues POST /api/v1/tenants/{id}/suspend against an id that was already deleted (fat-finger, stale UI, replayed request). _load returns the tombstone; suspend() overwrites status 'deleted' -> 'suspended' via a full put. GET /internal/tenants/{id} now answers status='suspended' instead of 'deleted', so every peer that missed the at-most-once tenant.deleted event — the exact case the tombstone exists to cover — fails OPEN and resumes accepting writes to an erased company. reactivate() is worse: it sets status='active' AND pops config._close, producing an ACTIVE tenant with slug=='' and no domain index (a zombie the erasure already stripped of its data).",
+      "fix": "In suspend()/reactivate() (and ideally a single _transition helper) reject when tenant.status == DELETED (raise TenantInactive/terminal), the same way _require_active guards config writes. Deletion must be a one-way terminal state."
+    },
+    {
+      "id": "tenant-r2-03",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "concurrency/TOCTOU",
+      "file": "app/core/tenant_service.py",
+      "line": 206,
+      "title": "close_sweep erases on a STALE snapshot — a reactivate racing the sweep either loses a live tenant or resurrects a tombstone",
+      "detail": "close_sweep() (lines 190-210) pages iter_suspended(), and for each row whose config._close.grace_until <= now_iso calls self.delete(Tenant.from_dict(r)) at line 206 using the row as read at the top of the page. It never re-reads or re-checks the tenant's current status/schedule immediately before deleting, and delete()/tombstone() do not CAS on state.",
+      "failure_scenario": "During the grace window an owner calls POST /api/v1/tenant/reactivate (sets status='active', pops config._close). If reactivate lands AFTER iter_suspended snapshotted the row but BEFORE line 206's delete, the sweep tombstones a tenant that is now live again — the owner's shop is erased despite a valid take-back. If the two land in the other order, reactivate's blind put (finding -01) can re-write the just-tombstoned row back to a full ACTIVE record, resurrecting an erased tenant. Either interleaving corrupts the close/reactivate contract the round-1 rework was meant to make safe.",
+      "fix": "Make the erase conditional: re-load the tenant (or use a CAS/conditional delete) immediately before tombstoning and skip it unless status is still SUSPENDED and config._close.grace_until <= now. Pair with the version/CAS scheme from -01 so reactivate and sweep cannot both win."
+    },
+    {
+      "id": "tenant-r2-04",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "isolation-scoping/divergence",
+      "file": "app/core/tenant_service.py",
+      "line": 242,
+      "title": "scope() ignores the tenant's stored isolation_mode and always returns the globally-configured strategy; provision accepts an unvalidated isolation_mode",
+      "detail": "provision() stores a PER-TENANT isolation_mode (line 91), accepted verbatim from the request body with no allowlist check (tenants.py:47 / internal.py:165 -> tenant_service.py:80-91). But scope() (line 242) returns self._isolation.scope(...) where self._isolation is the SINGLE global strategy chosen by ISOLATION_DRIVER in the container (container.py:229 — one instance, not a per-mode map). The stored isolation_mode is never mapped to a strategy. _internal_view() (internal.py:89) then hands scope() to peers as authoritative 'data scoping'.",
+      "failure_scenario": "Platform runs ISOLATION_DRIVER=shared-row but provisions a high-compliance customer with isolation_mode='db' (or 'schema'), trusting the per-tenant field the API exposes. GET /internal/tenants/{id} returns isolation={'mode':'shared-row','namespace':<id>} instead of a dedicated DSN/schema, so every peer places that customer's data in the shared row store — a silent isolation-guarantee violation. Because isolation_mode is also never validated, junk values ('db ', 'DB', 'garbage') are persisted and would break any future per-tenant dispatch.",
+      "fix": "Either drop the per-tenant isolation_mode field entirely (make isolation a service-global decision and stop advertising a knob nothing reads), or build a per-mode strategy map and have scope() dispatch on tenant.isolation_mode; in both cases validate isolation_mode against the _ISOLATION allowlist at provision time (400 on unknown)."
+    },
+    {
+      "id": "tenant-r2-05",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "config-injection/reserved-keys",
+      "file": "app/core/tenant_service.py",
+      "line": 119,
+      "title": "update_config/provision accept reserved underscore keys — a tenant can inject config._close and weaponise the close-sweep",
+      "detail": "update_config() does tenant.config.update(config) (line 119) with no filtering of service-internal keys, and provision() does config.update(config_overrides or {}) (line 88) likewise. The close-sweep's erase trigger is entirely driven by config._close.grace_until (tenant_service.py:203-205). _internal_view strips underscore keys on the way OUT to peers (internal.py:86) but the sweep reads the raw stored config, so nothing prevents a caller from writing _close IN.",
+      "failure_scenario": "A tenant.manage self-service user (or the platform via config_overrides) PUT /api/v1/tenant/config with {\"_close\": {\"grace_until\": \"2000-01-01T00:00:00+00:00\"}} while ACTIVE (allowed — _require_active passes). The tenant stays active, so the sweep (SUSPENDED-only) ignores it for now. Later an operator SUSPENDS the tenant for investigation (a plain suspend, not a close). The next close_sweep finds a suspended tenant carrying a _close with a past grace_until and ERASES it — destroying the tenant and any evidence, from an admin action that was never a close request. Also lets an owner pre-arm self-destruction.",
+      "fix": "Reject or strip keys beginning with '_' (and any other reserved namespace) in update_config and provision config_overrides before merging; keep the close schedule in a dedicated field the public config API cannot write."
+    },
+    {
+      "id": "tenant-r2-06",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "sweep-completeness/error-handling",
+      "file": "app/core/tenant_service.py",
+      "line": 202,
+      "title": "close_sweep aborts the entire run on the first tenant whose delete() raises — later due tenants in that run are skipped",
+      "detail": "The per-row loop (lines 202-207) calls await self.delete(...) with no try/except. delete()/tombstone() perform several store writes (put marker, delete slug, delete each domain). Any transient failure on ONE tenant (store hiccup, a domain key error) propagates out of close_sweep and terminates the whole sweep call; every remaining row in the current page and all subsequent pages go unprocessed for that run.",
+      "failure_scenario": "A scheduled sweep has 500 due tenants; tenant #7's tombstone write hits a momentary datastore error. The exception unwinds close_sweep, so tenants #8..#500 are not erased on this run and the returned {scanned,erased} counts understate the backlog. The FOCUS invariant 'never skip a tenant' is violated within a run; it is only self-healing because the next scheduled run re-queries SUSPENDED — but a persistently-failing single tenant permanently blocks the whole tail behind it.",
+      "fix": "Wrap the per-tenant delete in try/except, count and log failures, continue the loop, and surface a 'failed' tally in the result so a stuck tenant is observable rather than silently blocking the rest."
+    },
+    {
+      "id": "tenant-r2-07",
+      "severity": "medium",
+      "status": "SPECULATIVE",
+      "category": "concurrency/PII-resurrection",
+      "file": "app/core/erasure.py",
+      "line": 51,
+      "title": "DSAR erase() does read-modify-put of the whole tenant row and can resurrect a concurrently tombstoned/suspended tenant",
+      "detail": "erase() gets the full tenant row (line 40), mutates branding, and puts the ENTIRE row back (line 51). The inline comment asserts it is 'not a concurrent request path', but it shares the same collection/key as every lifecycle and config write and has no CAS. Like finding -01 this is a blind whole-record overwrite.",
+      "failure_scenario": "A subject erasure runs while the tenant is deleted (tombstone drops name/branding/config/domains and sets status='deleted') — or while an operator suspends it. erase() read the full pre-delete row, so its put() writes that full row back: status flips from 'deleted' to the old 'active', the name/branding/domains the tombstone erased reappear, and the PII the DSAR was clearing is re-persisted. Requires overlapping timing and (for the branding path) a branding hit, hence SPECULATIVE, but the outcome is an un-erased, un-deleted tenant.",
+      "fix": "Perform the branding scrub as a CAS/conditional update (or a field-scoped store operation), and refuse to write when the row is a tombstone (status==DELETED); never round-trip the whole document from a stale read on a shared key."
+    },
+    {
+      "id": "tenant-r2-08",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "postgres-vs-memory/latent-bug",
+      "file": "app/core/tenant_repository.py",
+      "line": 75,
+      "title": "iter_suspended sorts by a non-existent field 'created' (model field is created_at) — sweep ordering claim is false and the postgres ordering index is bypassed",
+      "detail": "iter_suspended() passes sort=('created','asc') (line 76), but Tenant.to_dict() has no 'created' key — it stores 'created_at' (models.py:32,44). In the memory adapter r.get('created') is None for every row; in postgres COALESCE(value->'created','null'::jsonb) is JSON null for every row. Both adapters therefore fall back to the id/key tie-break (which is total, so pagination does NOT skip — the round-1 completeness fix survives), but the intended 'oldest-closing-first' ordering does not happen and the kv_created_desc btree cannot serve the ORDER BY.",
+      "failure_scenario": "Not a data-loss bug (id tie-break keeps the page total-ordered), but the sweep does not process due tenants in close order as documented, and on a large SUSPENDED set postgres orders by a constant-null expression then key, so the '(created) DESC, key' index is not the intended match — degrading the very O(page) property the index comment claims. A future change that relied on created ordering would silently misbehave.",
+      "fix": "Change the sort field to 'created_at' (matching the model and the kv_created_at_desc index) or add a real 'created' field; add a test asserting iter_suspended returns oldest-first."
+    },
+    {
+      "id": "tenant-r2-09",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "durability/orphaned-index",
+      "file": "app/core/tenant_repository.py",
+      "line": 30,
+      "title": "Crash between slug CAS reservation and tenant-row put leaves an orphaned slug reservation that 409s forever",
+      "detail": "create() reserves the slug with cas(_SLUGS,...) at line 30, then reserves domains, then puts the tenant row LAST (line 40). The three steps are not atomic across a process crash. If the pod dies after the slug (and/or domain) reservation but before the _TENANTS put, the index rows persist with no backing tenant.",
+      "failure_scenario": "Provision reserves slug 'acme' (tenant_slugs row written), then the process is killed before line 40. get_by_slug('acme') resolves the index to an id whose _TENANTS row does not exist and returns None (repository.py:47-49), yet a retry of provision('acme') hits cas() and raises SlugTaken -> 409 forever. The slug is permanently un-provisionable and invisible, with no live tenant to delete to release it.",
+      "fix": "Write the tenant row first (or within the same transaction as the index reservations), or add a reconciliation/self-heal that releases an index row whose target _TENANTS row is absent; on postgres, wrap create in a single transaction."
+    },
+    {
+      "id": "tenant-r2-10",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "backup-restore/index-drift",
+      "file": "app/api/internal.py",
+      "line": 313,
+      "title": "_reindex_tenants after restore is bounded by scan_cap and never removes stale index rows",
+      "detail": "_reindex_tenants() (lines 313-332) rebuilds slug/domain lookups by scan_all('tenants', scan_cap) — bounded by BACKUP_MAX_ROWS_PER_COLLECTION (default 5,000,000) — and only PUTs derived rows; it never deletes pre-existing index entries. It also skips slug-less tombstones correctly, but does not reconcile an index pointing at a now-absent or reassigned target.",
+      "failure_scenario": "If the restored registry exceeds scan_cap, tenants beyond the cap get no slug/domain row and answer 404 on host/slug resolution despite existing in the registry. And if a slug/domain was reassigned to a different tenant after the backup, a non-overwrite restore leaves the live index pointing one way while the reindex (over restored rows) may point another, or a stale mapping to a tenant not in the restore survives — host resolution then routes to the wrong or a missing tenant.",
+      "fix": "Reindex over the full registry (page rather than a single capped scan_all) and rebuild the index collections from scratch (clear-then-fill) so stale/removed mappings cannot survive a restore."
+    }
+  ]
+}

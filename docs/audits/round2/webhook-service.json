@@ -1,0 +1,114 @@
+{
+  "service": "webhook-service",
+  "round": 2,
+  "findings": [
+    {
+      "id": "webhook-r2-01",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "privacy/erasure-ineffective (CWE-212 improper removal of sensitive info)",
+      "file": "app/core/erasure.py",
+      "line": 123,
+      "title": "DSAR erasure of inbound events writes the redacted copy under the WRONG key, leaving the original PII row intact",
+      "detail": "`_redact_row` persists with `await self._store.put(collection, row[\"id\"], row)`. For the `events` and `deliveries` collections the store key equals `row[\"id\"]`, so the redacted row overwrites the original. But inbound events are NOT keyed by id: InboundStore stores them under the composite key `f\"{source}::{provider_event_id}\"` (app/core/stores.py:216-217,230,242) while `row[\"id\"]` is the surrogate `in_<uuid>` (app/core/models.py:113). So for the `inbound` collection, erasure reads the row (via scan_all), redacts it in memory, then PUTs the redacted copy under a brand-new key `in_<uuid>` and never touches the original `stripe::evt_123` row. The original inbound payload — described in erasure.py:6-7 as 'a third party's raw body (Stripe, GitHub), routinely full of PII' — survives forever, yet the DSAR ack reports `inbound:N` in `erased` and returns success. The unit test misses this because its fake store keys by `id` (tests/unit/test_erasure.py:108 `r[\"id\"] == key`) and its inbound fixture has no source/provider fields (test line 144), i.e. a memory-fake-vs-real-store divergence.",
+      "failure_scenario": "A customer files a right-to-erasure request. Operator calls POST /internal/privacy/erase {tenant, subject}. The service returns {\"erased\": [\"inbound:3\", ...], \"already_absent\": false} — a clean success. The person's email/name/card metadata inside the three Stripe/gateway inbound payloads is still in the datastore under keys `stripe::evt_...`, plus three orphan duplicate rows now exist under `in_...`. The org has certified an erasure that did not happen (PDPL/GDPR Art.17 violation) and doubled the stored PII.",
+      "fix": "Persist inbound redactions under the SAME key the row was read at, not row[\"id\"]. Either have scan_all/find surface the storage key and put back under it, or add a store method that rewrites in place. At minimum, InboundEvent redaction must recompute `f\"{source}::{provider_event_id}\"` from the row and put under that. Add a test that exercises the real memory adapter (not a fake keyed by id) with a genuinely stored inbound event."
+    },
+    {
+      "id": "webhook-r2-02",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "unbounded read / DoS (CWE-400)",
+      "file": "app/core/stores.py",
+      "line": 184,
+      "title": "Sweep `due()` reads EVERY queued/failed delivery each tick; only status is pushed down, next_retry_at is filtered in Python",
+      "detail": "`due()` pages the whole `{status: [queued, failed]}` set in _SWEEP_PAGE(500) chunks and filters `next_retry_at <= now` in Python, looping `while len(out) < limit`. When the backlog contains many not-yet-due rows (large retry_max_seconds=21600s ceiling means a failing endpoint's deliveries sit FAILED with a future next_retry_at for hours), each sweep drains the entire cursor before it can collect `limit` due rows, reading all queued+failed rows every tick. The next_retry_at predicate is never pushed to the datastore, so the read is O(open backlog), not O(due backlog). deliver() also re-defers disabled/circuit-open endpoints by pushing next_retry_at forward (webhook_service.py:173,183) which keeps them in the queued/failed set, inflating the scanned volume.",
+      "failure_scenario": "One tenant registers 5k endpoints that all start 5xx-ing. Each event fans out 5k FAILED deliveries with next_retry_at hours in the future. Every /internal/webhooks/sweep tick now paginates through tens of thousands of not-due rows to find a handful of due ones, saturating the DB connection and the worker; healthy tenants' due deliveries are delayed behind the scan.",
+      "fix": "Push the due-time predicate into the datastore query (`next_retry_at <= now` as an indexed range filter combined with status), or maintain a due-index sorted by next_retry_at so the scan is proportional to the DUE backlog. Cap total rows scanned per sweep and record when the cap is hit."
+    },
+    {
+      "id": "webhook-r2-03",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "concurrency / dedupe race (TOCTOU, CWE-367)",
+      "file": "app/core/stores.py",
+      "line": 244,
+      "title": "Inbound dedupe re-accept after TTL uses a non-atomic get+put, re-opening the double-publish window reserve() was built to close",
+      "detail": "reserve() first does an atomic cas(expected=0) insert-if-absent (correct). But the TTL-lapsed branch (lines 244-248) does `get()` then, if the existing row aged past ttl, `put()` (a plain overwrite) and returns True. Two concurrent duplicates arriving after the dedupe window has lapsed both hit the cas (fails, row exists), both get() the aged row, both put() and both return True -> InboundService.ingest publishes the event to the bus TWICE. There is no compare-and-set on this overwrite, unlike the first-seen path. The doc comment claims 'exactly one wins', which holds for the fresh-insert path but not the re-accept path.",
+      "failure_scenario": "A provider re-sends a webhook with the same provider_event_id more than INBOUND_DEDUPE_TTL_SECONDS (24h default) after the first, and its retry logic fires two near-simultaneous copies (common: provider timeout + retry). Both pass signature verification, both re-accept, both publish `inbound.<source>` — downstream subscribers process the event twice (e.g. double credit / double fulfilment) despite the dedupe guarantee.",
+      "fix": "Make the re-accept atomic: use a cas keyed on the aged row's version (or a conditional put-if-received_ts-unchanged) so only one caller replaces the lapsed row and publishes. On cas failure, treat as duplicate."
+    },
+    {
+      "id": "webhook-r2-04",
+      "severity": "medium",
+      "status": "SPECULATIVE",
+      "category": "postgres-vs-memory divergence / pagination correctness (CWE-707)",
+      "file": "app/adapters/datastore/postgres.py",
+      "line": 219,
+      "title": "Keyset cursor tie-break uses row['id'] but Postgres ORDER BY/compare uses the primary key `key`; they differ for inbound rows",
+      "detail": "find() orders and compares on `(value->'<field>', key)` where `key` is the PK (postgres.py:219,226), but the emitted cursor encodes `str(last.get('id',''))` (postgres.py:237), and the next-page WHERE compares that encoded id against `key` (line 219). For every collection where key==row['id'] (endpoints/events/deliveries) this is fine. For the `inbound` collection key is `source::provider_event_id` while row['id'] is `in_<uuid>` — so the tie-break value in the cursor is compared against a totally different string domain than the column being ordered. When two inbound rows share the same `received` value at a page boundary, rows can be skipped or duplicated. The memory adapter instead orders AND tie-breaks on `str(r.get('id'))` (memory.py:73,79), so the two backends page inbound listings differently — a divergence tests using the memory store cannot catch.",
+      "failure_scenario": "An operator pages the cross-source inbound feed (InboundStore.list with a source filter -> find, sort received desc) on Postgres. At a page boundary where several events share a received timestamp, some inbound events silently never appear in any page, hiding events from an investigation; the same query on memory (tests/dev) returns them, so the gap is invisible until production.",
+      "fix": "Encode and compare the actual ordering key (the PK `key`) in the cursor, not row['id'] — or make the two consistent for every collection. Align the memory adapter to tie-break on the same field so a contract test can assert identical paging across backends."
+    },
+    {
+      "id": "webhook-r2-05",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "concurrency / lost update (CWE-362)",
+      "file": "app/core/webhook_service.py",
+      "line": 242,
+      "title": "Endpoint circuit-breaker/counter state is saved with save_state() (no CAS), so concurrent deliveries lose failure counts",
+      "detail": "The delivery row transition is CAS-protected (claim_delivering), but the ENDPOINT state written after each attempt (consecutive_failures, circuit_state, opened_at, success/failure counts) goes through EndpointStore.save_state -> plain put (stores.py:74-78), a read-modify-write with no version guard. Two deliveries to the same endpoint finishing concurrently both read ep, both mutate counters, last write wins.",
+      "failure_scenario": "An endpoint starts failing under high fan-out; N concurrent deliveries each read consecutive_failures=k and write k+1, so the counter advances by 1 instead of N. The circuit threshold (default 5) is reached far later than intended, letting many more doomed attempts hammer a dead receiver (and burn worker time) before the breaker opens.",
+      "fix": "Apply the counters as atomic increments (or a versioned CAS with retry) rather than a whole-object put, so concurrent attempts accumulate rather than overwrite."
+    },
+    {
+      "id": "webhook-r2-06",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "tenant isolation / fail-open default (CWE-284)",
+      "file": "app/api/v1/webhooks.py",
+      "line": 65,
+      "title": "Tenantless principals collapse to a shared '__none__' bucket, mixing endpoints/deliveries across such callers",
+      "detail": "_tenant() and _owned() fall back to `p.tenant or '__none__'` for a non-platform principal whose verified token carries no tenant/org/tid claim (auth.py:30 leaves tenant=None when absent). Every such principal shares the literal tenant '__none__', so they read/replay each other's endpoints, events, deliveries and dead-letters. This is safe only if the deployment guarantees every non-platform token carries a tenant claim — which is an unenforced assumption, not a checked invariant.",
+      "failure_scenario": "A deployment (or a misconfigured issuer) mints user tokens without a tenant claim for two different real customers. Both authenticate, both resolve to tenant '__none__', and customer A lists/replays customer B's webhook deliveries and dead-letters — a cross-tenant IDOR that no ownership check catches because both truly share the bucket.",
+      "fix": "Refuse (403) a non-platform principal with no tenant claim rather than assigning a shared sentinel, or require a tenant claim at authentication for any tenant-scoped route."
+    },
+    {
+      "id": "webhook-r2-07",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "availability / silent truncation (CWE-670)",
+      "file": "app/core/secret_store.py",
+      "line": 185,
+      "title": "Inbound-secret resolution reads at most 200 secret rows with no paging; sources beyond the 200th (by name) are silently untrusted",
+      "detail": "InboundSecretPool._resolve() enumerates stored secrets via store.list_info(tenant='') which does find(_COLL, {'tenant': ''}, limit=200, sort=('name','asc')) with NO cursor loop (secret_store.py:185). A deployment with >200 operator-entered INBOUND_SECRET:* rows only ever resolves the first 200 by name; any source whose secret sorts after that is absent from the pool and every genuine callback for it is rejected as UNKNOWN_SOURCE (inbound_service.py:44-45). Fail-closed (good — no forged acceptance) but a silent, name-order-dependent availability cliff.",
+      "failure_scenario": "An operator onboards the 201st inbound source; its stored secret is never loaded, so that provider's real signed callbacks all return 400 while the panel shows the secret set correctly. Diagnosis is hard because it depends on alphabetical name ordering, not on the source just added.",
+      "fix": "Page through all INBOUND_SECRET:* rows (cursor loop) or raise/alert when the row count reaches the read cap, so the resolution is complete or loudly incomplete rather than silently truncated."
+    },
+    {
+      "id": "webhook-r2-08",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "signature scheme coverage / integration correctness",
+      "file": "app/core/signing.py",
+      "line": 42,
+      "title": "Inbound verification implements ONLY the service's own Stripe-style HMAC; no per-gateway scheme (Tap/Geidea/PayPal/Stripe-native) is supported",
+      "detail": "The audit scope names per-gateway inbound schemes, but this service verifies exactly one format: `X-Webhook-Signature: t=<unix>,v1=<hmac_sha256(ts.body)>` (signing.py, inbound.py:35). Real payment gateways sign differently (PayPal transmits a cert-chain + CRC over headers; Tap/Geidea use their own field digests; native Stripe uses this exact scheme but its own header name `Stripe-Signature`). Pointing a real gateway at /inbound/{source} would fail verification for every callback because the header name and/or algorithm do not match. This is a functional/coverage gap (gateway-specific verification lives in payment-service per project notes), not an authentication weakness — the generic scheme fails closed.",
+      "failure_scenario": "An operator, expecting 'webhook-service handles inbound webhooks', points a live Tap or PayPal webhook at /inbound/tap. Tap signs with its own scheme under its own header; the service's HMAC-on-X-Webhook-Signature check always fails, so every legitimate gateway callback is rejected (400) and the provider eventually stops retrying — lost payment events.",
+      "fix": "Either document explicitly that inbound is the platform's own HMAC contract only (and route gateway callbacks to payment-service), or add a per-source verifier strategy (header name + algorithm) so a source can declare which gateway scheme applies."
+    },
+    {
+      "id": "webhook-r2-09",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "DoS / algorithmic (CWE-400)",
+      "file": "app/core/signing.py",
+      "line": 51,
+      "title": "verify() compares every secret against every parsed v* signature with no cap on signature count",
+      "detail": "parse() collects an unbounded list of signatures for any header part whose key starts with 'v' (signing.py:37-38), and verify() does a nested loop secrets x sigs of hmac.compare_digest (lines 51-57). An attacker who can reach /inbound/{source} for a KNOWN source can send a header packed with thousands of v1=... values, forcing len(secrets) * N constant-time SHA-256 comparisons per request. Bounded by the HTTP header size limit, so impact is modest, but it is attacker-controlled CPU on the hot path before any dedupe.",
+      "failure_scenario": "An attacker floods /inbound/stripe with requests carrying maximally long X-Webhook-Signature headers full of bogus v1 entries; each request burns CPU on futile HMAC compares (all rejected on the timestamp/secret check anyway), amplifying a request flood into a CPU flood on the single-worker event loop.",
+      "fix": "Cap the number of accepted signatures parsed from the header (e.g. first 4) and short-circuit once the timestamp tolerance check fails (already done) — reject before iterating an oversized sig list."
+    }
+  ]
+}

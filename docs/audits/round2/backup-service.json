@@ -1,0 +1,126 @@
+{
+  "service": "backup-service",
+  "round": 2,
+  "findings": [
+    {
+      "id": "backup-r2-01",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "restore-correctness / false-safety-guarantee",
+      "file": "app/core/restore.py",
+      "line": 278,
+      "title": "undo() is not a true rollback: rows the restore INSERTED are never removed",
+      "detail": "A restore takes a whole-service pre-restore snapshot (_snapshot, tenant=\"\") of the target's CURRENT state, then calls import_archive. import_archive INSERTS any archived row whose id is absent from the target (backup.py:161-164, `inserted`). undo()/_undo_one (restore.py:278-301) rolls back by re-importing that snapshot with overwrite=True. import_archive only put()s keys that exist in the snapshot body; it has no delete path. Therefore any row the restore inserted (a key that did NOT exist before the restore, so it is absent from the snapshot) is left in place after undo. The docstrings claim undo 'put[s] back exactly what was there before' (restore.py:250) and that restore is 'undoable' (restore.py:15-17), which is false whenever the restored archive contained rows newer/absent than the live target.",
+      "failure_scenario": "Operator restores run R into a service to recover from a bad deploy. The archive holds 10k rows the live target no longer has; import reports inserted=10k. The restore turns out wrong, operator clicks undo. undo re-applies the pre-restore snapshot (overwrite) but the 10k inserted rows remain, because they are not keys in the snapshot. The service is left in a state that is neither pre- nor post-restore, and the 'safety net' silently failed. In the into_tenant clone case this leaves an unbounded set of foreign rows under the destination tenant that undo cannot reach.",
+      "fix": "Make undo authoritative: capture the exact set of keys import_archive wrote (return inserted keys, or diff snapshot-vs-current) and have undo delete keys that were inserted by the restore in addition to overwriting snapshot keys. Alternatively snapshot the full key set and, on undo, delete any live key in the affected collections that is absent from the snapshot. Do not advertise 'undoable' until inserts are reversible."
+    },
+    {
+      "id": "backup-r2-02",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "silent-data-loss / integrity",
+      "file": "app/core/backup.py",
+      "line": 60,
+      "title": "Global-collection export silently TRUNCATES at scan_cap instead of failing; incomplete archive still passes checksum, verify and drill",
+      "detail": "_read_collection's non-tenant path returns `await datastore.scan_all(name, scan_cap)` and the docstring/comment claims it is 'Bounded by scan_cap so a runaway collection fails the backup rather than exhausting memory' (backup.py:58-60). But scan_all in BOTH adapters truncates silently with no signal: MemoryDataStore.scan_all returns `rows[:limit]` (memory.py:73-76) and PostgresDataStore.scan_all runs `... ORDER BY key LIMIT $2` returning at most `limit` rows (postgres.py:209-222). Nothing raises when the collection exceeds scan_cap (default BACKUP_MAX_ROWS_PER_COLLECTION=5_000_000, config.py:162). The archive is then sealed over only the truncated rows, the checksum matches, verify_restore round-trips the truncated set (checked==expected because expected is computed from the truncated body), and the drill re-verifies the same truncated bytes. Every honesty mechanism reports OK over a backup that is missing rows.",
+      "failure_scenario": "A global (tenant_scoped:false) collection grows past 5,000,000 rows. The nightly backup captures only the first 5,000,000 by key order; the run is marked ok+verified, health is green, the drill passes. At restore time the archive faithfully restores an incomplete dataset and the rows past the cap are gone forever, discovered only when data is missing in production. The exact 'we have backups' lie the phase claims to kill.",
+      "fix": "Detect truncation: read scan_cap+1 (or have scan_all report whether more rows exist) and FAIL the target's export with a clear error when the cap is hit, exactly as the docstring promises. Never seal a knowingly-truncated collection. Same treatment needed for the per-tenant path (see backup-r2-05)."
+    },
+    {
+      "id": "backup-r2-03",
+      "severity": "high",
+      "status": "CONFIRMED",
+      "category": "SSRF / secret-exfiltration / egress-bypass",
+      "file": "app/core/internal_http.py",
+      "line": 67,
+      "title": "HTTP redirects are auto-followed, bypassing the egress allowlist and leaking the internal token + resolved operator secret",
+      "detail": "post_json validates only the INITIAL url against EGRESS_ALLOWED_HOSTS and the metadata-host blocklist (_check_host, internal_http.py:33-53), then calls urllib.request.urlopen(req, ...) with the DEFAULT opener (internal_http.py:67). The default opener installs HTTPRedirectHandler, which auto-follows 3xx responses. The redirect target is NEVER re-checked by _check_host, and urllib carries custom headers across the redirect: X-Internal-Token (the shared fleet internal-tier secret) and X-Internal-Assertion, plus any operator secret resolved into an outbound header (assertion_headers_for_url / token_ref -> secret_store.get). Python's cross-host header stripping only covers Authorization/Cookie, not these custom headers. Every outbound path is affected: orchestrator export/verify, restore import, drill verify, snapshot export, and undo import.",
+      "failure_scenario": "A registered target (first- or third-party) is compromised or malicious. On /internal/backup/export it answers 302 Location: http://169.254.169.254/latest/... or http://attacker.example/collect. backup-service follows the redirect, re-sending X-Internal-Token and the target's resolved operator secret to the attacker/metadata endpoint. The attacker harvests the shared internal token (full internal-tier pivot across the fleet) and cloud credentials, all while the destination never appeared on EGRESS_ALLOWED_HOSTS. The metadata blocklist in _check_host is useless because it only sees the first hop.",
+      "fix": "Disable redirect following for these token-bearing calls: build an opener with a no-op/rejecting HTTPRedirectHandler (redirect_request returns None -> raise), or treat any 3xx as TargetUnreachable. If redirects must be supported, re-run _check_host (host allowlist + metadata block) on every redirect target and strip the X-Internal-Token/assertion/secret headers on any cross-host hop."
+    },
+    {
+      "id": "backup-r2-04",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "cross-tenant data comingling / tenant IDOR",
+      "file": "app/core/backup.py",
+      "line": 157,
+      "title": "into_tenant remaps EVERY tenant's rows in a whole-service archive into one tenant, with no single-tenant guard",
+      "detail": "import_archive applies `if into_tenant and \"tenant\" in row: row = {**row, \"tenant\": into_tenant}` to every row of every collection (backup.py:157-159). There is no check that the archive represents a single tenant. Restore/plan expose into_tenant directly (operator.py:242, internal.py:129) and the restore always applies the WHOLE stored archive (restore.py comment 196-198 states import has no tenant filter; the `tenant` arg does NOT scope the restore). A run captured whole-service (tenant=\"\") contains every customer's rows, so restore-as-clone into_tenant=X collapses ALL customers' data under tenant X.",
+      "failure_scenario": "Support wants to stand up customer A's data in a sandbox tenant. They restore the latest (whole-service) run with into_tenant=\"sandbox\". Instead of only A, every tenant's rows are rewritten with tenant=\"sandbox\" and inserted, mixing all customers' PII/records under one accessible tenant — a cross-tenant disclosure created by the tool meant for isolation. With overwrite=True and colliding ids it also clobbers existing sandbox rows.",
+      "fix": "Refuse into_tenant unless the archive is single-tenant (body[\"tenant\"] non-empty, or all remapped rows share one source tenant). For selective clone, require the source archive to have been captured per-tenant, or add a source-tenant filter to import so only that tenant's rows are remapped."
+    },
+    {
+      "id": "backup-r2-05",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "unbounded-read / DoS",
+      "file": "app/core/backup.py",
+      "line": 50,
+      "title": "Per-tenant export accumulates the entire tenant into memory with no scan_cap",
+      "detail": "The tenant-scoped branch of _read_collection pages with find() but appends every page into `out` and returns the whole list (backup.py:50-57); scan_cap is applied ONLY to the global scan_all branch (backup.py:60). export() then holds all collections' full row lists in `payload`, computes tenants_covered over them, and json.dumps the entire structure before sealing (backup.py:73-95). A single large tenant is fully materialised twice (list + serialised string) in one request.",
+      "failure_scenario": "A tenant with millions of rows triggers a per-tenant backup (or a pre-restore snapshot, which calls export). The service loads the entire tenant into RAM plus the serialised JSON copy, spiking memory and risking OOM/eventloop stalls on the backup pod — a self-inflicted DoS with no configured ceiling, in contrast to the (silently-truncating) global path which at least caps rows.",
+      "fix": "Apply a bound to the tenant path too (cap total rows and fail loudly when exceeded, like backup-r2-02 recommends), and/or stream the archive to the object store instead of building the whole sealed body in memory."
+    },
+    {
+      "id": "backup-r2-06",
+      "severity": "medium",
+      "status": "SPECULATIVE",
+      "category": "postgres-vs-memory / stale-read correctness",
+      "file": "app/core/runs.py",
+      "line": 36,
+      "title": "RunStore.recent() returns the OLDEST 10k runs when run count exceeds _RECENT_SCAN, so 'latest run' can be stale",
+      "detail": "recent() does `rows = await scan_all(_COLL, _RECENT_SCAN=10_000)` then sorts newest-first and slices (runs.py:36-37). scan_all returns key-ASCENDING first N (memory.py:73-76 insertion-order-ish / postgres.py ORDER BY key), and run ids are `run_<timestamp>_...`, so the first 10k by key are the OLDEST runs. If more than 10k run records exist, the newest runs are never read; recent(1) then yields the newest of the OLDEST 10k — a stale run. tenant-coverage (internal.py:295 uses recent(1) as 'the latest run') and health/drill would reason over stale data.",
+      "failure_scenario": "Retention is disabled or the prune cron stalls (both possible: BACKUP_RETENTION_MAX_AGE_SECONDS default 0 = age-based off; prune is cron-driven). Runs accumulate past 10,000. A dispute-defense query GET /internal/backup/tenant-coverage answers 'covered/verified' against an ancient run while recent runs (which may show the tenant MISSED) are invisible — a confidently wrong compliance answer.",
+      "fix": "Have scan_all support a newest-first read (ORDER BY key DESC) for these control logs, or key the log so the DB can return the most recent N directly; alternatively raise if the scan hits _RECENT_SCAN so the truncation is observable rather than silently wrong."
+    },
+    {
+      "id": "backup-r2-07",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "storage-leak / retention gap",
+      "file": "app/core/retention.py",
+      "line": 74,
+      "title": "Pre-restore snapshots are never pruned",
+      "detail": "RetentionSweeper.prune only deletes objects listed as `archive_key` inside run results (retention.py:74-81). Pre-restore snapshots are stored under `{restore_id}/pre/{service}.json` (restore.py:240) and are referenced only from restore records (backup_restores), never from run results, so no code path ever deletes them.",
+      "failure_scenario": "Over months of restores/drills, snapshot objects accumulate unbounded in the object store, growing cost and, for the local adapter, disk until the store fills and future backups fail to store (orchestrator marks targets FAILED).",
+      "fix": "Add snapshot pruning tied to restore-record retention (delete snapshot_key objects when their restore record ages out), or a max-age sweep over the `*/pre/` prefix."
+    },
+    {
+      "id": "backup-r2-08",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "integrity / rollback attack",
+      "file": "app/core/orchestrator.py",
+      "line": 117,
+      "title": "Stored archive not bound to its run; an object-store writer can substitute an older valid same-service archive undetected",
+      "detail": "Integrity rests on _checksum over the `sealed` field and AES-GCM (backup.py:40-41,265-300). Neither binds the archive to its run_id or the recorded taken_at (taken_at lives inside the sealed body but is never compared to the run record on restore/drill). The stored object at `{run_id}/{service}.json` (orchestrator.py:115-117) is read back by key on restore (restore.py:208) and drill (drill.py:106) and accepted if checksum+unseal succeed.",
+      "failure_scenario": "An actor with write access to the object store (but without BACKUP_KEK) overwrites run R's archive for a service with that service's OWN older valid archive from run R-10. Checksum passes, GCM decrypts, verify/drill pass, and a restore from R silently restores stale data — a rollback attack the self-verifying design does not detect.",
+      "fix": "Bind the stored object to its run: include run_id in the sealed body and verify it matches the run record on restore/drill, or store the expected checksum in the run record and compare against the re-read object before trusting it."
+    },
+    {
+      "id": "backup-r2-09",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "verify-soundness / false-pass",
+      "file": "app/core/backup.py",
+      "line": 226,
+      "title": "verify_restore passes archives with duplicate row ids that real import cannot faithfully restore",
+      "detail": "verify_restore writes each row into ns keyed by id then immediately reads it back and compares (backup.py:226-240). If a collection contains two rows sharing an id, each is written-then-read in its own iteration so both compare equal and count toward `checked`, and `verified` becomes true. But import_archive keys on id and (without overwrite) SKIPS the second, or (with overwrite) keeps only the last — so a real restore loses one of the duplicates. verify therefore reports an archive as faithfully restorable when it is not.",
+      "failure_scenario": "A target's export emits two rows with the same id (a schema/serialisation quirk). The archive verifies OK and drills green, but a real restore silently drops or overwrites one of the two rows, and the loss is never surfaced.",
+      "fix": "Detect duplicate ids per collection during verify_restore (and/or in verify/import) and fail the archive, since idempotent id-keyed restore is exactly the invariant the archive relies on."
+    },
+    {
+      "id": "backup-r2-10",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "unbounded-read / DoS",
+      "file": "app/core/internal_http.py",
+      "line": 68,
+      "title": "No response-size cap on target replies; a compromised target can OOM the orchestrator",
+      "detail": "post_json does `resp.read()` with no size limit (internal_http.py:68) and _parse json-loads the whole body. Export/verify responses are expected to be large, but there is no ceiling, so a hostile or buggy target can return an arbitrarily large body.",
+      "failure_scenario": "A compromised target answers /internal/backup/export with a multi-gigabyte body; backup-service reads it entirely into memory (the read runs in a worker thread via asyncio.to_thread, so it does not block the loop but does consume heap), risking OOM of the backup pod during a routine run.",
+      "fix": "Cap the read (Content-Length check plus a bounded read that aborts past a configured max archive size) and treat oversize responses as a failed target."
+    }
+  ]
+}

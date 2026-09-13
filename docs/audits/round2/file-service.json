@@ -1,0 +1,150 @@
+{
+  "service": "file-service",
+  "round": 2,
+  "findings": [
+    {
+      "id": "file-r2-01",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "audit-integrity / IDOR",
+      "file": "app/api/v1/files.py",
+      "line": 269,
+      "title": "DELETE records the audit event BEFORE authorization, so any caller can spray false 'file.deleted' entries for arbitrary file ids / tenants",
+      "detail": "In `delete()` the write-ahead audit `record('file.deleted', ...)` runs at line 269-271, BEFORE `_load_scoped()` (line 273) authorizes the caller against the file's tenant. This is exactly the bug the team fixed in `signed_url()` (line 254-256 comment: 'Authorize (tenant ownership) BEFORE recording issuance ... recording first logged an issuance that never happened, a false audit entry an attacker could spray by id'). The delete route regressed the same pattern: the mutation is correctly gated by `_load_scoped`, but the audit is not.",
+      "failure_scenario": "An authenticated user in tenant B (holding files.upload) calls DELETE /api/v1/files/{id} with a file id belonging to tenant A (or a guessed/known id). `_load_scoped` will 404 and nothing is deleted, but a `file.deleted` row for actor=attacker, resource=file:{id} has already been appended to the immutable audit chain. Sprayed at scale this pollutes the append-only log, manufactures deletion evidence for files that were never touched, and can implicate the attacker's own tenant in cross-tenant activity that never happened.",
+      "fix": "Call `await _load_scoped(svc, file_id, principal)` FIRST, then write the write-ahead audit, then mutate. Mirror the ordering already used in `signed_url()`."
+    },
+    {
+      "id": "file-r2-02",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "audit gap / cross-tenant read",
+      "file": "app/api/v1/files.py",
+      "line": 236,
+      "title": "Cross-tenant byte download by a platform.files holder through the normal GET /{file_id} route is UNAUDITED",
+      "detail": "`_load_scoped` (line 81-82) returns any file unscoped when the principal holds `platform.files`. The operator browse routes `/admin/list` and `/admin/{file_id}/metadata` audit ('file.inspected') and the admin metadata route deliberately serves metadata only. But the ordinary `download()` (GET /{file_id}, line 236-247) and `signed_url()` POST route contain NO auditor.record() call at all, yet a platform.files holder reaches them and pulls another tenant's actual bytes (or mints a bearer link to them). So the one cross-tenant action that exposes content, done through the normal route, leaves no audit trail, while the metadata-only admin route is audited.",
+      "failure_scenario": "A support/platform operator (platform.files) issues GET /api/v1/files/{id} for any tenant's file id and receives the bytes (or a 302 to a presigned bucket URL). No 'file.inspected'/'file.downloaded' record is written. Cross-tenant content access is invisible to a later investigation, defeating the purpose of the audited /admin surface.",
+      "fix": "Audit the download path when the read crosses tenants (or unconditionally). E.g. in `download()` and `signed_url()`, when `'platform.files' in principal.caps and f.tenant != principal.tenant`, record a 'file.downloaded'/'file.inspected' event with the file's tenant. Better: fold cross-tenant reads through one audited helper."
+    },
+    {
+      "id": "file-r2-03",
+      "severity": "medium",
+      "status": "CONFIRMED",
+      "category": "config fail-open / malware distribution (CWE-434)",
+      "file": "app/config.py",
+      "line": 415,
+      "title": "Default posture LARGE_UPLOAD_SCAN=async + SCANNER_DRIVER=none serves large objects unscanned in production; boot guard only blocks 'skip'",
+      "detail": "`assert_large_scan_ok()` refuses to boot only when LARGE_UPLOAD_SCAN=='skip'. The defaults are LARGE_UPLOAD_SCAN='async' (config.py:281) and SCANNER_DRIVER='none' (config.py:291). With that combination the ScanWorker calls `NoneScanner.scan_stream` which does nothing, so a multi-GB object is promoted to READY and served with NO malware scan, while the operator believes 'async' scanning is in effect. The fail-closed branch in `begin_large_upload` only triggers for scan_policy=='require' (file_service.py:95-99), never for 'async'. So 'async' silently degrades to 'skip' whenever no real scanner is wired.",
+      "failure_scenario": "Operator deploys to production with the defaults (or sets LARGE_UPLOAD_SCAN=async but forgets SCANNER_DRIVER), passes all boot guards and health checks, and the service becomes a malware-distribution channel: any client uploads an executable via the direct-to-bucket large path, it verifies only by hash, is promoted, deduped and served by short-lived presigned URLs to any tenant that shares the content hash.",
+      "fix": "Extend the boot guard: in production, LARGE_UPLOAD_SCAN in {'async','require'} with SCANNER_DRIVER=='none' must refuse to start (an async scan with no scanner is skip with a misleading name). Alternatively make 'async'+none fail-closed at begin_large_upload as 'require' does."
+    },
+    {
+      "id": "file-r2-04",
+      "severity": "medium",
+      "status": "SPECULATIVE",
+      "category": "TOCTOU / data loss (blob ref-count race)",
+      "file": "app/core/file_service.py",
+      "line": 184,
+      "title": "finalize/upload put-then-incr can race a concurrent last-ref delete, leaving a live FileObject pointing at a deleted blob",
+      "detail": "The delete-safety invariant relies on 'upload writes the blob before it increments' (delete() comment, line 285-289). But the ordering is put/promote THEN incr_ref, and claim_blob_delete only checks ref==0. Consider content sha S already referenced by one file (ref=1). Concurrent: (A) a fresh large upload of the same content finalizes -> `promote(staging, content_key)` restores/keeps the blob (line 185), THEN `incr_ref(S)` (line 186). (B) delete of the sole existing file -> `decr_ref` 1->0, then `claim_blob_delete(S)` sees ref==0 and deletes the blob. Interleaving A.promote, B.decr(->0), B.claim+store.delete, A.incr(->1) leaves blob_refs[S].count=1 with the object gone. Same shape in the small `upload()` path (put line 251, incr line 252). Round 1 notes flag CAS/concurrency as deferred.",
+      "failure_scenario": "Under concurrent re-upload and last-reference deletion of the same content hash, a tenant's newly created (deduped/finalized) file references a sha whose bytes were just deleted. Subsequent download 404s / NoSuchKey; the file record survives but the content is permanently gone. Also corrupts erasure receipts (claims bytes removed while a ref row survives, or vice-versa).",
+      "fix": "Make the increment and the zero-claim mutually exclusive: either incr_ref before promote and re-verify existence (as begin_large_upload's dedup path already does at lines 118-126), or gate blob deletion on a claim that also fails if any incr happened after the decr (version/CAS token), or perform decr+claim+delete and incr+existence-restore under one store-level transaction."
+    },
+    {
+      "id": "file-r2-05",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "cross-tenant IDOR (dedup possession)",
+      "file": "app/core/file_repository.py",
+      "line": 39,
+      "title": "Large-upload dedup possession check keys on owner only, not (tenant, owner)",
+      "detail": "`first_by_owner_sha(owner, sha256)` (file_repository.py:39-48) filters `{owner, sha256}` with no tenant. `begin_large_upload` uses it to short-circuit an upload as 'you already possess this' and to copy the existing file's content_type/size (file_service.py:111-125). Safe only while the JWT `sub` (owner) is globally unique across tenants. `_extract_principal` takes `sub` verbatim (auth.py:31-33); if any issuer ever mints tenant-local/reused subject ids, an attacker in tenant B whose sub collides with a victim in tenant A could claim a reference to the victim's content by declaring its sha256, without ever possessing the bytes.",
+      "failure_scenario": "Attacker learns/guesses a content sha256 (or reuses one leaked via a dedup timing difference) and, sharing a subject id with the original uploader in another tenant, calls POST /uploads with that sha. The dedup branch creates a FileObject in the attacker's tenant referencing the blob with no upload and no scan, then downloads it — a cross-tenant content disclosure.",
+      "fix": "Scope the possession query to (tenant, owner, sha256), or bind dedup to a possession proof that cannot be satisfied by naming a hash. At minimum document and enforce the global-uniqueness invariant of `sub` at the token-verifier boundary."
+    },
+    {
+      "id": "file-r2-06",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "unbounded requests / DoS",
+      "file": "app/api/v1/files.py",
+      "line": 236,
+      "title": "Byte-serving download, metadata and signed-url-minting routes carry no rate limit",
+      "detail": "Only `upload`, `initiate_large_upload`, `list_files`, and the operator routes declare `Depends(rate_limit)`. The GET `download` (line 236), GET `metadata` (line 226), POST `signed_url` (line 250), the public `signed_download` (line 314), and `complete/get/abort` upload routes do not. So an authenticated caller can hammer downloads (each may proxy full bytes for a non-presign store) and spray POST /{id}/signed-url, each of which also appends an audit row (file.signed_url_issued).",
+      "failure_scenario": "An authenticated user issues thousands of POST /{id}/signed-url per second: mints unbounded bearer links and floods the audit chain, or hammers GET /{id} on a local/memory store to force repeated full-object reads into memory — a self-service DoS and audit-amplification with no throttle.",
+      "fix": "Add `Depends(rate_limit)` to download, metadata, signed_url, signed_download, and the large-upload complete/status/abort routes, with an appropriate route class/cost."
+    },
+    {
+      "id": "file-r2-07",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "config knob not wired (advertised-but-unread)",
+      "file": "app/core/file_service.py",
+      "line": 292,
+      "title": "Presigned bucket GET TTL is hardcoded to 300s; PRESIGN_TTL_SECONDS only governs PUT/multipart, not downloads",
+      "detail": "`download_redirect(f, *, ttl=300)` (file_service.py:292) is called from `download` and `signed_download` with no ttl argument, so every presigned GET is minted for 300s. PRESIGN_TTL_SECONDS (config.py:296-299, default 900) is documented as 'Consumed by the s3 object store when it mints presigned PUT/GET URLs' and is wired only into S3ObjectStore._presign_ttl (used by begin_multipart PUT URLs, s3.py:163). The GET presign path uses the hardcoded 300 instead. An operator setting PRESIGN_TTL_SECONDS to tighten/lengthen download link lifetime has no effect on downloads.",
+      "failure_scenario": "Operator sets PRESIGN_TTL_SECONDS=60 to minimize the window a leaked bucket URL is usable; downloads keep issuing 300s URLs. The control the operator relied on is silently inert (the advertised-but-unread-knob failure mode).",
+      "fix": "Thread PRESIGN_TTL_SECONDS into download_redirect (pass it from build_files / the route) rather than a hardcoded 300, or drop the default and require the caller to pass the configured value."
+    },
+    {
+      "id": "file-r2-08",
+      "severity": "low",
+      "status": "CONFIRMED",
+      "category": "secret reuse / key separation",
+      "file": "app/container.py",
+      "line": 141,
+      "title": "SIGNED_URL_SECRET falls back to INTERNAL_SERVICE_TOKEN, so the internal service token can forge share links for any file",
+      "detail": "The hmac signer is built as `HmacSigner(s.SIGNED_URL_SECRET or s.INTERNAL_SERVICE_TOKEN, ...)` (container.py:141). When SIGNED_URL_SECRET is unset, the same secret that authenticates every /internal caller also signs public share-link tokens. The signer signs only {key,exp} (hmac_signer.py:46-49) and `resolve_signed_file` returns the file for any valid token with no further authz (file_service.py:307-311). Every service in the fleet holds INTERNAL_SERVICE_TOKEN.",
+      "failure_scenario": "Any component or attacker who obtains the internal service token (a widely-shared secret) can forge a valid /files/signed/{token} for an arbitrary file id and download it without any user JWT or tenant check, for the token TTL. Compromise of the internal token thus also becomes universal file-read.",
+      "fix": "Require SIGNED_URL_SECRET explicitly for the hmac driver (fail-fast if empty) rather than silently reusing the internal token; keep the two keys distinct so the blast radius of each is bounded."
+    },
+    {
+      "id": "file-r2-09",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "signed-URL scope / expiry widening",
+      "file": "app/api/v1/files.py",
+      "line": 314,
+      "title": "Signed token carries no owner/tenant/IP binding and a valid token minutes-old still yields a fresh 300s bucket redirect",
+      "detail": "The HMAC token payload is {key,exp} only (hmac_signer.py:47) — no tenant, owner, or client binding — a pure bearer credential. Additionally the effective access window stacks: a token resolved at t just before SIGNED_URL_TTL_SECONDS expiry hands out a bucket presign valid for another ttl (300s, see file-r2-07), and the signer verifies against the previous rotated secret for the whole rotation window (hmac_signer.py:41,56-57). All by design, but it means a link leaked to logs/referrers/proxies is usable by anyone until exp, plus the presign tail.",
+      "failure_scenario": "A /files/signed/{token} URL captured from an access log, browser history, or an HTTP referrer header is replayable by any party (no IP/tenant binding) until expiry, and the final bucket 302 remains valid ~300s beyond that. For long SIGNED_URL_TTL_SECONDS this is a meaningful exposure window on shared content.",
+      "fix": "Keep default TTL short (already 300s); consider optionally binding the token to the issuing subject/tenant when minted via the authenticated route, and ensure the bucket-redirect TTL is <= the remaining token lifetime rather than a fresh full window."
+    },
+    {
+      "id": "file-r2-10",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "weak content-type enforcement (CWE-434/CWE-646)",
+      "file": "app/adapters/scanner/magic.py",
+      "line": 46,
+      "title": "Magic scanner: overly-broad RIFF signature, no archive-content inspection, and shebang blanket-rejects benign text",
+      "detail": "`_SIGNATURES['image/webp']=(b'RIFF',)` (magic.py:19) matches any RIFF container (AVI/WAV), so a non-webp RIFF passes strict declared-type validation. Archives ('application/zip' PK header) are accepted without inspecting members, so an MZ/ELF payload inside a permitted zip is stored and served. `_DANGEROUS` includes b'#!' (magic.py:25), which rejects every file that legitimately begins with a shebang or the characters '#!' even when declared text/plain. The scanner only inspects the first 16 bytes (scan_stream keeps a 16-byte header, line 37-44).",
+      "failure_scenario": "With SCANNER_DRIVER=magic (the lighter option many deployments choose over clamav), an attacker uploads content_type=image/webp whose bytes are a RIFF/AVI (or an executable wrapped in an accepted zip) and it passes; conversely a legitimate script/text upload beginning with '#!' is rejected as 'executable'. Type gating gives false assurance.",
+      "fix": "Tighten webp to require 'WEBP' at offset 8 after RIFF; recurse into archives or refuse to bless their contents by declared type; scope the shebang rejection to declared executable/script types rather than all content; consider clamav for real malware coverage."
+    },
+    {
+      "id": "file-r2-11",
+      "severity": "low",
+      "status": "SPECULATIVE",
+      "category": "postgres-vs-memory divergence (paging correctness)",
+      "file": "app/adapters/datastore/postgres.py",
+      "line": 235,
+      "title": "Keyset next_cursor id uses value['id'] while the SQL tie-break compares the primary key column, diverging for collections whose key != value id",
+      "detail": "In postgres `find`, the cursor comparison clause tie-breaks on the primary-key column `key` (postgres.py:217), but `next_cursor` is built from `last.get('id','')` (postgres.py:235). The memory adapter uses `str(r.get('id',''))` for BOTH ordering and cursor (memory.py:84-96). For `file_subjects` rows the datastore key is `link_id` = 'tenant|ref|file_id' while the stored value has no 'id' field (subject_links.py:70-71), so the postgres cursor id degenerates to '' and no longer matches the column it is compared against. Today this is masked because files_for sorts by the unique file_id, but it is a latent correctness gap and a memory/postgres behavioral divergence.",
+      "failure_scenario": "If a collection ever pages on a non-unique sort value with key != value['id'] (or a future field reuses this path), a page boundary can skip or duplicate rows in postgres but not in memory. In an erasure/subject-links context a skipped row means a file the DSAR believed it erased is actually retained, while the receipt says otherwise.",
+      "fix": "Make the postgres cursor tie-break and next_cursor both use the same identifier (the primary-key `key`), and make the memory adapter agree, so the two adapters are provably identical. Add a contract test that pages a collection where key != value['id'] with tied sort values."
+    },
+    {
+      "id": "file-r2-12",
+      "severity": "info",
+      "status": "CONFIRMED",
+      "category": "SSRF surface review (no finding)",
+      "file": "app/adapters/object_store/s3.py",
+      "line": 38,
+      "title": "Object-store endpoint, credentials, JWKS and audit URLs are all config-sourced, never caller-influenced (SSRF checked, clean)",
+      "detail": "Reviewed for SSRF/credential injection: S3 endpoint_url comes only from config (s3.py:38-39 'never from a caller'); credentials require both halves or fall back to the ambient chain (s3.py:69-77); object keys are strictly validated (keys.py validate_key blocks traversal, backslash, NUL, absolute, drive letters, and re-normalizes). Presigned URLs sign only host (request_checksum_calculation=when_required) and force ResponseContentDisposition=attachment (s3.py:185-198), preventing inline HTML rendering. No user input reaches an outbound URL or the object key namespace beyond the content hash / session id. No SSRF finding.",
+      "failure_scenario": "N/A - documented as a checked dimension with no exploitable path found.",
+      "fix": "No change required; retain the config-only endpoint invariant and the validate_key gate. Keep the safety:scans / egress-allowlist gates enforcing it."
+    }
+  ]
+}
