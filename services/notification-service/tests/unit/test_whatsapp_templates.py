@@ -107,6 +107,43 @@ def test_changing_the_flow_button_resets_an_approved_template_to_pending():
     assert changed.status == PENDING          # different flow id → re-review
 
 
+def test_register_stores_and_trims_a_footer():
+    reg = _reg()
+    t = run(reg.register(tenant="acme", name="promo", language="en", category="MARKETING",
+                         body="Sale", footer="  Reply STOP to opt out  "))
+    assert t.footer == "Reply STOP to opt out"     # trimmed, stored, and round-trips
+    assert run(reg.get("acme", "promo", "en")).footer == "Reply STOP to opt out"
+
+
+def test_footer_rejects_variables_and_over_length():
+    reg = _reg()
+    with pytest.raises(TemplateError):             # Meta allows no variables in a footer
+        run(reg.register(tenant="acme", name="a", language="en", category="MARKETING",
+                         body="x", footer="Hi {{1}}"))
+    with pytest.raises(TemplateError):             # 60-char cap
+        run(reg.register(tenant="acme", name="b", language="en", category="MARKETING",
+                         body="x", footer="z" * 61))
+    # exactly 60 is fine (boundary)
+    t = run(reg.register(tenant="acme", name="c", language="en", category="MARKETING",
+                         body="x", footer="z" * 60))
+    assert len(t.footer) == 60
+
+
+def test_changing_the_footer_resets_an_approved_template_to_pending():
+    # The footer is part of what Meta reviews — changing it must re-open review, like a body edit.
+    st = WhatsAppTemplateStore(MemoryDataStore())
+    reg = WhatsAppTemplateRegistry(st)
+    run(reg.register(tenant="acme", name="promo", language="en", category="MARKETING",
+                     body="Sale", footer="Old footer"))
+    t = run(reg.get("acme", "promo", "en")); t.status = APPROVED; run(st.save(t))
+    same = run(reg.register(tenant="acme", name="promo", language="en", category="MARKETING",
+                            body="Sale", footer="Old footer"))
+    assert same.status == APPROVED                 # identical footer is a no-op, stays approved
+    changed = run(reg.register(tenant="acme", name="promo", language="en", category="MARKETING",
+                               body="Sale", footer="New footer"))
+    assert changed.status == PENDING               # different footer → re-review
+
+
 def _carousel(n=2, header="IMAGE", body=None):
     card = lambda i: {   # noqa: E731 — terse test factory
         "header_format": header, "header_example_handle": f"h{i}",

@@ -634,6 +634,9 @@ class WaTemplateInternalIn(BaseModel):
     # Optional CAROUSEL: {"cards": [{"header_format":"IMAGE"|"VIDEO", "header_example_handle", "body"?,
     # "body_examples"?, "buttons":[…]}]}. 2–10 cards, all the same shape. Validated by the registry.
     carousel: dict = Field(default_factory=dict)
+    # Optional FOOTER: a short fixed grey line under the message. Text-only, 60 chars max, no
+    # variables — validated by the registry against Meta's rule.
+    footer: str = Field(default="", max_length=60)
 
 
 class WaSubmitInternalIn(BaseModel):
@@ -661,7 +664,7 @@ async def register_whatsapp_template_internal(request: Request, body: WaTemplate
         t = await reg.register(tenant=body.tenant, name=body.name, language=body.language,
                                category=body.category, body=body.body, variables=body.variables,
                                examples=body.examples, flow_button=body.flow_button,
-                               carousel=body.carousel)
+                               carousel=body.carousel, footer=body.footer)
     except TemplateError as exc:
         raise HTTPException(422, str(exc)) from exc
     return t.public()

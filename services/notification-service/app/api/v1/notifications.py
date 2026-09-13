@@ -150,6 +150,9 @@ class WaTemplateIn(BaseModel):
     flow_button: dict = Field(default_factory=dict)
     # Optional CAROUSEL: {"cards":[…]} — 2–10 media cards, uniform shape. Validated by the registry.
     carousel: dict = Field(default_factory=dict)
+    # Optional FOOTER: a short fixed grey line under the message. Text-only, 60 chars max, no
+    # variables — validated by the registry against Meta's rule.
+    footer: str = Field(default="", max_length=60)
 
 
 @wa_templates_router.post("", status_code=201, dependencies=[Depends(_WA_CAP)])
@@ -165,7 +168,8 @@ async def register_wa_template(request: Request, body: WaTemplateIn,
         t = await _wa_registry(request).register(
             tenant=principal.tenant or "", name=body.name, language=body.language,
             category=body.category, body=body.body, variables=body.variables,
-            examples=body.examples, flow_button=body.flow_button, carousel=body.carousel)
+            examples=body.examples, flow_button=body.flow_button, carousel=body.carousel,
+            footer=body.footer)
     except TemplateError as exc:
         raise HTTPException(422, str(exc))
     return t.public()

@@ -77,7 +77,8 @@ class WhatsAppTemplateManager(Protocol):
     def submit(self, *, name: str, language: str, category: str, body: str,
                variables: list[str], examples: list[str],
                flow_button: dict[str, Any] | None = None,
-               carousel: dict[str, Any] | None = None) -> SubmitResult: ...
+               carousel: dict[str, Any] | None = None,
+               footer: str = "") -> SubmitResult: ...
 
     def status(self, *, provider_template_id: str, name: str, language: str) -> StatusResult: ...
 

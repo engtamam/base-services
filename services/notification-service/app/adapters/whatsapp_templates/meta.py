@@ -143,6 +143,16 @@ def _carousel_component(carousel: dict | None) -> dict | None:
     return {"type": "CAROUSEL", "cards": out_cards}
 
 
+def _footer_component(footer: str) -> dict | None:
+    """Meta's FOOTER component, or None when there is no footer.
+
+    Verified against Meta's template-components docs (Sep 2026): a text-only `{"type":"FOOTER",
+    "text":…}`, no variables, 60 chars max. The registry already validated length + no-variables
+    before we get here, so this only shapes it."""
+    f = str(footer or "").strip()
+    return {"type": "FOOTER", "text": f} if f else None
+
+
 class MetaTemplateManager:
     driver = "meta"
 
@@ -156,7 +166,7 @@ class MetaTemplateManager:
         self._headers = bearer(access_token)
 
     def submit(self, *, name, language, category, body, variables, examples=None,
-               flow_button=None, carousel=None) -> SubmitResult:
+               flow_button=None, carousel=None, footer="") -> SubmitResult:
         components = []
         if body:
             comp = {"type": "BODY", "text": body}
@@ -166,6 +176,10 @@ class MetaTemplateManager:
                 # set one value per {{n}}. One set is enough for a single-language body.
                 comp["example"] = {"body_text": [ex]}
             components.append(comp)
+        # FOOTER goes after BODY and before BUTTONS, matching Meta's required component order.
+        footer_comp = _footer_component(footer)
+        if footer_comp:
+            components.append(footer_comp)
         flow_comp = _flow_button_component(flow_button)
         if flow_comp:
             components.append(flow_comp)

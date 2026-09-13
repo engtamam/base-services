@@ -122,6 +122,28 @@ def test_submit_builds_a_carousel_component(monkeypatch):
     assert btns[1] == {"type": "URL", "text": "Menu", "url": "https://x/{{1}}", "example": ["a"]}
 
 
+def test_submit_declares_a_footer_component(monkeypatch):
+    # Meta's FOOTER (verified Sep 2026): a text-only {"type":"FOOTER","text":…}, 60 chars max, no
+    # variables. It must sit AFTER the body and BEFORE any buttons in the components list.
+    sent = _capture(monkeypatch)
+    _mgr().submit(name="promo", language="en", category="MARKETING", body="Big sale {{1}}",
+                  variables=["pct"], examples=["20%"],
+                  flow_button={"flow_id": "1", "text": "Shop"},
+                  footer="Reply STOP to opt out")
+    comps = sent["payload"]["components"]
+    footer = next(c for c in comps if c["type"] == "FOOTER")
+    assert footer == {"type": "FOOTER", "text": "Reply STOP to opt out"}
+    types = [c["type"] for c in comps]
+    assert types.index("BODY") < types.index("FOOTER") < types.index("BUTTONS")
+
+
+def test_submit_without_a_footer_sends_no_footer_component(monkeypatch):
+    sent = _capture(monkeypatch)
+    _mgr().submit(name="plain", language="en", category="UTILITY", body="Hi {{1}}",
+                  variables=["n"], examples=["Sam"])
+    assert all(c["type"] != "FOOTER" for c in sent["payload"]["components"])
+
+
 def test_paused_and_disabled_are_distinct_statuses_not_pending(monkeypatch):
     # The single failure a messaging product most needs to surface: a live template Meta has muted.
     for meta_status, ours in (("PAUSED", "paused"), ("DISABLED", "disabled"),

@@ -65,6 +65,10 @@ class WhatsAppTemplate:
     # cards must share the same component shape (Meta's rule); the send supplies each card's media +
     # variable values. Reviewed as one template — the whole carousel is approved together.
     carousel: dict[str, Any] = field(default_factory=dict)
+    # Optional FOOTER — a short, fixed grey line under the message. Text-only: Meta allows NO
+    # variables and caps it at 60 chars (verified against Meta's template-components docs, Sep 2026).
+    # Empty for a template with no footer.
+    footer: str = ""
     created: str = field(default_factory=_now)
     updated: str = field(default_factory=_now)
 
@@ -72,7 +76,7 @@ class WhatsAppTemplate:
         return {"id": self.id, "tenant": self.tenant, "name": self.name, "language": self.language,
                 "category": self.category, "body": self.body, "variables": self.variables,
                 "examples": self.examples, "flow_button": self.flow_button,
-                "carousel": self.carousel,
+                "carousel": self.carousel, "footer": self.footer,
                 "status": self.status, "provider_template_id": self.provider_template_id,
                 "rejection_reason": self.rejection_reason, "created": self.created,
                 "updated": self.updated}
@@ -85,6 +89,7 @@ class WhatsAppTemplate:
                    examples=list(d.get("examples") or []),
                    flow_button=dict(d.get("flow_button") or {}),
                    carousel=dict(d.get("carousel") or {}),
+                   footer=str(d.get("footer") or ""),
                    status=d.get("status", PENDING),
                    provider_template_id=d.get("provider_template_id", ""),
                    rejection_reason=d.get("rejection_reason", ""),
@@ -92,6 +97,24 @@ class WhatsAppTemplate:
 
     def public(self) -> dict[str, Any]:
         return self.to_dict()
+
+
+# Meta caps a template FOOTER at 60 characters and allows no variables in it (verified against
+# Meta's template-components docs, Sep 2026). Enforced here so a bad footer is a clean 400 from us
+# rather than a burned template name at Meta.
+_FOOTER_MAX = 60
+
+
+def _validate_footer(footer: str) -> str:
+    """Normalise + validate a footer, or raise TemplateError. Returns "" for no footer."""
+    f = str(footer or "").strip()
+    if not f:
+        return ""
+    if "{{" in f or "}}" in f:
+        raise TemplateError("a footer is text-only — Meta allows no variables ({{…}}) in a footer")
+    if len(f) > _FOOTER_MAX:
+        raise TemplateError(f"a footer is at most {_FOOTER_MAX} characters ({len(f)} given)")
+    return f
 
 
 _CAROUSEL_MIN, _CAROUSEL_MAX = 2, 10
@@ -196,7 +219,8 @@ class WhatsAppTemplateRegistry:
                        body: str = "", variables: list[str] | None = None,
                        examples: list[str] | None = None,
                        flow_button: dict[str, Any] | None = None,
-                       carousel: dict[str, Any] | None = None) -> WhatsAppTemplate:
+                       carousel: dict[str, Any] | None = None,
+                       footer: str = "") -> WhatsAppTemplate:
         if not tenant or not name or not language:
             raise TemplateError("tenant, name and language are required")
         cat = (category or "").strip().upper()
@@ -208,6 +232,7 @@ class WhatsAppTemplateRegistry:
         if fb and not (fb.get("flow_id") or fb.get("flow_name")):
             raise TemplateError("a flow_button needs flow_id or flow_name")
         car = _validate_carousel(dict(carousel or {}))
+        ftr = _validate_footer(footer)
         existing = await self._store.get(tenant, name, language)
         # register() is an upsert, and it is the natural home of "make sure this tenant has the
         # library" — run over the whole set whenever one template is added. So it must NOT move an
@@ -217,12 +242,13 @@ class WhatsAppTemplateRegistry:
         # not on a no-op re-register.
         unchanged = (existing is not None and existing.body == body and existing.variables == vs
                      and existing.examples == exs and existing.category == cat
-                     and existing.flow_button == fb and existing.carousel == car)
+                     and existing.flow_button == fb and existing.carousel == car
+                     and existing.footer == ftr)
         status = existing.status if unchanged else PENDING
         t = WhatsAppTemplate(
             id=existing.id if existing else uuid.uuid4().hex,
             tenant=tenant, name=name, language=language, category=cat, body=body, variables=vs,
-            examples=exs, flow_button=fb, carousel=car, status=status,
+            examples=exs, flow_button=fb, carousel=car, footer=ftr, status=status,
             provider_template_id=existing.provider_template_id if existing else "",
             rejection_reason=existing.rejection_reason if (unchanged and existing) else "",
             created=existing.created if existing else _now())
@@ -244,7 +270,7 @@ class WhatsAppTemplateRegistry:
             raise TemplateError("no such template to submit")
         res = manager.submit(name=t.name, language=t.language, category=t.category, body=t.body,
                              variables=t.variables, examples=t.examples, flow_button=t.flow_button,
-                             carousel=t.carousel)
+                             carousel=t.carousel, footer=t.footer)
         if res.provider_template_id:
             t.provider_template_id = res.provider_template_id
         t.status = res.status or PENDING
