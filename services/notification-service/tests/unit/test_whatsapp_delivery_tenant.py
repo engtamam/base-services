@@ -21,7 +21,7 @@ class _WA:
     driver = "fake"
 
     def send(self, to, template_name, language, variables, biz_opaque_callback_data="",
-             flow_token="", flow_action_data=None, header_media_id=""):
+             flow_token="", flow_action_data=None, header_media_id="", button_payload=""):
         return True, "fake", "wamid.fake"
 
 
@@ -50,10 +50,12 @@ class _WACapture:
 
     def __init__(self):
         self.header_media_id = "UNSET"
+        self.button_payload = "UNSET"
 
     def send(self, to, template_name, language, variables, biz_opaque_callback_data="",
-             flow_token="", flow_action_data=None, header_media_id=""):
+             flow_token="", flow_action_data=None, header_media_id="", button_payload=""):
         self.header_media_id = header_media_id
+        self.button_payload = button_payload
         return True, "fake", "wamid.fake"
 
 
@@ -92,6 +94,26 @@ def test_header_media_id_defaults_to_empty_when_absent():
     run(svc.notify(recipient="+966500000010", channel="whatsapp", template_key="otp",
                    tenant="acme", variables={"code": "1"}))
     assert wa.header_media_id == ""
+    assert wa.button_payload == ""
+
+
+def test_button_payload_threads_from_notify_to_the_provider():
+    st = MemoryDataStore()
+    wa = _WACapture()
+    reg = _approved_reg(st)
+
+    class R:
+        def render(self, subject, body, variables):
+            return subject, body
+
+    svc = NotificationService(
+        templates=TemplateStore(st), prefs=PreferenceStore(st), deliveries=DeliveryStore(st),
+        inapp=InAppStore(st), email=None, sms=None, whatsapp=wa, wa_templates=reg, renderer=R(),
+        email_from="x@y.z", default_locale="en")
+    res = run(svc.notify(recipient="+966500000011", channel="whatsapp", template_key="otp",
+                         tenant="acme", variables={"code": "123456"}, button_payload="book:svc_7"))
+    assert res["status"] == "sent"
+    assert wa.button_payload == "book:svc_7"
 
 
 def test_whatsapp_send_stamps_the_delivery_with_its_tenant():

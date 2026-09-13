@@ -36,7 +36,7 @@ class _P:
         self.calls = []
 
     def send(self, to, template_name, language, variables, biz_opaque_callback_data="",
-             flow_token="", flow_action_data=None, header_media_id=""):
+             flow_token="", flow_action_data=None, header_media_id="", button_payload=""):
         self.calls.append((to, template_name, language, tuple(variables)))
         return self._mid
 
@@ -154,3 +154,31 @@ def test_meta_send_without_header_media_id_has_no_header_component(monkeypatch):
     MetaWhatsApp("tok", "pnid").send("+96650", "promo", "en", ["Ahmed"])
     comps = calls[-1][1]["template"].get("components", [])
     assert not any(c.get("type") == "header" for c in comps)
+
+
+def test_meta_send_with_button_payload_adds_a_quick_reply_button_component(monkeypatch):
+    # A single-message campaign template with a per-send quick-reply payload. Same button shape the
+    # carousel path builds per card: {"type":"button","sub_type":"quick_reply","index":"0",...}.
+    calls = _capture_meta(monkeypatch)
+    MetaWhatsApp("tok", "pnid").send("+96650", "promo", "en", ["Ahmed"],
+                                     button_payload="book:svc_42")
+    comps = calls[-1][1]["template"]["components"]
+    btn = next(c for c in comps if c.get("type") == "button")
+    assert btn["sub_type"] == "quick_reply" and btn["index"] == "0"
+    assert btn["parameters"][0] == {"type": "payload", "payload": "book:svc_42"}
+
+
+def test_meta_send_without_button_payload_has_no_button_component(monkeypatch):
+    calls = _capture_meta(monkeypatch)
+    MetaWhatsApp("tok", "pnid").send("+96650", "promo", "en", ["Ahmed"])
+    comps = calls[-1][1]["template"].get("components", [])
+    assert not any(c.get("type") == "button" for c in comps)
+
+
+def test_meta_send_combines_header_body_and_button(monkeypatch):
+    # All three optional components on one ordinary send, in Meta's order: header, body, button.
+    calls = _capture_meta(monkeypatch)
+    MetaWhatsApp("tok", "pnid").send("+96650", "promo", "en", ["Ahmed"],
+                                     header_media_id="MEDIA-1", button_payload="book:svc_1")
+    types = [c["type"] for c in calls[-1][1]["template"]["components"]]
+    assert types == ["header", "body", "button"]

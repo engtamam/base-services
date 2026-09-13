@@ -176,7 +176,7 @@ class _WA:
         self.calls = []
 
     def send(self, to, template_name, language, variables, biz_opaque_callback_data="",
-             flow_token="", flow_action_data=None, header_media_id=""):
+             flow_token="", flow_action_data=None, header_media_id="", button_payload=""):
         self.calls.append((to, template_name, language, list(variables), flow_token, flow_action_data))
         return True, "fake", "wamid.fake"      # (ok, provider, provider_message_id)
 

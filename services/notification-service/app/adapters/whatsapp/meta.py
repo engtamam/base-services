@@ -28,7 +28,8 @@ class MetaWhatsApp:
 
     def send(self, to: str, template_name: str, language: str, variables: list[str],
              biz_opaque_callback_data: str = "", flow_token: str = "",
-             flow_action_data: dict | None = None, header_media_id: str = "") -> str:
+             flow_action_data: dict | None = None, header_media_id: str = "",
+             button_payload: str = "") -> str:
         template: dict = {"name": template_name, "language": {"code": language or "en"}}
         components: list[dict] = []
         if header_media_id:
@@ -56,6 +57,13 @@ class MetaWhatsApp:
                 action["flow_action_data"] = dict(flow_action_data)
             components.append({"type": "button", "sub_type": "flow", "index": "0",
                                "parameters": [{"type": "action", "action": action}]})
+        if button_payload:
+            # A quick-reply button declared+APPROVED on the template, whose PAYLOAD varies per send —
+            # the same shape the carousel path builds per card (core/whatsapp_carousel). For a
+            # single-message campaign ("Book now") where the button is fixed but which service the
+            # customer tapped must differ each send. Declared only when supplied.
+            components.append({"type": "button", "sub_type": "quick_reply", "index": "0",
+                               "parameters": [{"type": "payload", "payload": button_payload}]})
         if components:
             template["components"] = components
         payload: dict = {"messaging_product": "whatsapp", "to": to, "type": "template",

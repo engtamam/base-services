@@ -59,6 +59,11 @@ class NotifyIn(BaseModel):
     # path builds per card, for a text+image+button campaign message that needs no carousel. Ignored
     # for non-WhatsApp channels and for templates with no header. Declared only when supplied.
     header_media_id: str | None = Field(default=None, max_length=256)
+    # WhatsApp only: a per-send PAYLOAD for a quick-reply button that is declared+APPROVED on the
+    # template (the button is fixed; which service the customer tapped varies each send). Builds the
+    # same button component the carousel path builds per card. Ignored for non-WhatsApp channels and
+    # for templates with no quick-reply button. Declared only when supplied.
+    button_payload: str | None = Field(default=None, max_length=256)
     # WhatsApp only: which of the tenant's NUMBERS to send from — a WABA holds many (one per branch).
     # It is the branch's phone-number-id. Resolved to a number this tenant is entitled to send from;
     # an UNKNOWN identity is REFUSED (a message from another branch's number is worse than none sent),
@@ -161,7 +166,7 @@ async def internal_notify(request: Request, body: NotifyIn) -> dict:
         user_id=body.user_id, event=body.event, idempotency_key=body.idempotency_key,
         biz_opaque_callback_data=body.biz_opaque_callback_data, whatsapp_override=whatsapp_override,
         flow_token=body.flow_token, flow_action_data=body.flow_action_data,
-        header_media_id=body.header_media_id,
+        header_media_id=body.header_media_id, button_payload=body.button_payload,
     )
 
 
