@@ -8,7 +8,17 @@ from __future__ import annotations
 
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+
+# The refusal codes attach_coupon may raise, exposed as a machine-readable `reason` on the
+# attach-coupon endpoint so the caller can show the shop the real cause. A WHITELIST: only codes we
+# emit are echoed; anything else collapses to the generic COUPON_REFUSED, so an unexpected message
+# can never leak through.
+_ATTACH_REASONS = frozenset({
+    "COUPON_CODE_REQUIRED", "COUPON_PLAN_MISMATCH", "COUPON_UNKNOWN", "COUPON_EXPIRED",
+    "COUPON_EXHAUSTED", "COUPON_DISABLED", "COUPON_SCHEDULED", "COUPON_MAX_REDEMPTIONS",
+})
 
 from app.api.v1.billing import build_billing, build_usage
 from app.config import Settings, get_settings
@@ -365,9 +375,22 @@ async def attach_coupon_internal(request: Request, sub_id: str,
         result = await (await build_billing(request, body.tenant)).attach_coupon(
             subscription_id=sub_id, tenant=body.tenant, coupon_code=body.coupon_code)
     except ValueError as exc:
-        code = (status.HTTP_404_NOT_FOUND if "SUBSCRIPTION_NOT_FOUND" in str(exc)
-                else status.HTTP_400_BAD_REQUEST)
-        raise HTTPException(code, str(exc)) from exc
+        # DELIBERATE exception to the service's generic-error convention, on THIS internal endpoint
+        # only: a machine-readable `reason` accompanies the refusal so the caller can show the shop
+        # owner the REAL cause (expired vs used-up vs no-such-code vs wrong-plan) instead of a generic
+        # "failed". Safe to name here — the caller is a trusted peer over the internal token that
+        # already holds the coupon code, so this discloses nothing it does not have. The response is
+        # built directly (not a raised HTTPException) because the global handler would collapse the
+        # detail to a bare code; the security middleware still hardens it via call_next. Same
+        # reasoning as the TaxProfileIncomplete handler, which names its missing key on purpose.
+        msg = str(exc)
+        if "SUBSCRIPTION_NOT_FOUND" in msg:
+            # 404 stays NON-distinguishing: absent and another-tenant's are the SAME answer (IDOR).
+            return JSONResponse({"error": "NOT_FOUND", "reason": "SUBSCRIPTION_NOT_FOUND"},
+                                status_code=status.HTTP_404_NOT_FOUND)
+        reason = msg if msg in _ATTACH_REASONS else "COUPON_REFUSED"   # whitelist codes we emit
+        return JSONResponse({"error": "BAD_REQUEST", "reason": reason},
+                            status_code=status.HTTP_400_BAD_REQUEST)
     if result.get("status") == "attached":
         # Only a real state change is witnessed; a no-op re-attach (retry) records nothing.
         await request.app.state.auditor.record(

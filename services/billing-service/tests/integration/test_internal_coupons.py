@@ -102,19 +102,50 @@ def test_attach_is_tenant_guarded(client):
     sub_id = _subscribe(client, tenant="t1")
     client.post("/internal/billing/coupons", headers=IT,
                 json={"code": "IDOR", "type": "percent", "value": 20})
-    # another tenant naming a real subscription id gets 404, never a mutation
+    # another tenant naming a real subscription id gets 404, never a mutation. The reason is the SAME
+    # for absent and wrong-tenant — the 404 stays non-distinguishing (IDOR privacy).
     r = client.post(f"/internal/billing/subscriptions/{sub_id}/coupon", headers=IT,
                     json={"tenant": "attacker", "coupon_code": "IDOR"})
     assert r.status_code == 404
+    assert r.json()["error"] == "NOT_FOUND" and r.json()["reason"] == "SUBSCRIPTION_NOT_FOUND"
     ds = client.app.state.container.datastore
     assert run(ds.get("subscriptions", sub_id)).get("coupon_code", "") == ""
 
 
-def test_attach_fails_closed_on_an_expired_coupon(client):
+def test_attach_refusals_carry_a_distinct_machine_readable_reason(client):
+    # The product requirement: the shop owner sees the REAL reason, so each refusal maps to a
+    # distinct `reason` on the attach endpoint (400 error stays "BAD_REQUEST" for the generic layer).
     _seed_plan(client)
     sub_id = _subscribe(client, tenant="t1")
-    client.post("/internal/billing/coupons", headers=IT,
-                json={"code": "GONE", "type": "percent", "value": 20, "expires_at": 1.0})
+    cases = {
+        "R_EXPIRED":  ({"expires_at": 1.0}, "COUPON_EXPIRED"),
+        "R_DISABLED": ({"active": False}, "COUPON_DISABLED"),
+        "R_SCHED":    ({"starts_at": 9_999_999_999.0}, "COUPON_SCHEDULED"),
+        "R_MISMATCH": ({"plan_id": "another_plan"}, "COUPON_PLAN_MISMATCH"),
+    }
+    for code, (extra, expected_reason) in cases.items():
+        client.post("/internal/billing/coupons", headers=IT,
+                    json={"code": code, "type": "percent", "value": 20, **extra})
+        r = client.post(f"/internal/billing/subscriptions/{sub_id}/coupon", headers=IT,
+                        json={"tenant": "t1", "coupon_code": code})
+        assert r.status_code == 400, r.text
+        assert r.json() == {"error": "BAD_REQUEST", "reason": expected_reason} or \
+            r.json().get("reason") == expected_reason      # request_id may also be present
+    # an unknown code is its own reason
     r = client.post(f"/internal/billing/subscriptions/{sub_id}/coupon", headers=IT,
-                    json={"tenant": "t1", "coupon_code": "GONE"})
-    assert r.status_code == 400 and r.json()["error"] == "BAD_REQUEST"
+                    json={"tenant": "t1", "coupon_code": "NEVER_CREATED"})
+    assert r.status_code == 400 and r.json()["reason"] == "COUPON_UNKNOWN"
+
+
+def test_attach_exhausted_reason(client):
+    _seed_plan(client)
+    s1 = _subscribe(client, tenant="t1")
+    s2 = _subscribe(client, tenant="t2")
+    client.post("/internal/billing/coupons", headers=IT,
+                json={"code": "ONE1", "type": "percent", "value": 20, "max_redemptions": 1})
+    a = client.post(f"/internal/billing/subscriptions/{s1}/coupon", headers=IT,
+                    json={"tenant": "t1", "coupon_code": "ONE1"})
+    assert a.status_code == 200
+    b = client.post(f"/internal/billing/subscriptions/{s2}/coupon", headers=IT,
+                    json={"tenant": "t2", "coupon_code": "ONE1"})
+    assert b.status_code == 400 and b.json()["reason"] == "COUPON_EXHAUSTED"
