@@ -316,7 +316,60 @@ class BillingService:
                 for r in rows]
 
     async def upsert_coupon(self, **kw) -> Coupon:
+        # A percent coupon over 100 is nonsensical (>100% off). coupon_discount already clamps the
+        # money to the subtotal so it could never over-refund, but storing 500 misleads every operator
+        # who reads it and every UI that renders it — so it is refused at the one creation chokepoint
+        # (this method backs BOTH the admin route and the scoped internal route). fixed/trial `value`
+        # is minor-units / days and stays uncapped.
+        if str(kw.get("type", "percent")) == "percent" and not 0 <= int(kw.get("value", 0) or 0) <= 100:
+            raise ValueError("COUPON_PERCENT_OUT_OF_RANGE")
         return await self._coupons.upsert(Coupon(created=iso(), **kw))
+
+    async def create_scoped_coupon(self, **kw) -> Coupon:
+        """Create a coupon from the INTERNAL service tier (a peer service acting for a shop), with a
+        deliberately smaller blast radius than the admin route: `public` can NEVER be set here, so a
+        scoped creator can create a private discount code but can never publish one to the
+        unauthenticated /offers list. Everything else flows through upsert_coupon (percent cap, model)."""
+        kw.pop("public", None)                     # never settable on this path — forced private below
+        return await self.upsert_coupon(public=False, **kw)
+
+    async def attach_coupon(self, *, subscription_id: str, tenant: str, coupon_code: str) -> dict:
+        """Attach (or replace) a coupon code on an EXISTING subscription, post-signup.
+
+        Mirrors subscribe()'s own coupon handling EXACTLY so the two paths cannot diverge: a
+        plan-scoped code is refused for a different plan (loud, before any redeem), the coupon must be
+        currently usable (fail closed on unknown/scheduled/expired/exhausted/disabled), and the
+        redemption is claimed through the SAME atomic CAS that enforces max_redemptions — so attaching
+        a one-time code to a second subscription is refused rather than granting it twice.
+
+        `tenant` is the IDOR guard (same rule as cancel_internal): a subscription whose tenant differs
+        is reported absent, never mutated for another tenant. Idempotent by target state: re-attaching
+        the code the subscription already carries is a no-op that claims NO further redemption, so a
+        network-retry cannot double-redeem or double-discount.
+        """
+        if not coupon_code:
+            raise ValueError("COUPON_CODE_REQUIRED")
+        sub = await self._subs.fetch(subscription_id)
+        if sub is None or sub.tenant != tenant:
+            raise ValueError("SUBSCRIPTION_NOT_FOUND")     # absent OR another tenant's — never disclosed
+        if sub.coupon_code == coupon_code:
+            # Already carrying this exact code: nothing to change, and crucially NO second redeem.
+            return {"subscription_id": sub.id, "coupon_code": coupon_code, "status": "unchanged"}
+        coupon = await self._coupons.fetch(coupon_code)
+        now = self._clock()
+        # plan-scoped coupon refused for a different plan — loud, BEFORE any redeem (mirror subscribe()).
+        if coupon is not None and coupon.plan_id and coupon.plan_id != sub.plan_id:
+            raise ValueError("COUPON_PLAN_MISMATCH")
+        reason = _coupons.status(coupon.to_dict() if coupon else None, now)
+        if reason != _coupons.ACTIVE:
+            raise ValueError(f"COUPON_{reason.upper()}")   # fail closed: unknown/expired/exhausted/…
+        applied, _count = await self._coupons.redeem(
+            coupon_code, max_redemptions=getattr(coupon, "max_redemptions", None))
+        if not applied:
+            raise ValueError("COUPON_MAX_REDEMPTIONS")
+        sub.coupon_code = coupon_code
+        await self._subs.save(sub)
+        return {"subscription_id": sub.id, "coupon_code": coupon_code, "status": "attached"}
 
     async def list_coupons(self, *, status: str = "") -> list[dict]:
         """Every coupon, with WHY each one is or is not currently discounting.

@@ -305,6 +305,78 @@ async def subscribe_internal(request: Request, body: SubscribeInternalIn) -> dic
     return sub.to_dict()
 
 
+class CouponCreateInternalIn(BaseModel):
+    """Create a coupon service-to-service (a peer acting for a shop, e.g. operations minting a
+    one-time grant code). Same fields as the admin CouponIn EXCEPT `public`: a scoped creator may
+    never publish a code to the unauthenticated /offers list, so the field simply does not exist here
+    — it is forced false in the service. A percent `value` over 100 is refused (COUPON_PERCENT_OUT_OF
+    _RANGE), the one coupon-value cap billing enforces for every creator."""
+    code: str = Field(min_length=1, max_length=64)
+    type: str = Field(default="percent", pattern="^(percent|fixed|trial)$")
+    value: int = Field(default=0, ge=0)
+    currency: str = Field(default="SAR", max_length=8)
+    starts_at: float | None = None
+    expires_at: float | None = None
+    max_redemptions: int = Field(default=0, ge=0)     # 0 = unlimited
+    plan_id: str = Field(default="", max_length=128)  # scope to ONE plan; empty = any plan
+    active: bool = True
+    note: str = Field(default="", max_length=512)
+
+
+@router.post("/billing/coupons", status_code=201, dependencies=[Depends(require_internal_token)])
+async def create_coupon_internal(request: Request, body: CouponCreateInternalIn) -> dict:
+    """Create a coupon over the internal token — the narrow primitive a peer service needs to mint a
+    grant code, WITHOUT the broad platform.billing/billing.manage capability (which grants full
+    coupon/discount-rule/plan CRUD). This route does exactly one thing: create one coupon row, always
+    private (`public` cannot be set), with the percent cap enforced. No read/update/delete, no
+    discount-rule or plan access — the whole blast radius is 'one coupon row'."""
+    try:
+        coupon = await (await build_billing(request)).create_scoped_coupon(**body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    # Recorded after success so a rejected create is not logged as one; source "internal" distinguishes
+    # this from an admin coupon.created.
+    await request.app.state.auditor.record(
+        "coupon.created_scoped", actor="", tenant="",
+        resource=f"coupon:{body.code}", ip=request.client.host if request.client else "",
+        metadata={"type": body.type, "plan_id": body.plan_id})
+    return coupon.to_dict()
+
+
+class AttachCouponInternalIn(BaseModel):
+    """Attach/replace a coupon on an EXISTING subscription, service-to-service. `tenant` is REQUIRED
+    and is the IDOR guard (same rule as cancel_internal): a subscription whose tenant differs is
+    reported absent, never mutated for another tenant."""
+    tenant: str = Field(min_length=1, max_length=128)
+    coupon_code: str = Field(min_length=1, max_length=64)
+
+
+@router.post("/billing/subscriptions/{sub_id}/coupon",
+             dependencies=[Depends(require_internal_token)])
+async def attach_coupon_internal(request: Request, sub_id: str,
+                                 body: AttachCouponInternalIn) -> dict:
+    """Attach (or replace) a coupon code on an existing subscription — the gap that blocked applying a
+    coupon after signup (the code was stampable only at subscribe()). Validates the coupon exists, is
+    active and unexpired and within its redemption cap (fail closed, exactly like subscribe()), claims
+    the redemption through the SAME atomic CAS, and is idempotent by target state (re-attaching the
+    code already present claims nothing further). `tenant` guards against touching another tenant's
+    subscription."""
+    try:
+        result = await (await build_billing(request, body.tenant)).attach_coupon(
+            subscription_id=sub_id, tenant=body.tenant, coupon_code=body.coupon_code)
+    except ValueError as exc:
+        code = (status.HTTP_404_NOT_FOUND if "SUBSCRIPTION_NOT_FOUND" in str(exc)
+                else status.HTTP_400_BAD_REQUEST)
+        raise HTTPException(code, str(exc)) from exc
+    if result.get("status") == "attached":
+        # Only a real state change is witnessed; a no-op re-attach (retry) records nothing.
+        await request.app.state.auditor.record(
+            "subscription.coupon_attached", actor="", tenant=body.tenant,
+            resource=f"subscription:{sub_id}", ip=request.client.host if request.client else "",
+            metadata={"coupon_code": body.coupon_code})
+    return result
+
+
 class CancelInternalIn(BaseModel):
     """The internal twin of POST /api/v1/billing/subscriptions/{sub_id}/cancel. The TENANT rides in the
     body — the caller is a product service acting FOR a shop (e.g. operations cascading a cancel when a

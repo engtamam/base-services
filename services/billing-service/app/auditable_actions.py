@@ -25,6 +25,21 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "critical": False,
     },
     {
+        # A coupon created by a peer service (operations) over the internal token, not a human admin —
+        # its own action + source so the audit trail distinguishes a scoped service creation from an
+        # admin one. `public` is always false on this path.
+        "action": "coupon.created_scoped",
+        "source": "internal",
+        "critical": False,
+    },
+    {
+        # A coupon attached to an EXISTING subscription post-signup by a peer service — money-affecting
+        # (it changes what the tenant is charged next cycle), so it is witnessed on the internal tier.
+        "action": "subscription.coupon_attached",
+        "source": "internal",
+        "critical": False,
+    },
+    {
         "action": "subscription.created",
         "source": "user",
         "critical": False,

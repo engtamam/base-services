@@ -138,6 +138,103 @@ def test_a_capped_coupon_is_refused_once_it_is_used_up():
         run(b.subscribe(tenant="t2", plan_id=plan.id, payment_token="pm", coupon_code="ONCE"))
 
 
+# ── percent cap at creation (the audit gap: percent was never bounded ≤100) ───
+def test_creating_a_percent_coupon_over_100_is_refused():
+    st = MemoryDataStore()
+    b = _svc(st)
+    with pytest.raises(ValueError, match="COUPON_PERCENT_OUT_OF_RANGE"):
+        run(b.upsert_coupon(code="TOOBIG", type="percent", value=150))
+    run(b.upsert_coupon(code="FREE", type="percent", value=100))       # 100 = free, allowed
+    # fixed/trial values are minor-units/days and stay uncapped
+    run(b.upsert_coupon(code="BIGFIXED", type="fixed", value=999999))
+
+
+# ── scoped (internal) creation forces public off ─────────────────────────────
+def test_scoped_coupon_creation_forces_public_false():
+    st = MemoryDataStore()
+    b = _svc(st)
+    c = run(b.create_scoped_coupon(code="GRANT", type="percent", value=20, public=True))
+    assert c.public is False                    # the flag can never be set on this path
+    assert run(b.get_coupon("GRANT"))["public"] is False
+
+
+# ── attach a coupon to an EXISTING subscription (the post-signup gap) ─────────
+def _sub(b, tenant="t1"):
+    plan = _plan(b)
+    return run(b.subscribe(tenant=tenant, plan_id=plan.id, payment_token="pm")), plan
+
+
+def test_attach_coupon_applies_to_an_existing_subscription():
+    st = MemoryDataStore()
+    b = _svc(st)
+    sub, _ = _sub(b)
+    run(b.upsert_coupon(code="SAVE20", type="percent", value=20, max_redemptions=1))
+    res = run(b.attach_coupon(subscription_id=sub.id, tenant="t1", coupon_code="SAVE20"))
+    assert res["status"] == "attached"
+    assert run(b._subs.fetch(sub.id)).coupon_code == "SAVE20"
+    # the redemption was claimed (cap of 1 now consumed)
+    assert C.remaining(run(b._coupons.get("SAVE20"))) == 0
+
+
+def test_attach_is_idempotent_and_does_not_double_redeem():
+    st = MemoryDataStore()
+    b = _svc(st)
+    sub, _ = _sub(b)
+    run(b.upsert_coupon(code="ONCE", type="percent", value=20, max_redemptions=1))
+    run(b.attach_coupon(subscription_id=sub.id, tenant="t1", coupon_code="ONCE"))
+    again = run(b.attach_coupon(subscription_id=sub.id, tenant="t1", coupon_code="ONCE"))
+    assert again["status"] == "unchanged"
+    assert C.remaining(run(b._coupons.get("ONCE"))) == 0     # still 0 — NOT double-redeemed to -1/refused
+
+
+def test_attach_enforces_the_redemption_cap_across_subscriptions():
+    # A one-time grant attached to one sub cannot then be attached to another — the whole point.
+    st = MemoryDataStore()
+    b = _svc(st)
+    s1, plan = _sub(b, "t1")
+    s2 = run(b.subscribe(tenant="t2", plan_id=plan.id, payment_token="pm"))
+    run(b.upsert_coupon(code="ONE", type="percent", value=20, max_redemptions=1))
+    run(b.attach_coupon(subscription_id=s1.id, tenant="t1", coupon_code="ONE"))
+    # Sequentially the derived status catches it first (EXHAUSTED); the atomic redeem CAS is the
+    # backstop for the concurrent case. Either way the second attach is refused, fail-closed.
+    with pytest.raises(ValueError, match="COUPON_EXHAUSTED"):
+        run(b.attach_coupon(subscription_id=s2.id, tenant="t2", coupon_code="ONE"))
+
+
+def test_attach_fails_closed_on_a_non_usable_coupon():
+    st = MemoryDataStore()
+    b = _svc(st)
+    sub, _ = _sub(b)
+    run(b.upsert_coupon(code="OLD", type="percent", value=20, expires_at=NOW - 1))
+    with pytest.raises(ValueError, match="COUPON_EXPIRED"):
+        run(b.attach_coupon(subscription_id=sub.id, tenant="t1", coupon_code="OLD"))
+    with pytest.raises(ValueError, match="COUPON_UNKNOWN"):
+        run(b.attach_coupon(subscription_id=sub.id, tenant="t1", coupon_code="NOSUCH"))
+    assert run(b._subs.fetch(sub.id)).coupon_code == ""      # nothing attached on refusal
+
+
+def test_attach_is_tenant_guarded_against_idor():
+    st = MemoryDataStore()
+    b = _svc(st)
+    sub, _ = _sub(b, "t1")
+    run(b.upsert_coupon(code="X", type="percent", value=20))
+    # another tenant naming a real subscription id is told it does not exist, never mutated
+    with pytest.raises(ValueError, match="SUBSCRIPTION_NOT_FOUND"):
+        run(b.attach_coupon(subscription_id=sub.id, tenant="t2", coupon_code="X"))
+    assert run(b._subs.fetch(sub.id)).coupon_code == ""
+
+
+def test_attach_refuses_a_plan_scoped_coupon_for_a_different_plan():
+    st = MemoryDataStore()
+    b = _svc(st)
+    sub, _ = _sub(b)
+    run(b.upsert_coupon(code="OTHER", type="percent", value=20, plan_id="some_other_plan"))
+    with pytest.raises(ValueError, match="COUPON_PLAN_MISMATCH"):
+        run(b.attach_coupon(subscription_id=sub.id, tenant="t1", coupon_code="OTHER"))
+    # a mismatch never consumes a redemption
+    assert C.remaining(run(b._coupons.get("OTHER"))) is None
+
+
 def test_an_uncapped_coupon_never_runs_out():
     st = MemoryDataStore()
     b = _svc(st)
