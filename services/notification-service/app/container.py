@@ -184,10 +184,27 @@ def _build_chain(chain: list[str], registry: dict[str, Builder], name: str, sett
     for driver in chain:
         builder = registry.get(driver)
         if builder is None:
+            # An UNKNOWN driver is a config TYPO, not a not-yet-set credential — still fatal, so a
+            # misspelled provider is caught at deploy rather than silently dropped to console.
             raise ConfigError(
                 f"unknown {name} provider: {driver!r} — allowed: {', '.join(sorted(registry))}"
             )
-        providers.append(builder(settings))
+        try:
+            providers.append(builder(settings))
+        except ConfigError:
+            # A KNOWN provider whose CREDENTIAL is not set yet (e.g. Meta WhatsApp on a fresh install,
+            # before an admin has entered a token) must NOT crash the whole service at import/boot: that
+            # turned one unconfigured optional channel into CrashLoopBackOff for the entire process, so
+            # no channel and no route came up. Drop it and boot DEGRADED instead — the provider lights
+            # up later without a redeploy, because the per-tenant send path already resolves credentials
+            # at call time through _tolerant_chain. Same posture, just deferred from boot to send.
+            _log.warning("provider_unconfigured_skipped_at_boot",
+                         extra={"channel": name, "provider": driver})
+    if not providers:
+        # Console is the floor so the chain is never empty — an empty chain fails every send with no
+        # provider even to name in the log. A missing token thus degrades to console, never to nothing.
+        providers.append(registry["console"](settings))
+        _log.warning("provider_chain_empty_fell_back_to_console", extra={"channel": name})
     return providers
 
 

@@ -46,6 +46,27 @@ def test_known_drivers_build():
     assert c.token_verifier.driver == "null"
 
 
+def test_a_provider_missing_its_credential_boots_degraded_not_crashlooped():
+    """A KNOWN provider whose credential is not set yet (Meta WhatsApp on a fresh install) must not
+    crash the whole service at boot — it is dropped and the channel degrades to console, so the
+    process comes up and every other channel/route works while the token is still absent."""
+    c = build_container(_settings(WHATSAPP_CHAIN="meta,console"))   # no WHATSAPP_ACCESS_TOKEN set
+    assert c.whatsapp is not None                                   # the service built, no ConfigError
+    # meta was dropped (unconfigured); console remains as the floor
+    assert "console" in c.whatsapp.driver and "meta" not in c.whatsapp.driver
+
+
+def test_a_missing_credential_with_no_console_still_falls_back_to_console():
+    c = build_container(_settings(WHATSAPP_CHAIN="meta"))           # meta only, unconfigured
+    assert c.whatsapp is not None and "console" in c.whatsapp.driver
+
+
+def test_an_unknown_channel_provider_is_still_fatal():
+    # A TYPO in the chain is a config error, not a not-yet-set credential — must still fail fast.
+    with pytest.raises(ConfigError):
+        build_container(_settings(WHATSAPP_CHAIN="metaa"))
+
+
 # ── Lazy infra dependency -> friendly ConfigError, not ImportError ──────────
 def test_infra_driver_without_extra_is_friendly(monkeypatch):
     """Selecting an infra driver whose extra is missing must raise a friendly ConfigError.
