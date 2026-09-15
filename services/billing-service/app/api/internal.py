@@ -167,6 +167,44 @@ async def list_subscriptions_internal(request: Request, tenant: str,
         for r in rows]}
 
 
+# The horizon a caller may look ahead — capped so a huge `within_seconds` cannot turn a bounded
+# read into an effectively-unbounded scan of the whole active set. 90 days covers any renewal cadence.
+_RENEWING_SOON_MAX_WITHIN = 90 * 86_400
+_RENEWING_SOON_MAX_LIMIT = 500
+
+
+@router.get("/billing/subscriptions/renewing-soon", dependencies=[Depends(require_internal_token)])
+async def renewing_soon_internal(request: Request, within_seconds: int = 172_800,
+                                 limit: int = 100, cursor: str = "") -> dict:
+    """READ-ONLY: subscriptions across ALL tenants whose period ends within `within_seconds` — the set
+    a proactive pre-renewal reminder (e.g. "renews in 2 days") iterates. NO side effect: it never
+    invoices and never mutates a subscription — deliberately NOT the cycle sweep, which does. Returns
+    the SAME safe fields as /internal/billing/subscriptions plus `tenant` (this view spans tenants),
+    and NOTHING sensitive (no payment token, no buyer tax identity). Real keyset paging via `cursor`
+    (a call may return fewer than `limit` while still handing back a cursor — page until it is empty).
+
+    NOTE ON SEMANTICS: a row is included when 0 < current_period_end <= now+within_seconds — the same
+    "period has (or will have) ended by the horizon" test the sweep uses, extended into the future. It
+    can therefore include a just-lapsed-but-not-yet-swept renewal; a caller that wants strictly-future
+    renewals can compare current_period_end against its own clock.
+    """
+    if within_seconds <= 0 or within_seconds > _RENEWING_SOON_MAX_WITHIN:
+        raise HTTPException(400, f"within_seconds must be 1..{_RENEWING_SOON_MAX_WITHIN}")
+    limit = max(1, min(int(limit), _RENEWING_SOON_MAX_LIMIT))
+    from app.core.models import now_ts
+    from app.core.stores import SubscriptionStore
+    c = request.app.state.container
+    horizon = now_ts() + within_seconds
+    rows, nxt = await SubscriptionStore(c.datastore, c.cache).renewing_soon(
+        horizon, limit=limit, cursor=cursor or None)
+    return {"subscriptions": [
+        {"id": r.get("id", ""), "tenant": r.get("tenant", ""), "plan_id": r.get("plan_id", ""),
+         "status": r.get("status", ""),
+         "current_period_end": float(r.get("current_period_end", 0) or 0),
+         "limits_snapshot": r.get("limits_snapshot") or {}}
+        for r in rows], "next_cursor": nxt}
+
+
 # Money-relevant states only: 'paid' (a peer accrues on it) and 'void' (it claws back). draft/open are
 # internal working states and are never exposed across the internal API.
 _INVOICE_HISTORY_STATUSES = ("paid", "void")

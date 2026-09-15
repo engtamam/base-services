@@ -338,6 +338,28 @@ class SubscriptionStore(_Repo):
                 break
         return out[:limit]
 
+    async def renewing_soon(self, horizon: float, *, limit: int = 100,
+                            cursor: str | None = None) -> tuple[list[dict], str | None]:
+        """READ-ONLY: subscriptions whose period ends at or before `horizon` — the set a proactive
+        pre-renewal reminder needs. The same status-filtered, keyset-ordered read as due() (only
+        active/trialing, never a one-time purchase, never cancelled history), but with a future
+        horizon instead of `now`, and with a REAL resumable cursor so a caller can page a large set
+        without a side effect.
+
+        ONE indexed find() per call (bounded work): it scans up to `limit` rows off the (created, id)
+        keyset and returns the subset within the horizon plus the cursor to resume after them. A call
+        may therefore return FEWER than `limit` matches (or none) while still handing back a cursor —
+        the caller pages until the cursor is None. It never mutates anything and never invoices: this
+        is deliberately NOT the cycle sweep. Returns raw rows; the route projects the safe fields.
+        """
+        rows, nxt = await self._store.find(
+            self.collection, {"status": ["active", "trialing"]},
+            limit=max(1, int(limit)), after=cursor, sort=("created", "asc"))
+        matches = [r for r in rows
+                   if r.get("interval") != "once"
+                   and 0 < float(r.get("current_period_end", 0) or 0) <= horizon]
+        return matches, nxt
+
 
 class InvoiceStore(_Repo):
     collection = "invoices"
