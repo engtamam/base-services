@@ -21,5 +21,11 @@ BACKUP: dict[str, Any] = {
         {"name": "onboarding_forced", "tenant_scoped": True},    # id = "tenant::subject::requirement"
         {"name": "provisioning_runs", "tenant_scoped": True},    # the provisioning saga state
     ],
-    "excluded": [],
+    "excluded": [
+        {"name": "provisioning_locks",
+         "reason": "a short-lived advisory MUTEX (run_key -> {at}) taken before a provisioning saga "
+                   "and deleted in its finally — transient. After a restore no saga is running, so a "
+                   "restored stale lock would only BLOCK a legitimate run; the clean slate is correct. "
+                   "The durable saga state lives in provisioning_runs, which IS backed up"},
+    ],
 }
