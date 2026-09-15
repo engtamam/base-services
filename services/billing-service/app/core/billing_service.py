@@ -2426,6 +2426,9 @@ class BillingService:
             token = _secrets.token_urlsafe(32)          # unguessable; the redirector's only key
             try:
                 await self._paylinks.save({
+                    # id == the store key (the token), so a backup restores each row under its own key
+                    # rather than collapsing them all under a single None id (the key==id invariant).
+                    "id": token,
                     "token": token, "tenant": tenant, "payment_id": pay.id, "invoice_id": inv.id,
                     "checkout_url": checkout_url, "expires_at": expires_at, "status": "pending"})
             except Exception:

@@ -38,6 +38,12 @@ BACKUP: dict[str, Any] = {
         {"name": "billing_seq", "tenant_scoped": True},     # invoice-number sequence
         {"name": "invoice_settled", "tenant_scoped": False},  # atomic settled-amount counter, keyed by invoice
         {"name": "settlement_index", "tenant_scoped": False},
+        # Cross-app discount rules — global like the coupon/plan catalogue (a rule is not tenant-owned).
+        {"name": "discount_rules", "tenant_scoped": False},
+        # Hosted-checkout pay-links (token -> checkout_url + the payment/invoice it settles). A late
+        # gateway webhook correlates by this token, so a restore that dropped them could not resolve an
+        # in-flight payment; each row carries id == its token.
+        {"name": "pay_links", "tenant_scoped": True},
     ],
     "excluded": [
         {"name": "idempo",
