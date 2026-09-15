@@ -36,10 +36,22 @@ BACKUP: dict[str, Any] = {
         # number) to a shop. Not a secret; rebindable on re-registration, but backed up so attribution
         # is not degraded from restore until each shop re-registers. Id-keyed (id == phone_number_id).
         {"name": "wa_number_index", "tenant_scoped": True},
+        # The WhatsApp message history + contact state (id-keyed, tenant-stamped). wa_history is the
+        # durable replayable message feed; wa_contacts is each contact's latest add/remove state;
+        # wa_msg_echoes records owner-sent messages (idempotent by wamid) so an erasure can find them
+        # by subject. All carry an expiry, but within their window they are real message data a restore
+        # must keep — not regenerable like an idempotency key.
+        {"name": "wa_history", "tenant_scoped": True},
+        {"name": "wa_contacts", "tenant_scoped": True},
+        {"name": "wa_msg_echoes", "tenant_scoped": True},
     ],
     "excluded": [
         {"name": "notify_idempo",
          "reason": "per-send idempotency keys (idempotency_key -> {result, ts}); regenerated on the "
                    "next send, not data. Restoring stale ones would at worst suppress a resend"},
+        {"name": "flow_sessions",
+         "reason": "short-TTL, mid-conversation WhatsApp Flow session state (tenant|flow_token -> "
+                   "{step, chosen}); a restore mid-flow is meaningless — the customer simply reopens "
+                   "the flow — so the clean slate is correct, like a worker lease"},
     ],
 }

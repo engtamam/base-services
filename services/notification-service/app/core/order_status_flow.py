@@ -33,7 +33,7 @@ class OrderStatusEngine:
 
     def __init__(self, *, provider: OrderStatusProvider, strings: dict[str, str] | None = None) -> None:
         self._p = provider
-        self._s = strings or {}
+        self._strings = strings or {}
 
     async def handle(self, payload: dict[str, Any], *, tenant: str = "") -> dict[str, Any]:
         action = payload.get("action")
@@ -49,8 +49,8 @@ class OrderStatusEngine:
             st = await self._p.status(tenant=tenant, order=order)
         except ProviderUnavailable:
             return {"screen": STATUS, "data": {
-                "headline": self._s.get("unavailable_title", "Status unavailable"),
-                "body": self._s.get("backend_error", "Sorry, we could not load your order right now."),
-                "error_message": self._s.get("backend_error", "Please try again.")}}
+                "headline": self._strings.get("unavailable_title", "Status unavailable"),
+                "body": self._strings.get("backend_error", "Sorry, we could not load your order right now."),
+                "error_message": self._strings.get("backend_error", "Please try again.")}}
         return {"screen": STATUS, "data": {"headline": st.get("headline", ""),
                                            "body": st.get("body", "")}}
