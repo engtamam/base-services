@@ -84,7 +84,9 @@ class InboundBridge:
         # and both open a ticket. cas(expected_version=0) is insert-if-absent — exactly one claimant
         # wins; the loser is a re-delivery and is skipped. Rolled back if the write fails so the
         # message is retried rather than silently lost.
-        if not await self._store.cas(_INGESTED, ikey, 0, {"seen": 1, "ts": msg.timestamp}):
+        # `id` == the row key, so the backup can restore it (backup keys each row by row["id"]; a row
+        # without one collapses every row under a single None key on restore — the key==id invariant).
+        if not await self._store.cas(_INGESTED, ikey, 0, {"id": ikey, "seen": 1, "ts": msg.timestamp}):
             return "skipped"                        # idempotent: seen (or being ingested) already
         try:
             # PSEUDONYMISE the sender before it is persisted anywhere. The raw phone number must never
@@ -100,11 +102,11 @@ class InboundBridge:
                 # two concurrent messages from the SAME customer both saw an empty index and both opened
                 # a duplicate ticket (ticket-r2-04). cas(expected_version=0) is insert-if-absent — the
                 # winner opens the ticket and fills in its id; the loser polls for the winner's id.
-                if await self._store.cas(_THREAD, tkey, 0, {"ticket_id": ""}):
+                if await self._store.cas(_THREAD, tkey, 0, {"id": tkey, "ticket_id": ""}):
                     t = await self._svc.open(
                         tenant=msg.tenant, type=self._type, subject=self._subject(msg),
                         body=msg.text, raiser=msg.sender, ref={"kind": msg.channel, "id": sref})
-                    await self._store.put(_THREAD, tkey, {"ticket_id": t.id})
+                    await self._store.put(_THREAD, tkey, {"id": tkey, "ticket_id": t.id})
                     return "created"
                 # lost the reservation race — wait for the winner to publish its ticket_id, then append
                 for _ in range(100):
@@ -123,13 +125,13 @@ class InboundBridge:
                 t = await self._svc.open(
                     tenant=msg.tenant, type=self._type, subject=self._subject(msg),
                     body=msg.text, raiser=msg.sender, ref={"kind": msg.channel, "id": sref})
-                await self._store.put(_THREAD, tkey, {"ticket_id": t.id})
+                await self._store.put(_THREAD, tkey, {"id": tkey, "ticket_id": t.id})
                 return "created"
             # reservation won by nobody we can see (should not happen) → open defensively
             t = await self._svc.open(tenant=msg.tenant, type=self._type, subject=self._subject(msg),
                                      body=msg.text, raiser=msg.sender,
                                      ref={"kind": msg.channel, "id": sref})
-            await self._store.put(_THREAD, tkey, {"ticket_id": t.id})
+            await self._store.put(_THREAD, tkey, {"id": tkey, "ticket_id": t.id})
             return "created"
         except Exception:
             await self._store.delete(_INGESTED, ikey)   # un-claim so a retry re-processes it

@@ -25,6 +25,17 @@ BACKUP: dict[str, Any] = {
         {"name": "tickets", "tenant_scoped": True},
         {"name": "ticket_events", "tenant_scoped": True},
         {"name": "notifications", "tenant_scoped": True},
+        # The inbound-bridge indexes. Both are keyed by a length-prefixed (tenant|…) string, not a
+        # tenant COLUMN, so they are restored whole (tenant_scoped: False) — the key already keeps one
+        # tenant's rows from colliding with another's.
+        #   inbound_threads   — the open-thread index (tenant|channel|sender -> ticket_id). Durable and
+        #     restore-relevant: without it, after a restore a customer's next message opens a DUPLICATE
+        #     ticket instead of appending to their still-open one.
+        #   inbound_ingested  — the per-message idempotency claim (channel:external_id -> seen). Backed
+        #     up so a restore does not re-ingest (duplicate-reply) messages an at-least-once source
+        #     re-delivers; the backup→disaster gap is the only remaining re-delivery window.
+        {"name": "inbound_threads", "tenant_scoped": False},
+        {"name": "inbound_ingested", "tenant_scoped": False},
     ],
     "excluded": [
     ],

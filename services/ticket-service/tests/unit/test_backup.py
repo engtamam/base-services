@@ -158,6 +158,34 @@ def test_a_row_with_no_identity_is_refused():
         run(B.import_archive(MemoryDataStore(), archive, unseal=unseal))
 
 
+# ── the inbound-bridge indexes round-trip (the key==id fix) ───────────────────
+def test_inbound_bridge_indexes_survive_a_real_backup_roundtrip():
+    """inbound_threads / inbound_ingested are keyed by a composite string, not a tenant column, and
+    each row now carries `id` == its key so the backup can restore it. Without that, every row would
+    collapse under a single None key on restore (the key==id invariant). Uses the REAL manifest."""
+    from app.backup_manifest import BACKUP
+
+    st = MemoryDataStore()
+    # rows exactly as InboundBridge writes them (id == the store key)
+    tkey = "4:acme|whatsapp|sref_1"
+    ikey = "4:acme|whatsapp:wamid_1"
+    run(st.put("inbound_threads", tkey, {"id": tkey, "ticket_id": "tkt_1"}))
+    run(st.put("inbound_ingested", ikey, {"id": ikey, "seen": 1, "ts": 100.0}))
+    # a couple of primary rows so the archive is realistic
+    run(st.put("tickets", "tkt_1", {"id": "tkt_1", "tenant": "acme", "subject": "hi"}))
+
+    seal, unseal = B.make_sealer("backup-key")
+    archive = run(B.export(st, BACKUP, service="ticket-service", version="1.0.0",
+                           taken_at="2026-09-15T00:00:00Z", seal=seal, tenant="", scan_cap=1000))
+    dst = MemoryDataStore()
+    run(B.import_archive(dst, archive, unseal=unseal))
+
+    # each index row restored UNDER ITS OWN KEY, not collapsed under None
+    assert run(dst.get("inbound_threads", tkey)) == {"id": tkey, "ticket_id": "tkt_1"}
+    assert run(dst.get("inbound_ingested", ikey))["seen"] == 1
+    assert run(dst.get("tickets", "tkt_1"))["subject"] == "hi"
+
+
 # ── per-tenant scope ──────────────────────────────────────────────────────────
 def test_a_per_tenant_backup_holds_only_that_tenant():
     st = MemoryDataStore()
