@@ -229,6 +229,9 @@ class ConnectionStore:
         missing that identity is skipped (counted) rather than guessed at."""
         moved = skipped = 0
         for coll, id_field in ((_CONNECTIONS, "id"), (_USAGE, "connection_id")):
+            # sweeper: a ONE-TIME operator-run migration over the whole (small) connection/usage
+            # catalogue, not a request path — re-keying every row IS the operation, and it is bounded
+            # by `cap`. Reads values only (scan_all returns no keys); a find() cannot express "every row".
             for row in await self._s.scan_all(coll, cap):
                 cid = str(row.get(id_field) or "")
                 tenant = str(row.get("tenant") or "")
