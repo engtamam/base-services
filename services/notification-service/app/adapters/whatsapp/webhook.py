@@ -21,12 +21,14 @@ class WebhookWhatsApp:
     def send(self, to: str, template_name: str, language: str, variables: list[str],
              biz_opaque_callback_data: str = "", flow_token: str = "",
              flow_action_data: dict | None = None, header_media_id: str = "",
-             button_payload: str = "") -> str:
+             button_payload: str = "", url_button_param: str = "") -> str:
         body: dict = {"to": to, "template": template_name, "language": language, "variables": variables}
         if header_media_id:
             body["header_media_id"] = header_media_id
         if button_payload:
             body["button_payload"] = button_payload
+        if url_button_param:
+            body["url_button_param"] = url_button_param
         if flow_token:
             body["flow"] = {"flow_token": flow_token, **({"flow_action_data": dict(flow_action_data)}
                                                          if flow_action_data else {})}

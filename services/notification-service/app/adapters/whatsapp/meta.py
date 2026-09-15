@@ -29,7 +29,7 @@ class MetaWhatsApp:
     def send(self, to: str, template_name: str, language: str, variables: list[str],
              biz_opaque_callback_data: str = "", flow_token: str = "",
              flow_action_data: dict | None = None, header_media_id: str = "",
-             button_payload: str = "") -> str:
+             button_payload: str = "", url_button_param: str = "") -> str:
         template: dict = {"name": template_name, "language": {"code": language or "en"}}
         components: list[dict] = []
         if header_media_id:
@@ -64,6 +64,14 @@ class MetaWhatsApp:
             # customer tapped must differ each send. Declared only when supplied.
             components.append({"type": "button", "sub_type": "quick_reply", "index": "0",
                                "parameters": [{"type": "payload", "payload": button_payload}]})
+        if url_button_param:
+            # A URL button declared+APPROVED on the template with a dynamic suffix — the template's url
+            # is "https://…/{{1}}" and this supplies {{1}} for THIS send (e.g. a per-customer rating
+            # page token). Verified against Meta's send API (Sep 2026): type "button", sub_type "url",
+            # index "0" (single button), one parameter of type "text" carrying the suffix. Declared only
+            # when supplied — a template with no dynamic URL button ignores it, same discipline as above.
+            components.append({"type": "button", "sub_type": "url", "index": "0",
+                               "parameters": [{"type": "text", "text": url_button_param}]})
         if components:
             template["components"] = components
         payload: dict = {"messaging_product": "whatsapp", "to": to, "type": "template",

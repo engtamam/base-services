@@ -300,7 +300,7 @@ class _FakeWaDriver:
         return self._mid
 
     def send(self, to, template_name, language, variables, biz_opaque_callback_data="",
-             flow_token="", flow_action_data=None, header_media_id="", button_payload=""):
+             flow_token="", flow_action_data=None, header_media_id="", button_payload="", url_button_param=""):
         self.calls.append(("template", to, template_name))
         return self._mid
 

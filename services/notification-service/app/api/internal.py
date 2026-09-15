@@ -64,6 +64,11 @@ class NotifyIn(BaseModel):
     # same button component the carousel path builds per card. Ignored for non-WhatsApp channels and
     # for templates with no quick-reply button. Declared only when supplied.
     button_payload: str | None = Field(default=None, max_length=256)
+    # WhatsApp only: the dynamic SUFFIX for a URL button declared+APPROVED on the template whose url is
+    # "https://…/{{1}}" (e.g. a per-customer hosted rating-page token). Sent as the button's url
+    # component only when non-empty; ignored for templates with no dynamic URL button. Same
+    # only-when-supplied discipline as flow_token / button_payload.
+    url_button_param: str | None = Field(default=None, max_length=1024)
     # WhatsApp only: which of the tenant's NUMBERS to send from — a WABA holds many (one per branch).
     # It is the branch's phone-number-id. Resolved to a number this tenant is entitled to send from;
     # an UNKNOWN identity is REFUSED (a message from another branch's number is worse than none sent),
@@ -167,6 +172,7 @@ async def internal_notify(request: Request, body: NotifyIn) -> dict:
         biz_opaque_callback_data=body.biz_opaque_callback_data, whatsapp_override=whatsapp_override,
         flow_token=body.flow_token, flow_action_data=body.flow_action_data,
         header_media_id=body.header_media_id, button_payload=body.button_payload,
+        url_button_param=body.url_button_param,
     )
 
 

@@ -14,11 +14,12 @@ class ConsoleWhatsApp:
     def send(self, to: str, template_name: str, language: str, variables: list[str],
              biz_opaque_callback_data: str = "", flow_token: str = "",
              flow_action_data: dict | None = None, header_media_id: str = "",
-             button_payload: str = "") -> str:
+             button_payload: str = "", url_button_param: str = "") -> str:
         _log.info("whatsapp_sent", extra={"provider": "console", "to": to,
                                           "template": template_name, "language": language,
                                           "header_media": bool(header_media_id),
-                                          "button_payload": bool(button_payload)})
+                                          "button_payload": bool(button_payload),
+                                          "url_button_param": bool(url_button_param)})
         # A synthetic id so the dev/console path exercises the same wamid→delivery plumbing as Meta.
         return f"console:{uuid.uuid4().hex}"
 

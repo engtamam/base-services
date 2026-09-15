@@ -21,7 +21,7 @@ class _WA:
     driver = "fake"
 
     def send(self, to, template_name, language, variables, biz_opaque_callback_data="",
-             flow_token="", flow_action_data=None, header_media_id="", button_payload=""):
+             flow_token="", flow_action_data=None, header_media_id="", button_payload="", url_button_param=""):
         return True, "fake", "wamid.fake"
 
 
@@ -51,11 +51,13 @@ class _WACapture:
     def __init__(self):
         self.header_media_id = "UNSET"
         self.button_payload = "UNSET"
+        self.url_button_param = "UNSET"
 
     def send(self, to, template_name, language, variables, biz_opaque_callback_data="",
-             flow_token="", flow_action_data=None, header_media_id="", button_payload=""):
+             flow_token="", flow_action_data=None, header_media_id="", button_payload="", url_button_param=""):
         self.header_media_id = header_media_id
         self.button_payload = button_payload
+        self.url_button_param = url_button_param
         return True, "fake", "wamid.fake"
 
 
@@ -114,6 +116,29 @@ def test_button_payload_threads_from_notify_to_the_provider():
                          tenant="acme", variables={"code": "123456"}, button_payload="book:svc_7"))
     assert res["status"] == "sent"
     assert wa.button_payload == "book:svc_7"
+
+
+def test_url_button_param_threads_from_notify_to_the_provider():
+    st = MemoryDataStore()
+    wa = _WACapture()
+    reg = _approved_reg(st)
+
+    class R:
+        def render(self, subject, body, variables):
+            return subject, body
+
+    svc = NotificationService(
+        templates=TemplateStore(st), prefs=PreferenceStore(st), deliveries=DeliveryStore(st),
+        inapp=InAppStore(st), email=None, sms=None, whatsapp=wa, wa_templates=reg, renderer=R(),
+        email_from="x@y.z", default_locale="en")
+    res = run(svc.notify(recipient="+966500000012", channel="whatsapp", template_key="otp",
+                         tenant="acme", variables={"code": "1"}, url_button_param="rate_tok_9"))
+    assert res["status"] == "sent"
+    assert wa.url_button_param == "rate_tok_9"
+    # absent by default
+    run(svc.notify(recipient="+966500000013", channel="whatsapp", template_key="otp",
+                   tenant="acme", variables={"code": "1"}))
+    assert wa.url_button_param == ""
 
 
 def test_whatsapp_send_stamps_the_delivery_with_its_tenant():

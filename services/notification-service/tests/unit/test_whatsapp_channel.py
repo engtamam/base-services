@@ -36,7 +36,7 @@ class _P:
         self.calls = []
 
     def send(self, to, template_name, language, variables, biz_opaque_callback_data="",
-             flow_token="", flow_action_data=None, header_media_id="", button_payload=""):
+             flow_token="", flow_action_data=None, header_media_id="", button_payload="", url_button_param=""):
         self.calls.append((to, template_name, language, tuple(variables)))
         return self._mid
 
@@ -182,3 +182,22 @@ def test_meta_send_combines_header_body_and_button(monkeypatch):
                                      header_media_id="MEDIA-1", button_payload="book:svc_1")
     types = [c["type"] for c in calls[-1][1]["template"]["components"]]
     assert types == ["header", "body", "button"]
+
+
+def test_meta_send_with_url_button_param_adds_a_url_button_component(monkeypatch):
+    # A template whose approved URL button is "https://…/{{1}}"; the send supplies the {{1}} suffix.
+    # Meta's shape (verified Sep 2026): button/sub_type "url", index "0", one text parameter.
+    calls = _capture_meta(monkeypatch)
+    MetaWhatsApp("tok", "pnid").send("+96650", "rate", "en", ["Ahmed"],
+                                     url_button_param="tok_abc123")
+    btn = next(c for c in calls[-1][1]["template"]["components"]
+               if c.get("type") == "button" and c.get("sub_type") == "url")
+    assert btn["index"] == "0"
+    assert btn["parameters"] == [{"type": "text", "text": "tok_abc123"}]
+
+
+def test_meta_send_without_url_button_param_has_no_url_button(monkeypatch):
+    calls = _capture_meta(monkeypatch)
+    MetaWhatsApp("tok", "pnid").send("+96650", "rate", "en", ["Ahmed"])
+    comps = calls[-1][1]["template"].get("components", [])
+    assert not any(c.get("sub_type") == "url" for c in comps)
