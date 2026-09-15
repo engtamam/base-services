@@ -30,6 +30,20 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "critical": False,
     },
     {
+        # Registering a push webhook redirects a queue's delivery to a URL — a security-relevant config
+        # change (a wrong/hostile url would exfiltrate every job on that queue), so it is witnessed. The
+        # host is egress-allow-listed, but WHO pointed a queue where still belongs in the trail. The
+        # per-job dispatch itself is high-volume and emitted as an event, not audited.
+        "action": "dispatch.target_registered",
+        "source": "internal",
+        "critical": False,
+    },
+    {
+        "action": "dispatch.target_removed",
+        "source": "internal",
+        "critical": False,
+    },
+    {
         "action": "job.replayed",
         "source": "admin",
         "critical": True,

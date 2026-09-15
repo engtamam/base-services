@@ -289,6 +289,18 @@ class Settings(BaseSettings):
     SCHEDULER_SINGLETON: bool = True        # skip a cron run if the prior one is still active
     JOB_LIST_LIMIT: int = 100
 
+    # ── push dispatch (opt-in; a queue is PULL unless a webhook is registered for it) ──────────
+    # OFF by default: enabling it is purely additive, and dispatch_batch no-ops until True, so a
+    # deployment that never registers a target behaves exactly as before.
+    PUSH_DISPATCH_ENABLED: bool = False
+    PUSH_DISPATCH_BATCH: int = 20           # jobs claimed+delivered per queue per dispatch pass
+    PUSH_DISPATCH_TIMEOUT_SECONDS: float = 10.0
+    # The HMAC key the receiver verifies (integrity + replay). Empty → fall back to the shared
+    # INTERNAL_SERVICE_TOKEN so a push is signed out of the box; set a DEDICATED secret to make the
+    # push signature independent of the internal token. See core/push_signing.
+    PUSH_SIGNING_SECRET: str = ""
+    PUSH_SIGNATURE_MAX_SKEW_SECONDS: int = 300   # a receiver rejects a push timestamped outside this
+
     @property
     def egress_allowed_hosts(self) -> frozenset[str]:
         return frozenset(

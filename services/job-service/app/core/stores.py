@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.core.models import DEAD, Job, Schedule
+from app.core.models import DEAD, DispatchTarget, Job, Schedule
 from app.ports.datastore import DataStore
 
 _JOBS = "jobs"
@@ -17,6 +17,7 @@ _DUE = "jobs_due"            # job_id -> {next_run_at, priority, tenant, queue}
 _LEASED = "jobs_leased"     # job_id -> {lease_expires} — reclaim reads this, never scans
 _UNIQUE = "jobs_unique"      # unique_key / idempotency_key -> {job_id, ts}
 _SCHEDULES = "schedules"
+_DISPATCH_TARGETS = "dispatch_targets"   # queue -> {url, active} — the PUSH webhook per queue
 
 # The indexes below hold one row per CLAIMABLE / IN-FLIGHT job, not one per job ever enqueued.
 # That is the whole reason they exist, so reading them whole is the operation. The bound is a
@@ -187,3 +188,33 @@ class ScheduleStore:
             if not cursor:
                 break
         return [Schedule.from_dict(r) for r in rows]
+
+
+class DispatchTargetStore:
+    """The PUSH webhook registry — one target per queue, keyed by the queue name (the row id)."""
+
+    def __init__(self, store: DataStore) -> None:
+        self._store = store
+
+    async def upsert(self, t: DispatchTarget) -> DispatchTarget:
+        await self._store.put(_DISPATCH_TARGETS, t.queue, t.to_dict())
+        return t
+
+    async def get(self, queue: str) -> DispatchTarget | None:
+        row = await self._store.get(_DISPATCH_TARGETS, queue)
+        return DispatchTarget.from_dict(row) if row else None
+
+    async def delete(self, queue: str) -> bool:
+        if await self._store.get(_DISPATCH_TARGETS, queue) is None:
+            return False
+        await self._store.delete(_DISPATCH_TARGETS, queue)
+        return True
+
+    async def list(self) -> list[dict]:
+        # sweeper: the target registry is global and tiny — one row per push-enabled queue, exactly
+        # like the schedule catalogue. Bounded by _SCHEDULE_MAX so it can never become an unbounded read.
+        return await self._store.scan_all(_DISPATCH_TARGETS, _SCHEDULE_MAX)
+
+    async def active(self) -> list[DispatchTarget]:
+        """Every queue that currently has an ACTIVE push target — what the dispatcher iterates."""
+        return [DispatchTarget.from_dict(r) for r in await self.list() if r.get("active", True)]

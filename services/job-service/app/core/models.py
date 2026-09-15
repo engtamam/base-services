@@ -51,6 +51,30 @@ class Job:
 
 
 @dataclass
+class DispatchTarget:
+    """A registered PUSH webhook for a queue. When a queue has an active target, job-service delivers
+    that queue's due jobs by POSTing each one to `url` (the target's own internal webhook), instead of
+    waiting for the target to pull via claim(). Keyed by `queue` (the row id), so a queue has at most
+    one target — re-registering replaces it. A queue with no target stays PULL, unchanged.
+
+    `url` is validated against the egress allowlist at registration (SSRF: CWE-918), so a target can
+    never be pointed at an arbitrary host. No tenant field: a target is queue-global; each individual
+    job still carries and is dispatched with ONLY its own tenant."""
+    queue: str                        # the row id — one target per queue
+    url: str                          # the peer's internal webhook; host must be egress-allowlisted
+    active: bool = True
+    created: float = 0.0
+    updated: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "DispatchTarget":
+        return cls(**{k: d.get(k, getattr(cls, k, None)) for k in cls.__dataclass_fields__})
+
+
+@dataclass
 class Schedule:
     id: str
     name: str

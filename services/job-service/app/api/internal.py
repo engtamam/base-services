@@ -12,7 +12,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from app.api.v1.jobs import build_jobs, build_scheduler
+from app.api.v1.jobs import build_dispatcher, build_jobs, build_scheduler
+from app.core.dispatcher import DispatchError
 from app.backup_manifest import BACKUP
 from app.core import backup as _backup
 from app.config import Settings, get_settings
@@ -142,6 +143,53 @@ async def reclaim(request: Request) -> dict:
 async def tick(request: Request) -> dict:
     """Fire due cron schedules. A deployment cron / the worker loop calls this."""
     return await build_scheduler(request).tick()
+
+
+class DispatchTargetIn(BaseModel):
+    queue: str = Field(min_length=1, max_length=128)
+    url: str = Field(min_length=1, max_length=2048)
+    active: bool = True
+
+
+@router.post("/dispatch/targets", status_code=201, dependencies=[Depends(require_internal_token)])
+async def register_dispatch_target(request: Request, body: DispatchTargetIn) -> dict:
+    """Register (or replace) the PUSH webhook for a queue. From now, that queue's due jobs are
+    delivered by job-service POSTing each to `url`, instead of the target polling claim(). The host
+    must be egress-allow-listed (SSRF). A queue with no target stays PULL — this is purely additive."""
+    try:
+        t = await build_dispatcher(request).register(
+            queue=body.queue, url=body.url, active=body.active)
+    except DispatchError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    await request.app.state.auditor.record(
+        "dispatch.target_registered", actor="system", tenant="",
+        resource=f"queue:{body.queue}", ip=request.client.host if request.client else "",
+        metadata={"active": str(body.active)})
+    return t.to_dict()
+
+
+@router.get("/dispatch/targets", dependencies=[Depends(require_internal_token)])
+async def list_dispatch_targets(request: Request) -> dict:
+    return {"targets": await build_dispatcher(request).list_targets()}
+
+
+@router.delete("/dispatch/targets/{queue}", dependencies=[Depends(require_internal_token)])
+async def delete_dispatch_target(request: Request, queue: str) -> dict:
+    """Unregister a queue's push webhook — it reverts to PULL immediately."""
+    removed = await build_dispatcher(request).unregister(queue)
+    if removed:
+        await request.app.state.auditor.record(
+            "dispatch.target_removed", actor="system", tenant="",
+            resource=f"queue:{queue}", ip=request.client.host if request.client else "")
+    return {"removed": removed}
+
+
+@router.post("/dispatch/run", dependencies=[Depends(require_internal_token)])
+async def dispatch_run(request: Request) -> dict:
+    """Deliver one batch of due jobs on every push-enabled queue. Driven by the SAME central ticker
+    that calls scheduler/tick and jobs/reclaim — so no consuming service needs its own CronJob. A
+    no-op when push is disabled."""
+    return await build_dispatcher(request).dispatch_batch()
 
 
 @router.get("/manifest", dependencies=[Depends(require_internal_token)])

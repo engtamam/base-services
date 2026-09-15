@@ -19,6 +19,9 @@ BACKUP: dict[str, Any] = {
         {"name": "jobs", "tenant_scoped": True},
         {"name": "schedules", "tenant_scoped": True},
         {"name": "jobs_due", "tenant_scoped": True},     # the claimable-index; row id = job id
+        # The PUSH webhook registry (queue -> url). Durable operator config, like schedules: lose it on
+        # a restore and every push-enabled queue silently reverts to pull. Queue-global, no tenant.
+        {"name": "dispatch_targets", "tenant_scoped": False},
     ],
     "excluded": [
         {"name": "jobs_leased",

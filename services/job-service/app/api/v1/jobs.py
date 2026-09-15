@@ -12,9 +12,10 @@ from app.api.auth import Principal
 from app.api.authz import require_any_capability
 from app.config import get_settings
 from app.core.cron import CronError
+from app.core.dispatcher import Dispatcher
 from app.core.job_service import JobService
 from app.core.scheduler import Scheduler
-from app.core.stores import JobStore, ScheduleStore
+from app.core.stores import DispatchTargetStore, JobStore, ScheduleStore
 
 router = APIRouter(prefix="/api/v1/jobs", tags=["jobs"])
 
@@ -40,6 +41,23 @@ def build_scheduler(request: Request) -> Scheduler:
     c = request.app.state.container
     return Scheduler(schedules=ScheduleStore(c.datastore), jobs=build_jobs(request),
                      clock=c.clock, cron=c.cron, singleton_default=get_settings().SCHEDULER_SINGLETON)
+
+
+def _dispatch_cfg() -> dict[str, Any]:
+    s = get_settings()
+    return {"enabled": s.PUSH_DISPATCH_ENABLED, "batch": s.PUSH_DISPATCH_BATCH,
+            "timeout": s.PUSH_DISPATCH_TIMEOUT_SECONDS,
+            "allowed_hosts": s.egress_allowed_hosts,
+            # Sign with the dedicated push secret when set, else the shared internal token so a push is
+            # signed out of the box (the receiver holds the same token to verify).
+            "signing_secret": s.PUSH_SIGNING_SECRET or s.INTERNAL_SERVICE_TOKEN,
+            "max_skew_seconds": s.PUSH_SIGNATURE_MAX_SKEW_SECONDS}
+
+
+def build_dispatcher(request: Request) -> Dispatcher:
+    c = request.app.state.container
+    return Dispatcher(targets=DispatchTargetStore(c.datastore), jobs=build_jobs(request),
+                      clock=c.clock, config=_dispatch_cfg())
 
 
 def _tenant(p: Principal, body_tenant: str | None = None) -> str:
