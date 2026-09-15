@@ -22,5 +22,15 @@ BACKUP: dict[str, Any] = {
         {"name": "exports", "tenant_scoped": True},
         {"name": "triggers", "tenant_scoped": True},   # id = source id
     ],
-    "excluded": [],
+    "excluded": [
+        {"name": "stream_ship_locks",
+         "reason": "a short-lived shipping MUTEX (session -> {ts}), taken before a session ships and "
+                   "deleted on release — transient. After a restore no ship is in flight, so a "
+                   "restored stale lock would only BLOCK a legitimate ship; the clean slate is correct"},
+        {"name": "stream_quota",
+         "reason": "the LIVE-session counter per (tenant, source), incremented on start and "
+                   "decremented on stop — runtime state, not a durable record. After a restore nothing "
+                   "is streaming, so the correct live count is zero; restoring a stale count would "
+                   "permanently over-consume quota. It self-heals from a clean slate as sessions run"},
+    ],
 }
