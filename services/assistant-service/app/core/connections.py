@@ -102,11 +102,20 @@ def cost_micros(tokens_in: int, tokens_out: int, in_price: int, out_price: int) 
     return ci + co
 
 
-def _key(tenant: str, cid: str) -> str:
+def _legacy_key(tenant: str, cid: str) -> str:
+    """The OLD composite store key. Kept only so the one-time re-key migration can find and remove
+    legacy rows. Live reads/writes now key by the bare cid (see below)."""
     return f"{tenant}|{cid}"
 
 
 class ConnectionStore:
+    """Connections and their usage ledger are keyed by the BARE connection id (cid) — a globally
+    unique uuid — so the datastore key equals the row's own `id`. That is what lets a backup restore
+    each row under its own key (the key==id invariant); the previous composite key (tenant|cid) has
+    no `id`-equal form and would have collapsed every restored row under one key. Tenant isolation,
+    which the composite key used to give implicitly, is now an EXPLICIT guard on every read: a row
+    whose tenant does not match is treated as absent (no cross-tenant read, an IDOR guard)."""
+
     def __init__(self, store, *, now, new_id) -> None:
         self._s = store
         self._now = now
@@ -130,7 +139,7 @@ class ConnectionStore:
                          temperature=float(temperature), input_price_micros=int(input_price_micros),
                          output_price_micros=int(output_price_micros), currency=currency,
                          tools=_validate_tools(tools), created=now, updated=now)
-        await self._s.put(_CONNECTIONS, _key(tenant, c.id), c.to_dict())
+        await self._s.put(_CONNECTIONS, c.id, c.to_dict())
         return c
 
     _MUTABLE = ("name", "url", "shape", "model", "auth", "system_prompt", "temperature",
@@ -160,12 +169,16 @@ class ConnectionStore:
                 v = _validate_tools(v)
             setattr(c, k, v)
         c.updated = self._now()
-        await self._s.put(_CONNECTIONS, _key(tenant, c.id), c.to_dict())
+        await self._s.put(_CONNECTIONS, c.id, c.to_dict())
         return c
 
     async def get(self, tenant: str, cid: str) -> AiConnection | None:
-        row = await self._s.get(_CONNECTIONS, _key(tenant, cid))
-        return AiConnection.from_dict(row) if row else None
+        row = await self._s.get(_CONNECTIONS, cid)
+        # IDOR guard: a row keyed by the (global) cid must belong to THIS tenant, or it
+        # reads as absent — the tenant scoping the composite key used to give implicitly.
+        if not row or row.get("tenant") != tenant:
+            return None
+        return AiConnection.from_dict(row)
 
     async def list(self, tenant: str, *, limit: int = 100) -> list[dict[str, Any]]:
         if not tenant:
@@ -177,8 +190,8 @@ class ConnectionStore:
     async def delete(self, tenant: str, cid: str) -> bool:
         if await self.get(tenant, cid) is None:
             return False
-        await self._s.delete(_CONNECTIONS, _key(tenant, cid))
-        await self._s.delete(_USAGE, _key(tenant, cid))
+        await self._s.delete(_CONNECTIONS, cid)
+        await self._s.delete(_USAGE, cid)
         return True
 
     # ── usage ledger (per connection) ────────────────────────────────────────────
@@ -189,15 +202,49 @@ class ConnectionStore:
         # under-counts and the cost is UNDER-BILLED — a silent money leak that grows with traffic.
         # add_fields does the read-modify-write indivisibly, so every call's tokens and cost land.
         await self._s.add_fields(
-            _USAGE, _key(tenant, cid),
+            _USAGE, cid,
             {"calls": 1, "tokens_in": int(tokens_in), "tokens_out": int(tokens_out),
              "cost_micros": int(cost)},
-            {"tenant": tenant, "connection_id": cid, "updated": self._now()})
+            # id == cid so the usage row restores under its own key (key==id); tenant is stamped for
+            # the IDOR guard on read.
+            {"id": cid, "tenant": tenant, "connection_id": cid, "updated": self._now()})
 
     async def usage(self, tenant: str, cid: str) -> dict[str, Any]:
-        row = await self._s.get(_USAGE, _key(tenant, cid))
-        return row or {"tenant": tenant, "connection_id": cid, "calls": 0,
-                       "tokens_in": 0, "tokens_out": 0, "cost_micros": 0}
+        row = await self._s.get(_USAGE, cid)
+        # IDOR guard: another tenant's usage for the same (global) cid reads as empty, never leaked.
+        if not row or row.get("tenant") != tenant:
+            return {"tenant": tenant, "connection_id": cid, "calls": 0,
+                    "tokens_in": 0, "tokens_out": 0, "cost_micros": 0}
+        return row
+
+    # ── one-time re-key migration (composite key -> bare cid) ────────────────────
+    async def migrate_keys(self, *, cap: int = 100_000) -> dict[str, int]:
+        """Re-key any legacy rows written under the old composite key (tenant|cid) to the bare cid, so
+        the datastore key equals row['id'] and a backup can restore them. IDEMPOTENT: a row already at
+        its bare-cid key is left alone; a legacy duplicate at the composite key is moved then deleted.
+        Safe to run repeatedly (an operator calls it once after upgrade). Bounded by `cap`.
+
+        Reads values only (scan_all returns no keys), but a row carries everything needed to recompute
+        its OWN old key: connections carry id + tenant; usage rows carry connection_id + tenant. A row
+        missing that identity is skipped (counted) rather than guessed at."""
+        moved = skipped = 0
+        for coll, id_field in ((_CONNECTIONS, "id"), (_USAGE, "connection_id")):
+            for row in await self._s.scan_all(coll, cap):
+                cid = str(row.get(id_field) or "")
+                tenant = str(row.get("tenant") or "")
+                if not cid or not tenant:
+                    skipped += 1
+                    continue
+                legacy = _legacy_key(tenant, cid)
+                if legacy == cid:                       # nothing to move (defensive)
+                    continue
+                if await self._s.get(coll, legacy) is None:
+                    continue                            # already migrated (or never legacy)
+                row = {**row, "id": cid}                # ensure key==id on the moved row (usage lacked it)
+                await self._s.put(coll, cid, row)       # write under the bare key
+                await self._s.delete(coll, legacy)      # remove the composite duplicate
+                moved += 1
+        return {"moved": moved, "skipped": skipped}
 
 
 async def invoke(conn: AiConnection, *, prompt: str, caller: Caller, store: ConnectionStore,

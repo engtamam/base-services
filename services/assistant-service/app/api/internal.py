@@ -453,6 +453,14 @@ async def connection_usage(request: Request, cid: str, tenant: str) -> dict:
     return await _connections(request).usage(tenant, cid)
 
 
+@router.post("/assistant/connections/migrate-keys", dependencies=[Depends(require_internal_token)])
+async def migrate_connection_keys(request: Request) -> dict:
+    """One-time maintenance: re-key legacy connection/usage rows (old composite key tenant|cid) to the
+    bare cid, so a backup can restore them (key==id). Idempotent — safe to run more than once; an
+    operator calls it once after upgrading to a build that keys by cid."""
+    return await _connections(request).migrate_keys()
+
+
 # ── Backup (backup-service orchestrates; this service produces sealed archives) ──────────────
 # What this service holds is declared in app/backup_manifest.py; how it is read lives in
 # core/backup.py. backup-service never opens this database — it calls export/verify/import over the

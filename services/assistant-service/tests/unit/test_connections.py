@@ -66,9 +66,10 @@ def test_bad_shape_and_auth_are_refused():
 
 def test_list_is_tenant_scoped():
     st = MemoryDataStore()
-    run(_store(st).create(tenant="t1", name="a", url="u"))
-    run(_store(st).create(tenant="t2", name="b", url="u"))
-    rows = run(_store(st).list("t1"))
+    s = _store(st)   # ONE store so ids are globally unique (real new_id is a uuid), as the bare-cid
+    run(s.create(tenant="t1", name="a", url="u"))   # key scheme requires — not reused c1/c1 per call
+    run(s.create(tenant="t2", name="b", url="u"))
+    rows = run(s.list("t1"))
     assert len(rows) == 1 and rows[0]["name"] == "a"
 
 
@@ -136,3 +137,76 @@ def test_usage_accumulates_across_calls():
     run(invoke(conn, prompt="2", caller=caller, store=s))
     u = run(s.usage("t1", conn.id))
     assert u["calls"] == 2 and u["tokens_in"] == 2000 and u["cost_micros"] == 40
+
+
+# ── bare-cid key scheme: IDOR guard, key==id, re-key migration (backup coverage) ──
+def test_reads_are_tenant_guarded_against_idor():
+    """Now keyed by the global cid, a cross-tenant read must be refused explicitly (the composite key
+    used to prevent it structurally)."""
+    st = MemoryDataStore()
+    s = _store(st)
+    c = run(s.create(tenant="owner", name="a", url="u"))
+    run(s.record_usage(tenant="owner", cid=c.id, tokens_in=10, tokens_out=5, cost=7))
+    # another tenant naming the real cid gets nothing — not the connection, not the usage
+    assert run(s.get("attacker", c.id)) is None
+    assert run(s.usage("attacker", c.id))["calls"] == 0
+    # the real owner still sees both
+    assert run(s.get("owner", c.id)).name == "a"
+    assert run(s.usage("owner", c.id))["calls"] == 1
+
+
+def test_rows_are_stored_under_the_bare_cid_key():
+    st = MemoryDataStore()
+    s = _store(st)
+    c = run(s.create(tenant="t1", name="a", url="u"))
+    run(s.record_usage(tenant="t1", cid=c.id, tokens_in=1, tokens_out=1, cost=1))
+    # datastore key == the row's own id (the key==id invariant a backup restore relies on)
+    assert run(st.get("ai_connections", c.id))["id"] == c.id
+    assert run(st.get("ai_connection_usage", c.id))["id"] == c.id
+
+
+def test_migrate_keys_rekeys_legacy_rows_idempotently():
+    st = MemoryDataStore()
+    s = _store(st)
+    # simulate legacy rows written under the OLD composite key (tenant|cid), no id on usage
+    run(st.put("ai_connections", "t1|old1",
+               {"id": "old1", "tenant": "t1", "name": "legacy", "url": "u"}))
+    run(st.put("ai_connection_usage", "t1|old1",
+               {"tenant": "t1", "connection_id": "old1", "calls": 3, "cost_micros": 42}))
+
+    first = run(s.migrate_keys())
+    assert first["moved"] == 2
+    # now reachable by the bare cid, tenant-guarded, and keyed by id
+    assert run(s.get("t1", "old1")).name == "legacy"
+    assert run(s.usage("t1", "old1"))["calls"] == 3
+    assert run(st.get("ai_connections", "old1"))["id"] == "old1"
+    assert run(st.get("ai_connection_usage", "old1"))["id"] == "old1"
+    assert run(st.get("ai_connections", "t1|old1")) is None      # composite duplicate removed
+    # idempotent: a second run moves nothing
+    assert run(s.migrate_keys())["moved"] == 0
+
+
+def test_migrate_keys_skips_a_row_without_identity():
+    st = MemoryDataStore()
+    s = _store(st)
+    run(st.put("ai_connections", "junk", {"name": "no id, no tenant"}))
+    assert run(s.migrate_keys())["skipped"] >= 1
+
+
+def test_connections_and_usage_survive_a_backup_roundtrip():
+    from app.core import backup as B
+    from app.backup_manifest import BACKUP
+    st = MemoryDataStore()
+    s = _store(st)
+    c = run(s.create(tenant="t1", name="a", url="u"))
+    run(s.record_usage(tenant="t1", cid=c.id, tokens_in=100, tokens_out=50, cost=9))
+
+    seal, unseal = B.make_sealer("backup-key")
+    archive = run(B.export(st, BACKUP, service="assistant-service", version="1.0.0",
+                           taken_at="2026-09-15T00:00:00Z", seal=seal, tenant="", scan_cap=1000))
+    dst = MemoryDataStore()
+    run(B.import_archive(dst, archive, unseal=unseal))
+    s2 = ConnectionStore(dst, now=lambda: "x", new_id=lambda: "n")
+    # each row restored under its own key — not collapsed under a single None id
+    assert run(s2.get("t1", c.id)).name == "a"
+    assert run(s2.usage("t1", c.id))["cost_micros"] == 9

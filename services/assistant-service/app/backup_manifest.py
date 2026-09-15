@@ -17,6 +17,14 @@ BACKUP: dict[str, Any] = {
     "collections": [
         {"name": "assistant_conversations", "tenant_scoped": True},
         {"name": "assistant_messages", "tenant_scoped": True},
+        # Per-tenant AI connection definitions and their usage/cost ledger. Durable config + billing
+        # data — both keyed by the bare connection id (id == key) and tenant-stamped. A restore must
+        # keep them: losing ai_connections drops a tenant's configured LLM lines; losing
+        # ai_connection_usage loses the metered cost record. (Rows written before the key migration
+        # live under a legacy composite key — run POST /internal/assistant/connections/migrate-keys
+        # once after upgrade to re-key them so a backup captures them.)
+        {"name": "ai_connections", "tenant_scoped": True},
+        {"name": "ai_connection_usage", "tenant_scoped": True},
     ],
     "excluded": [],
 }
