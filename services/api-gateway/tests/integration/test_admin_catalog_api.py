@@ -23,7 +23,7 @@ def client(monkeypatch):
     # Stub the network: pretend tenant-service returned its manifest with one admin action.
     import app.api.v1.admin as adm
 
-    async def fake_fetch_via_build(targets, caps, fetch):
+    async def fake_fetch_via_build(targets, caps, fetch, **kw):
         from app.core.admin_catalog import build_catalog
 
         async def stub(_t):
@@ -34,7 +34,7 @@ def client(monkeypatch):
                 {"id": "billing.refund", "label": "Refund", "method": "POST",
                  "path": "/x", "capability": "platform.billing"},
             ]}
-        return await build_catalog(targets, caps, stub)
+        return await build_catalog(targets, caps, stub, **kw)
 
     monkeypatch.setattr(adm, "build_catalog", fake_fetch_via_build)
 

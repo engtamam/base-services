@@ -108,8 +108,11 @@ async def assistant_catalog(request: Request, settings: Settings = Depends(get_s
         return r.json() if r.status_code == 200 else None
 
     all_caps = frozenset({"*"})     # unfiltered: the KB holds every action; the caller filters later
-    users = await build_catalog(targets, all_caps, fetch, field="user_actions")
-    admins = await build_catalog(targets, all_caps, fetch, field="admin_actions")
+    cat_timeout = settings.CATALOG_FETCH_TIMEOUT_SECONDS
+    users = await build_catalog(targets, all_caps, fetch, field="user_actions",
+                                timeout_seconds=cat_timeout)
+    admins = await build_catalog(targets, all_caps, fetch, field="admin_actions",
+                                 timeout_seconds=cat_timeout)
 
     # Merge the two views: one row per service, its user + admin actions concatenated. Order is
     # preserved (user actions first) and services with neither are simply absent.

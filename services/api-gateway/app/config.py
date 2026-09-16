@@ -280,6 +280,10 @@ class Settings(BaseSettings):
     ADMIN_SERVICES: str = ""
     ADMIN_CATALOG_TTL: int = 60              # cache the merged catalog (admin-time read, not hot path)
     ADMIN_CATALOG_CAP: str = "platform.admin"  # capability required to OPEN the panel at all
+    # Per-target bound for the CONCURRENT catalog fan-out. The catalog blocks the app's first screen
+    # after login, so one hung service must not hold it for the full UPSTREAM_TIMEOUT_SECONDS — a
+    # short bound drops a blackholed service fast while healthy ones (sub-second) are unaffected.
+    CATALOG_FETCH_TIMEOUT_SECONDS: float = 3.0
 
     @property
     def egress_allowed_hosts(self) -> frozenset[str]:

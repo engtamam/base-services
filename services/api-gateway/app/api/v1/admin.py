@@ -65,7 +65,8 @@ async def catalog(request: Request, principal: Principal = Depends(require_user)
                                           **assertion_headers_for_url(t.base_url)})
         return r.json() if r.status_code == 200 else None
 
-    result = await build_catalog(targets, caps, fetch)
+    result = await build_catalog(targets, caps, fetch,
+                                 timeout_seconds=s.CATALOG_FETCH_TIMEOUT_SECONDS)
     if s.ADMIN_CATALOG_TTL > 0:
         _CACHE[key] = (now + s.ADMIN_CATALOG_TTL, result)
     return result

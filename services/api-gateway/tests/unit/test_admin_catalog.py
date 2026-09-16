@@ -128,3 +128,42 @@ def test_a_hostile_manifest_cannot_inject_an_absolute_url():
 
     got = run(build_catalog(targets, frozenset({"*"}), fetch))
     assert got["services"] == [], "an absolute-URL action must be refused"
+
+
+# ── the fan-out is CONCURRENT + bounded (login-blocking perf bug, fixed) ──────
+def test_fan_out_runs_concurrently_not_sequentially():
+    """The bug: `for t: await fetch(t)` made the wait the SUM of every upstream call, so a login
+    (which blocks on this catalog) hung for over a minute with 12+ services. gather makes it the
+    slowest SINGLE call. We assert wall-clock ≈ one delay, not N delays."""
+    import time
+    targets = [ServiceTarget(f"s{i}", f"http://s{i}") for i in range(10)]
+
+    async def fetch(t):
+        await asyncio.sleep(0.05)          # each "upstream" takes 50ms
+        return _manifest([{"id": f"{t.name}.a", "label": "A", "method": "GET", "path": "/a", "capability": "platform.x"}])
+
+    start = time.monotonic()
+    got = run(build_catalog(targets, frozenset({"*"}), fetch))
+    elapsed = time.monotonic() - start
+    assert len(got["services"]) == 10                 # all fetched
+    # sequential would be ~0.5s (10 x 50ms); concurrent is ~0.05s. Generous bound rules out serial.
+    assert elapsed < 0.30, f"fan-out looks sequential ({elapsed:.2f}s for 10 x 50ms)"
+
+
+def test_a_hung_service_is_bounded_by_the_timeout_and_reported_unreachable():
+    """One blackholed service must not stall the rest: it is bounded by timeout_seconds and reported
+    unreachable, while healthy services still return."""
+    import time
+    targets = [ServiceTarget("hung", "http://hung"), ServiceTarget("ok", "http://ok")]
+
+    async def fetch(t):
+        if t.name == "hung":
+            await asyncio.sleep(5)         # would blackhole the whole catalog without a timeout
+        return _manifest([{"id": f"{t.name}.a", "label": "A", "method": "GET", "path": "/a", "capability": "platform.x"}])
+
+    start = time.monotonic()
+    got = run(build_catalog(targets, frozenset({"*"}), fetch, timeout_seconds=0.1))
+    elapsed = time.monotonic() - start
+    assert elapsed < 1.0, "a hung service was not bounded by the timeout"
+    assert got["unreachable"] == ["hung"]
+    assert [s["service"] for s in got["services"]] == ["ok"]   # healthy one still returned

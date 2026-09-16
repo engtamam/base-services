@@ -23,6 +23,7 @@ Three things this module treats as load-bearing, all from phase-33:
 """
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
@@ -105,21 +106,37 @@ async def build_catalog(
     caller_caps: frozenset[str],
     fetch_manifest: Callable[[ServiceTarget], Awaitable[dict[str, Any] | None]],
     field: str = "admin_actions",
+    *,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
-    """Fan out, merge, filter. `fetch_manifest` is injected so this stays pure and testable — no
-    network here, no clock, no token. A target that fails to answer is skipped and REPORTED, never
-    silently dropped (a missing service should be visible, not invisible).
+    """Fan out CONCURRENTLY, merge, filter. `fetch_manifest` is injected so this stays pure and
+    testable — no network here, no clock, no token. A target that fails to answer is skipped and
+    REPORTED, never silently dropped (a missing service should be visible, not invisible).
+
+    The fan-out runs every target's fetch AT ONCE (asyncio.gather), each under its own bounded
+    `timeout_seconds`. Sequentially the worst case was the SUM of every upstream call — with 12+
+    services at seconds each this made a >1min wait, and this catalog blocks the app's first screen
+    after login, so every login hung. Concurrently the wait is the SLOWEST single call, and one hung
+    service is bounded to `timeout_seconds` instead of stalling the rest. (Same reasoning and shape as
+    the readiness fan-out in api/health.py.)
 
     `field` selects which declaration to aggregate: `admin_actions` (the operator panel) or
     `user_actions` (the end-user app). The validation, capability filtering, and anti-SSRF rules are
     identical — only the manifest key differs."""
+    async def _fetch_one(t: ServiceTarget) -> dict[str, Any] | None:
+        try:
+            if timeout_seconds is not None:
+                return await asyncio.wait_for(fetch_manifest(t), timeout_seconds)
+            return await fetch_manifest(t)
+        except Exception:
+            # A timeout, a network error, or a malformed answer — a target that cannot answer is
+            # unreachable, never a 500 on the whole catalog.
+            return None
+
+    manifests = await asyncio.gather(*(_fetch_one(t) for t in targets))
     services: list[dict[str, Any]] = []
     unreachable: list[str] = []
-    for t in targets:
-        try:
-            manifest = await fetch_manifest(t)
-        except Exception:
-            manifest = None
+    for t, manifest in zip(targets, manifests):   # gather preserves order → deterministic output
         if manifest is None:
             unreachable.append(t.name)
             continue

@@ -26,7 +26,7 @@ def client(monkeypatch):
 
     import app.api.v1.app_catalog as ac
 
-    async def fake_build(targets, caps, fetch, field="user_actions"):
+    async def fake_build(targets, caps, fetch, field="user_actions", **kw):
         from app.core.admin_catalog import build_catalog
 
         async def stub(_t):
@@ -36,7 +36,7 @@ def client(monkeypatch):
                 {"id": "files.upload", "label": "Upload", "method": "POST",
                  "path": "/api/v1/files", "capability": "files.upload"},
             ]}
-        return await build_catalog(targets, caps, stub, field=field)
+        return await build_catalog(targets, caps, stub, field=field, **kw)
 
     monkeypatch.setattr(ac, "build_catalog", fake_build)
 

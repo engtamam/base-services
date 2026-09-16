@@ -22,7 +22,7 @@ def client(monkeypatch):
     import app.core.admin_catalog as acat
     real = acat.build_catalog          # capture before patching to avoid recursion
 
-    async def fake_build(targets, caps, fetch, field="admin_actions"):
+    async def fake_build(targets, caps, fetch, field="admin_actions", **kw):
         async def stub(_t):
             return {
                 "user_actions": [
@@ -32,7 +32,7 @@ def client(monkeypatch):
                     {"id": "files.purge", "label": "Purge", "method": "DELETE",
                      "path": "/api/v1/admin/files", "capability": "platform.files", "group": "admin"}],
             }
-        return await real(targets, caps, stub, field=field)
+        return await real(targets, caps, stub, field=field, **kw)
 
     monkeypatch.setattr(acat, "build_catalog", fake_build)
 
