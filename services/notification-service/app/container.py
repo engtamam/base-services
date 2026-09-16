@@ -274,6 +274,8 @@ def make_provider_pool(settings, secret_store, runtime_config):
         build_template_manager=lambda token, waba: _tenant_template_manager(settings, token, waba),
         build_flow_manager=lambda token, waba: _tenant_flow_manager(settings, token, waba),
         build_media_uploader=lambda token: _tenant_media_uploader(settings, token),
+        build_catalog_manager=lambda token, business, waba: _tenant_catalog_manager(
+            settings, token, business, waba),
         ttl_s=settings.PROVIDER_REFRESH_SECONDS,
     )
 
@@ -313,6 +315,29 @@ def _tenant_media_uploader(settings, token: str):
     return MetaMediaUploader(token, settings.META_APP_ID, settings.WHATSAPP_GRAPH_BASE)
 
 
+def _tenant_catalog_manager(settings, token: str, business: str, waba: str):
+    """A per-tenant Meta catalog manager, or None to fall back to the boot one — same rule as the
+    template manager: a catalog is created on the tenant's business and connected to its WABA, so a
+    tenant with its own creds manages its own catalog; the configured creds reuse the boot manager."""
+    from app.adapters.whatsapp_catalog.meta import MetaCatalogManager
+    if settings.WHATSAPP_CATALOG_MANAGER != "meta" or not token:
+        return None
+    if (token == settings.WHATSAPP_ACCESS_TOKEN and business == settings.WHATSAPP_BUSINESS_ID
+            and waba == settings.WHATSAPP_BUSINESS_ACCOUNT_ID):
+        return None
+    return MetaCatalogManager(token, business, waba, settings.WHATSAPP_GRAPH_BASE)
+
+
+def _build_catalog_manager(settings):
+    """The boot-built catalog manager (console default, or meta for the single-brand deployment)."""
+    from app.adapters.whatsapp_catalog.console import ConsoleCatalogManager
+    from app.adapters.whatsapp_catalog.meta import MetaCatalogManager
+    if settings.WHATSAPP_CATALOG_MANAGER == "meta" and settings.WHATSAPP_ACCESS_TOKEN:
+        return MetaCatalogManager(settings.WHATSAPP_ACCESS_TOKEN, settings.WHATSAPP_BUSINESS_ID,
+                                  settings.WHATSAPP_BUSINESS_ACCOUNT_ID, settings.WHATSAPP_GRAPH_BASE)
+    return ConsoleCatalogManager()
+
+
 def _pick(registry: dict[str, Builder], driver: str, port_name: str, settings: Settings) -> Any:
     builder = registry.get(driver)
     if builder is None:
@@ -342,6 +367,7 @@ class Container:
     whatsapp_template_manager: Any = None
     whatsapp_flow_manager: Any = None
     whatsapp_media_uploader: Any = None
+    whatsapp_catalog_manager: Any = None
     renderer: Any = None
 
     def describe(self) -> list[dict[str, str]]:
@@ -423,6 +449,7 @@ def build_container(settings: Settings) -> Container:
         whatsapp_template_manager=_build_template_manager(settings),
         whatsapp_flow_manager=_build_flow_manager(settings),
         whatsapp_media_uploader=_build_media_uploader(settings),
+        whatsapp_catalog_manager=_build_catalog_manager(settings),
         renderer=SafeRenderer(),
     )
 

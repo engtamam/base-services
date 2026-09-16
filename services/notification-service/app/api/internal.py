@@ -747,6 +747,81 @@ async def submit_pending_whatsapp_templates_internal(
     return result
 
 
+# ── WhatsApp catalog management (Phase 1) ────────────────────────────────────
+class WaCatalogCreateIn(BaseModel):
+    tenant: str = Field(min_length=1, max_length=128)
+    name: str = Field(min_length=1, max_length=256)
+
+
+class WaCatalogConnectIn(BaseModel):
+    tenant: str = Field(min_length=1, max_length=128)
+
+
+class WaCommerceSettingsIn(BaseModel):
+    tenant: str = Field(min_length=1, max_length=128)
+    phone_number_id: str = Field(min_length=1, max_length=128)
+    is_cart_enabled: bool = True
+    is_catalog_visible: bool = True
+
+
+@router.post("/whatsapp/catalog", status_code=201, dependencies=[Depends(require_internal_token)])
+async def create_catalog_internal(request: Request, body: WaCatalogCreateIn) -> dict:
+    """Create a product catalog for a tenant's WhatsApp Business (owned by its Business Manager).
+    A consuming platform calls this per shop; the token/business id resolve per tenant in core."""
+    from app.api.v1.notifications import build_catalog_manager
+    res = await (await build_catalog_manager(request, body.tenant)).create_catalog(name=body.name)
+    if not res.ok:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, res.error or "catalog create failed")
+    await request.app.state.auditor.record(
+        "whatsapp_catalog.created", actor="system", tenant=body.tenant,
+        resource=f"catalog:{res.catalog_id}", ip=request.client.host if request.client else "")
+    return res.to_dict()
+
+
+@router.get("/whatsapp/catalog/{catalog_id}", dependencies=[Depends(require_internal_token)])
+async def get_catalog_internal(request: Request, catalog_id: str, tenant: str) -> dict:
+    from app.api.v1.notifications import build_catalog_manager
+    res = await (await build_catalog_manager(request, tenant)).get_catalog(catalog_id=catalog_id)
+    if not res.ok:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, res.error or "NOT_FOUND")
+    return {**res.to_dict(), "catalog": res.raw}
+
+
+@router.get("/whatsapp/catalogs", dependencies=[Depends(require_internal_token)])
+async def list_catalogs_internal(request: Request, tenant: str) -> dict:
+    from app.api.v1.notifications import build_catalog_manager
+    return {"catalogs": await (await build_catalog_manager(request, tenant)).list_catalogs()}
+
+
+@router.post("/whatsapp/catalog/{catalog_id}/connect", dependencies=[Depends(require_internal_token)])
+async def connect_catalog_internal(request: Request, catalog_id: str, body: WaCatalogConnectIn) -> dict:
+    """Connect an owned catalog to the tenant's WABA so its products can be shown in chat."""
+    from app.api.v1.notifications import build_catalog_manager
+    res = await (await build_catalog_manager(request, body.tenant)).connect_catalog(catalog_id=catalog_id)
+    if not res.ok:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, res.error or "catalog connect failed")
+    await request.app.state.auditor.record(
+        "whatsapp_catalog.connected", actor="system", tenant=body.tenant,
+        resource=f"catalog:{catalog_id}", ip=request.client.host if request.client else "")
+    return res.to_dict()
+
+
+@router.post("/whatsapp/commerce-settings", dependencies=[Depends(require_internal_token)])
+async def set_commerce_settings_internal(request: Request, body: WaCommerceSettingsIn) -> dict:
+    """Set a tenant phone number's WhatsApp commerce settings (cart + catalog visibility)."""
+    from app.api.v1.notifications import build_catalog_manager
+    res = await (await build_catalog_manager(request, body.tenant)).set_commerce_settings(
+        phone_number_id=body.phone_number_id, is_cart_enabled=body.is_cart_enabled,
+        is_catalog_visible=body.is_catalog_visible)
+    if not res.ok:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, res.error or "commerce settings failed")
+    await request.app.state.auditor.record(
+        "whatsapp_catalog.commerce_settings_set", actor="system", tenant=body.tenant,
+        resource=f"phone:{body.phone_number_id}", ip=request.client.host if request.client else "",
+        metadata={"cart": str(body.is_cart_enabled), "catalog_visible": str(body.is_catalog_visible)})
+    return res.to_dict()
+
+
 class WaFlowProvisionIn(BaseModel):
     tenant: str = Field(min_length=1, max_length=128)
     name: str = Field(min_length=1, max_length=256)          # the flow_NAME templates reference

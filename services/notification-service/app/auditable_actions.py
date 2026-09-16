@@ -95,6 +95,24 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "resource": "wa_media",
     },
     {
+        # Catalog lifecycle over the internal tier (a peer product service acting for a shop). Creating
+        # or connecting a catalog, and changing a phone number's commerce settings, are config changes
+        # worth witnessing — WHO turned a shop's storefront on, and where its catalog points.
+        "action": "whatsapp_catalog.created",
+        "source": "internal",
+        "critical": False,
+    },
+    {
+        "action": "whatsapp_catalog.connected",
+        "source": "internal",
+        "critical": False,
+    },
+    {
+        "action": "whatsapp_catalog.commerce_settings_set",
+        "source": "internal",
+        "critical": False,
+    },
+    {
         # An admin-triggered manual WhatsApp send (the diagnostic test-send). A privileged manual
         # send from a customer's number is exactly what a review asks about — who sent what, from
         # where — so it is recorded (last-4 of the recipient only, never the full number/body).

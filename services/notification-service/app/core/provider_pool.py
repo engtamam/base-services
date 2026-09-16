@@ -65,6 +65,7 @@ class ProviderPool:
     def __init__(self, settings, secret_store, runtime_config, *,
                  build_email, build_sms, build_whatsapp, build_template_manager=None,
                  build_flow_manager=None, build_media_uploader=None, build_whatsapp_identity=None,
+                 build_catalog_manager=None,
                  ttl_s: int = 30, now=time.monotonic) -> None:
         self._s = settings
         self._secrets = secret_store          # None when no KEK is configured
@@ -85,6 +86,9 @@ class ProviderPool:
         self._build_flow_manager = build_flow_manager
         # Resolves the media uploader per tenant (App-scoped upload, tenant-token authed). None → boot.
         self._build_media_uploader = build_media_uploader
+        # Resolves the CATALOG manager per tenant (token + owning business id + WABA id — all secret
+        # reads, so they belong here in core, never a route). None → use the boot-built manager.
+        self._build_catalog_manager = build_catalog_manager
         self._ttl = ttl_s
         self._now = now
         self._cache: dict[str, tuple[float, object, object, object]] = {}
@@ -170,6 +174,19 @@ class ProviderPool:
             return None
         token = await self._credential(tenant, "WHATSAPP_ACCESS_TOKEN")
         return self._build_media_uploader(token)
+
+    async def catalog_manager(self, tenant: str = ""):
+        """The WhatsApp catalog manager scoped to this tenant's WABA + owning business, or None to
+        use the boot one. A catalog is created on the tenant's Business Manager and connected to the
+        tenant's WABA, so both ids — and the token — resolve from the same credential store the send
+        chains and template manager use (a read that must live in core, never a route). None → the
+        configured, boot-built manager (single-brand deployment unchanged)."""
+        if self._build_catalog_manager is None:
+            return None
+        token = await self._credential(tenant, "WHATSAPP_ACCESS_TOKEN")
+        business = await self._credential(tenant, "WHATSAPP_BUSINESS_ID")
+        waba = await self._credential(tenant, "WHATSAPP_BUSINESS_ACCOUNT_ID")
+        return self._build_catalog_manager(token, business, waba)
 
     async def whatsapp_phone_number_id(self, tenant: str = "") -> str:
         """The tenant's WhatsApp phone-number id, resolved from the same store the send creds use

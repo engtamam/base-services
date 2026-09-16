@@ -499,6 +499,12 @@ class Settings(BaseSettings):
     # calls the Graph message_templates API on the WhatsApp Business Account.
     WHATSAPP_TEMPLATE_MANAGER: str = "console"   # console | meta
     WHATSAPP_BUSINESS_ACCOUNT_ID: str = ""       # WABA id — the template-management endpoint
+    # Catalog management (Phase 1). Same console|meta shape as the template manager; per-tenant creds
+    # (token/business/WABA) resolve in the provider pool. The BUSINESS id is the WABA's owning Meta
+    # Business Manager id — a catalog is created on the business, then connected to the WABA — and is
+    # distinct from WHATSAPP_BUSINESS_ACCOUNT_ID (the WABA id).
+    WHATSAPP_CATALOG_MANAGER: str = "console"    # console | meta
+    WHATSAPP_BUSINESS_ID: str = ""               # owning Business Manager id (for catalog create)
     WHATSAPP_TEMPLATE_SYNC_LIMIT: int = 200      # max pending templates reconciled per sweep
     # Max templates SUBMITTED to Meta per drain call — Meta rate-limits template creation to 100/hour
     # per WABA, so the whole library (often >100 texts) is submitted across scheduled ticks. Bounded

@@ -69,7 +69,7 @@ Our implementation:
 ## Phases (each = its own release)
 
 - [ ] **P0 — Spec + architecture (this doc).** Verify Meta facts, lock homes + credential model. *No behavior.*
-- [ ] **P1 — Catalog adapter (notification-service).** Create/get catalog for a WABA; connect catalog↔WABA; set phone-number commerce settings. Internal routes per tenant; per-tenant WABA creds. Verify catalog endpoints vs Meta ref first.
+- [x] **P1 — Catalog adapter (notification-service).** Create/get catalog for a WABA; connect catalog↔WABA; set phone-number commerce settings. Internal routes per tenant; per-tenant WABA creds. Verify catalog endpoints vs Meta ref first.
 - [ ] **P2 — Product batch sync (notification-service).** `items_batch` CREATE/UPDATE/DELETE; product fields (retailer_id/name/price/currency/availability/image_url/description); idempotent; async batch-status handling; list/read.
 - [ ] **P3 — Product & order messaging (notification-service).** Single/multi-product messages (reuse send path); inbound `order` webhook → durable inbound feed (like `wa_inbound`) for the consumer to read.
 - [ ] **P4 — Payments conduit: external pay-link (`payments-service`).** ⭐ *Works in KSA today.* Scaffold from `_template`; `MERCHANT_*` sealed per-tenant creds (model above); `PaymentRequest` (server-authoritative amount, TTL, idempotent apply via webhook+reconcile); per-order dynamic link from the shop's gateway; public redirector (TTL/allowed-hosts); `payment.completed` event; deliver link via notification `url_button_param`. Money-grade tests (idempotency, concurrency, tenant isolation, secret redaction, fail-closed). Each option independently lockable per tenant. **Research credential-isolation best practices online at the start of this phase.**

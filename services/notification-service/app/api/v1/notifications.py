@@ -90,6 +90,19 @@ async def build_flow_manager(request: Request, tenant: str = ""):
     return c.whatsapp_flow_manager
 
 
+async def build_catalog_manager(request: Request, tenant: str = ""):
+    """The WhatsApp catalog manager scoped to THIS tenant's WABA + owning business, or the boot one.
+    Same resolution as the template/flow managers — a catalog belongs to one WABA and its token +
+    business + WABA ids are read in core (the pool), never in a route."""
+    c = request.app.state.container
+    pool = getattr(request.app.state, "provider_pool", None)
+    if pool is not None:
+        mgr = await pool.catalog_manager(tenant)
+        if mgr is not None:
+            return mgr
+    return c.whatsapp_catalog_manager
+
+
 async def build_media_uploader(request: Request, tenant: str = ""):
     """The WhatsApp media uploader scoped to THIS tenant's token, or the boot one. Same resolution as
     the template/flow managers — the token read happens in core (the pool), never in a route."""
