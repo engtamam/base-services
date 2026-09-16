@@ -108,6 +108,11 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "critical": False,
     },
     {
+        "action": "whatsapp_catalog.products_synced",
+        "source": "internal",
+        "critical": False,
+    },
+    {
         "action": "whatsapp_catalog.commerce_settings_set",
         "source": "internal",
         "critical": False,

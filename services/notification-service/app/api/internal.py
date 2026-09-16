@@ -806,6 +806,53 @@ async def connect_catalog_internal(request: Request, catalog_id: str, body: WaCa
     return res.to_dict()
 
 
+class WaProductIn(BaseModel):
+    retailer_id: str = Field(min_length=1, max_length=256)   # the shop's own stable product id
+    name: str = Field(min_length=1, max_length=200)
+    price_minor: int = Field(ge=0)                           # integer minor units — never a float
+    currency: str = Field(default="SAR", max_length=8)
+    availability: str = Field(default="in stock", max_length=32)
+    condition: str = Field(default="new", max_length=32)
+    description: str = Field(default="", max_length=9999)
+    image_url: str = Field(default="", max_length=2048)
+    url: str = Field(default="", max_length=2048)
+    brand: str = Field(default="", max_length=200)
+
+
+class WaProductSyncIn(BaseModel):
+    tenant: str = Field(min_length=1, max_length=128)
+    upserts: list[WaProductIn] = Field(default_factory=list)
+    deletes: list[str] = Field(default_factory=list)         # retailer_ids to remove
+
+
+@router.post("/whatsapp/catalog/{catalog_id}/products", dependencies=[Depends(require_internal_token)])
+async def sync_products_internal(request: Request, catalog_id: str, body: WaProductSyncIn,
+                                 settings: Settings = Depends(get_settings)) -> dict:
+    """Upsert/delete products in a catalog, in ONE idempotent batch (Meta items_batch). A consuming
+    platform pushes its own product set; content is theirs. Bounded to Meta's per-call limit."""
+    from app.api.v1.notifications import build_catalog_manager
+    from app.ports.whatsapp_catalog import ProductItem
+    total = len(body.upserts) + len([d for d in body.deletes if d])
+    if total > settings.WHATSAPP_PRODUCT_BATCH_MAX:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            f"batch of {total} exceeds WHATSAPP_PRODUCT_BATCH_MAX "
+                            f"({settings.WHATSAPP_PRODUCT_BATCH_MAX}); page it")
+    items = [ProductItem(retailer_id=p.retailer_id, name=p.name, price_minor=p.price_minor,
+                         currency=p.currency, availability=p.availability, condition=p.condition,
+                         description=p.description, image_url=p.image_url, url=p.url, brand=p.brand)
+             for p in body.upserts]
+    res = await (await build_catalog_manager(request, body.tenant)).sync_products(
+        catalog_id=catalog_id, upserts=items, deletes=[d for d in body.deletes if d])
+    if not res.ok:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, res.error or "product sync failed")
+    if res.count:
+        await request.app.state.auditor.record(
+            "whatsapp_catalog.products_synced", actor="system", tenant=body.tenant,
+            resource=f"catalog:{catalog_id}", ip=request.client.host if request.client else "",
+            metadata={"upserts": str(len(items)), "deletes": str(len([d for d in body.deletes if d]))})
+    return res.to_dict()
+
+
 @router.post("/whatsapp/commerce-settings", dependencies=[Depends(require_internal_token)])
 async def set_commerce_settings_internal(request: Request, body: WaCommerceSettingsIn) -> dict:
     """Set a tenant phone number's WhatsApp commerce settings (cart + catalog visibility)."""

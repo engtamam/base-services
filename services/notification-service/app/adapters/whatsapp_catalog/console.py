@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 
 from app.observability.logging import get_logger
-from app.ports.whatsapp_catalog import CatalogResult
+from app.ports.whatsapp_catalog import BatchResult, CatalogResult, ProductItem
 
 _log = get_logger("app.whatsapp_catalog.console")
 
@@ -35,3 +35,10 @@ class ConsoleCatalogManager:
                                                   "cart": bool(is_cart_enabled),
                                                   "catalog_visible": bool(is_catalog_visible)})
         return CatalogResult(ok=True)
+
+    async def sync_products(self, *, catalog_id: str, upserts: list[ProductItem],
+                            deletes: list[str]) -> BatchResult:
+        n = len(upserts) + len([d for d in deletes if d])
+        _log.info("products_synced", extra={"provider": "console", "catalog_id": catalog_id,
+                                            "upserts": len(upserts), "deletes": len(deletes)})
+        return BatchResult(ok=True, handles=[f"console:batch:{uuid.uuid4().hex}"] if n else [], count=n)

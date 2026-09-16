@@ -25,6 +25,34 @@ class CatalogResult:
         return {"ok": self.ok, "catalog_id": self.catalog_id, "error": self.error}
 
 
+@dataclass
+class ProductItem:
+    """One product to upsert. `retailer_id` is the SHOP's own stable id for the product (Meta's
+    `id`) — the idempotency key across syncs. Money is INTEGER minor units + currency (never a float);
+    the adapter formats it to Meta's `"129.00 SAR"` shape."""
+    retailer_id: str
+    name: str
+    price_minor: int
+    currency: str = "SAR"
+    availability: str = "in stock"       # in stock | out of stock | preorder
+    condition: str = "new"               # new | used | refurbished
+    description: str = ""
+    image_url: str = ""
+    url: str = ""
+    brand: str = ""
+
+
+@dataclass
+class BatchResult:
+    ok: bool
+    handles: list[str] = field(default_factory=list)   # Meta's async batch handles, for a status check
+    count: int = 0                                      # items submitted in this batch
+    error: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"ok": self.ok, "handles": self.handles, "count": self.count, "error": self.error}
+
+
 @runtime_checkable
 class WhatsAppCatalogManager(Protocol):
     driver: str
@@ -48,4 +76,10 @@ class WhatsAppCatalogManager(Protocol):
     async def set_commerce_settings(self, *, phone_number_id: str, is_cart_enabled: bool,
                                     is_catalog_visible: bool) -> CatalogResult:
         """Set a business phone number's WhatsApp commerce settings (cart + catalog visibility)."""
+        ...
+
+    async def sync_products(self, *, catalog_id: str, upserts: list[ProductItem],
+                            deletes: list[str]) -> BatchResult:
+        """Upsert and/or delete products in ONE batch (Meta's items_batch). Idempotent by
+        retailer_id — a re-sync of the same items is safe. Returns the async batch handles."""
         ...

@@ -505,6 +505,9 @@ class Settings(BaseSettings):
     # distinct from WHATSAPP_BUSINESS_ACCOUNT_ID (the WABA id).
     WHATSAPP_CATALOG_MANAGER: str = "console"    # console | meta
     WHATSAPP_BUSINESS_ID: str = ""               # owning Business Manager id (for catalog create)
+    # Max products per items_batch call. Meta's hard cap is 5000 (recommends ≤3000); a caller with
+    # more pages across calls. Refused above this so one request can never exceed Meta's limit.
+    WHATSAPP_PRODUCT_BATCH_MAX: int = 3000
     WHATSAPP_TEMPLATE_SYNC_LIMIT: int = 200      # max pending templates reconciled per sweep
     # Max templates SUBMITTED to Meta per drain call — Meta rate-limits template creation to 100/hour
     # per WABA, so the whole library (often >100 texts) is submitted across scheduled ticks. Bounded

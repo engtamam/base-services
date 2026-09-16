@@ -61,3 +61,24 @@ def test_commerce_settings_succeeds(client):
 def test_list_catalogs_is_empty_on_console(client):
     r = client.get("/internal/whatsapp/catalogs?tenant=acme", headers=IT)
     assert r.status_code == 200 and r.json() == {"catalogs": []}
+
+
+def test_sync_products_batch(client):
+    r = client.post("/internal/whatsapp/catalog/cat_1/products", headers=IT, json={
+        "tenant": "acme",
+        "upserts": [{"retailer_id": "p1", "name": "Cut", "price_minor": 12900, "currency": "SAR"}],
+        "deletes": ["old1"]})
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"] is True and r.json()["count"] == 2
+
+
+def test_sync_products_requires_the_token(client):
+    assert client.post("/internal/whatsapp/catalog/cat_1/products",
+                       json={"tenant": "acme", "upserts": []}).status_code == 401
+
+
+def test_sync_products_over_the_cap_is_refused(client):
+    big = [{"retailer_id": f"p{i}", "name": "x", "price_minor": 1} for i in range(3001)]
+    r = client.post("/internal/whatsapp/catalog/cat_1/products", headers=IT,
+                    json={"tenant": "acme", "upserts": big})
+    assert r.status_code == 400 and "exceeds" in r.json().get("error", "").lower() or r.status_code == 400
