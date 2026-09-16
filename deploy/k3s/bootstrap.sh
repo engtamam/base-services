@@ -20,6 +20,7 @@ K3S_CHANNEL="${K3S_CHANNEL:-stable}"
 
 info() { printf '\033[1;34m[ .. ]\033[0m %s\n' "$*"; }
 ok()   { printf '\033[1;32m[ OK ]\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m[WARN]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[FAIL]\033[0m %s\n' "$*" >&2; exit 1; }
 
 need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
@@ -56,12 +57,23 @@ install_calico() {
 
 # ── 3. metrics-server (the HPA is inert without it) ─────────────────────────
 install_metrics_server() {
-  if kubectl get deploy -n kube-system metrics-server >/dev/null 2>&1; then
+  if ! kubectl get deploy -n kube-system metrics-server >/dev/null 2>&1; then
+    info "installing metrics-server"
+    kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+  else
     ok "metrics-server present"
-    return
   fi
-  info "installing metrics-server"
-  kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+  # k3s's kubelet serves a self-signed cert the stock metrics-server manifest does not trust, so every
+  # scrape dies ("no metrics to serve" — kubectl top and every HPA silently dead). --kubelet-insecure-tls
+  # is the well-known fix. Applied on EVERY bring-up, both paths: the old early-return meant a reinstall
+  # re-applied the UNPATCHED manifest and the fix silently vanished (it did, for 20 days). Strategic-merge
+  # REPLACES the args list (a JSON-patch array append would grow a duplicate flag on every run).
+  if ! kubectl -n kube-system patch deployment metrics-server --type=strategic \
+      -p='{"spec":{"template":{"spec":{"containers":[{"name":"metrics-server","args":["--cert-dir=/tmp","--secure-port=10250","--kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname","--kubelet-use-node-status-port","--metric-resolution=15s","--kubelet-insecure-tls"]}]}}}}'; then
+    # NON-fatal (bring-up must not abort on this) but VISIBLE — a silenced failure here is exactly how
+    # the unpatched manifest went unnoticed for 20 days.
+    warn "metrics-server args patch failed — it may not scrape (kubectl top / HPA affected); check it"
+  fi
   kubectl -n kube-system rollout status deploy/metrics-server --timeout=300s
   ok "metrics-server ready"
 }
