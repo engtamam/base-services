@@ -68,7 +68,7 @@ Our implementation:
 
 ## Phases (each = its own release)
 
-- [ ] **P0 — Spec + architecture (this doc).** Verify Meta facts, lock homes + credential model. *No behavior.*
+- [x] **P0 — Spec + architecture (this doc).** Verify Meta facts, lock homes + credential model. *No behavior.*
 - [x] **P1 — Catalog adapter (notification-service).** Create/get catalog for a WABA; connect catalog↔WABA; set phone-number commerce settings. Internal routes per tenant; per-tenant WABA creds. Verify catalog endpoints vs Meta ref first.
 - [ ] **P2 — Product batch sync (notification-service).** `items_batch` CREATE/UPDATE/DELETE; product fields (retailer_id/name/price/currency/availability/image_url/description); idempotent; async batch-status handling; list/read.
 - [ ] **P3 — Product & order messaging (notification-service).** Single/multi-product messages (reuse send path); inbound `order` webhook → durable inbound feed (like `wa_inbound`) for the consumer to read.
