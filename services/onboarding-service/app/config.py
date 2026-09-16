@@ -234,7 +234,7 @@ class Settings(BaseSettings):
     # while the old pod still holds its 10). So the floor is 1: a pod is Ready on one connection, an
     # idle service costs one, and horizontal scale spends the ceiling deliberately, not by default.
     DATASTORE_POOL_MIN: int = 1
-    DATASTORE_POOL_MAX: int = 5
+    DATASTORE_POOL_MAX: int = 10           # load-tested ceiling; 5 exhausted under fleet-wide concurrent load while postgres sat idle (PgBouncer multiplexes)
     DATASTORE_POOL_TIMEOUT_SECONDS: float = 10.0            # wait for a free slot, then fail cleanly
     DATASTORE_POOL_MAX_INACTIVE_LIFETIME_SECONDS: float = 300.0  # return idle connections to postgres
     DATASTORE_STATEMENT_CACHE_SIZE: int = 0   # 0 => PgBouncer transaction-mode safe (no asyncpg prepared-statement cache)
