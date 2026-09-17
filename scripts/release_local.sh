@@ -193,8 +193,24 @@ if [ "$DO_TAG" = 1 ]; then
     git tag -a "$VERSION" -m "$(printf '%s\n\nReleased locally: images built+pushed, CVE-scanned, digests pinned and chart-rendered.' "$VERSION")" \
       || die "git tag failed"
   fi
-  git push origin "$VERSION" 2>/dev/null && echo "    pushed tag to origin" \
-    || echo "    (tag already on origin, or push skipped)"
+  # Push the tag — a FAILED push MUST be fatal. The tag-publish incident was exactly this line
+  # swallowing the error: the push was rejected (the PAT lacked the `workflow` scope and the tag
+  # bridged `.github/workflows/ci.yml` edits) but `2>/dev/null ... || echo` hid it, the release
+  # "succeeded", and step 7's `gh release create` then minted a LIGHTWEIGHT tag at the default
+  # branch's (stale) HEAD — v0.25.2/v0.25.3 ended up on a 4-month-old wrong commit. Never again.
+  # Distinguish "already on origin at the SAME commit" (fine) from any real failure or a silent move.
+  local_sha="$(git rev-parse "$VERSION^{}")"
+  remote_sha="$(git ls-remote origin "refs/tags/$VERSION^{}" | awk '{print $1}')"
+  [ -z "$remote_sha" ] && remote_sha="$(git ls-remote origin "refs/tags/$VERSION" | awk '{print $1}')"
+  if [ -n "$remote_sha" ]; then
+    [ "$remote_sha" = "$local_sha" ] \
+      && echo "    tag already on origin at the correct commit ($local_sha) — ok" \
+      || die "tag $VERSION is on origin at $remote_sha but locally points at $local_sha — refusing to move a published tag silently; resolve by hand"
+  else
+    git push origin "refs/tags/$VERSION" \
+      || die "pushing tag $VERSION FAILED (error above). Common cause: the PAT lacks the 'workflow' scope while this tag includes .github/workflows changes. Fix the token and re-run — do NOT let the release continue with an unpushed tag."
+    echo "    pushed tag to origin"
+  fi
 else
   echo; echo "==> [6/7] tag SKIPPED (--no-tag)"
 fi
@@ -225,17 +241,22 @@ if command -v gh >/dev/null 2>&1; then
     echo "    release exists — uploading/overwriting assets"
     gh release upload "$VERSION" "$TARBALL" digests.json checksums.txt --clobber || die "asset upload failed"
   else
+    # --target pins the Release (and the tag it would create) to the EXACT commit. Without it,
+    # if the tag were somehow absent on origin, gh would create a lightweight tag at the default
+    # branch's HEAD — the second half of the wrong-tag incident. Step 6 already guarantees the tag
+    # is on origin at $VERSION^{}; --target is belt-and-suspenders that costs nothing.
     gh release create "$VERSION" "$TARBALL" digests.json checksums.txt \
-      --title "$VERSION" --notes "$BODY" || die "gh release create failed"
+      --title "$VERSION" --notes "$BODY" --target "$(git rev-parse "$VERSION^{}")" || die "gh release create failed"
   fi
   echo "==> published: $(gh release view "$VERSION" --json url -q .url 2>/dev/null)"
 else
   TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
   [ -n "$TOKEN" ] || TOKEN="$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill 2>/dev/null | sed -n 's/^password=//p')"
   [ -n "$TOKEN" ] || die "no GitHub token (install gh, or set GH_TOKEN)"
-  RID="$(python - "$TOKEN" "$REPO" "$VERSION" "$BODY" <<'PY'
+  TARGET_SHA="$(git rev-parse "$VERSION^{}")"
+  RID="$(python - "$TOKEN" "$REPO" "$VERSION" "$BODY" "$TARGET_SHA" <<'PY'
 import sys,json,urllib.request,urllib.error
-token,repo,ver,body=sys.argv[1:5]
+token,repo,ver,body,target=sys.argv[1:6]
 def call(method,url,data=None):
     req=urllib.request.Request(url,data=(json.dumps(data).encode() if data else None),method=method,
         headers={"Authorization":f"Bearer {token}","Accept":"application/vnd.github+json","Content-Type":"application/json"})
@@ -243,8 +264,10 @@ def call(method,url,data=None):
 try:
     r=call("GET",f"https://api.github.com/repos/{repo}/releases/tags/{ver}")
 except urllib.error.HTTPError:
+    # target_commitish pins the Release to the EXACT commit. Without it GitHub creates the tag at
+    # the default branch's HEAD if it is absent — how v0.25.2/v0.25.3 landed on a stale commit.
     r=call("POST",f"https://api.github.com/repos/{repo}/releases",
-           {"tag_name":ver,"name":ver,"body":body,"generate_release_notes":True})
+           {"tag_name":ver,"target_commitish":target,"name":ver,"body":body,"generate_release_notes":True})
 print(r["id"])
 PY
 )" || die "creating the Release failed"
