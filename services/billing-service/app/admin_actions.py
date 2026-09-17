@@ -17,7 +17,16 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
     # change a price and no way to see what the price was.
     {
         "id": "billing.list_plans", "label": "Plans & pricing", "method": "GET",
-        "path": "/api/v1/billing/plans", "capability": "billing.manage", "group": "Catalogue",
+        # `platform.billing`, matching every sibling plan/coupon action in this same group
+        # (`billing.create_plan` two entries below, `billing.list_coupons`, ...) — this used to say
+        # `billing.manage`, a TENANT-scoped capability (`_ADMIN`'s OTHER accepted capability,
+        # granted to a SHOP's own billing manager, never to a platform operator's role — see
+        # `deploy/seed/roles.json`). No `operator-roles.json` role ever holds it, so this action was
+        # permanently absent from every platform operator's own catalog: the whole "الباقات
+        # والأسعار" section of AdminApps.tsx could never render for anyone. Found recording this
+        # screen's own tour, with a real platform-owner session that could see everything else on
+        # this catalog except this.
+        "path": "/api/v1/billing/plans", "capability": "platform.billing", "group": "Catalogue",
         "params": [
             {"name": "include_hidden", "in": "query", "type": "boolean", "required": False,
              "help": "also show retired and unlisted plans — the operator view"},
@@ -374,7 +383,9 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
     },
     {
         "id": "billing.update_plan", "label": "Edit a plan", "method": "PATCH",
-        "path": "/api/v1/billing/plans/{plan_id}", "capability": "billing.manage",
+        # Same fix as `billing.list_plans` above, same reason — this is a platform-only edit, not
+        # a tenant capability.
+        "path": "/api/v1/billing/plans/{plan_id}", "capability": "platform.billing",
         "group": "Catalogue", "confirm": True,
         "params": [
             {"name": "plan_id", "in": "path", "type": "string", "required": True},
@@ -387,7 +398,8 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
     },
     {
         "id": "billing.plan_availability", "label": "Retire or hide a plan", "method": "POST",
-        "path": "/api/v1/billing/plans/{plan_id}/availability", "capability": "billing.manage",
+        # Same fix, same reason.
+        "path": "/api/v1/billing/plans/{plan_id}/availability", "capability": "platform.billing",
         "group": "Catalogue", "confirm": True,
         "params": [
             {"name": "plan_id", "in": "path", "type": "string", "required": True},
