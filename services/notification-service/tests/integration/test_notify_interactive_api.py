@@ -156,3 +156,44 @@ def test_flow_data_seeds_the_first_screen_without_being_echoed_in_the_response(c
                           "flow_token": "rate:vis_3", "flow_id": "f1", "flow_cta": "Go",
                           "flow_screen": "RATING", "flow_data": {"customer_name": "Ahmed"}})
     assert r.status_code == 200 and r.json()["status"] == "sent"
+
+
+# ── product messages (commerce Phase 3) ─────────────────────────────────────────────────────
+
+
+def test_single_product_send_is_recorded_as_a_tenant_scoped_delivery(client):
+    r = client.post("/internal/notify/whatsapp/interactive", headers=_tok(),
+                    json={"recipient": "+966500000010", "tenant": "acme", "type": "product",
+                          "body": "Our best seller", "catalog_id": "CAT1",
+                          "product_retailer_id": "SKU-9"})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "sent"
+    rows = client.get("/internal/whatsapp/deliveries?tenant=acme", headers=_tok()).json()["deliveries"]
+    assert any(d["template_key"] == "interactive:product" and d["status"] == "sent" for d in rows)
+
+
+def test_multi_product_send_succeeds(client):
+    r = client.post("/internal/notify/whatsapp/interactive", headers=_tok(),
+                    json={"recipient": "+966500000011", "tenant": "acme", "type": "product_list",
+                          "header": "This week", "body": "Pick what you like", "catalog_id": "CAT1",
+                          "product_sections": [
+                              {"title": "Coffee", "product_ids": ["SKU-1", "SKU-2"]},
+                              {"title": "Tea", "product_ids": ["SKU-3"]}]})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "sent"
+
+
+def test_single_product_without_catalog_id_is_a_422(client):
+    r = client.post("/internal/notify/whatsapp/interactive", headers=_tok(),
+                    json={"recipient": "+966", "type": "product", "body": "x",
+                          "product_retailer_id": "SKU-9"})
+    assert r.status_code == 422 and "catalog" in r.json()["reason"].lower()
+
+
+def test_multi_product_over_thirty_items_is_a_422(client):
+    r = client.post("/internal/notify/whatsapp/interactive", headers=_tok(),
+                    json={"recipient": "+966", "type": "product_list", "header": "h", "body": "b",
+                          "catalog_id": "CAT1",
+                          "product_sections": [{"title": "All",
+                                                "product_ids": [f"SKU-{i}" for i in range(31)]}]})
+    assert r.status_code == 422 and "30" in r.json()["reason"]

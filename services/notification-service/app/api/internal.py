@@ -192,10 +192,17 @@ class _SectionIn(BaseModel):
     rows: list[_RowIn] = Field(min_length=1)
 
 
+class _ProductSectionIn(BaseModel):
+    # A multi-product section: a title (required by Meta only when there is more than one section) and
+    # the catalog `product_retailer_id`s to show in it. The builder caps the TOTAL at 30 across sections.
+    title: str = Field(default="", max_length=256)
+    product_ids: list[str] = Field(min_length=1)
+
+
 class InteractiveNotifyIn(BaseModel):
     recipient: str = Field(min_length=1, max_length=256)
     tenant: str | None = Field(default=None, max_length=128)
-    type: Literal["button", "list", "flow", "location_request"]
+    type: Literal["button", "list", "flow", "location_request", "product", "product_list"]
     body: str = Field(min_length=1, max_length=1024)
     header: str = Field(default="", max_length=1024)
     footer: str = Field(default="", max_length=1024)
@@ -223,6 +230,12 @@ class InteractiveNotifyIn(BaseModel):
     flow_action: str = Field(default="navigate", max_length=16)
     flow_screen: str = Field(default="", max_length=128)
     flow_data: dict[str, Any] = Field(default_factory=dict)
+    # product messages (commerce Phase 3): a Single Product Message carries catalog_id +
+    # product_retailer_id; a Multi-Product Message carries catalog_id + product_sections (≤30 items).
+    # Only IDS are sent — Meta renders each item from the connected catalog at delivery.
+    catalog_id: str = Field(default="", max_length=256)
+    product_retailer_id: str = Field(default="", max_length=256)
+    product_sections: list[_ProductSectionIn] = Field(default_factory=list)
     biz_opaque_callback_data: str | None = Field(default=None, max_length=512)
     sending_identity: str | None = Field(default=None, max_length=128)
     idempotency_key: str | None = Field(default=None, max_length=256)
@@ -240,7 +253,8 @@ async def internal_notify_interactive(request: Request, body: InteractiveNotifyI
     limit-checked here (core/whatsapp_interactive) so a bad spec is a clear 422, not a Meta 400.
     """
     from app.core.whatsapp_interactive import (InteractiveError, build_button, build_flow,
-                                               build_list, build_location_request)
+                                               build_list, build_location_request, build_product,
+                                               build_product_list)
 
     override, refusal = await _resolve_sending_identity(
         request, body.tenant or "", body.sending_identity)
@@ -263,6 +277,15 @@ async def internal_notify_interactive(request: Request, body: InteractiveNotifyI
             # A location-request carries only body text; header/footer/action fields are not accepted
             # by Meta for this interactive type, so they are ignored rather than forwarded.
             interactive = build_location_request(body=body.body)
+        elif body.type == "product":
+            interactive = build_product(
+                catalog_id=body.catalog_id, product_retailer_id=body.product_retailer_id,
+                body=body.body, footer=body.footer)
+        elif body.type == "product_list":
+            interactive = build_product_list(
+                catalog_id=body.catalog_id, header=body.header, body=body.body, footer=body.footer,
+                sections=[{"title": s.title, "product_ids": s.product_ids}
+                          for s in body.product_sections])
         else:
             interactive = build_list(
                 body=body.body, header=body.header, footer=body.footer, button_text=body.button_text,

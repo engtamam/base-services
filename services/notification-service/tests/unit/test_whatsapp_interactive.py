@@ -6,7 +6,8 @@ from __future__ import annotations
 import pytest
 
 from app.core.whatsapp_interactive import (InteractiveError, build_button, build_flow, build_list,
-                                           build_location_request)
+                                           build_location_request, build_product,
+                                           build_product_list, parse_order)
 
 
 def test_location_request_shape_matches_the_cloud_api():
@@ -216,3 +217,116 @@ def test_a_bad_flow_action_is_refused():
     with pytest.raises(InteractiveError):
         build_flow(body="x", flow_token="tk", flow_cta="Go", flow_name="f", screen="S",
                    flow_action="stream")
+
+
+# ── product messages (commerce Phase 3) — single + multi + inbound order parsing ─────────────
+
+
+def test_single_product_shape_matches_the_cloud_api():
+    obj = build_product(catalog_id="CAT1", product_retailer_id="SKU-9", body="Our best seller")
+    assert obj == {
+        "type": "product",
+        "body": {"text": "Our best seller"},
+        "action": {"catalog_id": "CAT1", "product_retailer_id": "SKU-9"}}
+
+
+def test_single_product_omits_empty_body_and_footer_and_takes_no_header():
+    obj = build_product(catalog_id="CAT1", product_retailer_id="SKU-9")
+    assert obj == {"type": "product",
+                   "action": {"catalog_id": "CAT1", "product_retailer_id": "SKU-9"}}
+    assert "header" not in obj and "body" not in obj and "footer" not in obj
+
+
+def test_single_product_requires_catalog_and_retailer_ids():
+    with pytest.raises(InteractiveError):
+        build_product(catalog_id="", product_retailer_id="SKU-9")
+    with pytest.raises(InteractiveError):
+        build_product(catalog_id="CAT1", product_retailer_id="  ")
+
+
+def test_multi_product_shape_matches_the_cloud_api():
+    obj = build_product_list(
+        catalog_id="CAT1", header="This week", body="Pick what you like",
+        sections=[{"title": "Coffee", "product_ids": ["SKU-1", "SKU-2"]},
+                  {"title": "Tea", "product_ids": ["SKU-3"]}])
+    assert obj == {
+        "type": "product_list",
+        "header": {"type": "text", "text": "This week"},
+        "body": {"text": "Pick what you like"},
+        "action": {"catalog_id": "CAT1", "sections": [
+            {"title": "Coffee", "product_items": [
+                {"product_retailer_id": "SKU-1"}, {"product_retailer_id": "SKU-2"}]},
+            {"title": "Tea", "product_items": [{"product_retailer_id": "SKU-3"}]}]}}
+
+
+def test_multi_product_single_section_title_optional():
+    obj = build_product_list(catalog_id="CAT1", header="Menu", body="Choose",
+                             sections=[{"product_ids": ["SKU-1"]}])
+    assert obj["action"]["sections"] == [{"product_items": [{"product_retailer_id": "SKU-1"}]}]
+
+
+def test_multi_product_requires_title_when_multiple_sections():
+    with pytest.raises(InteractiveError):
+        build_product_list(catalog_id="CAT1", header="h", body="b",
+                           sections=[{"product_ids": ["SKU-1"]},
+                                     {"product_ids": ["SKU-2"]}])
+
+
+def test_multi_product_requires_header_and_body():
+    with pytest.raises(InteractiveError):
+        build_product_list(catalog_id="CAT1", header="", body="b",
+                           sections=[{"product_ids": ["SKU-1"]}])
+    with pytest.raises(InteractiveError):
+        build_product_list(catalog_id="CAT1", header="h", body="",
+                           sections=[{"product_ids": ["SKU-1"]}])
+
+
+def test_multi_product_caps_at_thirty_products_total():
+    ids = [f"SKU-{i}" for i in range(31)]
+    with pytest.raises(InteractiveError):
+        build_product_list(catalog_id="CAT1", header="h", body="b",
+                           sections=[{"title": "All", "product_ids": ids}])
+    # exactly 30 is allowed
+    ok = build_product_list(catalog_id="CAT1", header="h", body="b",
+                            sections=[{"title": "All", "product_ids": ids[:30]}])
+    assert sum(len(s["product_items"]) for s in ok["action"]["sections"]) == 30
+
+
+def test_multi_product_rejects_empty_section_and_blank_product_id():
+    with pytest.raises(InteractiveError):
+        build_product_list(catalog_id="CAT1", header="h", body="b",
+                           sections=[{"title": "x", "product_ids": []}])
+    with pytest.raises(InteractiveError):
+        build_product_list(catalog_id="CAT1", header="h", body="b",
+                           sections=[{"product_ids": ["  "]}])
+
+
+def test_parse_order_normalises_quantity_price_and_totals():
+    msg = {"type": "order", "from": "9665550001", "id": "wamid.X",
+           "order": {"catalog_id": "CAT1", "text": "please deliver tonight",
+                     "product_items": [
+                         {"product_retailer_id": "SKU-1", "quantity": "2",
+                          "item_price": 12.5, "currency": "SAR"},
+                         {"product_retailer_id": "SKU-2", "quantity": 1,
+                          "item_price": 4.0, "currency": "SAR"}]}}
+    out = parse_order(msg)
+    assert out["catalog_id"] == "CAT1"
+    assert out["from"] == "9665550001" and out["wamid"] == "wamid.X"
+    assert out["text"] == "please deliver tonight"
+    assert out["items"][0] == {"product_retailer_id": "SKU-1", "quantity": 2,
+                               "item_price": 12.5, "currency": "SAR", "line_total": 25.0}
+    assert out["order_total"] == 29.0
+
+
+def test_parse_order_returns_none_for_non_order_messages():
+    assert parse_order({"type": "text", "text": {"body": "hi"}}) is None
+    assert parse_order({}) is None
+    assert parse_order("not a dict") is None
+
+
+def test_parse_order_survives_malformed_quantity_or_price():
+    msg = {"type": "order", "order": {"catalog_id": "C", "product_items": [
+        {"product_retailer_id": "SKU-1", "quantity": "abc", "item_price": None, "currency": "SAR"}]}}
+    out = parse_order(msg)
+    assert out["items"][0]["quantity"] == 0 and out["items"][0]["item_price"] == 0.0
+    assert out["order_total"] == 0.0

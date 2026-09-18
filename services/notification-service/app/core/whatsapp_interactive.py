@@ -27,6 +27,12 @@ _ROW_TITLE_MAX, _ROW_DESC_MAX, _ROW_ID_MAX, _ROWS_MAX = 24, 72, 200, 10
 _FLOW_CTA_MAX = 20
 _FLOW_TOKEN_MAX, _FLOW_ID_MAX, _FLOW_SCREEN_MAX = 256, 128, 128
 
+# Product messages draw from a connected catalog (see whatsapp_catalog): the message carries only
+# IDS (catalog_id + product_retailer_id), never product data — Meta renders the image/title/price
+# from the catalog at delivery time, so a price change in the catalog is reflected without resending.
+# A multi-product message shows AT MOST 30 items total across its sections (Meta's hard cap).
+_PRODUCT_LIST_MAX = 30
+
 
 class InteractiveError(ValueError):
     """An interactive spec the Cloud API would reject — caught at build time, not at send."""
@@ -229,4 +235,134 @@ def build_flow(*, body: str, flow_token: str, flow_cta: str, screen: str = "",
     return {
         "type": "flow", **_envelope(body, header, footer),
         "action": {"name": "flow", "parameters": parameters},
+    }
+
+
+def build_product(*, catalog_id: str, product_retailer_id: str,
+                  body: str = "", footer: str = "") -> dict[str, Any]:
+    """A Single Product Message — one catalog item rendered with its image, title and price, plus an
+    'Add to cart' affordance the customer uses to build an order (which returns as an inbound `order`
+    webhook, captured by the durable inbound feed).
+
+    The message carries only IDS: `catalog_id` (the catalog connected to the sending number) and
+    `product_retailer_id` (the item's SKU/retailer id in that catalog, i.e. the `id` we set in
+    whatsapp_catalog.sync_products). Meta renders the product from the catalog at delivery, so this
+    never carries a price we could get wrong.
+
+    Verified against Meta's WhatsApp Cloud API "Single Product Messages" (Sep 2026): interactive
+    `type` is exactly "product"; `action` carries catalog_id + product_retailer_id; body and footer
+    are OPTIONAL and a single-product message takes NO header (unlike product_list). Valid only inside
+    the 24h customer-service window or as a template — the same window rule as every interactive send.
+    """
+    if not catalog_id or not catalog_id.strip():
+        raise InteractiveError("a product message needs a catalog_id")
+    if not product_retailer_id or not product_retailer_id.strip():
+        raise InteractiveError("a product message needs a product_retailer_id")
+    block: dict[str, Any] = {
+        "type": "product",
+        "action": {"catalog_id": catalog_id, "product_retailer_id": product_retailer_id},
+    }
+    # body/footer are optional here; include only when supplied (an empty body{} is not accepted).
+    if body and body.strip():
+        block["body"] = {"text": _capped("body", body, _BODY_MAX)}
+    if footer:
+        block["footer"] = {"text": _capped("footer", footer, _FOOTER_MAX)}
+    return block
+
+
+def build_product_list(*, catalog_id: str, sections: list[dict[str, Any]],
+                       header: str, body: str, footer: str = "") -> dict[str, Any]:
+    """A Multi-Product Message — up to 30 catalog items grouped into sections, from which the customer
+    picks quantities and sends back ONE inbound `order` webhook.
+
+    `sections` is [{"title": str, "product_ids": [retailer_id, …]}, …]. Each product_id is a
+    `product_retailer_id` in the connected catalog. As with the single-product message, only IDS are
+    sent — Meta renders each item from the catalog.
+
+    Verified against Meta's WhatsApp Cloud API "Multi-Product Messages" (Sep 2026): interactive `type`
+    is exactly "product_list"; a text `header` is REQUIRED (it is the only header type accepted here)
+    and so is `body`; `action` carries catalog_id + sections[], each section {title, product_items:
+    [{product_retailer_id}]}; the message shows AT MOST 30 products TOTAL across all sections. A section
+    title is required when there is more than one section, so the customer can tell the groups apart.
+    """
+    if not catalog_id or not catalog_id.strip():
+        raise InteractiveError("a product-list message needs a catalog_id")
+    if not header or not header.strip():
+        raise InteractiveError("a product-list message requires a text header")
+    if not body or not body.strip():
+        raise InteractiveError("a product-list message requires body text")
+    if not sections:
+        raise InteractiveError("a product-list message needs at least one section")
+    multi_section = len(sections) > 1
+    total = 0
+    out: list[dict[str, Any]] = []
+    for sec in sections:
+        product_ids = sec.get("product_ids") or []
+        if not product_ids:
+            raise InteractiveError("each section needs at least one product_id")
+        title = sec.get("title", "")
+        if multi_section and not title:
+            raise InteractiveError("each section needs a title when there is more than one section")
+        items = []
+        for pid in product_ids:
+            if not pid or not str(pid).strip():
+                raise InteractiveError("each product_id must be non-empty")
+            items.append({"product_retailer_id": str(pid)})
+            total += 1
+        section: dict[str, Any] = {"product_items": items}
+        if title:
+            section["title"] = _capped("section title", title, _SECTION_TITLE_MAX)
+        out.append(section)
+    if total > _PRODUCT_LIST_MAX:
+        raise InteractiveError(
+            f"a product-list message shows at most {_PRODUCT_LIST_MAX} products ({total} given)")
+    block: dict[str, Any] = {
+        "type": "product_list",
+        "header": {"type": "text", "text": _capped("header", header, _HEADER_MAX)},
+        "body": {"text": _capped("body", body, _BODY_MAX)},
+        "action": {"catalog_id": catalog_id, "sections": out},
+    }
+    if footer:
+        block["footer"] = {"text": _capped("footer", footer, _FOOTER_MAX)}
+    return block
+
+
+def parse_order(message: dict[str, Any]) -> dict[str, Any] | None:
+    """Normalise an inbound `order` message (the cart a customer sends back) into a stable shape the
+    order consumer can use directly, or None if this is not an order.
+
+    Meta's inbound order shape (verified Sep 2026): a message with `type:"order"` and
+    `order: {catalog_id, text?, product_items: [{product_retailer_id, quantity, item_price, currency}]}`.
+    `item_price` is a MAJOR-unit number (e.g. 12.50) and `quantity` may arrive as a string — both are
+    footguns every consumer would otherwise re-handle, so they are normalised ONCE here: quantity to
+    int, and a `line_total` computed as price × quantity. Raw values are preserved alongside so nothing
+    is lost. Pure and I/O-free — the durable feed keeps the original message; this is a reader helper.
+    """
+    if not isinstance(message, dict) or message.get("type") != "order":
+        return None
+    order = message.get("order") or {}
+    items: list[dict[str, Any]] = []
+    for it in order.get("product_items", []) or []:
+        try:
+            qty = int(it.get("quantity", 0) or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        try:
+            price = float(it.get("item_price", 0) or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        items.append({
+            "product_retailer_id": str(it.get("product_retailer_id", "")),
+            "quantity": qty,
+            "item_price": price,
+            "currency": str(it.get("currency", "")),
+            "line_total": round(price * qty, 4),
+        })
+    return {
+        "catalog_id": str(order.get("catalog_id", "")),
+        "text": str(order.get("text", "") or ""),
+        "from": str(message.get("from", "")),
+        "wamid": str(message.get("id", "")),
+        "items": items,
+        "order_total": round(sum(i["line_total"] for i in items), 4),
     }
