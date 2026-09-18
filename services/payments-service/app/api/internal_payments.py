@@ -6,6 +6,8 @@ returns a stored value — the write-only guarantee the sealed store depends on 
 """
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse
@@ -13,11 +15,19 @@ from starlette.responses import JSONResponse
 from app.adapters.payment_http import validate_gateway_base
 from app.api.internal import require_internal_token
 from app.api.payments_deps import build_merchant_secrets, build_payment_service
+from app.core.currency import SUPPORTED_CURRENCIES
 from app.core.merchant_credentials import API_BASE, SETTABLE_NAMES
 from app.core.payments import GatewayUnavailable, PaymentNotConfigured, PaymentsDisabled
 from app.core.secret_store import SecretError
 
 router = APIRouter(prefix="/internal/payments", tags=["internal-payments"])
+
+# L7: an order amount is bounded well below this; a value above it is a typo/overflow/abuse, not a
+# real charge (config-owned by another task, so a commented module constant lives here for now).
+_MAX_AMOUNT_MINOR = 1_000_000_000            # 10,000,000.00 in an exp-2 currency
+# L8: metadata is stored and forwarded to the gateway — cap it so it can't be a storage/DoS vector.
+_MAX_METADATA_KEYS = 32
+_MAX_METADATA_BYTES = 8192
 
 
 # ── merchant credentials (write-only) ─────────────────────────────────────────
@@ -83,15 +93,36 @@ async def list_credentials(request: Request, tenant: str) -> dict:
 class _CreateIn(BaseModel):
     tenant: str = Field(min_length=1, max_length=128)
     reference: str = Field(min_length=1, max_length=256)     # the shop's order id (idempotency key)
-    amount_minor: int = Field(gt=0)
+    amount_minor: int = Field(gt=0, le=_MAX_AMOUNT_MINOR)    # L7: bounded above
     currency: str = Field(min_length=3, max_length=3)
     return_url: str = Field(default="", max_length=2048)
     metadata: dict = Field(default_factory=dict)
 
 
+def _reject_metadata(metadata: dict) -> JSONResponse | None:
+    """L8: refuse an oversized metadata dict before it is stored/forwarded."""
+    if len(metadata) > _MAX_METADATA_KEYS:
+        return JSONResponse(
+            {"ok": False, "reason": f"metadata has too many keys (max {_MAX_METADATA_KEYS})"},
+            status_code=422)
+    if len(json.dumps(metadata, default=str)) > _MAX_METADATA_BYTES:
+        return JSONResponse(
+            {"ok": False, "reason": f"metadata too large (max {_MAX_METADATA_BYTES} bytes)"},
+            status_code=422)
+    return None
+
+
 @router.post("/requests", dependencies=[Depends(require_internal_token)])
 async def create_request(request: Request, body: _CreateIn) -> dict:
     """Mint (or re-use) a hosted pay-link for one order via the shop's own gateway."""
+    # M3: reject an unsupported currency here — never let it fall through and be silently billed as SAR.
+    if body.currency.upper() not in SUPPORTED_CURRENCIES:
+        return JSONResponse(
+            {"ok": False, "reason": f"unsupported currency; allowed: {sorted(SUPPORTED_CURRENCIES)}"},
+            status_code=422)
+    bad_meta = _reject_metadata(body.metadata)
+    if bad_meta is not None:
+        return bad_meta
     svc = build_payment_service(request)
     try:
         link = await svc.create_link(

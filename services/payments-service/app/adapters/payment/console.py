@@ -8,6 +8,7 @@ adapter (e.g. tuwaiqpay) whose verification is cryptographic or verify-by-fetch.
 """
 from __future__ import annotations
 
+import hmac
 import json
 
 from app.ports.payment_gateway import (CANCELLED, FAILED, PENDING, SUCCEEDED, CheckoutSession,
@@ -42,7 +43,8 @@ class ConsoleGateway:
         # A shared echo secret stands in for a real signature: the caller proves it knows the secret,
         # exactly where a real adapter would check an HMAC. A wrong/absent secret is unverified.
         supplied = headers.get("x-console-secret", "") or payload.get("secret", "")
-        verified = bool(self._secret) and supplied == self._secret
+        # L2: constant-time compare (no `==` timing oracle) — the pattern a real HMAC adapter copies.
+        verified = bool(self._secret) and hmac.compare_digest(str(supplied), self._secret)
         status = str(payload.get("status", PENDING))
         if status not in (SUCCEEDED, FAILED, CANCELLED, PENDING):
             status = PENDING

@@ -20,24 +20,51 @@ password, base overrides the environment (UAT vs Production).
 from __future__ import annotations
 
 import json
+import re
 import time
+from urllib.parse import quote
 
 from app.adapters.payment_http import bearer, get_json, post_json
+from app.core.currency import to_major, to_minor
 from app.ports.payment_gateway import (CANCELLED, FAILED, PENDING, SUCCEEDED, CheckoutSession,
                                        GatewayUnavailable, PaymentOutcome)
 
-_PAID = {"SETTLED", "APPROVED", "PENDING_SETTLEMENT"}
+# L5: PENDING_SETTLEMENT is deliberately NOT paid. It means the gateway accepted the payment but has
+# not yet SETTLED/APPROVED it (capture pending); mapping it to SUCCEEDED would complete — and emit the
+# money-moved event — before capture, so a later reversal would leave us over-committed. We complete
+# only on a confirmed capture (SETTLED/APPROVED); PENDING_SETTLEMENT falls through to PENDING and a
+# later webhook/reconcile settles it. Revisit only if TuwaiqPay confirms PENDING_SETTLEMENT is a
+# guaranteed capture.
+_PAID = {"SETTLED", "APPROVED"}
 _FAILED = {"FAILED", "DECLINED"}
 _CANCELLED = {"CANCELLED"}
 _CURRENCY_ID = {"SAR": 1, "USD": 2, "EUR": 3}
+_ID_CURRENCY = {v: k for k, v in _CURRENCY_ID.items()}   # 1 -> SAR … for reverse-mapping status
 _DEFAULT_METHODS = ["VISA", "MASTER", "MADA", "AMEX", "STC_PAY", "APPLE_PAY"]
 _DEFAULT_BASE = "https://onboarding-prod.tuwaiqpay.com.sa/api/v1"
+# L4: transactionId is interpolated into the status URL path — pin it to an id-shaped charset/length
+# so a "../"-style value can never traverse or inject into the path (quote() is a second guard).
+_PROVIDER_REF_RE = re.compile(r"[A-Za-z0-9_.\-]{1,128}\Z")
 
 
 def _norm(status: str) -> str:
     s = (status or "").upper()
     return (SUCCEEDED if s in _PAID else FAILED if s in _FAILED
             else CANCELLED if s in _CANCELLED else PENDING)
+
+
+def _iso_currency(raw, fallback: str) -> str:
+    """Normalise TuwaiqPay's status/webhook currency to an ISO code so it compares against our stored
+    ISO currency. UNCONFIRMED against live UAT (2026-09-19): the create response echoes "SAR", the
+    webhook nests {"currency":{"nameEn":"SAR"}}, and the numeric currencyId ("1") is plausible — a raw
+    "1" would flag every real SAR payment as a mismatch. Handle all three shapes; capture a real UAT
+    status fixture to lock this down."""
+    if isinstance(raw, dict):
+        raw = raw.get("nameEn") or raw.get("code") or raw.get("name") or ""
+    s = str(raw or "").strip().upper()
+    if not s:
+        return fallback
+    return _ID_CURRENCY.get(int(s), fallback) if s.isdigit() else s
 
 
 class TuwaiqPayGateway:
@@ -86,8 +113,11 @@ class TuwaiqPayGateway:
                 ok=False, provider=self.driver,
                 error="TuwaiqPay requires customerName + customerMobilePhone in metadata")
         cur = (currency or "SAR").upper()
+        # I3: TuwaiqPay's bill payload (docs/integrations/tuwaiqpay-api-reference.md) has NO return/
+        # callback URL field — the customer is not bounced back to the shop by the gateway — so our
+        # return_url is intentionally not forwarded here (the shop reconciles via webhook/status).
         payload = {
-            "amount": round(int(amount_minor) / 100.0, 2),
+            "amount": float(to_major(int(amount_minor), cur)),
             "actionDateInDays": int(meta.get("actionDateInDays", 3)),
             "currencyId": _CURRENCY_ID.get(cur, 1),
             "supportedPaymentMethods": list(meta.get("supportedPaymentMethods") or _DEFAULT_METHODS),
@@ -116,19 +146,22 @@ class TuwaiqPayGateway:
                    "billId": str(data.get("billId", "")), "qrCode": str(data.get("qrCode", ""))})
 
     def fetch_status(self, *, provider_ref: str, currency: str = "") -> PaymentOutcome:
-        code, resp = get_json(f"{self._base}/integration/bills/transaction/{provider_ref}",
+        if not _PROVIDER_REF_RE.match(provider_ref or ""):
+            raise GatewayUnavailable("TuwaiqPay: malformed transactionId")
+        ref = quote(provider_ref, safe="")   # L4: never interpolate a raw id into the URL path
+        code, resp = get_json(f"{self._base}/integration/bills/transaction/{ref}",
                               self._auth_headers(), timeout=self._timeout)
         if code == 0:
             raise GatewayUnavailable("TuwaiqPay unreachable (status)")
         data = resp.get("data") or {}
         status = _norm(str(data.get("transactionStatus", "")))
         bill = data.get("bill") or {}
+        cur = _iso_currency(bill.get("currency"), currency)
         return PaymentOutcome(
             status=status, provider=self.driver,
             provider_ref=str(data.get("transactionId", provider_ref)),
-            amount_minor=int(round(float(bill.get("amount", 0) or 0) * 100)),
-            currency=str(bill.get("currency", currency) or currency),
-            verified=True, raw={"status": status})
+            amount_minor=to_minor(bill.get("amount", 0) or 0, cur),
+            currency=cur, verified=True, raw={"status": status})
 
     def verify_webhook(self, *, headers: dict[str, str], body: bytes) -> PaymentOutcome:
         """UNSIGNED webhook → do NOT trust the body's status. Take only transactionId and RE-QUERY
