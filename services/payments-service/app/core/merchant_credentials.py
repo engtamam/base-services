@@ -40,9 +40,16 @@ SETTABLE_NAMES = (DRIVER, API_KEY, EXTRA_SECRET, API_BASE, WEBHOOK_SECRET)
 
 
 def merchant_secret_store(store, kek: str, *, rotation_window_s: int = 300) -> SecretStore:
-    """A SecretStore bound to the isolated merchant collection + salt."""
+    """A SecretStore bound to the isolated merchant collection + salt.
+
+    platform_fallback=False and require_tenant=True make the "no platform-wide fallback" guarantee in
+    this module's docstring TRUE in code, not just in prose: a credential resolves STRICTLY to its own
+    (tenant, name) — no "*" inheritance on read — and a platform-wide ("") merchant row is refused at
+    the write, so even a backup restore/remap has nothing for a stray fallback to pick up.
+    """
     return SecretStore(store, kek, rotation_window_s=rotation_window_s,
-                       collection=MERCHANT_COLLECTION, salt=MERCHANT_SALT)
+                       collection=MERCHANT_COLLECTION, salt=MERCHANT_SALT,
+                       platform_fallback=False, require_tenant=True)
 
 
 @dataclass(frozen=True)

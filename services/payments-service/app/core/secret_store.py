@@ -54,6 +54,10 @@ def _derive_key(kek: str, salt: bytes) -> bytes:
 # How much of a credential the panel may see. Four characters identifies which key is loaded and
 # is useless on its own — a longer hint starts being a meaningful fraction of a short token.
 _HINT_CHARS = 4
+# Below this length a 4-char tail is most of the secret (a 5-char token would leak 80%), so we reveal
+# NO tail at all and show only the mask — the panel loses "which key is loaded" for tiny credentials,
+# which is the right trade for a value short enough that the tail would compromise it.
+_HINT_MIN_LEN = 12
 
 
 class SecretError(ValueError):
@@ -74,7 +78,8 @@ class SecretInfo:
 class SecretStore:
     def __init__(self, store, kek: str, *, now=time.time,
                  rotation_window_s: int = 300,
-                 collection: str = _COLL, salt: bytes = b"operator-secrets-v1") -> None:
+                 collection: str = _COLL, salt: bytes = b"operator-secrets-v1",
+                 platform_fallback: bool = True, require_tenant: bool = False) -> None:
         if not kek:
             # Refused rather than defaulted. A store that silently accepted an empty key would
             # write plaintext-equivalent rows while every check reported "encrypted".
@@ -92,33 +97,57 @@ class SecretStore:
         self._s = store
         self._now = now
         self._window = rotation_window_s
+        # A tenant with no row of its own inherits the platform-wide ("") row. Right for the operator
+        # store (a platform default an operator sets once); WRONG for the merchant store, where every
+        # value is one shop's key to its OWN money — a stray "*|MERCHANT_*" row (e.g. via a backup
+        # restore/remap) must never be silently inherited by every unconfigured tenant. The merchant
+        # store turns this OFF so a credential resolves STRICTLY to (tenant, name).
+        self._platform_fallback = platform_fallback
+        # And, belt-and-braces, the merchant store refuses a tenant="" write so a platform-wide
+        # merchant row can never be created even by a future writer — the fallback has nothing to find.
+        self._require_tenant = require_tenant
 
     # ── crypto ────────────────────────────────────────────────────────────────
-    def _seal(self, text: str) -> str:
+    def _aad(self, tenant: str, name: str) -> bytes:
+        # Binds a ciphertext to its exact slot. Without it a DB tamperer (who has no KEK) could copy
+        # tenant A's `sealed` blob into tenant B's row, or under another `name`, and it would still
+        # decrypt — B would then authenticate as A. Keyed by `collection` too so the two stores'
+        # blobs are not interchangeable even at equal (tenant, name). A relocated or renamed blob now
+        # fails the GCM tag → SecretError, loudly, instead of decrypting into the wrong identity.
+        return f"{self._coll}|{tenant}|{name}".encode("utf-8")
+
+    def _seal(self, text: str, tenant: str, name: str) -> str:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
         iv = os.urandom(12)
         return _PREFIX + base64.b64encode(
-            iv + AESGCM(self._key).encrypt(iv, text.encode("utf-8"), None)).decode("ascii")
+            iv + AESGCM(self._key).encrypt(iv, text.encode("utf-8"),
+                                           self._aad(tenant, name))).decode("ascii")
 
-    def _open(self, sealed: str) -> str:
+    def _open(self, sealed: str, tenant: str, name: str) -> str:
         if not sealed.startswith(_PREFIX):
             raise SecretError("stored credential is not in a recognised format")
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
         blob = base64.b64decode(sealed[len(_PREFIX):])
         try:
-            return AESGCM(self._key).decrypt(blob[:12], blob[12:], None).decode("utf-8")
-        except Exception as exc:   # noqa: BLE001 — wrong key, tampered blob: one condition here
+            # NOTE: the AAD must match what _seal used. Rows sealed before AAD was introduced fail
+            # here — acceptable because nothing is in production yet; re-enter such credentials.
+            return AESGCM(self._key).decrypt(
+                blob[:12], blob[12:], self._aad(tenant, name)).decode("utf-8")
+        except Exception as exc:   # noqa: BLE001 — wrong key, tampered/relocated blob: one path here
             # Loud. Returning "" would make every provider call fail with "unauthorised" and send
             # somebody to the provider's dashboard instead of to the KEK they just changed.
             raise SecretError(
                 "stored credential could not be decrypted — the KEK does not match the one it was "
-                "sealed with. Restore the previous SECRETS_KEK, or re-enter the credentials.") from exc
+                "sealed with, or the row was tampered with. Restore the previous SECRETS_KEK, or "
+                "re-enter the credentials.") from exc
 
     @staticmethod
     def _hint(value: str) -> str:
-        tail = value[-_HINT_CHARS:] if len(value) > _HINT_CHARS else ""
+        # Reveal a tail only when the value is long enough that 4 chars is a small fraction of it;
+        # otherwise the tail would be most of a short secret. Mask format is unchanged either way.
+        tail = value[-_HINT_CHARS:] if len(value) >= _HINT_MIN_LEN else ""
         return "•" * 4 + tail
 
     @staticmethod
@@ -130,6 +159,11 @@ class SecretStore:
         """Store a credential, keeping the previous one for the rotation window."""
         if not name:
             raise SecretError("a credential needs a name")
+        if self._require_tenant and not tenant:
+            # The merchant store: a platform-wide ("") merchant row would be one shop's money key
+            # inherited by every tenant. Refuse it at the write so the row can never exist.
+            raise SecretError("this store requires a tenant — a platform-wide credential is not "
+                              "allowed here")
         if not value or not value.strip():
             raise SecretError("refusing to store an empty credential — use clear() to remove one, "
                               "so that 'unset' and 'set to nothing' cannot be confused")
@@ -138,7 +172,7 @@ class SecretStore:
         now = self._now()
         row = {
             "id": key, "tenant": tenant, "name": name,
-            "sealed": self._seal(value),
+            "sealed": self._seal(value, tenant, name),
             "hint": self._hint(value),
             "set_at": str(now), "set_by": actor_ref,
             # The previous value survives briefly so in-flight requests do not fail mid-rotation,
@@ -167,12 +201,14 @@ class SecretStore:
         """
         row = await self._s.get(self._coll, self._key_of(tenant, name))
         if not row:
-            # A tenant with no override inherits the platform-wide one before falling back to env.
-            if tenant:
+            # A tenant with no override inherits the platform-wide one before falling back to env —
+            # UNLESS this store disables it (the merchant store: no shop inherits another's money key).
+            if tenant and self._platform_fallback:
                 row = await self._s.get(self._coll, self._key_of("", name))
             if not row:
                 return fallback
-        return self._open(row["sealed"])
+        # Open under the row's OWN (tenant, name) — a platform-fallback row was sealed with tenant="".
+        return self._open(row["sealed"], row["tenant"], row["name"])
 
     async def accepted(self, *, tenant: str, name: str) -> tuple[str, ...]:
         """Every credential a provider should currently be willing to accept from us.
@@ -184,10 +220,11 @@ class SecretStore:
         row = await self._s.get(self._coll, self._key_of(tenant, name))
         if not row:
             return ()
-        out = [self._open(row["sealed"])]
+        out = [self._open(row["sealed"], row["tenant"], row["name"])]
         prev, until = row.get("previous"), row.get("previous_until")
         if prev and until and self._now() < float(until):
-            out.append(self._open(prev))
+            # `previous` is the former `sealed` blob for this same (tenant, name), so its AAD matches.
+            out.append(self._open(prev, row["tenant"], row["name"]))
         return tuple(out)
 
     async def info(self, *, tenant: str, name: str) -> SecretInfo | None:
