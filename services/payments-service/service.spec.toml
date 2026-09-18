@@ -1,0 +1,9 @@
+# service.spec.toml — the record of how this service was generated.
+name = "payments-service"
+description = "Payments conduit: per-tenant external pay-links from each shop's own gateway (never a PSP)"
+port = 8024
+
+[drivers]
+datastore = "postgres"
+event_bus = "redis"
+token_verifier = "rs256"
