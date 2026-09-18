@@ -72,28 +72,83 @@ class PaymentService:
     # ── create ──────────────────────────────────────────────────────────────────
     async def create_link(self, *, tenant: str, reference: str, amount_minor: int, currency: str,
                           metadata: dict | None = None, return_url: str = "") -> CreatedLink:
-        """Mint (or re-use) a hosted pay-link for one order. Idempotent by (tenant, reference): a
-        second call for a still-valid or completed order returns the SAME request, never a new charge."""
+        """Mint (or re-use) a hosted pay-link for one order. Idempotent by (tenant, reference) AND
+        safe under concurrency: an ATOMIC claim on (tenant, reference) is taken BEFORE the gateway
+        bill is minted, so two concurrent (or retried) calls for the same order can never mint two
+        bills / two links — exactly one wins, the others resolve to that same request."""
         await self._ensure_enabled(tenant)
+
+        # Fast path: a still-valid or completed request already exists → return it, no claim needed.
         existing = await self._req.active_by_reference(tenant=tenant, reference=reference)
         if existing is not None:
             return self._to_link(existing)
 
+        import uuid as _uuid
+        # Bounded attempts: win the claim, or resolve to the winner, or steal a stale claim. The loop
+        # terminates because each pass either mints (win), returns (winner resolved), or steals+mints.
+        for _ in range(64):
+            rid = _uuid.uuid4().hex
+            won, claim = await self._req.claim(tenant=tenant, reference=reference, request_id=rid)
+            if won:
+                return await self._mint_claimed(
+                    tenant=tenant, reference=reference, request_id=rid, amount_minor=amount_minor,
+                    currency=currency, metadata=metadata, return_url=return_url)
+            # Lost the claim — someone else is (or was) minting this order. Resolve to their request.
+            resolved = await self._resolve_claim(tenant=tenant, reference=reference, claim=claim)
+            if resolved is not None:
+                return resolved
+            # The claim is stale (its request expired/failed and left no usable link): steal it.
+            if claim is not None:
+                stolen_rid = _uuid.uuid4().hex
+                if await self._req.steal_claim(claim, request_id=stolen_rid):
+                    return await self._mint_claimed(
+                        tenant=tenant, reference=reference, request_id=stolen_rid,
+                        amount_minor=amount_minor, currency=currency, metadata=metadata,
+                        return_url=return_url)
+            # Lost the steal too — another caller is mid-mint; re-read on the next pass.
+        raise GatewayUnavailable("could not acquire a payment claim for this order; retry")
+
+    async def _resolve_claim(self, *, tenant: str, reference: str, claim: dict | None) -> CreatedLink | None:
+        """Given a claim we did NOT win, return the winner's usable request (pending-not-expired or
+        completed), waiting briefly for a mint in flight. Returns None if the claim is stale (its
+        request is expired/failed/cancelled) so the caller may steal it."""
+        import asyncio
+        target_rid = (claim or {}).get("request_id", "")
+        if not target_rid:
+            return None
+        for _ in range(50):                              # ~0.5s max, for a concurrent mint to land
+            row = await self._req.get(target_rid)
+            if row is not None:
+                status = row.get("status")
+                if status == COMPLETED or (status == "pending" and not self._req.is_expired(row)):
+                    return self._to_link(row)
+                if status in ("failed", "cancelled") or self._req.is_expired(row):
+                    return None                          # stale → caller may steal the claim
+                # status == provisioning (mint in flight) → wait and re-read
+            await asyncio.sleep(0.01)
+        return None
+
+    async def _mint_claimed(self, *, tenant: str, reference: str, request_id: str, amount_minor: int,
+                            currency: str, metadata: dict | None, return_url: str) -> CreatedLink:
+        """Mint the gateway bill for a claim we won, then persist the request. Releases the claim on a
+        gateway failure so a failed attempt never permanently blocks a retry for this order."""
         gateway = await self._gw.gateway_for(tenant)
         if getattr(gateway, "driver", "null") == "null":
-            raise PaymentNotConfigured(
-                f"tenant {tenant!r} has no payment gateway configured")
+            await self._req.release_claim(tenant=tenant, reference=reference)
+            raise PaymentNotConfigured(f"tenant {tenant!r} has no payment gateway configured")
         try:
             session = gateway.prepare_checkout(
                 amount_minor=amount_minor, currency=currency, reference=reference,
                 return_url=return_url, metadata=metadata or {})
-        except GatewayUnavailable as exc:
-            raise GatewayUnavailable(str(exc)) from exc
+        except GatewayUnavailable:
+            await self._req.release_claim(tenant=tenant, reference=reference)
+            raise
         if not session.ok or not session.redirect_url:
+            await self._req.release_claim(tenant=tenant, reference=reference)
             raise GatewayUnavailable(session.error or "gateway did not return a checkout link")
         row = await self._req.create(
-            tenant=tenant, reference=reference, amount_minor=amount_minor, currency=currency,
-            provider=session.provider, provider_ref=session.provider_ref,
+            request_id=request_id, tenant=tenant, reference=reference, amount_minor=amount_minor,
+            currency=currency, provider=session.provider, provider_ref=session.provider_ref,
             redirect_url=session.redirect_url, ttl_seconds=self._ttl,
             expires_at_provider=session.expires_at)
         return self._to_link(row)

@@ -36,6 +36,21 @@ from app.ports.errors import ConfigError
 _COLL = "operator_secrets"
 _PREFIX = "v1:gcm:"
 
+# scrypt is deliberately expensive (~tens of ms + 16 MiB). A SecretStore is often built PER REQUEST
+# (the merchant store is), so deriving on every construction turns an unauthenticated request into a
+# CPU/memory-exhaustion lever. The derived key is a pure function of (kek, salt), so it is memoized
+# process-wide here — the derivation happens once per distinct (kek, salt), not once per request.
+_DERIVED_KEY_CACHE: dict[tuple[str, bytes], bytes] = {}
+
+
+def _derive_key(kek: str, salt: bytes) -> bytes:
+    cache_key = (kek, salt)
+    key = _DERIVED_KEY_CACHE.get(cache_key)
+    if key is None:
+        key = hashlib.scrypt(kek.encode("utf-8"), salt=salt, n=2**14, r=8, p=1, dklen=32)
+        _DERIVED_KEY_CACHE[cache_key] = key
+    return key
+
 # How much of a credential the panel may see. Four characters identifies which key is loaded and
 # is useless on its own — a longer hint starts being a meaningful fraction of a short token.
 _HINT_CHARS = 4
@@ -67,13 +82,12 @@ class SecretStore:
                 "SECRETS_KEK is required to store operator-managed credentials. It must come from "
                 "the environment or a secret manager — never from the admin panel, because a key "
                 "settable in the UI protects nothing from someone who has the UI.")
-        # Derived once. scrypt is deliberately expensive, and re-deriving per read would make a
-        # credential lookup a CPU cost on every outbound provider call. `salt` (and `collection`)
-        # let a separate, higher-isolation store (e.g. shops' MERCHANT_* payment credentials) live in
-        # its OWN table under its OWN derived key — a leak of one credential class never touches the
+        # Memoized by (kek, salt) so a per-request SecretStore does not re-run scrypt every request
+        # (an unauthenticated DoS lever otherwise — see _derive_key). `salt` (and `collection`) let a
+        # separate, higher-isolation store (e.g. shops' MERCHANT_* payment credentials) live in its
+        # OWN table under its OWN derived key — a leak of one credential class never touches the
         # other, and the two ciphertexts are not even under the same key.
-        self._key = hashlib.scrypt(kek.encode("utf-8"), salt=salt,
-                                   n=2**14, r=8, p=1, dklen=32)
+        self._key = _derive_key(kek, salt)
         self._coll = collection
         self._s = store
         self._now = now

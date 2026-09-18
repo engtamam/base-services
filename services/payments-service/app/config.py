@@ -152,6 +152,9 @@ class Settings(BaseSettings):
     # Per-call timeout for a shop's gateway (auth/bill/status). Kept modest — a slow gateway must not
     # hold a request open indefinitely; a timeout reads as unreachable (retry via reconcile).
     PAYMENTS_GATEWAY_TIMEOUT_SECONDS: int = 30
+    # Max bytes accepted on the PUBLIC webhook. A payment status webhook is a few KB; a larger body is
+    # refused (413) so an unauthenticated caller cannot pressure memory with a giant payload.
+    PAYMENTS_MAX_WEBHOOK_BYTES: int = 65_536
 
     # ── Internal service-to-service auth (REQUIRED) ─────────────────────────
     # Shared token for /internal/* endpoints. Must be strong (>= 32 chars).

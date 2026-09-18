@@ -20,6 +20,12 @@ import uuid
 from app.ports.payment_gateway import CANCELLED, FAILED, PENDING, SUCCEEDED
 
 _COLL = "payment_requests"
+# The atomic idempotency guard for create_link. A claim is inserted (cas insert-if-absent) on the
+# LOGICAL order key (tenant, reference) BEFORE the gateway bill is minted, so exactly one concurrent
+# create wins the right to mint — the others resolve to the winner's request. It maps the logical key
+# to the unguessable request id; the request id (the public redirector token) stays a random uuid, so
+# the claim being derivable from (tenant, reference) never makes a pay-link guessable.
+_CLAIM_COLL = "payment_claims"
 
 # Public lifecycle states (SUCCEEDED/FAILED/CANCELLED/PENDING are the gateway's normalised statuses).
 COMPLETED = "completed"
@@ -42,12 +48,14 @@ class PaymentRequestStore:
 
     async def create(self, *, tenant: str, reference: str, amount_minor: int, currency: str,
                      provider: str, provider_ref: str, redirect_url: str,
-                     ttl_seconds: int, expires_at_provider: str = "") -> dict:
-        """Insert a new pending request. `id` is a fresh unguessable token (also the redirector key).
+                     ttl_seconds: int, expires_at_provider: str = "",
+                     request_id: str | None = None) -> dict:
+        """Insert a new pending request. `request_id` is the unguessable token (also the redirector
+        key) — supplied by the caller that won the (tenant, reference) claim, or freshly minted here.
         Created via cas insert-if-absent so the row carries version=1 and can be transitioned later."""
         if amount_minor <= 0:
             raise PaymentRequestError("amount_minor must be positive")
-        rid = uuid.uuid4().hex
+        rid = request_id or uuid.uuid4().hex
         now = self._now()
         row = {
             "id": rid, "tenant": tenant, "reference": reference,
@@ -65,6 +73,39 @@ class PaymentRequestStore:
 
     async def get(self, request_id: str) -> dict | None:
         return await self._s.get(_COLL, request_id)
+
+    # ── atomic (tenant, reference) claim — the double-charge guard ─────────────────
+    @staticmethod
+    def _claim_key(tenant: str, reference: str) -> str:
+        # Length-prefix the tenant so ("a","b|c") and ("a|b","c") can never collide (the
+        # tenant-scoped-idempotency rule). The value is the logical order key, not a secret.
+        return f"{len(tenant)}:{tenant}|{reference}"
+
+    async def claim(self, *, tenant: str, reference: str, request_id: str) -> tuple[bool, dict | None]:
+        """Try to claim (tenant, reference) for `request_id`. Returns (won, current_claim_row). The
+        winner (won=True) is the ONLY caller allowed to mint a gateway bill for this order; a loser
+        reads the returned claim to find whoever won."""
+        key = self._claim_key(tenant, reference)
+        row = {"id": key, "tenant": tenant, "reference": reference,
+               "request_id": request_id, "created_at": self._now()}
+        won = await self._s.cas(_CLAIM_COLL, key, 0, row)
+        return won, await self._s.get(_CLAIM_COLL, key)
+
+    async def get_claim(self, *, tenant: str, reference: str) -> dict | None:
+        return await self._s.get(_CLAIM_COLL, self._claim_key(tenant, reference))
+
+    async def steal_claim(self, claim_row: dict, *, request_id: str) -> bool:
+        """Take over a STALE claim (its request expired/failed) for a fresh request_id, version-pinned
+        so only one caller can steal it. Returns True for the single winner."""
+        ver = int(claim_row.get("version", 0))
+        updated = {k: v for k, v in claim_row.items() if k != "version"}
+        updated.update({"request_id": request_id, "created_at": self._now()})
+        return await self._s.cas(_CLAIM_COLL, claim_row["id"], ver, updated)
+
+    async def release_claim(self, *, tenant: str, reference: str) -> bool:
+        """Drop a claim so the order can be re-attempted — called when the gateway mint FAILS, so a
+        failed attempt never permanently blocks a retry for that order."""
+        return await self._s.delete(_CLAIM_COLL, self._claim_key(tenant, reference))
 
     async def by_provider_ref(self, *, tenant: str, provider_ref: str) -> dict | None:
         """Resolve the request a gateway callback refers to. Keyed by (tenant, provider_ref) so one

@@ -31,5 +31,9 @@ BACKUP: dict[str, Any] = {
         {"name": "merchant_secrets", "tenant_scoped": True},
     ],
     "excluded": [
+        # Idempotency/claim keys for create_link — regenerated on demand, not data worth restoring;
+        # restoring stale claims could even wrongly block a re-attempt. Skipped, like dedupe keys.
+        {"name": "payment_claims", "reason": "atomic (tenant,reference) idempotency claims — "
+                                             "ephemeral, regenerated, not restorable state"},
     ],
 }

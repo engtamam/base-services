@@ -221,3 +221,43 @@ def test_merchant_credentials_are_tenant_isolated():
         # a tenant with nothing set inherits NO other shop's key (no cross-tenant fallback to a peer)
         assert await secrets.get(tenant="shopC", name="MERCHANT_API_KEY", fallback="none") == "none"
     run(go())
+
+
+def test_C1_concurrent_create_mints_one_link_no_double_charge():
+    """C1 fix: two concurrent create_link for the SAME (tenant, reference) must mint exactly ONE
+    gateway bill / one request, never two — the atomic claim guarantees a single winner."""
+    async def go():
+        svc, secrets, _ = await _svc_with_events()
+        await _configure_console(secrets)
+        a, b = await asyncio.gather(
+            svc.create_link(tenant="acme", reference="order-race", amount_minor=15000, currency="SAR"),
+            svc.create_link(tenant="acme", reference="order-race", amount_minor=15000, currency="SAR"))
+        assert a.request_id == b.request_id                      # both callers got the SAME request
+        rows, _c = await svc._req._s.find(
+            "payment_requests", {"tenant": "acme", "reference": "order-race"}, limit=10)
+        assert len(rows) == 1                                    # exactly ONE request row exists
+    run(go())
+
+
+def test_C1_gateway_failure_releases_claim_so_retry_can_succeed():
+    """A failed mint must not permanently block the order: the claim is released, so a later create
+    for the same reference can succeed once the gateway works."""
+    async def go():
+        store = MemoryDataStore()
+        bus = MemoryEventBus()
+        secrets = merchant_secret_store(store, KEK)
+        # Point the console at an empty link_base so the first attempt fails (no redirect_url)? The
+        # console always returns ok; instead simulate failure by configuring NO driver first, then fix.
+        gateways = MerchantGateways(secrets, console_link_base="https://pay.example.test/checkout")
+        svc = PaymentService(requests=PaymentRequestStore(store), gateways=gateways, event_bus=bus,
+                             redirect_base_url="https://c.example", allowed_hosts=ALLOWED,
+                             link_ttl_seconds=3600)
+        # first attempt: unconfigured -> PaymentNotConfigured, claim must be released
+        with pytest.raises(PaymentNotConfigured):
+            await svc.create_link(tenant="acme", reference="o-retry", amount_minor=100, currency="SAR")
+        assert await svc._req.get_claim(tenant="acme", reference="o-retry") is None
+        # now configure and retry -> succeeds
+        await secrets.set(tenant="acme", name=DRIVER, value="console")
+        link = await svc.create_link(tenant="acme", reference="o-retry", amount_minor=100, currency="SAR")
+        assert link.request_id
+    run(go())

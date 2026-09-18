@@ -10,9 +10,10 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse
 
+from app.adapters.payment_http import validate_gateway_base
 from app.api.internal import require_internal_token
 from app.api.payments_deps import build_merchant_secrets, build_payment_service
-from app.core.merchant_credentials import SETTABLE_NAMES
+from app.core.merchant_credentials import API_BASE, SETTABLE_NAMES
 from app.core.payments import GatewayUnavailable, PaymentNotConfigured, PaymentsDisabled
 from app.core.secret_store import SecretError
 
@@ -46,6 +47,12 @@ async def set_credential(request: Request, body: _CredIn) -> dict:
     bad = _reject_unknown(body.name)
     if bad is not None:
         return bad
+    # Defence-in-depth SSRF guard: a gateway base URL must be https + a public host, refused at write
+    # (not only at fetch), so a malicious MERCHANT_API_BASE never even lands in the sealed store.
+    if body.name == API_BASE:
+        ok, reason = validate_gateway_base(body.value)
+        if not ok:
+            return JSONResponse({"ok": False, "reason": reason}, status_code=422)
     secrets = build_merchant_secrets(request)
     try:
         info = await secrets.set(tenant=body.tenant, name=body.name, value=body.value,

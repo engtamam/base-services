@@ -135,3 +135,24 @@ def test_unverified_webhook_applies_nothing(client):
     assert hook.status_code == 200 and hook.json()["applied"] is False
     st = client.get(f"/internal/payments/requests/{r['request_id']}?tenant=acme", headers=_h()).json()
     assert st["status"] == "pending"
+
+
+def test_H1_malicious_gateway_base_is_refused_at_write(client):
+    for bad in ("http://169.254.169.254/", "https://127.0.0.1/", "file:///etc/passwd",
+                "http://evil.example/"):
+        r = client.post("/internal/payments/merchant-credentials", headers=_h(),
+                        json={"tenant": "acme", "name": "MERCHANT_API_BASE", "value": bad})
+        assert r.status_code == 422, (bad, r.text)
+    # a legitimate https gateway base is accepted
+    ok = client.post("/internal/payments/merchant-credentials", headers=_h(),
+                     json={"tenant": "acme", "name": "MERCHANT_API_BASE",
+                           "value": "https://onboarding-uat.tuwaiqpay.com.sa/api/v1"})
+    assert ok.status_code == 200, ok.text
+
+
+def test_H5_oversized_webhook_is_refused(client):
+    _configure(client)
+    big = client.post("/api/v1/payments/webhook/acme",
+                      headers={"content-length": str(10_000_000)},
+                      content=b"x" * 100)   # declared length over cap -> 413 before reading
+    assert big.status_code == 413
