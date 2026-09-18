@@ -151,13 +151,20 @@ class PaymentRequestStore:
     async def apply_outcome(self, row: dict, *, status: str, event_id: str,
                             paid_amount_minor: int, paid_currency: str,
                             amount_mismatch: bool) -> tuple[bool, dict]:
-        """Move a PENDING request to a terminal state exactly once. Returns (transitioned_now, row).
-        A row already terminal returns (False, row) — the idempotent no-op a replayed webhook hits."""
-        if row.get("status") in _TERMINAL:
-            return False, row
+        """Move a request to a terminal state exactly once. Returns (transitioned_now, row).
+
+        A replayed terminal outcome is the idempotent no-op (False, row). The ONE exception is money
+        that truly moved: a verified SUCCEEDED (final == COMPLETED) may SUPERSEDE a NON-success
+        terminal state (failed/cancelled/expired) under the version-pinned CAS — our own TTL expiry or
+        an earlier decline must never silently strand a real settlement (H2), and a success must never
+        lose to a failure (M4). A non-success outcome never overwrites a terminal row, and nothing ever
+        overwrites a COMPLETED one."""
         final = COMPLETED if status == SUCCEEDED else status if status in (FAILED, CANCELLED) else PENDING
         if final == PENDING:                                  # not actionable yet
             return False, row
+        current = row.get("status")
+        if current in _TERMINAL and not (final == COMPLETED and current != COMPLETED):
+            return False, row                                 # first terminal wins (except success)
         return await self._transition(row, {
             "status": final, "applied_event_id": event_id,
             "paid_amount_minor": int(paid_amount_minor), "paid_currency": paid_currency,

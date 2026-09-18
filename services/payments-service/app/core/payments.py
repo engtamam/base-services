@@ -16,16 +16,41 @@ reconcile fetch — moves that request to a terminal state EXACTLY ONCE and emit
 """
 from __future__ import annotations
 
+import json
+import logging
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 from app.core.merchant_credentials import MerchantGateways
-from app.core.payment_requests import COMPLETED, PaymentRequestStore
+from app.core.payment_requests import COMPLETED, EXPIRED, PaymentRequestStore
 from app.ports.event_bus import Event, EventBus
-from app.ports.payment_gateway import FAILED, SUCCEEDED, GatewayUnavailable, PaymentOutcome
+from app.ports.payment_gateway import (CANCELLED, FAILED, PENDING, SUCCEEDED, GatewayUnavailable,
+                                       PaymentOutcome)
 
 TOPIC_COMPLETED = "payment.completed"
 TOPIC_FAILED = "payment.failed"
+
+_log = logging.getLogger("app.payments")
+
+
+def _peek_provider_ref(body: bytes) -> str:
+    """Cheaply pull the gateway's transaction id from a webhook body WITHOUT trusting it — used only
+    to skip the outbound verify-by-fetch for a junk/unknown id (M2). Returns "" when the body does not
+    plainly expose a ref, so the caller falls through to full verification (this never weakens the
+    gate; it only avoids an outbound call that could not have settled anything)."""
+    try:
+        payload = json.loads(body.decode("utf-8", "replace")) if body else {}
+    except Exception:   # noqa: BLE001 — an unparseable body exposes no ref; fall through to verify
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    details = payload.get("transactionDetails")
+    if isinstance(details, dict) and details.get("transactionId"):
+        return str(details["transactionId"])              # tuwaiqpay webhook shape
+    for key in ("provider_ref", "transactionId"):         # console / generic shapes
+        if payload.get(key):
+            return str(payload[key])
+    return ""
 
 
 class PaymentsDisabled(Exception):
@@ -60,14 +85,22 @@ class PaymentService:
         self._is_enabled = is_enabled
 
     def _host_allowed(self, url: str) -> bool:
-        # Fail-closed: an empty allowlist permits nothing. A redirect target must be an https URL whose
-        # host is explicitly allowed — this is what makes the public redirector not an open redirect.
-        host = (urlsplit(url).hostname or "").lower()
-        return bool(host) and host in self._allowed_hosts
+        # Fail-closed: an empty allowlist permits nothing. A redirect target must be an HTTPS URL whose
+        # host is explicitly allowed. The scheme check is load-bearing (M5): without it an
+        # `http://<allow-listed-host>` downgrade would pass — the host being right does not make a
+        # plaintext hop safe. Both together are what make the public redirector not an open redirect.
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+        return parts.scheme == "https" and bool(host) and host in self._allowed_hosts
 
     async def _ensure_enabled(self, tenant: str) -> None:
         if self._is_enabled is not None and not await self._is_enabled(tenant):
             raise PaymentsDisabled(f"payments are disabled for tenant {tenant!r}")
+
+    async def get(self, request_id: str) -> dict | None:
+        """The stored PaymentRequest row (or None), for a route that needs to read request state
+        without reaching into the private store (I4)."""
+        return await self._req.get(request_id)
 
     # ── create ──────────────────────────────────────────────────────────────────
     async def create_link(self, *, tenant: str, reference: str, amount_minor: int, currency: str,
@@ -164,15 +197,23 @@ class PaymentService:
     # ── redirect ──────────────────────────────────────────────────────────────────
     async def redirect_target(self, request_id: str) -> str:
         """The gateway URL to 302 a customer to, or raise. Expires a stale pending request, refuses a
-        terminal one, and host-allowlists the target (fail-closed) so this is never an open redirect."""
+        terminal one, and host-allowlists the target (fail-closed) so this is never an open redirect.
+
+        This does NOT fully hide whether an id exists (I2): an unknown id raises KeyError, an
+        existing-but-unusable one raises PaymentsDisabled — a link holder can still tell the two apart
+        by the route's status code. The PaymentsDisabled message here is deliberately generic (it never
+        names the concrete state) so those two are the ONLY distinguishable outcomes, leaving a future
+        route free to collapse both to one response without changing this method."""
         row = await self._req.get(request_id)
         if row is None:
             raise KeyError("unknown payment request")
         if self._req.is_expired(row):
             await self._req.mark_expired(row)
-            raise PaymentsDisabled("payment link has expired")
-        if row.get("status") != "pending":
-            raise PaymentsDisabled(f"payment link is no longer active ({row.get('status')})")
+            raise PaymentsDisabled("payment link is not available")
+        if row.get("status") != PENDING:
+            # Generic on purpose: do not leak the concrete terminal state (completed/failed/…) to a
+            # link holder — every non-pending request refuses identically.
+            raise PaymentsDisabled("payment link is not available")
         url = row.get("redirect_url", "")
         if not self._host_allowed(url):
             # The gateway handed us a link whose host is not on the allowlist — refuse rather than
@@ -189,18 +230,41 @@ class PaymentService:
         row = await self._req.by_provider_ref(tenant=tenant, provider_ref=outcome.provider_ref)
         if row is None:
             return None
-        # Server-authoritative amount: a settled callback whose amount differs from what we recorded is
-        # NOT a completion — it is refused and flagged, never a fabricated or wrong-sum "paid".
-        mismatch = bool(outcome.amount_minor) and (
-            int(outcome.amount_minor) != int(row["amount_minor"])
-            or (outcome.currency and outcome.currency.upper() != str(row["currency"]).upper()))
+        prior_status = row.get("status")
+        # Server-authoritative amount. A verified success must carry a CONFIRMABLE amount that matches
+        # what we recorded; anything else is refused (marked failed + flagged), never a fabricated or
+        # wrong-sum "paid". A 0/absent amount on a SUCCEEDED is UNVERIFIABLE, not "matches" (H3) — we
+        # can only refuse it, never read "no amount" as "amount matches". The currency check stays
+        # reachable whenever an amount is present. A non-success outcome carries no amount claim.
+        if outcome.status == SUCCEEDED:
+            amount_ok = bool(outcome.amount_minor) and int(outcome.amount_minor) == int(row["amount_minor"])
+            currency_ok = (not outcome.currency) or outcome.currency.upper() == str(row["currency"]).upper()
+            mismatch = not (amount_ok and currency_ok)
+            if not outcome.amount_minor:
+                _log.warning("payment.unverifiable_amount: verified success with no confirmable amount "
+                             "refused for request %s (tenant=%s, provider_ref=%s)",
+                             row.get("id", ""), tenant, outcome.provider_ref)
+        else:
+            mismatch = False
         effective_status = FAILED if (outcome.status == SUCCEEDED and mismatch) else outcome.status
         transitioned, updated = await self._req.apply_outcome(
             row, status=effective_status, event_id=outcome.event_id,
             paid_amount_minor=outcome.amount_minor, paid_currency=outcome.currency,
             amount_mismatch=mismatch)
         if transitioned:
+            # H2/M4: a verified success that had to override our own EXPIRED (or a prior failed/
+            # cancelled) is money we nearly dropped — surface it loudly so ops confirm fulfilment.
+            if effective_status == SUCCEEDED and prior_status in (EXPIRED, FAILED, CANCELLED):
+                _log.warning("payment.recovered: verified success superseded %s for request %s "
+                             "(tenant=%s, provider_ref=%s)", prior_status, updated.get("id", ""),
+                             tenant, outcome.provider_ref)
             await self._emit(updated, mismatch=mismatch)
+        elif effective_status == SUCCEEDED and updated.get("status") != COMPLETED:
+            # A verified success that could not land (lost the CAS, or otherwise blocked) must never
+            # vanish silently (M4) — alert so ops reconcile by hand; success never loses to failure.
+            _log.error("payment.success_dropped: verified success could NOT complete request %s "
+                       "(current=%s, tenant=%s, provider_ref=%s)", updated.get("id", ""),
+                       updated.get("status"), tenant, outcome.provider_ref)
         return updated
 
     async def _emit(self, row: dict, *, mismatch: bool) -> None:
@@ -218,7 +282,16 @@ class PaymentService:
         await self._bus.publish(topic, Event(type=topic, payload=payload))
 
     async def handle_webhook(self, *, tenant: str, headers: dict[str, str], body: bytes) -> dict | None:
-        """Verify a gateway webhook with the tenant's own gateway, then apply it idempotently."""
+        """Verify a gateway webhook with the tenant's own gateway, then apply it idempotently.
+
+        Cheap junk-id short-circuit (M2): when the body plainly exposes a provider ref this tenant has
+        NO request for, skip the outbound verify-by-fetch — an unknown id can never settle anything,
+        and this denies an unauthenticated caller a free authenticated call on the shop's real gateway.
+        A body that does not expose a resolvable ref falls through to the full verify path unchanged, so
+        verification is never weakened."""
+        ref = _peek_provider_ref(body)
+        if ref and await self._req.by_provider_ref(tenant=tenant, provider_ref=ref) is None:
+            return None
         gateway = await self._gw.gateway_for(tenant)
         outcome = gateway.verify_webhook(headers=headers, body=body)
         return await self.apply_outcome(tenant=tenant, outcome=outcome)
@@ -229,7 +302,10 @@ class PaymentService:
         row = await self._req.get(request_id)
         if row is None or row.get("tenant") != tenant:
             return None
-        if row.get("status") != "pending":
+        # Re-query PENDING (missed webhook) AND EXPIRED (H2): our TTL can elapse while the customer
+        # pays on a page already open, so a verified success must still be recoverable off an expired
+        # request. Any other terminal state is settled — return it unchanged.
+        if row.get("status") not in (PENDING, EXPIRED):
             return row
         gateway = await self._gw.gateway_for(tenant)
         outcome = gateway.fetch_status(provider_ref=row.get("provider_ref", ""),
