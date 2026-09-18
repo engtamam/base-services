@@ -225,4 +225,30 @@ no size cap. A few dozen concurrent `GET /pay/{x}` or `POST /webhook/{x}` satura
 Items C1, H1–H5, M1–M4, M6–M8 are code fixes to land before real money. M6/M7 and per-option locks
 overlap with commerce **Phase 6** (wiring/provisioning). None released yet — this is the pre-release
 security backlog.
+
+---
+
+## Remediation status (2026-09-19) — FIXED
+
+All findings except M7 were remediated across five commits (C1/H1/H5/M8 inline; then four parallel
+worktree tasks with strictly disjoint files, each reviewed line-by-line before merge). Full
+payments-service suite: **426 passed, 49 skipped**. Not released (commerce hold).
+
+- **C1, H1, H5, M8** — `9c3e36d6` (atomic (tenant,reference) claim; SSRF egress guard + write-time
+  MERCHANT_API_BASE validation; KEK memoized + webhook body cap + rate-limit; log-before-200).
+- **H4, M1, L1** — `11389503` (merchant store no-fallback + require_tenant; AES-GCM AAD; hint length).
+- **H2, H3, M4, M5, M2, I2, I4** — `46327de7` (expiry non-terminal vs confirmed success + reconcile
+  recovers it; 0-amount success refused; success supersedes terminal; https redirect; webhook
+  junk-id short-circuit; generic redirect refusal; public `get()`).
+- **L2, L4–L8, M3, I3** — `5c42bf43` (constant-time compare; provider_ref quote+validate; ISO-4217
+  Decimal currency module; PENDING_SETTLEMENT→pending; amount/metadata/currency validation;
+  return_url documented).
+- **L3, M6** — `0990b7c9` (SECRETS_KEK/BACKUP_KEK boot guard; background reconcile/expiry sweep,
+  off by default).
+
+**Still open:**
+- **M7** (refund / chargeback / dispute ingestion) — DEFERRED: spans port + adapter + state as a
+  feature; to be built as its own pass (or with Phase 6), not squeezed into the parallel remediation.
+- **I1** (internal-token is omnipotent; use the `jwks`/`static` per-caller identity in production) —
+  a deployment/provisioning choice for Phase 6, not a code change here.
 </content>
