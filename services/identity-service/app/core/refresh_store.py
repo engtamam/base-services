@@ -36,7 +36,17 @@ class RefreshStore:
         row = {"jti": jti, "user_id": user_id, "exp": exp_ts, "revoked": False}
         if tenant:
             row["tenant"] = tenant
-        await self._store.put(_COLL, jti, row)
+        # Create via the insert-if-absent CAS (expected_version=0), NOT put(), so the row lands
+        # carrying version=1. This is not cosmetic: consume() ROTATES the row with a version-pinned
+        # CAS, and the postgres adapter's expected_version=0 branch is a strict INSERT ... ON CONFLICT
+        # DO NOTHING. A row written by a plain put() has no version, so consume()'s cas(jti, 0, ...)
+        # is read as insert-if-absent against an already-present row -> DO NOTHING -> False, and EVERY
+        # refresh 401s in production (the memory adapter happened to treat versionless==0 and let the
+        # rotation through, so every unit test passed while prod logged everyone out each access-TTL).
+        # login_attempts.record_failure already creates its rows this way, for the same reason.
+        # jti is a fresh new_id(), so the insert always wins; a collision (astronomically unlikely)
+        # simply leaves this token unrecorded, and its first use fails closed as "unknown".
+        await self._store.cas(_COLL, jti, 0, row)
 
     async def is_active(self, jti: str) -> bool:
         return await self.status(jti) == "active"

@@ -14,6 +14,7 @@ Each test is RED on the pre-fix code and GREEN after:
 from __future__ import annotations
 
 import asyncio
+import copy
 
 import pytest
 
@@ -177,6 +178,55 @@ def test_refresh_store_consume_is_single_winner():
 
     wins = [r for r in run(_race()) if r is True]
     assert len(wins) == 1                        # exactly one caller may rotate the jti
+
+
+class _PgSemanticsStore(MemoryDataStore):
+    """cas() with the POSTGRES adapter's exact semantics: expected_version=0 is a STRICT
+    insert-if-absent (any existing row fails, versionless included); a versioned pin is an UPDATE.
+    Guards the fix even if the memory adapter's cas were ever loosened again."""
+
+    async def cas(self, c, k, ver, val):
+        bucket = self._data.setdefault(c, {})
+        current = bucket.get(k)
+        if int(ver) == 0:
+            if current is not None:
+                return False
+            stored = copy.deepcopy(val)
+            stored["version"] = 1
+            bucket[k] = stored
+            return True
+        cur_v = int(current.get("version", 0)) if current else 0
+        if cur_v != int(ver):
+            return False
+        stored = copy.deepcopy(val)
+        stored["version"] = cur_v + 1
+        bucket[k] = stored
+        return True
+
+
+def _refresh_e2e_rotates(store):
+    v = _Verifier()
+    svc = _svc(store, verifier=v)
+    user = run(svc.register("acme", "sara@x.com", "pw12"))
+    rt = run(svc.issue_tokens(user))["refresh_token"]
+    v.tokens[rt] = {"type": "refresh", "jti": rt.split(".")[-1], "sub": user.id}
+    out = run(svc.refresh(rt))                    # THE call that 401'd for everyone in production
+    assert out is not None and out["access_token"], "refresh must rotate, not 401"
+    assert run(svc.refresh(rt)) is None          # the rotated token is now dead
+
+
+def test_refresh_rotates_end_to_end_on_memory_store():
+    """Regression: issue() wrote the refresh row with put() (no version) and consume() rotated it
+    with a version-pinned cas. On postgres that cas is insert-if-absent and always failed on the
+    existing row, so EVERY refresh returned None (401) while memory-backed unit tests passed —
+    users were logged out each access-TTL. Now pinned on the (aligned) memory adapter."""
+    _refresh_e2e_rotates(MemoryDataStore())
+
+
+def test_refresh_rotates_end_to_end_under_postgres_cas_semantics():
+    """The same flow against a store with the POSTGRES cas contract — the environment where the bug
+    actually fired. This fails hard if issue() ever reverts to put()."""
+    _refresh_e2e_rotates(_PgSemanticsStore())
 
 
 # ── r2-03: last-owner invariant under concurrency ──────────────────────────────
