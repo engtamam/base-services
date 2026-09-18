@@ -47,6 +47,8 @@ def create_app() -> FastAPI:
     settings.assert_audit_config_ok()
     settings.assert_pii_config_ok()
     settings.assert_cors_config_ok()
+    # A misconfigured sealing key must refuse to START, not fail deep on the first credential op.
+    settings.assert_secrets_config_ok()
     configure_logging(settings.SERVICE_NAME, settings.ENV, settings.LOG_LEVEL)
     logger = get_logger("app.main")
 
@@ -62,7 +64,7 @@ def create_app() -> FastAPI:
     )
 
     @asynccontextmanager
-    async def lifespan(_app: FastAPI):
+    async def lifespan(app_: FastAPI):
         logger.info(
             "startup",
             extra={
@@ -71,8 +73,24 @@ def create_app() -> FastAPI:
                 "ports": container.describe(),
             },
         )
-        yield
-        await container.close()
+        # Background reconciliation / expiry sweep — the safety net behind the (email-registered,
+        # unreliable) TuwaiqPay webhook. OFF by default: the task is created only when a deployment
+        # opts in, so nothing changes unless enabled.
+        sweep = None
+        if settings.PAYMENTS_RECONCILE_SWEEP_ENABLED:
+            from app.core.reconcile_sweep import build_sweep
+            sweep = build_sweep(app_, settings, logger=get_logger("app.reconcile_sweep"))
+            sweep.start()
+            logger.info(
+                "reconcile_sweep_started",
+                extra={"interval_s": settings.PAYMENTS_RECONCILE_INTERVAL_SECONDS,
+                       "min_age_s": settings.PAYMENTS_RECONCILE_MIN_AGE_SECONDS})
+        try:
+            yield
+        finally:
+            if sweep is not None:
+                await sweep.stop()
+            await container.close()
         logger.info("shutdown", extra={"service": settings.SERVICE_NAME})
 
     app = FastAPI(

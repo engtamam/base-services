@@ -156,6 +156,29 @@ class Settings(BaseSettings):
     # refused (413) so an unauthenticated caller cannot pressure memory with a giant payload.
     PAYMENTS_MAX_WEBHOOK_BYTES: int = 65_536
 
+    # ── Background reconciliation / expiry sweep (Phase 4 robustness) ─────────
+    # A TuwaiqPay webhook is registered by EMAIL — the least reliable delivery there is. A dropped
+    # webhook otherwise leaves money captured and the order stuck `pending` forever, because
+    # reconcile/mark_expired are lazy (they only run when a redirect or an internal call happens to
+    # touch the row). This sweep is the safety net: it periodically expires abandoned pendings and
+    # re-queries the gateway for old ones whose webhook never arrived (reconcile is idempotent and
+    # fail-closed, so a re-query can only recover a real settlement, never fabricate one).
+    #
+    # OFF by default: a background loop that reaches every tenant's gateway is a deliberate operational
+    # choice (it spends gateway quota and needs real merchant creds wired), so nothing changes until a
+    # deployment turns it on. When off, the task is never created.
+    PAYMENTS_RECONCILE_SWEEP_ENABLED: bool = False
+    # How often the sweep runs. Modest by default — the sweep is a safety net behind the webhook, not
+    # the primary path, so it need not be aggressive; a smaller value reconciles sooner at more cost.
+    PAYMENTS_RECONCILE_INTERVAL_SECONDS: int = 300      # 5 min
+    # How old a PENDING request must be before the sweep re-queries its gateway. Kept well above the
+    # normal webhook latency so the sweep only chases requests the webhook genuinely missed — not ones
+    # still in flight (which would double the gateway load for no gain).
+    PAYMENTS_RECONCILE_MIN_AGE_SECONDS: int = 900       # 15 min
+    # How many rows the sweep reads per page. The sweep pages the datastore (never an unbounded scan),
+    # so this bounds the working set per read regardless of how many pendings accrue.
+    PAYMENTS_RECONCILE_PAGE_SIZE: int = 200
+
     # ── Internal service-to-service auth (REQUIRED) ─────────────────────────
     # Shared token for /internal/* endpoints. Must be strong (>= 32 chars).
     INTERNAL_SERVICE_TOKEN: str = Field(min_length=32)
@@ -447,6 +470,38 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"COMPLIANCE_SERVICE_URL {self.COMPLIANCE_SERVICE_URL!r} must start with "
                 f"http:// or https://"
+            )
+
+    def assert_secrets_config_ok(self) -> None:
+        """Boot guard. Refuse to start production without the keys the sealed stores need.
+
+        SECRETS_KEK seals every MERCHANT_* credential — a shop's key to its OWN money. Empty is a
+        real fail-closed state (the operator surface refuses to store rather than storing unsealed),
+        but for THIS service that state is useless: the whole job is minting pay-links from a shop's
+        gateway, which cannot be configured at all without the KEK. Without this guard the service
+        starts, passes health, and then refuses the first credential write months later — the same
+        badly-timed failure the PII guard prevents. A misconfiguration must refuse to START.
+
+        BACKUP_KEK seals the archives backup-service collects from this service; the export surface is
+        always mounted, so an empty key means every export 503s and this service silently drops out of
+        the platform's backups. Both keys are minted together by gen-secrets.py, so in a real
+        production deploy both are always present — an empty one is a provisioning slip, caught here.
+        """
+        if not self.is_production:
+            return
+        if not self.SECRETS_KEK:
+            raise ValueError(
+                "SECRETS_KEK is empty in production: merchant gateway credentials could never be "
+                "sealed or read, so this service could take no payments at all, and the failure "
+                "would surface only on the first credential op. Set SECRETS_KEK (gen-secrets.py "
+                "mints it; it is settable through NO api by design)."
+            )
+        if not self.BACKUP_KEK:
+            raise ValueError(
+                "BACKUP_KEK is empty in production: the export surface is mounted but every backup "
+                "would 503, so this service would silently drop out of the platform's backups. Set "
+                "BACKUP_KEK to the SAME value backup-service holds (gen-secrets.py mints it "
+                "consistently — see config/product.identifiers.lock.json)."
             )
 
     @field_validator("INTERNAL_SERVICE_TOKEN")
