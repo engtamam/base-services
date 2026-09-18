@@ -413,7 +413,26 @@ class WhatsAppNumberIndex:
     # bind() outcomes. A caller AUDITS a CONFLICT rather than swallowing it (see the routes).
     BOUND, UNCHANGED, CONFLICT, NOOP = "bound", "unchanged", "conflict", "noop"
 
-    async def bind(self, phone_number_id: str, tenant: str) -> str:
+    @staticmethod
+    def _row(phone_number_id: str, tenant: str, waba_id: str, branch_id: str,
+             existing: dict | None = None) -> dict:
+        """Build the routing row. `waba_id`/`branch_id` are SEPARATE first-class fields — never
+        concatenated into a key — so a decentralized-branch shop (each branch its own WABA/number
+        under ONE tenant) is a set of distinct rows sharing a tenant, and a lookup can be by number OR
+        by WABA without parsing a composite string (the composite-string pattern already caused a
+        leak elsewhere; we do not repeat it here). A rebind that omits waba_id/branch_id keeps the
+        values already on the row rather than wiping them."""
+        row = {"id": phone_number_id, "phone_number_id": phone_number_id, "tenant": tenant}
+        wb = waba_id or (existing or {}).get("waba_id")
+        br = branch_id or (existing or {}).get("branch_id")
+        if wb:
+            row["waba_id"] = wb
+        if br:
+            row["branch_id"] = br
+        return row
+
+    async def bind(self, phone_number_id: str, tenant: str, *,
+                   waba_id: str = "", branch_id: str = "") -> str:
         """Bind phone_number_id → tenant, FIRST-WINS. Returns the outcome.
 
         Idempotent for the same tenant (re-registration). But if the number ALREADY routes to a
@@ -421,14 +440,19 @@ class WhatsAppNumberIndex:
         the incumbent's inbound routing and delivery visibility — a duplicate/mistaken onboarding of
         one number under a second tenant must not hijack it with no trace. A genuine number transfer
         between tenants is a deliberate, audited reassignment, not a blind rebind, and is not this path.
+
+        `waba_id`/`branch_id` are optional per-branch attributes (decentralized branches): they are
+        written as their own fields on the row under the EXACT same CAS/first-wins/conflict-refusal
+        semantics as the tenant binding — they never widen who may claim the number, only annotate the
+        winning row so it can also be resolved by WABA (see by_waba_id).
         """
         if not phone_number_id or not tenant:
             return self.NOOP
+        existing = await self._store.get(_WA_NUMBER_INDEX, phone_number_id)
         # id == the key (the phone_number_id), so the row satisfies the backup key==id invariant and
         # this routing map survives a restore rather than silently emptying (and breaking inbound
         # attribution) until every shop happens to re-register.
-        row = {"id": phone_number_id, "phone_number_id": phone_number_id, "tenant": tenant}
-        existing = await self._store.get(_WA_NUMBER_INDEX, phone_number_id)
+        row = self._row(phone_number_id, tenant, waba_id, branch_id, existing)
         owner = (existing or {}).get("tenant")
         if owner and owner != tenant:
             return self.CONFLICT                          # incumbent kept; caller records the collision
@@ -450,6 +474,22 @@ class WhatsAppNumberIndex:
             return None
         row = await self._store.get(_WA_NUMBER_INDEX, phone_number_id)
         return row.get("tenant") if row else None
+
+    async def by_waba_id(self, waba_id: str) -> dict | None:
+        """Resolve a WABA id → {tenant, branch_id, phone_number_id}, or None. The lookup a Meta
+        Connector event (which identifies the shop by WABA, not by our tenant id) will need. A WABA
+        belongs to ONE tenant, so every row matching a waba_id shares its tenant; branch_id/
+        phone_number_id are taken from the first row deterministically (a WABA hosting several numbers
+        still resolves to its owning tenant). Filtered on the indexed field, never a scan."""
+        if not waba_id:
+            return None
+        rows, _ = await self._store.find(_WA_NUMBER_INDEX, {"waba_id": waba_id}, limit=50,
+                                         sort=("phone_number_id", "asc"))
+        if not rows:
+            return None
+        first = rows[0]
+        return {"tenant": first.get("tenant"), "branch_id": first.get("branch_id", ""),
+                "phone_number_id": first.get("phone_number_id", "")}
 
     async def count(self, cap: int) -> dict:
         # sweeper: an operator aggregate glance — a bounded (cap) count of the routing map for a
