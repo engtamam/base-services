@@ -13,6 +13,7 @@ a host of their choosing and be told yes.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import urllib.error
 import urllib.parse
@@ -42,8 +43,10 @@ class HttpConsentGate:
             req.add_header(_k, _v)
 
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # nosec B310 - config-only host
-                status, raw = resp.status, resp.read()
+            def _send():  # blocking urllib OFF the event loop
+                with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # nosec B310 - config-only host
+                    return resp.status, resp.read()
+            status, raw = await asyncio.to_thread(_send)
         except urllib.error.HTTPError as exc:
             # A 4xx here is OUR bug (bad token, wrong path), not a statement about the subject.
             # Reporting it as denied would silently stop lawful processing platform-wide the day
