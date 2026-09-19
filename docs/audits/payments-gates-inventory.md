@@ -74,9 +74,17 @@ existing `defensive-access-hides-bugs` discipline.
   gate was refined to drop 12 false positives (Decimal percent products; float(helper) serialization),
   now flags only a bare money value scaled by a hardcoded 100/1000. Selftest + gate + ci.yml; PASSES
   fleet-wide.
-- **Remaining:** timing-compare (1 real: file-service hmac_signer `!=`), aesgcm-aad (85, fleet-wide —
-  needs a backup.py-AAD policy decision), open-redirect (3, triage), SSRF (rework as a helper gate),
-  swallowed-except (defer/tune).
+- **safety:timing-compare — REGISTERED BLOCKING.** All 3 findings were false positives (the fleet
+  already verifies with hmac.compare_digest); the gate was refined to skip sentinel/constant compares.
+  Selftest + gate + ci.yml; PASSES fleet-wide.
+- **safety:aesgcm-aad — REGISTERED BLOCKING.** AAD bound fleet-wide across all 24 services
+  (_template pilot → 5 parallel worktree agents, each reviewed line-by-line before merge): backup
+  archives bound to service|tenant, secret_store to collection|tenant|name, bespoke sealers to their
+  natural identity (assistant conversations, stream source, zatca CSID, connector tokens). Two correct
+  deferrals: notification flow_crypto (Meta-dictated) and billing hyperpay (provider webhook body).
+  Selftest + gate + ci.yml; PASSES fleet-wide (3064 files); relocation tests per service.
+- **Remaining (not yet done):** open-redirect (3, triage), SSRF (rework as a helper-level gate),
+  swallowed-except (defer/tune). Four gates now registered blocking; ci-parity green.
 
 ## Recommendation
 Enforce, in priority order, the precise high-value gates after their fleet remediation:
