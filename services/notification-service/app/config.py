@@ -431,6 +431,14 @@ class Settings(BaseSettings):
     # days; a deployment that needs a shorter footprint lowers it, and <=0 keeps rows indefinitely
     # (opt-in to "forever" — never the default). Stamped at receipt time.
     WHATSAPP_INBOUND_RETENTION_DAYS: int = 30
+    # MASTER privacy switch for storing WhatsApp CONVERSATION CONTENT (inbound customer messages AND
+    # the coexistence logs). OFF by default — the house rule is a new capability starts off and the
+    # platform that wants it enables it, and here that makes NOT storing a customer's conversation the
+    # default. When OFF: the webhook is still received, Meta is still acked, and events still fan out
+    # on the bus for any live consumer — but nothing is written to wa_inbound or the coexistence logs.
+    # A platform that wants the durable inbound catch-up feed (/internal/whatsapp/inbound) or
+    # coexistence must set this True (coexistence ALSO still needs WHATSAPP_COEXISTENCE_ENABLED).
+    WHATSAPP_CONVERSATION_STORE_ENABLED: bool = False
     # WhatsApp Flow DATA ENDPOINT (the encrypted server callback that drives a Flow's screens — e.g.
     # the booking calendar). OFF by default: a deployment opts in once it has uploaded a public key to
     # Meta and sealed the matching private key. See docs/design/whatsapp-booking-flow.md.

@@ -24,7 +24,9 @@ def client():
     saved = dict(os.environ)
     os.environ.update(ENV="test", META_APP_SECRET=SECRET, INTERNAL_SERVICE_TOKEN=ITOKEN,
                       TOKEN_VERIFIER_DRIVER="hs256", TOKEN_HS256_SECRET="h" * 40,
-                      PII_SALT="s" * 32)
+                      PII_SALT="s" * 32,
+                      # the durable inbound feed is opt-in now (master privacy switch defaults off)
+                      WHATSAPP_CONVERSATION_STORE_ENABLED="true")
     get_settings.cache_clear()
     from app.main import create_app
     with TestClient(create_app()) as c:
@@ -112,3 +114,34 @@ def test_inbound_purge_route_runs_and_is_audited(client):
     _post(client, _inbound_webhook("wamid.A", "PNID1"))
     r = client.post("/internal/whatsapp/inbound/purge", headers=_tok())
     assert r.status_code == 200 and r.json()["removed"] == 0   # fresh, still in-window
+
+
+def test_master_switch_off_stores_nothing_but_still_acks_and_fans_out():
+    """Default (WHATSAPP_CONVERSATION_STORE_ENABLED off): an inbound webhook is received and acked,
+    the bus still fans out for live consumers, but NOT ONE row is written to wa_inbound — privacy by
+    default. The catch-up feed is opt-in."""
+    import asyncio as _asyncio
+
+    saved = dict(os.environ)
+    os.environ.update(ENV="test", META_APP_SECRET=SECRET, INTERNAL_SERVICE_TOKEN=ITOKEN,
+                      TOKEN_VERIFIER_DRIVER="hs256", TOKEN_HS256_SECRET="h" * 40, PII_SALT="s" * 32)
+    os.environ.pop("WHATSAPP_CONVERSATION_STORE_ENABLED", None)   # default OFF
+    get_settings.cache_clear()
+    try:
+        from app.main import create_app
+        with TestClient(create_app()) as c:
+            _asyncio.run(WhatsAppNumberIndex(c.app.state.container.datastore).bind("PNID1", "acme"))
+            seen = []
+
+            async def _h(ev):
+                seen.append(ev)
+            _asyncio.run(c.app.state.container.event_bus.subscribe("whatsapp.message", _h))
+
+            r = _post(c, _inbound_webhook("wamid.X", "PNID1"))
+            assert r.status_code == 200 and r.json()["received"] is True     # acked
+            assert seen, "the bus must still fan out for a live consumer"    # published
+            # but nothing stored — the feed is empty
+            assert c.get("/internal/whatsapp/inbound", headers=_tok()).json()["messages"] == []
+    finally:
+        os.environ.clear(); os.environ.update(saved)
+        get_settings.cache_clear()

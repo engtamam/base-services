@@ -233,16 +233,21 @@ async def receive(request: Request) -> dict:
     bus = request.app.state.container.event_bus
     ds = request.app.state.container.datastore
     deliveries = DeliveryStore(ds)
-    # Coexistence is opt-in: only when the platform enabled it do we durably store the owner's own-app
-    # activity, and then only for the configured retention window. Off ⇒ None ⇒ nothing stored.
+    # MASTER privacy switch (default OFF): store NO conversation content unless the platform opted in.
+    # OFF ⇒ inbound and coexistence are None ⇒ nothing is written; the webhook is still acked and the
+    # bus still fans out for live consumers (fan-out guards `inbound is not None`/`coexistence is not
+    # None`). Coexistence additionally needs its own enable flag.
+    inbound = None
     coexistence = None
-    if s.WHATSAPP_COEXISTENCE_ENABLED:
-        coexistence = CoexistenceStore(
-            ds, retention_seconds=max(0, s.WHATSAPP_COEXISTENCE_RETENTION_DAYS) * 86400)
+    if s.WHATSAPP_CONVERSATION_STORE_ENABLED:
+        inbound = InboundStore(
+            ds, retention_seconds=max(0, s.WHATSAPP_INBOUND_RETENTION_DAYS) * 86400)
+        if s.WHATSAPP_COEXISTENCE_ENABLED:
+            coexistence = CoexistenceStore(
+                ds, retention_seconds=max(0, s.WHATSAPP_COEXISTENCE_RETENTION_DAYS) * 86400)
     emitted = await _fan_out(
         bus, deliveries, data if isinstance(data, dict) else {},
-        inbound=InboundStore(ds, retention_seconds=max(0, s.WHATSAPP_INBOUND_RETENTION_DAYS) * 86400),
-        number_index=WhatsAppNumberIndex(ds),
+        inbound=inbound, number_index=WhatsAppNumberIndex(ds),
         coexistence=coexistence, prefs=PreferenceStore(ds))
     # Meta retries on any non-2xx and treats the retries as duplicates, so acknowledge fast once the
     # events are on the bus. The count is for our observability, not for Meta.
