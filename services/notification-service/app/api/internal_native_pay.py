@@ -181,6 +181,39 @@ async def refund_payment(request: Request, body: _RefundIn,
     if denied is not None:
         return denied
     adapter = await _payments_adapter(request, settings, body.tenant or "")
+    # FAIL-CLOSED money guard against the SOURCE OF TRUTH (the lookup, per this module's own contract)
+    # BEFORE releasing money. Without it the refund route trusted the caller's amount/currency blindly:
+    # it would over-refund (refund > captured), refund in a currency the payment was never captured in,
+    # or double-refund a redelivered request. We verify the payment is actually captured, the currency
+    # matches, and the amount does not exceed what was captured. A refunded/partially-refunded payment
+    # is no longer "captured", so a replay of a completed refund is refused here — once-only by state.
+    lk = adapter.get_payment_status(configuration=body.payment_configuration,
+                                    reference_id=body.reference_id)
+    if not lk.ok:
+        return JSONResponse(
+            {"ok": False, "reason": f"cannot verify payment before refund: {lk.error}",
+             "code": "REFUND_LOOKUP_FAILED"}, status_code=502)
+    if lk.status != "captured":
+        # Not refundable: pending/failed/canceled, or ALREADY (fully/partially) refunded — the latter
+        # makes a redelivered refund a no-op refusal instead of a second money movement.
+        return JSONResponse(
+            {"ok": False, "reason": f"payment is not refundable in status '{lk.status}'",
+             "code": "PAYMENT_NOT_REFUNDABLE", "status": lk.status}, status_code=409)
+    if lk.currency and lk.currency.upper() != body.currency.upper():
+        return JSONResponse(
+            {"ok": False, "reason": "refund currency does not match the captured payment currency",
+             "code": "REFUND_CURRENCY_MISMATCH", "captured_currency": lk.currency.upper()},
+            status_code=422)
+    if int(lk.amount_minor) <= 0:
+        return JSONResponse(
+            {"ok": False, "reason": "captured amount is unknown; refusing to refund an unverifiable ceiling",
+             "code": "CAPTURED_AMOUNT_UNKNOWN"}, status_code=422)
+    # Compare across possibly-different decimal offsets without floats: a/oa <= b/ob  <=>  a*ob <= b*oa.
+    if int(body.amount_minor) * int(lk.offset) > int(lk.amount_minor) * int(body.offset):
+        return JSONResponse(
+            {"ok": False, "reason": "refund amount exceeds the captured amount",
+             "code": "REFUND_EXCEEDS_CAPTURED", "captured_minor": int(lk.amount_minor),
+             "captured_offset": int(lk.offset)}, status_code=422)
     res = adapter.refund(reference_id=body.reference_id, configuration=body.payment_configuration,
                          amount_minor=body.amount_minor, currency=body.currency.upper(),
                          offset=body.offset, speed=body.speed)

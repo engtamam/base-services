@@ -38,6 +38,21 @@ def test_ubl_types_and_vat():
     assert "0100000" in std["xml"] and "clearance:1.0" in std["xml"]
 
 
+def test_category_vat_is_rounded_on_the_total_not_summed_per_line():
+    """MEDIUM regression (ZATCA BR-S-08): the category/document TaxAmount must be
+    round(Σ taxable × rate), NOT the sum of per-line rounded VATs. Two 0.10 lines: per-line VAT
+    rounds 0.015->0.02 each (Σ=0.04), but the category is round(0.20×0.15)=0.03. Summing per-line
+    would assert 0.04 against a 0.03 taxable×rate and ZATCA rejects the invoice."""
+    b = build_ubl({**INV, "vat_rate": "0.15", "currency": "SAR",
+                   "lines": [{"description": "a", "qty": 1, "amount_minor": 10},
+                             {"description": "b", "qty": 1, "amount_minor": 10}]},
+                  icv=1, pih=GENESIS_PIH, invoice_type="simplified")
+    assert b["vat"] == "0.03", f"category VAT must be round(0.20*0.15)=0.03, got {b['vat']}"
+    assert b["tax_inclusive"] == "0.23"          # 0.20 + 0.03
+    # the document-level TaxAmount in the XML is the category value, not 0.04
+    assert '<cbc:TaxAmount currencyID="SAR">0.04</cbc:TaxAmount>' not in b["xml"]
+
+
 def test_chain_breaks():
     good = [{"icv": 1, "pih": GENESIS_PIH, "hash": "H1", "status": "reported"},
             {"icv": 2, "pih": "H1", "hash": "H2", "status": "pending"}]

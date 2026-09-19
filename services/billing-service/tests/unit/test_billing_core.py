@@ -55,6 +55,13 @@ def test_proration():
     assert d == 5000
 
 
+def test_proration_delta_is_deterministic_half_up_not_truncated():
+    # 2/3 of the period remaining: each side is rounded HALF-UP from an exact whole-second Decimal
+    # (20000*2/3=13333.33->13333 ; 10000*2/3=6666.67->6667 ; delta=6666), deterministic run-to-run —
+    # not the binary-float + truncation the old int(Decimal(x)*Decimal(float)) could produce.
+    assert pricing.proration_delta(10000, 20000, period_start=0, period_end=3, now=1) == 6666
+
+
 def test_vat():
     t = VatCalculator("0.15")
     assert t.compute(amount_minor=10000) == 1500

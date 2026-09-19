@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import time as _time
 
 import pytest
 
@@ -102,6 +103,32 @@ def test_concurrent_same_number_allocates_exactly_one_icv():
     assert len([r for r in rows if r["number"] == "INV-1"]) == 1
     assert run(st.get("zatca_index", f"icv::t1::{created[0].icv}")) is not None
     assert run(st.get("zatca_index", f"icv::t1::{created[0].icv + 1}")) is None
+
+
+# ── orphaned num:: claim (crash before icv:: claim) self-heals, never a permanent 500 ──
+def test_stale_orphan_num_claim_self_heals_and_reuses_the_number():
+    """A crash between the num:: claim and save() (BEFORE any icv:: claim) leaves a num:: orphan that
+    reconcile_orphans — which walks icv:: — never sees. A later allocate must free the STALE claim and
+    mint the invoice, not spin and 500 forever."""
+    st = MemoryDataStore()
+    store = InvoiceStore(st)
+    run(st.create("zatca_index", "num::t1::INV-9",
+                  {"id": "phantom", "claimed_ts": _time.time() - 3600}))   # crash aftermath, no row
+    inv, created = run(store.allocate_slot("t1", "INV-9", "standard"))
+    assert created is True and inv.number == "INV-9" and inv.icv == 1
+    assert run(st.get("zatca_index", "num::t1::INV-9"))["id"] == inv.id     # claim now points to it
+    assert run(store.by_number("t1", "INV-9")).id == inv.id
+
+
+def test_fresh_num_claim_is_not_stolen_from_an_inflight_winner():
+    """A just-written num:: claim with no invoice yet (a live winner mid-allocate) is NOT reclaimed —
+    only a claim older than the stale threshold is treated as a crash orphan."""
+    st = MemoryDataStore()
+    store = InvoiceStore(st)
+    run(st.create("zatca_index", "num::t1::INV-7", {"id": "inflight", "claimed_ts": _time.time()}))
+    with pytest.raises(RuntimeError):
+        run(store.allocate_slot("t1", "INV-7", "standard"))
+    assert run(st.get("zatca_index", "num::t1::INV-7"))["id"] == "inflight"   # untouched
 
 
 # ── r2-02: concurrent sign never forks the chain / overwrites signed bytes ───────

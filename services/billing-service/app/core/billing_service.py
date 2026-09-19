@@ -139,6 +139,20 @@ class BillingService:
             return self._gw
         return await self._gw_resolver(pay.tenant, driver)
 
+    async def _gw_for_webhook(self, provider: str, tenant: str) -> Any:
+        """Verify a callback with the gateway that SENT it, not the currently-active one. A tenant that
+        switched gateways still has in-flight callbacks from the OLD gateway; only that gateway's
+        scheme verifies its signature, so verifying with the active gateway would reject a genuine
+        payment.succeeded and leave an invoice unpaid after the money moved. Only relevant in pinned
+        mode (multiple gateways coexist); in active mode there is one gateway and self._gw is it.
+        Mirrors _gw_for_refund: route by the provider that actually signed."""
+        if not self._pinned_mode():
+            return self._gw
+        driver = (provider or "").strip()
+        if not driver or not tenant:
+            return self._gw
+        return await self._gw_resolver(tenant, driver)
+
     # ── entitlements (general limit enforcement) ────────────────────────────────
     async def _generation(self, tenant: str) -> str:
         """Tenant generation + global (catalogue) generation. Either bump invalidates."""
@@ -785,6 +799,14 @@ class BillingService:
                     "pending_plan_id": new_plan_id, "effective": "next_renewal", "proration_minor": 0}
 
         # ── UPGRADE (or lateral): charge the difference FIRST, flip only on success ─────────────
+        # A mid-cycle interval change (e.g. month -> year) must NOT be prorated against the current
+        # period: proration_delta scales the NEW interval's price by the fraction of the OLD interval's
+        # period left (charging a year's price for the days remaining in a month) and would leave the
+        # renewal boundary on the old cadence — a real mispricing. Refuse it here rather than mischarge.
+        # A cheaper interval change still schedules cleanly at renewal via the downgrade branch above;
+        # an immediate cross-interval UPGRADE needs an explicit period-reset design (see docs/backlog).
+        if new_interval != sub.interval:
+            raise ValueError("INTERVAL_CHANGE_NOT_SUPPORTED_MIDCYCLE")
         delta = pricing.proration_delta(old_price, new_price, period_start=sub.current_period_start,
                                         period_end=sub.current_period_end, now=now_ts())
         invoice_id = ""
@@ -828,6 +850,19 @@ class BillingService:
             raise UpgradeChargeUnavailable(str(ex)) from ex
         if not charge.ok:
             raise UpgradeChargeFailed(charge.error or "DECLINED")
+        # APP-LEVEL idempotency, keyed like the gateway charge (same as wallet_topup). The gateway
+        # dedupes the CHARGE, but without this a double-clicked / retried / raced upgrade would still
+        # mint a SECOND invoice (new id) whose _mark_paid records a SECOND ledger charge and a SECOND
+        # grant credit (grants are idempotent by invoice_id, so two invoice ids = two credits). Claim
+        # AFTER a successful charge (a decline never poisons the key): a duplicate replays the first
+        # invoice; a concurrent duplicate is told it is in progress. (wallet-r2 / billing double-invoice)
+        proceed, prior = await self._idempo.claim(idem)
+        if prior is not None:
+            existing = await self._invoices.fetch(prior["invoice_id"])
+            if existing is not None:
+                return existing
+        elif not proceed:
+            raise UpgradeChargeFailed("UPGRADE_IN_PROGRESS")
         inv = Invoice(id=new_id("inv_"), tenant=sub.tenant,
                       number=await self._invoices.next_number(sub.tenant), subscription_id=sub.id,
                       lines=[{"description": "Plan change — upgrade", "quantity": 1,
@@ -840,6 +875,7 @@ class BillingService:
                       status="succeeded", created=iso())
         await self._payments.save(pay)
         await self._mark_paid(inv)                          # doc_type, VAT, e-invoice, ledger, event
+        await self._idempo.mark(idem, {"invoice_id": inv.id})  # a duplicate replays THIS invoice
         return inv
 
     # ── one-off wallet top-up ────────────────────────────────────────────────────
@@ -2108,9 +2144,10 @@ class BillingService:
         candidates = tuple(c for c in candidates if c)
         if not candidates:
             return {"ok": False, "reason": "WEBHOOK_SECRET_NOT_CONFIGURED", "type": ""}
+        gw = await self._gw_for_webhook(provider, webhook_tenant)
         event = None
         for candidate in candidates:
-            event = self._gw.verify_webhook(headers=headers, body=body, secret=candidate)
+            event = gw.verify_webhook(headers=headers, body=body, secret=candidate)
             if event.verified:
                 break
         if event is None or not event.verified:
@@ -2262,7 +2299,8 @@ class BillingService:
             amount_minor=grantable, reason=f"refund:{inv.number}",
             allow_negative=bool(self._cfg.get("clawback_allow_negative", True)))
 
-    async def refund(self, payment_id: str, amount_minor: int | None = None) -> dict[str, Any]:
+    async def refund(self, payment_id: str, amount_minor: int | None = None,
+                     refund_id: str = "") -> dict[str, Any]:
         pay = await self._payments.fetch(payment_id)
         if pay is None:
             return {"ok": False, "reason": "NOT_FOUND"}
@@ -2291,7 +2329,13 @@ class BillingService:
         # pass, both call gw.refund). Mirror settle()/run_cycle — claim first (replay a finished one,
         # refuse an in-flight one), bound the money through the same atomic counter, and send only the
         # delta that atomically applied to the gateway.
-        rkey = f"refund:{payment_id}:{refund_amt}"
+        # Idempotency identity. PREFER a caller-supplied refund_id — the caller owns "is this the same
+        # refund?": two genuinely DISTINCT partial refunds of the SAME amount get distinct ids (so the
+        # second is not swallowed as a duplicate → customer under-refunded), while a retry of one refund
+        # reuses its id and dedupes. Without an id we fall back to the amount-based key, which cannot
+        # tell two equal partial refunds apart — a documented coarser guarantee, so callers issuing
+        # multiple partial refunds should pass a refund_id.
+        rkey = f"refund:{payment_id}:{refund_id}" if refund_id else f"refund:{payment_id}:{refund_amt}"
         proceed, prior = await self._idempo.claim(rkey)
         if prior is not None:
             return {**prior, "duplicate": True}

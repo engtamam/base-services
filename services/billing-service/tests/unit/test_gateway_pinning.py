@@ -16,7 +16,7 @@ from app.core.stores import (CouponStore, IdempotencyStore, InvoiceStore, Ledger
                              PlanStore, SettlementStore, SubscriptionStore, UsageStore)
 from app.adapters.datastore.memory import MemoryDataStore
 from app.adapters.tax.vat import VatCalculator
-from app.ports.payment_gateway import Charge, GatewayUnavailable
+from app.ports.payment_gateway import Charge, GatewayUnavailable, WebhookEvent
 
 from tests.unit.test_billing_core import CFG, MockEInv, NullPdf
 
@@ -40,6 +40,13 @@ class _GW:
     def refund(self, **k):
         self.charged.append({"refund": True, **k})
         return Charge(ok=True, status="refunded", provider=self.driver, provider_id="re_1")
+
+    def verify_webhook(self, *, headers, body, secret):
+        # Records that THIS gateway did the verifying, and only verifies for its own signed callbacks
+        # (self.ok). A wrong-gateway verify (active instead of the sender) would return verified=False.
+        self.charged.append({"verify": True, "secret": secret})
+        return WebhookEvent(verified=self.ok, type="payment.succeeded",
+                            provider_id=headers.get("pid", ""))
 
 
 class _FailGW:
@@ -126,6 +133,24 @@ def test_active_mode_ignores_the_pin_and_uses_the_active_gateway():
                        payment_token="pm", payment_gateway="moyasar")
     run(b._charge_invoice(_inv(), sub.payment_token, sub))
     assert len(active.charged) == 1                          # active mode → the active gateway
+
+
+# ── webhook routing ─────────────────────────────────────────────────────────────
+def test_webhook_is_verified_by_the_sending_gateway_not_the_active_one():
+    """A callback from the OLD gateway (after the active driver was switched) must be verified by the
+    gateway that SIGNED it, or a genuine payment.succeeded is rejected and the invoice stays unpaid."""
+    st = MemoryDataStore()
+    old = _GW("moyasar", ok=True)          # the sender — verifies its own signature
+    new = _GW("stripe", ok=False)          # the active gateway — would REJECT the old signature
+    b = _svc(st, new, registry={"moyasar": old, "stripe": new})
+    sub = Subscription(id="sub_x", tenant="t1", plan_id="p", status="active",
+                       payment_token="pm", payment_gateway="moyasar")
+    run(b._charge_invoice(_inv(), sub.payment_token, sub))   # provider=moyasar, provider_id=moyasar_ch
+    res = run(b.handle_webhook("moyasar", {"pid": "moyasar_ch"}, b"{}", ("whsec",),
+                               webhook_tenant="t1"))
+    assert res["ok"] is True and res["reconciled"] is True          # verified via the OLD gateway
+    assert any(c.get("verify") for c in old.charged)               # ... which is the one that verified
+    assert not any(c.get("verify") for c in new.charged)           # the active gateway was NOT used
 
 
 # ── refund routing ──────────────────────────────────────────────────────────────

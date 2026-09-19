@@ -85,12 +85,16 @@ def rule_discount(rules: list[dict], subtotal_minor: int, *, held_keys: set[str]
 
 def proration_delta(old_minor: int, new_minor: int, *, period_start: float,
                     period_end: float, now: float) -> int:
-    """Net charge (minor units) for switching plans mid-period: prorated new − credit old."""
-    span = max(1.0, period_end - period_start)
-    frac = max(0.0, min(1.0, (period_end - now) / span))    # fraction of the period remaining
-    credit = int(Decimal(old_minor) * Decimal(frac))
-    charge = int(Decimal(new_minor) * Decimal(frac))
-    return charge - credit
+    """Net charge (minor units) for switching plans mid-period: prorated new − credit old.
+
+    Deterministic like prorate(): the remaining fraction is an EXACT Decimal built from whole-second
+    period lengths (never a binary float), and each side is rounded HALF-UP via prorate — so the same
+    upgrade produces the same delta to the minor unit on every run, not merely close. (The earlier
+    `int(Decimal(x) * Decimal(float_frac))` smuggled in the float's binary tail and TRUNCATED.)"""
+    span = max(1, int(period_end) - int(period_start))
+    remaining = max(0, min(span, int(period_end) - int(now)))   # whole seconds left in the period
+    frac = Decimal(remaining) / Decimal(span)
+    return prorate(new_minor, frac) - prorate(old_minor, frac)
 
 
 def recurring_component(price: dict, *, quantity: int = 1) -> int:

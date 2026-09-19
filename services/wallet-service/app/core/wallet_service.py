@@ -573,15 +573,30 @@ class WalletService:
             return {"withdrawal_id": wd.id, "state": wd.state, "idempotent": True}
         if paid:
             wd.state = WITHDRAW_PAID
+            wd.settled_at = self._clock.now()
+            await self._store.put(_WITHDRAWALS, wd.id, wd.to_dict())
         else:
+            # DURABLE backstop, independent of the idempotency TTL (audit wallet-r2-03). The "settle"
+            # claim above only dedups a duplicate while its result row is unexpired (24h); after that a
+            # redelivered paid=false callback re-claims, re-reads state — and if the state write had
+            # never landed (a crash between the reversal _mutate and the put) it still sees PENDING and
+            # REVERSES A SECOND TIME (double credit). Stamp the terminal state durably BEFORE the
+            # reversal credit, and roll it back if the credit fails — exactly as credit()/refund() stamp
+            # their marker first — so a post-TTL replay (or a crash mid-mutate) finds FAILED, never
+            # PENDING, and reverses AT MOST once: fail-safe toward never double-crediting a failed payout.
+            orig = wd.to_dict()
+            wd.state = WITHDRAW_FAILED
+            wd.settled_at = self._clock.now()
+            await self._store.put(_WITHDRAWALS, wd.id, wd.to_dict())
             entry = self._entry(wd.tenant, WITHDRAW_REVERSAL, wd.applied, +1,
                                 source=source or f"reverse:{wd.id}", reason="payout failed",
                                 ref=wd.id)
-            await self._mutate(wd.tenant, funds_delta={k: int(v) for k, v in wd.applied.items()},
-                               entry=entry)
-            wd.state = WITHDRAW_FAILED
-        wd.settled_at = self._clock.now()
-        await self._store.put(_WITHDRAWALS, wd.id, wd.to_dict())
+            try:
+                await self._mutate(wd.tenant, funds_delta={k: int(v) for k, v in wd.applied.items()},
+                                   entry=entry)
+            except Exception:
+                await self._store.put(_WITHDRAWALS, wd.id, orig)   # nothing reversed — restore PENDING
+                raise
         result = {"withdrawal_id": wd.id, "state": wd.state}
         await self._finalize(wd.tenant, "settle", withdrawal_id, result)
         return result
@@ -685,14 +700,27 @@ class WalletService:
         # falls by the full reserved amount (freeing the unspent remainder back to available) while
         # funds fall only by what was actually spent. A crash between the two would either double-count
         # the hold or spend money that was never reserved.
-        out = await self._mutate(hold.tenant,
-                                 funds_delta={k: -v for k, v in applied.items()},
-                                 held_delta={k: -v for k, v in reserved_applied.items()},
-                                 entry=entry)
+        # DURABLE backstop, independent of the idempotency TTL (audit wallet-r2-03). The "confirm" claim
+        # only dedups a duplicate while its result row is unexpired (24h); after that a replay re-claims,
+        # re-reads the hold — and if the state write had never landed (a crash between the debit _mutate
+        # and the put) still sees ACTIVE and DEBITS A SECOND TIME (double-charge). Stamp the terminal
+        # state (and what was actually charged) durably BEFORE the debit, and roll it back if the debit
+        # fails — matching credit()/refund()'s marker-first ordering — so a post-TTL replay (or a crash
+        # mid-mutate) finds CONFIRMED, never ACTIVE, and debits AT MOST once: fail-safe toward never
+        # double-charging the customer (a hard crash can only leave the hold uncharged, never charged twice).
+        orig = hold.to_dict()
         hold.state = HOLD_CONFIRMED
         hold.applied = applied                              # record what was ACTUALLY charged
         hold.plan = plan_dict
         await self._store.put(_HOLDS, hold.id, hold.to_dict())
+        try:
+            out = await self._mutate(hold.tenant,
+                                     funds_delta={k: -v for k, v in applied.items()},
+                                     held_delta={k: -v for k, v in reserved_applied.items()},
+                                     entry=entry)
+        except Exception:
+            await self._store.put(_HOLDS, hold.id, orig)    # nothing debited — restore ACTIVE
+            raise
         released = sum(reserved_applied.values()) - sum(applied.values())
         result = {"hold_id": hold.id, "tenant": hold.tenant, "state": HOLD_CONFIRMED, "released": released, **out}
         await self._finalize(hold.tenant, "confirm", hold_id, result)
@@ -954,24 +982,41 @@ class WalletService:
             reserved = await self._reserved_for_other_grants(grant.tenant, grant.fund, grant.id, now)
             claimable = max(0, spare - reserved)
             remaining = max(0, min(claimable, grant.amount))
+            # DURABLE backstop, independent of the idempotency TTL (audit wallet-r2-03). The "sweep"
+            # claim only dedups a duplicate while its result row is unexpired (24h); after that a replay
+            # re-claims, re-reads state — and if the state write had never landed (a crash between the
+            # clawback _mutate and the put) still sees "active" and CLAWS A SECOND TIME (over-claw).
+            # Stamp the terminal grant state durably BEFORE the debit, and roll it back if the debit
+            # fails — matching credit()/refund()'s marker-first ordering — so a post-TTL re-sweep (or a
+            # crash mid-mutate) finds it no longer "active" and claws AT MOST once: fail-safe toward
+            # never over-clawing the customer.
+            orig = grant.to_dict()
+            grant.state = "dormant" if behavior == "dormant" else "expired"
+            grant.swept = remaining
             if remaining > 0:
                 is_dormant = behavior == "dormant"
                 led_type = EXPIRE if is_dormant else CLAWBACK
                 entry = self._entry(grant.tenant, led_type, {grant.fund: remaining}, -1,
                                     source=f"{led_type}:{grant.id}",
                                     reason="grant expired (dormant)" if is_dormant else "grant expired")
-                out = await self._mutate(grant.tenant, funds_delta={grant.fund: -remaining},
-                                         entry=entry)
+                # atomic: ok — serialized by the _claim("sweep", grant.id) above; only the winning
+                # sweep reaches these grant writes, so there is no competing writer.
+                await self._store.put(_GRANTS, grant.id, grant.to_dict())   # terminal state BEFORE debit
+                try:
+                    out = await self._mutate(grant.tenant, funds_delta={grant.fund: -remaining},
+                                             entry=entry)
+                except Exception:
+                    # atomic: ok — same single-writer sweep claim; restores the pre-terminal row.
+                    await self._store.put(_GRANTS, grant.id, orig)   # nothing clawed — restore active
+                    raise
                 if is_dormant:
                     dormant_total += remaining
                 else:
                     clawed += remaining
                 await self._check_low_balance(grant.tenant, out["funds"], debit=True)
-            grant.state = "dormant" if behavior == "dormant" else "expired"
-            grant.swept = remaining
-            # atomic: ok — serialized by the _claim("sweep", grant.id) above; only the winning sweep
-            # reaches this state write, so there is no competing writer on this grant.
-            await self._store.put(_GRANTS, grant.id, grant.to_dict())
+            else:
+                # atomic: ok — serialized by the _claim("sweep", grant.id) above (single writer).
+                await self._store.put(_GRANTS, grant.id, grant.to_dict())
             await self._finalize(grant.tenant, "sweep", grant.id,
                                  {"grant_id": grant.id, "state": grant.state, "swept": remaining})
             await self._emit(_events.GRANT_EXPIRED, {
@@ -1050,9 +1095,28 @@ class WalletService:
             entry = self._entry(grant.tenant, RECLAIM, {grant.fund: amount}, +1,
                                 source=src, reason=reason or "dormant grant reclaimed",
                                 ref=f"{EXPIRE}:{grant.id}")
-            out = await self._mutate(grant.tenant, funds_delta={grant.fund: amount}, entry=entry)
-        grant.state = "reclaimed"
-        await self._store.put(_GRANTS, grant.id, grant.to_dict())
+            # DURABLE backstop, independent of the idempotency TTL (audit wallet-r2-03). The grant-scoped
+            # claim only dedups a duplicate while its result row is unexpired (24h); after that a replay
+            # re-claims, re-reads state — and if the state write had never landed (a crash between the
+            # credit _mutate and the put) still sees "dormant" and CREDITS A SECOND TIME (mint). Stamp
+            # state="reclaimed" durably BEFORE the credit, and roll it back if the credit fails — matching
+            # credit()/refund()'s marker-first ordering — so a post-TTL replay (or a crash mid-mutate)
+            # finds "reclaimed", never "dormant", and credits AT MOST once: fail-safe toward never minting.
+            orig = grant.to_dict()
+            grant.state = "reclaimed"
+            # atomic: ok — serialized by the _claim(RECLAIM, reclaim:{grant.id}) above; only the claim
+            # winner reaches these grant writes, so there is no competing writer.
+            await self._store.put(_GRANTS, grant.id, grant.to_dict())
+            try:
+                out = await self._mutate(grant.tenant, funds_delta={grant.fund: amount}, entry=entry)
+            except Exception:
+                # atomic: ok — same single-writer reclaim claim; restores the pre-terminal row.
+                await self._store.put(_GRANTS, grant.id, orig)   # nothing credited — restore dormant
+                raise
+        else:
+            grant.state = "reclaimed"
+            # atomic: ok — serialized by the reclaim claim above (single writer).
+            await self._store.put(_GRANTS, grant.id, grant.to_dict())
         result = {"reclaimed": amount, "fund": grant.fund, "grant_id": grant.id, **out}
         await self._finalize(grant.tenant, RECLAIM, claim_key, result)
         await self._emit(_events.GRANT_RECLAIMED,

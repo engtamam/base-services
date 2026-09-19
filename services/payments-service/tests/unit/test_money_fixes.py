@@ -39,7 +39,7 @@ async def _svc_with_events():
     await bus.subscribe("payment.failed", _collect)
 
     secrets = merchant_secret_store(store, KEK)
-    gateways = MerchantGateways(secrets, console_link_base="https://pay.example.test/checkout")
+    gateways = MerchantGateways(secrets, console_link_base="https://pay.example.test/checkout", allow_console=True)
     svc = PaymentService(
         requests=PaymentRequestStore(store), gateways=gateways, event_bus=bus,
         redirect_base_url="https://conduit.example", allowed_hosts=ALLOWED, link_ttl_seconds=3600)
@@ -121,6 +121,35 @@ def test_H3_zero_amount_success_is_refused_not_completed():
                                      currency="SAR")
         row = await svc._req.get(link.request_id)
         updated = await svc.apply_outcome(tenant="acme", outcome=_success(row, amount=0))
+        assert updated["status"] == FAILED and updated["amount_mismatch"] is True
+        assert not any(e.type == TOPIC_COMPLETED for e in events)
+    run(go())
+
+
+def test_a_success_with_no_confirmable_currency_is_refused_not_completed():
+    """MEDIUM regression: an absent currency was read as "matches" (SAR/USD/EUR share exponent 2, so
+    the bare amount compare cannot tell them apart) — a success in another currency could complete a
+    request. A SUCCEEDED with no confirmable currency is now UNVERIFIABLE, refused like a 0 amount."""
+    async def go():
+        svc, secrets, events = await _svc_with_events()
+        await _configure_console(secrets)
+        link = await svc.create_link(tenant="acme", reference="o-nocur", amount_minor=15000,
+                                     currency="SAR")
+        row = await svc._req.get(link.request_id)
+        updated = await svc.apply_outcome(tenant="acme", outcome=_success(row, currency=""))
+        assert updated["status"] == FAILED and updated["amount_mismatch"] is True
+        assert not any(e.type == TOPIC_COMPLETED for e in events)
+    run(go())
+
+
+def test_a_success_in_a_different_currency_is_refused():
+    async def go():
+        svc, secrets, events = await _svc_with_events()
+        await _configure_console(secrets)
+        link = await svc.create_link(tenant="acme", reference="o-usd", amount_minor=15000,
+                                     currency="SAR")
+        row = await svc._req.get(link.request_id)
+        updated = await svc.apply_outcome(tenant="acme", outcome=_success(row, currency="USD"))
         assert updated["status"] == FAILED and updated["amount_mismatch"] is True
         assert not any(e.type == TOPIC_COMPLETED for e in events)
     run(go())

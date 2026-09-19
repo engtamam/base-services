@@ -108,6 +108,30 @@ def test_two_partial_refunds_accumulate_and_then_void():
     assert got.voided_at != ""                                  # stamped when the accumulated refunds reach the total
 
 
+def test_two_equal_partial_refunds_are_distinguished_by_refund_id():
+    """MEDIUM regression: the refund key was refund:{payment}:{amount}, so a SECOND genuinely distinct
+    partial refund of the SAME amount was swallowed as a duplicate (customer under-refunded). A
+    caller-supplied refund_id distinguishes them; a retry of one id still dedupes."""
+    from app.core.models import Payment
+    st = MemoryDataStore(); b = _svc(st)
+    _paid(st, "inv_5", 20000)
+
+    def _refundable():
+        run(PaymentStore(st).save(Payment(id="pay_inv_5", tenant="t1", invoice_id="inv_5",
+                                          status="succeeded", provider_id="ch", currency="SAR")))
+
+    r1 = run(b.refund("pay_inv_5", amount_minor=5000, refund_id="r1"))
+    assert r1["ok"] and not r1.get("duplicate")
+    _refundable()
+    r2 = run(b.refund("pay_inv_5", amount_minor=5000, refund_id="r2"))   # distinct refund, same amount
+    assert r2["ok"] and not r2.get("duplicate"), "a distinct equal refund must not be swallowed"
+    assert run(InvoiceStore(st).fetch("inv_5")).refunded_minor == 10000  # BOTH applied
+    _refundable()
+    r1_retry = run(b.refund("pay_inv_5", amount_minor=5000, refund_id="r1"))   # retry of r1
+    assert r1_retry.get("duplicate") is True                             # deduped by id
+    assert run(InvoiceStore(st).fetch("inv_5")).refunded_minor == 10000  # unchanged (no third refund)
+
+
 # ── currency ──────────────────────────────────────────────────────────────────
 def test_currency_decimals():
     assert currency.major(5000, "SAR") == "50.00"

@@ -8,8 +8,11 @@ from app.ports.whatsapp_payments import PaymentLookup, RefundResult
 class ConsoleWhatsAppPayments:
     driver = "console"
 
-    def __init__(self, *, status: str = "captured", amount_minor: int = 0, currency: str = "SAR",
-                 offset: int = 100, **_) -> None:
+    # Default to a large captured ceiling so the permissive test double passes the refund route's
+    # fail-closed "amount <= captured" guard on the happy path. Construct it with an explicit
+    # amount_minor / status / currency to exercise that guard's refusal branches.
+    def __init__(self, *, status: str = "captured", amount_minor: int = 1_000_000_000_000,
+                 currency: str = "SAR", offset: int = 100, **_) -> None:
         self._status, self._amount, self._currency, self._offset = status, amount_minor, currency, offset
 
     def get_payment_status(self, *, configuration: str, reference_id: str) -> PaymentLookup:

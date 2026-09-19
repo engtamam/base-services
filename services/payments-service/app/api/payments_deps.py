@@ -41,7 +41,9 @@ def build_gateways(request: Request, settings: Settings | None = None) -> Mercha
     return MerchantGateways(
         build_merchant_secrets(request, settings),
         console_link_base=settings.PAYMENTS_CONSOLE_LINK_BASE,
-        gateway_timeout=settings.PAYMENTS_GATEWAY_TIMEOUT_SECONDS)
+        gateway_timeout=settings.PAYMENTS_GATEWAY_TIMEOUT_SECONDS,
+        # The fake console gateway is selectable only outside production (fail-closed in prod).
+        allow_console=settings.ENV != "production")
 
 
 def build_option_gate(request: Request) -> OptionGate:

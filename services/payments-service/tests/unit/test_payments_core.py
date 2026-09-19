@@ -38,7 +38,7 @@ async def _svc_with_events():
     await bus.subscribe("payment.failed", _collect)
 
     secrets = merchant_secret_store(store, KEK)
-    gateways = MerchantGateways(secrets, console_link_base="https://pay.example.test/checkout")
+    gateways = MerchantGateways(secrets, console_link_base="https://pay.example.test/checkout", allow_console=True)
     svc = PaymentService(
         requests=PaymentRequestStore(store), gateways=gateways, event_bus=bus,
         redirect_base_url="https://conduit.example", allowed_hosts=ALLOWED, link_ttl_seconds=3600)
@@ -77,6 +77,25 @@ def test_unconfigured_tenant_fails_closed():
         svc, _, _ = await _svc_with_events()
         with pytest.raises(PaymentNotConfigured):
             await svc.create_link(tenant="nobody", reference="o1", amount_minor=100, currency="SAR")
+    run(go())
+
+
+def test_console_gateway_is_not_selectable_in_production():
+    """The fake console gateway (marks paid with no real money) must fail closed in production. With
+    allow_console=False a tenant that has 'console' selected resolves to the null gateway and is
+    reported unconfigured — never a live-looking checkout that collects nothing."""
+    async def go():
+        store = MemoryDataStore()
+        secrets = merchant_secret_store(store, KEK)
+        await _configure_console(secrets)
+        prod = MerchantGateways(secrets, console_link_base="https://x/checkout")  # allow_console=False
+        assert await prod.configured("acme") is False
+        gw = await prod.gateway_for("acme")
+        assert gw.driver == "null"
+        # But outside production the same tenant resolves to the console double.
+        dev = MerchantGateways(secrets, console_link_base="https://x/checkout", allow_console=True)
+        assert await dev.configured("acme") is True
+        assert (await dev.gateway_for("acme")).driver == "console"
     run(go())
 
 
@@ -248,7 +267,7 @@ def test_C1_gateway_failure_releases_claim_so_retry_can_succeed():
         secrets = merchant_secret_store(store, KEK)
         # Point the console at an empty link_base so the first attempt fails (no redirect_url)? The
         # console always returns ok; instead simulate failure by configuring NO driver first, then fix.
-        gateways = MerchantGateways(secrets, console_link_base="https://pay.example.test/checkout")
+        gateways = MerchantGateways(secrets, console_link_base="https://pay.example.test/checkout", allow_console=True)
         svc = PaymentService(requests=PaymentRequestStore(store), gateways=gateways, event_bus=bus,
                              redirect_base_url="https://c.example", allowed_hosts=ALLOWED,
                              link_ttl_seconds=3600)

@@ -191,3 +191,82 @@ def test_a_locked_off_shop_stays_off_and_lookup_is_gated_too(saved_env):
                json={"tenant": "notenabled", "reference_id": "ORD-9",
                      "payment_configuration": "x"})
     assert r.status_code == 403 and r.json()["code"] == "NATIVE_PAY_NOT_ENABLED_FOR_TENANT"
+
+
+# ── refund is FAIL-CLOSED against the lookup (source of truth) ───────────────────
+def _patch_adapter(monkeypatch, adapter):
+    """Inject a payments adapter with a chosen captured state for the refund guard tests."""
+    import app.api.internal_native_pay as mod
+
+    async def _fake(request, settings, tenant):
+        return adapter
+
+    monkeypatch.setattr(mod, "_payments_adapter", _fake)
+
+
+def _refund_body(**over) -> dict:
+    b = {"tenant": "acme", "reference_id": "ORD-1", "payment_configuration": "acme_rzp",
+         "amount_minor": 3450, "currency": "SAR"}
+    b.update(over)
+    return b
+
+
+def test_refund_exceeding_the_captured_amount_is_refused(saved_env, monkeypatch):
+    from app.adapters.whatsapp_payments.console import ConsoleWhatsAppPayments
+    c = _make_app(WHATSAPP_NATIVE_PAY_ENABLED="true", WHATSAPP_PAYMENTS_DRIVER="console")
+    _enable_native_pay(c, "acme")
+    _patch_adapter(monkeypatch, ConsoleWhatsAppPayments(status="captured", amount_minor=1000,
+                                                        currency="SAR"))
+    r = c.post("/internal/whatsapp/pay/refund", headers=_tok(),
+               json=_refund_body(amount_minor=2000))
+    assert r.status_code == 422 and r.json()["code"] == "REFUND_EXCEEDS_CAPTURED"
+
+
+def test_refund_in_the_wrong_currency_is_refused(saved_env, monkeypatch):
+    from app.adapters.whatsapp_payments.console import ConsoleWhatsAppPayments
+    c = _make_app(WHATSAPP_NATIVE_PAY_ENABLED="true", WHATSAPP_PAYMENTS_DRIVER="console")
+    _enable_native_pay(c, "acme")
+    _patch_adapter(monkeypatch, ConsoleWhatsAppPayments(status="captured", amount_minor=100000,
+                                                        currency="USD"))
+    r = c.post("/internal/whatsapp/pay/refund", headers=_tok(), json=_refund_body(currency="SAR"))
+    assert r.status_code == 422 and r.json()["code"] == "REFUND_CURRENCY_MISMATCH"
+
+
+def test_refund_of_an_already_refunded_payment_is_refused(saved_env, monkeypatch):
+    """A payment that is no longer 'captured' (already fully/partially refunded) is not refundable —
+    so a redelivered refund request is a no-op refusal, never a second money movement."""
+    from app.adapters.whatsapp_payments.console import ConsoleWhatsAppPayments
+    c = _make_app(WHATSAPP_NATIVE_PAY_ENABLED="true", WHATSAPP_PAYMENTS_DRIVER="console")
+    _enable_native_pay(c, "acme")
+    _patch_adapter(monkeypatch, ConsoleWhatsAppPayments(status="refunded", amount_minor=100000,
+                                                        currency="SAR"))
+    r = c.post("/internal/whatsapp/pay/refund", headers=_tok(), json=_refund_body())
+    assert r.status_code == 409 and r.json()["code"] == "PAYMENT_NOT_REFUNDABLE"
+
+
+def test_refund_when_the_lookup_cannot_verify_is_refused(saved_env, monkeypatch):
+    from app.ports.whatsapp_payments import PaymentLookup, RefundResult
+    c = _make_app(WHATSAPP_NATIVE_PAY_ENABLED="true", WHATSAPP_PAYMENTS_DRIVER="console")
+    _enable_native_pay(c, "acme")
+
+    class _Unverifiable:
+        def get_payment_status(self, *, configuration, reference_id):
+            return PaymentLookup(ok=False, reference_id=reference_id, error="graph unreachable")
+
+        def refund(self, **_):                      # must NEVER be reached
+            raise AssertionError("refund fired without a verified payment")
+
+    _patch_adapter(monkeypatch, _Unverifiable())
+    r = c.post("/internal/whatsapp/pay/refund", headers=_tok(), json=_refund_body())
+    assert r.status_code == 502 and r.json()["code"] == "REFUND_LOOKUP_FAILED"
+
+
+def test_refund_within_the_captured_amount_succeeds(saved_env, monkeypatch):
+    from app.adapters.whatsapp_payments.console import ConsoleWhatsAppPayments
+    c = _make_app(WHATSAPP_NATIVE_PAY_ENABLED="true", WHATSAPP_PAYMENTS_DRIVER="console")
+    _enable_native_pay(c, "acme")
+    _patch_adapter(monkeypatch, ConsoleWhatsAppPayments(status="captured", amount_minor=5000,
+                                                        currency="SAR"))
+    r = c.post("/internal/whatsapp/pay/refund", headers=_tok(), json=_refund_body(amount_minor=3450))
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"] is True

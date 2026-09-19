@@ -184,6 +184,27 @@ def test_upgrade_charges_the_difference_first_then_flips(monkeypatch):
     assert run(b.run_cycle(sub.id)).subtotal_minor == 30000               # next renewal: pro full price, no leftover
 
 
+def test_midcycle_interval_change_is_refused_not_misproratated(monkeypatch):
+    """A month->year change mid-cycle would prorate the YEARLY price by the fraction of the MONTH left
+    (a gross overcharge) and leave the renewal on the old cadence. It is refused, not mischarged, and
+    the subscription is untouched."""
+    import app.core.billing_service as bs
+    st = MemoryDataStore(); gw = GW(ok=True); b = _svc(st, gw=gw)
+    basic = run(b.create_plan(name="Basic",
+                              prices=[{"interval": "month", "amount_minor": 10000, "currency": "SAR"}],
+                              limits={"seats": 5}))
+    pro = run(b.create_plan(name="Pro", limits={"seats": 20}, prices=[
+        {"interval": "month", "amount_minor": 30000, "currency": "SAR"},
+        {"interval": "year", "amount_minor": 300000, "currency": "SAR"}]))
+    sub = run(b.subscribe(tenant="ali", plan_id=basic.id, payment_token="pm"))   # monthly
+    monkeypatch.setattr(bs, "now_ts", lambda: sub.current_period_start)
+    with pytest.raises(ValueError, match="INTERVAL_CHANGE_NOT_SUPPORTED_MIDCYCLE"):
+        run(b.change_plan(sub.id, new_plan_id=pro.id, interval="year"))
+    s = run(SubscriptionStore(st).fetch(sub.id))
+    assert s.plan_id == basic.id and s.interval == "month"          # nothing changed
+    assert gw.charges == []                                          # and nothing was charged
+
+
 def test_upgrade_decline_changes_nothing():
     from app.core.billing_service import UpgradeChargeFailed
     st = MemoryDataStore(); b = _svc(st, gw=GW(ok=False))
@@ -280,3 +301,24 @@ def test_cancel_at_period_end_wins_over_a_scheduled_downgrade(monkeypatch):
     assert after.status == "canceled" and after.canceled_at
     assert inv.id == ""                                   # no invoice cut, no card charged
     assert after.plan_id == pro.id                        # downgrade never adopted
+
+
+def test_a_retried_or_raced_upgrade_charge_makes_exactly_one_invoice_and_one_ledger_row(monkeypatch):
+    """HIGH regression: _charge_upgrade had no app-level idempotency claim (only the gateway key), so
+    a double-clicked/retried/raced upgrade minted a SECOND invoice → a second ledger charge (revenue
+    doubled) + a second grant credit. It must now dedupe to one invoice, mirroring wallet_topup."""
+    import app.core.billing_service as bs
+    st = MemoryDataStore(); gw = GW(ok=True); b = _svc(st, gw=gw)
+    basic, pro = _two_plans(b)
+    sub = run(b.subscribe(tenant="ali", plan_id=basic.id, payment_token="pm"))
+    monkeypatch.setattr(bs, "now_ts", lambda: sub.current_period_start)   # whole period remains
+    delta = 20000                                                         # 30000 - 10000, full period
+
+    inv1 = run(b._charge_upgrade(sub, pro, "month", sub.quantity, delta))
+    inv2 = run(b._charge_upgrade(sub, pro, "month", sub.quantity, delta))   # a retry of the same upgrade
+
+    assert inv1.id == inv2.id, "the retry must replay the first invoice, not mint a second"
+    assert len(gw.charges) == 2, "both requests hit the gateway (which dedupes the charge by idem key)"
+    # exactly ONE upgrade charge landed in the ledger — revenue not doubled
+    charges = [r for r in run(LedgerStore(st).list("ali")) if r.get("kind") == "charge"]
+    assert len(charges) == 1, f"expected one ledger charge, got {len(charges)}"

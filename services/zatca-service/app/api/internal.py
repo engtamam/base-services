@@ -225,7 +225,7 @@ async def _rebuild_index(datastore, scan_cap: int) -> dict[str, int]:
     allocation cannot re-issue a number. last_hash follows the highest SIGNED invoice (the one whose
     hash the chain extends from), exactly as record_hash maintains it. Idempotent and self-healing.
     """
-    heads: dict[str, dict[str, Any]] = {}   # tenant -> {reserved_icv, last_hash, _top_signed_icv}
+    heads: dict[str, dict[str, Any]] = {}   # tenant -> {reserved_icv, last_hash, _top_signed_icv, _signed}
     nums = 0
     for row in await datastore.scan_all("zatca_invoices", scan_cap):
         tenant, number, iid = row.get("tenant"), row.get("number"), row.get("id")
@@ -235,15 +235,33 @@ async def _rebuild_index(datastore, scan_cap: int) -> dict[str, int]:
         if number is not None:
             await datastore.put("zatca_index", f"num::{tenant}::{number}", {"id": iid})
             nums += 1
-        h = heads.setdefault(tenant, {"reserved_icv": 0, "last_hash": "", "_top_signed_icv": -1})
+        h = heads.setdefault(tenant, {"reserved_icv": 0, "last_hash": "", "_top_signed_icv": -1,
+                                      "_signed": {}})
         h["reserved_icv"] = max(int(h["reserved_icv"]), icv)
-        if ihash and icv > h["_top_signed_icv"]:     # the highest SIGNED invoice sets the head hash
-            h["_top_signed_icv"] = icv
-            h["last_hash"] = ihash
+        if ihash:                                    # a hash present ⇒ this invoice is signed
+            h["_signed"][icv] = ihash
+            if icv > h["_top_signed_icv"]:           # the highest SIGNED invoice sets the head hash
+                h["_top_signed_icv"] = icv
+                h["last_hash"] = ihash
+    signed_heads = 0
     for tenant, h in heads.items():
         await datastore.put("zatca_index", f"head::{tenant}",
                             {"reserved_icv": h["reserved_icv"], "last_hash": h["last_hash"]})
-    return {"num_entries": nums, "heads": len(heads)}
+        # REBUILD signed:: — the sole authority for the in-order signing gate (signed_head). It is the
+        # CONTIGUOUSLY-signed head: the highest K such that ICVs 1..K are ALL signed (signing is
+        # strictly in-order, so signed ICVs are contiguous from 1). Without this, a restored tenant's
+        # signed:: is absent → signed_head=(0,"") → the next invoice (ICV N+1) waits forever for ICV 1
+        # and issuance wedges permanently. Only written when a contiguous signed chain exists.
+        signed = h["_signed"]
+        k, last = 0, ""
+        while (k + 1) in signed:
+            k += 1
+            last = signed[k]
+        if k > 0:
+            await datastore.put("zatca_index", f"signed::{tenant}",
+                                {"signed_icv": k, "last_hash": last})
+            signed_heads += 1
+    return {"num_entries": nums, "heads": len(heads), "signed_heads": signed_heads}
 
 
 @router.post("/backup/import", dependencies=[Depends(require_internal_token)])

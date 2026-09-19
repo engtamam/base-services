@@ -238,11 +238,15 @@ class PaymentService:
         # reachable whenever an amount is present. A non-success outcome carries no amount claim.
         if outcome.status == SUCCEEDED:
             amount_ok = bool(outcome.amount_minor) and int(outcome.amount_minor) == int(row["amount_minor"])
-            currency_ok = (not outcome.currency) or outcome.currency.upper() == str(row["currency"]).upper()
+            # A SUCCEEDED with NO confirmable currency is UNVERIFIABLE, not "matches" — the same H3
+            # principle as the amount (never read "no value" as "value matches"). Since the amount
+            # check is a bare minor-unit compare and SAR/USD/EUR all share exponent 2, an absent
+            # currency would let a success in one currency complete a request recorded in another.
+            currency_ok = bool(outcome.currency) and outcome.currency.upper() == str(row["currency"]).upper()
             mismatch = not (amount_ok and currency_ok)
-            if not outcome.amount_minor:
-                _log.warning("payment.unverifiable_amount: verified success with no confirmable amount "
-                             "refused for request %s (tenant=%s, provider_ref=%s)",
+            if not outcome.amount_minor or not outcome.currency:
+                _log.warning("payment.unverifiable_outcome: verified success with no confirmable "
+                             "amount/currency refused for request %s (tenant=%s, provider_ref=%s)",
                              row.get("id", ""), tenant, outcome.provider_ref)
         else:
             mismatch = False

@@ -117,6 +117,11 @@ class TuwaiqPayGateway:
         # callback URL field — the customer is not bounced back to the shop by the gateway — so our
         # return_url is intentionally not forwarded here (the shop reconciles via webhook/status).
         payload = {
+            # TuwaiqPay's `amount` is a JSON number in major units (docs: `150.00`), so it must be a
+            # numeric literal, not a string. `to_major` gives the EXACT currency-quantized Decimal and
+            # float() only crosses the JSON boundary: for a value quantized to the currency's 2–3
+            # decimals, Python's shortest round-trip repr serialises the exact decimal (150.00 → 150.0,
+            # 8.61 → 8.61), never a binary tail — the amount on the wire equals the integer minor units.
             "amount": float(to_major(int(amount_minor), cur)),
             "actionDateInDays": int(meta.get("actionDateInDays", 3)),
             "currencyId": _CURRENCY_ID.get(cur, 1),

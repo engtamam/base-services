@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as _dt
+import time as _time
 from typing import Any
 
 from app.core.chain import GENESIS_PIH
@@ -16,6 +17,9 @@ _INDEX = "zatca_index"           # head::<tenant> and num::<tenant>::<number> �
 
 _PAGE = 500
 _TENANT_MAX = 100_000     # a bounded read of ONE taxpayer's invoices
+# A `num::` claim whose invoice row never appeared and that is older than this is a crash orphan (a
+# real allocate_slot completes in well under a second), safe for allocate_slot to free and reuse.
+_STALE_NUM_CLAIM_S = 60.0
 
 
 def _csid_aad(tenant: str, field: str) -> str:
@@ -177,18 +181,39 @@ class InvoiceStore:
         exactly one caller wins the create(); the loser re-reads and returns the winner's invoice
         WITHOUT ever claiming an ICV."""
         number = str(number)
-        existing = await self.by_number(tenant, number)
-        if existing is not None:
-            return existing, False
         # Claim the number FIRST. The loser of a same-number race never reaches the ICV mint below.
-        inv_id = new_id()
-        if not await self._store.create(_INDEX, f"num::{tenant}::{number}", {"id": inv_id}):
+        # A crash BETWEEN this claim and save() (before any icv:: claim, so reconcile_orphans — which
+        # walks icv:: — never sees it) would otherwise wedge this number FOREVER: every later allocate
+        # loses the create, finds no invoice, and raises a 500. The bounded retry below frees such a
+        # STALE orphan and reuses the number, while never touching a genuinely in-flight claim.
+        inv_id = ""
+        for _claim_try in range(3):
+            existing = await self.by_number(tenant, number)
+            if existing is not None:
+                return existing, False
+            candidate = new_id()
+            if await self._store.create(_INDEX, f"num::{tenant}::{number}",
+                                        {"id": candidate, "claimed_ts": _time.time()}):
+                inv_id = candidate
+                break                                        # won the number claim
+            row = await self._store.get(_INDEX, f"num::{tenant}::{number}")
             for _ in range(10_000):                          # a concurrent winner is mid-flight; wait for
                 existing = await self.by_number(tenant, number)   # its invoice row, then return it
                 if existing is not None:
                     return existing, False
                 await asyncio.sleep(0)                        # yield so the winner's save() can land
+            # No invoice appeared. Free it and retry ONLY when the claim is old enough to be a crash
+            # orphan (a live winner finishes in << _STALE_NUM_CLAIM_S) AND its id resolves to no
+            # invoice — so an in-flight claim of the same instant is never stolen. A legacy claim with
+            # no claimed_ts (ts 0) reads as stale, healing orphans written before this fix.
+            if (row is not None
+                    and _time.time() - float(row.get("claimed_ts", 0) or 0) >= _STALE_NUM_CLAIM_S
+                    and not await self.get(row.get("id", ""))):
+                await self._store.delete(_INDEX, f"num::{tenant}::{number}")
+                continue                                     # orphan freed — retry the claim
             raise RuntimeError("number claimed but invoice row never appeared")
+        else:
+            raise RuntimeError("number claim contended repeatedly")
         head = await self._store.get(_INDEX, f"head::{tenant}") or {"reserved_icv": 0, "last_hash": ""}
         icv = int(head.get("reserved_icv", 0)) + 1
         for _ in range(10_000):                              # bounded; advances past ICVs already taken

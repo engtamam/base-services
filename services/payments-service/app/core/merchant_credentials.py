@@ -66,17 +66,23 @@ class MerchantGateways:
     are short-lived (one request) and hold plaintext only in memory."""
 
     def __init__(self, secrets: SecretStore, *, console_link_base: str = "",
-                 gateway_timeout: int = 30) -> None:
+                 gateway_timeout: int = 30, allow_console: bool = False) -> None:
         self._secrets = secrets
         self._console_link_base = console_link_base
         self._timeout = gateway_timeout
+        # The console gateway is a FAKE that marks payments paid with no real money movement — a
+        # dev/zero-infra double, never a live processor. In production it must not be selectable, or a
+        # mis-set tenant driver would silently "collect" money that never arrived. Off by default;
+        # enabled only outside production (the wiring passes ENV != "production").
+        self._selectable = SELECTABLE_DRIVERS if allow_console \
+            else tuple(d for d in SELECTABLE_DRIVERS if d != "console")
 
     async def driver_for(self, tenant: str) -> str:
         """The tenant's selected gateway driver, or "" if none is configured."""
         return (await self._secrets.get(tenant=tenant, name=DRIVER, fallback="")).strip().lower()
 
     async def configured(self, tenant: str) -> bool:
-        return await self.driver_for(tenant) in SELECTABLE_DRIVERS
+        return await self.driver_for(tenant) in self._selectable
 
     async def _config(self, tenant: str) -> GatewayConfig:
         async def g(name: str) -> str:
@@ -90,7 +96,7 @@ class MerchantGateways:
         """Build the tenant's gateway from its sealed creds. Unknown/unset driver → null (fail-closed).
         The plaintext creds live only inside the returned adapter instance for this one operation."""
         cfg = await self._config(tenant)
-        if cfg.driver not in SELECTABLE_DRIVERS:
+        if cfg.driver not in self._selectable:
             return build_gateway("null")
         return build_gateway(cfg.driver, {
             "api_key": cfg.api_key, "extra_secret": cfg.extra_secret, "base": cfg.base,

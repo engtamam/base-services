@@ -824,6 +824,9 @@ async def change_plan(request: Request, sub_id: str, body: ChangeIn,
         # The gateway was unreachable — retryable, distinct from a decline.
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e))
     except ValueError as e:
+        if str(e) == "INTERVAL_CHANGE_NOT_SUPPORTED_MIDCYCLE":
+            # A valid request we deliberately refuse (would mis-price), not a missing resource.
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e))
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
     await request.app.state.auditor.record(
         "subscription.changed", actor=principal.subject, tenant=sub.tenant,
@@ -1226,7 +1229,7 @@ async def invoice_document(request: Request, invoice_id: str, principal: Princip
 
 @router.post("/payments/{payment_id}/refund")
 async def refund(request: Request, payment_id: str, amount_minor: int | None = None,
-                 principal: Principal = Depends(_ADMIN)) -> dict:
+                 refund_id: str = "", principal: Principal = Depends(_ADMIN)) -> dict:
     # Resolve the payment and guard tenant OWNERSHIP before touching it — a tenant-scoped billing.manage
     # admin must never refund another tenant's payment (IDOR). platform.billing crosses tenants by design.
     svc = await build_billing(request)
@@ -1240,7 +1243,7 @@ async def refund(request: Request, payment_id: str, amount_minor: int | None = N
         "payment.refunded", actor=principal.subject, tenant=pay.tenant,
         resource=f"payment:{payment_id}",
         ip=request.client.host if request.client else "")
-    res = await svc.refund(payment_id, amount_minor)
+    res = await svc.refund(payment_id, amount_minor, refund_id=refund_id)
     if not res.get("ok") and res.get("reason") == "NOT_FOUND":
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
     if not res.get("ok") and res.get("reason") in ("REFUND_EXCEEDS_OUTSTANDING", "REFUND_AMOUNT_INVALID"):

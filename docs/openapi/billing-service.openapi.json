@@ -3262,6 +3262,16 @@
               ],
               "title": "Amount Minor"
             }
+          },
+          {
+            "in": "query",
+            "name": "refund_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Refund Id",
+              "type": "string"
+            }
           }
         ],
         "responses": {

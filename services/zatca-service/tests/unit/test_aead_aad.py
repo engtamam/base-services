@@ -72,6 +72,16 @@ def test_csid_seal_is_bound_to_its_slot():
     assert csid_unseal(blob, "seal-key", _csid_aad("acme", "private_key")) is None
 
 
+def test_a_legacy_no_aad_csid_blob_still_unseals_after_aad_was_introduced():
+    """Backward compatibility (the fleet AEAD fix originally MISSED core/seal.py): a CSID blob sealed
+    BEFORE AAD binding (associated_data=None) must still decrypt once callers pass an AAD — otherwise
+    an upgrade orphans every existing tenant's cert/key and silently halts all signing."""
+    legacy = csid_seal("cert-pem", "seal-key", "")          # pre-AAD seal (no associated data)
+    assert csid_unseal(legacy, "seal-key", _csid_aad("acme", "csid_cert")) == "cert-pem"
+    # A wrong key still fails loudly (None) even on the legacy path — no silent accept.
+    assert csid_unseal(legacy, "wrong-key", _csid_aad("acme", "csid_cert")) is None
+
+
 def test_relocating_a_whole_csid_settings_row_fails_closed():
     """load_secrets on a settings row copied into another tenant must not return the original's
     material — the AAD mismatch makes the unseals fail, so it returns None (fails closed)."""

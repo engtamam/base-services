@@ -31,9 +31,21 @@ def seal(plaintext: str, seal_key: str, aad: str = "") -> str:
 def unseal(token: str, seal_key: str, aad: str = "") -> str | None:
     if not token:
         return None
+    from cryptography.exceptions import InvalidTag
     try:
         raw = base64.b64decode(token)
         ad = aad.encode() if aad else None
-        return AESGCM(_key(seal_key)).decrypt(raw[:12], raw[12:], ad).decode()
+        key = _key(seal_key)
+        try:
+            return AESGCM(key).decrypt(raw[:12], raw[12:], ad).decode()
+        except InvalidTag:
+            if ad is None:
+                raise
+            # Backward compatibility: a CSID blob sealed BEFORE AAD binding (associated_data=None)
+            # fails the AAD attempt above. Decrypt it in the legacy no-AAD format so upgrading never
+            # orphans an existing tenant's cert/key (which would silently halt all signing — the same
+            # incident class the fleet AEAD fix closed elsewhere; this file was missed then). A wrong
+            # key / tampered blob fails this attempt too and falls through to None.
+            return AESGCM(key).decrypt(raw[:12], raw[12:], None).decode()  # aad: ok — legacy pre-AAD CSID blob; primary decrypt above binds the AAD
     except Exception:
         return None

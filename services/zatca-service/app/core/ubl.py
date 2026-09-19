@@ -66,15 +66,20 @@ def build_ubl(inv: dict, *, icv: int, pih: str, invoice_type: str = "simplified"
         # reject anything else rather than let it inject markup into the document we sign (CWE-91).
         raise ValueError(f"invalid currency code: {inv.get('currency')!r}")
     rate = str(inv.get("vat_rate", "0.15"))
-    vat_pct = str(int(round(float(rate) * 100)))
+    # Percent for the XML (e.g. "0.15" -> "15"). Decimal, not float(rate)*100, so an odd rate never
+    # picks up a binary tail before rounding (money-adjacent value on a signed document).
+    vat_pct = str(int((Decimal(rate) * 100).quantize(Decimal(1), rounding=ROUND_HALF_UP)))
     type_name = "0200000" if invoice_type == "simplified" else "0100000"
     profile_id = "reporting:1.0" if invoice_type == "simplified" else "clearance:1.0"
 
     lines = inv.get("lines") or []
     nets = [int(ln["amount_minor"]) for ln in lines]
-    vats = [_vat_of(n, rate) for n in nets]            # per-line half-up VAT ...
+    vats = [_vat_of(n, rate) for n in nets]            # per-line half-up VAT (line-level TaxTotals)
     line_extension = sum(nets)
-    vat = sum(vats)                                     # ... document VAT = Σ line VAT (BR-CO-14)
+    # CATEGORY / document VAT = round(Σ taxable × rate), NOT the sum of per-line rounded VATs. ZATCA
+    # validates the category TaxAmount as round(category_taxable × rate) (BR-S-08 / BR-CO-14); summing
+    # per-line half-up rounding drifts by a halala on multi-line invoices and the invoice is rejected.
+    vat = _vat_of(line_extension, rate)
     gross = line_extension + vat
 
     line_xml = "\n".join(
