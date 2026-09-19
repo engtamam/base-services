@@ -62,6 +62,22 @@ The platform legitimately uses broad best-effort catches widely; the detector al
 tune (recognize `logger.*`/`log.*` receivers; scope to routes/handlers only) or drop in favour of the
 existing `defensive-access-hides-bugs` discipline.
 
+## Progress (2026-09-19)
+
+- **safety:cas-create — REGISTERED BLOCKING.** Triaged all 11: **4 real production bugs fixed**
+  (billing coupons never redeemable · job jobs never claimable · stream sessions never terminate ·
+  tenant first lifecycle write fails) + 7 false positives annotated; the lax memory cas() was
+  aligned to postgres in every affected service. Gate + mutation selftest + ci.yml; PASSES fleet-wide
+  (25 services). ci-parity RED backlog (9 uncredited gates) fixed in passing.
+- **safety:money-float — REGISTERED BLOCKING.** **2 real bugs fixed** (billing TuwaiqPay adapter
+  hardcoded /100 *100 → routed through billing's ISO-4217 core/currency.py; added to_minor()); the
+  gate was refined to drop 12 false positives (Decimal percent products; float(helper) serialization),
+  now flags only a bare money value scaled by a hardcoded 100/1000. Selftest + gate + ci.yml; PASSES
+  fleet-wide.
+- **Remaining:** timing-compare (1 real: file-service hmac_signer `!=`), aesgcm-aad (85, fleet-wide —
+  needs a backup.py-AAD policy decision), open-redirect (3, triage), SSRF (rework as a helper gate),
+  swallowed-except (defer/tune).
+
 ## Recommendation
 Enforce, in priority order, the precise high-value gates after their fleet remediation:
 **cas-create → money-float → timing-compare → aesgcm-aad**. Triage **open-redirect**. Rework
