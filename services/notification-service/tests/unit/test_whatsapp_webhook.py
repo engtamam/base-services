@@ -111,3 +111,39 @@ def test_inbound_message_bus_event_carries_the_resolved_tenant(client):
     ev = seen["whatsapp.message"][0]
     assert ev.payload["tenant"] == "acme"      # the fast path now carries attribution
     assert ev.payload["message"]["id"] == "wamid.abc"
+
+
+def test_native_payment_status_fans_out_as_a_first_class_payment_event(client):
+    # A native "Review and Pay" outcome arrives as a status of type "payment" (NOT a message). It must
+    # still be emitted on the ordinary whatsapp.status axis AND exploded into whatsapp.payment so a
+    # consumer sees it at once — but the payload is only a HINT (verified=False; confirm via lookup).
+    seen = _subscribe(client, "whatsapp.status", "whatsapp.payment")
+    payload = {"object": "whatsapp_business_account", "entry": [{"id": "WABA1", "changes": [
+        {"field": "messages", "value": {
+            "metadata": {"phone_number_id": "PN1"},
+            "statuses": [{"id": "wamid.pay1", "status": "captured", "type": "payment",
+                          "recipient_id": "96650",
+                          "payment": {"reference_id": "ORD-9",
+                                      "amount": {"value": 5000, "offset": 100}, "currency": "SAR",
+                                      "transaction": {"id": "txn_1", "status": "captured"}}}]}}]}]}
+    raw = json.dumps(payload).encode()
+    assert client.post("/webhooks/whatsapp", content=raw,
+                       headers={"X-Hub-Signature-256": _sign(raw)}).status_code == 200
+    assert seen["whatsapp.status"], "the payment status must still ride the ordinary status axis"
+    assert seen["whatsapp.payment"], "a type:payment status must fan out on whatsapp.payment"
+    pay = seen["whatsapp.payment"][0].payload["payment"]
+    assert pay["reference_id"] == "ORD-9" and pay["amount_minor"] == 5000 and pay["currency"] == "SAR"
+    assert pay["status"] == "captured" and pay["transaction_id"] == "txn_1"
+    assert pay["verified"] is False, "the webbook body is a hint; only a lookup marks it verified"
+
+
+def test_a_plain_status_does_not_emit_a_payment_event(client):
+    seen = _subscribe(client, "whatsapp.status", "whatsapp.payment")
+    payload = {"object": "whatsapp_business_account", "entry": [{"id": "WABA1", "changes": [
+        {"field": "messages", "value": {
+            "metadata": {"phone_number_id": "PN1"},
+            "statuses": [{"id": "wamid.2", "status": "delivered"}]}}]}]}
+    raw = json.dumps(payload).encode()
+    assert client.post("/webhooks/whatsapp", content=raw,
+                       headers={"X-Hub-Signature-256": _sign(raw)}).status_code == 200
+    assert seen["whatsapp.status"] and not seen["whatsapp.payment"]

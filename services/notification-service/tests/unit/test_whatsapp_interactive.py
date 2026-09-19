@@ -7,7 +7,8 @@ import pytest
 
 from app.core.whatsapp_interactive import (InteractiveError, build_button, build_flow, build_list,
                                            build_location_request, build_product,
-                                           build_product_list, parse_order)
+                                           build_product_list, parse_order, build_order_details,
+                                           build_order_status, parse_payment_status)
 
 
 def test_location_request_shape_matches_the_cloud_api():
@@ -330,3 +331,79 @@ def test_parse_order_survives_malformed_quantity_or_price():
     out = parse_order(msg)
     assert out["items"][0]["quantity"] == 0 and out["items"][0]["item_price"] == 0.0
     assert out["order_total"] == 0.0
+
+
+# ── native pay: order_details / order_status (build-ahead, KSA-dormant) ───────────────────────
+
+
+def _items():
+    return [{"retailer_id": "SKU-1", "name": "Coffee", "amount_minor": 10000, "quantity": 1},
+            {"retailer_id": "SKU-2", "name": "Tea", "amount_minor": 5000, "quantity": 2}]
+
+
+def test_order_details_shape_and_offset_amounts():
+    obj = build_order_details(
+        reference_id="order-1", currency="sar", order_type="physical-goods", items=_items(),
+        subtotal_minor=20000, tax_minor=1000, shipping_minor=500, discount_minor=500,
+        payment_gateway="tuwaiqpay", payment_configuration="cfg-1", body="Pay please")
+    assert obj["type"] == "order_details"
+    p = obj["action"]["parameters"]
+    assert obj["action"]["name"] == "review_and_pay"
+    assert p["reference_id"] == "order-1" and p["currency"] == "SAR" and p["type"] == "physical-goods"
+    # total = subtotal + tax + shipping - discount = 20000+1000+500-500 = 21000
+    assert p["total_amount"] == {"value": 21000, "offset": 100}
+    assert p["order"]["subtotal"] == {"value": 20000, "offset": 100}
+    assert p["payment_settings"][0]["payment_gateway"] == {"type": "tuwaiqpay",
+                                                           "configuration_name": "cfg-1"}
+    assert p["order"]["items"][0]["amount"] == {"value": 10000, "offset": 100}
+    assert p["order"]["status"] == "pending"
+
+
+def test_order_details_subtotal_must_equal_item_sum():
+    with pytest.raises(InteractiveError):
+        build_order_details(reference_id="o1", currency="SAR", order_type="digital-goods",
+                            items=_items(), subtotal_minor=99999,  # wrong (should be 20000)
+                            payment_gateway="g", payment_configuration="c")
+
+
+def test_order_details_rejects_bad_ref_type_and_empty_items():
+    with pytest.raises(InteractiveError):
+        build_order_details(reference_id="x"*36, currency="SAR", order_type="digital-goods",
+                            items=_items(), subtotal_minor=20000, payment_gateway="g",
+                            payment_configuration="c")
+    with pytest.raises(InteractiveError):
+        build_order_details(reference_id="o1", currency="SAR", order_type="bogus",
+                            items=_items(), subtotal_minor=20000, payment_gateway="g",
+                            payment_configuration="c")
+    with pytest.raises(InteractiveError):
+        build_order_details(reference_id="o1", currency="SAR", order_type="digital-goods",
+                            items=[], subtotal_minor=0, payment_gateway="g", payment_configuration="c")
+
+
+def test_order_details_3dp_offset():
+    obj = build_order_details(
+        reference_id="o-kwd", currency="KWD", order_type="digital-goods",
+        items=[{"retailer_id": "S", "name": "X", "amount_minor": 1234, "quantity": 1}],
+        subtotal_minor=1234, payment_gateway="g", payment_configuration="c", offset=1000)
+    assert obj["action"]["parameters"]["total_amount"] == {"value": 1234, "offset": 1000}
+
+
+def test_order_status_shape_and_enum():
+    obj = build_order_status(reference_id="order-1", status="shipped", description="on its way")
+    assert obj["type"] == "order_status" and obj["action"]["name"] == "review_order"
+    assert obj["action"]["parameters"] == {"reference_id": "order-1",
+                                           "order": {"status": "shipped", "description": "on its way"}}
+    with pytest.raises(InteractiveError):
+        build_order_status(reference_id="o1", status="not-a-status")
+
+
+def test_parse_payment_status_normalises_and_marks_unverified():
+    st = {"type": "payment", "status": "captured", "recipient_id": "9665",
+          "payment": {"reference_id": "order-1", "currency": "SAR",
+                      "amount": {"value": 21000, "offset": 100},
+                      "transaction": {"id": "tx", "pg_transaction_id": "pg", "status": "success"}}}
+    out = parse_payment_status(st)
+    assert out["reference_id"] == "order-1" and out["amount_minor"] == 21000 and out["offset"] == 100
+    assert out["status"] == "captured" and out["transaction_id"] == "tx"
+    assert out["verified"] is False                       # must be confirmed via lookup, never trusted
+    assert parse_payment_status({"type": "delivered"}) is None

@@ -271,6 +271,8 @@ def create_app() -> FastAPI:
     from app.api import webhooks
     app.include_router(webhooks.router)
     app.include_router(internal.router)
+    from app.api import internal_native_pay
+    app.include_router(internal_native_pay.router)
     app.include_router(v1_router)
     # Operator controls: credentials and policy an operator changes after launch.
     app.include_router(operator_router)

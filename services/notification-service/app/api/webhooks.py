@@ -28,6 +28,7 @@ from starlette.responses import PlainTextResponse
 
 from app.config import get_settings
 from app.core import whatsapp_optout as _optout
+from app.core.whatsapp_interactive import parse_payment_status as _parse_payment_status
 from app.ports.event_bus import Event
 
 router = APIRouter(tags=["webhooks"])
@@ -120,6 +121,17 @@ async def _fan_out(bus, deliveries, data: dict, inbound=None, number_index=None,
                 await bus.publish(f"{_TOPIC}.status", Event(
                     type=f"{_TOPIC}.status", payload={**base, "delivery_id": delivery_id, "status": st}))
                 emitted += 1
+                # A native-payment status (order_details "Review and Pay") arrives here as a status of
+                # type "payment", NOT a message. Emit it as a first-class `whatsapp.payment` event so a
+                # consumer sees it immediately — but the payload is a HINT ONLY: the consumer MUST
+                # confirm via the lookup (POST /internal/whatsapp/pay/lookup) before acting on money,
+                # never trusting the webhook body. (Durable capture + a reconcile sweep are P6.)
+                if str(st.get("type", "")) == "payment":
+                    parsed = _parse_payment_status(st)
+                    if parsed is not None:
+                        await bus.publish(f"{_TOPIC}.payment", Event(
+                            type=f"{_TOPIC}.payment", payload={**base, "payment": parsed}))
+                        emitted += 1
             for msg in value.get("messages", []) or []:
                 # Resolve the tenant ONCE from the receiving number and put it on BOTH the durable
                 # record AND the live bus event. It used to live only on the record, so a fast-path

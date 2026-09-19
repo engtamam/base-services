@@ -366,3 +366,138 @@ def parse_order(message: dict[str, Any]) -> dict[str, Any] | None:
         "items": items,
         "order_total": round(sum(i["line_total"] for i in items), 4),
     }
+
+
+# ── Native in-WhatsApp payment (order_details "Review and Pay") — BUILD-AHEAD, KSA-DORMANT ─────────
+# Verified against Meta's WhatsApp payments (payments-in/pg) reference, 2026-09-19: interactive
+# type "order_details", action.name "review_and_pay". Amounts are {value, offset} where the real
+# amount = value / offset (offset = 10^decimals: 100 for 2-dp INR/SAR, 1000 for 3-dp). Our
+# amount_minor already IS value when offset matches the currency's exponent, so value = amount_minor.
+# Meta REQUIRES total_amount.value == subtotal + tax + shipping - discount, and (in practice) subtotal
+# == sum(item amount*qty); we enforce both HERE so a bad order is a clear local error, not a Cloud 400.
+# THIS SEAM IS DORMANT IN KSA: native pay via gateway is India-only today (WhatsApp Pay expected in
+# KSA during 2026). The route that sends this is gated by WHATSAPP_NATIVE_PAY_ENABLED (default off);
+# these pure builders carry no gate — flipping the config enables the seam with no new code.
+_ORDER_TYPES = ("digital-goods", "physical-goods")
+_ORDER_STATUSES = ("pending", "processing", "partially_shipped", "shipped", "completed", "canceled")
+_REF_ID_MAX = 35
+
+
+def _amount(value_minor: int, offset: int) -> dict[str, int]:
+    return {"value": int(value_minor), "offset": int(offset)}
+
+
+def build_order_details(*, reference_id: str, currency: str, order_type: str,
+                        items: list[dict[str, Any]], subtotal_minor: int,
+                        payment_gateway: str, payment_configuration: str,
+                        tax_minor: int = 0, shipping_minor: int = 0, discount_minor: int = 0,
+                        body: str = "", offset: int = 100, header_image_url: str = "",
+                        footer: str = "") -> dict[str, Any]:
+    """A native "Review and Pay" order-details interactive object (build-ahead; KSA-dormant).
+
+    `items` is [{"retailer_id","name","amount_minor","quantity"}]. Amounts are minor units at the
+    currency's exponent (offset = 10^decimals). total is computed and must equal
+    subtotal + tax + shipping - discount; subtotal must equal sum(item amount * qty) — both enforced.
+    `payment_gateway` is the gateway type (e.g. "razorpay") and `payment_configuration` its configured
+    name on the WABA (see the native-pay adapter / P6 provisioning).
+    """
+    ref = str(reference_id)
+    if not ref or len(ref) > _REF_ID_MAX:
+        raise InteractiveError(f"reference_id is required and must be <= {_REF_ID_MAX} chars")
+    if order_type not in _ORDER_TYPES:
+        raise InteractiveError(f"order type must be one of {_ORDER_TYPES}")
+    if not items:
+        raise InteractiveError("an order needs at least one item")
+    if not (payment_gateway and payment_configuration):
+        raise InteractiveError("payment_gateway and payment_configuration are required")
+    built_items: list[dict[str, Any]] = []
+    items_total = 0
+    for it in items:
+        name = str(it.get("name", ""))
+        rid = str(it.get("retailer_id", ""))
+        qty = int(it.get("quantity", 0) or 0)
+        amt = int(it.get("amount_minor", 0) or 0)
+        if not (name and rid) or qty <= 0:
+            raise InteractiveError("each item needs retailer_id, name, and quantity > 0")
+        built_items.append({"retailer_id": rid, "name": name,
+                            "amount": _amount(amt, offset), "quantity": qty})
+        items_total += amt * qty
+    if items_total != int(subtotal_minor):
+        raise InteractiveError(
+            f"subtotal ({subtotal_minor}) must equal the sum of item amount*quantity ({items_total})")
+    total_minor = int(subtotal_minor) + int(tax_minor) + int(shipping_minor) - int(discount_minor)
+    if total_minor <= 0:
+        raise InteractiveError("order total must be positive")
+    order: dict[str, Any] = {
+        "status": "pending",
+        "items": built_items,
+        "subtotal": _amount(subtotal_minor, offset),
+        "tax": _amount(tax_minor, offset),
+    }
+    if shipping_minor:
+        order["shipping"] = _amount(shipping_minor, offset)
+    if discount_minor:
+        order["discount"] = _amount(discount_minor, offset)
+    params: dict[str, Any] = {
+        "reference_id": ref,
+        "type": order_type,
+        "currency": (currency or "").upper(),
+        "payment_settings": [{"type": "payment_gateway",
+                              "payment_gateway": {"type": payment_gateway,
+                                                  "configuration_name": payment_configuration}}],
+        "total_amount": _amount(total_minor, offset),
+        "order": order,
+    }
+    block: dict[str, Any] = {"type": "order_details",
+                             "body": {"text": _capped("body", body or "Review and pay", _BODY_MAX)},
+                             "action": {"name": "review_and_pay", "parameters": params}}
+    if header_image_url:
+        block["header"] = {"type": "image", "image": {"link": header_image_url}}
+    if footer:
+        block["footer"] = {"text": _capped("footer", footer, _FOOTER_MAX)}
+    return block
+
+
+def build_order_status(*, reference_id: str, status: str, body: str = "",
+                       description: str = "") -> dict[str, Any]:
+    """An order-status update interactive object (action "review_order"). Statuses:
+    pending/processing/partially_shipped/shipped/completed/canceled (the last two are terminal)."""
+    ref = str(reference_id)
+    if not ref or len(ref) > _REF_ID_MAX:
+        raise InteractiveError(f"reference_id is required and must be <= {_REF_ID_MAX} chars")
+    if status not in _ORDER_STATUSES:
+        raise InteractiveError(f"order status must be one of {_ORDER_STATUSES}")
+    order: dict[str, Any] = {"status": status}
+    if description:
+        order["description"] = _capped("description", description, _BODY_MAX)
+    return {"type": "order_status",
+            "body": {"text": _capped("body", body or "Order update", _BODY_MAX)},
+            "action": {"name": "review_order", "parameters": {"reference_id": ref, "order": order}}}
+
+
+def parse_payment_status(status: dict[str, Any]) -> dict[str, Any] | None:
+    """Normalise an inbound payment webhook STATUS (statuses[] with type:"payment") into a stable
+    shape, or None if not a payment. Meta (Sep 2026): {type:"payment", status, payment:{reference_id,
+    amount{value,offset}, currency, transaction{id, pg_transaction_id, status, ...}}}. NOTE: never
+    trust this alone — verify via the payments lookup (see the native-pay adapter)."""
+    if not isinstance(status, dict) or status.get("type") != "payment":
+        return None
+    pay = status.get("payment") or {}
+    amt = pay.get("amount") or {}
+    tx = pay.get("transaction") or {}
+    try:
+        amount_minor = int(amt.get("value", 0) or 0)
+    except (TypeError, ValueError):
+        amount_minor = 0
+    return {
+        "reference_id": str(pay.get("reference_id", "")),
+        "status": str(status.get("status", "")),          # e.g. captured | pending | failed
+        "amount_minor": amount_minor,
+        "offset": int(amt.get("offset", 100) or 100),
+        "currency": str(pay.get("currency", "")),
+        "transaction_id": str(tx.get("id", "")),
+        "pg_transaction_id": str(tx.get("pg_transaction_id", "")),
+        "transaction_status": str(tx.get("status", "")),
+        "recipient": str(status.get("recipient_id", "")),
+        "verified": False,                                 # set True only after a lookup confirms it
+    }

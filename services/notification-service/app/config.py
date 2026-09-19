@@ -473,6 +473,15 @@ class Settings(BaseSettings):
     # this config-only URL (op=status). Empty ⇒ null backend. Served at .../flow/{tenant}/order_status.
     WHATSAPP_ORDER_STATUS_PROVIDER_URL: str = ""
     WHATSAPP_ORDER_STATUS_PROVIDER_TOKEN: str = ""
+    # Native in-WhatsApp payment (order_details "Review and Pay") — BUILD-AHEAD, KSA-DORMANT.
+    # Native pay via a payment gateway is India-only today (WhatsApp Pay expected in KSA during 2026),
+    # so this is OFF by default: the order_details/order_status send path and the payment lookup/refund
+    # routes REFUSE (503) until a deployment flips it on. Flipping it enables the seam with NO new code
+    # — the builders + adapter are already in place. Per-tenant locking is layered in P6.
+    WHATSAPP_NATIVE_PAY_ENABLED: bool = False
+    # Native-payment adapter for the lookup-verify + refund Graph calls. "meta" in production;
+    # "console" is the zero-infra/test double. Only reached when WHATSAPP_NATIVE_PAY_ENABLED is on.
+    WHATSAPP_PAYMENTS_DRIVER: Literal["meta", "console"] = "meta"
     # Embedded Signup (Tech Provider onboarding). These identify US as the Tech Provider — NOT the
     # shop — so they are platform-wide, from the environment, and never settable through any panel
     # (the same reasoning as SECRETS_KEK). The exchange endpoint reads them in CORE, never a route,
