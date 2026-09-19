@@ -1281,6 +1281,101 @@
         ]
       }
     },
+    "/internal/verification/identity-grant-token": {
+      "get": {
+        "description": "A PURPOSE-SCOPED, one-way uniqueness token for onboarding's once-per-verified-identity grants.\n\nonboarding needs a stable, deletion-surviving, cross-tenant key so a welcome grant issues once per\nreal person \u2014 but it must NEVER receive the claim_ref itself, because that stable hash would let it\ncorrelate the same person across tenants (the exact linkage the hashing hides). So this returns\nHMAC(PII_SALT, \"onboarding-grant|<claim_ref>\") instead: unique per verified identity (dedup works),\nstable (same person \u2192 same token, survives deletion like the claim_ref), but one-way and bound to\nTHIS purpose \u2014 it cannot be reversed to the claim_ref or matched against the claim_ref used\nanywhere else. Empty token when the subject has no VERIFIED verification of this identity claim,\nso a grant gated on it fails CLOSED (withheld, never issued on an unverified claim).",
+        "operationId": "identity_grant_token_internal_verification_identity_grant_token_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "subject",
+            "required": true,
+            "schema": {
+              "title": "Subject",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "claim_type",
+            "required": true,
+            "schema": {
+              "title": "Claim Type",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Identity Grant Token Internal Verification Identity Grant Token Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Identity Grant Token",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/verification/identity/{claim_ref}/seen": {
       "get": {
         "description": "Has this verified identity been seen before?\n\nThe anti-abuse question, asked by onboarding-service before it grants anything once per\nidentity. Internal tier because the caller is a SERVICE, not a person \u2014 a capability check\nwould have been machine auth wearing a user's clothes.\n\nTakes a claim_ref rather than a raw value on purpose: the caller must already hold the hash, so\nthis cannot be used to ask whether a given national id exists in our records. A raw-value\nendpoint here would be an enumeration oracle over a national registry.",

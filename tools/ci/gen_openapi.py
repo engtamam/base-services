@@ -67,7 +67,11 @@ ENV = {
 # `x-available-when` naming the setting that turns it on. One honest document, rather than one
 # document per deployment or a document that silently picks a deployment.
 FEATURE_FLAGS: dict[str, dict[str, str]] = {
-    "identity-service": {"IDENTITY_MULTI_TENANT": "true", "SERVICE_ACCOUNTS_ENABLED": "true"},
+    # IDENTITY_MULTI_TENANT=true exposes the tenancy/members routers; but with it on, identity's boot
+    # guard refuses an empty PLATFORM_TENANT (the platform-capability boundary would be undecidable),
+    # so a spec export must name one — any value satisfies the guard and reaches no network.
+    "identity-service": {"IDENTITY_MULTI_TENANT": "true", "SERVICE_ACCOUNTS_ENABLED": "true",
+                         "PLATFORM_TENANT": "platform"},
 }
 
 # Any `if settings.X:` guarding an include_router. Used to FAIL when a service grows a conditional

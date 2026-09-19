@@ -29,4 +29,76 @@ from __future__ import annotations
 from typing import Any
 
 
-ADMIN_ACTIONS: list[dict[str, Any]] = []
+ADMIN_ACTIONS: list[dict[str, Any]] = [
+    # The operator surface: sealed merchant/gateway credentials and runtime policy, plus the P6
+    # per-shop commerce option toggles. Reads are declared too so the panel can show which credential
+    # is loaded (a four-char hint; no route ever returns a value — safety:no-secret-reads).
+    {
+        "id": "operator.list_secrets", "label": "Gateway credentials", "method": "GET",
+        "path": "/api/v1/app/operator/secrets", "capability": "platform.secrets",
+        "group": "Credentials",
+    },
+    {
+        "id": "operator.set_secret", "label": "Set / rotate a gateway credential", "method": "PUT",
+        "path": "/api/v1/app/operator/secrets", "capability": "platform.secrets",
+        "group": "Credentials", "confirm": True,
+        "params": [
+            {"name": "name", "in": "body", "type": "string", "required": True},
+            {"name": "value", "in": "body", "type": "string", "required": True,
+             "help": "write-only: sealed on arrival, no route can read it back"},
+            {"name": "tenant", "in": "body", "type": "string", "required": False,
+             "help": "leave empty for platform-wide"},
+        ],
+    },
+    {
+        "id": "operator.clear_secret", "label": "Remove a gateway credential", "method": "DELETE",
+        "path": "/api/v1/app/operator/secrets/{name}", "capability": "platform.secrets",
+        "group": "Credentials", "confirm": True,
+        "params": [{"name": "name", "in": "path", "type": "string", "required": True}],
+    },
+    {
+        "id": "operator.get_config", "label": "Runtime settings", "method": "GET",
+        "path": "/api/v1/app/operator/config", "capability": "platform.config", "group": "Settings",
+    },
+    {
+        "id": "operator.set_config", "label": "Change a runtime setting", "method": "PUT",
+        "path": "/api/v1/app/operator/config", "capability": "platform.config",
+        "group": "Settings", "confirm": True,
+        "params": [
+            {"name": "key", "in": "body", "type": "string", "required": True},
+            {"name": "value", "in": "body", "type": "string", "required": True},
+            {"name": "tenant", "in": "body", "type": "string", "required": False},
+        ],
+    },
+    {
+        "id": "operator.clear_config", "label": "Reset a setting to its default", "method": "DELETE",
+        "path": "/api/v1/app/operator/config/{key}", "capability": "platform.config",
+        "group": "Settings", "confirm": True,
+        "params": [{"name": "key", "in": "path", "type": "string", "required": True}],
+    },
+    {
+        "id": "operator.list_options", "label": "Commerce options (external pay-link)", "method": "GET",
+        "path": "/api/v1/app/operator/options", "capability": "platform.config", "group": "Commerce",
+    },
+    {
+        "id": "operator.set_option", "label": "Enable / lock a commerce option", "method": "PUT",
+        "path": "/api/v1/app/operator/options", "capability": "platform.config",
+        "group": "Commerce", "confirm": True,
+        "params": [
+            {"name": "option", "in": "body", "type": "string", "required": True,
+             "help": "the option to toggle, e.g. external_paylink"},
+            {"name": "enabled", "in": "body", "type": "boolean", "required": True},
+            {"name": "locked", "in": "body", "type": "boolean", "required": False},
+            {"name": "tenant", "in": "body", "type": "string", "required": False,
+             "help": "leave empty for a platform-wide (fleet) setting"},
+            {"name": "force", "in": "body", "type": "boolean", "required": False,
+             "help": "required to change a scope that is already locked"},
+        ],
+    },
+    {
+        "id": "operator.clear_option", "label": "Reset a commerce option to its default",
+        "method": "DELETE", "path": "/api/v1/app/operator/options/{option}",
+        "capability": "platform.config", "group": "Commerce", "confirm": True,
+        "params": [{"name": "option", "in": "path", "type": "string", "required": True}],
+    },
+]

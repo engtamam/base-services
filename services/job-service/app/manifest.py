@@ -79,6 +79,11 @@ def build_manifest(
             {"path": "/internal/backup/export", "tier": "internal", "method": "POST"},
             {"path": "/internal/backup/import", "tier": "internal", "method": "POST"},
             {"path": "/internal/backup/verify", "tier": "internal", "method": "POST"},
+            # Dispatch targets management + a manual dispatch run (internal peer/operator tier).
+            {"path": "/internal/dispatch/targets", "tier": "internal", "method": "GET"},
+            {"path": "/internal/dispatch/targets", "tier": "internal", "method": "POST"},
+            {"path": "/internal/dispatch/targets/{}", "tier": "internal", "method": "DELETE"},
+            {"path": "/internal/dispatch/run", "tier": "internal", "method": "POST"},
 
             {"path": "/api/v1/jobs/schedules", "tier": "user", "method": "POST"},
             {"path": "/api/v1/jobs/schedules", "tier": "user", "method": "GET"},

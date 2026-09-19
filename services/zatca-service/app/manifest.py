@@ -75,6 +75,8 @@ def build_manifest(
             {"path": "/internal/backup/export", "tier": "internal", "method": "POST"},
             {"path": "/internal/backup/import", "tier": "internal", "method": "POST"},
             {"path": "/internal/backup/verify", "tier": "internal", "method": "POST"},
+            # The signed/reserved chain head lag over the internal tier (a peer/monitor read).
+            {"path": "/internal/zatca/head-lag", "tier": "internal", "method": "GET"},
 
             {"path": "/api/v1/zatca/settings", "tier": "user", "method": "GET"},
             {"path": "/api/v1/zatca/settings", "tier": "user", "method": "PUT"},

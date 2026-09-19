@@ -69,6 +69,11 @@
             "default": false,
             "title": "Overwrite",
             "type": "boolean"
+          },
+          "prune": {
+            "default": false,
+            "title": "Prune",
+            "type": "boolean"
           }
         },
         "required": [
@@ -1200,7 +1205,7 @@
           "tenancy"
         ]
       },
-      "x-available-when": "IDENTITY_MULTI_TENANT=true, SERVICE_ACCOUNTS_ENABLED=true"
+      "x-available-when": "IDENTITY_MULTI_TENANT=true, PLATFORM_TENANT=platform, SERVICE_ACCOUNTS_ENABLED=true"
     },
     "/api/v1/auth/person/login": {
       "post": {
@@ -1245,7 +1250,7 @@
           "tenancy"
         ]
       },
-      "x-available-when": "IDENTITY_MULTI_TENANT=true, SERVICE_ACCOUNTS_ENABLED=true"
+      "x-available-when": "IDENTITY_MULTI_TENANT=true, PLATFORM_TENANT=platform, SERVICE_ACCOUNTS_ENABLED=true"
     },
     "/api/v1/auth/refresh": {
       "post": {
@@ -1464,7 +1469,7 @@
           "tenancy"
         ]
       },
-      "x-available-when": "IDENTITY_MULTI_TENANT=true, SERVICE_ACCOUNTS_ENABLED=true"
+      "x-available-when": "IDENTITY_MULTI_TENANT=true, PLATFORM_TENANT=platform, SERVICE_ACCOUNTS_ENABLED=true"
     },
     "/api/v1/auth/verify-email": {
       "post": {
@@ -1839,7 +1844,7 @@
           "service-accounts"
         ]
       },
-      "x-available-when": "IDENTITY_MULTI_TENANT=true, SERVICE_ACCOUNTS_ENABLED=true"
+      "x-available-when": "IDENTITY_MULTI_TENANT=true, PLATFORM_TENANT=platform, SERVICE_ACCOUNTS_ENABLED=true"
     },
     "/api/v1/otp/request": {
       "post": {
@@ -2023,7 +2028,7 @@
           "service-accounts"
         ]
       },
-      "x-available-when": "IDENTITY_MULTI_TENANT=true, SERVICE_ACCOUNTS_ENABLED=true"
+      "x-available-when": "IDENTITY_MULTI_TENANT=true, PLATFORM_TENANT=platform, SERVICE_ACCOUNTS_ENABLED=true"
     },
     "/api/v1/service-accounts/{client_id}": {
       "delete": {
@@ -2069,7 +2074,7 @@
           "service-accounts"
         ]
       },
-      "x-available-when": "IDENTITY_MULTI_TENANT=true, SERVICE_ACCOUNTS_ENABLED=true"
+      "x-available-when": "IDENTITY_MULTI_TENANT=true, PLATFORM_TENANT=platform, SERVICE_ACCOUNTS_ENABLED=true"
     },
     "/api/v1/service-accounts/{client_id}/rotate": {
       "post": {
@@ -2132,7 +2137,7 @@
           "service-accounts"
         ]
       },
-      "x-available-when": "IDENTITY_MULTI_TENANT=true, SERVICE_ACCOUNTS_ENABLED=true"
+      "x-available-when": "IDENTITY_MULTI_TENANT=true, PLATFORM_TENANT=platform, SERVICE_ACCOUNTS_ENABLED=true"
     },
     "/api/v1/tenancy/members": {
       "get": {
@@ -2244,7 +2249,7 @@
           "tenancy"
         ]
       },
-      "x-available-when": "IDENTITY_MULTI_TENANT=true, SERVICE_ACCOUNTS_ENABLED=true"
+      "x-available-when": "IDENTITY_MULTI_TENANT=true, PLATFORM_TENANT=platform, SERVICE_ACCOUNTS_ENABLED=true"
     },
     "/api/v1/tenancy/members/{person_id}": {
       "delete": {
@@ -2343,7 +2348,7 @@
           "tenancy"
         ]
       },
-      "x-available-when": "IDENTITY_MULTI_TENANT=true, SERVICE_ACCOUNTS_ENABLED=true"
+      "x-available-when": "IDENTITY_MULTI_TENANT=true, PLATFORM_TENANT=platform, SERVICE_ACCOUNTS_ENABLED=true"
     },
     "/api/v1/tenancy/members/{person_id}/status": {
       "post": {
@@ -2399,7 +2404,7 @@
           "tenancy"
         ]
       },
-      "x-available-when": "IDENTITY_MULTI_TENANT=true, SERVICE_ACCOUNTS_ENABLED=true"
+      "x-available-when": "IDENTITY_MULTI_TENANT=true, PLATFORM_TENANT=platform, SERVICE_ACCOUNTS_ENABLED=true"
     },
     "/healthz": {
       "get": {

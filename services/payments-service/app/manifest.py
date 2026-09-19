@@ -88,6 +88,22 @@ def build_manifest(
             {"path": "/api/v1/app/operator/config", "tier": "user", "method": "GET"},
             {"path": "/api/v1/app/operator/config", "tier": "user", "method": "PUT"},
             {"path": "/api/v1/app/operator/config/{}", "tier": "user", "method": "DELETE"},
+            # Per-shop commerce option toggles (external pay-link enable/lock) — operator surface (P6).
+            {"path": "/api/v1/app/operator/options", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/app/operator/options", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/app/operator/options/{}", "tier": "user", "method": "DELETE"},
+            # PUBLIC (unauthenticated by design): the hosted pay-link redirector the customer's browser
+            # follows, and the gateway's server-to-server webhook (adapter-verified, tenant in the path).
+            {"path": "/api/v1/payments/pay/{}", "tier": "public", "method": "GET"},
+            {"path": "/api/v1/payments/webhook/{}", "tier": "public", "method": "POST"},
+            # Internal peer tier (a product service acting for a shop): sealed merchant credentials
+            # (write-only; no read route) and the server-authoritative PaymentRequest lifecycle.
+            {"path": "/internal/payments/merchant-credentials", "tier": "internal", "method": "GET"},
+            {"path": "/internal/payments/merchant-credentials", "tier": "internal", "method": "POST"},
+            {"path": "/internal/payments/merchant-credentials/clear", "tier": "internal", "method": "POST"},
+            {"path": "/internal/payments/requests", "tier": "internal", "method": "POST"},
+            {"path": "/internal/payments/requests/{}", "tier": "internal", "method": "GET"},
+            {"path": "/internal/payments/requests/{}/reconcile", "tier": "internal", "method": "POST"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         # FILL THIS too, or leave it empty deliberately. Same trap as capabilities: an empty

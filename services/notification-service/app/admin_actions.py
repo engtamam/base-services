@@ -152,4 +152,32 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         "group": "Settings", "confirm": True,
         "params": [{"name": "key", "in": "path", "type": "string", "required": True}],
     },
+    # Per-shop commerce option toggles (native pay enable/lock) — the P6 operator surface.
+    {
+        "id": "operator.list_options", "label": "Commerce options (native pay)", "method": "GET",
+        "path": "/api/v1/notifications/operator/options", "capability": "platform.config",
+        "group": "Commerce",
+    },
+    {
+        "id": "operator.set_option", "label": "Enable / lock a commerce option", "method": "PUT",
+        "path": "/api/v1/notifications/operator/options", "capability": "platform.config",
+        "group": "Commerce", "confirm": True,
+        "params": [
+            {"name": "option", "in": "body", "type": "string", "required": True,
+             "help": "the option to toggle, e.g. native_pay"},
+            {"name": "enabled", "in": "body", "type": "boolean", "required": True},
+            {"name": "locked", "in": "body", "type": "boolean", "required": False,
+             "help": "freeze this scope so a later change needs force"},
+            {"name": "tenant", "in": "body", "type": "string", "required": False,
+             "help": "leave empty for a platform-wide (fleet) setting"},
+            {"name": "force", "in": "body", "type": "boolean", "required": False,
+             "help": "required to change a scope that is already locked"},
+        ],
+    },
+    {
+        "id": "operator.clear_option", "label": "Reset a commerce option to its default",
+        "method": "DELETE", "path": "/api/v1/notifications/operator/options/{option}",
+        "capability": "platform.config", "group": "Commerce", "confirm": True,
+        "params": [{"name": "option", "in": "path", "type": "string", "required": True}],
+    },
 ]

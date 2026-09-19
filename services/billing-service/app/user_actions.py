@@ -93,6 +93,10 @@ USER_ACTIONS: list[dict[str, Any]] = [
      "params": [{"name": "invoice_id", "in": "path", "type": "string", "required": True}]},
     {"id": "billing.my_usage", "label": "My usage", "method": "GET",
      "path": "/api/v1/billing/usage", "capability": "billing.self", "group": "Usage"},
+    {"id": "billing.invoice_pay_link", "label": "Get a pay-by-link for an invoice", "method": "POST",
+     "path": "/api/v1/billing/invoices/{invoice_id}/pay-link", "capability": "billing.self",
+     "group": "Invoices", "confirm": True,
+     "params": [{"name": "invoice_id", "in": "path", "type": "string", "required": True}]},
 ]
 
 # Routes deliberately NOT rendered as controls. Machine-checked by safety:action-coverage: every

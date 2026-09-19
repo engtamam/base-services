@@ -58,7 +58,7 @@ def build_manifest(
         # credential and changing a retention period are not the same privilege, and a role that
         # conflates them hands every settings-editor the ability to redirect the platform's mail.
         "capabilities": ["notifications.templates", "notifications.self",
-                         "platform.secrets", "platform.config"],
+                         "platform.notifications", "platform.secrets", "platform.config"],
         "endpoints": [
             {"path": "/healthz", "tier": "public", "method": "GET"},
             {"path": "/readyz", "tier": "public", "method": "GET"},
@@ -99,6 +99,10 @@ def build_manifest(
             {"path": "/api/v1/notifications/operator/config", "tier": "user", "method": "GET"},
             {"path": "/api/v1/notifications/operator/config", "tier": "user", "method": "PUT"},
             {"path": "/api/v1/notifications/operator/config/{}", "tier": "user", "method": "DELETE"},
+            # Per-shop commerce option toggles (native pay enable/lock) — operator surface (P6).
+            {"path": "/api/v1/notifications/operator/options", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/notifications/operator/options", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/notifications/operator/options/{}", "tier": "user", "method": "DELETE"},
             {"path": "/internal/whatsapp/embedded-signup", "tier": "internal", "method": "POST"},
             {"path": "/internal/notifications/drain", "tier": "internal", "method": "POST"},
             {"path": "/internal/whatsapp/templates/sync", "tier": "internal", "method": "POST"},
@@ -148,6 +152,18 @@ def build_manifest(
             {"path": "/internal/backup/verify", "tier": "internal", "method": "POST"},
             # Non-secret Embedded-Signup client config (app_id/config_id/graph_version) — never a secret.
             {"path": "/internal/whatsapp/config", "tier": "internal", "method": "GET"},
+            # Catalog + product batch sync (commerce P1/P2) — internal peer (a product service) tier.
+            {"path": "/internal/whatsapp/catalog", "tier": "internal", "method": "POST"},
+            {"path": "/internal/whatsapp/catalogs", "tier": "internal", "method": "GET"},
+            {"path": "/internal/whatsapp/catalog/{}", "tier": "internal", "method": "GET"},
+            {"path": "/internal/whatsapp/catalog/{}/connect", "tier": "internal", "method": "POST"},
+            {"path": "/internal/whatsapp/catalog/{}/products", "tier": "internal", "method": "POST"},
+            {"path": "/internal/whatsapp/commerce-settings", "tier": "internal", "method": "POST"},
+            # Native in-WhatsApp pay seam (commerce P5, KSA-dormant) — internal peer tier.
+            {"path": "/internal/whatsapp/pay/order-details", "tier": "internal", "method": "POST"},
+            {"path": "/internal/whatsapp/pay/order-status", "tier": "internal", "method": "POST"},
+            {"path": "/internal/whatsapp/pay/lookup", "tier": "internal", "method": "POST"},
+            {"path": "/internal/whatsapp/pay/refund", "tier": "internal", "method": "POST"},
             # WhatsApp Coexistence catch-up reads (owner-app echoes/history/contacts) + retention purge.
             {"path": "/internal/whatsapp/coexistence/echoes", "tier": "internal", "method": "GET"},
             {"path": "/internal/whatsapp/coexistence/history", "tier": "internal", "method": "GET"},

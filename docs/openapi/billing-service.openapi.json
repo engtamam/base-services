@@ -1,6 +1,29 @@
 {
   "components": {
     "schemas": {
+      "AttachCouponInternalIn": {
+        "description": "Attach/replace a coupon on an EXISTING subscription, service-to-service. `tenant` is REQUIRED\nand is the IDOR guard (same rule as cancel_internal): a subscription whose tenant differs is\nreported absent, never mutated for another tenant.",
+        "properties": {
+          "coupon_code": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Coupon Code",
+            "type": "string"
+          },
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant",
+          "coupon_code"
+        ],
+        "title": "AttachCouponInternalIn",
+        "type": "object"
+      },
       "BackupVerifyIn": {
         "properties": {
           "archive": {
@@ -193,6 +216,85 @@
           "key"
         ],
         "title": "ConsumeIn",
+        "type": "object"
+      },
+      "CouponCreateInternalIn": {
+        "description": "Create a coupon service-to-service (a peer acting for a shop, e.g. operations minting a\none-time grant code). Same fields as the admin CouponIn EXCEPT `public`: a scoped creator may\nnever publish a code to the unauthenticated /offers list, so the field simply does not exist here\n\u2014 it is forced false in the service. A percent `value` over 100 is refused (COUPON_PERCENT_OUT_OF\n_RANGE), the one coupon-value cap billing enforces for every creator.",
+        "properties": {
+          "active": {
+            "default": true,
+            "title": "Active",
+            "type": "boolean"
+          },
+          "code": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          },
+          "currency": {
+            "default": "SAR",
+            "maxLength": 8,
+            "title": "Currency",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "max_redemptions": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Max Redemptions",
+            "type": "integer"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 512,
+            "title": "Note",
+            "type": "string"
+          },
+          "plan_id": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Plan Id",
+            "type": "string"
+          },
+          "starts_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Starts At"
+          },
+          "type": {
+            "default": "percent",
+            "pattern": "^(percent|fixed|trial)$",
+            "title": "Type",
+            "type": "string"
+          },
+          "value": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Value",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "title": "CouponCreateInternalIn",
         "type": "object"
       },
       "CouponIn": {
@@ -4516,6 +4618,84 @@
         ]
       }
     },
+    "/internal/billing/coupons": {
+      "post": {
+        "description": "Create a coupon over the internal token \u2014 the narrow primitive a peer service needs to mint a\ngrant code, WITHOUT the broad platform.billing/billing.manage capability (which grants full\ncoupon/discount-rule/plan CRUD). This route does exactly one thing: create one coupon row, always\nprivate (`public` cannot be set), with the percent cap enforced. No read/update/delete, no\ndiscount-rule or plan access \u2014 the whole blast radius is 'one coupon row'.",
+        "operationId": "create_coupon_internal_internal_billing_coupons_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CouponCreateInternalIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Coupon Internal Internal Billing Coupons Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Coupon Internal",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/billing/cycle-due": {
       "post": {
         "description": "Invoice every subscription whose period has ended \u2014 the renewal engine.\n\nDriven by a daily cron beside dunning. Bounded, idempotent per cycle, and resilient to a single\nunbillable subscription. The `<= now` guard lives in the service, never here: run_cycle charges\nunconditionally, so the filter is the only thing between \"renew what is due\" and \"charge\neveryone today\".",
@@ -5365,6 +5545,104 @@
         ]
       }
     },
+    "/internal/billing/subscriptions/renewing-soon": {
+      "get": {
+        "description": "READ-ONLY: subscriptions across ALL tenants whose period ends within `within_seconds` \u2014 the set\na proactive pre-renewal reminder (e.g. \"renews in 2 days\") iterates. NO side effect: it never\ninvoices and never mutates a subscription \u2014 deliberately NOT the cycle sweep, which does. Returns\nthe SAME safe fields as /internal/billing/subscriptions plus `tenant` (this view spans tenants),\nand NOTHING sensitive (no payment token, no buyer tax identity). Real keyset paging via `cursor`\n(a call may return fewer than `limit` while still handing back a cursor \u2014 page until it is empty).\n\nNOTE ON SEMANTICS: a row is included when 0 < current_period_end <= now+within_seconds \u2014 the same\n\"period has (or will have) ended by the horizon\" test the sweep uses, extended into the future. It\ncan therefore include a just-lapsed-but-not-yet-swept renewal; a caller that wants strictly-future\nrenewals can compare current_period_end against its own clock.",
+        "operationId": "renewing_soon_internal_internal_billing_subscriptions_renewing_soon_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "within_seconds",
+            "required": false,
+            "schema": {
+              "default": 172800,
+              "title": "Within Seconds",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Cursor",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Renewing Soon Internal Internal Billing Subscriptions Renewing Soon Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Renewing Soon Internal",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/billing/subscriptions/{sub_id}/cancel": {
       "post": {
         "description": "Cancel a shop's subscription service-to-service \u2014 the internal twin of the user cancel route,\nfor a peer's cascade (e.g. a dependent app that requires visit/bookings must be REALLY cancelled,\nnot just blocked, once both are gone). Same core .cancel(); at_period_end mirrors the user route\n(True = cancel at period end, False = now). tenant is REQUIRED and verified: a subscription whose\ntenant differs is reported absent (404), never cancelled or confirmed for another tenant.",
@@ -5447,6 +5725,93 @@
           }
         },
         "summary": "Cancel Internal",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/billing/subscriptions/{sub_id}/coupon": {
+      "post": {
+        "description": "Attach (or replace) a coupon code on an existing subscription \u2014 the gap that blocked applying a\ncoupon after signup (the code was stampable only at subscribe()). Validates the coupon exists, is\nactive and unexpired and within its redemption cap (fail closed, exactly like subscribe()), claims\nthe redemption through the SAME atomic CAS, and is idempotent by target state (re-attaching the\ncode already present claims nothing further). `tenant` guards against touching another tenant's\nsubscription.",
+        "operationId": "attach_coupon_internal_internal_billing_subscriptions__sub_id__coupon_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sub_id",
+            "required": true,
+            "schema": {
+              "title": "Sub Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AttachCouponInternalIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Attach Coupon Internal Internal Billing Subscriptions  Sub Id  Coupon Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Attach Coupon Internal",
         "tags": [
           "internal"
         ]

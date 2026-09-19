@@ -1428,6 +1428,74 @@
         ]
       }
     },
+    "/internal/assistant/connections/migrate-keys": {
+      "post": {
+        "description": "One-time maintenance: re-key legacy connection/usage rows (old composite key tenant|cid) to the\nbare cid, so a backup can restore them (key==id). Idempotent \u2014 safe to run more than once; an\noperator calls it once after upgrading to a build that keys by cid.",
+        "operationId": "migrate_connection_keys_internal_assistant_connections_migrate_keys_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Migrate Connection Keys Internal Assistant Connections Migrate Keys Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Migrate Connection Keys",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/assistant/connections/{cid}": {
       "delete": {
         "operationId": "delete_connection_internal_assistant_connections__cid__delete",

@@ -25,3 +25,11 @@ USER_ACTIONS: list[dict[str, Any]] = [
      "path": "/api/v1/notifications/preferences", "capability": "notifications.self",
      "group": "Preferences", "confirm": True},
 ]
+
+
+# Routes that exist but are deliberately NOT panel controls, each with a reason (safety:action-coverage).
+UNDECLARED_ROUTES: list[dict[str, str]] = [
+    {"method": "GET", "path": "/api/v1/whatsapp/flows/{name}/preview-json",
+     "why": "a developer diagnostic: renders a Flow's JSON for inspection during setup — a debugging "
+            "aid the client fetches for itself, not a control a panel renders as a button"},
+]

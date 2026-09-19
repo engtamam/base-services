@@ -77,6 +77,9 @@ def build_manifest(
             {"path": "/internal/backup/export", "tier": "internal", "method": "POST"},
             {"path": "/internal/backup/import", "tier": "internal", "method": "POST"},
             {"path": "/internal/backup/verify", "tier": "internal", "method": "POST"},
+            # Internal peer reads: mint a short-lived identity grant token, and resolve a verification.
+            {"path": "/internal/verification/identity-grant-token", "tier": "internal", "method": "GET"},
+            {"path": "/internal/verification/resolve", "tier": "internal", "method": "POST"},
 
             # ── user tier: a person checking their OWN claim ─────────────────
             {"path": "/api/v1/verification/claims", "tier": "user", "method": "POST"},

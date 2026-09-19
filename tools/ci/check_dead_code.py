@@ -160,6 +160,25 @@ ALLOWLIST: dict[str, str] = {
         "get_by_domain() is exercised by tests/unit/test_tombstone.py",
     "services/wallet-service/app/core/funds.py":
         "apply() is exercised by tests/unit/test_wallet_core.py",
+    "services/payments-service/app/core/audit.py":
+        "is_critical() is exercised by tests/unit/test_auditor.py; vulture never scans tests/",
+    "services/payments-service/app/core/payment_requests.py":
+        "get_claim() is exercised by tests/unit/test_payments_core.py; vulture never scans tests/",
+
+    # ── public commerce API surface, called by the CONSUMER, not internally ───────────────────
+    "services/notification-service/app/core/whatsapp_interactive.py":
+        "parse_order() is a pure helper the consuming app calls to normalise an inbound WhatsApp "
+        "order message (commerce P3); it is part of the public surface, not reached from a route",
+    "services/notification-service/app/core/stores.py":
+        "by_waba_id() resolves a Meta Connector event (which identifies a shop by WABA, not by our "
+        "tenant id) to its tenant/branch — the multi-branch resolver the consumer wires; unused "
+        "internally until the Connector inbound path lands",
+    "services/payments-service/app/core/merchant_credentials.py":
+        "configured() is a public predicate (is a gateway selected for this tenant) a caller checks "
+        "before offering pay; webhook_secrets() is the rotation-aware webhook-verification primitive "
+        "(current+previous accepted secrets) — wiring it into the gateway verify path so a "
+        "mid-rotation webhook is not rejected is a pending enhancement (verification currently uses "
+        "the single current WEBHOOK_SECRET via _config)",
 
     # ── SUSPECTED MISSING CALL SITE — not dead, unreached. Kept deliberately. ─────────────────
     # These are not decoration: each is working code with a plausible caller that does not exist.

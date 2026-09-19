@@ -262,6 +262,12 @@
       "EmbeddedSignupInternalIn": {
         "description": "Same shape as the operator route, but the TENANT rides in the body \u2014 the internal caller is a\nproduct service acting FOR a shop, not a human whose token carries a tenant.",
         "properties": {
+          "branch_id": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Branch Id",
+            "type": "string"
+          },
           "code": {
             "maxLength": 4096,
             "minLength": 1,
@@ -285,6 +291,12 @@
               }
             ],
             "title": "Pin"
+          },
+          "root_tenant": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Root Tenant",
+            "type": "string"
           },
           "tenant": {
             "default": "",
@@ -377,6 +389,12 @@
             "title": "Buttons",
             "type": "array"
           },
+          "catalog_id": {
+            "default": "",
+            "maxLength": 256,
+            "title": "Catalog Id",
+            "type": "string"
+          },
           "flow_action": {
             "default": "navigate",
             "maxLength": 16,
@@ -430,6 +448,22 @@
             "title": "Header",
             "type": "string"
           },
+          "header_media_id": {
+            "default": "",
+            "maxLength": 256,
+            "title": "Header Media Id",
+            "type": "string"
+          },
+          "header_media_type": {
+            "default": "image",
+            "enum": [
+              "image",
+              "video",
+              "document"
+            ],
+            "title": "Header Media Type",
+            "type": "string"
+          },
           "idempotency_key": {
             "anyOf": [
               {
@@ -441,6 +475,19 @@
               }
             ],
             "title": "Idempotency Key"
+          },
+          "product_retailer_id": {
+            "default": "",
+            "maxLength": 256,
+            "title": "Product Retailer Id",
+            "type": "string"
+          },
+          "product_sections": {
+            "items": {
+              "$ref": "#/components/schemas/_ProductSectionIn"
+            },
+            "title": "Product Sections",
+            "type": "array"
           },
           "recipient": {
             "maxLength": 256,
@@ -484,7 +531,9 @@
               "button",
               "list",
               "flow",
-              "location_request"
+              "location_request",
+              "product",
+              "product_list"
             ],
             "title": "Type",
             "type": "string"
@@ -511,6 +560,18 @@
               }
             ],
             "title": "Biz Opaque Callback Data"
+          },
+          "button_payload": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Button Payload"
           },
           "channel": {
             "pattern": "^(email|sms|whatsapp|inapp)$",
@@ -551,6 +612,18 @@
               }
             ],
             "title": "Flow Token"
+          },
+          "header_media_id": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Header Media Id"
           },
           "idempotency_key": {
             "anyOf": [
@@ -611,6 +684,18 @@
             ],
             "title": "Tenant"
           },
+          "url_button_param": {
+            "anyOf": [
+              {
+                "maxLength": 1024,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url Button Param"
+          },
           "user_id": {
             "anyOf": [
               {
@@ -634,6 +719,42 @@
           "template_key"
         ],
         "title": "NotifyIn",
+        "type": "object"
+      },
+      "OptionIn": {
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "force": {
+            "default": false,
+            "title": "Force",
+            "type": "boolean"
+          },
+          "locked": {
+            "default": false,
+            "title": "Locked",
+            "type": "boolean"
+          },
+          "option": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Option",
+            "type": "string"
+          },
+          "tenant": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "option",
+          "enabled"
+        ],
+        "title": "OptionIn",
         "type": "object"
       },
       "PreferenceIn": {
@@ -807,6 +928,75 @@
         "title": "ValidationError",
         "type": "object"
       },
+      "WaCatalogConnectIn": {
+        "properties": {
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant"
+        ],
+        "title": "WaCatalogConnectIn",
+        "type": "object"
+      },
+      "WaCatalogCreateIn": {
+        "properties": {
+          "name": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant",
+          "name"
+        ],
+        "title": "WaCatalogCreateIn",
+        "type": "object"
+      },
+      "WaCommerceSettingsIn": {
+        "properties": {
+          "is_cart_enabled": {
+            "default": true,
+            "title": "Is Cart Enabled",
+            "type": "boolean"
+          },
+          "is_catalog_visible": {
+            "default": true,
+            "title": "Is Catalog Visible",
+            "type": "boolean"
+          },
+          "phone_number_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Phone Number Id",
+            "type": "string"
+          },
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant",
+          "phone_number_id"
+        ],
+        "title": "WaCommerceSettingsIn",
+        "type": "object"
+      },
       "WaFlowEncryptionEnsureIn": {
         "properties": {
           "phone_number_id": {
@@ -916,6 +1106,105 @@
         "title": "WaMediaUploadIn",
         "type": "object"
       },
+      "WaProductIn": {
+        "properties": {
+          "availability": {
+            "default": "in stock",
+            "maxLength": 32,
+            "title": "Availability",
+            "type": "string"
+          },
+          "brand": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Brand",
+            "type": "string"
+          },
+          "condition": {
+            "default": "new",
+            "maxLength": 32,
+            "title": "Condition",
+            "type": "string"
+          },
+          "currency": {
+            "default": "SAR",
+            "maxLength": 8,
+            "title": "Currency",
+            "type": "string"
+          },
+          "description": {
+            "default": "",
+            "maxLength": 9999,
+            "title": "Description",
+            "type": "string"
+          },
+          "image_url": {
+            "default": "",
+            "maxLength": 2048,
+            "title": "Image Url",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "price_minor": {
+            "minimum": 0.0,
+            "title": "Price Minor",
+            "type": "integer"
+          },
+          "retailer_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Retailer Id",
+            "type": "string"
+          },
+          "url": {
+            "default": "",
+            "maxLength": 2048,
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "retailer_id",
+          "name",
+          "price_minor"
+        ],
+        "title": "WaProductIn",
+        "type": "object"
+      },
+      "WaProductSyncIn": {
+        "properties": {
+          "deletes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Deletes",
+            "type": "array"
+          },
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          },
+          "upserts": {
+            "items": {
+              "$ref": "#/components/schemas/WaProductIn"
+            },
+            "title": "Upserts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "tenant"
+        ],
+        "title": "WaProductSyncIn",
+        "type": "object"
+      },
       "WaRegisterIn": {
         "properties": {
           "phone_number_id": {
@@ -978,6 +1267,11 @@
             "title": "Body",
             "type": "string"
           },
+          "button": {
+            "additionalProperties": true,
+            "title": "Button",
+            "type": "object"
+          },
           "carousel": {
             "additionalProperties": true,
             "title": "Carousel",
@@ -999,6 +1293,17 @@
           "flow_button": {
             "additionalProperties": true,
             "title": "Flow Button",
+            "type": "object"
+          },
+          "footer": {
+            "default": "",
+            "maxLength": 60,
+            "title": "Footer",
+            "type": "string"
+          },
+          "header": {
+            "additionalProperties": true,
+            "title": "Header",
             "type": "object"
           },
           "language": {
@@ -1038,6 +1343,11 @@
             "title": "Body",
             "type": "string"
           },
+          "button": {
+            "additionalProperties": true,
+            "title": "Button",
+            "type": "object"
+          },
           "carousel": {
             "additionalProperties": true,
             "title": "Carousel",
@@ -1059,6 +1369,17 @@
           "flow_button": {
             "additionalProperties": true,
             "title": "Flow Button",
+            "type": "object"
+          },
+          "footer": {
+            "default": "",
+            "maxLength": 60,
+            "title": "Footer",
+            "type": "string"
+          },
+          "header": {
+            "additionalProperties": true,
+            "title": "Header",
             "type": "object"
           },
           "language": {
@@ -1207,6 +1528,349 @@
           "media_id"
         ],
         "title": "_CarouselCardIn",
+        "type": "object"
+      },
+      "_ItemIn": {
+        "properties": {
+          "amount_minor": {
+            "minimum": 0.0,
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "name": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "quantity": {
+            "exclusiveMinimum": 0.0,
+            "title": "Quantity",
+            "type": "integer"
+          },
+          "retailer_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Retailer Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "retailer_id",
+          "name",
+          "amount_minor",
+          "quantity"
+        ],
+        "title": "_ItemIn",
+        "type": "object"
+      },
+      "_LookupIn": {
+        "properties": {
+          "payment_configuration": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Payment Configuration",
+            "type": "string"
+          },
+          "reference_id": {
+            "maxLength": 35,
+            "minLength": 1,
+            "title": "Reference Id",
+            "type": "string"
+          },
+          "tenant": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant"
+          }
+        },
+        "required": [
+          "reference_id",
+          "payment_configuration"
+        ],
+        "title": "_LookupIn",
+        "type": "object"
+      },
+      "_OrderDetailsIn": {
+        "properties": {
+          "body": {
+            "default": "",
+            "maxLength": 1024,
+            "title": "Body",
+            "type": "string"
+          },
+          "currency": {
+            "maxLength": 3,
+            "minLength": 3,
+            "title": "Currency",
+            "type": "string"
+          },
+          "discount_minor": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Discount Minor",
+            "type": "integer"
+          },
+          "footer": {
+            "default": "",
+            "maxLength": 60,
+            "title": "Footer",
+            "type": "string"
+          },
+          "header_image_url": {
+            "default": "",
+            "maxLength": 2048,
+            "title": "Header Image Url",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/_ItemIn"
+            },
+            "minItems": 1,
+            "title": "Items",
+            "type": "array"
+          },
+          "offset": {
+            "default": 100,
+            "title": "Offset",
+            "type": "integer"
+          },
+          "order_type": {
+            "default": "physical-goods",
+            "maxLength": 32,
+            "title": "Order Type",
+            "type": "string"
+          },
+          "payment_configuration": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Payment Configuration",
+            "type": "string"
+          },
+          "payment_gateway": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Payment Gateway",
+            "type": "string"
+          },
+          "recipient": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Recipient",
+            "type": "string"
+          },
+          "reference_id": {
+            "maxLength": 35,
+            "minLength": 1,
+            "title": "Reference Id",
+            "type": "string"
+          },
+          "shipping_minor": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Shipping Minor",
+            "type": "integer"
+          },
+          "subtotal_minor": {
+            "exclusiveMinimum": 0.0,
+            "title": "Subtotal Minor",
+            "type": "integer"
+          },
+          "tax_minor": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Tax Minor",
+            "type": "integer"
+          },
+          "tenant": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant"
+          }
+        },
+        "required": [
+          "recipient",
+          "reference_id",
+          "currency",
+          "items",
+          "subtotal_minor",
+          "payment_gateway",
+          "payment_configuration"
+        ],
+        "title": "_OrderDetailsIn",
+        "type": "object"
+      },
+      "_OrderStatusIn": {
+        "properties": {
+          "body": {
+            "default": "",
+            "maxLength": 1024,
+            "title": "Body",
+            "type": "string"
+          },
+          "description": {
+            "default": "",
+            "maxLength": 1024,
+            "title": "Description",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "recipient": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Recipient",
+            "type": "string"
+          },
+          "reference_id": {
+            "maxLength": 35,
+            "minLength": 1,
+            "title": "Reference Id",
+            "type": "string"
+          },
+          "status": {
+            "maxLength": 32,
+            "minLength": 1,
+            "title": "Status",
+            "type": "string"
+          },
+          "tenant": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant"
+          }
+        },
+        "required": [
+          "recipient",
+          "reference_id",
+          "status"
+        ],
+        "title": "_OrderStatusIn",
+        "type": "object"
+      },
+      "_ProductSectionIn": {
+        "properties": {
+          "product_ids": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Product Ids",
+            "type": "array"
+          },
+          "title": {
+            "default": "",
+            "maxLength": 256,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "product_ids"
+        ],
+        "title": "_ProductSectionIn",
+        "type": "object"
+      },
+      "_RefundIn": {
+        "properties": {
+          "amount_minor": {
+            "exclusiveMinimum": 0.0,
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "currency": {
+            "maxLength": 3,
+            "minLength": 3,
+            "title": "Currency",
+            "type": "string"
+          },
+          "offset": {
+            "default": 100,
+            "title": "Offset",
+            "type": "integer"
+          },
+          "payment_configuration": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Payment Configuration",
+            "type": "string"
+          },
+          "reference_id": {
+            "maxLength": 35,
+            "minLength": 1,
+            "title": "Reference Id",
+            "type": "string"
+          },
+          "speed": {
+            "default": "normal",
+            "maxLength": 16,
+            "title": "Speed",
+            "type": "string"
+          },
+          "tenant": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant"
+          }
+        },
+        "required": [
+          "reference_id",
+          "payment_configuration",
+          "amount_minor",
+          "currency"
+        ],
+        "title": "_RefundIn",
         "type": "object"
       },
       "_RowIn": {
@@ -1453,6 +2117,159 @@
           }
         },
         "summary": "Clear Config",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/v1/notifications/operator/options": {
+      "get": {
+        "description": "Every commerce option this service gates (native pay), with its effective enabled/locked state.\n\nA self-serve UI reads `locked` to know an option is frozen; `source` says whether a stored\noverride or the built-in default decided it. Note native pay is ALSO gated globally by\nWHATSAPP_NATIVE_PAY_ENABLED \u2014 this per-shop toggle only matters once that region flag is on.",
+        "operationId": "list_options_api_v1_notifications_operator_options_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Tenant",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Options Api V1 Notifications Operator Options Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Options",
+        "tags": [
+          "operator"
+        ]
+      },
+      "put": {
+        "description": "Enable/disable (and optionally lock) one commerce option for a scope.",
+        "operationId": "set_option_api_v1_notifications_operator_options_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OptionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Option Api V1 Notifications Operator Options Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Option",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/v1/notifications/operator/options/{option}": {
+      "delete": {
+        "description": "Drop an option override so it resolves to its default again.",
+        "operationId": "clear_option_api_v1_notifications_operator_options__option__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "option",
+            "required": true,
+            "schema": {
+              "title": "Option",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Force",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Clear Option Api V1 Notifications Operator Options  Option  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Clear Option",
         "tags": [
           "operator"
         ]
@@ -2993,6 +3810,419 @@
         ]
       }
     },
+    "/internal/whatsapp/catalog": {
+      "post": {
+        "description": "Create a product catalog for a tenant's WhatsApp Business (owned by its Business Manager).\nA consuming platform calls this per shop; the token/business id resolve per tenant in core.",
+        "operationId": "create_catalog_internal_internal_whatsapp_catalog_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaCatalogCreateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Catalog Internal Internal Whatsapp Catalog Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Catalog Internal",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/whatsapp/catalog/{catalog_id}": {
+      "get": {
+        "operationId": "get_catalog_internal_internal_whatsapp_catalog__catalog_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "catalog_id",
+            "required": true,
+            "schema": {
+              "title": "Catalog Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Catalog Internal Internal Whatsapp Catalog  Catalog Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Catalog Internal",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/whatsapp/catalog/{catalog_id}/connect": {
+      "post": {
+        "description": "Connect an owned catalog to the tenant's WABA so its products can be shown in chat.",
+        "operationId": "connect_catalog_internal_internal_whatsapp_catalog__catalog_id__connect_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "catalog_id",
+            "required": true,
+            "schema": {
+              "title": "Catalog Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaCatalogConnectIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Connect Catalog Internal Internal Whatsapp Catalog  Catalog Id  Connect Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Connect Catalog Internal",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/whatsapp/catalog/{catalog_id}/products": {
+      "post": {
+        "description": "Upsert/delete products in a catalog, in ONE idempotent batch (Meta items_batch). A consuming\nplatform pushes its own product set; content is theirs. Bounded to Meta's per-call limit.",
+        "operationId": "sync_products_internal_internal_whatsapp_catalog__catalog_id__products_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "catalog_id",
+            "required": true,
+            "schema": {
+              "title": "Catalog Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaProductSyncIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Sync Products Internal Internal Whatsapp Catalog  Catalog Id  Products Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sync Products Internal",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/whatsapp/catalogs": {
+      "get": {
+        "operationId": "list_catalogs_internal_internal_whatsapp_catalogs_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Catalogs Internal Internal Whatsapp Catalogs Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Catalogs Internal",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/whatsapp/coexistence/contacts": {
       "get": {
         "description": "Catch-up read for the COEXISTENCE contact sync \u2014 the business's contacts at onboarding and on\nevery add/remove. One row per contact number per tenant (latest state wins); each carries the\naction (add|remove) and the contact fields. Ordered by timestamp; page with the cursor.",
@@ -3330,6 +4560,84 @@
           }
         },
         "summary": "Coexistence Purge",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/whatsapp/commerce-settings": {
+      "post": {
+        "description": "Set a tenant phone number's WhatsApp commerce settings (cart + catalog visibility).",
+        "operationId": "set_commerce_settings_internal_internal_whatsapp_commerce_settings_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaCommerceSettingsIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Commerce Settings Internal Internal Whatsapp Commerce Settings Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Commerce Settings Internal",
         "tags": [
           "internal"
         ]
@@ -4135,6 +5443,315 @@
         "summary": "Whatsapp Messaging Limit Internal",
         "tags": [
           "internal"
+        ]
+      }
+    },
+    "/internal/whatsapp/pay/lookup": {
+      "post": {
+        "description": "The source of truth for a payment \u2014 never trust a type:payment webhook alone; confirm here.",
+        "operationId": "lookup_payment_internal_whatsapp_pay_lookup_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_LookupIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Lookup Payment Internal Whatsapp Pay Lookup Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Lookup Payment",
+        "tags": [
+          "native-pay"
+        ]
+      }
+    },
+    "/internal/whatsapp/pay/order-details": {
+      "post": {
+        "operationId": "send_order_details_internal_whatsapp_pay_order_details_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_OrderDetailsIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Send Order Details Internal Whatsapp Pay Order Details Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Send Order Details",
+        "tags": [
+          "native-pay"
+        ]
+      }
+    },
+    "/internal/whatsapp/pay/order-status": {
+      "post": {
+        "operationId": "send_order_status_internal_whatsapp_pay_order_status_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_OrderStatusIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Send Order Status Internal Whatsapp Pay Order Status Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Send Order Status",
+        "tags": [
+          "native-pay"
+        ]
+      }
+    },
+    "/internal/whatsapp/pay/refund": {
+      "post": {
+        "operationId": "refund_payment_internal_whatsapp_pay_refund_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_RefundIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Refund Payment Internal Whatsapp Pay Refund Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Refund Payment",
+        "tags": [
+          "native-pay"
         ]
       }
     },

@@ -74,6 +74,8 @@ def build_manifest(
             {"path": "/internal/backup/export", "tier": "internal", "method": "POST"},
             {"path": "/internal/backup/import", "tier": "internal", "method": "POST"},
             {"path": "/internal/backup/verify", "tier": "internal", "method": "POST"},
+            # Housekeeping: drop already-seen dedupe markers past their window.
+            {"path": "/internal/connectors/prune-seen", "tier": "internal", "method": "POST"},
 
             {"path": "/api/v1/connectors/specs", "tier": "user", "method": "POST"},
             {"path": "/api/v1/connectors/specs", "tier": "user", "method": "GET"},

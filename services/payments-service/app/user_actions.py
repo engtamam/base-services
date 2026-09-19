@@ -32,3 +32,14 @@ from typing import Any
 
 
 USER_ACTIONS: list[dict[str, Any]] = []
+
+
+# Routes that exist but are deliberately NOT panel controls, each with a reason (safety:action-coverage).
+UNDECLARED_ROUTES: list[dict[str, Any]] = [
+    {"method": "GET", "path": "/api/v1/whoami",
+     "why": "scaffold diagnostic from the template: echoes the caller's own claims, a debugging aid "
+            "rather than a control a panel renders"},
+    {"method": "GET", "path": "/api/v1/admin/ping",
+     "why": "scaffold liveness probe from the template — proves the admin tier authorises, carries no "
+            "data and does nothing"},
+]

@@ -91,6 +91,10 @@ CRONS: dict[str, list] = {   # each job: a (name, schedule, path) tuple, or a di
         ("reclaim", "*/5 * * * *", "/internal/jobs/reclaim"),
     ],
     "webhook-service": [("sweep", "*/5 * * * *", "/internal/webhooks/sweep")],
+    # Retention for the per-record sync idempotency ledger (connector-r2-04): prune sync_seen rows
+    # past SYNC_SEEN_TTL_SECONDS so the collection's growth is bounded. The endpoint is explicitly
+    # scheduler-driven; without this cron the ledger grows forever.
+    "connector-service": [("prune-seen", "*/15 * * * *", "/internal/connectors/prune-seen")],
     # Re-attempt queued deliveries. With NOTIFY_DELIVERY_MODE=queued a provider hiccup queues a
     # message, and without this tick `queued` is just a prettier word for `lost` — the delivery log
     # fills with queued while the service looks healthy. Drain in inline mode is a cheap no-op, so

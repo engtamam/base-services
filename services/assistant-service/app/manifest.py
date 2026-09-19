@@ -114,6 +114,8 @@ def build_manifest(
             {"path": "/internal/backup/export", "tier": "internal", "method": "POST"},
             {"path": "/internal/backup/import", "tier": "internal", "method": "POST"},
             {"path": "/internal/backup/verify", "tier": "internal", "method": "POST"},
+            # Re-seal every connection's stored credential under a rotated key (an internal migration).
+            {"path": "/internal/assistant/connections/migrate-keys", "tier": "internal", "method": "POST"},
 
         ],
         "ports": ports or [],  # port -> driver, from the composition root
