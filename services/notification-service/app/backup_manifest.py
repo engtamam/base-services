@@ -48,6 +48,10 @@ BACKUP: dict[str, Any] = {
         # not messages, but worth restoring: losing it silently changes whether a shop may take
         # native pay. A platform-scope row uses tenant="".
         {"name": "commerce_option_gates", "tenant_scoped": True},
+        # Per-NUMBER handover mode (us|meta). Config an operator set; losing it silently reverts a
+        # number to the deployment default — a privacy-relevant change. Keyed by phone_number_id (not
+        # tenant-partitioned), so restored whole.
+        {"name": "wa_handover_mode", "tenant_scoped": False, "key": "{phone_number_id}"},
     ],
     "excluded": [
         {"name": "notify_idempo",

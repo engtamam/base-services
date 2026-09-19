@@ -25,6 +25,9 @@ VERIFY = "verify-nonce-123"
 def client(monkeypatch):
     monkeypatch.setenv("META_APP_SECRET", SECRET)
     monkeypatch.setenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", VERIFY)
+    # these tests exercise the us-path (inbound fans out); the default handover mode is now "meta"
+    # (privacy-first), so opt this deployment into "us".
+    monkeypatch.setenv("WHATSAPP_DEFAULT_HANDOVER_MODE", "us")
     get_settings.cache_clear()
     from app.main import create_app
     with TestClient(create_app()) as c:

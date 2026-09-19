@@ -187,6 +187,16 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "down would strand the option in its current state, which protects nothing",
     },
     {
+        "action": "operator.whatsapp_handover_mode_set",
+        "source": "admin",
+        "critical": False,
+        "resource": "handover_mode",
+        "why": "sets whether a number is handled by us or handed to Meta (private). Flipping to `us` "
+               "means we START receiving/storing that shop's customer content — a privacy-relevant "
+               "change worth attributing. Not critical: refusing the toggle because the log blinked "
+               "would strand the number in its current mode, which protects nothing",
+    },
+    {
         "action": "operator.whatsapp_webhook_override_set",
         "source": "admin",
         "critical": True,

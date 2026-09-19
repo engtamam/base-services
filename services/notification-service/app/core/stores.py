@@ -15,6 +15,7 @@ _WA_NUMBER_INDEX = "wa_number_index"   # phone_number_id -> {tenant} (routing ma
 _RECEIPTS = "notify_receipts"  # append-only receipt-event log, ordered by receipt_ts (catch-up read)
 _RECEIPT_KIND = "receipt"      # constant partition key so the ordered read is a filtered query, not a scan
 _INBOUND = "wa_inbound"        # append-only inbound-message log, ordered by timestamp (catch-up read)
+_HANDOVER = "wa_handover_mode"  # phone_number_id -> {mode: us|meta}; per-number handover override
 _INBOUND_KIND = "inbound"      # constant partition key — same reason as _RECEIPT_KIND
 # WhatsApp Coexistence catch-up logs (owner's own-app activity on the same number). One collection +
 # constant kind each, exactly like _INBOUND, so every read is an indexed ordered query, never a scan.
@@ -316,6 +317,39 @@ class InboundStore:
             if not cursor:
                 break
         return removed
+
+
+_HANDOVER_MODES = ("us", "meta")
+
+
+class HandoverModeStore:
+    """Per-NUMBER handover mode: `us` (we handle it) | `meta` (handed to Meta Business Agent ⇒ full
+    privacy for that number). Keyed by phone_number_id — the SAME unit as the Meta-side webhook
+    override, and the id the webhook already carries, so the hot-path decision needs no tenant
+    resolution. A number with no row follows the deployment default; an operator override beats it."""
+
+    def __init__(self, store: DataStore) -> None:
+        self._s = store
+
+    async def get(self, phone_number_id: str) -> str | None:
+        """The explicit per-number mode, or None if unset (⇒ caller applies the deployment default)."""
+        if not phone_number_id:
+            return None
+        row = await self._s.get(_HANDOVER, phone_number_id)
+        mode = row.get("mode") if row else None
+        return mode if mode in _HANDOVER_MODES else None
+
+    async def set(self, *, phone_number_id: str, mode: str, actor: str = "") -> None:
+        if not phone_number_id:
+            raise ValueError("phone_number_id is required")
+        if mode not in _HANDOVER_MODES:
+            raise ValueError(f"mode must be one of {_HANDOVER_MODES}")
+        await self._s.put(_HANDOVER, phone_number_id,
+                          {"id": phone_number_id, "mode": mode, "set_by": actor})
+
+    async def clear(self, phone_number_id: str) -> bool:
+        """Drop the per-number override so the number follows the deployment default again."""
+        return await self._s.delete(_HANDOVER, phone_number_id)
 
 
 class CoexistenceStore:

@@ -28,9 +28,11 @@ def client():
     saved = dict(os.environ)
     os.environ.update(ENV="test", META_APP_SECRET=SECRET, INTERNAL_SERVICE_TOKEN=ITOKEN,
                       TOKEN_VERIFIER_DRIVER="hs256", TOKEN_HS256_SECRET="h" * 40,
-                      # coexistence storage needs BOTH the master store switch and its own enable
+                      # coexistence storage needs the master store switch, its own enable, AND the
+                      # us-path (default handover mode is now "meta" ⇒ content dropped before store).
                       WHATSAPP_CONVERSATION_STORE_ENABLED="true",
-                      WHATSAPP_COEXISTENCE_ENABLED="true")
+                      WHATSAPP_COEXISTENCE_ENABLED="true",
+                      WHATSAPP_DEFAULT_HANDOVER_MODE="us")
     get_settings.cache_clear()
     from app.main import create_app
     with TestClient(create_app()) as c:

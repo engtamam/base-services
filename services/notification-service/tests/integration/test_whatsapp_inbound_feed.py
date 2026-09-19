@@ -25,8 +25,10 @@ def client():
     os.environ.update(ENV="test", META_APP_SECRET=SECRET, INTERNAL_SERVICE_TOKEN=ITOKEN,
                       TOKEN_VERIFIER_DRIVER="hs256", TOKEN_HS256_SECRET="h" * 40,
                       PII_SALT="s" * 32,
-                      # the durable inbound feed is opt-in now (master privacy switch defaults off)
-                      WHATSAPP_CONVERSATION_STORE_ENABLED="true")
+                      # us-path: store is opt-in (master switch off by default) AND the default
+                      # handover mode is now "meta" (privacy) — opt into "us" so inbound is processed.
+                      WHATSAPP_CONVERSATION_STORE_ENABLED="true",
+                      WHATSAPP_DEFAULT_HANDOVER_MODE="us")
     get_settings.cache_clear()
     from app.main import create_app
     with TestClient(create_app()) as c:
@@ -124,7 +126,9 @@ def test_master_switch_off_stores_nothing_but_still_acks_and_fans_out():
 
     saved = dict(os.environ)
     os.environ.update(ENV="test", META_APP_SECRET=SECRET, INTERNAL_SERVICE_TOKEN=ITOKEN,
-                      TOKEN_VERIFIER_DRIVER="hs256", TOKEN_HS256_SECRET="h" * 40, PII_SALT="s" * 32)
+                      TOKEN_VERIFIER_DRIVER="hs256", TOKEN_HS256_SECRET="h" * 40, PII_SALT="s" * 32,
+                      # us-path (this test checks store-OFF still fans out); default mode is meta.
+                      WHATSAPP_DEFAULT_HANDOVER_MODE="us")
     os.environ.pop("WHATSAPP_CONVERSATION_STORE_ENABLED", None)   # default OFF
     get_settings.cache_clear()
     try:

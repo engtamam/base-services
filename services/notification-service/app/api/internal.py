@@ -1395,6 +1395,56 @@ async def whatsapp_clear_webhook_override(request: Request, body: WebhookOverrid
     return {"ok": True, "scope": body.scope, "cleared": True}
 
 
+class HandoverModeIn(BaseModel):
+    phone_number_id: str = Field(min_length=1, max_length=64)
+    mode: str = Field(pattern="^(us|meta)$")   # us = we handle it | meta = handed to Meta (private)
+
+
+@router.get("/whatsapp/handover-mode", dependencies=[Depends(require_internal_token)])
+async def whatsapp_get_handover_mode(request: Request, phone_number_id: str):
+    """The EFFECTIVE handover mode for a number: its own setting if any, else the deployment default.
+    `source` says which decided it. `private` is what the webhook enforces (meta ⇒ content dropped)."""
+    from app.core.stores import HandoverModeStore
+    s = get_settings()
+    if not phone_number_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "phone_number_id is required")
+    own = await HandoverModeStore(request.app.state.container.datastore).get(phone_number_id)
+    mode = own or s.WHATSAPP_DEFAULT_HANDOVER_MODE
+    return {"phone_number_id": phone_number_id, "mode": mode,
+            "source": "override" if own else "default",
+            "private": bool(s.WHATSAPP_INBOUND_PRIVACY_MODE or mode == "meta")}
+
+
+@router.post("/whatsapp/handover-mode", dependencies=[Depends(require_internal_token)])
+async def whatsapp_set_handover_mode(request: Request, body: HandoverModeIn):
+    """Set a number's handover mode (per-number override; beats the deployment default). `meta` hands
+    the number to Meta Business Agent ⇒ we drop its content at the root; `us` = we handle it. Audited:
+    flipping a number to `us` means we START processing that shop's customer content, a privacy-
+    relevant change worth attributing."""
+    from app.core.stores import HandoverModeStore
+    await request.app.state.auditor.record(
+        "operator.whatsapp_handover_mode_set", actor="system", tenant="",
+        resource=f"phone:{body.phone_number_id}", ip=request.client.host if request.client else "",
+        metadata={"mode": body.mode})
+    await HandoverModeStore(request.app.state.container.datastore).set(
+        phone_number_id=body.phone_number_id, mode=body.mode, actor="system")
+    return {"ok": True, "phone_number_id": body.phone_number_id, "mode": body.mode}
+
+
+@router.post("/whatsapp/handover-mode/clear", dependencies=[Depends(require_internal_token)])
+async def whatsapp_clear_handover_mode(request: Request, phone_number_id: str):
+    """Drop a number's override so it follows the deployment default again."""
+    from app.core.stores import HandoverModeStore
+    if not phone_number_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "phone_number_id is required")
+    await request.app.state.auditor.record(
+        "operator.whatsapp_handover_mode_set", actor="system", tenant="",
+        resource=f"phone:{phone_number_id}", ip=request.client.host if request.client else "",
+        metadata={"cleared": True})
+    cleared = await HandoverModeStore(request.app.state.container.datastore).clear(phone_number_id)
+    return {"ok": True, "cleared": cleared}
+
+
 @router.get("/whatsapp/business-verification", dependencies=[Depends(require_internal_token)])
 async def whatsapp_business_verification(request: Request, tenant: str):
     """The WABA's business-verification status + overall status, read live from Meta

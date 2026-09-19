@@ -453,6 +453,13 @@ class Settings(BaseSettings):
     # JSON-list of allowed hostnames; EMPTY = fail-closed (no override may be set at all until an
     # operator lists the trusted endpoints, e.g. Meta's Business Agent host). HTTPS is required too.
     WHATSAPP_OVERRIDE_ALLOWED_HOSTS: str = ""
+    # The DEFAULT handover mode every number follows unless it has its own per-number setting:
+    # "meta" = handed to Meta Business Agent ⇒ FULL PRIVACY for that number (content dropped at the
+    # root — never received, never stored), "us" = we handle it (the classic path). DEFAULT "meta":
+    # privacy-first — a fresh number neither stores nor processes customer content until someone
+    # deliberately opts it into "us" (deployment-wide here, or per-number via HandoverModeStore, which
+    # beats this). Flip to "us" to make handling-by-us the baseline. A per-number override always wins.
+    WHATSAPP_DEFAULT_HANDOVER_MODE: Literal["us", "meta"] = "meta"
     # WhatsApp Flow DATA ENDPOINT (the encrypted server callback that drives a Flow's screens — e.g.
     # the booking calendar). OFF by default: a deployment opts in once it has uploaded a public key to
     # Meta and sealed the matching private key. See docs/design/whatsapp-booking-flow.md.

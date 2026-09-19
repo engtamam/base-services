@@ -173,6 +173,10 @@ def build_manifest(
             # The Meta-side handover lever: route a number's/WABA's webhooks to an alternate endpoint.
             {"path": "/internal/whatsapp/webhook-override", "tier": "internal", "method": "POST"},
             {"path": "/internal/whatsapp/webhook-override/clear", "tier": "internal", "method": "POST"},
+            # Per-number handover mode (us | meta) — the on/off, our-side privacy routing.
+            {"path": "/internal/whatsapp/handover-mode", "tier": "internal", "method": "GET"},
+            {"path": "/internal/whatsapp/handover-mode", "tier": "internal", "method": "POST"},
+            {"path": "/internal/whatsapp/handover-mode/clear", "tier": "internal", "method": "POST"},
             # Ensure the WABA's Flow data-endpoint encryption keypair (generate/register, idempotent).
             {"path": "/internal/whatsapp/flow-encryption/ensure", "tier": "internal", "method": "POST"},
             # Operator platform-status glance — bounded AGGREGATE counts only (no rows, no PII).
