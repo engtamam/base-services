@@ -476,5 +476,12 @@ jobs:
       - name: Show what each gate protects
         run: bash tools/ci/run_all_gates.sh --list
 
+      # This --strict aggregate run is the merge blocker: it executes EVERY gate in gates.d/. The
+      # gates below are covered ONLY here (they have no dedicated step above), so they are declared
+      # so safety:ci-parity credits them — a gate CI runs but the workflow never names reads as
+      # "not run" to the parity check. Verified each is in the aggregate run.
+      # gates: safety:cas-create, safety:atomic-cas, safety:async-blocking, safety:body-limit
+      # gates: safety:idempo-scope, safety:keyed-integrity, safety:operator-tenant-wired
+      # gates: safety:sort-index, safety:tenant-guard
       - name: run_all_gates.sh --strict
         run: bash tools/ci/run_all_gates.sh --strict --profile aggregate

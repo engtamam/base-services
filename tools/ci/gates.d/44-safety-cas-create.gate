@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+gate_name="safety:cas-create"
+gate_desc="a version-pinned cas()-updated row must be CREATED via cas insert-if-absent, not put()"
+gate_protects="The identity refresh-rotation incident (2026-09-19), replicated latently across the
+fleet and found by this gate in billing/job/stream/tenant: a row created via put() carries no
+version, so a later version-pinned cas(coll,key,ver,…) on the STRICT postgres adapter (UPDATE …
+WHERE version=ver, and INSERT … ON CONFLICT DO NOTHING for expected 0) never matches — the update
+no-ops forever in production (coupons never redeemable, jobs never claimable, sessions never
+terminate, first tenant lifecycle write fails) while the LAX in-memory cas (versionless → 0 →
+matches) keeps every unit test green and hides it. The rule: any collection ever transitioned by a
+version-pinned cas() must be CREATED by cas(coll,key,0,…) so the row lands carrying a version. Flags
+each service's app/core; a genuine exception (a create-if-absent via a computed expected=0, or a
+generic self.collection helper) opts out with an in-line '# cas-create: ok — reason' on the put."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_cas_create.py"
+gate_units=1
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_cas_create.py; }
+
+# Mutation-tested: a put-then-version-pinned-cas fails, a cas insert-if-absent create passes, a
+# marker re-exempts.
+gate_selftest() { "$PY" tools/ci/selftest_cas_create.py >/dev/null 2>&1; }
