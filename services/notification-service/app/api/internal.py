@@ -12,7 +12,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
-from app.api.v1.notifications import build_notifier
+from app.api.v1.notifications import build_notifier, build_release_control
 from app.backup_manifest import BACKUP
 from app.core import backup as _backup
 from app.config import Settings, get_settings
@@ -604,6 +604,43 @@ async def drain_queue(request: Request) -> dict:
     result = await (await build_notifier(request)).drain(limit=s.NOTIFY_DRAIN_LIMIT)
     await request.app.state.auditor.record(
         "notification.drained", actor="system", resource="notifications",
+        ip=request.client.host if request.client else "",
+        metadata={k: str(v) for k, v in result.items() if isinstance(v, (int, str))})
+    return result
+
+
+@router.post("/notifications/release-control/drain", dependencies=[Depends(require_internal_token)])
+async def drain_release_control(request: Request) -> dict:
+    """Re-attempt every queued WhatsApp "release thread control" call whose backoff has expired.
+
+    A meta-mode send takes thread control from the Meta Business Agent; we release it back after each
+    send, and a failed release is queued here. Like /notifications/drain, drive this from a cronJob:
+
+        cronJobs:
+          - name: notify-release-drain
+            schedule: "*/1 * * * *"
+            path: /internal/notifications/release-control/drain
+
+    Each row carries its own next_attempt_ts, so an early tick simply skips it. When the feature is
+    off (WHATSAPP_RELEASE_THREAD_CONTROL_ENABLED) there is nothing queued and this is a no-op.
+    """
+    s = get_settings()
+    release = build_release_control(request.app.state.container.datastore, s)
+    if release is None:
+        return {"drained": 0, "released": 0, "requeued": 0, "dead": 0,
+                "reason": "WHATSAPP_RELEASE_THREAD_CONTROL_ENABLED is off"}
+    pool = getattr(request.app.state, "provider_pool", None)
+
+    async def resolver(phone_number_id: str, tenant: str):
+        # Rebuild the provider for the row's OWN number (same per-number credentials the send used),
+        # so any worker pod can release even one that never handled the original send.
+        if pool is None or not phone_number_id:
+            return None
+        return await pool.whatsapp_for_identity(tenant or "", phone_number_id)
+
+    result = await release.drain(resolver, limit=s.NOTIFY_DRAIN_LIMIT)
+    await request.app.state.auditor.record(
+        "notification.release_control_drained", actor="system", resource="whatsapp_release_control",
         ip=request.client.host if request.client else "",
         metadata={k: str(v) for k, v in result.items() if isinstance(v, (int, str))})
     return result

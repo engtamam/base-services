@@ -172,7 +172,9 @@ _SMS_PROVIDERS: dict[str, Builder] = {
 _WHATSAPP_PROVIDERS: dict[str, Builder] = {
     "console": lambda s: ConsoleWhatsApp(),
     "meta": lambda s: MetaWhatsApp(s.WHATSAPP_ACCESS_TOKEN, s.WHATSAPP_PHONE_NUMBER_ID,
-                                   s.WHATSAPP_GRAPH_BASE),
+                                   s.WHATSAPP_GRAPH_BASE,
+                                   thread_control_base=s.WHATSAPP_THREAD_CONTROL_BASE,
+                                   thread_control_api_version=s.WHATSAPP_THREAD_CONTROL_API_VERSION),
     "webhook": lambda s: WebhookWhatsApp(s.WHATSAPP_WEBHOOK_URL, s.WHATSAPP_WEBHOOK_BEARER),
 }
 
@@ -270,7 +272,9 @@ def make_provider_pool(settings, secret_store, runtime_config):
         # it yields the same (ok, provider, message_id) shape the notifier expects, and single-element
         # means NO fallback — a send explicitly addressed to a number never goes out from another.
         build_whatsapp_identity=lambda token, phone_id: FailoverWhatsApp(
-            [MetaWhatsApp(token, phone_id, settings.WHATSAPP_GRAPH_BASE)]),
+            [MetaWhatsApp(token, phone_id, settings.WHATSAPP_GRAPH_BASE,
+                          thread_control_base=settings.WHATSAPP_THREAD_CONTROL_BASE,
+                          thread_control_api_version=settings.WHATSAPP_THREAD_CONTROL_API_VERSION)]),
         build_template_manager=lambda token, waba: _tenant_template_manager(settings, token, waba),
         build_flow_manager=lambda token, waba: _tenant_flow_manager(settings, token, waba),
         build_media_uploader=lambda token: _tenant_media_uploader(settings, token),

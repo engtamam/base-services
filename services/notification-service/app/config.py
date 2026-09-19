@@ -460,6 +460,22 @@ class Settings(BaseSettings):
     # deliberately opts it into "us" (deployment-wide here, or per-number via HandoverModeStore, which
     # beats this). Flip to "us" to make handling-by-us the baseline. A per-number override always wins.
     WHATSAPP_DEFAULT_HANDOVER_MODE: Literal["us", "meta"] = "meta"
+    # RELEASE THREAD CONTROL back to the Meta Business Agent after WE send to a number in `meta` mode.
+    # Meta's handover protocol: any message we send TAKES thread control from the agent, and it does
+    # NOT auto-return — so unless we explicitly release it, the customer is left with the agent muted
+    # and no one answering (our own assistant is off for a meta-mode number by design). When ON, every
+    # successful WhatsApp send (template / interactive / carousel) to a meta-mode number durably
+    # enqueues a `release` call and retries it until it lands (never a silent failure). OFF by default:
+    # a deployment opts in once its numbers are actually connected to a Meta Business Agent. Endpoint
+    # verified against Meta's "Thread Control (Cloud API)" reference 2026-09-20:
+    #   POST {WHATSAPP_THREAD_CONTROL_BASE}/business/whatsapp/phone_numbers/{phone_number_id}/thread_control
+    #   headers: Authorization: Bearer <token>, X-API-Version: <WHATSAPP_THREAD_CONTROL_API_VERSION>
+    #   body: {"messaging_product":"whatsapp","action":"release","to":"<consumer wa id>"}
+    # The host + version are config (never a request) so a caller cannot retarget the call, and so the
+    # shape can be corrected without a code change if Meta revises it (see the dated note above).
+    WHATSAPP_RELEASE_THREAD_CONTROL_ENABLED: bool = False
+    WHATSAPP_THREAD_CONTROL_BASE: str = "https://api.facebook.com"
+    WHATSAPP_THREAD_CONTROL_API_VERSION: str = "1.0.0"
     # WhatsApp Flow DATA ENDPOINT (the encrypted server callback that drives a Flow's screens — e.g.
     # the booking calendar). OFF by default: a deployment opts in once it has uploaded a public key to
     # Meta and sealed the matching private key. See docs/design/whatsapp-booking-flow.md.

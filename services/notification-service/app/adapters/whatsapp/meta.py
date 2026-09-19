@@ -13,18 +13,52 @@ from app.adapters.notify_http import bearer, ok, post_json
 from app.ports.errors import ConfigError
 
 _DEFAULT_BASE = "https://graph.facebook.com/v26.0"
+_DEFAULT_TC_BASE = "https://api.facebook.com"
+_DEFAULT_TC_VERSION = "1.0.0"
 
 
 class MetaWhatsApp:
     driver = "meta"
 
-    def __init__(self, access_token: str, phone_number_id: str, base_url: str = "") -> None:
+    def __init__(self, access_token: str, phone_number_id: str, base_url: str = "",
+                 thread_control_base: str = "", thread_control_api_version: str = "") -> None:
         if not access_token or not phone_number_id:
             raise ConfigError(
                 "WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID are required for the meta provider")
         self._base = (base_url or _DEFAULT_BASE).rstrip("/")
         self._phone_id = phone_number_id
         self._headers = bearer(access_token)
+        # Thread Control (handover) lives on a DIFFERENT host + versioning scheme than the messages
+        # endpoint — api.facebook.com with an X-API-Version header, not graph.facebook.com/v{n} — so it
+        # gets its own base/version (config, verified against Meta's reference 2026-09-20).
+        self._tc_base = (thread_control_base or _DEFAULT_TC_BASE).rstrip("/")
+        self._tc_version = thread_control_api_version or _DEFAULT_TC_VERSION
+
+    @property
+    def phone_number_id(self) -> str:
+        """The number this provider sends FROM — the key the handover mode + thread-control call use."""
+        return self._phone_id
+
+    def release_thread_control(self, to: str, metadata: str = "") -> tuple[bool, str]:
+        """Hand thread control back to the Meta Business Agent for conversation `to`.
+
+        Our outbound send TAKES control from the agent and Meta never auto-returns it, so a meta-mode
+        number must release after each send or the customer is left unanswered. Idempotent by nature:
+        releasing when we no longer hold control is a harmless no-op on Meta's side. Returns
+        (ok, error) — never raises — so the caller can queue a retry on failure.
+        """
+        payload: dict = {"messaging_product": "whatsapp", "action": "release", "to": to}
+        if metadata:
+            payload["metadata"] = metadata[:512]
+        headers = {**self._headers, "X-API-Version": self._tc_version}
+        url = f"{self._tc_base}/business/whatsapp/phone_numbers/{self._phone_id}/thread_control"
+        try:
+            status, body = post_json(url, payload, headers)
+        except Exception as exc:  # noqa: BLE001 — network/transport error is a retryable failure, not a raise
+            return False, f"{type(exc).__name__}: {exc}"
+        if ok(status):
+            return True, ""
+        return False, f"HTTP {status}: {body[:200]}"
 
     def send(self, to: str, template_name: str, language: str, variables: list[str],
              biz_opaque_callback_data: str = "", flow_token: str = "",

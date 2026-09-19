@@ -320,7 +320,25 @@ async def build_notifier(request: Request, tenant: str = "") -> NotificationServ
             retryable=s.notify_retryable, permanent=s.notify_permanent,
             unknown_is_retryable=s.NOTIFY_UNKNOWN_ERROR_RETRYABLE),
         auditor=getattr(request.app.state, "auditor", None),
+        release_control=build_release_control(store, s),
     )
+
+
+def build_release_control(store, s):
+    """The thread-control release service — None (feature off) unless the deployment opted in. Reuses
+    the same RetryPolicy shape the notifier uses, so a release retries with the same backoff discipline."""
+    if not s.WHATSAPP_RELEASE_THREAD_CONTROL_ENABLED:
+        return None
+    from app.core.release_control import ReleaseControlService
+    from app.core.stores import HandoverModeStore, ReleaseControlStore
+    return ReleaseControlService(
+        store=ReleaseControlStore(store), handover=HandoverModeStore(store),
+        default_mode=s.WHATSAPP_DEFAULT_HANDOVER_MODE, enabled=True,
+        retry=RetryPolicy(
+            max_attempts=s.NOTIFY_MAX_ATTEMPTS,
+            base_ms=s.NOTIFY_BACKOFF_BASE_MS, max_ms=s.NOTIFY_BACKOFF_MAX_MS,
+            retryable=s.notify_retryable, permanent=s.notify_permanent,
+            unknown_is_retryable=s.NOTIFY_UNKNOWN_ERROR_RETRYABLE))
 
 
 # ── Schemas ─────────────────────────────────────────────────────────────────

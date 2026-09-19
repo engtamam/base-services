@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import time
 
-from app.core.models import Delivery, InAppItem, Preference, Template
+from app.core.models import Delivery, InAppItem, Preference, Template, new_id
 from app.ports.datastore import DataStore
 
 _TEMPLATES = "templates"
@@ -16,6 +16,7 @@ _RECEIPTS = "notify_receipts"  # append-only receipt-event log, ordered by recei
 _RECEIPT_KIND = "receipt"      # constant partition key so the ordered read is a filtered query, not a scan
 _INBOUND = "wa_inbound"        # append-only inbound-message log, ordered by timestamp (catch-up read)
 _HANDOVER = "wa_handover_mode"  # phone_number_id -> {mode: us|meta}; per-number handover override
+_RELEASE = "wa_release_control"  # EPHEMERAL queue: pending "release thread control" calls (deleted on success)
 _INBOUND_KIND = "inbound"      # constant partition key — same reason as _RECEIPT_KIND
 # WhatsApp Coexistence catch-up logs (owner's own-app activity on the same number). One collection +
 # constant kind each, exactly like _INBOUND, so every read is an indexed ordered query, never a scan.
@@ -350,6 +351,44 @@ class HandoverModeStore:
     async def clear(self, phone_number_id: str) -> bool:
         """Drop the per-number override so the number follows the deployment default again."""
         return await self._s.delete(_HANDOVER, phone_number_id)
+
+
+_RELEASE_QUEUED, _RELEASE_DEAD = "queued", "dead"
+
+
+class ReleaseControlStore:
+    """EPHEMERAL queue of pending "release thread control back to the Meta agent" calls.
+
+    A row is written when we send to a meta-mode number and TAKE control; it is DELETED the moment the
+    release lands, so a healthy system keeps this collection near-empty. A row survives only while its
+    release is still being retried (or has gone `dead` after exhausting retries — kept as an error
+    signal). Purely operational state, reconstructable from nothing — so it is deliberately EXCLUDED
+    from backup (see backup_manifest), never backed up.
+    """
+
+    def __init__(self, store: DataStore) -> None:
+        self._s = store
+
+    async def enqueue(self, *, phone_number_id: str, to: str, tenant: str = "",
+                      clock=time.time) -> dict:
+        now = clock()
+        row = {"id": new_id(), "phone_number_id": phone_number_id, "to": to, "tenant": tenant,
+               "status": _RELEASE_QUEUED, "attempts": 0, "next_attempt_ts": 0.0, "error": "",
+               "ts": now}
+        await self._s.put(_RELEASE, row["id"], row)
+        return row
+
+    async def due(self, limit: int) -> list[dict]:
+        """Queued releases, oldest first — never a scan (pushed down by status)."""
+        rows, _ = await self._s.find(_RELEASE, {"status": _RELEASE_QUEUED}, limit=limit,
+                                     sort=("ts", "asc"))
+        return rows
+
+    async def save(self, row: dict) -> None:
+        await self._s.put(_RELEASE, row["id"], row)
+
+    async def delete(self, row_id: str) -> bool:
+        return await self._s.delete(_RELEASE, row_id)
 
 
 class CoexistenceStore:

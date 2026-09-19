@@ -101,6 +101,10 @@ CRONS: dict[str, list] = {   # each job: a (name, schedule, path) tuple, or a di
     # this is safe to ship on always.
     "notification-service": [
         ("drain", "*/1 * * * *", "/internal/notifications/drain"),
+        # Retry queued "release thread control" calls (a meta-mode send took control from the Meta
+        # agent; a failed release must still land or the customer is left unanswered). A no-op when the
+        # feature is off or nothing is queued, so it is safe to always ship.
+        ("release-drain", "*/1 * * * *", "/internal/notifications/release-control/drain"),
         # Retention reapers so stored WhatsApp conversation data is a bounded buffer, never a forever
         # archive: inbound customer messages (wa_inbound, on by default) and — when the platform
         # enabled it — the coexistence logs. Both purge routes are idempotent no-ops on an empty/

@@ -48,7 +48,8 @@ class NotificationService:
                  retry: RetryPolicy | None = None,
                  consent_gate=None, consent_purposes: dict[str, str] | None = None,
                  consent_unknown: str = FAIL_CLOSED,
-                 delivery_mode: str = INLINE, clock=time.time, auditor=None) -> None:
+                 delivery_mode: str = INLINE, clock=time.time, auditor=None,
+                 release_control=None) -> None:
         self._templates = templates
         self._prefs = prefs
         self._deliveries = deliveries
@@ -78,6 +79,10 @@ class NotificationService:
         # Recorded in _record(), the single funnel, so an inline send and a drained retry are
         # witnessed the same way. Optional so tests build the service without one.
         self._auditor = auditor
+        # After a successful WhatsApp send to a `meta`-mode number, hand thread control back to the
+        # Meta Business Agent (else our send leaves the customer with a muted agent). None ⇒ feature
+        # off (WHATSAPP_RELEASE_THREAD_CONTROL_ENABLED). It never raises and never affects the send.
+        self._release = release_control
 
     async def notify(self, *, recipient: str, channel: str, template_key: str,
                      tenant: str | None = None,
@@ -240,6 +245,7 @@ class NotificationService:
             return await rec(recipient, "whatsapp", template_key, "failed",
                                       error=f"{type(exc).__name__}: {exc}")
         if ok:
+            await self._release_thread_control(wa, recipient, tenant)
             # Capture the wamid: it is the ONLY key a later receipt can be matched back to this send by.
             return await rec(recipient, "whatsapp", template_key, SENT, provider=provider,
                                       attempts=1, provider_message_id=message_id)
@@ -276,6 +282,7 @@ class NotificationService:
                 recipient, "whatsapp", tk, "failed", tenant=tenant,
                 error=f"{type(exc).__name__}: {exc}"))
         if ok:
+            await self._release_thread_control(wa, recipient, tenant)
             return await self._finish(idempotency_key, tenant or "", await self._record(
                 recipient, "whatsapp", tk, SENT, tenant=tenant, provider=provider, attempts=1,
                 provider_message_id=mid))
@@ -335,12 +342,20 @@ class NotificationService:
                 recipient, "whatsapp", tk, "failed", tenant=tenant,
                 error=f"{type(exc).__name__}: {exc}"))
         if ok:
+            await self._release_thread_control(wa, recipient, tenant)
             return await self._finish(idempotency_key, tenant or "", await self._record(
                 recipient, "whatsapp", tk, SENT, tenant=tenant, provider=provider, attempts=1,
                 provider_message_id=mid))
         return await self._finish(idempotency_key, tenant or "", await self._record(
             recipient, "whatsapp", tk, "failed", tenant=tenant, provider=provider,
             error="send failed"))
+
+    async def _release_thread_control(self, wa, recipient: str, tenant: str) -> None:
+        """Hand thread control back to the Meta agent after a successful send (meta-mode numbers only).
+        Delegated to ReleaseControlService, which is durable + retrying and never raises; a no-op when
+        the feature is off."""
+        if self._release is not None:
+            await self._release.after_send(wa=wa, recipient=recipient, tenant=tenant or "")
 
     async def _deliver(self, channel: str, recipient: str, subject: str, body: str,
                        user_id: str | None) -> tuple[bool, str, str]:

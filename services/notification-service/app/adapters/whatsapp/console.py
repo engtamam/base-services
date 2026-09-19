@@ -10,6 +10,12 @@ _log = get_logger("app.whatsapp.console")
 
 class ConsoleWhatsApp:
     driver = "console"
+    phone_number_id = ""          # no real number → the release service treats it as nothing to release
+
+    def release_thread_control(self, to: str, metadata: str = "") -> tuple[bool, str]:
+        """No-op for the console double — there is no Meta agent to hand control back to."""
+        _log.info("whatsapp_release_thread_control", extra={"provider": "console", "to": to})
+        return True, ""
 
     def send(self, to: str, template_name: str, language: str, variables: list[str],
              biz_opaque_callback_data: str = "", flow_token: str = "",

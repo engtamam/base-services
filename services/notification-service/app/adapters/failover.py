@@ -45,6 +45,24 @@ class FailoverWhatsApp:
         self._providers = providers
         self.driver = ",".join(p.driver for p in providers)
 
+    @property
+    def phone_number_id(self) -> str:
+        """The number the chain sends FROM — the first provider that has a real one (the Meta
+        provider). Empty for a console/webhook-only chain, so the release service simply skips it."""
+        for p in self._providers:
+            pid = getattr(p, "phone_number_id", "")
+            if pid:
+                return pid
+        return ""
+
+    def release_thread_control(self, to: str, metadata: str = "") -> tuple[bool, str]:
+        """Release thread control on the first provider that can (the Meta one). A console/webhook-only
+        chain has nothing to release and reports success."""
+        for p in self._providers:
+            if getattr(p, "phone_number_id", ""):
+                return p.release_thread_control(to, metadata)
+        return True, ""
+
     def send(self, to: str, template_name: str, language: str, variables: list,
              biz_opaque_callback_data: str = "", flow_token: str = "",
              flow_action_data: dict | None = None, header_media_id: str = "",

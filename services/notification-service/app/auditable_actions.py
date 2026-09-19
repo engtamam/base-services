@@ -30,6 +30,11 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "critical": False,
     },
     {
+        "action": "notification.release_control_drained",
+        "source": "system",
+        "critical": False,
+    },
+    {
         "action": "notification.deliveries_viewed",
         "source": "admin",
         "critical": False,

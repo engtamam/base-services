@@ -61,5 +61,10 @@ BACKUP: dict[str, Any] = {
          "reason": "short-TTL, mid-conversation WhatsApp Flow session state (tenant|flow_token -> "
                    "{step, chosen}); a restore mid-flow is meaningless — the customer simply reopens "
                    "the flow — so the clean slate is correct, like a worker lease"},
+        {"name": "wa_release_control",
+         "reason": "ephemeral queue of pending 'release thread control' calls, DELETED on success; a "
+                   "row exists only while a release is still being retried. Restoring stale rows would "
+                   "at worst re-issue a release that is a harmless no-op on Meta's side, so the clean "
+                   "slate is correct, like a worker lease"},
     ],
 }

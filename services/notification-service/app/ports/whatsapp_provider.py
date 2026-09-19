@@ -56,3 +56,18 @@ class WhatsAppProvider(Protocol):
         replies to a user who has just messaged us. Returns the wamid on success, "" on failure,
         exactly like send()/send_interactive()."""
         ...
+
+    # ── Meta Business Agent handover ─────────────────────────────────────────────
+    phone_number_id: str
+    """The number this provider sends FROM (Meta providers), or "" when the driver has no Meta number
+    (console/webhook) — the key the handover mode + thread-control release are scoped by."""
+
+    def release_thread_control(self, to: str, metadata: str = "") -> tuple[bool, str]:
+        """Hand WhatsApp thread control back to the Meta Business Agent for conversation `to`.
+
+        Our outbound send TAKES control from the agent and Meta never auto-returns it, so a meta-mode
+        number must release after each send or the customer is left with a muted agent. Returns
+        (ok, error) and MUST NOT raise — the caller queues a retry on a False. Idempotent on Meta's
+        side (releasing when we no longer hold control is a harmless no-op). A driver with no Meta
+        number (console/webhook) is a no-op returning (True, "")."""
+        ...

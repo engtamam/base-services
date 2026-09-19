@@ -11,6 +11,11 @@ from app.ports.errors import ConfigError
 
 class WebhookWhatsApp:
     driver = "webhook"
+    phone_number_id = ""          # a generic relay has no Meta number → nothing to release
+
+    def release_thread_control(self, to: str, metadata: str = "") -> tuple[bool, str]:
+        """No-op: a generic webhook relay is not a Meta Business Agent handover peer."""
+        return True, ""
 
     def __init__(self, url: str, token: str = "") -> None:
         if not url:

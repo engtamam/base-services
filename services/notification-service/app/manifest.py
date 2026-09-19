@@ -105,6 +105,7 @@ def build_manifest(
             {"path": "/api/v1/notifications/operator/options/{}", "tier": "user", "method": "DELETE"},
             {"path": "/internal/whatsapp/embedded-signup", "tier": "internal", "method": "POST"},
             {"path": "/internal/notifications/drain", "tier": "internal", "method": "POST"},
+            {"path": "/internal/notifications/release-control/drain", "tier": "internal", "method": "POST"},
             {"path": "/internal/whatsapp/templates/sync", "tier": "internal", "method": "POST"},
             {"path": "/internal/whatsapp/templates", "tier": "internal", "method": "GET"},
             # Internal WRITE twins of the user-tier register/submit routes: a backend service (an

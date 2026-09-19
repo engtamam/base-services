@@ -3502,6 +3502,74 @@
         ]
       }
     },
+    "/internal/notifications/release-control/drain": {
+      "post": {
+        "description": "Re-attempt every queued WhatsApp \"release thread control\" call whose backoff has expired.\n\nA meta-mode send takes thread control from the Meta Business Agent; we release it back after each\nsend, and a failed release is queued here. Like /notifications/drain, drive this from a cronJob:\n\n    cronJobs:\n      - name: notify-release-drain\n        schedule: \"*/1 * * * *\"\n        path: /internal/notifications/release-control/drain\n\nEach row carries its own next_attempt_ts, so an early tick simply skips it. When the feature is\noff (WHATSAPP_RELEASE_THREAD_CONTROL_ENABLED) there is nothing queued and this is a no-op.",
+        "operationId": "drain_release_control_internal_notifications_release_control_drain_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Drain Release Control Internal Notifications Release Control Drain Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Drain Release Control",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/notify": {
       "post": {
         "description": "Service-to-service send. Returns the delivery id + status.",
