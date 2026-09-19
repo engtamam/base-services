@@ -95,11 +95,25 @@ class SecretStore:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
         blob = base64.b64decode(sealed[len(_PREFIX):])
+        from cryptography.exceptions import InvalidTag
         try:
-            # AAD must match _seal's. Rows sealed before AAD was introduced fail here — acceptable
-            # (nothing in production); re-enter such credentials.
+            # AAD must match _seal's (collection|tenant|name): a relocated / renamed / cross-tenant
+            # blob fails the GCM tag here — the tamper protection this binding exists for.
             return AESGCM(self._key).decrypt(blob[:12], blob[12:],
                                              self._aad(tenant, name)).decode("utf-8")
+        except InvalidTag:
+            # Backward compatibility: a blob sealed BEFORE AAD binding (pre-v0.25.6,
+            # associated_data=None) fails the AAD attempt above. Decrypt it in the legacy no-AAD
+            # format so upgrading never orphans existing credentials; the next set() re-seals it WITH
+            # the AAD. A genuinely wrong KEK / tampered blob fails this attempt too and falls through
+            # to the loud SecretError below.
+            try:
+                return AESGCM(self._key).decrypt(blob[:12], blob[12:], None).decode("utf-8")  # aad: ok — legacy pre-v0.25.6 no-AAD blob; primary decrypt above binds the AAD
+            except Exception as exc:   # noqa: BLE001
+                raise SecretError(
+                    "stored credential could not be decrypted — the KEK does not match the one it "
+                    "was sealed with. Restore the previous SECRETS_KEK, or re-enter the "
+                    "credentials.") from exc
         except Exception as exc:   # noqa: BLE001 — wrong key, tampered blob: one condition here
             # Loud. Returning "" would make every provider call fail with "unauthorised" and send
             # somebody to the provider's dashboard instead of to the KEK they just changed.

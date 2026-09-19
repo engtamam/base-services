@@ -67,10 +67,20 @@ class Sealer:
     def unseal(self, sealed: str, aad: str = "") -> str:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+        from cryptography.exceptions import InvalidTag
+
         raw = base64.urlsafe_b64decode(sealed.encode())
         nonce, ct = raw[:12], raw[12:]
         ad = aad.encode() if aad else None
-        return AESGCM(self._key).decrypt(nonce, ct, ad).decode()
+        try:
+            return AESGCM(self._key).decrypt(nonce, ct, ad).decode()
+        except InvalidTag:
+            if ad is None:
+                raise
+            # Legacy blob sealed before AAD binding (pre-v0.25.6, associated_data=None): decrypt in
+            # the old no-AAD format so upgrading never orphans a source sealed by the earlier build.
+            # A wrong SEAL_KEY / tampered row fails this too and propagates.
+            return AESGCM(self._key).decrypt(nonce, ct, None).decode()  # aad: ok — legacy pre-v0.25.6 no-AAD blob; primary decrypt above binds the AAD
 
 
 def _derive_key(key: str) -> bytes:

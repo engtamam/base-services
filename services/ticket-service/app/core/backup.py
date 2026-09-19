@@ -370,6 +370,15 @@ def make_sealer(kek: str):
             raise BackupError("sealed body is not in a recognised format")
         blob = base64.b64decode(sealed[len(_SEAL_PREFIX):])
         ad = aad.encode("utf-8") if aad else None
-        return AESGCM(key).decrypt(blob[:12], blob[12:], ad).decode("utf-8")
+        from cryptography.exceptions import InvalidTag
+        try:
+            return AESGCM(key).decrypt(blob[:12], blob[12:], ad).decode("utf-8")
+        except InvalidTag:
+            if ad is None:
+                raise
+            # Legacy archive sealed before AAD binding (pre-v0.25.6, associated_data=None): decrypt in
+            # the old no-AAD format so an upgrade can still restore / verify archives written by the
+            # earlier build. A wrong backup key / tampered archive fails this too and propagates.
+            return AESGCM(key).decrypt(blob[:12], blob[12:], None).decode("utf-8")  # aad: ok — legacy pre-v0.25.6 no-AAD blob; primary decrypt above binds the AAD
 
     return seal, unseal

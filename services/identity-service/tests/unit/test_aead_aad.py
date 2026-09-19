@@ -59,3 +59,46 @@ def test_a_credential_blob_cannot_be_relocated_across_rows():
                {**acme_row, "id": "globex|sms_key", "tenant": "globex"}))
     with pytest.raises(SecretError):
         run(store.get(tenant="globex", name="sms_key"))
+
+
+# ── backward compatibility: v0.25.6 added AAD; blobs sealed BEFORE it (associated_data=None) must
+#    still decrypt, or an upgrade orphans every pre-existing credential (the v0.25.6 boot outage). ──
+def _legacy_seal_secret(store: SecretStore, value: str) -> str:
+    """Reproduce the pre-AAD seal: AES-GCM with associated_data=None, same key + prefix."""
+    import base64
+    import os
+
+    from app.core.secret_store import _PREFIX
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    iv = os.urandom(12)
+    return _PREFIX + base64.b64encode(
+        iv + AESGCM(store._key).encrypt(iv, value.encode("utf-8"), None)).decode("ascii")
+
+
+def test_a_legacy_no_aad_credential_still_decrypts_after_the_upgrade():
+    kek = "k" * 40
+    st = MemoryDataStore()
+    store = SecretStore(st, kek)
+    # A credential sealed by the pre-v0.25.6 build, written straight into the row.
+    legacy = _legacy_seal_secret(store, "sk-live-legacy-value")
+    run(st.put("operator_secrets", "acme|sms_key",
+               {"id": "acme|sms_key", "tenant": "acme", "name": "sms_key", "sealed": legacy}))
+    assert run(store.get(tenant="acme", name="sms_key")) == "sk-live-legacy-value"
+
+
+def test_a_wrong_key_still_fails_loudly_even_on_the_legacy_path():
+    st = MemoryDataStore()
+    legacy = _legacy_seal_secret(SecretStore(st, "k" * 40), "sk-live-legacy-value")
+    other = SecretStore(st, "k" * 39 + "X")   # different KEK → different derived key
+    run(st.put("operator_secrets", "acme|sms_key",
+               {"id": "acme|sms_key", "tenant": "acme", "name": "sms_key", "sealed": legacy}))
+    with pytest.raises(SecretError):
+        run(other.get(tenant="acme", name="sms_key"))
+
+
+def test_a_legacy_no_aad_archive_still_unseals_after_the_upgrade():
+    seal, unseal = B.make_sealer("shared-backup-key")
+    body = json.dumps({"service": "svc-A", "tenant": "acme", "collections": {}})
+    # Pre-v0.25.6 archives were sealed with no AAD (aad="") — must still round-trip.
+    legacy_sealed = seal(body, aad="")
+    assert json.loads(unseal(legacy_sealed, aad=B._archive_aad("svc-A", "acme"))) == json.loads(body)

@@ -86,10 +86,20 @@ class MessageCrypto:
                               "configured — the history cannot be read without it")
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+        from cryptography.exceptions import InvalidTag
+
         blob = base64.b64decode(stored[len(_PREFIX):])
         # aad must match encrypt's (tenant|message-id). A blob moved to another row fails here.
         ad = aad.encode("utf-8") if aad else None
-        return AESGCM(self._key).decrypt(blob[:12], blob[12:], ad).decode("utf-8")
+        try:
+            return AESGCM(self._key).decrypt(blob[:12], blob[12:], ad).decode("utf-8")
+        except InvalidTag:
+            if ad is None:
+                raise
+            # Legacy content sealed before AAD binding (pre-v0.25.6, associated_data=None): decrypt in
+            # the old no-AAD format so upgrading never orphans history written by the earlier build.
+            # A wrong key / tampered row fails this too and propagates.
+            return AESGCM(self._key).decrypt(blob[:12], blob[12:], None).decode("utf-8")  # aad: ok — legacy pre-v0.25.6 no-AAD blob; primary decrypt above binds the AAD
 
 
 @dataclass(frozen=True)
