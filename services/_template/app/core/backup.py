@@ -28,6 +28,15 @@ from typing import Any, Callable
 
 ARCHIVE_FORMAT = "base-backup/v1"
 
+
+def _archive_aad(service: str, tenant: str) -> str:
+    """The associated-data that binds a sealed archive body to its identity. BACKUP_KEK is shared
+    fleet-wide, so without this a sealed body could be relocated across services/tenants (same key
+    decrypts it anywhere). Bound to the CLEAR envelope's (service, tenant); a wrapper that claims a
+    different identity fails the AEAD tag. Length-prefix the service so ("a","b|c") and ("a|b","c")
+    cannot collide."""
+    return f"{len(service or '')}:{service or ''}|{tenant or ''}"
+
 # How many rows a single find() page pulls when walking a tenant-scoped collection. A page, not the
 # whole thing, so a large tenant is streamed rather than loaded whole into one request's memory.
 _PAGE = 500
@@ -142,7 +151,8 @@ async def export(datastore, declaration: dict[str, Any], *, service: str, versio
     })
     sealed = seal(json.dumps({"service": service, "version": version, "taken_at": taken_at,
                               "tenant": tenant, "collections": payload},
-                             separators=(",", ":"), sort_keys=True))
+                             separators=(",", ":"), sort_keys=True),
+                  aad=_archive_aad(service, tenant))
     return {
         "format": ARCHIVE_FORMAT,
         "service": service,
@@ -202,7 +212,7 @@ async def import_archive(datastore, archive: dict[str, Any], *,
     verify(archive)
     templates = _key_templates(declaration)
     try:
-        body = json.loads(unseal(archive["sealed"]))
+        body = json.loads(unseal(archive["sealed"], aad=_archive_aad(archive.get("service", ""), archive.get("tenant", ""))))
     except BackupError:
         raise
     except Exception as exc:  # noqa: BLE001 — a wrong backup key, or a tampered blob
@@ -320,7 +330,7 @@ async def verify_restore(datastore, archive: dict[str, Any], *, unseal: Callable
     """
     verify(archive)  # cheap structural refusal before we decrypt or write anything
     try:
-        body = json.loads(unseal(archive["sealed"]))
+        body = json.loads(unseal(archive["sealed"], aad=_archive_aad(archive.get("service", ""), archive.get("tenant", ""))))
     except BackupError:
         raise
     except Exception as exc:  # noqa: BLE001 — a rotated/mismatched backup key, or a tampered blob
@@ -404,17 +414,23 @@ def make_sealer(kek: str):
         raise BackupError("BACKUP_KEK is required to seal a backup — it must never be empty")
     key = hashlib.scrypt(kek.encode("utf-8"), salt=b"base-backup-v1", n=2**14, r=8, p=1, dklen=32)
 
-    def seal(text: str) -> str:
+    def seal(text: str, aad: str = "") -> str:
+        # aad BINDS the ciphertext to this archive's identity (service|tenant — see export). Without
+        # it, BACKUP_KEK is shared fleet-wide, so a stored archive sealed for service X could be
+        # wrapped in a service-Y envelope and would still decrypt — restoring Y from X's data. With
+        # the AAD, unseal under a different identity fails the GCM tag loudly instead.
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
         iv = os.urandom(12)
+        ad = aad.encode("utf-8") if aad else None
         return _SEAL_PREFIX + base64.b64encode(
-            iv + AESGCM(key).encrypt(iv, text.encode("utf-8"), None)).decode("ascii")
+            iv + AESGCM(key).encrypt(iv, text.encode("utf-8"), ad)).decode("ascii")
 
-    def unseal(sealed: str) -> str:
+    def unseal(sealed: str, aad: str = "") -> str:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
         if not sealed.startswith(_SEAL_PREFIX):
             raise BackupError("sealed body is not in a recognised format")
         blob = base64.b64decode(sealed[len(_SEAL_PREFIX):])
-        return AESGCM(key).decrypt(blob[:12], blob[12:], None).decode("utf-8")
+        ad = aad.encode("utf-8") if aad else None
+        return AESGCM(key).decrypt(blob[:12], blob[12:], ad).decode("utf-8")
 
     return seal, unseal

@@ -152,7 +152,10 @@ def test_a_row_with_no_identity_is_refused():
     # Forge an archive whose sealed body contains an id-less row.
     import json
     body = json.dumps({"service": "s", "tenant": "", "collections": {"widgets": [{"tenant": "acme"}]}})
-    archive = {"format": B.ARCHIVE_FORMAT, "service": "s", "sealed": seal(body)}
+    # Seal with the archive's identity AAD (service|tenant), the same binding export uses, so import's
+    # unseal succeeds and the id-less-row refusal — not a decrypt failure — is what fires.
+    archive = {"format": B.ARCHIVE_FORMAT, "service": "s",
+               "sealed": seal(body, aad=B._archive_aad("s", ""))}
     archive["checksum"] = B._checksum(archive["sealed"])
     with pytest.raises(B.BackupError, match="stable per-row key"):
         run(B.import_archive(MemoryDataStore(), archive, unseal=unseal))
@@ -237,3 +240,27 @@ def test_verify_fails_when_a_row_does_not_round_trip():
     verdict = _verify(_TamperingStore(), archive)
     assert verdict["verified"] is False
     assert verdict["mismatches"], "a row that restored differently was reported as verified"
+
+
+def test_a_sealed_archive_cannot_be_relocated_to_another_service_or_tenant():
+    """AAD binding (safety:aesgcm-aad): BACKUP_KEK is shared fleet-wide, so a body sealed for one
+    service/tenant must NOT decrypt when wrapped in another's envelope — otherwise a tamperer could
+    restore service Y (or tenant B) from service X's (tenant A's) archive."""
+    import json
+    seal, unseal = B.make_sealer("shared-backup-key")
+    body = json.dumps({"service": "svc-A", "tenant": "acme", "collections": {}})
+    sealed = seal(body, aad=B._archive_aad("svc-A", "acme"))
+
+    # Same key, but a forged envelope claiming a different SERVICE → unseal must fail.
+    forged_service = {"format": B.ARCHIVE_FORMAT, "service": "svc-B", "tenant": "acme",
+                      "sealed": sealed}
+    forged_service["checksum"] = B._checksum(sealed)
+    with pytest.raises(B.BackupError):
+        run(B.import_archive(MemoryDataStore(), forged_service, unseal=unseal))
+
+    # Same key, forged TENANT → unseal must fail.
+    forged_tenant = {"format": B.ARCHIVE_FORMAT, "service": "svc-A", "tenant": "evil",
+                     "sealed": sealed}
+    forged_tenant["checksum"] = B._checksum(sealed)
+    with pytest.raises(B.BackupError):
+        run(B.import_archive(MemoryDataStore(), forged_tenant, unseal=unseal))
