@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+gate_name="safety:money-float"
+gate_desc="money must convert minor<->major via a currency exponent helper, not a hardcoded /100 *100"
+gate_protects="The checkout audit's L6 class, found by this gate in billing's TuwaiqPay adapter: a
+hardcoded 'amount_minor / 100' (or '* 100') assumes every currency is exponent-2, so it mischarges a
+3-dp currency (KWD/BHD/OMR/JOD) by 10x and a 0-dp one (JPY/KRW) by 100x, and float money rounds a
+minor unit wrong. The fix is an ISO-4217 minor<->major helper (Decimal/int) — payments-service and
+billing both have core/currency.py. This gate flags a bare money value (a name, or int(amount_minor))
+scaled by a 100/1000 literal in any service's app/core|app/adapters. It deliberately does NOT flag a
+Decimal PERCENT product (Decimal(subtotal_minor)*Decimal(pct)/100 — the /100 is the percent divisor,
+not an exponent) or float() of a currency-helper result. A genuine exception opts out with an in-line
+'# money: ok — reason'."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_money_float.py"
+gate_units=1
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_money_float.py; }
+
+# Mutation-tested: a bare amount_minor/100 fails; a Decimal percent product and float(major(...)) pass;
+# a marker re-exempts.
+gate_selftest() { "$PY" tools/ci/selftest_money_float.py >/dev/null 2>&1; }

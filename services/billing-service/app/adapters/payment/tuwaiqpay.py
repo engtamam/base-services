@@ -27,6 +27,7 @@ from __future__ import annotations
 import time
 
 from app.adapters.billing_http import bearer, get_json, post_json
+from app.adapters.payment._common import major, to_minor
 from app.ports.payment_gateway import Charge, CheckoutSession, GatewayUnavailable, WebhookEvent
 
 # Provider status -> our normalised status. SETTLED/APPROVED/PENDING_SETTLEMENT are all "money moved".
@@ -98,7 +99,7 @@ class TuwaiqPayGateway:
                                    error="TuwaiqPay requires customerName + customerMobilePhone in metadata")
         cur = (currency or "SAR").upper()
         payload = {
-            "amount": round(int(amount_minor) / 100.0, 2),      # minor units -> float major units
+            "amount": float(major(amount_minor, cur)),          # minor -> major at the currency's real exponent (KWD/BHD 3-dp)
             "actionDateInDays": int(meta.get("actionDateInDays", 3)),
             "currencyId": _CURRENCY_ID.get(cur, 1),
             "supportedPaymentMethods": list(meta.get("supportedPaymentMethods") or _DEFAULT_METHODS),
@@ -138,7 +139,8 @@ class TuwaiqPayGateway:
         bill = data.get("bill") or {}
         return Charge(ok=status == "succeeded", status=status, provider=self.driver,
                       provider_id=str(data.get("transactionId", provider_id)),
-                      amount_minor=int(round(float(bill.get("amount", 0) or 0) * 100)),
+                      amount_minor=to_minor(bill.get("amount", 0) or 0,
+                                            str(bill.get("currency", currency) or currency)),
                       currency=str(bill.get("currency", currency) or currency))
 
     def verify_webhook(self, *, headers: dict[str, str], body: bytes, secret: str) -> WebhookEvent:

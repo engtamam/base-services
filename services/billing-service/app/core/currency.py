@@ -24,3 +24,12 @@ def major(amount_minor: int, currency: str = "SAR") -> str:
     """Minor units → major decimal string with the currency's real precision."""
     dp = decimals(currency)
     return f"{Decimal(int(amount_minor)) / (10 ** dp):.{dp}f}"
+
+
+def to_minor(amount_major, currency: str = "SAR") -> int:
+    """Major units → integer minor units at the currency's real precision (the inverse of major()).
+    Decimal(str(x)) so a float like 12.30 does not smuggle in its binary-repr tail; ROUND_HALF_UP so
+    a gateway-reported major amount lands on the exact integer minor unit."""
+    from decimal import ROUND_HALF_UP
+    scale = Decimal(10) ** decimals(currency)
+    return int((Decimal(str(amount_major)) * scale).to_integral_value(rounding=ROUND_HALF_UP))

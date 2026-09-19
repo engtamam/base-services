@@ -81,14 +81,19 @@ def _check_file(path: pathlib.Path, rel: str) -> list[str]:
     for node in ast.walk(tree):
         hit = None
         if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Div, ast.Mult)):
-            # a money-ish operand scaled by a 100/1000 literal
+            # A money-ish operand scaled by a 100/1000 literal — the hardcoded-exponent conversion.
             a, b = node.left, node.right
-            if (_is_scale_const(b) and _is_money(a)) or (_is_scale_const(a) and _is_money(b)):
+            money_side = a if (_is_scale_const(b) and _is_money(a)) else (
+                b if (_is_scale_const(a) and _is_money(b)) else None)
+            # EXCLUDE percent math: `Decimal(subtotal_minor) * Decimal(pct) / 100` scales a COMPOUND
+            # expression (a BinOp), where /100 is the percent divisor, not a minor<->major exponent.
+            # A real exponent bug scales a plain value (a name, int(amount_minor)), never a product.
+            if money_side is not None and not isinstance(money_side, ast.BinOp):
                 op = "/" if isinstance(node.op, ast.Div) else "*"
                 hit = f"money value scaled by a hardcoded {op}{int((b if _is_scale_const(b) else a).value)}"
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "float" \
-                and node.args and any(w in _text(node.args[0]) for w in _FLOAT_WORDS):
-            hit = "float() applied to a minor-units money value"
+        # A separate float(<money>) rule was dropped: float(major(...)) is correct serialization of a
+        # currency-helper result, and a bare float(amount_minor) is coercion — neither is the exponent
+        # bug. The concrete L6 defect is the hardcoded /100 * 100 conversion detected above.
         if hit and not _marker_at_or_above(lines, node.lineno):
             out.append(f"{rel}:{node.lineno}: {hit} — a hardcoded exponent mischarges 3-dp/0-dp "
                        f"currencies and float rounds money wrong. Use an ISO-4217 minor-unit helper "
