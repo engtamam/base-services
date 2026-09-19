@@ -50,6 +50,24 @@ def _has_marker(line: str) -> bool:
     return "# cas-create: ok" in line
 
 
+def _marker_at_or_above(src_lines: list[str], lineno: int) -> bool:
+    """The marker on the put line, or on any contiguous comment line directly above it."""
+    if 0 <= lineno - 1 < len(src_lines) and _has_marker(src_lines[lineno - 1]):
+        return True
+    i = lineno - 2
+    while i >= 0:
+        stripped = src_lines[i].strip()
+        if not stripped:
+            i -= 1
+            continue
+        if not stripped.startswith("#"):
+            return False
+        if _has_marker(stripped):
+            return True
+        i -= 1
+    return False
+
+
 def _check_file(path: pathlib.Path, rel: str) -> list[str]:
     src = path.read_text(encoding="utf-8")
     lines = src.splitlines()
@@ -79,8 +97,7 @@ def _check_file(path: pathlib.Path, rel: str) -> list[str]:
     for c in sorted(cas_updated):
         if c in puts and c not in cas_created:
             lineno = puts[c]
-            line = lines[lineno - 1] if 0 <= lineno - 1 < len(lines) else ""
-            if _has_marker(line):
+            if _marker_at_or_above(lines, lineno):
                 continue
             out.append(f"{rel}:{lineno}: collection {c} is version-pinned cas()-updated but CREATED "
                        f"via put() (no cas insert-if-absent) — on postgres the update never matches "

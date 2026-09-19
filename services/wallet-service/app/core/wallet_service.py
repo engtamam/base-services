@@ -298,6 +298,9 @@ class WalletService:
         # atomic: ok — only the caller that WON the claim's CAS reaches here (a late loser replays the
         # finished result before re-claiming), so there is no competing writer; the version is carried
         # forward so a post-TTL re-claim stays on the CAS UPDATE branch (see the comment above).
+        # cas-create: ok — _IDEMPO is CREATED via _claim's cas(key, expected=0-when-absent, …)
+        # insert-if-absent; this put only rewrites a row the winner already cas-created, preserving its
+        # version (see the comment above), so it is not the put-then-cas-on-a-versionless-row class.
         await self._store.put(_IDEMPO, key,
                               {"result": result,
                                "version": version,

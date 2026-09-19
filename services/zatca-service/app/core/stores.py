@@ -206,6 +206,10 @@ class InvoiceStore:
         cur = await self._store.get(_INDEX, f"head::{tenant}") or {"reserved_icv": 0, "last_hash": ""}
         if icv > int(cur.get("reserved_icv", 0)):
             cur["reserved_icv"] = icv
+            # cas-create: ok — this put writes the `head::` (reserved-hint) key, which is never
+            # version-pinned cas-updated. The version-pinned cas in this file is on the SEPARATE
+            # `signed::` key, which mark_signed CREATES via cas(ver=0-when-absent) insert-if-absent —
+            # so no row is ever put-created then cas-updated on a versionless row (the flagged class).
             await self._store.put(_INDEX, f"head::{tenant}", cur)
         return inv, True
 
