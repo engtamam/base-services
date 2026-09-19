@@ -31,6 +31,11 @@ class _Repo:
         self._store = store
 
     async def put(self, key: str, value: dict) -> None:
+        # cas-create: ok — this is the GENERIC base helper; `self.collection` resolves to a different
+        # concrete collection per subclass. The only subclass whose rows are version-pinned
+        # cas()-updated is CouponStore, and it now CREATES through cas (see CouponStore.upsert), never
+        # this put(). The gate conflates every subclass's `self.collection` into one identity, so it
+        # cannot see that — hence this annotation on the shared helper.
         await self._store.put(self.collection, key, value)
 
     async def get(self, key: str) -> dict | None:
