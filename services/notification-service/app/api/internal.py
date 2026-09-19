@@ -566,6 +566,25 @@ async def coexistence_purge(request: Request, limit: int = 1000) -> dict:
     return {"removed": removed}
 
 
+@router.post("/whatsapp/inbound/purge", dependencies=[Depends(require_internal_token)])
+async def inbound_purge(request: Request, limit: int = 1000) -> dict:
+    """Reap inbound customer-message rows (wa_inbound) past their retention window — the scheduler
+    (job-service) calls this periodically so a customer's messages are a bounded buffer, never a
+    forever archive. Bounded per call; re-invoke until `removed` is 0. Recorded so the retention
+    actually running (or silently not) is provable."""
+    from app.core.stores import InboundStore
+    s = get_settings()
+    store = InboundStore(
+        request.app.state.container.datastore,
+        retention_seconds=max(0, s.WHATSAPP_INBOUND_RETENTION_DAYS) * 86400)
+    removed = await store.purge_expired(limit=max(1, min(5000, limit)))
+    await request.app.state.auditor.record(
+        "whatsapp_inbound.purged", actor="system", tenant="",
+        resource="wa_inbound", ip=request.client.host if request.client else "",
+        metadata={"removed": str(removed), "retention_days": str(s.WHATSAPP_INBOUND_RETENTION_DAYS)})
+    return {"removed": removed}
+
+
 @router.post("/notifications/drain", dependencies=[Depends(require_internal_token)])
 async def drain_queue(request: Request) -> dict:
     """Re-attempt every queued delivery whose backoff has expired.

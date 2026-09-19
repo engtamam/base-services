@@ -254,8 +254,16 @@ class InboundStore:
     messages, so the catch-up read returns every message exactly once behind the cursor.
     """
 
-    def __init__(self, store: DataStore) -> None:
+    def __init__(self, store: DataStore, *, clock=time.time, retention_seconds: int = 0) -> None:
+        # retention_seconds<=0 ⇒ no automatic expiry (expires_at=0). The platform sets it (default 30d)
+        # so a customer's inbound messages are a bounded reconciliation buffer, never a forever archive
+        # — same footprint discipline as the coexistence logs. Stamped at RECEIPT time.
         self._store = store
+        self._clock = clock
+        self._retention = int(retention_seconds)
+
+    def _expires_at(self) -> float:
+        return (self._clock() + self._retention) if self._retention > 0 else 0.0
 
     async def record(self, *, wamid: str, sender: str, timestamp: float, msg_type: str,
                      tenant: str, phone_number_id: str, waba_id: str, message: dict) -> bool:
@@ -266,7 +274,8 @@ class InboundStore:
         await self._store.put(_INBOUND, wamid, {
             "id": wamid, "kind": _INBOUND_KIND, "wamid": wamid, "from": sender,
             "timestamp": timestamp, "type": msg_type, "tenant": tenant,
-            "phone_number_id": phone_number_id, "waba_id": waba_id, "message": message})
+            "phone_number_id": phone_number_id, "waba_id": waba_id, "message": message,
+            "expires_at": self._expires_at()})
         return True
 
     async def changed_since(self, *, after: str | None, limit: int) -> tuple[list[dict], str | None]:
@@ -274,6 +283,39 @@ class InboundStore:
         on a constant kind (never an empty where), so it stays an indexed, ordered read, not a scan."""
         return await self._store.find(_INBOUND, {"kind": _INBOUND_KIND}, limit=limit, after=after,
                                       sort=("timestamp", "asc"))
+
+    async def purge_expired(self, *, now: float | None = None, limit: int = 1000) -> int:
+        """Delete inbound rows whose retention window has passed — so a customer's messages are not
+        kept forever. Ordered by expires_at ascending and stopped at the first row still in-window
+        (0 = never-expiring, sorted last), so this is an indexed read, not a scan. Bounded per call;
+        the scheduler re-invokes until a call deletes nothing. Returns how many it removed."""
+        cutoff = self._clock() if now is None else now
+        removed = 0
+        rows, _ = await self._store.find(_INBOUND, {"kind": _INBOUND_KIND}, limit=limit,
+                                         sort=("expires_at", "asc"))
+        for r in rows:
+            exp = float(r.get("expires_at", 0) or 0)
+            if exp <= 0 or exp > cutoff:
+                break                       # never-expiring or still in-window ⇒ nothing older left
+            await self._store.delete(_INBOUND, r["id"])
+            removed += 1
+        return removed
+
+    async def erase_subject(self, *, tenant: str, subject: str) -> int:
+        """Delete every inbound message FROM `subject` (a customer's number) for `tenant` — their own
+        message content. For the compliance erasure flow. Returns the count deleted; idempotent."""
+        removed = 0
+        cursor = None
+        while True:
+            rows, cursor = await self._store.find(
+                _INBOUND, {"tenant": tenant, "from": subject}, limit=500, after=cursor,
+                sort=("timestamp", "asc"))
+            for r in rows:
+                await self._store.delete(_INBOUND, r["id"])
+                removed += 1
+            if not cursor:
+                break
+        return removed
 
 
 class CoexistenceStore:

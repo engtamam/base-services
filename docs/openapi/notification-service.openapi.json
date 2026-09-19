@@ -5212,6 +5212,84 @@
         ]
       }
     },
+    "/internal/whatsapp/inbound/purge": {
+      "post": {
+        "description": "Reap inbound customer-message rows (wa_inbound) past their retention window \u2014 the scheduler\n(job-service) calls this periodically so a customer's messages are a bounded buffer, never a\nforever archive. Bounded per call; re-invoke until `removed` is 0. Recorded so the retention\nactually running (or silently not) is provable.",
+        "operationId": "inbound_purge_internal_whatsapp_inbound_purge_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 1000,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Inbound Purge Internal Whatsapp Inbound Purge Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Inbound Purge",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/whatsapp/media/upload-handle": {
       "post": {
         "description": "Upload a media file via Meta's Resumable Upload API and return the reusable HANDLE.\n\nWHY IT EXISTS: a carousel template must be created with an example media handle per card, and Meta\nonly accepts a handle its upload API produced \u2014 not a URL, not raw bytes. So the platform owns the\nupload\u2192handle step (the adopter should never hunt for a handle by hand): upload the card's image/\nvideo here, drop the returned handle into that card's header_example_handle, then register the\ncarousel template. App-scoped upload, authenticated with the tenant's own token (resolved in core).",

@@ -425,6 +425,12 @@ class Settings(BaseSettings):
     # minutes), not an archive, so we keep server storage light; a platform that wants a longer window
     # raises it. Never "forever".
     WHATSAPP_COEXISTENCE_RETENTION_DAYS: int = 2
+    # The INBOUND customer-message log (wa_inbound) is a reconciliation buffer (a consumer catches up
+    # from its cursor within minutes), NOT an archive — so it carries a retention window and a
+    # scheduled purge, and the compliance erasure flow deletes a subject's inbound rows. Default 30
+    # days; a deployment that needs a shorter footprint lowers it, and <=0 keeps rows indefinitely
+    # (opt-in to "forever" — never the default). Stamped at receipt time.
+    WHATSAPP_INBOUND_RETENTION_DAYS: int = 30
     # WhatsApp Flow DATA ENDPOINT (the encrypted server callback that drives a Flow's screens — e.g.
     # the booking calendar). OFF by default: a deployment opts in once it has uploaded a public key to
     # Meta and sealed the matching private key. See docs/design/whatsapp-booking-flow.md.

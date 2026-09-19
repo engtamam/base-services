@@ -239,9 +239,11 @@ async def receive(request: Request) -> dict:
     if s.WHATSAPP_COEXISTENCE_ENABLED:
         coexistence = CoexistenceStore(
             ds, retention_seconds=max(0, s.WHATSAPP_COEXISTENCE_RETENTION_DAYS) * 86400)
-    emitted = await _fan_out(bus, deliveries, data if isinstance(data, dict) else {},
-                             inbound=InboundStore(ds), number_index=WhatsAppNumberIndex(ds),
-                             coexistence=coexistence, prefs=PreferenceStore(ds))
+    emitted = await _fan_out(
+        bus, deliveries, data if isinstance(data, dict) else {},
+        inbound=InboundStore(ds, retention_seconds=max(0, s.WHATSAPP_INBOUND_RETENTION_DAYS) * 86400),
+        number_index=WhatsAppNumberIndex(ds),
+        coexistence=coexistence, prefs=PreferenceStore(ds))
     # Meta retries on any non-2xx and treats the retries as duplicates, so acknowledge fast once the
     # events are on the bus. The count is for our observability, not for Meta.
     return {"received": True, "events": emitted}

@@ -86,6 +86,16 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "resource": "wa_coexistence",
     },
     {
+        # The inbound customer-message retention reaper ran: wa_inbound rows past their window were
+        # deleted so a customer's messages are not kept forever. Not critical — a purge that could not
+        # be recorded simply runs again next cycle — but the row names how many were removed and the
+        # retention period, so "retention is actually running" (not silently stalled) is provable.
+        "action": "whatsapp_inbound.purged",
+        "source": "admin",
+        "critical": False,
+        "resource": "wa_inbound",
+    },
+    {
         # A media file uploaded to Meta (Resumable Upload) to get a carousel template's media handle.
         # Not critical — a failed upload is retried — but recorded: it names the type + size so a
         # template that shipped the wrong asset, or a burst of uploads, is provable after the fact.

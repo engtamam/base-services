@@ -99,7 +99,15 @@ CRONS: dict[str, list] = {   # each job: a (name, schedule, path) tuple, or a di
     # message, and without this tick `queued` is just a prettier word for `lost` — the delivery log
     # fills with queued while the service looks healthy. Drain in inline mode is a cheap no-op, so
     # this is safe to ship on always.
-    "notification-service": [("drain", "*/1 * * * *", "/internal/notifications/drain")],
+    "notification-service": [
+        ("drain", "*/1 * * * *", "/internal/notifications/drain"),
+        # Retention reapers so stored WhatsApp conversation data is a bounded buffer, never a forever
+        # archive: inbound customer messages (wa_inbound, on by default) and — when the platform
+        # enabled it — the coexistence logs. Both purge routes are idempotent no-ops on an empty/
+        # in-window set, so a daily sweep is safe to always ship.
+        ("inbound-purge", "37 3 * * *", "/internal/whatsapp/inbound/purge"),
+        ("coexistence-purge", "47 3 * * *", "/internal/whatsapp/coexistence/purge"),
+    ],
     # Without the sweep, a session past its guards (max_duration/idle/lease) or a zombie engine would
     # run forever; without retention, recordings would grow without bound.
     "stream-service": [

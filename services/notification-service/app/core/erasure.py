@@ -63,6 +63,14 @@ class NotificationErasure:
         if co:
             erased.append(f"coexistence:{co}")
 
+        # Inbound: the customer's OWN messages to the shop (wa_inbound) are the person's data with no
+        # delivery-proof basis to retain — deleted. Without this a DSAR closed green while the
+        # subject's inbound message content sat in the reconciliation log.
+        from app.core.stores import InboundStore
+        inbound = await InboundStore(self._store).erase_subject(tenant=tenant, subject=subject)
+        if inbound:
+            erased.append(f"inbound:{inbound}")
+
         # deliveries: keep the FACT, strip the CONTENT, replace the recipient with the pseudonym.
         # The recipient is stored under `recipient` (NOT `to`) and the message content lives in
         # `payload` (there is no `body`/`subject_line`) — the old field names matched nothing, so a

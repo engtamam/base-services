@@ -23,7 +23,8 @@ ITOKEN = "i" * 40
 def client():
     saved = dict(os.environ)
     os.environ.update(ENV="test", META_APP_SECRET=SECRET, INTERNAL_SERVICE_TOKEN=ITOKEN,
-                      TOKEN_VERIFIER_DRIVER="hs256", TOKEN_HS256_SECRET="h" * 40)
+                      TOKEN_VERIFIER_DRIVER="hs256", TOKEN_HS256_SECRET="h" * 40,
+                      PII_SALT="s" * 32)
     get_settings.cache_clear()
     from app.main import create_app
     with TestClient(create_app()) as c:
@@ -85,3 +86,29 @@ def test_cursor_advances_and_dedupes_by_wamid(client):
     nxt = client.get(f"/internal/whatsapp/inbound?after={first['cursor']}", headers=_tok()).json()
     kids = [m["wamid"] for m in nxt["messages"]]
     assert kids == ["wamid.B"], f"expected only B after the cursor, got {kids}"
+
+
+def test_erasure_deletes_the_subjects_inbound_messages(client):
+    # A customer's inbound messages are their own data with no delivery-proof basis — a DSAR must
+    # remove them. Before this, erase() left wa_inbound untouched and the DSAR closed green over it.
+    asyncio.run(WhatsAppNumberIndex(client.app.state.container.datastore).bind("PNID1", "acme"))
+    _post(client, _inbound_webhook("wamid.A", "PNID1", sender="966500000001"))
+    _post(client, _inbound_webhook("wamid.B", "PNID1", sender="966500000002"))   # another customer
+    assert len(client.get("/internal/whatsapp/inbound", headers=_tok()).json()["messages"]) == 2
+
+    r = client.post("/internal/privacy/erase", headers=_tok(),
+                    json={"tenant": "acme", "subject": "966500000001"})
+    assert r.status_code == 200, r.text
+    assert any("inbound:1" in e for e in r.json()["erased"])
+    # only that subject's message is gone; the other customer's remains
+    left = client.get("/internal/whatsapp/inbound", headers=_tok()).json()["messages"]
+    assert [m["wamid"] for m in left] == ["wamid.B"]
+
+
+def test_inbound_purge_route_runs_and_is_audited(client):
+    # The scheduled reaper endpoint responds (retention default keeps fresh rows, so 0 removed here);
+    # the purge logic itself is covered in tests/unit/test_inbound_retention.
+    asyncio.run(WhatsAppNumberIndex(client.app.state.container.datastore).bind("PNID1", "acme"))
+    _post(client, _inbound_webhook("wamid.A", "PNID1"))
+    r = client.post("/internal/whatsapp/inbound/purge", headers=_tok())
+    assert r.status_code == 200 and r.json()["removed"] == 0   # fresh, still in-window

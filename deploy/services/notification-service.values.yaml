@@ -60,3 +60,9 @@ cronJobs:
   - name: drain
     schedule: "*/1 * * * *"
     path: /internal/notifications/drain
+  - name: inbound-purge
+    schedule: "37 3 * * *"
+    path: /internal/whatsapp/inbound/purge
+  - name: coexistence-purge
+    schedule: "47 3 * * *"
+    path: /internal/whatsapp/coexistence/purge
