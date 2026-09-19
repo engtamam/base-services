@@ -448,6 +448,11 @@ class Settings(BaseSettings):
     # compliance signal that must always be honoured). Enforced BY US so the privacy guarantee never
     # depends on trusting Meta to withhold. Layer 2 of docs/design/whatsapp-meta-agent-handover-plan.md.
     WHATSAPP_INBOUND_PRIVACY_MODE: bool = False
+    # Host allow-list for a webhook OVERRIDE target (the handover lever reroutes a shop's message
+    # delivery to this URL, so an unconstrained target is a message-exfiltration hole). Comma- or
+    # JSON-list of allowed hostnames; EMPTY = fail-closed (no override may be set at all until an
+    # operator lists the trusted endpoints, e.g. Meta's Business Agent host). HTTPS is required too.
+    WHATSAPP_OVERRIDE_ALLOWED_HOSTS: str = ""
     # WhatsApp Flow DATA ENDPOINT (the encrypted server callback that drives a Flow's screens — e.g.
     # the booking calendar). OFF by default: a deployment opts in once it has uploaded a public key to
     # Meta and sealed the matching private key. See docs/design/whatsapp-booking-flow.md.

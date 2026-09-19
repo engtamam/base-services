@@ -1297,6 +1297,104 @@ async def whatsapp_subscribed_fields(request: Request, tenant: str):
     return {"apps": res["apps"]}
 
 
+def _override_host_allowed(callback_uri: str, allowed_raw: str) -> bool:
+    """A webhook-override target must be HTTPS and its host explicitly allow-listed. Empty allowlist
+    ⇒ fail closed (nothing allowed) — rerouting a shop's message delivery to an un-vetted host is a
+    message-exfiltration hole, so this is deny-by-default."""
+    from urllib.parse import urlsplit
+    raw = (allowed_raw or "").strip()
+    if not raw:
+        return False
+    if raw.startswith("["):
+        import json as _j
+        try:
+            allowed = {str(h).strip().lower() for h in _j.loads(raw) if str(h).strip()}
+        except (ValueError, TypeError):
+            return False
+    else:
+        allowed = {h.strip().lower() for h in raw.split(",") if h.strip()}
+    parts = urlsplit(callback_uri)
+    host = (parts.hostname or "").lower()
+    return parts.scheme == "https" and bool(host) and host in allowed
+
+
+class WebhookOverrideIn(BaseModel):
+    tenant: str = Field(min_length=1, max_length=128)
+    scope: str = Field(default="phone", pattern="^(phone|waba)$")   # per-number (default) or per-WABA
+    callback_uri: str = Field(min_length=1, max_length=2048)
+    verify_token: str = Field(min_length=1, max_length=512)
+
+
+class WebhookOverrideClearIn(BaseModel):
+    tenant: str = Field(min_length=1, max_length=128)
+    scope: str = Field(default="phone", pattern="^(phone|waba)$")
+
+
+async def _override_ctx(request: Request, tenant: str, scope: str) -> tuple[str, str]:
+    """(access_token, target_id) for a phone/waba override, or raise a clear HTTP error."""
+    pool = getattr(request.app.state, "provider_pool", None)
+    if pool is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "PROVIDER_POOL_UNAVAILABLE")
+    token = await pool.whatsapp_access_token(tenant)
+    target = (await pool.whatsapp_phone_number_id(tenant)) if scope == "phone" \
+        else (await pool.whatsapp_business_account_id(tenant))
+    if not token or not target:
+        raise HTTPException(status.HTTP_409_CONFLICT, "NOT_CONNECTED")
+    return token, target
+
+
+@router.post("/whatsapp/webhook-override", dependencies=[Depends(require_internal_token)])
+async def whatsapp_set_webhook_override(request: Request, body: WebhookOverrideIn):
+    """Route THIS tenant's number's (or WABA's) message webhooks to an alternate endpoint — the
+    Meta-side lever that hands ordinary chat to Meta Business Agent. HIGH BLAST RADIUS: this reroutes
+    a shop's message delivery, so the target must be HTTPS and its host allow-listed
+    (WHATSAPP_OVERRIDE_ALLOWED_HOSTS; empty = fail closed), and every set is audited CRITICAL. The
+    verify_token is never returned or logged."""
+    from starlette.responses import JSONResponse
+
+    from app.core import whatsapp_admin as wa
+    s = get_settings()
+    if not _override_host_allowed(body.callback_uri, s.WHATSAPP_OVERRIDE_ALLOWED_HOSTS):
+        # 422, not 500: the request is well-formed and authorised, but the target is not permitted.
+        return JSONResponse(
+            {"ok": False, "reason": "override target must be HTTPS and its host allow-listed in "
+             "WHATSAPP_OVERRIDE_ALLOWED_HOSTS", "code": "OVERRIDE_HOST_NOT_ALLOWED"}, status_code=422)
+    token, target = await _override_ctx(request, body.tenant, body.scope)
+    # Write-ahead audit (critical): rerouting message delivery must be attributable even if it then
+    # fails — the resource names the scope + target, NEVER the verify_token.
+    await request.app.state.auditor.record(
+        "operator.whatsapp_webhook_override_set", actor="system", tenant=body.tenant,
+        resource=f"{body.scope}:{target}", ip=request.client.host if request.client else "",
+        metadata={"scope": body.scope, "callback_host": body.callback_uri.split("/")[2]
+                  if "//" in body.callback_uri else ""})
+    fn = wa.set_phone_webhook_override if body.scope == "phone" else wa.set_waba_webhook_override
+    kw = {"phone_number_id": target} if body.scope == "phone" else {"waba_id": target}
+    okr, reason = await asyncio.to_thread(
+        fn, access_token=token, callback_uri=body.callback_uri, verify_token=body.verify_token,
+        graph_base=s.WHATSAPP_GRAPH_BASE, **kw)
+    if not okr:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, reason or "META_ERROR")
+    return {"ok": True, "scope": body.scope}
+
+
+@router.post("/whatsapp/webhook-override/clear", dependencies=[Depends(require_internal_token)])
+async def whatsapp_clear_webhook_override(request: Request, body: WebhookOverrideClearIn):
+    """Revert the override so this tenant's webhooks return to our app default (the hand-back / on→off)."""
+    from app.core import whatsapp_admin as wa
+    s = get_settings()
+    token, target = await _override_ctx(request, body.tenant, body.scope)
+    await request.app.state.auditor.record(
+        "operator.whatsapp_webhook_override_cleared", actor="system", tenant=body.tenant,
+        resource=f"{body.scope}:{target}", ip=request.client.host if request.client else "",
+        metadata={"scope": body.scope})
+    fn = wa.clear_phone_webhook_override if body.scope == "phone" else wa.clear_waba_webhook_override
+    kw = {"phone_number_id": target} if body.scope == "phone" else {"waba_id": target}
+    okr, reason = await asyncio.to_thread(fn, access_token=token, graph_base=s.WHATSAPP_GRAPH_BASE, **kw)
+    if not okr:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, reason or "META_ERROR")
+    return {"ok": True, "scope": body.scope, "cleared": True}
+
+
 @router.get("/whatsapp/business-verification", dependencies=[Depends(require_internal_token)])
 async def whatsapp_business_verification(request: Request, tenant: str):
     """The WABA's business-verification status + overall status, read live from Meta

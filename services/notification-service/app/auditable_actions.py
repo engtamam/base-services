@@ -187,6 +187,24 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "down would strand the option in its current state, which protects nothing",
     },
     {
+        "action": "operator.whatsapp_webhook_override_set",
+        "source": "admin",
+        "critical": True,
+        "resource": "webhook_override",
+        "why": "rerouting a number's/WABA's message webhooks to an alternate endpoint changes WHERE a "
+               "shop's customer messages are delivered — a message-exfiltration lever if misused, so "
+               "who pointed which number where, and when, must be provable; the row names the scope + "
+               "target, never the verify_token",
+    },
+    {
+        "action": "operator.whatsapp_webhook_override_cleared",
+        "source": "admin",
+        "critical": True,
+        "resource": "webhook_override",
+        "why": "reverting a webhook override restores delivery to our app default (the hand-back); a "
+               "silent revert changes message routing back, so it is attributable like the set",
+    },
+    {
         "action": "operator.whatsapp_onboarded",
         "source": "admin",
         "critical": True,

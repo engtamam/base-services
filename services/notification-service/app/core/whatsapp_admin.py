@@ -67,3 +67,49 @@ def fetch_business_verification(*, access_token: str, waba_id: str, graph_base: 
     return {"ok": True,
             "business_verification_status": str(data.get("business_verification_status", "") or ""),
             "status": str(data.get("status", "") or "")}
+
+
+# ── webhook override (per phone / per WABA) — the Meta-side handover lever ─────────────────────────
+# Verified against Meta docs 2026-09-19 (webhooks/override): a per-phone or per-WABA override routes
+# that number's/WABA's message webhooks to a chosen endpoint instead of the app default — the lever
+# that hands a number's ordinary chat to Meta Business Agent (or anywhere). Priority: phone → WABA →
+# app default; account/template webhooks always go to the app default. SECURITY: this reroutes a
+# shop's message delivery, so the caller (API layer) must gate it (internal token), audit it, and
+# refuse a target host that is not allow-listed — never let it point a shop's messages anywhere.
+
+def set_phone_webhook_override(*, access_token: str, phone_number_id: str, callback_uri: str,
+                               verify_token: str, graph_base: str) -> tuple[bool, str]:
+    """POST /{PHONE_NUMBER_ID} {"webhook_configuration":{override_callback_uri, verify_token}}.
+    Blocking Graph POST — call via to_thread. Returns (ok, reason). Never logs/returns verify_token."""
+    status, body = post_json(
+        f"{_base(graph_base)}/{phone_number_id}",
+        {"webhook_configuration": {"override_callback_uri": callback_uri, "verify_token": verify_token}},
+        bearer(access_token))
+    return (True, "") if ok(status) else (False, _classify(status, body))
+
+
+def clear_phone_webhook_override(*, access_token: str, phone_number_id: str,
+                                 graph_base: str) -> tuple[bool, str]:
+    """POST /{PHONE_NUMBER_ID} {"webhook_configuration":{override_callback_uri:""}} — revert to the app
+    default (the on→off / hand-back). Blocking Graph POST — call via to_thread."""
+    status, body = post_json(
+        f"{_base(graph_base)}/{phone_number_id}",
+        {"webhook_configuration": {"override_callback_uri": ""}}, bearer(access_token))
+    return (True, "") if ok(status) else (False, _classify(status, body))
+
+
+def set_waba_webhook_override(*, access_token: str, waba_id: str, callback_uri: str,
+                              verify_token: str, graph_base: str) -> tuple[bool, str]:
+    """POST /{WABA_ID}/subscribed_apps {override_callback_uri, verify_token}. Blocking — via to_thread."""
+    status, body = post_json(
+        f"{_base(graph_base)}/{waba_id}/subscribed_apps",
+        {"override_callback_uri": callback_uri, "verify_token": verify_token}, bearer(access_token))
+    return (True, "") if ok(status) else (False, _classify(status, body))
+
+
+def clear_waba_webhook_override(*, access_token: str, waba_id: str,
+                                graph_base: str) -> tuple[bool, str]:
+    """POST /{WABA_ID}/subscribed_apps with NO body — re-subscribe plainly, dropping the override."""
+    status, body = post_json(
+        f"{_base(graph_base)}/{waba_id}/subscribed_apps", {}, bearer(access_token))
+    return (True, "") if ok(status) else (False, _classify(status, body))

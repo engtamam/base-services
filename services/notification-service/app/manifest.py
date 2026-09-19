@@ -170,6 +170,9 @@ def build_manifest(
             {"path": "/internal/whatsapp/coexistence/contacts", "tier": "internal", "method": "GET"},
             {"path": "/internal/whatsapp/coexistence/purge", "tier": "internal", "method": "POST"},
             {"path": "/internal/whatsapp/inbound/purge", "tier": "internal", "method": "POST"},
+            # The Meta-side handover lever: route a number's/WABA's webhooks to an alternate endpoint.
+            {"path": "/internal/whatsapp/webhook-override", "tier": "internal", "method": "POST"},
+            {"path": "/internal/whatsapp/webhook-override/clear", "tier": "internal", "method": "POST"},
             # Ensure the WABA's Flow data-endpoint encryption keypair (generate/register, idempotent).
             {"path": "/internal/whatsapp/flow-encryption/ensure", "tier": "internal", "method": "POST"},
             # Operator platform-status glance — bounded AGGREGATE counts only (no rows, no PII).
