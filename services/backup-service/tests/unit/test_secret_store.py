@@ -49,6 +49,28 @@ def test_the_wrong_kek_raises_rather_than_returning_nothing():
         run(other.get(tenant="acme", name="sms_key"))
 
 
+def test_a_sealed_credential_cannot_be_relocated_to_another_tenant_or_name():
+    """AAD binding (safety:aesgcm-aad): the KEK is one per deployment, so a DB tamperer with no KEK
+    could otherwise copy tenant A's sealed blob into tenant B's row (or under another name) and it
+    would still decrypt — B authenticating as A. AAD = collection|tenant|name, so a relocated or
+    renamed blob fails the GCM tag."""
+    st = _store()
+    run(st.set(tenant="acme", name="sms_key", value=SECRET))
+    row = run(st._s.get("operator_secrets", "acme|sms_key"))
+
+    # Copy the sealed blob into another TENANT's row → open must fail under that tenant's AAD.
+    run(st._s.put("operator_secrets", "beta|sms_key",
+                  {**row, "id": "beta|sms_key", "tenant": "beta"}))
+    with pytest.raises(SecretError):
+        run(st.get(tenant="beta", name="sms_key"))
+
+    # Copy the sealed blob under another NAME → open must fail under that name's AAD.
+    run(st._s.put("operator_secrets", "acme|other",
+                  {**row, "id": "acme|other", "name": "other"}))
+    with pytest.raises(SecretError):
+        run(st.get(tenant="acme", name="other"))
+
+
 # ── nothing readable is stored or shown ───────────────────────────────────────
 def test_the_plaintext_is_never_in_the_store():
     st = _store()

@@ -103,6 +103,20 @@ def test_plaintext_written_before_encryption_still_reads():
     assert msgs[0].content.startswith("my card")
 
 
+def test_a_message_blob_cannot_be_relocated_to_another_message_or_tenant():
+    """AAD binding (safety:aesgcm-aad): the message key is one per deployment, so without binding a
+    DB tamperer could copy one message's ciphertext over another row (another subject's, or another
+    tenant's) and it would still decrypt. AAD = tenant|message-id, so a relocated blob fails the tag."""
+    from cryptography.exceptions import InvalidTag
+    mc = MessageCrypto(KEY, required=True)
+    sealed = mc.encrypt("the private answer", aad="acme|m1")
+    assert mc.decrypt(sealed, aad="acme|m1") == "the private answer"   # its own slot opens
+    with pytest.raises(InvalidTag):
+        mc.decrypt(sealed, aad="acme|m2")     # moved to another message id
+    with pytest.raises(InvalidTag):
+        mc.decrypt(sealed, aad="evil|m1")     # moved to another tenant
+
+
 # ── erasure ───────────────────────────────────────────────────────────────────
 def test_erasing_a_subject_removes_conversations_and_messages():
     cs = _store(); conv = _seed(cs)

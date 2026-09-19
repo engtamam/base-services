@@ -62,16 +62,21 @@ class MessageCrypto:
     def enabled(self) -> bool:
         return self._key is not None
 
-    def encrypt(self, text: str) -> str:
+    def encrypt(self, text: str, aad: str = "") -> str:
         if self._key is None:
             return text
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+        # aad BINDS this ciphertext to the message's own slot (tenant|message-id — see add()). The
+        # key is one per deployment, so without it a DB tamperer could copy one message's stored
+        # content over another's row (another subject's, or another tenant's) and it would still
+        # decrypt. A relocated/renamed blob now fails the GCM tag loudly instead.
         iv = os.urandom(12)
-        ct = AESGCM(self._key).encrypt(iv, text.encode("utf-8"), None)
+        ad = aad.encode("utf-8") if aad else None
+        ct = AESGCM(self._key).encrypt(iv, text.encode("utf-8"), ad)
         return _PREFIX + base64.b64encode(iv + ct).decode("ascii")
 
-    def decrypt(self, stored: str) -> str:
+    def decrypt(self, stored: str, aad: str = "") -> str:
         if not stored.startswith(_PREFIX):
             return stored          # written before encryption was switched on
         if self._key is None:
@@ -82,7 +87,9 @@ class MessageCrypto:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
         blob = base64.b64decode(stored[len(_PREFIX):])
-        return AESGCM(self._key).decrypt(blob[:12], blob[12:], None).decode("utf-8")
+        # aad must match encrypt's (tenant|message-id). A blob moved to another row fails here.
+        ad = aad.encode("utf-8") if aad else None
+        return AESGCM(self._key).decrypt(blob[:12], blob[12:], ad).decode("utf-8")
 
 
 @dataclass(frozen=True)
@@ -141,7 +148,8 @@ class ConversationStore:
         await self._s.put(_MESSAGES, msg_id, {
             "id": msg_id, "conversation_id": conversation_id, "tenant": tenant,
             "subject_ref": conv.subject_ref, "role": role,
-            "content": self._crypto.encrypt(content),
+            # Bind the ciphertext to this message's slot (tenant|id) so it cannot be relocated.
+            "content": self._crypto.encrypt(content, aad=f"{tenant}|{msg_id}"),
             "citations": list(citations), "created": now})
         await self._s.put(_CONVERSATIONS, conv.id, {
             "id": conv.id, "tenant": conv.tenant, "subject_ref": conv.subject_ref,
@@ -184,7 +192,8 @@ class ConversationStore:
             _MESSAGES, {"tenant": tenant, "conversation_id": conversation_id},
             limit=limit, after=after, sort=("created", "asc"))
         return [Message(id=r["id"], conversation_id=r["conversation_id"], role=r.get("role", USER),
-                        content=self._crypto.decrypt(r.get("content", "")),
+                        content=self._crypto.decrypt(r.get("content", ""),
+                                                     aad=f"{r.get('tenant', '')}|{r.get('id', '')}"),
                         created=r.get("created", ""),
                         citations=tuple(r.get("citations") or ())) for r in rows], cursor
 

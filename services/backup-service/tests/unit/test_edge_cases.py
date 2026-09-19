@@ -41,9 +41,12 @@ class _Objects:
 
 def _sealed(service="billing", kek="backup-key"):
     seal, _ = B.make_sealer(kek)
+    # Seal with the archive's identity AAD (service|tenant=""), matching export, so the sealed body
+    # unseals under this envelope wherever it is later decrypted (verify_restore / import).
     body = seal(json.dumps({"service": service, "version": "1", "taken_at": "t", "tenant": "",
                             "collections": {"widgets": [{"id": "w1", "tenant": "acme", "n": 1}]}},
-                           separators=(",", ":"), sort_keys=True))
+                           separators=(",", ":"), sort_keys=True),
+                aad=B._archive_aad(service, ""))
     return {"format": "base-backup/v1", "service": service, "taken_at": "2099-01-01T00:00:00Z",
             "tenant": "", "row_counts": {"widgets": 1}, "sealed": body,
             "checksum": "sha256:" + __import__("hashlib").sha256(body.encode()).hexdigest()}
