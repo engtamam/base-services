@@ -74,8 +74,18 @@ async def _tenant_of(number_index, phone_id: str) -> str:
         return ""
 
 
+# WhatsApp webhook fields whose payload is CONVERSATION CONTENT (customer/owner messages, shared
+# history, contact PII). In privacy mode (a number handed to Meta Business Agent) none of these may
+# be stored OR put on the bus — we must know nothing. Delivery `statuses` (receipts about OUR sends),
+# account/template events, and the user_preferences opt-out are NOT content and still flow.
+_CONTENT_FIELDS = frozenset({"smb_message_echoes", "history", "smb_app_state_sync"})
+# Sub-keys of a `messages` change value that carry content — dropped in privacy mode; `metadata` and
+# `statuses` (receipts) are kept so delivery attribution still works.
+_MESSAGES_CONTENT_KEYS = frozenset({"messages", "contacts"})
+
+
 async def _fan_out(bus, deliveries, data: dict, inbound=None, number_index=None,
-                   coexistence=None, prefs=None) -> int:
+                   coexistence=None, prefs=None, privacy_mode: bool = False) -> int:
     """Publish every change to the bus, NOTHING filtered. Returns how many events were emitted.
 
     Meta's shape: {object, entry:[{id: <waba id>, changes:[{field, value}]}]}. Each change's `field`
@@ -95,9 +105,17 @@ async def _fan_out(bus, deliveries, data: dict, inbound=None, number_index=None,
             value = change.get("value", {}) or {}
             phone_id = (value.get("metadata", {}) or {}).get("phone_number_id", "")
             base = {"waba_id": waba_id, "phone_number_id": phone_id, "field": field}
+            # PRIVACY MODE (number handed to Meta): a content field is dropped WHOLE — not stored, not
+            # published, we know nothing. A `messages` change is REDACTED to {metadata, statuses} so
+            # delivery receipts still flow but the inbound messages + contact profiles never leave.
+            if privacy_mode and field in _CONTENT_FIELDS:
+                continue
+            pub_value = value
+            if privacy_mode and field == "messages":
+                pub_value = {k: v for k, v in value.items() if k not in _MESSAGES_CONTENT_KEYS}
             # 1) the change itself, under its own field name — never filtered, even if unrecognised.
             await bus.publish(f"{_TOPIC}.{field}", Event(type=f"{_TOPIC}.{field}",
-                                                         payload={**base, "value": value}))
+                                                         payload={**base, "value": pub_value}))
             emitted += 1
             # A marketing OPT-OUT is a compliance fact, not a hint: persist it DURABLY here (the bus
             # is at-most-once — a dropped event would resume marketing to someone who unsubscribed,
@@ -132,7 +150,7 @@ async def _fan_out(bus, deliveries, data: dict, inbound=None, number_index=None,
                         await bus.publish(f"{_TOPIC}.payment", Event(
                             type=f"{_TOPIC}.payment", payload={**base, "payment": parsed}))
                         emitted += 1
-            for msg in value.get("messages", []) or []:
+            for msg in (value.get("messages", []) or []) if not privacy_mode else []:
                 # Resolve the tenant ONCE from the receiving number and put it on BOTH the durable
                 # record AND the live bus event. It used to live only on the record, so a fast-path
                 # bus subscriber saw tenant="" and had to fall back to the slower catch-up poll just to
@@ -237,9 +255,12 @@ async def receive(request: Request) -> dict:
     # OFF ⇒ inbound and coexistence are None ⇒ nothing is written; the webhook is still acked and the
     # bus still fans out for live consumers (fan-out guards `inbound is not None`/`coexistence is not
     # None`). Coexistence additionally needs its own enable flag.
+    # FULL-PRIVACY mode wins over everything: content is dropped at the root, so nothing is stored or
+    # published regardless of the store switch.
+    privacy = s.WHATSAPP_INBOUND_PRIVACY_MODE
     inbound = None
     coexistence = None
-    if s.WHATSAPP_CONVERSATION_STORE_ENABLED:
+    if s.WHATSAPP_CONVERSATION_STORE_ENABLED and not privacy:
         inbound = InboundStore(
             ds, retention_seconds=max(0, s.WHATSAPP_INBOUND_RETENTION_DAYS) * 86400)
         if s.WHATSAPP_COEXISTENCE_ENABLED:
@@ -248,7 +269,7 @@ async def receive(request: Request) -> dict:
     emitted = await _fan_out(
         bus, deliveries, data if isinstance(data, dict) else {},
         inbound=inbound, number_index=WhatsAppNumberIndex(ds),
-        coexistence=coexistence, prefs=PreferenceStore(ds))
+        coexistence=coexistence, prefs=PreferenceStore(ds), privacy_mode=privacy)
     # Meta retries on any non-2xx and treats the retries as duplicates, so acknowledge fast once the
     # events are on the bus. The count is for our observability, not for Meta.
     return {"received": True, "events": emitted}

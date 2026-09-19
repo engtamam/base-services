@@ -439,6 +439,15 @@ class Settings(BaseSettings):
     # A platform that wants the durable inbound catch-up feed (/internal/whatsapp/inbound) or
     # coexistence must set this True (coexistence ALSO still needs WHATSAPP_COEXISTENCE_ENABLED).
     WHATSAPP_CONVERSATION_STORE_ENABLED: bool = False
+    # FULL-PRIVACY mode (default OFF) — for a number handed to Meta Business Agent: customer/owner
+    # conversation content is dropped at the ROOT, before any store OR bus publish, so we truly know
+    # nothing. Stricter than the store switch above (which stops storing but still fans out live): this
+    # also stops the content from entering the pipeline at all. The webhook is still acked (200, so
+    # Meta does not retry — verified 2026-09-19) and NON-content events still flow: delivery/read
+    # receipts (about our own sends), account/template events, and the user_preferences opt-out (a
+    # compliance signal that must always be honoured). Enforced BY US so the privacy guarantee never
+    # depends on trusting Meta to withhold. Layer 2 of docs/design/whatsapp-meta-agent-handover-plan.md.
+    WHATSAPP_INBOUND_PRIVACY_MODE: bool = False
     # WhatsApp Flow DATA ENDPOINT (the encrypted server callback that drives a Flow's screens — e.g.
     # the booking calendar). OFF by default: a deployment opts in once it has uploaded a public key to
     # Meta and sealed the matching private key. See docs/design/whatsapp-booking-flow.md.
