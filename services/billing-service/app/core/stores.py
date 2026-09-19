@@ -146,8 +146,24 @@ class CouponStore(_Repo):
     tenant_scoped = False
 
     async def upsert(self, c: Coupon) -> Coupon:
-        await self.put(c.code, c.to_dict())
-        return c
+        """Create — or blind-overwrite — a coupon THROUGH the version-aware CAS, never a plain put().
+
+        redeem() counts a use with a version-pinned cas(coupons, code, version, …), and the postgres
+        adapter's version pin only ever matches a row that CARRIES a `version`. A coupon first written
+        with put() has none, so on postgres every redeem's cas resolves to the expected=0 branch
+        (INSERT … ON CONFLICT DO NOTHING) against an already-present row → DO NOTHING → the coupon can
+        never be redeemed. The lax in-memory cas treated a versionless row as version 0 and matched,
+        so the whole class passed every unit test and 400'd in production (same divergence as identity
+        RefreshStore.issue). Writing through cas() lands the row carrying a version, so redeem behaves
+        identically on both adapters. The read+cas retry preserves the old overwrite-if-exists
+        semantics under a concurrent writer.
+        """
+        for _ in range(8):
+            existing = await self.get(c.code)
+            expected = int(existing.get("version", 0)) if existing else 0
+            if await self._store.cas(self.collection, c.code, expected, c.to_dict()):
+                return c
+        raise RuntimeError("coupon write contention")     # nothing written; the caller may retry
 
     async def fetch(self, code: str) -> Coupon | None:
         r = await self.get(code)

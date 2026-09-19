@@ -57,8 +57,11 @@ def test_a_stale_pending_claim_is_reclaimable():
     from app.core.models import now_ts
     idem = IdempotencyStore(st)
     key = "cycle:sub_stale:1"
-    # a pending claim whose lease already lapsed (a crashed winner) is re-claimable
-    run(st.put("idempo", key, {"key": key, "status": "pending", "expires_at": now_ts() - 10}))
+    # a pending claim whose lease already lapsed (a crashed winner) is re-claimable. Seed it the way
+    # claim() actually creates it — an insert-if-absent cas that stamps a version — NOT a raw put():
+    # a put()-created row has no version, so its reclaim cas would never match on postgres (the
+    # put/cas divergence). cas(...,0,...) lands the row carrying version=1, mirroring production.
+    run(st.cas("idempo", key, 0, {"key": key, "status": "pending", "expires_at": now_ts() - 10}))
     proceed, prior = run(idem.claim(key))
     assert proceed is True and prior is None
 

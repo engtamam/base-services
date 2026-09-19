@@ -24,6 +24,11 @@ class FlagStore:
         self._store = store
 
     async def save(self, flag: Flag) -> Flag:
+        # cas-create: ok — the reachable create path for a flag is FlagService.upsert, which reads the
+        # flag and writes it back through cas_save(flag, expected) with expected=0 on the row-absent
+        # branch (an insert-if-absent create that stamps version=1). This put() is not on that path —
+        # it is not called anywhere in app code — so no versionless row ever reaches the version-pinned
+        # cas_save(), and the postgres/memory cas divergence cannot arise for _FLAGS.
         await self._store.put(_FLAGS, flag.key, flag.to_dict())
         return flag
 

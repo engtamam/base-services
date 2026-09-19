@@ -104,6 +104,11 @@ class RollupStore:
         return Rollup.from_dict(row) if row else None
 
     async def put(self, r: Rollup) -> Rollup:
+        # cas-create: ok — the reachable create path for a rollup cell is IngestService._update_rollups,
+        # which reads the cell and writes it back through cas_put(r, expected) with expected=0 on the
+        # row-absent branch (an insert-if-absent create that stamps version=1). This put() is not on
+        # that path — it is not called anywhere in app code — so no versionless row ever reaches the
+        # version-pinned cas_put(); the postgres/memory divergence cannot arise here.
         await self._store.put(_ROLLUPS, r.key, r.to_dict())
         return r
 

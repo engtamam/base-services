@@ -98,10 +98,25 @@ class MemoryDataStore:
 
     async def cas(self, collection: str, key: str, expected_version: int,
                   value: dict[str, Any]) -> bool:
-        """See the port docstring. The compare and the swap are one indivisible step."""
+        """See the port docstring. The compare and the swap are one indivisible step.
+
+        expected_version=0 is STRICT insert-if-absent: ANY existing row fails, versionless rows
+        included — exactly what the postgres adapter does (INSERT … ON CONFLICT DO NOTHING). The old
+        code compared a versionless row's implicit version (0) to expected 0, MATCHED, and "updated"
+        it, so a row first written by put() could be cas-updated here but never in postgres — the
+        divergence that let a put-created coupon be version-pinned in memory while its redeem cas
+        no-oped for ever on postgres (see CouponStore.upsert). Only a genuinely absent key may be
+        claimed by expected_version=0."""
         async with self._lock:
             bucket = self._data.setdefault(collection, {})
             current = bucket.get(key)
+            if int(expected_version) == 0:
+                if current is not None:
+                    return False                              # a row exists — insert-if-absent must fail
+                stored = copy.deepcopy(value)
+                stored["version"] = 1
+                bucket[key] = stored
+                return True
             current_version = int(current.get("version", 0)) if current else 0
             if current_version != int(expected_version):
                 return False                                  # someone else wrote first
