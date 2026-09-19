@@ -236,6 +236,52 @@
         "title": "ConsentIn",
         "type": "object"
       },
+      "ConsentRecordIn": {
+        "properties": {
+          "granted": {
+            "title": "Granted",
+            "type": "boolean"
+          },
+          "method": {
+            "default": "self_service",
+            "maxLength": 128,
+            "title": "Method",
+            "type": "string"
+          },
+          "notice_version": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Notice Version",
+            "type": "string"
+          },
+          "purpose": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Purpose",
+            "type": "string"
+          },
+          "subject": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Subject",
+            "type": "string"
+          },
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant",
+          "subject",
+          "purpose",
+          "granted"
+        ],
+        "title": "ConsentRecordIn",
+        "type": "object"
+      },
       "DsarIn": {
         "properties": {
           "payload": {
@@ -2795,6 +2841,84 @@
           }
         },
         "summary": "Migrate Purpose Keys",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/compliance/consent/record": {
+      "post": {
+        "description": "Record a consent decision the SUBJECT ITSELF just made, live, through an interactive channel \u2014\na WhatsApp button tap (\"\u0645\u062a\u0627\u0628\u0639\u0629\" / \"\u0625\u0646\u0647\u0627\u0621 \u0627\u0644\u0645\u062d\u0627\u062f\u062b\u0629\"), a web toggle, an IVR keypress.\n\nWHY THIS IS DISTINCT FROM /consent/grant. That route is operator-recorded and requires an admin\nJWT: a human on the platform side attesting a consent on the subject's behalf. There was no way to\nrecord a decision the subject made THEMSELVES through a service \u2014 so a first-contact consent prompt\nhad nowhere to write its answer, and consent-check's UNKNOWN verdict stayed unresolved forever.\n\nTRUST BOUNDARY. Service-to-service, internal token \u2014 the SAME boundary consent-check already\ncrosses. The authorization is that the CALLING service verified the decision came from the\nsubject's own verified channel (the tap arrived from that WhatsApp number); a user JWT would be\nthe wrong model (the subject is not a platform operator). basis is always `self` here: this route\nis only ever the subject's own decision \u2014 a guardian/delegated consent is the operator flow.\n\nThe authoritative record is the consent proof the store writes (GRANTED/WITHDRAWN, with the\nsubject's pseudonym as actor and the capture method); the audit row is supplementary. Marketing is\nNOT this \u2014 it stays a separate purpose with its own opt-in and an always-available unsubscribe;\nthis records consent for whatever `purpose` the caller names (e.g. the service itself).",
+        "operationId": "record_subject_consent_internal_compliance_consent_record_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConsentRecordIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Record Subject Consent Internal Compliance Consent Record Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record Subject Consent",
         "tags": [
           "internal"
         ]

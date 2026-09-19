@@ -94,6 +94,16 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "decides whether everything that happened afterwards was lawful",
     },
     {
+        "action": "consent.subject_recorded",
+        "source": "internal",
+        "critical": False,
+        "resource": "consent",
+        "why": "a consent decision the SUBJECT made themselves live (a WhatsApp button tap, a web "
+               "toggle) captured by a service over the internal tier — supplements the authoritative "
+               "consent proof the store already wrote. Not critical: the proof is durable regardless, "
+               "so a log hiccup must not refuse a consent the subject just gave",
+    },
+    {
         "action": "dsar.processed",
         "source": "admin",
         "critical": True,

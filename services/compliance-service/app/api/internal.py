@@ -185,6 +185,59 @@ async def consent_check(request: Request, tenant: str, subject: str, purpose: st
     return await build_consent(request).check(tenant=tenant, subject=subject, purpose=purpose)
 
 
+class ConsentRecordIn(BaseModel):
+    tenant: str = Field(min_length=1, max_length=128)
+    subject: str = Field(min_length=1, max_length=256)
+    purpose: str = Field(min_length=1, max_length=128)
+    granted: bool
+    # How the decision was captured, for the proof (e.g. "whatsapp_interactive"). Defaults to a
+    # generic self-service marker.
+    method: str = Field(default="self_service", max_length=128)
+    notice_version: str = Field(default="", max_length=128)
+
+
+@router.post("/compliance/consent/record", dependencies=[Depends(require_internal_token)])
+async def record_subject_consent(request: Request, body: ConsentRecordIn) -> dict:
+    """Record a consent decision the SUBJECT ITSELF just made, live, through an interactive channel —
+    a WhatsApp button tap ("متابعة" / "إنهاء المحادثة"), a web toggle, an IVR keypress.
+
+    WHY THIS IS DISTINCT FROM /consent/grant. That route is operator-recorded and requires an admin
+    JWT: a human on the platform side attesting a consent on the subject's behalf. There was no way to
+    record a decision the subject made THEMSELVES through a service — so a first-contact consent prompt
+    had nowhere to write its answer, and consent-check's UNKNOWN verdict stayed unresolved forever.
+
+    TRUST BOUNDARY. Service-to-service, internal token — the SAME boundary consent-check already
+    crosses. The authorization is that the CALLING service verified the decision came from the
+    subject's own verified channel (the tap arrived from that WhatsApp number); a user JWT would be
+    the wrong model (the subject is not a platform operator). basis is always `self` here: this route
+    is only ever the subject's own decision — a guardian/delegated consent is the operator flow.
+
+    The authoritative record is the consent proof the store writes (GRANTED/WITHDRAWN, with the
+    subject's pseudonym as actor and the capture method); the audit row is supplementary. Marketing is
+    NOT this — it stays a separate purpose with its own opt-in and an always-available unsubscribe;
+    this records consent for whatever `purpose` the caller names (e.g. the service itself)."""
+    t = body.tenant
+    # The subject acted, so the subject IS the actor — pseudonymised, never the raw identifier.
+    actor = subject_ref(get_settings().PII_SALT, t, body.subject)
+    ip = request.client.host if request.client else ""
+    svc = build_consent(request)
+    if body.granted:
+        c = await svc.grant(tenant=t, subject=body.subject, purpose=body.purpose,
+                            notice_version=body.notice_version, method=body.method,
+                            actor=actor, ip=ip, basis="self")
+    else:
+        c = await svc.withdraw(tenant=t, subject=body.subject, purpose=body.purpose,
+                              actor=actor, ip=ip)
+    # AFTER the store write (the proof is the authoritative, disputable record; this audit row is
+    # supplementary). Non-critical by declaration, so a log hiccup never refuses a consent the
+    # subject just gave — the proof is already durable.
+    await request.app.state.auditor.record(
+        "consent.subject_recorded", actor=actor, tenant=t,
+        resource=f"consent:{body.purpose}", ip=ip,
+        metadata={"granted": body.granted, "method": body.method})
+    return c.to_dict()
+
+
 @router.get("/compliance/hold-check", dependencies=[Depends(require_internal_token)])
 async def hold_check(request: Request, tenant: str, subject: str) -> dict:
     """HOT PATH — a service asks before PURGING. Fail closed, cached by generation.

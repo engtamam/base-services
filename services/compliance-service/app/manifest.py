@@ -77,6 +77,10 @@ def build_manifest(
             {"path": "/internal/compliance/consent-check", "tier": "internal", "method": "GET",
              # Another SERVICE must call this. safety:contract-callers fails if none declares it.
              "caller": "service"},
+            # Record a decision the SUBJECT made themselves live (a WhatsApp button tap). Consumed
+            # cross-repo (the assistant's first-contact consent flow), so NOT caller:service — there
+            # is no in-repo declarer, same as the case-timeline read twins below.
+            {"path": "/internal/compliance/consent/record", "tier": "internal", "method": "POST"},
             # Read twins for the (cross-repo) case-timeline investigation tool — like consent-check
             # but LISTING for one subject. Consumed cross-repo, so NOT caller:service (no in-repo
             # declarer), same as /internal/whatsapp/channel-usage.
