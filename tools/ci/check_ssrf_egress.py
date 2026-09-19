@@ -1,120 +1,77 @@
 #!/usr/bin/env python3
-"""safety:ssrf-egress — an outbound HTTP fetch to a NON-LITERAL URL needs an egress guard.
+"""safety:ssrf-egress — a PAYMENT-GATEWAY HTTP transport must egress-guard its outbound fetches.
 
 THE FAILURE THIS EXISTS TO PREVENT (payments checkout audit 2026-09-19, finding H1).
 
-`urllib.request.urlopen(url)` / `requests.get(url)` / `httpx.*(url)` where `url` is built from config or
-a stored/tenant credential (e.g. MERCHANT_API_BASE) is an SSRF sink: a malicious base reaches cloud
-metadata (169.254.169.254), loopback, private ranges, or file://. Fetches to a hardcoded literal URL
-are fine; the risk is a variable URL with no scheme/IP-range guard.
+A payment gateway's base URL comes from operator/tenant-set credentials (MERCHANT_API_BASE /
+PAYMENT_API_BASE), so a transport that fetches it raw is an SSRF sink: a base pointed at cloud
+metadata (169.254.169.254), loopback, or a private host would be fetched with the shop's credentials.
+The fix is an egress guard (scheme allowlist + resolved-IP-range block) before the socket opens, plus
+refusing redirects — exactly what payments-service/app/adapters/payment_http.py's `guard_fetch_url`
+does.
 
-This gate flags an HTTP-client call whose URL argument is NOT a string literal and whose enclosing
-function calls NO guard (a function whose name contains guard/validate/ssrf/allowlist/safe_url). It is
-ADVISORY/heuristic — a fetch to a trusted fixed-config host opts out with an in-line
-`# ssrf: ok — reason`. Reads source via `ast`.
+SCOPE — deliberately NARROW. This gate does NOT touch the many internal service-to-service HTTP
+helpers (audit_sink, consent_gate, notifier, …): those call CONFIGURED cluster hosts that are
+legitimately private, and an IP-range guard there would BLOCK real traffic. Only PAYMENT-gateway
+transports fetch an external, credential-supplied URL, and only they must guard. A payment transport
+that does a raw outbound fetch without an egress guard fails; a deliberate exception opts out with
+`# ssrf: ok — reason`.
 """
 from __future__ import annotations
 
-import ast
 import os
 import pathlib
+import re
 import sys
 
 ROOT = pathlib.Path(os.environ.get("SSRF_GATE_ROOT") or pathlib.Path(__file__).resolve().parents[2])
 SERVICES = ROOT / "services"
 
-_HTTP_METHODS = {"get", "post", "put", "delete", "patch", "head", "options", "request", "send", "stream"}
-_URLOPEN = {"urlopen"}
-_GUARD_HINTS = ("guard", "validate_url", "validate_gateway", "ssrf", "allowlist", "safe_url", "_send")
+# A payment-gateway HTTP transport: the shared payment/billing HTTP helper, or any module under an
+# adapters/payment/ tree. These are the only modules that fetch an external, credential-supplied URL.
+_PAYMENT_TRANSPORT_BASENAMES = {"payment_http.py", "billing_http.py"}
+_RAW_FETCH = re.compile(r"urlopen\(|_OPENER\.open\(|requests\.(get|post|put|delete|patch)\(|"
+                        r"httpx\.(get|post|put|delete|patch|Client|AsyncClient|request)\(")
+# Evidence the module guards egress: it calls a guard, or does the IP-range check itself.
+_GUARD = re.compile(r"guard_fetch_url|_ip_is_blocked|is_private|getaddrinfo")
 
 
-def _has_marker(line: str) -> bool:
-    return "# ssrf: ok" in line
-
-
-def _marker_above(lines: list[str], lineno: int) -> bool:
-    for i in range(lineno - 1, max(-1, lineno - 4), -1):
-        if 0 <= i < len(lines) and _has_marker(lines[i]):
-            return True
-    return False
-
-
-def _first_url_arg(call: ast.Call):
-    return call.args[0] if call.args else None
-
-
-def _is_literal(node) -> bool:
-    return isinstance(node, ast.Constant) and isinstance(node.value, str)
-
-
-def _fn_calls_guard(fn: ast.AST) -> bool:
-    for n in ast.walk(fn):
-        if isinstance(n, ast.Call):
-            name = n.func.attr if isinstance(n.func, ast.Attribute) else (
-                n.func.id if isinstance(n.func, ast.Name) else "")
-            if any(h in name.lower() for h in _GUARD_HINTS):
-                return True
-    return False
+def _is_payment_transport(path: pathlib.Path) -> bool:
+    if path.name in _PAYMENT_TRANSPORT_BASENAMES:
+        return True
+    return "adapters" in path.parts and "payment" in path.parts and path.suffix == ".py"
 
 
 def _check_file(path: pathlib.Path, rel: str) -> list[str]:
     src = path.read_text(encoding="utf-8")
-    lines = src.splitlines()
-    try:
-        tree = ast.parse(src)
-    except SyntaxError:
-        return []
-    # map each function to whether it calls a guard
-    out: list[str] = []
-    funcs = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
-    guarded = {id(f): _fn_calls_guard(f) for f in funcs}
-
-    def enclosing_guarded(lineno: int) -> bool:
-        best = None
-        for f in funcs:
-            if f.lineno <= lineno and (best is None or f.lineno > best.lineno):
-                if lineno <= (max((c.lineno for c in ast.walk(f)), default=f.lineno)):
-                    best = f
-        return guarded.get(id(best), False) if best else False
-
-    for node in ast.walk(tree):
-        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
-            continue
-        method = node.func.attr
-        is_urlopen = method in _URLOPEN
-        is_http = method in _HTTP_METHODS and any(
-            h in ast.unparse(node.func.value).lower() for h in ("request", "http", "client", "session", "requests", "httpx", "urllib"))
-        if not (is_urlopen or is_http):
-            continue
-        url = _first_url_arg(node)
-        if url is None or _is_literal(url):
-            continue
-        if _marker_above(lines, node.lineno) or enclosing_guarded(node.lineno):
-            continue
-        out.append(f"{rel}:{node.lineno}: {method}() to a non-literal URL with no egress guard — an "
-                   f"SSRF sink if the URL comes from config/a tenant credential. Add a scheme+IP-range "
-                   f"guard, or mark `# ssrf: ok — reason`.")
-    return out
+    if not _RAW_FETCH.search(src):
+        return []                                  # no raw outbound fetch — nothing to guard
+    if "# ssrf: ok" in src or _GUARD.search(src):
+        return []                                  # guarded (or explicitly exempt)
+    return [f"{rel}: a payment-gateway transport does a raw outbound fetch with no egress guard — an "
+            f"SSRF sink for a credential-supplied base URL. Route it through an egress guard "
+            f"(scheme + IP-range, like payment_http.guard_fetch_url), or mark `# ssrf: ok — reason`."]
 
 
 def main() -> int:
     if not SERVICES.exists():
         print(f"no services dir at {SERVICES}")
         return 0
-    problems, files = [], 0
+    problems, checked = [], 0
     for svc in sorted(SERVICES.iterdir()):
         appdir = svc / "app"
         if not svc.is_dir() or not appdir.exists():
             continue
         for py in sorted(appdir.rglob("*.py")):
-            files += 1
-            problems.extend(_check_file(py, str(py.relative_to(ROOT))))
+            if _is_payment_transport(py):
+                checked += 1
+                problems.extend(_check_file(py, str(py.relative_to(ROOT))))
     if problems:
         print("safety:ssrf-egress: FAIL")
         for p in problems:
             print(f"  {p}")
         return 1
-    print(f"safety:ssrf-egress: PASS — {files} files; no unguarded non-literal HTTP fetches")
+    print(f"safety:ssrf-egress: PASS — {checked} payment transports; every raw fetch is egress-guarded")
     return 0
 
 

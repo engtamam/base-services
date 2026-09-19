@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+gate_name="safety:ssrf-egress"
+gate_desc="a payment-gateway HTTP transport must egress-guard its outbound fetches"
+gate_protects="The checkout audit's H1 class. A payment gateway's base URL comes from operator/tenant
+credentials (MERCHANT_API_BASE / PAYMENT_API_BASE), so a transport that fetches it raw is an SSRF
+sink — a base pointed at cloud metadata/loopback/a private host would be fetched with the shop's
+credentials. payment_http/billing_http now guard every fetch (scheme + resolved-IP-range, refuse
+redirects). Scope is deliberately NARROW: only payment-gateway transports (they fetch an external,
+credential-supplied URL). Internal service-to-service helpers legitimately call private cluster hosts
+and are NOT gated (an IP-range guard would block them). A deliberate exception opts out with
+'# ssrf: ok — reason'."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_ssrf_egress.py"
+gate_units=1
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_ssrf_egress.py; }
+
+gate_selftest() { "$PY" tools/ci/selftest_ssrf_egress.py >/dev/null 2>&1; }
