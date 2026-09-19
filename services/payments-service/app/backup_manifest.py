@@ -29,6 +29,10 @@ BACKUP: dict[str, Any] = {
         # SECRETS_KEK) so a restore keeps a shop able to take payments without re-entering keys; the
         # KEK itself is env, never in the archive, so an archive alone yields nothing. Tenant-scoped.
         {"name": "merchant_secrets", "tenant_scoped": True},
+        # Per-tenant per-option commerce toggles (enable/lock) an operator set. Config, not money,
+        # but worth restoring: losing it silently re-opens an option a shop was deliberately locked
+        # off. Rows carry `tenant` (a platform-scope row uses tenant="").
+        {"name": "commerce_option_gates", "tenant_scoped": True},
     ],
     "excluded": [
         # Idempotency/claim keys for create_link — regenerated on demand, not data worth restoring;

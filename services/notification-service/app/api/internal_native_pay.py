@@ -16,6 +16,7 @@ from starlette.responses import JSONResponse
 from app.api.internal import require_internal_token
 from app.api.v1.notifications import build_notifier
 from app.config import Settings, get_settings
+from app.core.option_gate import OptionGate
 from app.core.whatsapp_interactive import InteractiveError, build_order_details, build_order_status
 
 router = APIRouter(prefix="/internal/whatsapp/pay", tags=["native-pay"])
@@ -26,6 +27,18 @@ def _gate(settings: Settings) -> JSONResponse | None:
         return JSONResponse(
             {"ok": False, "reason": "native WhatsApp pay is disabled (KSA-dormant); set "
              "WHATSAPP_NATIVE_PAY_ENABLED to enable", "code": "NATIVE_PAY_DISABLED"}, status_code=503)
+    return None
+
+
+async def _tenant_gate(request: Request, tenant: str) -> JSONResponse | None:
+    """The SECOND gate: even when native pay is available in this deployment (global flag on), a shop
+    uses it only if its per-tenant `native_pay` option is enabled. Fail-closed on an empty tenant —
+    native pay is always per-shop, so a missing tenant is never "everyone allowed"."""
+    gate = OptionGate(request.app.state.container.datastore)
+    if not tenant or not await gate.is_enabled(tenant, "native_pay"):
+        return JSONResponse(
+            {"ok": False, "reason": "native WhatsApp pay is not enabled for this shop",
+             "code": "NATIVE_PAY_NOT_ENABLED_FOR_TENANT"}, status_code=403)
     return None
 
 
@@ -75,6 +88,9 @@ async def send_order_details(request: Request, body: _OrderDetailsIn,
     gated = _gate(settings)
     if gated is not None:
         return gated
+    denied = await _tenant_gate(request, body.tenant or "")
+    if denied is not None:
+        return denied
     try:
         interactive = build_order_details(
             reference_id=body.reference_id, currency=body.currency.upper(), order_type=body.order_type,
@@ -107,6 +123,9 @@ async def send_order_status(request: Request, body: _OrderStatusIn,
     gated = _gate(settings)
     if gated is not None:
         return gated
+    denied = await _tenant_gate(request, body.tenant or "")
+    if denied is not None:
+        return denied
     try:
         interactive = build_order_status(reference_id=body.reference_id, status=body.status,
                                          description=body.description, body=body.body)
@@ -131,6 +150,9 @@ async def lookup_payment(request: Request, body: _LookupIn,
     gated = _gate(settings)
     if gated is not None:
         return gated
+    denied = await _tenant_gate(request, body.tenant or "")
+    if denied is not None:
+        return denied
     adapter = await _payments_adapter(request, settings, body.tenant or "")
     res = adapter.get_payment_status(configuration=body.payment_configuration,
                                      reference_id=body.reference_id)
@@ -155,6 +177,9 @@ async def refund_payment(request: Request, body: _RefundIn,
     gated = _gate(settings)
     if gated is not None:
         return gated
+    denied = await _tenant_gate(request, body.tenant or "")
+    if denied is not None:
+        return denied
     adapter = await _payments_adapter(request, settings, body.tenant or "")
     res = adapter.refund(reference_id=body.reference_id, configuration=body.payment_configuration,
                          amount_minor=body.amount_minor, currency=body.currency.upper(),

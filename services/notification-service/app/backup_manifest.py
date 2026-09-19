@@ -44,6 +44,10 @@ BACKUP: dict[str, Any] = {
         {"name": "wa_history", "tenant_scoped": True},
         {"name": "wa_contacts", "tenant_scoped": True},
         {"name": "wa_msg_echoes", "tenant_scoped": True},
+        # Per-tenant per-option commerce toggles (native pay enable/lock) an operator set. Config,
+        # not messages, but worth restoring: losing it silently changes whether a shop may take
+        # native pay. A platform-scope row uses tenant="".
+        {"name": "commerce_option_gates", "tenant_scoped": True},
     ],
     "excluded": [
         {"name": "notify_idempo",

@@ -44,10 +44,11 @@ def test_the_shipped_examples_are_valid():
     validate(AUDITABLE_ACTIONS, "payments-service")
 
 
-def test_the_template_shows_the_most_missed_source():
-    """internal actions are the category people forget — "this service erased a person's data
-    because a DSAR told it to" appears in no panel and no catalog. The example must show one."""
-    assert any(a["source"] == "internal" for a in AUDITABLE_ACTIONS)
+# NOTE: the template's "shows an internal-source example" test was removed when payments-service
+# replaced the scaffold examples with its real declarations. Every real auditable action here is
+# operator/admin (secrets, config, options) or none — the service has no internal-source action to
+# record, and safety:audit-wiring already fails the build on any declared action nothing records, so
+# a stale example must not linger just to satisfy a template assertion.
 
 
 def test_the_template_shows_both_criticalities():

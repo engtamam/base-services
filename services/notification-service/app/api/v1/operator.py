@@ -23,6 +23,7 @@ from app.api.auth import Principal, require_user
 from app.api.authz import require_capability
 from app.api.ratelimit import rate_limit
 from app.config import get_settings
+from app.core.option_gate import OptionGate, OptionGateError
 from app.core.pii import subject_ref
 from app.core.runtime_config import RuntimeConfig, RuntimeConfigError
 from app.core.secret_store import SecretError, SecretStore
@@ -267,4 +268,71 @@ async def clear_config(request: Request, key: str, tenant: str = "",
         metadata={"key": key, "cleared": True})
     cleared = await _runtime_config(request).clear(tenant=tenant, key=key)
     _invalidate(request, tenant)
+    return {"cleared": cleared}
+
+
+# ── commerce options (enable / lock) ────────────────────────────────────────────
+class OptionIn(BaseModel):
+    option: str = Field(..., min_length=1, max_length=64)
+    enabled: bool
+    # Freeze this scope: a later change (or clear) is then refused unless force is passed. A platform
+    # ("") lock is the fleet-wide hard override; a tenant lock freezes just that shop.
+    locked: bool = False
+    tenant: str = Field(default="", max_length=128)
+    # Required to change (or clear) a scope that is already locked — a deliberate second step so a
+    # careless re-toggle cannot silently undo a lock.
+    force: bool = False
+
+
+def _option_gate(request: Request) -> OptionGate:
+    return OptionGate(request.app.state.container.datastore)
+
+
+def _option_dict(st) -> dict:
+    return {"option": st.option, "enabled": st.enabled, "locked": st.locked,
+            "source": st.source, "set_at": st.set_at}
+
+
+@router.get("/options", dependencies=[Depends(_CONFIG), Depends(rate_limit)])
+async def list_options(request: Request, tenant: str = "",
+                       principal: Principal = Depends(require_user)) -> dict:
+    """Every commerce option this service gates (native pay), with its effective enabled/locked state.
+
+    A self-serve UI reads `locked` to know an option is frozen; `source` says whether a stored
+    override or the built-in default decided it. Note native pay is ALSO gated globally by
+    WHATSAPP_NATIVE_PAY_ENABLED — this per-shop toggle only matters once that region flag is on.
+    """
+    states = await _option_gate(request).list(tenant=tenant)
+    return {"options": [_option_dict(s) for s in states]}
+
+
+@router.put("/options", dependencies=[Depends(_CONFIG), Depends(rate_limit)])
+async def set_option(request: Request, body: OptionIn,
+                     principal: Principal = Depends(require_user)) -> dict:
+    """Enable/disable (and optionally lock) one commerce option for a scope."""
+    await request.app.state.auditor.record(
+        "operator.option_changed", actor=_actor(principal), tenant=body.tenant or "",
+        resource=f"option:{body.option}", ip=request.client.host if request.client else "",
+        metadata={"option": body.option, "enabled": body.enabled, "locked": body.locked})
+    try:
+        st = await _option_gate(request).set(
+            tenant=body.tenant, option=body.option, enabled=body.enabled, locked=body.locked,
+            actor_ref=_actor(principal), force=body.force)
+    except OptionGateError as exc:
+        return _refuse(str(exc))
+    return _option_dict(st)
+
+
+@router.delete("/options/{option}", dependencies=[Depends(_CONFIG), Depends(rate_limit)])
+async def clear_option(request: Request, option: str, tenant: str = "", force: bool = False,
+                       principal: Principal = Depends(require_user)) -> dict:
+    """Drop an option override so it resolves to its default again."""
+    await request.app.state.auditor.record(
+        "operator.option_changed", actor=_actor(principal), tenant=tenant,
+        resource=f"option:{option}", ip=request.client.host if request.client else "",
+        metadata={"option": option, "cleared": True})
+    try:
+        cleared = await _option_gate(request).clear(tenant=tenant, option=option, force=force)
+    except OptionGateError as exc:
+        return _refuse(str(exc))
     return {"cleared": cleared}

@@ -172,6 +172,80 @@ def test_the_scaffold_declares_no_runtime_policy_so_it_offers_none(client, opera
     assert r.status_code == 400, "an undeclared knob was accepted and would have been inert"
 
 
+# ── commerce options (enable / lock) ────────────────────────────────────────────
+def test_options_list_shows_the_default_before_any_override(client, operator_auth):
+    got = client.get("/api/v1/app/operator/options?tenant=acme", headers=operator_auth).json()
+    ext = next(o for o in got["options"] if o["option"] == "external_paylink")
+    assert ext["enabled"] is True and ext["locked"] is False and ext["source"] == "default"
+
+
+def test_options_need_the_config_capability(client, reader_auth):
+    assert client.get("/api/v1/app/operator/options", headers=reader_auth).status_code == 403
+    assert client.put("/api/v1/app/operator/options",
+                      json={"option": "external_paylink", "enabled": False},
+                      headers=reader_auth).status_code == 403
+
+
+def test_disabling_the_paylink_option_stops_create_link(client, operator_auth):
+    tok = {"X-Internal-Token": "t" * 40}
+    hdr = {"headers": tok}
+    # Enabled by default: the option gate lets the call through — it then fails on missing merchant
+    # creds (409 NOT_CONFIGURED), which still proves the gate passed. What must NEVER appear enabled
+    # is the DISABLED refusal.
+    p1 = {"tenant": "shopA", "reference": "ord-1", "amount_minor": 1000, "currency": "SAR"}
+    r1 = client.post("/internal/payments/requests", json=p1, **hdr)
+    assert r1.json().get("code") != "DISABLED"
+    # operator disables the option for shopA
+    r = client.put("/api/v1/app/operator/options", headers=operator_auth,
+                   json={"option": "external_paylink", "enabled": False, "tenant": "shopA"})
+    assert r.status_code == 200 and r.json()["enabled"] is False
+    # a NEW order for shopA is now refused BY THE GATE, before any gateway work
+    p2 = {"tenant": "shopA", "reference": "ord-2", "amount_minor": 1000, "currency": "SAR"}
+    r2 = client.post("/internal/payments/requests", json=p2, **hdr)
+    assert r2.status_code == 403 and r2.json()["code"] == "DISABLED"
+    # another shop is unaffected — its option is still at the default
+    p3 = {"tenant": "shopB", "reference": "ord-1", "amount_minor": 1000, "currency": "SAR"}
+    assert client.post("/internal/payments/requests", json=p3, **hdr).json().get("code") != "DISABLED"
+
+
+def test_an_unknown_option_is_refused(client, operator_auth):
+    r = client.put("/api/v1/app/operator/options",
+                   json={"option": "teleport_pay", "enabled": True}, headers=operator_auth)
+    assert r.status_code == 400 and "unknown" in r.json()["reason"].lower()
+
+
+def test_a_locked_option_refuses_a_change_without_force(client, operator_auth):
+    h = {"headers": operator_auth}
+    lock = client.put("/api/v1/app/operator/options",
+                      json={"option": "external_paylink", "enabled": False, "locked": True,
+                            "tenant": "lockshop"}, **h)
+    assert lock.status_code == 200 and lock.json()["locked"] is True
+    # a plain change is refused …
+    blocked = client.put("/api/v1/app/operator/options",
+                         json={"option": "external_paylink", "enabled": True, "tenant": "lockshop"}, **h)
+    assert blocked.status_code == 400 and "locked" in blocked.json()["reason"].lower()
+    # … until force is passed
+    forced = client.put("/api/v1/app/operator/options",
+                        json={"option": "external_paylink", "enabled": True, "locked": False,
+                              "tenant": "lockshop", "force": True}, **h)
+    assert forced.status_code == 200 and forced.json()["enabled"] is True
+
+
+def test_a_platform_lock_overrides_a_tenant_row(client, operator_auth):
+    h = {"headers": operator_auth}
+    # tenant wants it on …
+    client.put("/api/v1/app/operator/options",
+               json={"option": "external_paylink", "enabled": True, "tenant": "shopC"}, **h)
+    # … but the platform hard-locks it OFF fleet-wide
+    client.put("/api/v1/app/operator/options",
+               json={"option": "external_paylink", "enabled": False, "locked": True}, **h)
+    got = client.get("/api/v1/app/operator/options?tenant=shopC", **h).json()
+    ext = next(o for o in got["options"] if o["option"] == "external_paylink")
+    assert ext["enabled"] is False and ext["locked"] is True
+    # clean up the platform lock so later tests see the default again
+    client.delete("/api/v1/app/operator/options/external_paylink?force=true", **h)
+
+
 # ── availability ──────────────────────────────────────────────────────────────
 def test_without_a_kek_the_surface_refuses_rather_than_storing_in_the_clear(env_guard):
     """No KEK means nothing to seal with. Storing the credential anyway — in the clear, while

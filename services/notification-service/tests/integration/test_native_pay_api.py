@@ -29,6 +29,16 @@ def _make_app(**over) -> TestClient:
     return TestClient(create_app(), raise_server_exceptions=False)
 
 
+def _enable_native_pay(client: TestClient, tenant: str) -> None:
+    """Turn ON the per-shop native_pay option (the second gate, on top of the global region flag).
+    Seeded directly on the datastore so these tests need no operator JWT."""
+    import asyncio
+
+    from app.core.option_gate import OptionGate
+    gate = OptionGate(client.app.state.container.datastore)
+    asyncio.run(gate.set(tenant=tenant, option="native_pay", enabled=True))
+
+
 @pytest.fixture()
 def saved_env():
     from app.config import get_settings
@@ -90,6 +100,7 @@ def test_routes_require_the_internal_token(saved_env):
 # ── order_details: sent through the shared interactive path, recorded as a Delivery ─
 def test_order_details_send_is_recorded_as_a_tenant_scoped_delivery(saved_env):
     c = _make_app(WHATSAPP_NATIVE_PAY_ENABLED="true", WHATSAPP_PAYMENTS_DRIVER="console")
+    _enable_native_pay(c, "acme")
     r = c.post("/internal/whatsapp/pay/order-details", headers=_tok(), json=_order_details_body())
     assert r.status_code == 200, r.text
     assert r.json()["status"] == "sent" and r.json()["provider"] == "console"
@@ -100,6 +111,7 @@ def test_order_details_send_is_recorded_as_a_tenant_scoped_delivery(saved_env):
 
 def test_order_details_with_a_wrong_subtotal_is_a_clear_422(saved_env):
     c = _make_app(WHATSAPP_NATIVE_PAY_ENABLED="true", WHATSAPP_PAYMENTS_DRIVER="console")
+    _enable_native_pay(c, "acme")
     # items sum to 3000 but subtotal claims 9999 — refused at build time, not by Meta
     r = c.post("/internal/whatsapp/pay/order-details", headers=_tok(),
                json=_order_details_body(subtotal_minor=9999))
@@ -108,6 +120,7 @@ def test_order_details_with_a_wrong_subtotal_is_a_clear_422(saved_env):
 
 def test_order_details_idempotency_key_dedupes_a_resend(saved_env):
     c = _make_app(WHATSAPP_NATIVE_PAY_ENABLED="true", WHATSAPP_PAYMENTS_DRIVER="console")
+    _enable_native_pay(c, "acme")
     body = _order_details_body(idempotency_key="ord-1-send")
     first = c.post("/internal/whatsapp/pay/order-details", headers=_tok(), json=body).json()
     second = c.post("/internal/whatsapp/pay/order-details", headers=_tok(), json=body).json()
@@ -117,6 +130,7 @@ def test_order_details_idempotency_key_dedupes_a_resend(saved_env):
 # ── order_status ────────────────────────────────────────────────────────────────
 def test_order_status_send_is_recorded_as_a_tenant_scoped_delivery(saved_env):
     c = _make_app(WHATSAPP_NATIVE_PAY_ENABLED="true", WHATSAPP_PAYMENTS_DRIVER="console")
+    _enable_native_pay(c, "acme")
     r = c.post("/internal/whatsapp/pay/order-status", headers=_tok(),
                json={"recipient": "+966500000001", "tenant": "acme", "reference_id": "ORD-1",
                      "status": "shipped", "description": "On its way"})
@@ -129,14 +143,17 @@ def test_order_status_send_is_recorded_as_a_tenant_scoped_delivery(saved_env):
 
 def test_order_status_with_an_unknown_status_is_a_422(saved_env):
     c = _make_app(WHATSAPP_NATIVE_PAY_ENABLED="true", WHATSAPP_PAYMENTS_DRIVER="console")
+    _enable_native_pay(c, "acme")
     r = c.post("/internal/whatsapp/pay/order-status", headers=_tok(),
-               json={"recipient": "+966", "reference_id": "ORD-1", "status": "teleported"})
+               json={"recipient": "+966", "tenant": "acme", "reference_id": "ORD-1",
+                     "status": "teleported"})
     assert r.status_code == 422 and "status" in r.json()["reason"].lower()
 
 
 # ── lookup: the source of truth (console driver answers deterministically) ──────
 def test_lookup_returns_a_verified_status_via_the_console_driver(saved_env):
     c = _make_app(WHATSAPP_NATIVE_PAY_ENABLED="true", WHATSAPP_PAYMENTS_DRIVER="console")
+    _enable_native_pay(c, "acme")
     r = c.post("/internal/whatsapp/pay/lookup", headers=_tok(),
                json={"tenant": "acme", "reference_id": "ORD-1", "payment_configuration": "acme_rzp"})
     assert r.status_code == 200, r.text
@@ -148,9 +165,29 @@ def test_lookup_returns_a_verified_status_via_the_console_driver(saved_env):
 # ── refund ──────────────────────────────────────────────────────────────────────
 def test_refund_via_the_console_driver_succeeds(saved_env):
     c = _make_app(WHATSAPP_NATIVE_PAY_ENABLED="true", WHATSAPP_PAYMENTS_DRIVER="console")
+    _enable_native_pay(c, "acme")
     r = c.post("/internal/whatsapp/pay/refund", headers=_tok(),
                json={"tenant": "acme", "reference_id": "ORD-1", "payment_configuration": "acme_rzp",
                      "amount_minor": 3450, "currency": "SAR"})
     assert r.status_code == 200, r.text
     j = r.json()
     assert j["ok"] is True and j["refund_id"] == "console_refund_ORD-1"
+
+
+# ── the per-shop second gate (native_pay option) ────────────────────────────────
+def test_globally_on_but_shop_not_enabled_is_403(saved_env):
+    """The region flag is on, but a shop with native_pay OFF (the default) is still refused — the
+    per-tenant gate is the second lock."""
+    c = _make_app(WHATSAPP_NATIVE_PAY_ENABLED="true", WHATSAPP_PAYMENTS_DRIVER="console")
+    r = c.post("/internal/whatsapp/pay/order-details", headers=_tok(),
+               json=_order_details_body(tenant="notenabled"))
+    assert r.status_code == 403 and r.json()["code"] == "NATIVE_PAY_NOT_ENABLED_FOR_TENANT"
+
+
+def test_a_locked_off_shop_stays_off_and_lookup_is_gated_too(saved_env):
+    c = _make_app(WHATSAPP_NATIVE_PAY_ENABLED="true", WHATSAPP_PAYMENTS_DRIVER="console")
+    # even lookup (the money-read half) is refused for a shop that is not enabled
+    r = c.post("/internal/whatsapp/pay/lookup", headers=_tok(),
+               json={"tenant": "notenabled", "reference_id": "ORD-9",
+                     "payment_configuration": "x"})
+    assert r.status_code == 403 and r.json()["code"] == "NATIVE_PAY_NOT_ENABLED_FOR_TENANT"

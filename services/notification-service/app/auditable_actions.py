@@ -167,6 +167,16 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "refusing to change a retention period because the log is down protects nothing",
     },
     {
+        "action": "operator.option_changed",
+        "source": "admin",
+        "critical": False,
+        "resource": "option",
+        "why": "enabling, disabling or locking a shop's commerce option (native in-WhatsApp pay) "
+               "changes whether it may take money that way; the history explains why a shop could or "
+               "could not at a point in time. Not critical: refusing a toggle because the log is "
+               "down would strand the option in its current state, which protects nothing",
+    },
+    {
         "action": "operator.whatsapp_onboarded",
         "source": "admin",
         "critical": True,
