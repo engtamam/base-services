@@ -41,10 +41,18 @@ VALUES = ROOT / "deploy" / "services"
 SCHEDULER_VERBS = ("sweep", "drain", "tick", "prune", "reclaim", "drill", "retention", "scan",
                    "cycle-due")
 
-# Scheduler-shaped endpoints that are DELIBERATELY not cron-driven — {"<svc>:<path>": "why"}. Empty
-# today; the escape hatch exists so a future false positive is a reviewed decision, not an edit to
-# the verb list that weakens the net for everyone. The selftest augments it via env.
-EXCLUDED: dict[str, str] = {}
+# Scheduler-shaped endpoints that are DELIBERATELY not cron-driven — {"<svc>:<path>": "why"}. The
+# escape hatch exists so a false positive is a reviewed decision, not an edit to the verb list that
+# weakens the net for everyone. The selftest augments it via env.
+EXCLUDED: dict[str, str] = {
+    # NOT a sweep: this reclaims ONE grant, addressed by a required grant_id in the request body — a
+    # per-grant primitive a customer action or a future 'reclaim idle balance' flow calls, not a
+    # clock. A CronJob has no grant_id to pass. The genuinely scheduled wallet sweeps are
+    # sweep-grants / notice-grants (which do carry CronJobs); this shares the 'reclaim' verb but not
+    # the shape.
+    "wallet-service:/internal/wallet/reclaim": "per-grant primitive (requires grant_id in the body), "
+                                               "not a scheduler sweep — sweep-grants/notice-grants are",
+}
 for _e in (os.environ.get("SCHEDULE_GATE_EXCLUDE", "") or "").split(","):
     if _e.strip():
         EXCLUDED[_e.strip()] = "excluded via env (selftest)"

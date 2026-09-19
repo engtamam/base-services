@@ -52,6 +52,11 @@ _INDEXES = (
     f"(collection, COALESCE(value->'timestamp', 'null'::jsonb) ASC, key ASC)",
 )
 
+# sort-index: ok phone_number_id — bounded: the only sort on this field is
+# WhatsAppNumberIndex.by_waba_id, a find filtered on the highly-selective waba_id (a WABA hosts a
+# handful of numbers) with limit=50 — the sort just picks a deterministic first row from a tiny set,
+# so an in-memory sort needs no dedicated btree.
+
 
 
 # The health probe waits at most this long for a slot. It is deliberately SHORT — shorter than the

@@ -242,7 +242,12 @@ STATIC_ENV: dict[str, dict[str, str]] = {
                 # ticket free text (the subject line and message bodies a person wrote) is PII; its
                 # erase was implemented but the service was never registered here, so the DSAR
                 # fan-out never asked it — the request closed green with that text still present.
-                "ticket-service")),
+                "ticket-service",
+                # payments-service holds PaymentRequests (a person's order references + metadata) and
+                # implements the erase contract; added the same way — it was built after this list
+                # (commerce P4) and never registered, so a DSAR closed green while it still held the
+                # subject's payment records.
+                "payments-service")),
         # Retention for the records compliance-service OWNS. Every other service declares its own
         # period in its RoPA row and enforces it itself — only the owner knows which timestamp is
         # its retention clock. Consent PROOF outlives everything else: it is the evidence that

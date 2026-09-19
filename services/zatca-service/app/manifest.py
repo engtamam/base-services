@@ -84,6 +84,13 @@ def build_manifest(
             {"path": "/api/v1/zatca/invoices/{id}", "tier": "user", "method": "GET"},
             {"path": "/api/v1/zatca/invoices/{id}/resubmit", "tier": "user", "method": "POST"},
             {"path": "/api/v1/zatca/invoices/{id}/qr", "tier": "user", "method": "GET"},
+            # Operator integrity actions (declared in ADMIN_ACTIONS): release a stuck tail ICV,
+            # correct-and-resign a stuck invoice, and read the signed/reserved head lag. Real routes
+            # in api/v1/zatca.py — declared here so the admin panel's actions map to a manifest route
+            # (safety:admin) rather than rendering a phantom.
+            {"path": "/api/v1/zatca/invoices/{id}/release-tail", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/zatca/invoices/{id}/correct-and-resign", "tier": "user", "method": "POST"},
+            {"path": "/api/v1/zatca/chain/head-lag", "tier": "user", "method": "GET"},
             {"path": "/api/v1/zatca/chain/verify", "tier": "user", "method": "GET"},
             {"path": "/api/v1/zatca/sweep", "tier": "user", "method": "POST"},
             # The operator surface: credentials and policy, changeable after launch.
