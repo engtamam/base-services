@@ -83,8 +83,29 @@ existing `defensive-access-hides-bugs` discipline.
   natural identity (assistant conversations, stream source, zatca CSID, connector tokens). Two correct
   deferrals: notification flow_crypto (Meta-dictated) and billing hyperpay (provider webhook body).
   Selftest + gate + ci.yml; PASSES fleet-wide (3064 files); relocation tests per service.
-- **Remaining (not yet done):** open-redirect (3, triage), SSRF (rework as a helper-level gate),
-  swallowed-except (defer/tune). Four gates now registered blocking; ci-parity green.
+- **safety:open-redirect — REGISTERED BLOCKING.** All 3 triaged FPs: billing pay-link is guarded
+  inline (gate refined to recognize inline host-allowlist guards); file-service redirects hand back a
+  presigned bucket URL (marked). Selftest + gate + ci.yml; PASSES fleet-wide.
+- **safety:ssrf-egress — REGISTERED BLOCKING (narrow).** Reworked from the noisy call-site scan: a
+  blanket SSRF gate is WRONG here (internal service-to-service helpers legitimately call private
+  cluster hosts; an IP-range guard would block them). Scoped to PAYMENT-gateway transports, which
+  fetch an external credential-supplied URL. billing_http gained the egress guard payment_http
+  already had; both refuse metadata/loopback/private + redirects. Selftest + gate + ci.yml; PASSES.
+- **swallowed-except — ADVISORY ONLY (not registered).** The one dangerous instance (M8 payments
+  webhook returning a fabricated result without logging) is already fixed. A blocking gate is not
+  worth it: even scoped to value-returning broad excepts, ~353 hits remain and are overwhelmingly
+  legitimate best-effort degradations (cache/redis/s3/event_bus returning a safe default when a
+  dependency is down; health → "down"). Those are correct, not bugs; marking hundreds of them is
+  churn with no security gain. The tool stays as an advisory scanner; the "defensive-access-hides-bugs"
+  discipline + review cover this class.
+
+## Final state
+**6 gates registered blocking** — safety:cas-create, safety:money-float, safety:timing-compare,
+safety:aesgcm-aad, safety:open-redirect, safety:ssrf-egress — each with a mutation selftest, in the
+--strict aggregate merge-blocker, ci-parity green. swallowed-except stays advisory. Real production
+bugs found + fixed along the way: 4 (cas-create) + 2 (money-float) + billing_http SSRF hardening +
+fleet-wide AAD binding. The vulnerability classes from the checkout audit are now caught
+platform-wide and cannot be reintroduced without failing a merge.
 
 ## Recommendation
 Enforce, in priority order, the precise high-value gates after their fleet remediation:

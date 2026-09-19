@@ -40,11 +40,27 @@ def _body_logs_or_raises(handler: ast.ExceptHandler) -> bool:
     for n in ast.walk(handler):
         if isinstance(n, ast.Raise):
             return True
-        if isinstance(n, ast.Call):
-            name = n.func.attr if isinstance(n.func, ast.Attribute) else (
-                n.func.id if isinstance(n.func, ast.Name) else "")
-            if any(h in name.lower() for h in _LOG_HINTS):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute):
+            # A call on a logger receiver — logger.info / self._log.warning / log.exception — counts
+            # as logging even when the method name (info/debug) is not itself a hint word.
+            recv = n.func.value
+            recv_text = (recv.id if isinstance(recv, ast.Name)
+                         else recv.attr if isinstance(recv, ast.Attribute) else "").lower()
+            if "log" in recv_text or any(h in n.func.attr.lower() for h in _LOG_HINTS):
                 return True
+        elif isinstance(n, ast.Call) and isinstance(n.func, ast.Name):
+            if any(h in n.func.id.lower() for h in _LOG_HINTS):
+                return True
+    return False
+
+
+def _returns_a_value(handler: ast.ExceptHandler) -> bool:
+    """True if the handler body returns a non-None value directly in the handler (masking the error
+    with a fabricated result). A bare `return`, `return None`, `pass`, or `continue` is benign."""
+    for stmt in handler.body:
+        if isinstance(stmt, ast.Return) and stmt.value is not None \
+                and not (isinstance(stmt.value, ast.Constant) and stmt.value.value is None):
+            return True
     return False
 
 
@@ -65,12 +81,19 @@ def _check_file(path: pathlib.Path, rel: str) -> list[str]:
             continue
         if _body_logs_or_raises(node):
             continue
+        # SCOPE to the dangerous shape: a handler that RETURNS A VALUE masks the failure with a
+        # fabricated result (the M8 webhook: `except: return {applied: false}` — a real error read as
+        # a normal answer). A best-effort `except: pass` / cleanup / `return None` is benign and NOT
+        # flagged — the codebase uses those deliberately, and drowning the signal in them is why a
+        # blanket version of this gate is useless. Only a value-returning silent swallow is flagged.
+        if not _returns_a_value(node):
+            continue
         line = lines[node.lineno - 1] if 0 <= node.lineno - 1 < len(lines) else ""
         if _line_ok(line):
             continue
-        out.append(f"{rel}:{node.lineno}: broad except that neither logs nor re-raises — a silently "
-                   f"swallowed error. Log before swallowing, or mark the deliberate catch with "
-                   f"`# noqa: BLE001`.")
+        out.append(f"{rel}:{node.lineno}: broad except that returns a value without logging — the "
+                   f"failure is masked as a normal result (the M8 webhook shape). Log before "
+                   f"returning, or mark the deliberate catch with `# noqa: BLE001`.")
     return out
 
 
