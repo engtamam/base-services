@@ -11,7 +11,7 @@ import asyncio
 import pytest
 
 from app.adapters.datastore.memory import MemoryDataStore
-from app.core.secret_store import SecretError, SecretStore
+from app.core.secret_store import SecretError, SecretStore, _COLL
 from app.ports.errors import ConfigError
 
 KEK = "k" * 40
@@ -47,6 +47,26 @@ def test_the_wrong_kek_raises_rather_than_returning_nothing():
     other = SecretStore(st._s, "different-kek-entirely")
     with pytest.raises(SecretError, match="KEK"):
         run(other.get(tenant="acme", name="sms_key"))
+
+
+def test_a_sealed_credential_cannot_be_relocated_to_another_row():
+    """AAD binding (safety:aesgcm-aad): the seal key is one per service, so a DB tamperer with NO key
+    could copy tenant A's sealed blob into tenant B's row (or under another name) and B would silently
+    authenticate as A. With AAD = collection|tenant|name, a relocated/renamed blob fails the tag."""
+    st = _store()
+    run(st.set(tenant="acme", name="sms_key", value=SECRET))
+    # Read acme's sealed blob straight out of the store and forge globex's row from it — exactly what a
+    # database tamperer (no KEK) can do. get() unseals under globex's identity, so the tag must fail.
+    acme_row = run(st._s.get(_COLL, "acme|sms_key"))
+    forged = {**acme_row, "id": "globex|sms_key", "tenant": "globex"}
+    run(st._s.put(_COLL, "globex|sms_key", forged))
+    with pytest.raises(SecretError):
+        run(st.get(tenant="globex", name="sms_key"))
+    # Renaming within the same tenant must fail too (bound to name, not just tenant).
+    forged_name = {**acme_row, "id": "acme|other_key", "name": "other_key"}
+    run(st._s.put(_COLL, "acme|other_key", forged_name))
+    with pytest.raises(SecretError):
+        run(st.get(tenant="acme", name="other_key"))
 
 
 # ── nothing readable is stored or shown ───────────────────────────────────────

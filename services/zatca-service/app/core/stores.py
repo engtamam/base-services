@@ -18,6 +18,12 @@ _PAGE = 500
 _TENANT_MAX = 100_000     # a bounded read of ONE taxpayer's invoices
 
 
+def _csid_aad(tenant: str, field: str) -> str:
+    """Associated data binding a sealed CSID blob to its (collection|tenant|field) slot, so a
+    tampered DB cannot relocate it across tenants or swap it between fields (see seal.py)."""
+    return f"{_SETTINGS}|{tenant}|{field}"
+
+
 def _now() -> str:
     return _dt.datetime.now(_dt.timezone.utc).isoformat()
 
@@ -353,10 +359,13 @@ class SettingsStore:
                          private_key_pem: str | None = None, onboarding_status: str = "production",
                          request_id: str | None = None) -> None:
         r = await self._raw(tenant)
-        r["csid_cert_enc"] = seal(certificate_pem, self._seal_key)
-        r["csid_secret_enc"] = seal(secret, self._seal_key)
+        # AAD binds each blob to (collection|tenant|field), so a tampered DB cannot relocate a sealed
+        # CSID across tenants or swap it between the cert/secret/key fields — it would fail the tag.
+        r["csid_cert_enc"] = seal(certificate_pem, self._seal_key, _csid_aad(tenant, "csid_cert"))
+        r["csid_secret_enc"] = seal(secret, self._seal_key, _csid_aad(tenant, "csid_secret"))
         if private_key_pem is not None:            # production exchange keeps the compliance key
-            r["private_key_enc"] = seal(private_key_pem, self._seal_key)
+            r["private_key_enc"] = seal(private_key_pem, self._seal_key,
+                                        _csid_aad(tenant, "private_key"))
         if request_id is not None:
             r["compliance_request_id"] = request_id
         r["onboarding_status"] = onboarding_status
@@ -368,11 +377,12 @@ class SettingsStore:
 
     async def load_secrets(self, tenant: str) -> dict[str, str] | None:
         r = await self._raw(tenant)
-        cert = unseal(r.get("csid_cert_enc", ""), self._seal_key)
-        key = unseal(r.get("private_key_enc", ""), self._seal_key)
+        cert = unseal(r.get("csid_cert_enc", ""), self._seal_key, _csid_aad(tenant, "csid_cert"))
+        key = unseal(r.get("private_key_enc", ""), self._seal_key, _csid_aad(tenant, "private_key"))
         if not (cert and key):
             return None
         import base64
         return {"certificate_pem": cert, "private_key_pem": key,
-                "secret": unseal(r.get("csid_secret_enc", ""), self._seal_key) or "",
+                "secret": unseal(r.get("csid_secret_enc", ""), self._seal_key,
+                                 _csid_aad(tenant, "csid_secret")) or "",
                 "cert_base64": base64.b64encode(cert.encode()).decode()}

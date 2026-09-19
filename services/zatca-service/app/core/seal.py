@@ -15,19 +15,25 @@ def _key(seal_key: str) -> bytes:
     return hashlib.sha256((seal_key or "").encode()).digest()
 
 
-def seal(plaintext: str, seal_key: str) -> str:
+def seal(plaintext: str, seal_key: str, aad: str = "") -> str:
+    # aad BINDS this ciphertext to its slot (collection|tenant|field — see stores.py). The seal key
+    # is one per service, so without it a DB tamperer (no key) could copy tenant A's sealed CSID cert
+    # into tenant B's row, or swap the cert blob into the private-key field, and it would still
+    # decrypt — B then signing as A. A relocated/renamed blob now fails the GCM tag loudly.
     if plaintext is None:
         return ""
     nonce = os.urandom(12)
-    ct = AESGCM(_key(seal_key)).encrypt(nonce, plaintext.encode(), None)
+    ad = aad.encode() if aad else None
+    ct = AESGCM(_key(seal_key)).encrypt(nonce, plaintext.encode(), ad)
     return base64.b64encode(nonce + ct).decode()
 
 
-def unseal(token: str, seal_key: str) -> str | None:
+def unseal(token: str, seal_key: str, aad: str = "") -> str | None:
     if not token:
         return None
     try:
         raw = base64.b64decode(token)
-        return AESGCM(_key(seal_key)).decrypt(raw[:12], raw[12:], None).decode()
+        ad = aad.encode() if aad else None
+        return AESGCM(_key(seal_key)).decrypt(raw[:12], raw[12:], ad).decode()
     except Exception:
         return None
