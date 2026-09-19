@@ -45,7 +45,8 @@ def test_credentials_are_sealed_at_rest_and_hidden_from_api():
     secret = "ACCESS-TOKEN-THAT-MUST-NEVER-APPEAR-IN-PLAINTEXT"
     tm, conns, _, _ = _env(access=secret)
     stored = run(conns.get("cn_1"))
-    assert secret not in stored.access_sealed and _seal.unseal(stored.access_sealed, SEAL) == secret
+    assert secret not in stored.access_sealed and _seal.unseal(
+        stored.access_sealed, SEAL, _seal.token_aad("cn_1", "access")) == secret
     assert "access_sealed" not in stored.public() and "refresh_sealed" not in stored.public()
 
 
@@ -79,7 +80,8 @@ def test_rotated_refresh_token_is_persisted():
     clk.advance(3600)
     run(tm.credentials("t1", "cn_1", {}))
     conn = run(conns.get("cn_1"))
-    assert _seal.unseal(conn.refresh_sealed, SEAL) == "rec_refresh_1"   # not the old "R1"
+    assert _seal.unseal(conn.refresh_sealed, SEAL,
+                        _seal.token_aad("cn_1", "refresh")) == "rec_refresh_1"   # not the old "R1"
 
 
 def test_provider_that_does_not_rotate_keeps_the_existing_refresh_token():
@@ -92,7 +94,8 @@ def test_provider_that_does_not_rotate_keeps_the_existing_refresh_token():
     clk.advance(3600)
     run(tm.credentials("t1", "cn_1", {}))
     conn = run(conns.get("cn_1"))
-    assert _seal.unseal(conn.refresh_sealed, SEAL) == "R1"    # never blanked
+    assert _seal.unseal(conn.refresh_sealed, SEAL,
+                        _seal.token_aad("cn_1", "refresh")) == "R1"    # never blanked
 
 
 def test_cached_token_is_not_served_past_its_expiry():
@@ -144,7 +147,8 @@ def test_another_replica_already_rotated_recovers_instead_of_bricking():
             self.gets += 1
             conn = await super().get(cid)
             if conn and self.gets >= 3:            # the post-failure re-read
-                conn.access_sealed = _seal.seal("token_from_other_replica", SEAL)
+                conn.access_sealed = _seal.seal("token_from_other_replica", SEAL,
+                                                _seal.token_aad("cn_1", "access"))
                 conn.expires_at = clk.now() + 3600
             return conn
 
@@ -178,7 +182,7 @@ def test_bump_invalidates_the_cached_token_immediately():
     tm, conns, _, _ = _env()
     assert run(tm.credentials("t1", "cn_1", {})) == "A1"
     conn = run(conns.get("cn_1"))
-    conn.access_sealed = _seal.seal("A2", SEAL)
+    conn.access_sealed = _seal.seal("A2", SEAL, _seal.token_aad("cn_1", "access"))
     run(conns.save(conn))
     run(tm.bump("t1"))                                    # e.g. reconnect
     assert run(tm.credentials("t1", "cn_1", {})) == "A2"

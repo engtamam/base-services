@@ -32,7 +32,8 @@ async def resolve_spec(datastore, secret_store, settings, conn: Connection) -> d
         return {}
     out = spec.to_dict()
     out.pop("client_secret_sealed", None)
-    out["client_secret"] = _seal.unseal(spec.client_secret_sealed, settings.seal_key) or ""
+    out["client_secret"] = _seal.unseal(spec.client_secret_sealed, settings.seal_key,
+                                        _seal.spec_secret_aad(spec.id)) or ""
     if secret_store is not None:
         out["client_secret"] = await secret_store.get(
             tenant=conn.tenant,

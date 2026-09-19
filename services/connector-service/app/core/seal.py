@@ -17,20 +17,39 @@ def _key(seal_key: str) -> bytes:
     return hashlib.sha256((seal_key or "").encode()).digest()
 
 
-def seal(plaintext: str, seal_key: str) -> str:
+def token_aad(connection_id: str, field: str) -> str:
+    """Bind a connection's sealed token to its exact (connection, field) slot. The seal key is one
+    per service, so without this a DB tamperer (no key) could copy connection A's access token into
+    connection B's row — B then calling the provider as A. A relocated/renamed blob now fails the
+    GCM tag instead."""
+    return f"connection|{connection_id}|{field}"
+
+
+def spec_secret_aad(spec_id: str) -> str:
+    """Bind a spec's sealed OAuth client secret to its spec id, so it cannot be relocated onto
+    another spec's row and reused."""
+    return f"spec|{spec_id}|client_secret"
+
+
+def seal(plaintext: str, seal_key: str, aad: str = "") -> str:
     if not plaintext:
         return ""
     nonce = os.urandom(12)
-    ct = AESGCM(_key(seal_key)).encrypt(nonce, plaintext.encode(), None)
+    # aad binds this ciphertext to its slot (see token_aad/spec_secret_aad); empty => unbound, kept
+    # only so a caller with no natural identity still round-trips. A bound seal must be unsealed with
+    # the same aad or the GCM tag fails.
+    ad = aad.encode() if aad else None
+    ct = AESGCM(_key(seal_key)).encrypt(nonce, plaintext.encode(), ad)
     return base64.b64encode(nonce + ct).decode()
 
 
-def unseal(token: str, seal_key: str) -> str | None:
+def unseal(token: str, seal_key: str, aad: str = "") -> str | None:
     if not token:
         return None
     try:
         raw = base64.b64decode(token)
-        return AESGCM(_key(seal_key)).decrypt(raw[:12], raw[12:], None).decode()
+        ad = aad.encode() if aad else None
+        return AESGCM(_key(seal_key)).decrypt(raw[:12], raw[12:], ad).decode()
     except Exception:
         return None
 

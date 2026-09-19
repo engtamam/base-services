@@ -134,10 +134,14 @@ async def create_spec(request: Request, body: SpecIn, principal: Principal = Dep
                            allowed_hosts=s.instance_allowed_hosts)
         except _ssrf.SsrfBlocked as e:
             raise HTTPException(400, f"URL_REJECTED ({_label}): {e}")
-    spec = ProviderSpec(id=new_id("spec_"), tenant=_tenant(principal), name=body.name,
+    # Pull the spec id out first so the client secret is sealed BOUND to it (spec_secret_aad) —
+    # a sealed blob then cannot be relocated onto another spec's row and reused.
+    spec_id = new_id("spec_")
+    spec = ProviderSpec(id=spec_id, tenant=_tenant(principal), name=body.name,
                         token_url=body.token_url, base_url=body.base_url, revoke_url=body.revoke_url,
                         auth_style=body.auth_style, client_id=body.client_id,
-                        client_secret_sealed=_seal.seal(body.client_secret, s.seal_key),
+                        client_secret_sealed=_seal.seal(body.client_secret, s.seal_key,
+                                                        _seal.spec_secret_aad(spec_id)),
                         endpoints=body.endpoints, field_map=body.field_map,
                         created=request.app.state.container.clock.now())
     saved = (await SpecStore(request.app.state.container.datastore).save(spec)).public()
@@ -219,7 +223,8 @@ async def disconnect(request: Request, connection_id: str, principal: Principal 
     spec = await _spec_for(request, conn)
     revoked = False
     try:
-        token = _seal.unseal(conn.access_sealed, get_settings().seal_key) or ""
+        token = _seal.unseal(conn.access_sealed, get_settings().seal_key,
+                             _seal.token_aad(conn.id, "access")) or ""
         if token:
             revoked = bool(c.provider.revoke(access_token=token, spec=spec))
     except Exception:

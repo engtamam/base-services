@@ -75,21 +75,31 @@ class SecretStore:
         self._window = rotation_window_s
 
     # ── crypto ────────────────────────────────────────────────────────────────
-    def _seal(self, text: str) -> str:
+    def _aad(self, tenant: str, name: str) -> bytes:
+        # Binds a ciphertext to its exact (collection, tenant, name) slot. Without it a DB tamperer
+        # (no KEK) could copy tenant A's sealed blob into tenant B's row, or under another name, and it
+        # would still decrypt — B authenticating as A. A relocated/renamed blob now fails the GCM tag.
+        return f"{_COLL}|{tenant}|{name}".encode("utf-8")
+
+    def _seal(self, text: str, tenant: str, name: str) -> str:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
         iv = os.urandom(12)
         return _PREFIX + base64.b64encode(
-            iv + AESGCM(self._key).encrypt(iv, text.encode("utf-8"), None)).decode("ascii")
+            iv + AESGCM(self._key).encrypt(iv, text.encode("utf-8"),
+                                           self._aad(tenant, name))).decode("ascii")
 
-    def _open(self, sealed: str) -> str:
+    def _open(self, sealed: str, tenant: str, name: str) -> str:
         if not sealed.startswith(_PREFIX):
             raise SecretError("stored credential is not in a recognised format")
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
         blob = base64.b64decode(sealed[len(_PREFIX):])
         try:
-            return AESGCM(self._key).decrypt(blob[:12], blob[12:], None).decode("utf-8")
+            # AAD must match _seal's. Rows sealed before AAD was introduced fail here — acceptable
+            # (nothing in production); re-enter such credentials.
+            return AESGCM(self._key).decrypt(blob[:12], blob[12:],
+                                             self._aad(tenant, name)).decode("utf-8")
         except Exception as exc:   # noqa: BLE001 — wrong key, tampered blob: one condition here
             # Loud. Returning "" would make every provider call fail with "unauthorised" and send
             # somebody to the provider's dashboard instead of to the KEK they just changed.
@@ -119,7 +129,7 @@ class SecretStore:
         now = self._now()
         row = {
             "id": key, "tenant": tenant, "name": name,
-            "sealed": self._seal(value),
+            "sealed": self._seal(value, tenant, name),
             "hint": self._hint(value),
             "set_at": str(now), "set_by": actor_ref,
             # The previous value survives briefly so in-flight requests do not fail mid-rotation,
@@ -153,7 +163,7 @@ class SecretStore:
                 row = await self._s.get(_COLL, self._key_of("", name))
             if not row:
                 return fallback
-        return self._open(row["sealed"])
+        return self._open(row["sealed"], row["tenant"], row["name"])
 
     async def accepted(self, *, tenant: str, name: str) -> tuple[str, ...]:
         """Every credential a provider should currently be willing to accept from us.
@@ -165,10 +175,10 @@ class SecretStore:
         row = await self._s.get(_COLL, self._key_of(tenant, name))
         if not row:
             return ()
-        out = [self._open(row["sealed"])]
+        out = [self._open(row["sealed"], row["tenant"], row["name"])]
         prev, until = row.get("previous"), row.get("previous_until")
         if prev and until and self._now() < float(until):
-            out.append(self._open(prev))
+            out.append(self._open(prev, row["tenant"], row["name"]))
         return tuple(out)
 
     async def info(self, *, tenant: str, name: str) -> SecretInfo | None:

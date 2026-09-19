@@ -6,7 +6,7 @@ import pytest
 from app.core import circuit
 from app.core.backoff import next_delay, parse_retry_after
 from app.core.mapping import MappingError, apply, get_path, validate
-from app.core.seal import redact, seal, unseal
+from app.core.seal import redact, seal, spec_secret_aad, token_aad, unseal
 from app.core.ssrf import SsrfBlocked
 from app.core.ssrf import validate as ssrf_validate
 
@@ -23,6 +23,21 @@ def test_seal_empty_and_bad_token():
     assert seal("", "k") == ""
     assert unseal("", "k") is None
     assert unseal("not-base64!!", "k") is None
+
+
+def test_a_token_bound_to_a_connection_cannot_be_relocated():
+    """safety:aesgcm-aad — a token sealed for connection A must not unseal under connection B's
+    slot, or a DB tamperer could copy A's access token into B's row and call the provider as A."""
+    key = "k" * 32
+    tok = seal("ya29.ACCESS", key, token_aad("cn_A", "access"))
+    # Right slot round-trips; a relocated connection id, or the refresh field, fails the tag → None.
+    assert unseal(tok, key, token_aad("cn_A", "access")) == "ya29.ACCESS"
+    assert unseal(tok, key, token_aad("cn_B", "access")) is None
+    assert unseal(tok, key, token_aad("cn_A", "refresh")) is None
+    # A spec's client secret is likewise bound to its spec id.
+    cs = seal("client-secret", key, spec_secret_aad("spec_1"))
+    assert unseal(cs, key, spec_secret_aad("spec_1")) == "client-secret"
+    assert unseal(cs, key, spec_secret_aad("spec_2")) is None
 
 
 def test_redact_removes_credentials_from_text():

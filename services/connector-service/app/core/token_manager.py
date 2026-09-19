@@ -109,7 +109,8 @@ class TokenManager:
             raise CredentialInvalid("connection is not active")
 
         if not self._expiring(conn):
-            token = _seal.unseal(conn.access_sealed, self._seal_key) or ""
+            token = _seal.unseal(conn.access_sealed, self._seal_key,
+                                 _seal.token_aad(conn.id, "access")) or ""
             if not token:
                 raise CredentialInvalid("no access token stored")
             await self._cache_set(key, {"access_token": token, "expires_at": conn.expires_at})
@@ -126,12 +127,14 @@ class TokenManager:
                 return cached["access_token"]
             fresh = await self._conns.get(conn.id)
             if fresh is not None and not self._expiring(fresh):
-                token = _seal.unseal(fresh.access_sealed, self._seal_key) or ""
+                token = _seal.unseal(fresh.access_sealed, self._seal_key,
+                                     _seal.token_aad(fresh.id, "access")) or ""
                 await self._cache_set(key, {"access_token": token, "expires_at": fresh.expires_at})
                 return token
 
             conn = fresh or conn
-            refresh_token = _seal.unseal(conn.refresh_sealed, self._seal_key) or ""
+            refresh_token = _seal.unseal(conn.refresh_sealed, self._seal_key,
+                                         _seal.token_aad(conn.id, "refresh")) or ""
             if not refresh_token:
                 conn.status = NEEDS_REAUTH
                 await self._conns.save(conn)
@@ -149,7 +152,8 @@ class TokenManager:
                 # use it. Only a genuinely dead credential forces re-authorisation.
                 latest = await self._conns.get(conn.id)
                 if latest is not None and not self._expiring(latest) and latest.access_sealed:
-                    token = _seal.unseal(latest.access_sealed, self._seal_key) or ""
+                    token = _seal.unseal(latest.access_sealed, self._seal_key,
+                                         _seal.token_aad(latest.id, "access")) or ""
                     if token:
                         await self._cache_set(key, {"access_token": token,
                                                     "expires_at": latest.expires_at})
@@ -165,9 +169,11 @@ class TokenManager:
             return tokens.access_token
 
     async def store_tokens(self, conn: Connection, tokens, *, invalidate: bool = False) -> Connection:
-        conn.access_sealed = _seal.seal(tokens.access_token, self._seal_key)
+        conn.access_sealed = _seal.seal(tokens.access_token, self._seal_key,
+                                        _seal.token_aad(conn.id, "access"))
         if tokens.refresh_token:                    # rotated → store the new one
-            conn.refresh_sealed = _seal.seal(tokens.refresh_token, self._seal_key)
+            conn.refresh_sealed = _seal.seal(tokens.refresh_token, self._seal_key,
+                                             _seal.token_aad(conn.id, "refresh"))
         # else: the provider did not rotate (e.g. HubSpot) → keep the refresh token we have
         conn.expires_at = (self._clock.now() + tokens.expires_in) if tokens.expires_in else 0.0
         if tokens.scopes:

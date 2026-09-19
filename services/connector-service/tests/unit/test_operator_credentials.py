@@ -31,7 +31,8 @@ async def _fixture(with_kek: bool, *, tenant: str = "t1"):
     ds = MemoryDataStore()
     s = get_settings()
     spec = ProviderSpec(id="spec_1", tenant=tenant, name="crm", client_id="cid",
-                        client_secret_sealed=_seal.seal(FROM_SPEC, s.seal_key))
+                        client_secret_sealed=_seal.seal(FROM_SPEC, s.seal_key,
+                                                        _seal.spec_secret_aad("spec_1")))
     await SpecStore(ds).save(spec)
     secrets = SecretStore(ds, KEK) if with_kek else None
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(

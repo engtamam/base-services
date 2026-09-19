@@ -94,6 +94,9 @@ class HyperPayGateway:
             ciphertext = bytes.fromhex(raw.strip())
             tag = bytes.fromhex(tag_hex.strip())
             # AESGCM.decrypt expects ciphertext||tag and verifies the tag — InvalidTag on mismatch.
+            # aad: ok — not our sealed row. This decrypts a HyperPay-encrypted webhook body under
+            # HyperPay's own scheme (their key/IV/tag), which uses no associated data; there is no
+            # slot of ours to bind, and adding an AAD would fail every legitimate provider webhook.
             plaintext = AESGCM(bytes.fromhex(key_hex.strip())).decrypt(
                 bytes.fromhex(iv_hex.strip()), ciphertext + tag, None)
         except Exception as exc:  # noqa: BLE001 — bad hex, wrong key, or a tampered body: unverified
