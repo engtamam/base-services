@@ -370,6 +370,12 @@ class EmbeddedSignupInternalIn(BaseModel):
     # same flow (a mute "connected" number is the failure this avoids). Validated shape; sealed on
     # success. Absent => the token is stored and the standalone /whatsapp/register finishes it later.
     pin: str | None = Field(default=None, pattern=r"^[0-9]{6}$")
+    # Decentralized branches: a shop links MORE THAN ONE number, each branch its own WABA/number. The
+    # caller sends the BARE tenant + branch id as their OWN fields (never parsed out of the composite
+    # `tenant` above), so the routing index records them separately. Both empty on the legacy/no-branch
+    # path — then the number routes to the composite `tenant` exactly as before (fully back-compatible).
+    branch_id: str = Field(default="", max_length=128)
+    root_tenant: str = Field(default="", max_length=128)
 
 
 @router.post("/whatsapp/embedded-signup", dependencies=[Depends(require_internal_token)])
@@ -411,8 +417,13 @@ async def internal_embedded_signup(request: Request, body: EmbeddedSignupInterna
         # must not turn onboarding into an error — the map is rebuilt on the next registration.
         try:
             from app.core.stores import WhatsAppNumberIndex
+            # Route to the BARE root tenant when the caller supplies it (decentralized branches), with
+            # waba_id/branch_id recorded as their own fields; fall back to the composite `tenant` on the
+            # legacy path (empty root_tenant) so nothing changes for a single-number shop.
+            bind_tenant = body.root_tenant or body.tenant
             outcome = await WhatsAppNumberIndex(request.app.state.container.datastore).bind(
-                body.phone_number_id, body.tenant)
+                body.phone_number_id, bind_tenant,
+                waba_id=body.waba_id, branch_id=body.branch_id)
         except Exception:  # noqa: BLE001
             outcome = None
         if outcome == WhatsAppNumberIndex.CONFLICT:
