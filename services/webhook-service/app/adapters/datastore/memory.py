@@ -29,9 +29,23 @@ class MemoryDataStore:
                   value: dict[str, Any]) -> bool:
         """Compare-and-set on the row's `version`. Single-threaded asyncio with no await between the
         read and the write, so the compare and the swap are one indivisible step — the atomic primitive
-        an insert-if-absent (expected_version=0) or an optimistic-lock transition needs."""
+        an insert-if-absent (expected_version=0) or an optimistic-lock transition needs.
+
+        expected_version=0 is insert-if-absent: ANY existing row fails, versionless rows included —
+        matching the postgres adapter's INSERT ... ON CONFLICT DO NOTHING. The old code compared a
+        versionless row's implicit version (0) to expected 0, MATCHED, and "updated" it, so a row
+        first written by put() could be cas-claimed here but never in postgres — the identity
+        refresh-rotation bug class (passes memory-backed tests, no-ops in production). The inbound
+        dedupe reserve (InboundStore.reserve) depends on this strictness."""
         bucket = self._data.setdefault(collection, {})
         current = bucket.get(key)
+        if int(expected_version) == 0:
+            if current is not None:
+                return False                              # a row exists — insert-if-absent must fail
+            stored = copy.deepcopy(value)
+            stored["version"] = 1
+            bucket[key] = stored
+            return True
         current_version = int(current.get("version", 0)) if current else 0
         if current_version != int(expected_version):
             return False                                  # someone else wrote first

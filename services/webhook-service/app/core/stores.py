@@ -142,6 +142,11 @@ class DeliveryStore:
 
     async def save(self, d: Delivery) -> Delivery:
         d.updated = iso()
+        # cas-create: ok — Delivery.version defaults to 1 and to_dict() (asdict) SERIALIZES it (see
+        # the model's version field note), so this put() stores {"version": 1} in the row.
+        # claim_delivering() then pins that version (1 on the first claim), which the postgres
+        # UPDATE ... WHERE version=1 matches. This is NOT the identity refresh-rotation bug (there the
+        # row carried no version); the version rides in the row, so no cas insert-if-absent is needed.
         await self._store.put(_DELIVERIES, d.id, d.to_dict())
         return d
 

@@ -19,6 +19,11 @@ class TicketStore:
         self._s = store
 
     async def save(self, t: Ticket) -> Ticket:
+        # cas-create: ok — Ticket.version defaults to 1 and to_dict() SERIALIZES it, so this put()
+        # stores {"version": 1} in the row (postgres jsonb and memory alike). cas_save() then pins
+        # t.version (1 on the first transition), which the postgres UPDATE ... WHERE version=1 matches.
+        # This is NOT the identity refresh-rotation bug (there the row carried no version at all); the
+        # version rides in the row, so no cas insert-if-absent is needed to make the update land.
         await self._s.put(self.collection, t.id, t.to_dict())
         return t
 

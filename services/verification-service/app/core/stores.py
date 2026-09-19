@@ -32,6 +32,11 @@ class VerificationStore:
         self._store = store
 
     async def put(self, record: Verification) -> Verification:
+        # cas-create: ok — Verification.version defaults to 1 and to_dict() (asdict) SERIALIZES it,
+        # so this put() stores {"version": 1} in the row. cas_put() then pins record.version (1 on
+        # the first decision), which the postgres UPDATE ... WHERE version=1 matches. This is NOT the
+        # identity refresh-rotation bug (there the row carried no version at all); the version rides
+        # in the row, so no cas insert-if-absent is needed to make the version-pinned update land.
         await self._store.put(_VERIFICATIONS, record.id, record.to_dict())
         return record
 
