@@ -72,3 +72,17 @@ def test_tenant_stats_does_not_scan_the_job_table():
     out = run(svc.stats(tenant="t1"))
     assert st.scans.get("jobs", 0) == 0            # no whole-job-table scan for a tenant caller
     assert out["by_status"].get("queued", 0) == 10
+
+
+# cas-create — enqueue must CREATE the job via the insert-if-absent CAS, so the row lands
+# version-stamped and the FIRST version-pinned claim CAS wins on the strict postgres adapter. A
+# put-created (versionless) row made that first claim a no-op on postgres — jobs never claimed in
+# prod while the lax memory cas kept tests green. Asserting the stamped version catches it on memory.
+def test_enqueue_creates_version_stamped_row_and_first_claim_cas_wins():
+    st = MemoryDataStore()
+    svc = JobService(jobs=JobStore(st), clock=ManualClock(1000.0), config=CFG)
+    job, created = run(svc.enqueue(type="x"))
+    assert created
+    assert int(run(st.get("jobs", job.id)).get("version", 0)) == 1   # cas-created, not put (would be 0)
+    claimed = run(svc.claim(worker="w1", batch=1))
+    assert claimed and claimed[0]["id"] == job.id                    # version-pinned QUEUED->LEASED won

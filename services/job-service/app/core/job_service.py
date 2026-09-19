@@ -61,7 +61,7 @@ class JobService:
                 existing = await self._jobs.get(existing_id) if existing_id else None
                 if existing and (key == idempotency_key or existing.status in ACTIVE):
                     return existing, False
-        await self._jobs.save(job)
+        await self._jobs.create(job)                          # cas insert-if-absent — stamps version=1
         await self._jobs.index_due(job)                       # 1 index write — no scan
         await self._emit("job.enqueued", job)
         return job, True

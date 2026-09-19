@@ -27,10 +27,27 @@ class MemoryDataStore:
 
     async def cas(self, collection: str, key: str, expected_version: int,
                   value: dict[str, Any]) -> bool:
-        """Compare-and-set on the row's `version`; single-loop asyncio, atomic. expected_version=0 is
-        insert-if-absent."""
+        """Compare-and-set on the row's `version` (atomic on the loop). Writes `value` only if the
+        stored version equals `expected_version`, stamping version = expected+1. expected_version=0 is
+        insert-if-absent (ANY existing row fails) — the atomic unique-claim primitive.
+
+        expected_version=0 must fail when the key is present AT ALL, versionless rows included — that
+        is what the postgres adapter does (INSERT ... ON CONFLICT DO NOTHING). The old code compared
+        a versionless row's implicit version (0) to expected 0, MATCHED, and "updated" it — so a row
+        first written by put() could be cas-updated here but never in postgres. That silent
+        divergence let the QUEUED->LEASED claim CAS pass every unit test and no-op in production (the
+        put-created job carried no version, so the first claim's cas(job, 0, ...) hit
+        INSERT..DO NOTHING on an existing row and jobs were never claimed); see JobStore.create.
+        Only a genuinely absent key may be claimed by expected_version=0."""
         bucket = self._data.setdefault(collection, {})
         current = bucket.get(key)
+        if int(expected_version) == 0:
+            if current is not None:
+                return False                       # a row exists — insert-if-absent must fail
+            stored = copy.deepcopy(value)
+            stored["version"] = 1
+            bucket[key] = stored
+            return True
         current_version = int(current.get("version", 0)) if current else 0
         if current_version != int(expected_version):
             return False

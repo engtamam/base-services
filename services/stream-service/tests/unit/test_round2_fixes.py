@@ -89,10 +89,12 @@ def test_release_uses_reserved_not_current_config():
 # r2-05 — a session-row create failure rolls back the reservation (no leaked slot).
 def test_reservation_rolled_back_when_create_fails():
     class _FailCreate(MemoryDataStore):
-        async def put(self, collection, key, value):
+        # create() persists the session row via the insert-if-absent CAS (not put()), so the injected
+        # failure must hook cas for the sessions collection to model a create that never lands.
+        async def cas(self, collection, key, expected_version, value):
             if collection == "sessions":
                 raise RuntimeError("create failed")
-            return await super().put(collection, key, value)
+            return await super().cas(collection, key, expected_version, value)
 
     ds = _FailCreate()
     svc = _svc(ds)
@@ -108,3 +110,18 @@ def test_pin_onvif_refuses_a_blocked_host():
     with pytest.raises(SsrfBlocked):
         svc.pin_onvif({"host": "169.254.169.254", "port": 80})
     assert svc.pin_onvif({}) == {}        # nothing to pin
+
+
+# cas-create — SessionStore.create must CREATE via the insert-if-absent CAS, so the LIVE->terminal
+# cas_save() in _stop wins on the strict postgres adapter. A put-created (versionless) row made that
+# first cas a no-op on postgres: the session never reached a terminal state and its concurrency slot
+# leaked, while the lax memory cas kept tests green. Asserting the stamped version catches it.
+def test_session_create_version_stamped_and_cas_save_wins():
+    from app.core.models import STARTING, Session
+    st = MemoryDataStore()
+    sessions = SessionStore(st)
+    sess = Session(id="sess_1", tenant="t1", source_id="src_1", status=STARTING)
+    run(sessions.create(sess))
+    assert int(run(st.get("sessions", "sess_1")).get("version", 0)) == 1   # cas-created (put would be 0)
+    assert sess.version == 1
+    assert run(sessions.cas_save(sess, sess.version)) is True              # version-pinned update wins

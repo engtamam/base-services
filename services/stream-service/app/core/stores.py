@@ -57,7 +57,17 @@ class SessionStore:
         return self._s
 
     async def create(self, sess: Session) -> Session:
-        await self._s.put(_SESSIONS, sess.id, sess.to_dict())
+        # Create via the insert-if-absent CAS (expected_version=0), NOT put(), so the row lands
+        # carrying version=1. This is not cosmetic: _stop ROTATES the LIVE->terminal transition with a
+        # version-pinned cas_save(), and the postgres adapter's expected_version=0 branch is a strict
+        # INSERT ... ON CONFLICT DO NOTHING. A row written by put() has no version, so the first
+        # _stop's cas(sess, 0, ...) is read as insert-if-absent against an already-present row ->
+        # DO NOTHING -> False: the session could never reach a terminal state and its concurrency
+        # reservation leaked (the memory adapter used to treat versionless as 0 and let it through, so
+        # every unit test passed). See identity RefreshStore.issue. sess.id is a fresh id, so the
+        # insert always wins.
+        await self._s.cas(_SESSIONS, sess.id, 0, sess.to_dict())
+        sess.version = 1
         return sess
 
     async def get(self, session_id: str) -> Session | None:

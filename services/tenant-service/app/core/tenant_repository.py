@@ -37,7 +37,18 @@ class TenantRepository:
                     await self._store.delete(_DOMAINS, h)
                 raise DomainTaken(f"domain already mapped: {host}")
             reserved.append(host)
-        await self._store.put(_TENANTS, tenant.id, tenant.to_dict())
+        # Create the id-keyed row via the insert-if-absent CAS (expected_version=0), NOT put(), so it
+        # lands carrying version=1. This is not cosmetic: every lifecycle/config write goes through the
+        # version-pinned cas_update() (see _apply), and the postgres adapter's expected_version=0
+        # branch is a strict INSERT ... ON CONFLICT DO NOTHING. A row written by put() has no version,
+        # so the first cas_update's cas(id, 0, ...) is read as insert-if-absent against an
+        # already-present row -> DO NOTHING -> False, and _apply exhausts its retries as
+        # ConcurrentModification on the very first suspend/activate/config change (the memory adapter
+        # used to treat versionless as 0 and let it through, so every unit test passed). The
+        # _SLUGS/_DOMAINS uniqueness indexes above already create this way. tenant.id is a fresh
+        # new_id(), so the insert always wins.
+        await self._store.cas(_TENANTS, tenant.id, 0, tenant.to_dict())
+        tenant.version = 1
         return tenant
 
     async def get(self, tenant_id: str) -> Tenant | None:

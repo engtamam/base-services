@@ -141,3 +141,17 @@ def test_iter_suspended_is_oldest_first():
         ids.append(t.id)
     rows, _ = run(svc._repo.iter_suspended(limit=10))
     assert [r["id"] for r in rows] == ids               # oldest-first, not arbitrary
+
+
+# cas-create — the id-keyed tenant row must be CREATED via the insert-if-absent CAS, so the first
+# lifecycle cas_update() wins on the strict postgres adapter. A put-created (versionless) row made
+# that first cas a no-op on postgres: _apply exhausted its retries as ConcurrentModification on the
+# very first suspend/config change, while the lax memory cas kept tests green. Asserting the stamped
+# version catches it on memory too.
+def test_tenant_create_version_stamped_and_first_lifecycle_write_succeeds():
+    store = MemoryDataStore()
+    svc = _svc(store=store)
+    t = run(svc.provision("acme", "Acme"))
+    assert int(run(store.get("tenants", t.id)).get("version", 0)) == 1   # cas-created (put would be 0)
+    out = run(svc.suspend(t))                                            # first lifecycle write must win
+    assert out.status == SUSPENDED

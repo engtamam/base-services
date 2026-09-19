@@ -215,3 +215,54 @@ def test_scan_all_is_deterministic_when_truncated(store):
     first = [r["id"] for r in run(store.scan_all("rows", 3))]
     second = [r["id"] for r in run(store.scan_all("rows", 3))]
     assert first == second and len(first) == 3
+
+
+# ── cas(): the atomic primitive. These MUST hold identically on both adapters. ───────────────
+# The two adapters silently disagreed on one case: expected_version=0 (insert-if-absent) against a
+# row written by put() (no version field). Postgres refused it (INSERT ON CONFLICT DO NOTHING);
+# memory treated the missing version as 0 and "updated" it. A row created by put() then rotated by a
+# version-pinned cas() therefore passed every memory-backed unit test and no-op'd on postgres.
+
+
+def test_cas_insert_if_absent_writes_when_absent(store):
+    assert run(store.cas("cas", "k", 0, {"n": 1})) is True
+    assert run(store.get("cas", "k"))["n"] == 1
+
+
+def test_cas_insert_if_absent_fails_when_present(store):
+    """A row that already exists must defeat expected_version=0 — that is what makes it a unique
+    claim. It must fail EVEN when the existing row has no version field (a put()-written row)."""
+    run(store.put("cas", "k", {"n": 1}))                 # no version field
+    assert run(store.cas("cas", "k", 0, {"n": 2})) is False
+    assert run(store.get("cas", "k"))["n"] == 1          # untouched
+
+
+def test_cas_first_insert_stamps_version_one(store):
+    run(store.cas("cas", "k", 0, {"n": 1}))
+    assert run(store.get("cas", "k")).get("version") == 1
+
+
+def test_cas_version_pinned_update_succeeds_on_match_and_bumps(store):
+    run(store.cas("cas", "k", 0, {"n": 1}))              # -> version 1
+    assert run(store.cas("cas", "k", 1, {"n": 2})) is True
+    row = run(store.get("cas", "k"))
+    assert row["n"] == 2 and row["version"] == 2
+
+
+def test_cas_version_pinned_update_fails_on_mismatch(store):
+    run(store.cas("cas", "k", 0, {"n": 1}))              # -> version 1
+    assert run(store.cas("cas", "k", 5, {"n": 99})) is False
+    assert run(store.get("cas", "k"))["n"] == 1          # untouched
+
+
+def test_cas_create_then_version_pinned_update_agrees_across_adapters(store):
+    """The exact bug shape: a row CREATED via cas insert-if-absent can then be rotated by a
+    version-pinned cas. (A row created via put() has no version and cannot be — which is why the
+    create path must use cas, not put.)"""
+    assert run(store.cas("cas", "j", 0, {"live": True})) is True         # create
+    row = run(store.get("cas", "j"))
+    ver = int(row.get("version", 0))
+    row["live"] = False
+    row.pop("version", None)
+    assert run(store.cas("cas", "j", ver, row)) is True                  # version-pinned update
+    assert run(store.get("cas", "j"))["live"] is False

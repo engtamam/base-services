@@ -32,6 +32,19 @@ class JobStore:
         self._store = store
 
     # ── jobs ──────────────────────────────────────────────────────────────────
+    async def create(self, job: Job) -> Job:
+        """Create a NEW job row via the insert-if-absent CAS (expected_version=0), NOT put(), so the
+        row lands carrying version=1. This is not cosmetic: the QUEUED->LEASED claim ROTATES the row
+        with a version-pinned cas_save(), and the postgres adapter's expected_version=0 branch is a
+        strict INSERT ... ON CONFLICT DO NOTHING. A row written by put() has no version, so the first
+        claim's cas(job.id, 0, ...) is read as insert-if-absent against an already-present row ->
+        DO NOTHING -> False, and the job could NEVER be claimed in production (the memory adapter used
+        to treat versionless as 0 and let it through, so every unit test passed). See identity
+        RefreshStore.issue for the same fix. job.id is a fresh new_id(), so the insert always wins."""
+        await self._store.cas(_JOBS, job.id, 0, job.to_dict())
+        job.version = 1
+        return job
+
     async def save(self, job: Job) -> Job:
         await self._store.put(_JOBS, job.id, job.to_dict())
         return job
