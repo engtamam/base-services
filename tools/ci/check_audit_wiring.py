@@ -159,13 +159,40 @@ _EMIT = re.compile(
 )
 
 
+def _without_docstrings(src: str) -> str:
+    """Blank out module/class/function docstrings, keeping line count stable.
+
+    The emit regex reads raw source, so a `record("x.y", ...)` shown as an EXAMPLE inside a docstring
+    (auditable_actions.py teaches exactly that call) would be counted as a real emit — a phantom
+    "emits an action it never declares". A docstring is never a real emit by definition, so removing
+    it can only drop false positives, never hide a genuine call (those live in code, not prose).
+    """
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return src
+    lines = src.splitlines(keepends=True)
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        body = getattr(node, "body", [])
+        if (body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)):
+            doc = body[0].value
+            for i in range(doc.lineno - 1, (doc.end_lineno or doc.lineno)):
+                if 0 <= i < len(lines):
+                    lines[i] = "\n"
+    return "".join(lines)
+
+
 def emitted_actions(service: pathlib.Path) -> set[str]:
     """Action names this service actually passes to auditor.record() (or a configured wrapper).
 
     Read as source text, not by importing: the gate must never execute what it audits. It matches
     a literal string argument, which is the only form that can be checked statically — and is the
     form every call should use anyway, because a computed action name cannot be found by anyone
-    searching the log either.
+    searching the log either. Docstrings are stripped first (see _without_docstrings) so a call shown
+    as an example in prose is not mistaken for a real emit.
     """
     found: set[str] = set()
     for path in (service / "app").rglob("*.py"):
@@ -180,7 +207,7 @@ def emitted_actions(service: pathlib.Path) -> set[str]:
         # three-part action is still caught. But it sends someone hunting for a call that is
         # already there, and a gate people learn to disbelieve stops working long before it
         # stops running.
-        for match in _EMIT.finditer(path.read_text(encoding="utf-8")):
+        for match in _EMIT.finditer(_without_docstrings(path.read_text(encoding="utf-8"))):
             found.add(match.group(1))
     return found
 
