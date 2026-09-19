@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+gate_name="safety:aesgcm-aad"
+gate_desc="an AEAD seal/open must bind its ciphertext to its slot with associated data (AAD)"
+gate_protects="The checkout audit's M1 class, then found fleet-wide. AES-GCM authenticates the
+ciphertext but NOT where it lives, so sealing with associated_data=None lets a DB tamperer (no KEK)
+copy a sealed credential/archive/message into another row/tenant/service and have it still decrypt —
+the wrong shop authenticating, a service restored from another's backup (BACKUP_KEK is shared
+fleet-wide), a message read into the wrong conversation. Binding an AAD to the blob's identity
+(collection|tenant|name for secrets, service|tenant for a backup archive, per-record ids elsewhere)
+makes a relocated/renamed blob fail the GCM tag loudly. This gate flags any AEAD encrypt/decrypt with
+a missing or None associated_data. Genuinely-inapplicable sites (provider-dictated crypto like Meta
+Flow, or a decrypt of a provider's own webhook body) opt out with '# aad: ok — reason'."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_aesgcm_aad.py"
+gate_units=1
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_aesgcm_aad.py; }
+
+gate_selftest() { "$PY" tools/ci/selftest_aesgcm_aad.py >/dev/null 2>&1; }
