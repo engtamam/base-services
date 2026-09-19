@@ -10,7 +10,8 @@ import pytest
 
 from app.adapters.datastore.memory import MemoryDataStore
 from app.core.booking_flow import (BookingEngine, BookingError, FlowDefinition, SessionStore,
-                                   CALENDAR, CONFIRM, INPUT, SELECT, SELECT_MULTI, SUCCESS, TIME)
+                                   CALENDAR, CONFIRM, DISPLAY, INPUT, SELECT, SELECT_MULTI, SUCCESS,
+                                   TIME)
 
 
 def run(c):
@@ -410,3 +411,94 @@ def test_a_definition_without_date_or_confirm_is_refused():
         FlowDefinition(steps=({"dimension": "date"},))          # no confirm
     with pytest.raises(BookingError):
         FlowDefinition(steps=({"dimension": "confirm"}, {"dimension": "date"}))  # confirm not last
+
+
+# ── display step (read-only computed info) ───────────────────────────────────
+class _AvailWithDisplay:
+    """A backend that resolves a reward selection AND a read-only loyalty-summary display, to prove a
+    display step informs (never enters selection) while a second options-step (reward) still does."""
+    def __init__(self, summary="Points: 120\nOffer: free coffee"):
+        self._summary = summary
+        self.display_calls = []
+
+    async def options(self, *, tenant, dimension, chosen, customer=""):
+        if dimension == "service":
+            return [{"id": "cut", "title": "Haircut"}]
+        if dimension == "reward":
+            return [{"id": "free_coffee", "title": "Free coffee"}]
+        return []
+
+    async def display(self, *, tenant, dimension, chosen, customer=""):
+        self.display_calls.append({"dimension": dimension, "chosen": dict(chosen), "customer": customer})
+        return self._summary
+
+    async def calendar(self, *, tenant, chosen, customer=""):
+        return {}
+
+    async def slots(self, *, tenant, chosen, date, customer=""):
+        return []
+
+
+def _display_defn():
+    # phone (text) → loyalty_summary (display) → reward (single-select) → confirm. A "happens now"
+    # visit: no date/time. Proves a display step sits between a text step and another options-step.
+    return FlowDefinition(steps=(
+        {"dimension": "phone", "input": "text"},
+        {"dimension": "loyalty_summary", "display": True},
+        {"dimension": "reward"},
+        {"dimension": "confirm"}))
+
+
+def _display_engine(booking=None, avail=None):
+    st = MemoryDataStore()
+    return BookingEngine(definitions=_Defs(_display_defn()),
+                         availability=avail or _AvailWithDisplay(), booking=booking or _Booking(),
+                         sessions=SessionStore(st, clock=_Clock()))
+
+
+def test_display_step_shows_computed_text_then_continues_and_never_enters_selection():
+    bk = _Booking()
+    av = _AvailWithDisplay()
+    e = _display_engine(booking=bk, avail=av)
+    r = _init(e)
+    assert r["screen"] == INPUT and r["data"]["dimension"] == "phone"
+    r = _submit(e, INPUT, {"input_value": "+96650"})
+    # the display screen renders with the backend-computed body
+    assert r["screen"] == DISPLAY and r["data"]["body"] == "Points: 120\nOffer: free coffee"
+    assert av.display_calls[0]["dimension"] == "loyalty_summary"
+    assert av.display_calls[0]["chosen"]["phone"] == "+96650"   # computed from prior chosen
+    # Continue (empty submit) advances to the reward selection
+    r = _submit(e, DISPLAY, {})
+    assert r["screen"] == SELECT and r["data"]["dimension"] == "reward"
+    r = _submit(e, SELECT, {"selection": "free_coffee"})
+    assert r["screen"] == CONFIRM
+    r = _submit(e, CONFIRM, {})
+    assert r["screen"] == SUCCESS
+    sel = bk.calls[0]["selection"]
+    assert sel["phone"] == "+96650" and sel["reward"] == "free_coffee"
+    assert "loyalty_summary" not in sel          # a display step informs, it does not choose
+
+
+def test_an_empty_display_text_skips_the_screen():
+    e = _display_engine(avail=_AvailWithDisplay(summary=""))   # nothing to say this time
+    _init(e)
+    r = _submit(e, INPUT, {"input_value": "+96650"})
+    assert r["screen"] == SELECT and r["data"]["dimension"] == "reward"   # display skipped
+
+
+def test_a_display_step_without_a_display_backend_is_a_clear_error():
+    # _Avail (the module's plain fake) has no display() method.
+    st = MemoryDataStore()
+    e = BookingEngine(definitions=_Defs(_display_defn()), availability=_Avail(),
+                      booking=_Booking(), sessions=SessionStore(st, clock=_Clock()))
+    _init(e)
+    with pytest.raises(BookingError, match="display"):
+        _submit(e, INPUT, {"input_value": "+96650"})
+
+
+def test_display_is_rejected_on_a_reserved_dimension_or_combined_with_input():
+    for bad in ({"dimension": "confirm", "display": True},
+                {"dimension": "x", "display": True, "multi": True},
+                {"dimension": "x", "display": True, "input": "text"}):
+        with pytest.raises(BookingError):
+            FlowDefinition(steps=(bad, {"dimension": "confirm"}))

@@ -1,8 +1,8 @@
 """The Flow JSON generator matches the booking engine's screen contract (they can't drift)."""
 from __future__ import annotations
 
-from app.core.booking_flow import (CALENDAR, CONFIRM, INPUT, INPUT_FIELD, SELECT, SELECT_MULTI,
-                                   SELECTION_FIELD, SUCCESS, TIME, FlowDefinition)
+from app.core.booking_flow import (CALENDAR, CONFIRM, DISPLAY, INPUT, INPUT_FIELD, SELECT,
+                                   SELECT_MULTI, SELECTION_FIELD, SUCCESS, TIME, FlowDefinition)
 from app.core.flow_json import build_booking_flow_json
 
 
@@ -49,6 +49,25 @@ def test_multi_step_generates_a_checkboxgroup_screen():
     js2 = build_booking_flow_json(FlowDefinition(steps=(
         {"dimension": "service"}, {"dimension": "date"}, {"dimension": "confirm"})))
     assert _screen(js2, SELECT_MULTI) is None and _screen(js2, SELECT) is not None
+
+
+def test_display_step_generates_a_readonly_screen_bound_to_data_body():
+    js = build_booking_flow_json(FlowDefinition(steps=(
+        {"dimension": "phone", "input": "text"},
+        {"dimension": "loyalty_summary", "display": True},
+        {"dimension": "confirm"})))
+    scr = _screen(js, DISPLAY)
+    assert scr is not None, "a display step must generate the DISPLAY screen"
+    body = next(c for c in scr["layout"]["children"] if c["type"] == "TextBody")
+    assert body["text"] == "${data.body}"          # the endpoint fills the computed text
+    # read-only: no input/select component collects anything
+    kinds = {c["type"] for c in scr["layout"]["children"]}
+    assert not kinds & {"TextInput", "RadioButtonsGroup", "CheckboxGroup"}
+    assert DISPLAY in js["routing_model"]
+    # a definition with NO display step never emits the screen
+    js2 = build_booking_flow_json(FlowDefinition(steps=(
+        {"dimension": "service"}, {"dimension": "confirm"})))
+    assert _screen(js2, DISPLAY) is None
 
 
 def _full_defn():

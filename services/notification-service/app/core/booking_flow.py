@@ -37,6 +37,13 @@ INPUT_FIELD = "input_value"
 # value simply comes back as a LIST. Both share options()/skip/BACK; only the widget differs.
 SELECT_MULTI = "SELECT_MULTI"
 
+# A READ-ONLY info screen: computed text shown to the person, no input — just an acknowledge/Continue
+# to the next step. A step opts in with {"display": true}; the engine asks the backend's display()
+# for the body text (per booking, from the prior `chosen` + `customer`), like SELECT asks options().
+# Nothing is submitted and nothing lands in `chosen`/selection — it informs, it does not choose (a
+# loyalty balance + a personal offer, a policy notice, an order summary before confirm).
+DISPLAY = "DISPLAY"
+
 # The terminal spine — every dimension NOT in here is a "selection" dimension resolved via options().
 _DATE, _TIME, _CONFIRM = "date", "time", "confirm"
 
@@ -56,6 +63,10 @@ def _submitted_field(dimension: str) -> str:
 
 def _is_text_step(step: dict[str, Any]) -> bool:
     return step.get("input") == "text"
+
+
+def _is_display_step(step: dict[str, Any]) -> bool:
+    return step.get("display") is True
 
 
 def _field_for_step(step: dict[str, Any]) -> str:
@@ -105,6 +116,20 @@ class AvailabilityProvider(Protocol):
         applicable to `chosen` from your loyalty program. The chosen reward flows to reserve(), which
         books + redeems atomically (see reserve's docstring). Leave the step out → no link. This is
         just a normal selection step — the engine stays loyalty-agnostic."""
+        ...
+
+    async def display(self, *, tenant: str, dimension: str,
+                      chosen: dict[str, Any], customer: str = "") -> str:
+        """The read-only body text for a {"display": true} step (dimension = your name for it, e.g.
+        "loyalty_summary"). Computed per booking from the prior `chosen` + `customer` — the loyalty
+        balance and personal offer for the phone just entered, an order summary, a policy notice.
+        Return the text to show; the person just acknowledges and continues (nothing is submitted and
+        the dimension never enters `chosen`/selection). Return "" to SKIP the screen (nothing to say
+        this time), the same way options() returns [] to skip a selection.
+
+        OPTIONAL: only a definition that contains a display step needs this. A backend without a
+        display step never has it called; one WITH a display step but no display() method is a
+        configuration error the engine reports clearly."""
         ...
 
     async def calendar(self, *, tenant: str, chosen: dict[str, Any],
@@ -176,6 +201,11 @@ class FlowDefinition:
                 raise BookingError("'multi' is only valid on a selection step, not date/time/confirm")
             if _is_text_step(s) and s.get("dimension") in (_DATE, _TIME, _CONFIRM):
                 raise BookingError("a text 'input' step must be a selection dimension, not date/time/confirm")
+            if _is_display_step(s):
+                if s.get("dimension") in (_DATE, _TIME, _CONFIRM):
+                    raise BookingError("a 'display' step must be a selection dimension, not date/time/confirm")
+                if s.get("multi") or _is_text_step(s):
+                    raise BookingError("a 'display' step is read-only — it cannot also be 'multi' or a text input")
         if _DATE in dims:
             # date must come after every selection/input dimension (so the calendar sees the full choice)
             for d in dims[dims.index(_DATE):]:
@@ -291,7 +321,8 @@ class BookingEngine:
             # else means NO seed and behaviour is 100% identical to today (BACK/re-pick untouched).
             first = defn.steps[0]
             fdim = first.get("dimension", "")
-            if self._is_selection(fdim) and not _is_text_step(first) and not first.get("multi"):
+            if (self._is_selection(fdim) and not _is_text_step(first) and not first.get("multi")
+                    and not _is_display_step(first)):
                 seed = data.get(fdim)
                 seed = str(seed).strip() if seed not in (None, "") else ""
                 if seed:
@@ -328,6 +359,12 @@ class BookingEngine:
             await self._sessions.clear(tenant, token)
             return {"screen": SUCCESS, "data": {"extension_message_response": {"params": {
                 "flow_token": token, "booking_ref": result.get("ref", "")}}}}
+
+        if _is_display_step(step):
+            # Read-only acknowledgement: nothing was submitted and nothing is chosen — just advance.
+            state["step"] = step_i + 1
+            await self._sessions.save(tenant, token, state)
+            return await self._render(defn, tenant, token, state)
 
         # a selection / text / date / time submission. The submitted field name is CANONICAL per screen
         # type (a reused SELECT screen has one fixed component name, not the dimension) — see _field_for_step.
@@ -381,6 +418,24 @@ class BookingEngine:
                 return {"screen": INPUT, "data": {
                     "dimension": dim, "title": defn.label(f"enter_{dim}", f"Enter {dim}"),
                     **({"error_message": error} if error else {})}}
+            if _is_display_step(step):
+                # A read-only info screen: ask the backend for the body text (per booking). "" ⇒ skip
+                # the screen this time, exactly as an empty options() skips a selection.
+                display_fn = getattr(self._avail, "display", None)
+                if display_fn is None:
+                    raise BookingError(
+                        f"step {dim!r} is a display step but the backend implements no display()")
+                body = (await display_fn(tenant=tenant, dimension=dim, chosen=chosen,
+                                        customer=customer)) or ""
+                if body:
+                    return {"screen": DISPLAY, "data": {
+                        "dimension": dim,
+                        "title": defn.label(f"title_{dim}", defn.label("display_title", "Information")),
+                        "body": body,
+                        **({"error_message": error} if error else {})}}
+                state["step"] = step_i + 1
+                await self._sessions.save(tenant, token, state)
+                continue
             options = await self._avail.options(tenant=tenant, dimension=dim, chosen=chosen,
                                                 customer=customer)
             if not self._is_skip(options):

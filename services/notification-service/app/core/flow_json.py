@@ -16,8 +16,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.core.booking_flow import (CALENDAR, CONFIRM, INPUT, INPUT_FIELD, SELECT, SELECT_MULTI,
-                                   SELECTION_FIELD, SUCCESS, TIME, FlowDefinition)
+from app.core.booking_flow import (CALENDAR, CONFIRM, DISPLAY, INPUT, INPUT_FIELD, SELECT,
+                                   SELECT_MULTI, SELECTION_FIELD, SUCCESS, TIME, FlowDefinition)
 
 _VERSION = "7.3"        # Flow JSON schema; must be >=6.1 for CalendarPicker (see module docstring)
 _DATA_API_VERSION = "3.0"
@@ -76,6 +76,23 @@ def _input_screen(defn: FlowDefinition) -> dict[str, Any]:
              "input-type": "text", "required": True},
             _footer(defn.label("continue", "Continue"),
                     {INPUT_FIELD: "${form." + INPUT_FIELD + "}"})]}}
+
+
+def _display_screen(defn: FlowDefinition) -> dict[str, Any]:
+    # ONE reused READ-ONLY screen for every {"display": true} step; the endpoint fills title + body
+    # each time (like SELECT fills title + options). Nothing is collected — a TextBody shows the
+    # computed text and the Footer just advances (data_exchange, empty payload; the engine advances a
+    # display step off session state, reading no submitted field).
+    return {
+        "id": DISPLAY, "title": defn.label("display_title", "Information"),
+        "data": {"title": {"type": "string", "__example__": "Your rewards"},
+                 "body": {"type": "string",
+                          "__example__": "Points: 120\nOffer: a free coffee on your next visit"},
+                 "error_message": {"type": "string", "__example__": "", "optional": True}},
+        "layout": {"type": "SingleColumnLayout", "children": [
+            {"type": "TextHeading", "text": "${data.title}"},
+            {"type": "TextBody", "text": "${data.body}"},
+            _footer(defn.label("continue", "Continue"), {})]}}
 
 
 def _calendar_screen(defn: FlowDefinition) -> dict[str, Any]:
@@ -145,10 +162,14 @@ def build_booking_flow_json(defn: FlowDefinition) -> dict[str, Any]:
     SUCCESS always close it."""
     dims = [s.get("dimension") for s in defn.steps]
     sel_steps = [s for s in defn.steps if s.get("dimension") not in ("date", "time", "confirm")]
-    picker_steps = [s for s in sel_steps if s.get("input") != "text"]
+    # A display step is neither a picker nor a text input — exclude it from both so it doesn't
+    # conjure a phantom SELECT/INPUT screen.
+    picker_steps = [s for s in sel_steps
+                    if s.get("input") != "text" and s.get("display") is not True]
     has_single = any(not s.get("multi") for s in picker_steps)   # a SELECT (RadioButtonsGroup) screen
     has_multi = any(s.get("multi") for s in picker_steps)         # a SELECT_MULTI (CheckboxGroup) screen
     has_input = any(s.get("input") == "text" for s in sel_steps)  # an INPUT (TextInput) screen
+    has_display = any(s.get("display") is True for s in sel_steps)  # a DISPLAY (read-only) screen
     has_date = "date" in dims
     has_time = "time" in dims
 
@@ -161,6 +182,8 @@ def build_booking_flow_json(defn: FlowDefinition) -> dict[str, Any]:
         screens.append(_select_multi_screen(defn)); pre_ids.append(SELECT_MULTI)
     if has_input:
         screens.append(_input_screen(defn)); pre_ids.append(INPUT)
+    if has_display:
+        screens.append(_display_screen(defn)); pre_ids.append(DISPLAY)
     # after the pre-commit steps comes the calendar if there is one, else straight to confirm
     after_pre = CALENDAR if has_date else CONFIRM
     for sid in pre_ids:
