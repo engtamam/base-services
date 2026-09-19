@@ -48,6 +48,13 @@ def _fn_calls_guard(fn: ast.AST) -> bool:
                 n.func.id if isinstance(n.func, ast.Name) else "")
             if any(h in name.lower() for h in _GUARD_HINTS):
                 return True
+        # An INLINE host-allowlist check counts too — a function that references an `allowed`/
+        # `allowlist` set or the URL's `hostname` is doing the guard itself (e.g. billing's pay-link
+        # redirector: `if parts.hostname not in allowed: raise`), not calling a named helper.
+        if isinstance(n, (ast.Name, ast.Attribute)):
+            text = (n.id if isinstance(n, ast.Name) else n.attr).lower()
+            if text in ("allowed", "allowlist", "allow_hosts", "allowed_hosts", "hostname"):
+                return True
     return False
 
 

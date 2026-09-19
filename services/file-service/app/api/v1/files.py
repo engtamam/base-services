@@ -253,6 +253,8 @@ async def download(request: Request, file_id: str, principal: Principal = Depend
             metadata={"cross_tenant": "true", "operator_tenant": principal.tenant or ""})
     redirect = await svc.download_redirect(f)
     if redirect is not None:
+        # redirect: ok — `redirect` is a short-lived PRESIGNED URL our object-store adapter
+        # minted for the configured bucket, not user/tenant input; there is no attacker-chosen host.
         return RedirectResponse(redirect, status_code=status.HTTP_302_FOUND)
     _, data = await svc.download(file_id)
     return Response(content=data, media_type=f.content_type,
@@ -340,6 +342,7 @@ async def signed_download(request: Request, token: str):
     # bytes — a large shared file is served by the bucket, not by us.
     redirect = await svc.download_redirect(f)
     if redirect is not None:
+        # redirect: ok — presigned bucket URL from our object-store adapter, not user input.
         return RedirectResponse(redirect, status_code=status.HTTP_302_FOUND,
                                 headers={"X-File-Access": "signed"})
     _, data = await svc.download(f.id)

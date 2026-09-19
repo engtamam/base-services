@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+gate_name="safety:open-redirect"
+gate_desc="a 302 to a non-literal location must be host-allowlisted (never an open redirect)"
+gate_protects="The checkout audit's M5/I2 class. RedirectResponse(url) where url comes from stored
+or gateway data is an open redirect unless its host is allow-listed — a tenant with a custom gateway
+base could steer a customer to an attacker page under the platform's domain (phishing), or downgrade
+to http. This gate flags a RedirectResponse to a non-literal target whose enclosing function has no
+host-allowlist guard (a named guard call, or an inline `allowed`/`hostname` check). A redirect to a
+literal path, or to a URL we ourselves minted (a presigned bucket URL), opts out with
+'# redirect: ok — reason'."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_open_redirect.py"
+gate_units=1
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_open_redirect.py; }
+
+gate_selftest() { "$PY" tools/ci/selftest_open_redirect.py >/dev/null 2>&1; }
