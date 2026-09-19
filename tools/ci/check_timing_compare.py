@@ -101,9 +101,14 @@ def _check_file(path: pathlib.Path, rel: str) -> list[str]:
         if not isinstance(node.ops[0], (ast.Eq, ast.NotEq)):
             continue
         left, right = node.left, node.comparators[0]
-        # a secret name on one side, and the OTHER side is not a plain literal presence check
-        pairs = ((left, right), (right, left))
-        if any(_looks_secret(a) and not _is_literalish(b) for a, b in pairs):
+        # A comparison to a literal, an ALL-CAPS module constant, or a sentinel (e.g.
+        # `mode == PASSWORD`, `password_hash == UNUSABLE_PASSWORD`) is a presence/branch check, never
+        # a byte-guessable secret compare — even when the CONSTANT's name happens to contain a secret
+        # word. Skip whenever EITHER side is literal-ish; only a var-to-var compare can leak bytes.
+        if _is_literalish(left) or _is_literalish(right):
+            continue
+        # Flag when a secret-looking name appears on either side (both are non-literal here).
+        if _looks_secret(left) or _looks_secret(right):
             if _marker_at_or_above(lines, node.lineno):
                 continue
             out.append(f"{rel}:{node.lineno}: secret/token compared with "

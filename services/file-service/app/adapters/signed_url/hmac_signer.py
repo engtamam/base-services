@@ -38,6 +38,10 @@ class HmacSigner:
         # in someone's inbox the instant the key changed — so the previous secret keeps VERIFYING
         # for its rotation window. Signing always uses the current one, so nothing new is minted
         # under a key that is on its way out.
+        # timing: ok — config-time dedup of the rotation list (drop the current secret from
+        # also-accept), comparing two TRUSTED config values at construction; not a per-request
+        # verification. Signature verification itself is constant-time (see verify(), which uses
+        # hmac.compare_digest over every accepted key).
         self._also = tuple(s.encode() for s in also_accept if s and s != secret)
 
     def _sign_msg(self, msg: str) -> str:

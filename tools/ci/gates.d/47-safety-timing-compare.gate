@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+gate_name="safety:timing-compare"
+gate_desc="a secret/token/signature/HMAC must be compared in constant time, not with == / !="
+gate_protects="The checkout audit's L2 class. 'supplied == secret' (or !=) short-circuits on the
+first differing byte, leaking how much of a guess is correct — a classic side channel for recovering
+a shared secret / HMAC / signature / OTP / api key one byte at a time. The fix is
+hmac.compare_digest(). This gate flags a var-to-var == / != where a secret-looking name (secret,
+signature, hmac, digest, password, api_key, otp) appears; it deliberately does NOT flag a compare to
+a literal or an ALL-CAPS sentinel constant (mode == PASSWORD, hash == UNUSABLE_PASSWORD — a
+presence/branch check, not a byte-guessable compare). The fleet already verifies with compare_digest;
+this keeps it that way. A genuine trusted-config compare opts out with '# timing: ok — reason'."
+gate_needs="python"
+gate_env=""
+gate_subject="tools/ci/check_timing_compare.py"
+gate_units=1
+gate_slow=0
+
+gate_main() { "$PY" tools/ci/check_timing_compare.py; }
+
+gate_selftest() { "$PY" tools/ci/selftest_timing_compare.py >/dev/null 2>&1; }
