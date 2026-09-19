@@ -45,6 +45,9 @@ def decrypt_request(*, encrypted_flow_data: str, encrypted_aes_key: str, initial
                          algorithm=hashes.SHA256(), label=None))
         iv = base64.b64decode(initial_vector)
         ct = base64.b64decode(encrypted_flow_data)          # ciphertext WITH the 16-byte tag appended
+        # aad: ok — Meta-dictated Flow crypto, AAD not part of the spec. Meta encrypts the request
+        # with associated_data=None; adding our own AAD here would fail the GCM tag on every genuine
+        # request and break interop. Identity is instead bound by the shop's RSA key pair.
         payload = json.loads(AESGCM(aes_key).decrypt(iv, ct, None).decode("utf-8"))
         if not isinstance(payload, dict):
             raise FlowCryptoError("payload is not an object")
@@ -58,4 +61,6 @@ def decrypt_request(*, encrypted_flow_data: str, encrypted_aes_key: str, initial
 def encrypt_response(response: dict[str, Any], *, aes_key: bytes, iv: bytes) -> str:
     """AES-GCM with the request key and the FLIPPED IV, base64. Tag is appended by AESGCM."""
     data = json.dumps(response, separators=(",", ":")).encode("utf-8")
+    # aad: ok — Meta-dictated Flow crypto, AAD not part of the spec. Meta decrypts our reply with
+    # associated_data=None; adding an AAD here would make Meta reject the response (HTTP 421).
     return base64.b64encode(AESGCM(aes_key).encrypt(_flip_iv(iv), data, None)).decode("ascii")
