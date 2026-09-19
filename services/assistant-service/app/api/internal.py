@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from app.backup_manifest import BACKUP
 from app.core import backup as _backup
+from app.core import connection_credentials as cc
 from app.config import Settings, get_settings
 from app.core.pii import subject_ref
 from app.core.erasure import TemplateErasure
@@ -197,44 +198,24 @@ def _connections(request: Request):
 
 
 def _conn_secret_name(cid: str) -> str:
-    return f"AI_CONNECTION_KEY:{cid}"
-
-
-def _vertex_source(request: Request, cid: str, secret: str):
-    """One cached VertexTokenSource per connection, so its short-lived-token cache actually survives
-    between calls. Keyed by connection id and rebuilt only when the secret rotates (a sha256
-    fingerprint mismatch), so the cache holds at most one live source per connection."""
-    import hashlib
-    from app.core.gcp_token import VertexTokenSource
-    cache = request.app.state.__dict__.setdefault("_vertex_sources", {})
-    fp = hashlib.sha256(secret.encode("utf-8")).hexdigest()
-    prev = cache.get(cid)
-    if prev is None or prev[0] != fp:
-        src = VertexTokenSource(sa_json=secret)
-        cache[cid] = (fp, src)
-        return src
-    return prev[1]
+    # Kept as a thin alias so the WRITE sites (set/clear) below read naturally; the canonical name
+    # and the plaintext-reading resolver live in app.core.connection_credentials so no route reads a
+    # credential's plaintext (safety:no-secret-reads).
+    return cc.conn_secret_name(cid)
 
 
 def _conn_model(request: Request, conn, priority: bool = False):
     """A model bound to THIS connection's endpoint + credential — the isolation boundary. Its
     credential is the connection's own secret: an API key (Bearer), or an SA JSON minted into a
     Vertex OAuth token when auth='vertex'. `priority` (opt-in, double-locked) selects the Vertex
-    priority tier via extra headers; see _priority_headers."""
+    priority tier via extra headers; see _priority_headers.
+
+    The credential resolver is built in core (cc.build_key_resolver): the plaintext read must not sit
+    in the API layer. The per-connection Vertex-token cache is a plain dict on app.state, passed in."""
     from app.adapters.model.http_provider import HttpModel
     store = getattr(request.app.state, "secret_store", None)
-
-    async def resolver() -> str:
-        secret = await store.get(tenant=conn.tenant, name=_conn_secret_name(conn.id),
-                                 fallback="") if store is not None else ""
-        if conn.auth == "vertex":
-            # Reuse ONE VertexTokenSource per connection: it caches the OAuth token until just
-            # before expiry, but that cache lives on the instance — building a fresh one per call
-            # (the previous behaviour) threw it away every time, so every question signed a JWT and
-            # made a token-endpoint round trip on the hot path, and hammered Google's token quota.
-            # Rebuilt only when the connection's secret actually rotates (fingerprint mismatch).
-            return await _vertex_source(request, conn.id, secret).token()
-        return secret
+    vertex_cache = request.app.state.__dict__.setdefault("_vertex_sources", {})
+    resolver = cc.build_key_resolver(store, conn, vertex_cache)
 
     # For the anthropic shape, a Vertex connection is Claude-on-Vertex (:rawPredict) — its body needs
     # anthropic_version and the model is in the URL; a non-Vertex one is the direct Anthropic API

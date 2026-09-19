@@ -283,15 +283,15 @@ async def _handle_flow(request: Request, tenant: str, handler_name: str = "booki
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "BAD_REQUEST")
 
     store = getattr(request.app.state, "secret_store", None)
+    # The sealed private key + passphrase are loaded in core (sealed_config.load_private_key), not
+    # here: a credential's plaintext read must not sit in an HTTP handler (safety:no-secret-reads).
     # The key is sealed per shop under the same name, scoped by tenant ("" = single-brand default).
-    private_pem = await store.get(tenant=tenant, name=s.WHATSAPP_FLOW_PRIVATE_KEY_SECRET,
-                                  fallback="") if store is not None else ""
+    from app.core import sealed_config as _sc
+    private_pem, passphrase = await _sc.load_private_key(
+        store, tenant=tenant, key_name=s.WHATSAPP_FLOW_PRIVATE_KEY_SECRET,
+        passphrase_name=s.WHATSAPP_FLOW_KEY_PASSPHRASE_SECRET)
     if not private_pem:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "FLOW_KEY_UNCONFIGURED")
-    passphrase = None
-    if s.WHATSAPP_FLOW_KEY_PASSPHRASE_SECRET and store is not None:
-        pp = await store.get(tenant=tenant, name=s.WHATSAPP_FLOW_KEY_PASSPHRASE_SECRET, fallback="")
-        passphrase = pp.encode("utf-8") if pp else None
 
     # Resolve the dynamic-Flow handler from the registry (L3). The current routes serve the "booking"
     # flow; a future route can carry another handler name — the generic layers do not care.

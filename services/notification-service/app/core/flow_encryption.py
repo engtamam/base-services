@@ -70,3 +70,37 @@ def public_key_from_private(private_pem: str, *, passphrase: bytes | None = None
     key = serialization.load_pem_private_key(private_pem.encode("ascii"), password=passphrase)
     return key.public_key().public_bytes(
         serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode("ascii")
+
+
+class FlowEncryptionError(ValueError):
+    """A Flow encryption keypair could not be ensured (e.g. a sealed key exists but is unreadable)."""
+
+
+async def ensure_sealed_keypair(store, *, tenant: str, name: str, key_size: int = DEFAULT_KEY_SIZE,
+                                passphrase_name: str = "",
+                                actor_ref: str = "system:flow-encryption") -> tuple[str, bool]:
+    """Ensure a sealed Flow private key exists for (tenant, name); return (public_pem, created).
+
+    IDEMPOTENT: if a key is already sealed it is NOT regenerated (that would rotate and break
+    in-flight Flows) — the SAME public half is re-derived. The private key is read here and used
+    ONLY to derive the public key; it never leaves this function.
+
+    This orchestration lives in core, not the API layer, on purpose: the plaintext credential read
+    (`store.get`) must not sit in an HTTP handler, where one stray `return` would leak every tenant's
+    key (safety:no-secret-reads). `store` is duck-typed to the operator SecretStore: it needs
+    async `info(tenant, name)`, `set(tenant, name, value, actor_ref)`, and `get(tenant, name, fallback)`.
+    """
+    info = await store.info(tenant=tenant, name=name)
+    if info is None:
+        private_pem, public_pem = generate_keypair(key_size)
+        await store.set(tenant=tenant, name=name, value=private_pem, actor_ref=actor_ref)
+        return public_pem, True
+    private_pem = await store.get(tenant=tenant, name=name, fallback="")
+    if not private_pem:
+        raise FlowEncryptionError("a sealed Flow key exists but could not be read")
+    passphrase = None
+    if passphrase_name:
+        pp = await store.get(tenant=tenant, name=passphrase_name, fallback="")
+        passphrase = pp.encode("utf-8") if pp else None
+    public_pem = public_key_from_private(private_pem, passphrase=passphrase)
+    return public_pem, False

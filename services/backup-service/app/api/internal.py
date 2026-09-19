@@ -296,8 +296,8 @@ async def tenant_coverage(request: Request,
     REPORTED covering this tenant also verified its restore. IMPORTANT: a target that was MISSED
     (unreachable) this run reports no coverage, so check `run_incomplete` — a green answer on an
     incomplete run is "of what we could reach", not "everything that holds this shop"."""
-    store = RunStore(request.app.state.container.datastore)
-    rec = await store.get(run) if run else next(iter(await store.recent(1)), None)
+    runs = RunStore(request.app.state.container.datastore)
+    rec = await runs.get(run) if run else next(iter(await runs.recent(1)), None)
     if rec is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NO_SUCH_RUN")
     covered: list[str] = []

@@ -501,12 +501,10 @@ async def whatsapp_config(request: Request) -> dict:
     store = getattr(request.app.state, "secret_store", None)
 
     async def _val(name: str, fallback: str) -> str:
-        if store is not None:
-            try:
-                return await store.get(tenant="", name=name, fallback=fallback)
-            except Exception:  # noqa: BLE001 — a store hiccup falls back to the config value
-                return fallback
-        return fallback
+        # The plaintext read lives in core (sealed_config), not here — even for these NON-secret
+        # public values, no route calls the store's .get() directly (safety:no-secret-reads).
+        from app.core import sealed_config as sc
+        return await sc.read_override(store, tenant="", name=name, fallback=fallback)
 
     app_id = (await _val("META_APP_ID", s.META_APP_ID) or "").strip()
     config_id = (await _val("META_APP_CONFIG_ID", s.META_APP_CONFIG_ID) or "").strip()
@@ -990,24 +988,16 @@ async def ensure_flow_encryption_internal(request: Request, body: WaFlowEncrypti
         raise HTTPException(422, "no phone_number_id resolved for this tenant — pass one explicitly")
 
     name = s.WHATSAPP_FLOW_PRIVATE_KEY_SECRET
-    info = await store.info(tenant=body.tenant, name=name)
-    created = False
-    if info is None:
-        private_pem, public_pem = fe.generate_keypair(s.WHATSAPP_FLOW_KEY_SIZE)
-        await store.set(tenant=body.tenant, name=name, value=private_pem,
-                        actor_ref="system:flow-encryption")
-        created = True
-    else:
-        # Already sealed — derive the public half and (re)register it; never regenerate (no rotation).
-        private_pem = await store.get(tenant=body.tenant, name=name, fallback="")
-        if not private_pem:
-            raise HTTPException(500, "a sealed Flow key exists but could not be read")
-        passphrase = None
-        if s.WHATSAPP_FLOW_KEY_PASSPHRASE_SECRET:
-            pp = await store.get(tenant=body.tenant, name=s.WHATSAPP_FLOW_KEY_PASSPHRASE_SECRET,
-                                 fallback="")
-            passphrase = pp.encode("utf-8") if pp else None
-        public_pem = fe.public_key_from_private(private_pem, passphrase=passphrase)
+    # The plaintext private-key read lives in core (fe.ensure_sealed_keypair), NOT here: a credential
+    # read must never sit in an HTTP handler (safety:no-secret-reads). The private key never leaves
+    # that helper — only the derived public key comes back. Idempotent: an existing key is re-used,
+    # never regenerated (regenerating would rotate and break in-flight Flows).
+    try:
+        public_pem, created = await fe.ensure_sealed_keypair(
+            store, tenant=body.tenant, name=name, key_size=s.WHATSAPP_FLOW_KEY_SIZE,
+            passphrase_name=s.WHATSAPP_FLOW_KEY_PASSPHRASE_SECRET)
+    except fe.FlowEncryptionError as exc:
+        raise HTTPException(500, str(exc)) from exc
 
     manager = await build_flow_manager(request, body.tenant)
     # Blocking Graph I/O off the event loop, like the provision route.
