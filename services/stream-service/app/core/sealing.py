@@ -16,6 +16,21 @@ import os
 from urllib.parse import urlsplit, urlunsplit
 
 
+def source_aad(source_id: str) -> str:
+    """The associated-data that binds a sealed source URL to its own source row.
+
+    SEAL_KEY is one key for the whole service, so an AEAD seal with no AAD authenticates the
+    ciphertext but NOT where it lives: a DB tamperer (no key) could copy source X's `url_sealed`
+    into source Y's row and it would still decrypt, so Y streams from X's camera credentials. The
+    AAD binds the blob to its source id, so a relocated blob fails the GCM tag loudly.
+
+    Bound to the source id, NOT the tenant: the id is unique and PRESERVED verbatim across
+    backup/restore — including a restore-as-clone that remaps the tenant but keeps the row id — so
+    the sealed URL keeps opening after a legitimate restore while still failing on a cross-row move.
+    """
+    return f"stream-source|{source_id}"
+
+
 def redact_url(url: str) -> str:
     """`rtsp://user:pass@cam:554/stream` -> `rtsp://cam:554`. Never raises; a weird string returns ''."""
     try:
@@ -38,19 +53,24 @@ class Sealer:
             raise ValueError("SEAL_KEY is required to seal source credentials")
         self._key = _derive_key(key)
 
-    def seal(self, plaintext: str) -> str:
+    def seal(self, plaintext: str, aad: str = "") -> str:
+        # aad BINDS this ciphertext to its slot (a source id — see source_aad). Without it the
+        # single SEAL_KEY decrypts a blob wherever it is stored, so a tampered row could relocate one
+        # source's sealed URL onto another. unseal must pass the SAME aad or the tag fails.
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
         nonce = os.urandom(12)
-        ct = AESGCM(self._key).encrypt(nonce, plaintext.encode(), None)
+        ad = aad.encode() if aad else None
+        ct = AESGCM(self._key).encrypt(nonce, plaintext.encode(), ad)
         return base64.urlsafe_b64encode(nonce + ct).decode()
 
-    def unseal(self, sealed: str) -> str:
+    def unseal(self, sealed: str, aad: str = "") -> str:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
         raw = base64.urlsafe_b64decode(sealed.encode())
         nonce, ct = raw[:12], raw[12:]
-        return AESGCM(self._key).decrypt(nonce, ct, None).decode()
+        ad = aad.encode() if aad else None
+        return AESGCM(self._key).decrypt(nonce, ct, ad).decode()
 
 
 def _derive_key(key: str) -> bytes:

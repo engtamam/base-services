@@ -10,7 +10,7 @@ from app.api.auth import Principal, require_user
 from app.api.authz import require_any_capability
 from app.api.ratelimit import rate_limit
 from app.config import get_settings
-from app.core.sealing import redact_url
+from app.core.sealing import redact_url, source_aad
 from app.core.ssrf import SsrfBlocked
 from app.core.recording import RecordingShipper
 from app.core.exporting import ExportService
@@ -284,7 +284,8 @@ async def _ptz_source(request: Request, source_id: str, tenant: str) -> dict:
     # The plaintext (unsealed) creds/host are needed to reach the camera — never returned to a client.
     # Re-validate + PIN the ONVIF host to its resolved IP at connect time (DNS-rebinding-safe), since
     # this call carries the camera credentials (stream-r2-02).
-    return {"onvif": svc.pin_onvif(src.onvif), "url": svc._sealer.unseal(src.url_sealed)}
+    return {"onvif": svc.pin_onvif(src.onvif),
+            "url": svc._sealer.unseal(src.url_sealed, aad=source_aad(src.id))}
 
 
 @router.post("/sources/{source_id}/ptz/move", dependencies=[Depends(_MANAGE)])

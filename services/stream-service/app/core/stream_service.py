@@ -13,7 +13,7 @@ from typing import Any, Callable
 from app.core.models import (
     ERROR, LIVE, STOPPED, Guards, Session, Source, new_id, now,
 )
-from app.core.sealing import Sealer, redact_url
+from app.core.sealing import Sealer, redact_url, source_aad
 from app.core.ssrf import SsrfBlocked, validate_source_url
 from app.core.stores import SessionStore, SourceStore
 from app.ports.stream_types import EngineSpec
@@ -97,8 +97,11 @@ class StreamService:
             # caller registers a source whose PTZ control points at an internal/metadata host.
             port = onvif.get("port") or 80
             self._check_ssrf(f"http://{onvif['host']}:{int(port)}")
-        src = Source(id=new_id(), tenant=tenant, name=name,
-                     url_sealed=self._sealer.seal(url), url_host=redact_url(url),
+        # Compute the id first so the sealed URL can be bound to it (AAD): the blob is then tied to
+        # this exact source row and cannot be relocated onto another under the shared SEAL_KEY.
+        sid = new_id()
+        src = Source(id=sid, tenant=tenant, name=name,
+                     url_sealed=self._sealer.seal(url, aad=source_aad(sid)), url_host=redact_url(url),
                      transport=transport, kind=kind, onvif=onvif or {}, tags=tags or [],
                      group_id=group_id, default_profile=default_profile)
         return await self._sources.create(src)
@@ -111,7 +114,7 @@ class StreamService:
 
     async def probe_source(self, source_id: str, *, tenant: str):
         src = await self.get_source(source_id, tenant=tenant)
-        url = self._sealer.unseal(src.url_sealed)
+        url = self._sealer.unseal(src.url_sealed, aad=source_aad(src.id))
         # Probe the PINNED ip, not the hostname: validating the host then connecting by name reopens a
         # DNS-rebinding window (the name can resolve to a blocked IP between the check and the connect),
         # exactly what _check_ssrf's own contract forbids. Mirrors start_session (stream-r2-03).
@@ -126,7 +129,7 @@ class StreamService:
         if not src.enabled:
             raise SourceNotFound(source_id)         # a disabled source refuses new sessions
 
-        url = self._sealer.unseal(src.url_sealed)
+        url = self._sealer.unseal(src.url_sealed, aad=source_aad(src.id))
         resolved = self._check_ssrf(url)            # re-validate at connect time
         pinned_url = self._pin_url(url, resolved.ip)  # connect to the validated IP — rebinding-safe
 
