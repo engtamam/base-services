@@ -356,6 +356,27 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "HandoverModeIn": {
+        "properties": {
+          "mode": {
+            "pattern": "^(us|meta)$",
+            "title": "Mode",
+            "type": "string"
+          },
+          "phone_number_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Phone Number Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "phone_number_id",
+          "mode"
+        ],
+        "title": "HandoverModeIn",
+        "type": "object"
+      },
       "InteractiveNotifyIn": {
         "properties": {
           "biz_opaque_callback_data": {
@@ -1467,6 +1488,62 @@
           "phone_number_id"
         ],
         "title": "WaTestSendIn",
+        "type": "object"
+      },
+      "WebhookOverrideClearIn": {
+        "properties": {
+          "scope": {
+            "default": "phone",
+            "pattern": "^(phone|waba)$",
+            "title": "Scope",
+            "type": "string"
+          },
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant"
+        ],
+        "title": "WebhookOverrideClearIn",
+        "type": "object"
+      },
+      "WebhookOverrideIn": {
+        "properties": {
+          "callback_uri": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Callback Uri",
+            "type": "string"
+          },
+          "scope": {
+            "default": "phone",
+            "pattern": "^(phone|waba)$",
+            "title": "Scope",
+            "type": "string"
+          },
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          },
+          "verify_token": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Verify Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant",
+          "callback_uri",
+          "verify_token"
+        ],
+        "title": "WebhookOverrideIn",
         "type": "object"
       },
       "_ButtonIn": {
@@ -5124,6 +5201,224 @@
         ]
       }
     },
+    "/internal/whatsapp/handover-mode": {
+      "get": {
+        "description": "The EFFECTIVE handover mode for a number: its own setting if any, else the deployment default.\n`source` says which decided it. `private` is what the webhook enforces (meta \u21d2 content dropped).",
+        "operationId": "whatsapp_get_handover_mode_internal_whatsapp_handover_mode_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "phone_number_id",
+            "required": true,
+            "schema": {
+              "title": "Phone Number Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Whatsapp Get Handover Mode",
+        "tags": [
+          "internal"
+        ]
+      },
+      "post": {
+        "description": "Set a number's handover mode (per-number override; beats the deployment default). `meta` hands\nthe number to Meta Business Agent \u21d2 we drop its content at the root; `us` = we handle it. Audited:\nflipping a number to `us` means we START processing that shop's customer content, a privacy-\nrelevant change worth attributing.",
+        "operationId": "whatsapp_set_handover_mode_internal_whatsapp_handover_mode_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HandoverModeIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Whatsapp Set Handover Mode",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/whatsapp/handover-mode/clear": {
+      "post": {
+        "description": "Drop a number's override so it follows the deployment default again.",
+        "operationId": "whatsapp_clear_handover_mode_internal_whatsapp_handover_mode_clear_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "phone_number_id",
+            "required": true,
+            "schema": {
+              "title": "Phone Number Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Whatsapp Clear Handover Mode",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/whatsapp/inbound": {
       "get": {
         "description": "The catch-up read for INBOUND WhatsApp messages \u2014 the same shape as /notifications/receipts.\n\nInbound `whatsapp.message` events go on the bus best-effort (at-most-once), so a pod that restarts\nthrough one hears it never and a customer's reply is silently never answered. This is how a\nconsumer reconciles that gap: read forward from a cursor, persist the returned `cursor` as its\nwatermark, repeat. Each row carries the wamid, sender, tenant (resolved from the receiving number)\nand the raw Meta message; ordered by the message timestamp; a message that only lived on the bus\nis still here. Idempotent by wamid, so a re-delivered webhook is one row, never a duplicate.",
@@ -6624,6 +6919,154 @@
           }
         },
         "summary": "Set Whatsapp Two Step Pin",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/whatsapp/webhook-override": {
+      "post": {
+        "description": "Route THIS tenant's number's (or WABA's) message webhooks to an alternate endpoint \u2014 the\nMeta-side lever that hands ordinary chat to Meta Business Agent. HIGH BLAST RADIUS: this reroutes\na shop's message delivery, so the target must be HTTPS and its host allow-listed\n(WHATSAPP_OVERRIDE_ALLOWED_HOSTS; empty = fail closed), and every set is audited CRITICAL. The\nverify_token is never returned or logged.",
+        "operationId": "whatsapp_set_webhook_override_internal_whatsapp_webhook_override_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhookOverrideIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Whatsapp Set Webhook Override",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/whatsapp/webhook-override/clear": {
+      "post": {
+        "description": "Revert the override so this tenant's webhooks return to our app default (the hand-back / on\u2192off).",
+        "operationId": "whatsapp_clear_webhook_override_internal_whatsapp_webhook_override_clear_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhookOverrideClearIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Whatsapp Clear Webhook Override",
         "tags": [
           "internal"
         ]

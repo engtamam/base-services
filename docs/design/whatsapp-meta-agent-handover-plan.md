@@ -1,6 +1,8 @@
 # WhatsApp → Meta Business Agent handover — phased plan
 
-**Status:** planning (P0). **Owner:** Tamam. **Started:** 2026-09-19.
+**Status:** A–E BUILT (committed locally, one release pending). **Owner:** Tamam. **Started:** 2026-09-19.
+End-to-end guide: docs/guides/whatsapp-meta-agent-handover.md. Default handover mode = `meta`
+(privacy-first, per Tamam). Each phase committed locally; ONE release cut after E.
 Consuming app: Raje3. This is plug-and-play **infrastructure** in notification-service — every step is
 a config knob so each platform picks what it wants; nothing here changes another platform's behavior.
 
