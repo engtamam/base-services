@@ -173,6 +173,62 @@
         "title": "CheckoutIn",
         "type": "object"
       },
+      "CheckoutInternalIn": {
+        "description": "Same shape as POST /api/v1/billing/subscriptions/checkout, but the TENANT rides in the body \u2014\nthe caller is a product service acting FOR a shop, not a human whose token carries a tenant.",
+        "properties": {
+          "buyer_cr": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Buyer Cr",
+            "type": "string"
+          },
+          "buyer_name": {
+            "default": "",
+            "maxLength": 256,
+            "title": "Buyer Name",
+            "type": "string"
+          },
+          "buyer_vat": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Buyer Vat",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CartItemIn"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Items",
+            "type": "array"
+          },
+          "payment_token": {
+            "default": "",
+            "maxLength": 512,
+            "title": "Payment Token",
+            "type": "string"
+          },
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant",
+          "items"
+        ],
+        "title": "CheckoutInternalIn",
+        "type": "object"
+      },
       "ConfigIn": {
         "properties": {
           "key": {
@@ -5740,6 +5796,84 @@
           }
         },
         "summary": "Subscribe Internal",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/billing/subscriptions/checkout": {
+      "post": {
+        "description": "The internal twin of POST /api/v1/billing/subscriptions/checkout \u2014 atomic multi-plan checkout,\nservice-to-service. Same core .checkout() (all validation, one-invoice-one-charge, idempotency and\nper-item semantics are identical); tenant in the body; X-Internal-Token auth. No new business\nlogic \u2014 exactly the relationship subscribe_internal has to subscribe.",
+        "operationId": "checkout_internal_internal_billing_subscriptions_checkout_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckoutInternalIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Checkout Internal Internal Billing Subscriptions Checkout Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Checkout Internal",
         "tags": [
           "internal"
         ]

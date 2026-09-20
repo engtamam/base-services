@@ -20,7 +20,7 @@ _ATTACH_REASONS = frozenset({
     "COUPON_EXHAUSTED", "COUPON_DISABLED", "COUPON_SCHEDULED", "COUPON_MAX_REDEMPTIONS",
 })
 
-from app.api.v1.billing import build_billing, build_usage
+from app.api.v1.billing import CartItemIn, build_billing, build_usage
 from app.config import Settings, get_settings
 from app.core.erasure import BillingErasure
 from app.core import backup as _backup
@@ -351,6 +351,41 @@ async def subscribe_internal(request: Request, body: SubscribeInternalIn) -> dic
         resource=f"subscription:{sub.id}", ip=request.client.host if request.client else "",
         metadata={"plan": body.plan_id})
     return sub.to_dict()
+
+
+class CheckoutInternalIn(BaseModel):
+    """Same shape as POST /api/v1/billing/subscriptions/checkout, but the TENANT rides in the body —
+    the caller is a product service acting FOR a shop, not a human whose token carries a tenant."""
+    tenant: str = Field(min_length=1, max_length=128)
+    items: list[CartItemIn] = Field(min_length=1, max_length=50)
+    payment_token: str = Field(default="", max_length=512)
+    buyer_name: str = Field(default="", max_length=256)
+    buyer_vat: str = Field(default="", max_length=64)
+    buyer_cr: str = Field(default="", max_length=64)
+    idempotency_key: str = Field(default="", max_length=128)
+
+
+@router.post("/billing/subscriptions/checkout", status_code=201,
+             dependencies=[Depends(require_internal_token)])
+async def checkout_internal(request: Request, body: CheckoutInternalIn) -> dict:
+    """The internal twin of POST /api/v1/billing/subscriptions/checkout — atomic multi-plan checkout,
+    service-to-service. Same core .checkout() (all validation, one-invoice-one-charge, idempotency and
+    per-item semantics are identical); tenant in the body; X-Internal-Token auth. No new business
+    logic — exactly the relationship subscribe_internal has to subscribe."""
+    try:
+        result = await (await build_billing(request, body.tenant)).checkout(
+            tenant=body.tenant, items=[i.model_dump() for i in body.items],
+            payment_token=body.payment_token, buyer_name=body.buyer_name, buyer_vat=body.buyer_vat,
+            buyer_cr=body.buyer_cr, idempotency_key=body.idempotency_key)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    await request.app.state.auditor.record(
+        "subscription.checkout", actor="", tenant=result["tenant"],
+        resource=f"invoice:{result.get('invoice_id') or '-'}",
+        ip=request.client.host if request.client else "",
+        metadata={"plans": ",".join(i["plan_id"] for i in result["items"]),
+                  "paid": str(result["paid"])})
+    return result
 
 
 class CouponCreateInternalIn(BaseModel):

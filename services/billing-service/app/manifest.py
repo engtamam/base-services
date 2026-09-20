@@ -120,6 +120,7 @@ def build_manifest(
             # — 429 on the purchase path that must fail closed. Tenant is an explicit field.
             {"path": "/internal/billing/plans", "tier": "internal", "method": "GET"},
             {"path": "/internal/billing/subscriptions", "tier": "internal", "method": "POST"},
+            {"path": "/internal/billing/subscriptions/checkout", "tier": "internal", "method": "POST"},
             {"path": "/internal/billing/subscriptions/{sub_id}/cancel", "tier": "internal", "method": "POST"},
             # Advisory read. ENFORCEMENT is /internal/billing/usage/consume (atomic).
             {"path": "/internal/billing/entitlements/check", "tier": "internal", "method": "GET"},
