@@ -323,6 +323,28 @@ def test_checkout_route_requires_billing_self_capability(client):
     assert r.status_code in (401, 403)                      # not a billing principal → refused
 
 
+def test_checkout_preview_route_returns_totals_and_creates_nothing(client):
+    p1 = _plan(client); p2 = _plan(client)
+    slf = _adm(caps=("billing.self",), tenant="prevuser")
+    r = client.post("/api/v1/billing/subscriptions/checkout/preview",
+                    json={"items": [{"plan_id": p1["id"]}, {"plan_id": p2["id"]}]}, headers=slf)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert {"currency", "subtotal_minor", "discount_minor", "tax_minor", "total_minor",
+            "items"}.issubset(body)
+    assert len(body["items"]) == 2
+    # a preview never subscribes the caller
+    subs = client.get("/api/v1/billing/subscriptions", headers=slf).json()["subscriptions"]
+    assert subs == []
+
+
+def test_checkout_preview_route_refuses_a_bad_cart(client):
+    slf = _adm(caps=("billing.self",), tenant="prevuser2")
+    r = client.post("/api/v1/billing/subscriptions/checkout/preview",
+                    json={"items": [{"plan_id": "ghost"}]}, headers=slf)
+    assert r.status_code == 422
+
+
 # ── one-off wallet top-up route ───────────────────────────────────────────────
 
 def _self(tenant="t1"):

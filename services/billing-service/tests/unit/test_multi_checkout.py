@@ -324,3 +324,141 @@ def test_a_renewed_event_is_emitted_per_recurring_item_only():
                                        {"plan_id": trial.id}], payment_token="pm"))
     renewed = [e for e in b._events._bus.events if e.type == ev.SUBSCRIPTION_RENEWED]
     assert len(renewed) == 1 and renewed[0].payload["plan_id"] == rec.id
+
+
+# ══ checkout_preview: read-only pre-purchase pricing ═════════════════════════════
+def _preview(b, tenant, items, **kw):
+    return run(b.checkout_preview(tenant=tenant, items=items, **kw))
+
+
+def test_preview_has_no_side_effects():
+    st = MemoryDataStore(); b = _svc(st, "consolidated")
+    a = _plan(b, "A", 10000); c = _plan(b, "B", 5000)
+    _preview(b, "t1", [{"plan_id": a.id}, {"plan_id": c.id}])
+    assert _subs(st) == [] and _invoices(st) == [] and _payments(st) == []
+
+
+def test_preview_totals_and_per_item_breakdown():
+    st = MemoryDataStore(); b = _svc(st, "consolidated")
+    run(b.upsert_coupon(code="HALF", type="percent", value=50))
+    a = _plan(b, "A", 10000); c = _plan(b, "B", 5000)
+    p = _preview(b, "t1", [{"plan_id": a.id, "coupon_code": "HALF"}, {"plan_id": c.id}])
+    assert p["currency"] == "SAR"
+    assert p["subtotal_minor"] == 15000 and p["discount_minor"] == 5000
+    assert p["tax_minor"] == 1500 and p["total_minor"] == 11500      # VAT on the DISCOUNTED net
+    # per-item sums reconcile to the aggregate
+    assert sum(i["total_minor"] for i in p["items"]) == p["total_minor"]
+    assert sum(i["discount_minor"] for i in p["items"]) == p["discount_minor"]
+    assert sum(i["tax_minor"] for i in p["items"]) == p["tax_minor"]
+
+
+def test_preview_equals_what_checkout_actually_charges():
+    st = MemoryDataStore(); b = _svc(st, "consolidated")
+    run(b.upsert_coupon(code="HALF", type="percent", value=50))
+    a = _plan(b, "A", 10000); c = _plan(b, "B", 5000)
+    items = [{"plan_id": a.id, "coupon_code": "HALF"}, {"plan_id": c.id}]
+    pre = _preview(b, "t1", items)                          # preview FIRST (no side effects)
+    res = run(b.checkout(tenant="t1", items=items, payment_token="pm"))  # then really charge
+    inv = _invoices(st)[0]
+    assert pre["total_minor"] == inv["total_minor"] == res["total_minor"]  # preview == the real bill
+    assert pre["discount_minor"] == inv["discount_minor"]
+    assert pre["tax_minor"] == inv["tax_minor"]
+
+
+def test_preview_matches_a_prorated_first_period_exactly():
+    """The alignment-accuracy case: with an existing same-interval sub, a new item's first period is
+    PRORATED — the preview must show the prorated amount, identical to what checkout charges."""
+    from app.core.models import now_ts
+    st = MemoryDataStore(); b = _svc(st, "consolidated")
+    grid = _plan(b, "Grid", 10000); new = _plan(b, "New", 30000)
+    run(b.subscribe(tenant="t1", plan_id=grid.id, payment_token="pm"))   # sets the tenant's grid
+    subs = SubscriptionStore(st)
+    row = run(subs._store.get("subscriptions", _subs(st)[0]["id"]))
+    row["current_period_end"] = now_ts() + 10 * 86400       # grid ends in ~10 days → new item prorates
+    run(subs._store.put("subscriptions", row["id"], row))
+
+    pre = _preview(b, "t1", [{"plan_id": new.id}])
+    assert pre["items"][0]["prorated"] is True
+    res = run(b.checkout(tenant="t1", items=[{"plan_id": new.id}], payment_token="pm"))
+    inv = _invoices(st)[0]
+    assert pre["total_minor"] == inv["total_minor"] == res["total_minor"]  # prorated, to the minor unit
+    assert pre["total_minor"] < 34500                       # strictly less than a full 30000+VAT period
+
+
+def test_preview_within_cart_alignment_matches_checkout():
+    st = MemoryDataStore(); b = _svc(st, "consolidated")
+    a = _plan(b, "A", 10000); c = _plan(b, "B", 6000)
+    items = [{"plan_id": a.id}, {"plan_id": c.id}]           # 2nd aligns to the 1st (same instant → equal)
+    pre = _preview(b, "t1", items)
+    run(b.checkout(tenant="t1", items=items, payment_token="pm"))
+    assert pre["total_minor"] == _invoices(st)[0]["total_minor"]
+
+
+def test_preview_tax_is_zero_when_vat_is_off():
+    st = MemoryDataStore()
+    from tests.unit.test_consolidated_cycle import _svc as _mk
+    b = _mk(st, "consolidated")
+    b._cfg = dict(b._cfg, vat_rate="0")
+    b._tax = __import__("app.adapters.tax.vat", fromlist=["VatCalculator"]).VatCalculator("0")
+    a = _plan(b, "A", 10000)
+    p = _preview(b, "t1", [{"plan_id": a.id}])
+    assert p["tax_minor"] == 0 and p["total_minor"] == 10000  # no VAT → total is the net
+
+
+def test_preview_reverse_charge_buyer_pays_no_vat():
+    st = MemoryDataStore(); b = _svc(st, "consolidated")
+    b._cfg = dict(b._cfg, reverse_charge=True)
+    a = _plan(b, "A", 10000)
+    p = _preview(b, "t1", [{"plan_id": a.id}], buyer_vat="300000000000003")
+    assert p["tax_minor"] == 0 and p["total_minor"] == 10000  # VAT-registered buyer accounts for VAT
+
+
+def test_preview_trial_item_is_not_charged_now():
+    st = MemoryDataStore(); b = _svc(st, "consolidated")
+    paid = _plan(b, "Paid", 10000); trial = _plan(b, "Trial", 20000, trial_days=14)
+    p = _preview(b, "t1", [{"plan_id": paid.id}, {"plan_id": trial.id}])
+    by = {i["plan_id"]: i for i in p["items"]}
+    assert by[trial.id]["charged_now"] is False and by[trial.id]["total_minor"] == 0
+    assert p["total_minor"] == 11500                        # only the paid plan is due now
+
+
+def test_preview_once_item_priced_now():
+    st = MemoryDataStore(); b = _svc(st, "consolidated")
+    once = _plan(b, "Once", 3000, interval="once")
+    p = _preview(b, "t1", [{"plan_id": once.id, "interval": "once"}])
+    assert p["items"][0]["charged_now"] is True and p["total_minor"] == 3450  # 3000 + VAT
+
+
+def test_preview_quantity_and_year_interval():
+    st = MemoryDataStore(); b = _svc(st, "consolidated")
+    seat = run(b.create_plan(name="Seats", prices=[{"interval": "month", "amount_minor": 5000,
+               "currency": "SAR", "type": "per_seat"}]))
+    yr = run(b.create_plan(name="Yr", prices=[{"interval": "year", "amount_minor": 100000,
+             "currency": "SAR", "type": "flat"}]))
+    p = _preview(b, "t1", [{"plan_id": seat.id, "quantity": 3}])
+    assert p["total_minor"] == 17250                        # 5000*3 + VAT
+    p2 = _preview(b, "t1", [{"plan_id": yr.id, "interval": "year"}])
+    assert p2["total_minor"] == 115000
+
+
+# ── preview refuses exactly what checkout refuses, creating nothing ──────────────
+def test_preview_refuses_mixed_currency():
+    st = MemoryDataStore(); b = _svc(st, "consolidated")
+    a = _plan(b, "SAR", 10000, currency="SAR"); c = _plan(b, "USD", 8000, currency="USD")
+    with pytest.raises(ValueError, match="MIXED_CURRENCY_CART"):
+        _preview(b, "t1", [{"plan_id": a.id}, {"plan_id": c.id}])
+    assert _subs(st) == []
+
+
+def test_preview_refuses_bad_duplicate_held_and_empty():
+    st = MemoryDataStore(); b = _svc(st, "consolidated")
+    a = _plan(b, "A", 10000)
+    with pytest.raises(ValueError, match="PLAN_NOT_FOUND"):
+        _preview(b, "t1", [{"plan_id": "ghost"}])
+    with pytest.raises(ValueError, match="DUPLICATE_PLAN_IN_CART"):
+        _preview(b, "t1", [{"plan_id": a.id}, {"plan_id": a.id}])
+    with pytest.raises(ValueError, match="EMPTY_CART"):
+        _preview(b, "t1", [])
+    run(b.subscribe(tenant="t1", plan_id=a.id, payment_token="pm"))
+    with pytest.raises(ValueError, match="ALREADY_SUBSCRIBED"):
+        _preview(b, "t1", [{"plan_id": a.id}])

@@ -645,6 +645,34 @@ class BillingService:
         return {"applied": applied, "potential": potential}
 
     # ── subscriptions ─────────────────────────────────────────────────────────────
+    def _initial_period(self, *, interval: str, trial_days: int, trial_end: float, now: float,
+                        existing_rows: list) -> tuple[str, float, bool]:
+        """(status, period_end, first_period_prorated) for a NEW subscription — the SHARED rule used by
+        both subscribe() and the read-only checkout_preview(), so a pre-purchase preview aligns and
+        prorates EXACTLY as the real signup will (no second copy of the money logic to drift).
+
+        once → no period (never renews); trial → the period ends at trial end (first charge deferred to
+        the sweep); else a full interval from now, SHORTENED to the tenant's existing same-interval grid
+        boundary (a prorated first period) when one exists. `existing_rows` are the tenant's billable
+        subs PLUS any earlier items in the same cart (dicts with interval/status/current_period_end), so
+        within-cart alignment matches how checkout creates the rows one after another."""
+        if interval == "once":
+            return "active", 0.0, False
+        if trial_days:
+            return "trialing", trial_end, False
+        interval_secs = _INTERVAL.get(interval, _INTERVAL["month"])
+        period_end, first_period_prorated = now + interval_secs, False
+        refs = [float(r.get("current_period_end") or 0) for r in existing_rows
+                if r.get("interval") == interval and r.get("interval") != "once"
+                and r.get("status") != "trialing" and float(r.get("current_period_end") or 0) > 0]
+        if refs:
+            aligned = periods.aligned_period_end(now, interval_secs, min(refs))
+            # Money-safe direction: alignment may only SHORTEN the first period (the next grid boundary
+            # is within one interval of now), never lengthen it — that would hand out free time.
+            if aligned < period_end:
+                period_end, first_period_prorated = aligned, True
+        return "active", period_end, first_period_prorated
+
     def _price_for(self, plan: Plan, interval: str) -> dict:
         for p in plan.prices:
             if p.get("interval") == interval:
@@ -711,33 +739,11 @@ class BillingService:
         #              interval then. Setting a full interval here gave a 14-day trial 30 free days,
         #              because trial_end was written and never read.
         #   else     — a full interval from now.
-        first_period_prorated = False
-        if interval == "once":
-            period_end, status = 0.0, "active"
-        elif trial_days:
-            period_end, status = trial_end, "trialing"
-        else:
-            interval_secs = _INTERVAL.get(interval, _INTERVAL["month"])
-            period_end, status = now + interval_secs, "active"
-            # ALIGN a second+ subscription onto the tenant's EXISTING billing grid so it renews on the
-            # same day as the first, instead of opening its own cycle (the escalated defect: buy on the
-            # 3rd and the 17th → charged twice a month for ever). One indexed read of the tenant's live
-            # billable subscriptions; only same-interval, renewing ones are a valid grid reference. When
-            # one exists, the first period ends at the shared grid boundary — a PARTIAL period, prorated
-            # on the first cycle — never a full interval from now. A tenant's FIRST subscription finds no
-            # reference and is completely unchanged.
-            existing = await self._subs.billable_for(tenant, _BILLABLE)
-            refs = [float(r.get("current_period_end") or 0) for r in existing
-                    if r.get("interval") == interval and r.get("interval") != "once"
-                    and r.get("status") != "trialing" and float(r.get("current_period_end") or 0) > 0]
-            if refs:
-                aligned = periods.aligned_period_end(now, interval_secs, min(refs))
-                # Money-safe direction, asserted explicitly: alignment may only SHORTEN the first
-                # period (the next grid boundary is always within one interval of now). It must never
-                # lengthen it — that would hand out free time — so we align only when strictly shorter.
-                if aligned < period_end:
-                    period_end = aligned
-                    first_period_prorated = True
+        existing = await self._subs.billable_for(tenant, _BILLABLE)
+        status, period_end, first_period_prorated = self._initial_period(
+            interval=interval, trial_days=trial_days, trial_end=trial_end, now=now,
+            existing_rows=existing)
+        if interval != "once" and not trial_days:
             # RUNTIME INVARIANT (the guard the escalation valued above the fix): after this signup the
             # tenant must have ONE renewal day for this interval. Projecting the new subscription onto
             # the existing set, more than one distinct period-end means an alignment gap — a drift a
@@ -2180,6 +2186,116 @@ class BillingService:
                     "limits": dict(sub.limits_snapshot or {}) if hasattr(sub, "limits_snapshot") else {}})
         return await self._invoices.fetch(inv.id) or inv
 
+    async def _validate_cart(self, tenant: str, items: list[dict]) -> list[dict]:
+        """Validate a whole cart with NO side effects, and return the normalised, priced items. The
+        SINGLE validation used by both checkout() and checkout_preview(), so a preview refuses exactly
+        what a real checkout would. Raises the same ValueErrors; creates and charges nothing."""
+        if not items:
+            raise ValueError("EMPTY_CART")
+        now = now_ts()
+        existing = await self._subs.billable_for(tenant, _BILLABLE)
+        held = {str(r.get("plan_id")) for r in existing}
+        norm: list[dict] = []
+        seen: set[str] = set()
+        currency: str | None = None
+        for raw in items:
+            pid = str(raw.get("plan_id") or "")
+            interval = str(raw.get("interval") or "month")
+            q = raw.get("quantity", 1)
+            qty = int(q) if q is not None else 1          # NOT `q or 1`: 0 must stay 0 and be refused
+            coup = str(raw.get("coupon_code") or "")
+            if not pid:
+                raise ValueError("PLAN_ID_REQUIRED")
+            if pid in seen:
+                raise ValueError(f"DUPLICATE_PLAN_IN_CART:{pid}")
+            seen.add(pid)
+            if qty < 1:
+                raise ValueError(f"INVALID_QUANTITY:{pid}")
+            plan = await self._plans.fetch(pid)
+            if plan is None:
+                raise ValueError(f"PLAN_NOT_FOUND:{pid}")
+            if not plan.active:
+                raise ValueError(f"PLAN_NOT_AVAILABLE:{pid}")
+            if pid in held:
+                raise ValueError(f"ALREADY_SUBSCRIBED:{pid}")
+            # The plan must actually OFFER this interval. _price_for falls back to prices[0], which would
+            # silently bill a month price under a "year" line — refuse instead of mis-pricing.
+            price = next((p for p in plan.prices if p.get("interval") == interval), None)
+            if price is None:
+                raise ValueError(f"PLAN_INTERVAL_UNAVAILABLE:{pid}:{interval}")
+            ccy = str(price.get("currency") or self._cfg["currency"])
+            if currency is None:
+                currency = ccy
+            elif ccy != currency:
+                # One charge cannot mix currencies (money in two currencies must never be summed).
+                raise ValueError("MIXED_CURRENCY_CART")
+            if coup:
+                c = await self._coupons.fetch(coup)
+                if c is not None and c.plan_id and c.plan_id != pid:
+                    raise ValueError(f"COUPON_PLAN_MISMATCH:{pid}")
+                reason = _coupons.status(c.to_dict() if c else None, now)
+                if reason != _coupons.ACTIVE:
+                    raise ValueError(f"COUPON_{reason.upper()}:{pid}")
+            norm.append({"plan": plan, "plan_id": pid, "interval": interval, "quantity": qty,
+                         "coupon_code": coup, "price": price})
+        return norm
+
+    async def checkout_preview(self, *, tenant: str, items: list[dict],
+                               buyer_vat: str = "") -> dict[str, Any]:
+        """Read-only PRE-PURCHASE price preview of a hypothetical cart — the exact amount checkout would
+        charge NOW (subtotal, best-of coupon-vs-rule discount, tax honouring includes_tax/reverse-charge),
+        before any subscription exists. Same validation as checkout (refuses the same carts, same 422),
+        and the SAME pricing + alignment: each item is priced through _compute_renewal on a TRANSIENT
+        (never-saved) subscription whose first-period end is computed by the shared _initial_period — so
+        a cart that will PRORATE its first period against the tenant's existing grid previews the prorated
+        amount, not the full one. Creates and mutates NOTHING.
+
+        A trial item is shown as charged_now=False (its first charge is deferred to the trial end), so the
+        cart total is exactly what the card is charged today. Money is integer minor units.
+        """
+        norm = await self._validate_cart(tenant, items)
+        now = now_ts()
+        # Start alignment from the tenant's real billable subs; append each cart item as we price it so a
+        # later same-interval item aligns to an earlier one — mirroring checkout's sequential subscribe().
+        existing = await self._subs.billable_for(tenant, _BILLABLE)
+        refs: list[dict] = [dict(r) for r in existing]
+        lines: list[dict] = []
+        subtotal = discount = tax = total = 0
+        currency: str | None = None
+        for it in norm:
+            plan = it["plan"]
+            trial_days = plan.trial_days or self._cfg["trial_days"]
+            trial_end = now + trial_days * 86400 if trial_days else 0.0
+            status, period_end, fpp = self._initial_period(
+                interval=it["interval"], trial_days=trial_days, trial_end=trial_end, now=now,
+                existing_rows=refs)
+            price_snap, limits_snap = self._snapshot(plan, it["interval"])
+            transient = Subscription(
+                id="preview", tenant=tenant, plan_id=it["plan_id"], interval=it["interval"],
+                quantity=it["quantity"], coupon_code=it["coupon_code"], buyer_vat=buyer_vat,
+                price_snapshot=price_snap, limits_snapshot=limits_snap, status=status,
+                current_period_start=now, current_period_end=period_end, trial_end=trial_end,
+                first_period_prorated=fpp)
+            refs.append({"interval": it["interval"], "status": status,
+                         "current_period_end": period_end})
+            charged_now = status == "active"
+            if not charged_now:
+                lines.append({"plan_id": it["plan_id"], "interval": it["interval"],
+                              "charged_now": False, "on_trial": True,
+                              "subtotal_minor": 0, "discount_minor": 0, "tax_minor": 0,
+                              "total_minor": 0})
+                continue
+            r = await self._compute_renewal(transient)     # transient is never saved — pure pricing
+            currency = currency or r["currency"]
+            subtotal += r["subtotal"]; discount += r["discount"]; tax += r["tax"]; total += r["total"]
+            lines.append({"plan_id": it["plan_id"], "interval": it["interval"], "charged_now": True,
+                          "on_trial": False, "subtotal_minor": r["subtotal"],
+                          "discount_minor": r["discount"], "tax_minor": r["tax"],
+                          "total_minor": r["total"], "prorated": bool(fpp)})
+        return {"tenant": tenant, "currency": currency or self._cfg["currency"],
+                "subtotal_minor": subtotal, "discount_minor": discount, "tax_minor": tax,
+                "total_minor": total, "items": lines}
+
     async def checkout(self, *, tenant: str, items: list[dict], payment_token: str = "",
                        buyer_name: str = "", buyer_vat: str = "", buyer_cr: str = "",
                        idempotency_key: str = "") -> dict[str, Any]:
@@ -2219,52 +2335,7 @@ class BillingService:
             if prior_row and "result" in prior_row:
                 return prior_row["result"]
         # ── PHASE 1: validate EVERYTHING before any write (no partial carts) ──────────────────────
-        now = now_ts()
-        existing = await self._subs.billable_for(tenant, _BILLABLE)
-        held = {str(r.get("plan_id")) for r in existing}
-        norm: list[dict] = []
-        seen: set[str] = set()
-        currency: str | None = None
-        for raw in items:
-            pid = str(raw.get("plan_id") or "")
-            interval = str(raw.get("interval") or "month")
-            q = raw.get("quantity", 1)
-            qty = int(q) if q is not None else 1          # NOT `q or 1`: 0 must stay 0 and be refused
-            coup = str(raw.get("coupon_code") or "")
-            if not pid:
-                raise ValueError("PLAN_ID_REQUIRED")
-            if pid in seen:
-                raise ValueError(f"DUPLICATE_PLAN_IN_CART:{pid}")
-            seen.add(pid)
-            if qty < 1:
-                raise ValueError(f"INVALID_QUANTITY:{pid}")
-            plan = await self._plans.fetch(pid)
-            if plan is None:
-                raise ValueError(f"PLAN_NOT_FOUND:{pid}")
-            if not plan.active:
-                raise ValueError(f"PLAN_NOT_AVAILABLE:{pid}")
-            if pid in held:
-                # Idempotent-friendly + safe: never silently double-subscribe a plan the tenant holds.
-                raise ValueError(f"ALREADY_SUBSCRIBED:{pid}")
-            # The plan must actually OFFER this interval. _price_for falls back to prices[0], which would
-            # silently bill a month price under a "year" line — refuse instead of mis-pricing.
-            price = next((p for p in plan.prices if p.get("interval") == interval), None)
-            if price is None:
-                raise ValueError(f"PLAN_INTERVAL_UNAVAILABLE:{pid}:{interval}")
-            ccy = str(price.get("currency") or self._cfg["currency"])
-            if currency is None:
-                currency = ccy
-            elif ccy != currency:
-                # One charge cannot mix currencies (money in two currencies must never be summed).
-                raise ValueError("MIXED_CURRENCY_CART")
-            if coup:
-                c = await self._coupons.fetch(coup)
-                if c is not None and c.plan_id and c.plan_id != pid:
-                    raise ValueError(f"COUPON_PLAN_MISMATCH:{pid}")
-                reason = _coupons.status(c.to_dict() if c else None, now)
-                if reason != _coupons.ACTIVE:
-                    raise ValueError(f"COUPON_{reason.upper()}:{pid}")
-            norm.append({"plan_id": pid, "interval": interval, "quantity": qty, "coupon_code": coup})
+        norm = await self._validate_cart(tenant, items)
 
         # ── PHASE 2: idempotency claim (covers create + charge; taken AFTER validation so a bad cart
         #    never locks the key). A retried checkout replays; a concurrent one is told to retry. ──────
@@ -2347,9 +2418,10 @@ class BillingService:
                         "period_start": sub.current_period_start, "period_end": sub.current_period_end,
                         "limits": dict(sub.limits_snapshot or {}) if hasattr(sub, "limits_snapshot") else {}})
 
+        cart_ccy = str((norm[0]["price"].get("currency") if norm else "") or self._cfg["currency"])
         result = {
             "tenant": tenant, "invoice_id": invoice_id, "paid": paid,
-            "currency": inv_ccy or currency or self._cfg["currency"], "total_minor": total,
+            "currency": inv_ccy or cart_ccy, "total_minor": total,
             "items": [{"plan_id": s.plan_id, "subscription_id": s.id, "status": s.status,
                        "interval": s.interval} for s in created],
         }

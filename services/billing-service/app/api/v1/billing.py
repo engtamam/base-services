@@ -654,6 +654,27 @@ async def multi_plan_checkout(request: Request, body: MultiCheckoutIn,
     return result
 
 
+class CheckoutPreviewIn(BaseModel):
+    items: list[CartItemIn] = Field(min_length=1, max_length=50)
+    buyer_vat: str = Field(default="", max_length=64)   # a VAT-registered buyer → reverse-charge, no VAT
+    tenant: str | None = None
+
+
+@router.post("/subscriptions/checkout/preview", dependencies=[Depends(_SELF)])
+async def checkout_preview(request: Request, body: CheckoutPreviewIn,
+                           principal: Principal = Depends(_SELF)) -> dict:
+    """Read-only PRE-PURCHASE price preview of a cart — the exact amount checkout would charge now
+    (subtotal, discount/savings, tax on the discounted net, total), plus a per-item breakdown, before
+    any subscription exists. Same validation and pricing as checkout (same 422 on a refused cart);
+    creates and charges NOTHING. Call it whenever the cart changes to keep the shown total live."""
+    try:
+        return await (await build_billing(request)).checkout_preview(
+            tenant=_tenant(principal, body.tenant),
+            items=[i.model_dump() for i in body.items], buyer_vat=body.buyer_vat)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e))
+
+
 class CheckoutIn(BaseModel):
     amount_minor: int = Field(gt=0)
     currency: str = Field(default="", max_length=8)

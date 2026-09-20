@@ -87,3 +87,27 @@ def test_internal_checkout_is_idempotent(client):
     assert first.status_code == 201 and second.status_code == 201
     assert first.json() == second.json()                   # replayed, not a second cart
     assert len(_invoices(client, "shopIdem")) == 1
+
+
+def test_internal_checkout_preview_prices_without_creating(client):
+    _seed_plan(client, "pv_a", 10000); _seed_plan(client, "pv_b", 5000)
+    r = client.post("/internal/billing/subscriptions/checkout/preview", headers=IT,
+                    json={"tenant": "shopPv", "items": [{"plan_id": "pv_a"}, {"plan_id": "pv_b"}]})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total_minor"] == 17250 and body["discount_minor"] == 0
+    assert len(body["items"]) == 2
+    assert _invoices(client, "shopPv") == []               # preview created nothing
+
+
+def test_internal_checkout_preview_refuses_bad_cart(client):
+    r = client.post("/internal/billing/subscriptions/checkout/preview", headers=IT,
+                    json={"tenant": "shopPvBad", "items": [{"plan_id": "ghost"}]})
+    assert r.status_code == 422
+
+
+def test_internal_checkout_preview_requires_token(client):
+    _seed_plan(client, "pv_auth")
+    r = client.post("/internal/billing/subscriptions/checkout/preview",
+                    json={"tenant": "x", "items": [{"plan_id": "pv_auth"}]})
+    assert r.status_code in (401, 403)

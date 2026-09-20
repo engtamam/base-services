@@ -388,6 +388,25 @@ async def checkout_internal(request: Request, body: CheckoutInternalIn) -> dict:
     return result
 
 
+class CheckoutPreviewInternalIn(BaseModel):
+    """Same shape as the user checkout preview, tenant in the body."""
+    tenant: str = Field(min_length=1, max_length=128)
+    items: list[CartItemIn] = Field(min_length=1, max_length=50)
+    buyer_vat: str = Field(default="", max_length=64)
+
+
+@router.post("/billing/subscriptions/checkout/preview",
+             dependencies=[Depends(require_internal_token)])
+async def checkout_preview_internal(request: Request, body: CheckoutPreviewInternalIn) -> dict:
+    """Internal twin of the pre-purchase cart price preview — read-only, tenant in the body,
+    X-Internal-Token auth. Same core .checkout_preview(); creates and charges nothing."""
+    try:
+        return await (await build_billing(request, body.tenant)).checkout_preview(
+            tenant=body.tenant, items=[i.model_dump() for i in body.items], buyer_vat=body.buyer_vat)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+
 class CouponCreateInternalIn(BaseModel):
     """Create a coupon service-to-service (a peer acting for a shop, e.g. operations minting a
     one-time grant code). Same fields as the admin CouponIn EXCEPT `public`: a scoped creator may
