@@ -983,6 +983,28 @@ def _scope(principal: Principal, tenant: str | None) -> str:
     return _tenant(principal, tenant)
 
 
+@router.get("/subscriptions/renewal-preview", dependencies=[Depends(_SELF)])
+async def renewal_preview(request: Request, tenant: str | None = Query(default=None, max_length=128),
+                          principal: Principal = Depends(_SELF)) -> dict:
+    """Read-only, side-effect-free preview of the CALLING shop's next renewal totals — the honest
+    "what your next renewal will actually cost" number for a billing screen.
+
+    Runs the SAME coupon + cross-app-rule discount the real consolidated invoice cut uses (best of the
+    two wins, never summed) over the shop's live, renewing subscriptions, and groups them exactly as
+    BILLING_RENEWAL_INVOICE_MODE=consolidated bills: one group per (gateway, currency), NEVER summing
+    two currencies into one total. Creates and mutates NOTHING (no invoice, no charge, no claim).
+
+    -> {"groups": [{"gateway", "currency", "next_charge_at",
+                    "lines": [{subscription_id, plan_id, plan_name, interval,
+                               subtotal_minor, discount_minor, tax_minor, total_minor}],
+                    "subtotal_minor", "discount_minor", "tax_minor", "total_minor"}],
+        "invoice_mode"}
+    Only live renewing subs are shown (active, not cancelling at period end, not one-off); trialing /
+    past_due / paused / canceled are excluded. Money is integer minor units."""
+    tenant = _scope(principal, tenant)
+    return await (await build_billing(request)).renewal_preview(tenant)
+
+
 @router.get("/subscriptions", dependencies=[Depends(_SELF)])
 async def list_subs(request: Request, status_: str | None = Query(default=None, alias="status",
                                                                   max_length=32),

@@ -3742,6 +3742,59 @@
         ]
       }
     },
+    "/api/v1/billing/subscriptions/renewal-preview": {
+      "get": {
+        "description": "Read-only, side-effect-free preview of the CALLING shop's next renewal totals \u2014 the honest\n\"what your next renewal will actually cost\" number for a billing screen.\n\nRuns the SAME coupon + cross-app-rule discount the real consolidated invoice cut uses (best of the\ntwo wins, never summed) over the shop's live, renewing subscriptions, and groups them exactly as\nBILLING_RENEWAL_INVOICE_MODE=consolidated bills: one group per (gateway, currency), NEVER summing\ntwo currencies into one total. Creates and mutates NOTHING (no invoice, no charge, no claim).\n\n-> {\"groups\": [{\"gateway\", \"currency\", \"next_charge_at\",\n                \"lines\": [{subscription_id, plan_id, plan_name, interval,\n                           subtotal_minor, discount_minor, tax_minor, total_minor}],\n                \"subtotal_minor\", \"discount_minor\", \"tax_minor\", \"total_minor\"}],\n    \"invoice_mode\"}\nOnly live renewing subs are shown (active, not cancelling at period end, not one-off); trialing /\npast_due / paused / canceled are excluded. Money is integer minor units.",
+        "operationId": "renewal_preview_api_v1_billing_subscriptions_renewal_preview_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Renewal Preview Api V1 Billing Subscriptions Renewal Preview Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Renewal Preview",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
     "/api/v1/billing/subscriptions/{sub_id}/cancel": {
       "post": {
         "operationId": "cancel_api_v1_billing_subscriptions__sub_id__cancel_post",

@@ -92,6 +92,7 @@ def build_manifest(
             {"path": "/api/v1/billing/wallet-topups/checkout", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/subscriptions", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/subscriptions", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/billing/subscriptions/renewal-preview", "tier": "user", "method": "GET"},
             {"path": "/api/v1/billing/subscriptions/{id}/change", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/subscriptions/{id}/cancel-scheduled-change", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/subscriptions/{id}/undo-cancel", "tier": "user", "method": "POST"},

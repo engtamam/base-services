@@ -1137,11 +1137,16 @@ class BillingService:
         keys.update((getattr(sub, "limits_snapshot", None) or {}).keys())
         return {str(k) for k in keys if k}
 
-    async def _rule_discount(self, sub, plan, subtotal: int) -> tuple[int, str]:
+    async def _rule_discount(self, sub, plan, subtotal: int, *, now: float | None = None) -> tuple[int, str]:
         """The best cross-app discount (minor units, MAX composition) for this subscription's renewal,
         and the rule id. (0, "") when the feature is off or nothing applies. Ownership is read from the
         EntitlementResolver — the same source of truth billing uses — so a rule triggers on what the
-        tenant holds RIGHT NOW, and a lapse/gain moves only the next cycle."""
+        tenant holds RIGHT NOW, and a lapse/gain moves only the next cycle.
+
+        `now` gates the rule's validity WINDOW (starts_at/expires_at). It defaults to the live clock —
+        the real renewal runs at renewal time, so that is correct there — but a read-only PREVIEW passes
+        the renewal instant so a rule that will have started/expired by then is judged as it will bill.
+        Ownership stays as-of NOW (the future cannot be resolved); the preview documents that caveat."""
         if self._rules is None or subtotal <= 0:
             return 0, ""
         rules = await self._rules.all(self._cfg["list_limit"])
@@ -1151,7 +1156,7 @@ class BillingService:
         held = {str(k) for k, v in (resolved.get("limits") or {}).items() if v}
         targets = self._sub_target_keys(sub, plan)
         return pricing.rule_discount(rules, subtotal, held_keys=held, target_keys=targets,
-                                     now=self._clock())
+                                     now=(now if now is not None else self._clock()))
 
     def _pct_of(self, base_minor: int, pct: int) -> int:
         return int((_Decimal(max(0, base_minor)) * _Decimal(pct) / 100).quantize(
@@ -1179,12 +1184,20 @@ class BillingService:
             return self._pct_of(int(base or 0), pct)
         return int((plan.limits or {}).get(self._cfg["plan_credit_limit_key"], 0) or 0)
 
-    async def _compute_renewal(self, sub) -> dict[str, Any]:
+    async def _compute_renewal(self, sub, *, as_of: float | None = None) -> dict[str, Any]:
         """Price ONE subscription's renewal — adopt a scheduled downgrade, apply grandfathered price,
         proration, usage, coupon and tax — and return the invoice LINE + rolled-up amounts + the
         plan's granted allowance. NO side effects on the invoice/charge/period: the SAME priced unit is
         used by a per-subscription invoice AND by a consolidated (one-per-tenant) invoice, so both cut
-        identical money. Mutates only `sub`'s plan fields when a pending downgrade is adopted."""
+        identical money. Mutates only `sub`'s plan fields when a pending downgrade is adopted.
+
+        `as_of` sets the timestamp the DISCOUNT VALIDITY WINDOWS (coupon + cross-app rule) are judged
+        against. It defaults to the live clock — correct for the real cycle, which runs at renewal time
+        — but the read-only renewal preview passes the subscription's period end, so a coupon/rule that
+        will have expired (or started) by the renewal is priced exactly as it will actually bill, not as
+        it stands today. Everything else (grandfathered price, downgrade, proration, usage, quantity,
+        tax) is intrinsic and needs no clock."""
+        clock_ts = as_of if as_of is not None else self._clock()
         # A SCHEDULED DOWNGRADE takes effect at THIS renewal: adopt the new plan BEFORE pricing, so the
         # invoice is the new plan at its FULL price for the new period — no proration, no credit, the
         # shop having had full value from the old plan through the period it paid for. `cancel_at_period_end`
@@ -1220,12 +1233,12 @@ class BillingService:
                          "recurring_full_minor": recurring, "recurring_charged_minor": subtotal - metered}
         coupon = await self._coupons.fetch(sub.coupon_code) if sub.coupon_code else None
         coupon_disc = pricing.coupon_discount(coupon.to_dict() if coupon else None, subtotal,
-                                              now=self._clock())
+                                              now=clock_ts)
         # Cross-app rule discount, evaluated LIVE this cycle against what the tenant holds NOW (so
         # gaining/losing an app changes the NEXT renewal only, never a past invoice). The larger of the
         # coupon and the best rule wins — never summed (product decision 2026-09-11), so combined
         # discounts can't silently reach 100%.
-        rule_disc, rule_id = await self._rule_discount(sub, plan, subtotal)
+        rule_disc, rule_id = await self._rule_discount(sub, plan, subtotal, now=clock_ts)
         discount = max(coupon_disc, rule_disc)
         taxable, tax, total = self._split_tax(subtotal - discount, price.get("includes_tax", False),
                                               reverse_charge=bool(sub.buyer_vat) and self._cfg.get("reverse_charge", False))
@@ -1238,7 +1251,69 @@ class BillingService:
         granted = self._granted_allowance(
             plan, list_base=int(price.get("amount_minor", 0) or 0), net_base=int(subtotal - discount))
         return {"line": line, "taxable": taxable, "discount": discount, "tax": tax, "total": total,
-                "currency": currency, "granted": granted, "plan": plan}
+                "currency": currency, "granted": granted, "plan": plan,
+                # Pre-discount subtotal (after proration/usage, before coupon/rule discount and tax) —
+                # so a read-only preview can show subtotal → discount → total without re-deriving it.
+                "subtotal": subtotal}
+
+    async def renewal_preview(self, tenant: str) -> dict[str, Any]:
+        """Read-only, side-effect-free preview of a tenant's NEXT renewal totals.
+
+        Reuses `_compute_renewal` — the EXACT coupon + cross-app-rule discount the real invoice cut uses
+        (best of coupon vs rule, never summed) — so the number shown is the number that will be billed,
+        never a second copy of the discount logic. Groups exactly as BILLING_RENEWAL_INVOICE_MODE=
+        consolidated bills: one group per (gateway, currency), NEVER summing two currencies into one
+        total. Creates/mutates NOTHING — no invoice, no idempotency claim, no save; `_compute_renewal`
+        only adopts a pending downgrade on the in-memory sub object, which is never persisted here.
+
+        Only LIVE, RENEWING subscriptions are included: status `active`, not scheduled to cancel at
+        period end, and not a one-off (`interval == "once"`). Trialing / past_due / paused / canceled
+        are excluded — none is a clean "this is what your next renewal costs".
+        """
+        groups: dict[tuple[str, str], dict] = {}
+        for row in await self._subs.list(tenant, limit=self._cfg["list_limit"]):
+            sub = Subscription.from_dict(row)
+            if sub.status != "active" or sub.cancel_at_period_end or sub.interval == "once":
+                continue
+            # Judge the coupon/rule validity windows AT THE RENEWAL instant (period end), not today —
+            # so a discount expiring before the renewal is not overstated. Ownership for a cross-app rule
+            # is still as-of now (the future cannot be resolved); see the caveat in the return.
+            r = await self._compute_renewal(sub, as_of=float(sub.current_period_end or 0) or None)
+            plan = r.get("plan")
+            key = (self._group_gateway_key(sub), r["currency"])
+            g = groups.get(key)
+            if g is None:
+                g = {"gateway": key[0], "currency": key[1], "lines": [],
+                     "subtotal_minor": 0, "discount_minor": 0, "tax_minor": 0, "total_minor": 0,
+                     "next_charge_at": None}
+                groups[key] = g
+            line = {
+                "subscription_id": sub.id,
+                "plan_id": sub.plan_id,
+                "plan_name": (plan.name if plan else ""),
+                "interval": sub.interval,
+                "subtotal_minor": int(r["subtotal"]),
+                "discount_minor": int(r["discount"]),
+                "tax_minor": int(r["tax"]),
+                "total_minor": int(r["total"]),
+            }
+            g["lines"].append(line)
+            g["subtotal_minor"] += line["subtotal_minor"]
+            g["discount_minor"] += line["discount_minor"]
+            g["tax_minor"] += line["tax_minor"]
+            g["total_minor"] += line["total_minor"]
+            # The group renews at its EARLIEST period end — the next moment a consolidated invoice cuts.
+            pe = float(sub.current_period_end or 0)
+            if pe > 0 and (g["next_charge_at"] is None or pe < g["next_charge_at"]):
+                g["next_charge_at"] = pe
+        # Deterministic order (by gateway then currency) so the UI renders stably. `ownership_as_of`
+        # names the one input that cannot be predicted: a cross-app rule triggers on what the tenant
+        # holds NOW, so gaining/dropping an app before the renewal would move it — every OTHER
+        # price input (grandfathered price, scheduled downgrade, proration, usage, quantity, coupon and
+        # rule VALIDITY WINDOWS, tax) is priced exactly as the renewal will bill via _compute_renewal.
+        return {"groups": [groups[k] for k in sorted(groups)],
+                "invoice_mode": self._cfg.get("renewal_invoice_mode", "per_subscription"),
+                "ownership_as_of": self._clock()}
 
     async def _finalize_cancellation(self, sub) -> Invoice:
         """A subscription whose owner asked to stop AT PERIOD END has reached that boundary: end it

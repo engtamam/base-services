@@ -266,6 +266,21 @@ def test_undo_cancel_rejects_another_tenants_subscription(client):
     assert r.status_code in (403, 404)
 
 
+# ── renewal preview (self-service billing screen) ─────────────────────────────
+def test_renewal_preview_route_is_self_scoped_and_shaped(client):
+    slf = _adm(caps=("billing.self",), tenant="tprev_empty")
+    r = client.get("/api/v1/billing/subscriptions/renewal-preview", headers=slf)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["groups"] == [] and "invoice_mode" in body and "ownership_as_of" in body
+
+
+def test_renewal_preview_route_refuses_cross_tenant_for_a_non_platform_user(client):
+    slf = _adm(caps=("billing.self",), tenant="tprev")
+    r = client.get("/api/v1/billing/subscriptions/renewal-preview?tenant=someoneelse", headers=slf)
+    assert r.status_code == 403                       # _scope: CROSS_TENANT_FORBIDDEN
+
+
 # ── one-off wallet top-up route ───────────────────────────────────────────────
 
 def _self(tenant="t1"):
