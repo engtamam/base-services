@@ -59,6 +59,40 @@
         "title": "CancelInternalIn",
         "type": "object"
       },
+      "CartItemIn": {
+        "properties": {
+          "coupon_code": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Coupon Code",
+            "type": "string"
+          },
+          "interval": {
+            "default": "month",
+            "pattern": "^(month|year|once)$",
+            "title": "Interval",
+            "type": "string"
+          },
+          "plan_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Plan Id",
+            "type": "string"
+          },
+          "quantity": {
+            "default": 1,
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Quantity",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "plan_id"
+        ],
+        "title": "CartItemIn",
+        "type": "object"
+      },
       "ChangeIn": {
         "properties": {
           "interval": {
@@ -685,6 +719,65 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "MultiCheckoutIn": {
+        "properties": {
+          "buyer_cr": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Buyer Cr",
+            "type": "string"
+          },
+          "buyer_name": {
+            "default": "",
+            "maxLength": 256,
+            "title": "Buyer Name",
+            "type": "string"
+          },
+          "buyer_vat": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Buyer Vat",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CartItemIn"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Items",
+            "type": "array"
+          },
+          "payment_token": {
+            "default": "",
+            "maxLength": 512,
+            "title": "Payment Token",
+            "type": "string"
+          },
+          "tenant": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "MultiCheckoutIn",
         "type": "object"
       },
       "PayLinkIn": {
@@ -3737,6 +3830,50 @@
           }
         },
         "summary": "Subscribe",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/subscriptions/checkout": {
+      "post": {
+        "description": "Buy several plans in ONE atomic checkout \u2014 one invoice, one charge, N subscription rows.\n\nAll-or-nothing: any invalid/duplicate/already-held/mixed-currency item refuses the WHOLE cart\nbefore anything is created or charged. Pass an `idempotency_key` so a retried checkout replays\ninstead of double-charging. Returns the invoice id, whether it was paid, and per-plan status.",
+        "operationId": "multi_plan_checkout_api_v1_billing_subscriptions_checkout_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MultiCheckoutIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Multi Plan Checkout Api V1 Billing Subscriptions Checkout Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Multi Plan Checkout",
         "tags": [
           "billing"
         ]

@@ -281,6 +281,48 @@ def test_renewal_preview_route_refuses_cross_tenant_for_a_non_platform_user(clie
     assert r.status_code == 403                       # _scope: CROSS_TENANT_FORBIDDEN
 
 
+# ── multi-plan (cart) checkout route ──────────────────────────────────────────
+def test_checkout_route_creates_a_subscription_per_plan_for_the_caller(client):
+    p1 = _plan(client)
+    p2 = _plan(client)                                      # a second, distinct plan id
+    slf = _adm(caps=("billing.self",), tenant="cartuser")
+    r = client.post("/api/v1/billing/subscriptions/checkout",
+                    json={"items": [{"plan_id": p1["id"]}, {"plan_id": p2["id"]}],
+                          "payment_token": "pm"}, headers=slf)
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["tenant"] == "cartuser"
+    assert {i["plan_id"] for i in body["items"]} == {p1["id"], p2["id"]}
+    assert isinstance(body["paid"], bool)
+
+
+def test_checkout_route_ignores_a_forged_tenant_for_a_non_platform_caller(client):
+    p1 = _plan(client)
+    slf = _adm(caps=("billing.self",), tenant="attacker")
+    r = client.post("/api/v1/billing/subscriptions/checkout",
+                    json={"items": [{"plan_id": p1["id"]}], "payment_token": "pm", "tenant": "victim"},
+                    headers=slf)
+    assert r.status_code == 201, r.text
+    assert r.json()["tenant"] == "attacker"                 # forged body tenant ignored, never "victim"
+
+
+def test_checkout_route_refuses_a_bad_cart_with_422(client):
+    slf = _adm(caps=("billing.self",), tenant="cartuser2")
+    r = client.post("/api/v1/billing/subscriptions/checkout",
+                    json={"items": [{"plan_id": "ghost"}], "payment_token": "pm"}, headers=slf)
+    # A refused cart is a 422; the specific reason is logged (with request_id), never leaked in the
+    # body — the platform's CWE-209 posture, same as every other route here.
+    assert r.status_code == 422
+    assert "ghost" not in r.text and r.json()["error"] == "VALIDATION_ERROR"
+
+
+def test_checkout_route_requires_billing_self_capability(client):
+    r = client.post("/api/v1/billing/subscriptions/checkout",
+                    json={"items": [{"plan_id": "x"}], "payment_token": "pm"},
+                    headers=_adm(caps=("something.else",)))
+    assert r.status_code in (401, 403)                      # not a billing principal → refused
+
+
 # ── one-off wallet top-up route ───────────────────────────────────────────────
 
 def _self(tenant="t1"):

@@ -610,6 +610,50 @@ async def subscribe(request: Request, body: SubscribeIn, principal: Principal = 
     return sub.to_dict()
 
 
+class CartItemIn(BaseModel):
+    plan_id: str = Field(min_length=1, max_length=64)
+    interval: str = Field(default="month", pattern="^(month|year|once)$")
+    quantity: int = Field(default=1, ge=1, le=1000)
+    coupon_code: str = Field(default="", max_length=64)
+
+
+class MultiCheckoutIn(BaseModel):
+    items: list[CartItemIn] = Field(min_length=1, max_length=50)
+    payment_token: str = Field(default="", max_length=512)
+    buyer_name: str = Field(default="", max_length=256)
+    buyer_vat: str = Field(default="", max_length=64)
+    buyer_cr: str = Field(default="", max_length=64)
+    idempotency_key: str = Field(default="", max_length=128)
+    tenant: str | None = None
+
+
+@router.post("/subscriptions/checkout", status_code=201)
+async def multi_plan_checkout(request: Request, body: MultiCheckoutIn,
+                              principal: Principal = Depends(_SELF)) -> dict:
+    """Buy several plans in ONE atomic checkout — one invoice, one charge, N subscription rows.
+
+    All-or-nothing: any invalid/duplicate/already-held/mixed-currency item refuses the WHOLE cart
+    before anything is created or charged. Pass an `idempotency_key` so a retried checkout replays
+    instead of double-charging. Returns the invoice id, whether it was paid, and per-plan status."""
+    try:
+        result = await (await build_billing(request)).checkout(
+            tenant=_tenant(principal, body.tenant),
+            items=[i.model_dump() for i in body.items],
+            payment_token=body.payment_token, buyer_name=body.buyer_name, buyer_vat=body.buyer_vat,
+            buyer_cr=body.buyer_cr, idempotency_key=body.idempotency_key)
+    except ValueError as e:
+        # A refused cart (bad/duplicate/held plan, mixed currency, coupon, in-progress) — nothing was
+        # charged. 422: the request was understood and deliberately refused, not "not found".
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e))
+    await request.app.state.auditor.record(
+        "subscription.checkout", actor=principal.subject, tenant=result["tenant"],
+        resource=f"invoice:{result.get('invoice_id') or '-'}",
+        ip=request.client.host if request.client else "",
+        metadata={"plans": ",".join(i["plan_id"] for i in result["items"]),
+                  "paid": str(result["paid"])})
+    return result
+
+
 class CheckoutIn(BaseModel):
     amount_minor: int = Field(gt=0)
     currency: str = Field(default="", max_length=8)

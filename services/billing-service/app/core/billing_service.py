@@ -2180,6 +2180,183 @@ class BillingService:
                     "limits": dict(sub.limits_snapshot or {}) if hasattr(sub, "limits_snapshot") else {}})
         return await self._invoices.fetch(inv.id) or inv
 
+    async def checkout(self, *, tenant: str, items: list[dict], payment_token: str = "",
+                       buyer_name: str = "", buyer_vat: str = "", buyer_cr: str = "",
+                       idempotency_key: str = "") -> dict[str, Any]:
+        """Atomic MULTI-PLAN checkout: buy several plans in ONE action — one invoice, one charge, N
+        subscription rows. Generic infrastructure: billing knows nothing about app dependencies or any
+        platform's catalogue rules (the caller owns those); it only validates its OWN invariants and
+        bills. All money runs through the SAME primitives a single subscribe+cycle uses (_compute_renewal
+        for pricing, _charge_invoice for the charge), so a cart bills identically to N single purchases,
+        just consolidated.
+
+        `items`: [{plan_id, interval?="month", quantity?=1, coupon_code?=""}].
+
+        ATOMICITY (the money contract):
+          * VALIDATE-ALL-FIRST: every item is checked (plan exists + active, the interval is offered,
+            not already subscribed, coupon usable, single currency, no duplicate plan in the cart)
+            BEFORE anything is written or charged. Any failure refuses the WHOLE cart, having created
+            nothing and charged nothing — never "charged 2 of 3".
+          * ONE charge: all immediately-due items are billed on ONE invoice against ONE token, so a card
+            decline is all-or-nothing at the charge (the whole invoice goes to dunning, exactly like a
+            declined single renewal — never a partial capture).
+          * IDEMPOTENT: an `idempotency_key` (tenant-scoped) makes a retried checkout replay the first
+            result instead of creating a second cart or double-charging.
+
+        Item kinds bill exactly as they do singly: a recurring plan is charged now for its first period
+        and renews on the tenant's aligned grid (so the cart's items renew together — and, under
+        BILLING_RENEWAL_INVOICE_MODE=consolidated, on one future invoice); a `once` plan is charged now
+        and never renews; a plan with a trial is created `trialing` and NOT charged now (its first
+        charge is raised by the normal sweep when the trial ends).
+        """
+        if not items:
+            raise ValueError("EMPTY_CART")
+        ckey = f"checkout:{len(tenant)}:{tenant}|{idempotency_key}" if idempotency_key else ""
+        # REPLAY a completed checkout BEFORE re-validating: a retry of a finished cart must return the
+        # first result, not fail validation on the plans it already created (ALREADY_SUBSCRIBED).
+        if ckey:
+            prior_row = await self._idempo.seen(ckey)
+            if prior_row and "result" in prior_row:
+                return prior_row["result"]
+        # ── PHASE 1: validate EVERYTHING before any write (no partial carts) ──────────────────────
+        now = now_ts()
+        existing = await self._subs.billable_for(tenant, _BILLABLE)
+        held = {str(r.get("plan_id")) for r in existing}
+        norm: list[dict] = []
+        seen: set[str] = set()
+        currency: str | None = None
+        for raw in items:
+            pid = str(raw.get("plan_id") or "")
+            interval = str(raw.get("interval") or "month")
+            q = raw.get("quantity", 1)
+            qty = int(q) if q is not None else 1          # NOT `q or 1`: 0 must stay 0 and be refused
+            coup = str(raw.get("coupon_code") or "")
+            if not pid:
+                raise ValueError("PLAN_ID_REQUIRED")
+            if pid in seen:
+                raise ValueError(f"DUPLICATE_PLAN_IN_CART:{pid}")
+            seen.add(pid)
+            if qty < 1:
+                raise ValueError(f"INVALID_QUANTITY:{pid}")
+            plan = await self._plans.fetch(pid)
+            if plan is None:
+                raise ValueError(f"PLAN_NOT_FOUND:{pid}")
+            if not plan.active:
+                raise ValueError(f"PLAN_NOT_AVAILABLE:{pid}")
+            if pid in held:
+                # Idempotent-friendly + safe: never silently double-subscribe a plan the tenant holds.
+                raise ValueError(f"ALREADY_SUBSCRIBED:{pid}")
+            # The plan must actually OFFER this interval. _price_for falls back to prices[0], which would
+            # silently bill a month price under a "year" line — refuse instead of mis-pricing.
+            price = next((p for p in plan.prices if p.get("interval") == interval), None)
+            if price is None:
+                raise ValueError(f"PLAN_INTERVAL_UNAVAILABLE:{pid}:{interval}")
+            ccy = str(price.get("currency") or self._cfg["currency"])
+            if currency is None:
+                currency = ccy
+            elif ccy != currency:
+                # One charge cannot mix currencies (money in two currencies must never be summed).
+                raise ValueError("MIXED_CURRENCY_CART")
+            if coup:
+                c = await self._coupons.fetch(coup)
+                if c is not None and c.plan_id and c.plan_id != pid:
+                    raise ValueError(f"COUPON_PLAN_MISMATCH:{pid}")
+                reason = _coupons.status(c.to_dict() if c else None, now)
+                if reason != _coupons.ACTIVE:
+                    raise ValueError(f"COUPON_{reason.upper()}:{pid}")
+            norm.append({"plan_id": pid, "interval": interval, "quantity": qty, "coupon_code": coup})
+
+        # ── PHASE 2: idempotency claim (covers create + charge; taken AFTER validation so a bad cart
+        #    never locks the key). A retried checkout replays; a concurrent one is told to retry. ──────
+        if ckey:
+            proceed, prior = await self._idempo.claim(ckey)
+            if prior is not None:
+                return prior
+            if not proceed:
+                raise ValueError("CHECKOUT_IN_PROGRESS")
+
+        # ── PHASE 3: create every subscription (subscribe() creates the row + redeems its coupon; it
+        #    does NOT charge). On any mid-create failure (a race past validation) roll the batch back so
+        #    the cart stays all-or-nothing. ────────────────────────────────────────────────────────
+        created: list = []
+        try:
+            for it in norm:
+                sub = await self.subscribe(
+                    tenant=tenant, plan_id=it["plan_id"], interval=it["interval"],
+                    quantity=it["quantity"], coupon_code=it["coupon_code"], payment_token=payment_token,
+                    buyer_name=buyer_name, buyer_vat=buyer_vat, buyer_cr=buyer_cr)
+                created.append(sub)
+        except Exception:
+            for sub in created:
+                await self._subs.delete(sub.id)             # nothing charged yet — undo the partial cart
+            raise
+
+        # ── PHASE 4: ONE invoice for the immediately-chargeable items (status active = non-trial),
+        #    charged ONCE. Trials are left `trialing` for the sweep to charge at trial end. ────────────
+        lines: list[dict] = []
+        grants_meta: list[dict] = []
+        subtotal = discount = tax = total = 0
+        inv_ccy: str | None = None
+        chargeable: list = []
+        for sub in created:
+            if sub.status != "active":
+                continue                                    # trialing → not billed at checkout
+            r = await self._compute_renewal(sub)
+            inv_ccy = inv_ccy or r["currency"]
+            lines.append(r["line"])
+            subtotal += r["taxable"]; discount += r["discount"]; tax += r["tax"]; total += r["total"]
+            if r["granted"] > 0:
+                grants_meta.append({"sub_id": sub.id, "fund": self._cfg["grant_fund"],
+                                    "amount_minor": r["granted"], "period_end": sub.current_period_end})
+            chargeable.append(sub)
+
+        invoice_id = ""
+        paid = True                                         # an all-trial cart charges nothing now
+        if chargeable:
+            meta: dict[str, Any] = {"checkout": True}
+            if grants_meta:
+                meta["grants"] = grants_meta
+            inv = Invoice(id=new_id("inv_"), tenant=tenant, number=await self._invoices.next_number(tenant),
+                          subscription_id="", lines=lines, subtotal_minor=subtotal, discount_minor=discount,
+                          tax_minor=tax, total_minor=total, currency=inv_ccy or self._cfg["currency"],
+                          status="open", created=iso(), meta=meta)
+            await self._invoices.save(inv)
+            invoice_id = inv.id
+            recurring: list = []
+            for sub in chargeable:
+                # A RECURRING item's first period is now billed: claim its first cycle (so the sweep can
+                # never re-charge the same period) and advance the window, exactly as run_cycle does. A
+                # `once` item (period_end == 0) never renews and the sweep skips it — no claim, no advance.
+                if float(sub.current_period_end) > 0:
+                    skey = f"cycle:{sub.id}:{int(sub.current_period_end)}"
+                    await self._idempo.claim(skey)
+                    await self._idempo.mark(skey, {"invoice_id": inv.id})
+                    sub.current_period_start = sub.current_period_end
+                    sub.current_period_end += _INTERVAL.get(sub.interval, _INTERVAL["month"])
+                    sub.first_period_prorated = False
+                    await self._subs.save(sub)
+                    recurring.append(sub)
+            await self._charge_invoice(inv, payment_token, chargeable[0])
+            paid = (await self._invoices.fetch(inv.id) or inv).status == "paid"
+            if self._events is not None:
+                for sub in recurring:                       # only recurring items renew; a `once` does not
+                    await self._events.emit(_events.SUBSCRIPTION_RENEWED, {
+                        "tenant": tenant, "subscription_id": sub.id, "plan_id": sub.plan_id,
+                        "invoice_id": inv.id,
+                        "period_key": f"cycle:{sub.id}:{int(sub.current_period_start)}",
+                        "period_start": sub.current_period_start, "period_end": sub.current_period_end,
+                        "limits": dict(sub.limits_snapshot or {}) if hasattr(sub, "limits_snapshot") else {}})
+
+        result = {
+            "tenant": tenant, "invoice_id": invoice_id, "paid": paid,
+            "currency": inv_ccy or currency or self._cfg["currency"], "total_minor": total,
+            "items": [{"plan_id": s.plan_id, "subscription_id": s.id, "status": s.status,
+                       "interval": s.interval} for s in created],
+        }
+        if ckey:
+            await self._idempo.mark(ckey, result)
+        return result
+
     async def dunning_sweep(self) -> dict[str, Any]:
         due = await self._payments.due(now_ts(), self._cfg["list_limit"])
         retried = 0
