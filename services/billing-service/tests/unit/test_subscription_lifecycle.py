@@ -40,6 +40,7 @@ class _Sub:
     def __init__(self, status="active", cancel_at_period_end=False):
         self.id = "sub_1"
         self.tenant = "acme"
+        self.plan_id = "p"
         self.status = status
         self.cancel_at_period_end = cancel_at_period_end
 
@@ -49,6 +50,7 @@ def _svc(sub):
     from app.core.billing_service import BillingService
     svc = BillingService.__new__(BillingService)      # no full container: this is a state machine
     svc._subs = _Subs(sub)
+    svc._events = None                                # real __init__ always sets this; no bus wired here
     return svc
 
 

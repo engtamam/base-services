@@ -217,3 +217,29 @@ def test_wallet_insufficient_also_publishes_the_uniform_suspended_signal():
     assert bus.one(ev.SUBSCRIPTION_RENEWAL_WALLET_INSUFFICIENT)
     e = bus.one(ev.SUBSCRIPTION_SUSPENDED)
     assert e.payload["subscription_id"] == sub.id and e.payload["reason"] == "wallet_insufficient"
+
+
+def test_admin_force_suspend_publishes_subscription_suspended():
+    """An admin force-suspend (-> paused) lapses feature entitlements like past_due does, so it emits
+    the same subscription.suspended (reason=paused) once, and not again on a re-suspend."""
+    st, bus = MemoryDataStore(), _Bus()
+    b = _svc(st, _OkGateway(), bus)
+    _, sub = _plan_sub(b)
+    run(b.force_suspend(sub.id))
+    e = bus.one(ev.SUBSCRIPTION_SUSPENDED)
+    assert e.payload["subscription_id"] == sub.id and e.payload["reason"] == "paused"
+    assert e.payload["plan_id"]
+    n = bus.types().count(ev.SUBSCRIPTION_SUSPENDED)
+    run(b.force_suspend(sub.id))                       # already paused → no re-fire
+    assert bus.types().count(ev.SUBSCRIPTION_SUSPENDED) == n
+
+
+def test_self_service_pause_also_publishes_subscription_suspended():
+    """Both ways into `paused` lapse the entitlement, so self-service pause() emits it too — the signal
+    is uniform however the subscription stopped."""
+    st, bus = MemoryDataStore(), _Bus()
+    b = _svc(st, _OkGateway(), bus)
+    _, sub = _plan_sub(b)
+    run(b.pause(sub.id))
+    e = bus.one(ev.SUBSCRIPTION_SUSPENDED)
+    assert e.payload["subscription_id"] == sub.id and e.payload["reason"] == "paused"

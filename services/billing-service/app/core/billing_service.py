@@ -1113,7 +1113,17 @@ class BillingService:
         sub.status = status
         if status == "canceled":
             sub.canceled_at = sub.canceled_at or iso()   # any path to canceled carries its timestamp
-        return await self._subs.save(sub)
+        saved = await self._subs.save(sub)
+        # A subscription entering `paused` lapses its entitlements exactly like past_due does, so it
+        # gets the SAME subscription.suspended signal — reaching here IS the transition (the equal-state
+        # retry returned above), so it fires once. Covers BOTH ways in: self-service pause() and admin
+        # force_suspend(). Emitted after the save, best-effort, so a bus hiccup never blocks the state
+        # change. (canceled has its own subscription.cancelled; active/reactivate is not a lapse.)
+        if status == "paused" and self._events is not None:
+            await self._events.emit(_events.SUBSCRIPTION_SUSPENDED, {
+                "tenant": saved.tenant, "subscription_id": saved.id, "plan_id": saved.plan_id,
+                "reason": "paused"})
+        return saved
 
     async def record_usage(self, *, tenant: str, subscription_id: str, metric: str, quantity: int) -> dict:
         # Ownership at the door: the subscription MUST belong to the caller's tenant. Without this a
