@@ -1557,6 +1557,7 @@ class BillingService:
         """Suspend on an insufficient wallet balance, OBSERVABLY. A wallet renewal that quietly
         failed would look like free service; a WARN spike and a distinct event are the signal that
         customers need to top up (and that a mis-set fund would refuse EVERY renewal at once)."""
+        was_past_due = sub is not None and sub.status == "past_due"
         if sub is not None:
             sub.status = "past_due"
             await self._subs.save(sub)
@@ -1567,6 +1568,12 @@ class BillingService:
                 "tenant": inv.tenant, "subscription_id": getattr(sub, "id", ""),
                 "invoice_id": inv.id, "amount_minor": inv.total_minor, "currency": inv.currency,
             })
+            # The uniform "this subscription lapsed" signal, alongside the wallet-specific reason above,
+            # so a consumer can subscribe to ONE event for any lapse. Once, on the transition.
+            if sub is not None and not was_past_due:
+                await self._events.emit(_events.SUBSCRIPTION_SUSPENDED, {
+                    "tenant": inv.tenant, "subscription_id": sub.id, "plan_id": sub.plan_id,
+                    "reason": "wallet_insufficient"})
 
     async def _mark_paid(self, inv: Invoice, *, paid_at: str = "", source: str = "") -> None:
         """The ONE place an invoice becomes paid.
@@ -1985,8 +1992,15 @@ class BillingService:
         if inv and inv.subscription_id:
             sub = await self._subs.fetch(inv.subscription_id)
             if sub:
+                was_past_due = sub.status == "past_due"
                 sub.status = "past_due"
                 await self._subs.save(sub)
+                # Signal the lapse ONCE, on the transition — a re-suspend of an already past_due sub
+                # (a later dunning attempt) must not re-fire. Best-effort hint, like every event here.
+                if not was_past_due and self._events is not None:
+                    await self._events.emit(_events.SUBSCRIPTION_SUSPENDED, {
+                        "tenant": sub.tenant, "subscription_id": sub.id, "plan_id": sub.plan_id,
+                        "reason": "dunning"})
 
     async def cycle_due_sweep(self) -> dict[str, Any]:
         """Invoice every subscription whose period has ended. The renewal engine.

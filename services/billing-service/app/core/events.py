@@ -44,11 +44,17 @@ INVOICE_PAID = "invoice.paid"
 # its own), so a consumer sends a "top up your wallet" prompt. Distinct from payment.failed, which
 # is a card decline that WILL be retried.
 SUBSCRIPTION_RENEWAL_WALLET_INSUFFICIENT = "subscription.renewal_wallet_insufficient"
+# A subscription LAPSED into past_due — a card renewal that failed (dunning, will retry) or a wallet
+# renewal that could not be covered — so its entitlements stop. Emitted once, on the TRANSITION into
+# past_due, so a consumer can react instantly (e.g. disable a lapsed feature) instead of polling.
+# `reason` distinguishes the cause. The return direction (past_due -> active on payment) is already
+# SUBSCRIPTION_RENEWED; a terminal stop is SUBSCRIPTION_CANCELLED.
+SUBSCRIPTION_SUSPENDED = "subscription.suspended"
 
 EMITTED = (
     PAYMENT_SUCCEEDED, PAYMENT_FAILED, PAYMENT_REFUNDED,
     SUBSCRIPTION_RENEWED, SUBSCRIPTION_CANCELLED, INVOICE_PAID,
-    SUBSCRIPTION_RENEWAL_WALLET_INSUFFICIENT,
+    SUBSCRIPTION_RENEWAL_WALLET_INSUFFICIENT, SUBSCRIPTION_SUSPENDED,
 )
 
 

@@ -133,9 +133,12 @@ def test_insufficient_balance_suspends_immediately_and_does_not_retry():
     run(b._charge_invoice(inv, "", _sub()))
     sub = run(SubscriptionStore(st).fetch("sub_x"))
     assert sub.status == "past_due"                          # suspended
-    # a distinct top-up event fired (not payment.failed, which implies a retry is coming)
-    assert em.events and em.events[-1][0] == _events.SUBSCRIPTION_RENEWAL_WALLET_INSUFFICIENT
-    assert em.events[-1][1]["amount_minor"] == 11500
+    # a distinct top-up event fired (not payment.failed, which implies a retry is coming). The lapse
+    # also emits the uniform subscription.suspended alongside it, so assert PRESENCE, not position.
+    bytype = {t: p for t, p in em.events}
+    assert _events.SUBSCRIPTION_RENEWAL_WALLET_INSUFFICIENT in bytype
+    assert bytype[_events.SUBSCRIPTION_RENEWAL_WALLET_INSUFFICIENT]["amount_minor"] == 11500
+    assert bytype[_events.SUBSCRIPTION_SUSPENDED]["reason"] == "wallet_insufficient"
     assert inv.status != "paid"                              # never marked paid
 
 

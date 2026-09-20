@@ -184,3 +184,36 @@ def test_a_service_with_no_bus_still_takes_money():
         config=CFG)                     # no emitter at all
     _, sub = _plan_sub(b)
     assert run(b.run_cycle(sub.id)).status == "paid"
+
+
+def test_suspend_publishes_subscription_suspended_once_on_the_transition():
+    """A card renewal that lapses to past_due announces it ONCE (reason=dunning), so a consumer can
+    disable a lapsed feature instantly; a later dunning re-suspend of an already past_due sub does
+    NOT re-fire."""
+    st, bus = MemoryDataStore(), _Bus()
+    b = _svc(st, _DeclinedGateway(), bus)
+    _, sub = _plan_sub(b)
+    run(b.run_cycle(sub.id))                           # declined → an open invoice exists
+    inv = run(InvoiceStore(st).list("t1"))[0]
+    run(b._suspend("t1", inv["id"]))
+    e = bus.one(ev.SUBSCRIPTION_SUSPENDED)
+    assert e.payload["subscription_id"] == sub.id
+    assert e.payload["plan_id"] and e.payload["reason"] == "dunning"
+    n = bus.types().count(ev.SUBSCRIPTION_SUSPENDED)
+    run(b._suspend("t1", inv["id"]))                   # already past_due → no second announcement
+    assert bus.types().count(ev.SUBSCRIPTION_SUSPENDED) == n
+
+
+def test_wallet_insufficient_also_publishes_the_uniform_suspended_signal():
+    """The wallet-insufficient lapse emits BOTH its specific reason event AND the uniform
+    subscription.suspended, so a consumer can subscribe to one event for any lapse cause."""
+    st, bus = MemoryDataStore(), _Bus()
+    b = _svc(st, _OkGateway(), bus)
+    _, sub = _plan_sub(b)
+    run(b.run_cycle(sub.id))
+    inv = run(InvoiceStore(st).fetch(run(InvoiceStore(st).list("t1"))[0]["id"]))
+    subo = run(SubscriptionStore(st).fetch(sub.id))
+    run(b._suspend_wallet_insufficient(inv, subo))
+    assert bus.one(ev.SUBSCRIPTION_RENEWAL_WALLET_INSUFFICIENT)
+    e = bus.one(ev.SUBSCRIPTION_SUSPENDED)
+    assert e.payload["subscription_id"] == sub.id and e.payload["reason"] == "wallet_insufficient"
