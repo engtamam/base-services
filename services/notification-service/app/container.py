@@ -179,7 +179,14 @@ _WHATSAPP_PROVIDERS: dict[str, Builder] = {
 }
 
 
-def _build_chain(chain: list[str], registry: dict[str, Builder], name: str, settings):
+def _whatsapp_chain_or_none(chain: list):
+    """A WhatsApp channel with NO real provider must be None, so the notifier's `wa is None` guard
+    refuses with a clear "not configured" instead of a chain that fakes success. See _tolerant_chain."""
+    return FailoverWhatsApp(chain) if chain else None
+
+
+def _build_chain(chain: list[str], registry: dict[str, Builder], name: str, settings,
+                 allow_console_floor: bool = True):
     if not chain:
         chain = ["console"]
     providers = []
@@ -202,11 +209,14 @@ def _build_chain(chain: list[str], registry: dict[str, Builder], name: str, sett
             # at call time through _tolerant_chain. Same posture, just deferred from boot to send.
             _log.warning("provider_unconfigured_skipped_at_boot",
                          extra={"channel": name, "provider": driver})
-    if not providers:
+    if not providers and allow_console_floor:
         # Console is the floor so the chain is never empty — an empty chain fails every send with no
         # provider even to name in the log. A missing token thus degrades to console, never to nothing.
         providers.append(registry["console"](settings))
         _log.warning("provider_chain_empty_fell_back_to_console", extra={"channel": name})
+    elif not providers:
+        # WhatsApp opts out of the console floor: a fabricated "sent" is worse than a clear refusal.
+        _log.warning("provider_chain_empty_no_console_floor", extra={"channel": name})
     return providers
 
 
@@ -232,12 +242,21 @@ class _Overlay:
         return getattr(object.__getattribute__(self, "_s"), name)
 
 
-def _tolerant_chain(chain: list[str], registry: dict[str, Builder], name: str, settings) -> list:
+def _tolerant_chain(chain: list[str], registry: dict[str, Builder], name: str, settings,
+                    allow_console_floor: bool = True) -> list:
     """Build what can be built. A provider with a missing credential is DROPPED, not fatal.
 
     The chain exists so one provider being unusable is survivable; raising here would turn a single
     bad key into a total outage for the channel. Console is kept as the floor so the chain is never
     empty — an empty chain fails every send with no provider to name in the log.
+
+    EXCEPT WhatsApp (`allow_console_floor=False`): the console double makes NO network call and returns
+    a fabricated success id, so falling back to it silently reports "sent" for a customer who received
+    nothing — harmless for email/SMS, but for WhatsApp "sent" carries real consent/regulatory weight
+    (a real number, real delivery). So when every real WhatsApp provider was dropped for a missing
+    credential we return an EMPTY chain, and the caller surfaces a distinguishable "not configured"
+    refusal instead of a fake send. A deployment that genuinely wants the console double still gets it
+    by putting "console" in WHATSAPP_CHAIN (it is then built as a configured provider, not a floor).
     """
     built = []
     for driver in chain:
@@ -250,9 +269,11 @@ def _tolerant_chain(chain: list[str], registry: dict[str, Builder], name: str, s
         except Exception:  # noqa: BLE001 — ConfigError for a missing key, anything a client raises
             _log.warning("provider_unconfigured_skipped",
                          extra={"channel": name, "provider": driver})
-    if not built:
+    if not built and allow_console_floor:
         built.append(registry["console"](settings))
         _log.warning("provider_chain_empty_fell_back_to_console", extra={"channel": name})
+    elif not built:
+        _log.warning("provider_chain_empty_no_console_floor", extra={"channel": name})
     return built
 
 
@@ -266,8 +287,9 @@ def make_provider_pool(settings, secret_store, runtime_config):
             _tolerant_chain(chain, _EMAIL_PROVIDERS, "email", _Overlay(settings, creds))),
         build_sms=lambda chain, creds: FailoverSms(
             _tolerant_chain(chain, _SMS_PROVIDERS, "sms", _Overlay(settings, creds))),
-        build_whatsapp=lambda chain, creds: FailoverWhatsApp(
-            _tolerant_chain(chain, _WHATSAPP_PROVIDERS, "whatsapp", _Overlay(settings, creds))),
+        build_whatsapp=lambda chain, creds: _whatsapp_chain_or_none(
+            _tolerant_chain(chain, _WHATSAPP_PROVIDERS, "whatsapp", _Overlay(settings, creds),
+                            allow_console_floor=False)),
         # A provider bound to ONE specific number (a branch's), same token. A single-element failover:
         # it yields the same (ok, provider, message_id) shape the notifier expects, and single-element
         # means NO fallback — a send explicitly addressed to a number never goes out from another.
@@ -448,8 +470,9 @@ def build_container(settings: Settings) -> Container:
         consent_gate=_pick(_CONSENT_GATE, settings.CONSENT_GATE_DRIVER, "consent_gate", settings),
         email=FailoverEmail(_build_chain(settings.email_chain, _EMAIL_PROVIDERS, "email", settings)),
         sms=FailoverSms(_build_chain(settings.sms_chain, _SMS_PROVIDERS, "sms", settings)),
-        whatsapp=FailoverWhatsApp(
-            _build_chain(settings.whatsapp_chain, _WHATSAPP_PROVIDERS, "whatsapp", settings)),
+        whatsapp=_whatsapp_chain_or_none(
+            _build_chain(settings.whatsapp_chain, _WHATSAPP_PROVIDERS, "whatsapp", settings,
+                         allow_console_floor=False)),
         whatsapp_template_manager=_build_template_manager(settings),
         whatsapp_flow_manager=_build_flow_manager(settings),
         whatsapp_media_uploader=_build_media_uploader(settings),

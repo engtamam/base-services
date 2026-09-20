@@ -176,6 +176,23 @@ class _Renderer:
         return s, b
 
 
+def test_send_with_no_configured_whatsapp_provider_refuses_never_fakes_sent():
+    """The container fix at the notify layer: an unconfigured WhatsApp channel resolves to None, so a
+    send is a DISTINGUISHABLE refusal — never the console double's fabricated 'sent' (the false-success
+    bug that made a message no customer received look delivered to every caller)."""
+    st = MemoryDataStore()
+    svc = NotificationService(
+        templates=TemplateStore(st), prefs=PreferenceStore(st),
+        deliveries=DeliveryStore(st), inapp=InAppStore(st, page_size=20, scan_limit=100),
+        email=None, sms=None, renderer=_Renderer(), email_from="x@y", default_locale="en",
+        whatsapp=None)                                   # unconfigured tenant / no real provider
+    res = run(svc.send_interactive(recipient="9", tenant="t",
+                                   interactive={"type": "button"}, kind="order_status"))
+    assert res["status"] == "failed"                     # NOT "sent"
+    tmpl_res = run(svc.notify(recipient="9", channel="whatsapp", template_key="x", tenant="t"))
+    assert tmpl_res["status"] == "failed"                # the template path refuses too
+
+
 def test_notifier_releases_after_a_successful_meta_mode_interactive_send():
     st = MemoryDataStore()
     wa = FakeWA()

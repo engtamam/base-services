@@ -56,9 +56,20 @@ def test_a_provider_missing_its_credential_boots_degraded_not_crashlooped():
     assert "console" in c.whatsapp.driver and "meta" not in c.whatsapp.driver
 
 
-def test_a_missing_credential_with_no_console_still_falls_back_to_console():
-    c = build_container(_settings(WHATSAPP_CHAIN="meta"))           # meta only, unconfigured
-    assert c.whatsapp is not None and "console" in c.whatsapp.driver
+def test_whatsapp_missing_credential_refuses_rather_than_faking_a_console_send():
+    # meta-only + unconfigured: WhatsApp must NOT fall back to the console double. Console.send() makes
+    # no network call and returns a fabricated success id, so falling back to it would report "sent" for
+    # a customer who received nothing — and for WhatsApp "sent" carries real consent/regulatory weight.
+    # The channel resolves to None so the notifier refuses with a clear "whatsapp channel not configured".
+    c = build_container(_settings(WHATSAPP_CHAIN="meta"))
+    assert c.whatsapp is None
+
+
+def test_email_missing_credential_still_falls_back_to_console():
+    # For email/SMS a no-op console double is a harmless degrade (no consent/delivery weight), so the
+    # floor stays — one unconfigured optional channel must not crash the service.
+    c = build_container(_settings(EMAIL_CHAIN="resend"))            # resend needs a key that is unset
+    assert c.email is not None and "console" in c.email.driver
 
 
 def test_an_unknown_channel_provider_is_still_fatal():
