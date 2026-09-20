@@ -357,6 +357,14 @@ class Settings(BaseSettings):
     # compliance-service served consent-check with ZERO callers for four phases: the control was
     # built and nothing consulted it. `null` answers UNKNOWN (never ALLOWED — a gate that invented
     # permission would be worse than no gate), and each call site declares what to do with that.
+    # KB ENTITLEMENT GATING — resolve what a tenant currently HOLDS (feature.X) to gate KB entries
+    # that carry `requires_entitlement`, a separate axis from role capability. `null` holds nothing
+    # (entitlement-gated entries invisible — fail-closed, feature off); `http` asks the billing/
+    # operations tier. The held set is ALWAYS resolved server-side, never accepted from a request.
+    ENTITLEMENTS_RESOLVER_DRIVER: str = "null"   # null | http
+    ENTITLEMENTS_RESOLVER_URL: str = ""          # e.g. http://billing-service:8000
+    ENTITLEMENTS_RESOLVER_PATH: str = "/internal/entitlements"
+    ENTITLEMENTS_TIMEOUT_SECONDS: int = 3
     CONSENT_GATE_DRIVER: str = "null"        # null | http
     COMPLIANCE_SERVICE_URL: str = ""         # e.g. http://compliance-service:8000
     # THEIR path, so it is a default rather than an assumption about another platform's routing.

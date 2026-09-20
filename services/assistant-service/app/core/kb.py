@@ -94,7 +94,13 @@ class KbEntry:
     kind: str = ""                       # free-form: glossary | field | howto | policy | faq | action
     surfaces: tuple[str, ...] = (ALL_SURFACES,)
     anchor: str = ""                     # UI element id, for the `?` icon's direct lookup
-    requires: str = ""                   # capability needed to SEE this at all
+    requires: str = ""                   # capability (token role) needed to SEE this at all
+    # A live BILLING ENTITLEMENT the tenant must currently hold to see this — a SEPARATE axis from
+    # `requires`. `requires` is what the caller's ROLE may see (from the verified token); this is what
+    # the tenant has BOUGHT (feature.X), resolved fresh at request time so a subscribe/cancel changes
+    # visibility with no re-login. Empty ⇒ visible to everyone (the general/marketing-tier entry); set
+    # ⇒ invisible until the tenant genuinely holds that feature key. Fail-closed, exactly like requires.
+    requires_entitlement: str = ""
     related: tuple[str, ...] = ()
     # Where this entry came from — "file", "catalog", … Kept so an operator can tell generated
     # entries from authored ones, and so a regenerated source can replace only its own.
@@ -130,14 +136,21 @@ class KbEntry:
             return True
         return (surface or "").strip().lower() in self.surfaces
 
-    def visible_to(self, caps: frozenset[str]) -> bool:
-        """FAIL CLOSED. An entry that names a capability is invisible without it.
+    def visible_to(self, caps: frozenset[str], held: frozenset[str] = frozenset()) -> bool:
+        """FAIL CLOSED on BOTH axes. An entry that names a capability is invisible without it; an entry
+        that names an entitlement is invisible unless the tenant currently holds it.
 
         Not "hidden from the UI" — never retrieved, never cited, never counted. Help text is a
         description of what the platform can do, and describing an admin capability to someone who
-        cannot hold it is how a customer learns which door to try.
+        cannot hold it is how a customer learns which door to try. `held` is resolved server-side from
+        an authoritative source (never a caller-supplied fact), so an unbought app's detailed KB stays
+        invisible even to a caller that claims the entitlement.
         """
-        return not self.requires or self.requires in caps
+        if self.requires and self.requires not in caps:
+            return False
+        if self.requires_entitlement and self.requires_entitlement not in held:
+            return False
+        return True
 
 
 def parse_entry(entry_id: str, raw: Any, *, source: str = "") -> KbEntry:
@@ -187,6 +200,7 @@ def parse_entry(entry_id: str, raw: Any, *, source: str = "") -> KbEntry:
         surfaces=surfaces,
         anchor=str(raw.get("anchor") or "").strip(),
         requires=str(raw.get("requires") or "").strip(),
+        requires_entitlement=str(raw.get("requires_entitlement") or "").strip(),
         related=tuple(str(r).strip() for r in related_raw if str(r).strip()),
         source=source,
         metadata=meta,

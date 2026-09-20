@@ -23,13 +23,27 @@ from app.ports.model import Model
 
 class KbService:
     def __init__(self, *, source: KnowledgeSource, model: Model, cfg: dict,
-                 embeddings=None) -> None:
+                 embeddings=None, entitlements=None) -> None:
         self._source = source
         self._model = model
         self._cfg = cfg
         self._emb = embeddings
+        # Resolves what a tenant currently HOLDS (feature.X) to gate entries carrying
+        # requires_entitlement — server-side, never caller-supplied. None ⇒ nothing held (fail-closed:
+        # entitlement-gated entries invisible).
+        self._entitlements = entitlements
         self._index: KbIndex | None = None
         self._lock = asyncio.Lock()
+
+    async def _held(self, tenant: str) -> frozenset[str]:
+        """The tenant's live entitlement set, resolved server-side. Empty when no resolver is wired or
+        resolution fails — so a detailed, entitlement-gated entry stays invisible (fail-closed)."""
+        if self._entitlements is None or not tenant:
+            return frozenset()
+        try:
+            return await self._entitlements.held(tenant)
+        except Exception:   # noqa: BLE001 — a resolver hiccup hides detailed KB, never breaks the ask
+            return frozenset()
 
     # ── index lifecycle ───────────────────────────────────────────────────────
     async def index(self) -> KbIndex:
@@ -64,13 +78,16 @@ class KbService:
             pass
 
     # ── the two read paths ────────────────────────────────────────────────────
-    async def lookup(self, *, anchor: str, surface: str, caps: frozenset[str]) -> KbEntry | None:
+    async def lookup(self, *, anchor: str, surface: str, caps: frozenset[str],
+                     tenant: str = "") -> KbEntry | None:
         """The `?` icon: a dictionary lookup, no ranking and no model."""
-        return (await self.index()).by_anchor(anchor, surface=surface, caps=caps)
+        held = await self._held(tenant)
+        return (await self.index()).by_anchor(anchor, surface=surface, caps=caps, held=held)
 
     async def retrieve(self, *, question: str, surface: str, caps: frozenset[str],
-                       lang: str) -> list[Hit]:
+                       lang: str, tenant: str = "") -> list[Hit]:
         idx = await self.index()
+        held = await self._held(tenant)
         # The QUERY vector is fetched per request and is equally optional: if it fails, the search
         # simply runs lexically, which is the same degradation as an unembedded index.
         qv = None
@@ -82,16 +99,17 @@ class KbService:
                 qv = None
         hits = idx.search(question, surface=surface, caps=caps, lang=lang,
                           limit=self._cfg["top_n"], min_score=self._cfg["min_score"],
-                          query_vector=qv, alpha=self._cfg.get("hybrid_alpha", 1.0))
+                          query_vector=qv, alpha=self._cfg.get("hybrid_alpha", 1.0), held=held)
         return budgeted(hits, max_chars=self._cfg["max_context_chars"])
 
     async def ask(self, *, question: str, surface: str, caps: frozenset[str], lang: str,
                   not_found_text: str, unavailable_text: str = "",
-                  persona: str = "") -> tuple[Answer, list[Hit]]:
+                  persona: str = "", tenant: str = "") -> tuple[Answer, list[Hit]]:
         """Retrieve, then answer or abstain. Hits are returned alongside so the caller can report
         what was searched even when nothing was good enough — an abstention that says only "I don't
         know" gives an operator nothing to act on."""
-        hits = await self.retrieve(question=question, surface=surface, caps=caps, lang=lang)
+        hits = await self.retrieve(question=question, surface=surface, caps=caps, lang=lang,
+                                   tenant=tenant)
         answer = await compose(question=question, hits=hits, model=self._model, lang=lang,
                                not_found_text=not_found_text,
                                unavailable_text=unavailable_text, persona=persona,

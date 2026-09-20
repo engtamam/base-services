@@ -50,6 +50,7 @@ def build_kb(request: Request) -> KbService:
              "max_answer_tokens": s.MODEL_MAX_ANSWER_TOKENS,
              "hybrid_alpha": s.RETRIEVAL_HYBRID_ALPHA},
         embeddings=c.embeddings,
+        entitlements=getattr(c, "entitlements", None),
     )
 
 
@@ -108,6 +109,7 @@ async def ask(request: Request, body: AskIn,
             question=cleaned.text,
             surface=body.surface,
             caps=principal.caps,          # from the verified token, never from the body
+            tenant=principal.tenant or "",  # held entitlements are resolved server-side from this
             lang=body.lang or s.DEFAULT_LANGUAGE,
             not_found_text=s.ASSISTANT_NOT_FOUND_TEXT,
             unavailable_text=s.ASSISTANT_UNAVAILABLE_TEXT,
@@ -185,7 +187,8 @@ async def help_for_anchor(request: Request, anchor: str = "", surface: str = "",
     if not anchor.strip():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "ANCHOR_REQUIRED")
     s = get_settings()
-    entry = await build_kb(request).lookup(anchor=anchor, surface=surface, caps=principal.caps)
+    entry = await build_kb(request).lookup(anchor=anchor, surface=surface, caps=principal.caps,
+                                           tenant=principal.tenant or "")
     if entry is None:
         # 404 whether it does not exist or the caller may not see it: distinguishing them would
         # confirm that an admin-only control exists to someone who cannot use it.

@@ -96,14 +96,15 @@ class KbIndex:
             return 0.0
         return sum(x * y for x, y in zip(a, b))       # both already unit-length
 
-    def _candidates(self, *, surface: str, caps: frozenset[str], lang: str) -> list[int]:
+    def _candidates(self, *, surface: str, caps: frozenset[str], lang: str,
+                    held: frozenset[str] = frozenset()) -> list[int]:
         """Chunk ordinals this caller may see, in this language, on this surface."""
         out = []
         for i, chunk in enumerate(self._chunks):
             entry = self._entries.get(chunk.entry_id)
             if entry is None:
                 continue
-            if not entry.visible_to(caps):
+            if not entry.visible_to(caps, held):
                 continue
             if not entry.serves(surface):
                 continue
@@ -125,7 +126,8 @@ class KbIndex:
 
     def search(self, query: str, *, surface: str = "", caps: frozenset[str] = frozenset(),
                lang: str = "", limit: int = 8, min_score: float = 0.0,
-               query_vector: list[float] | None = None, alpha: float = 1.0) -> list[Hit]:
+               query_vector: list[float] | None = None, alpha: float = 1.0,
+               held: frozenset[str] = frozenset()) -> list[Hit]:
         """The best passages for `query`, already filtered to what this caller may see.
 
         Returns at most one chunk per entry: three passages of one page crowd out three different
@@ -135,7 +137,7 @@ class KbIndex:
         terms = tokenize(query)
         if not terms:
             return []
-        candidates = self._candidates(surface=surface, caps=caps, lang=lang)
+        candidates = self._candidates(surface=surface, caps=caps, lang=lang, held=held)
         if not candidates:
             return []
 
@@ -196,17 +198,19 @@ class KbIndex:
         return hits
 
     def by_anchor(self, anchor: str, *, surface: str = "",
-                  caps: frozenset[str] = frozenset()) -> KbEntry | None:
+                  caps: frozenset[str] = frozenset(),
+                  held: frozenset[str] = frozenset()) -> KbEntry | None:
         """The entry a UI element points at — the `?` icon path.
 
         No ranking, no model, no cost: this is a dictionary lookup, and it is the common case. It
-        still applies both filters, because a direct lookup is not an authorisation bypass.
+        still applies ALL filters (role capability AND live entitlement), because a direct lookup is
+        not an authorisation bypass.
         """
         target = (anchor or "").strip()
         if not target:
             return None
         for entry in self._entries.values():
-            if entry.anchor == target and entry.visible_to(caps) and entry.serves(surface):
+            if entry.anchor == target and entry.visible_to(caps, held) and entry.serves(surface):
                 return entry
         return None
 

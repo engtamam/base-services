@@ -33,6 +33,8 @@ from app.adapters.audit_sink.http import HttpAuditSink
 from app.adapters.audit_sink.null import NullAuditSink
 from app.adapters.consent_gate.http import HttpConsentGate
 from app.adapters.consent_gate.null import NullConsentGate
+from app.adapters.entitlements.http import HttpEntitlements
+from app.adapters.entitlements.null import NullEntitlements
 from app.adapters.knowledge_source.catalog import CatalogKnowledgeSource
 from app.adapters.knowledge_source.composite import CompositeKnowledgeSource
 from app.adapters.knowledge_source.file import FileKnowledgeSource
@@ -127,6 +129,12 @@ _CONSENT_GATE: dict[str, Builder] = {
     "http": lambda s: HttpConsentGate(s.COMPLIANCE_SERVICE_URL, s.INTERNAL_SERVICE_TOKEN,
                                       timeout=s.CONSENT_TIMEOUT_SECONDS,
                                       path=s.CONSENT_CHECK_PATH),
+}
+_ENTITLEMENTS: dict[str, Builder] = {
+    "null": lambda s: NullEntitlements(),
+    "http": lambda s: HttpEntitlements(s.ENTITLEMENTS_RESOLVER_URL, s.INTERNAL_SERVICE_TOKEN,
+                                       timeout=s.ENTITLEMENTS_TIMEOUT_SECONDS,
+                                       path=s.ENTITLEMENTS_RESOLVER_PATH),
 }
 _TELEMETRY: dict[str, Builder] = {
     "stdout": lambda s: StdoutTelemetry(),
@@ -226,6 +234,7 @@ class Container:
     model: Any = None
     embeddings: Any = None
     consent_gate: Any = None
+    entitlements: Any = None
 
     def describe(self) -> list[dict[str, str]]:
         """[{port, driver}] for the service manifest."""
@@ -241,7 +250,8 @@ class Container:
             {"port": "telemetry", "driver": self.telemetry.driver},
         ] + ([{"port": "audit_sink", "driver": self.audit_sink.driver}]
              if self.audit_sink is not None else [])           + ([{"port": "consent_gate", "driver": self.consent_gate.driver}]
-             if self.consent_gate is not None else [])
+             if self.consent_gate is not None else []) + ([{"port": "entitlements", "driver": self.entitlements.driver}]
+             if self.entitlements is not None else [])
 
     def health_probes(self) -> dict[str, Any]:
         """name -> async health() for adapters that support it (readiness)."""
@@ -297,4 +307,5 @@ def build_container(settings: Settings) -> Container:
         model=_pick(_MODEL, settings.MODEL_DRIVER, "model", settings),
         embeddings=_pick(_EMBEDDINGS, settings.EMBEDDINGS_DRIVER, "embeddings", settings),
         consent_gate=_pick(_CONSENT_GATE, settings.CONSENT_GATE_DRIVER, "consent_gate", settings),
+        entitlements=_pick(_ENTITLEMENTS, settings.ENTITLEMENTS_RESOLVER_DRIVER, "entitlements", settings),
     )

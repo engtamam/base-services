@@ -38,7 +38,14 @@ _PARAM = re.compile(r"\{[^}]*\}")
 # Config-path fields that legitimately name something NO base-service serves (an external system, a
 # customer's own API) OR a KNOWN, reviewed gap. Keyed "<svc>:<FIELD>" -> reason. Empty today —
 # ticket's ASSISTANT_TRIAGE/DRAFT paths are now served by assistant-service (internal tier).
-EXCLUDED: dict[str, str] = {}
+EXCLUDED: dict[str, str] = {
+    # The KB entitlement resolver targets the DEPLOYING PLATFORM's own billing/operations endpoint,
+    # which returns a tenant's full held-feature set ({"held": [...]}). base-services ships no such
+    # aggregate endpoint (its billing entitlements-check is per-key/advisory, not a held-set list), and
+    # the authoritative set lives in the platform's operations layer — an external target the operator
+    # points ENTITLEMENTS_RESOLVER_URL/PATH at. Default off (null resolver); the path is a placeholder.
+    "assistant-service:ENTITLEMENTS_RESOLVER_PATH": "external: platform-owned entitlement endpoint",
+}
 for _e in (os.environ.get("PEER_PATHS_GATE_EXCLUDE", "") or "").split(","):
     if _e.strip():
         EXCLUDED[_e.strip()] = "excluded via env (selftest)"
