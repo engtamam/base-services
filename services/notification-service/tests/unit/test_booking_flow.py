@@ -396,11 +396,13 @@ def test_sessions_are_tenant_scoped():
     e = _engine()
     _init(e, tenant="shop_a")
     _submit(e, SELECT, {"service": "cut"}, tenant="shop_a")
-    # a different tenant with the SAME flow_token starts fresh, never sees shop_a's progress
+    # a different tenant with the SAME flow_token has NO session of its own, so it never sees shop_a's
+    # progress: it is restarted at the first step with an explicit "start again" message (the fix for
+    # the silent-reset bug), NOT advanced through shop_a's state.
     r = run(e.handle({"action": "data_exchange", "screen": SELECT, "flow_token": TOK,
                       "data": {"selection": "color"}}, tenant="shop_b"))
-    # shop_b had no session → step 0 recorded service, advances to staff (not shop_a's calendar)
-    assert r["screen"] == SELECT and r["data"]["dimension"] == "staff"
+    assert r["screen"] == SELECT and r["data"]["dimension"] == "service"   # step 0, not shop_a's staff/calendar
+    assert r["data"].get("error_message")                                  # explicit, never a silent hijack
 
 
 # ── definition validation ────────────────────────────────────────────────────
@@ -502,3 +504,39 @@ def test_display_is_rejected_on_a_reserved_dimension_or_combined_with_input():
                 {"dimension": "x", "display": True, "input": "text"}):
         with pytest.raises(BookingError):
             FlowDefinition(steps=(bad, {"dimension": "confirm"}))
+
+
+# ── session expiry on a non-INIT action (silent-reset bug) ───────────────────────
+def test_expired_session_on_a_non_init_action_is_told_not_silently_reset():
+    """A customer who pauses > TTL mid-booking and then taps Next/Back must be TOLD the session expired
+    and started clean — not silently dumped on step 0 with their picks and identity quietly wiped."""
+    from app.core.booking_flow import BookingEngine
+    clock = _Clock()
+    e = BookingEngine(definitions=_Defs(_defn()), availability=_Avail(), booking=_Booking(),
+                      sessions=SessionStore(MemoryDataStore(), clock=clock))
+    run(e.handle({"action": "INIT", "flow_token": TOK, "data": {"customer": "u1"}}, tenant="t1"))
+    r = run(e.handle({"action": "data_exchange", "screen": SELECT, "flow_token": TOK,
+                      "data": {"selection": "cut"}}, tenant="t1"))       # picked a service → staff step
+    assert r["screen"] == SELECT and r["data"]["dimension"] == "staff"
+
+    clock.t += 100_000                                                    # idle past the 30-min TTL
+
+    r = run(e.handle({"action": "data_exchange", "screen": SELECT, "flow_token": TOK,
+                      "data": {"selection": "dr_cut"}}, tenant="t1"))
+    assert r["data"].get("error_message")                                # NOT a silent reset
+    assert "expired" in r["data"]["error_message"].lower()
+    assert r["data"]["dimension"] == "service"                           # restarted at the first step
+
+
+def test_expired_session_on_a_BACK_action_is_also_told():
+    from app.core.booking_flow import BookingEngine, BACK
+    clock = _Clock()
+    e = BookingEngine(definitions=_Defs(_defn()), availability=_Avail(), booking=_Booking(),
+                      sessions=SessionStore(MemoryDataStore(), clock=clock))
+    run(e.handle({"action": "INIT", "flow_token": TOK, "data": {"customer": "u1"}}, tenant="t1"))
+    run(e.handle({"action": "data_exchange", "screen": SELECT, "flow_token": TOK,
+                  "data": {"selection": "cut"}}, tenant="t1"))
+    clock.t += 100_000
+    r = run(e.handle({"action": BACK, "screen": SELECT, "flow_token": TOK, "data": {}}, tenant="t1"))
+    assert "expired" in (r["data"].get("error_message") or "").lower()
+    assert r["data"]["dimension"] == "service"

@@ -331,7 +331,20 @@ class BookingEngine:
             await self._sessions.save(tenant, token, state)
             return await self._render(defn, tenant, token, state)
 
-        state = await self._sessions.load(tenant, token) or {"chosen": {}, "step": 0, "customer": ""}
+        state = await self._sessions.load(tenant, token)
+        if state is None:
+            # The Flow session expired (SessionStore TTL, default 30m) or was evicted mid-booking. The
+            # old code silently reused a BLANK state here, so a BACK/Next after a pause dumped the
+            # customer back on step 0 with their picks — and their `customer` identity — quietly wiped and
+            # NO explanation. Instead, start a clean session AND tell them, so a lost session looks like a
+            # lost session, not like nothing happened. (INIT always seeds+saves above, so this is only the
+            # expiry path; nothing was reserved yet, so no booking/slot is affected.)
+            fresh = {"chosen": {}, "step": 0, "customer": ""}
+            await self._sessions.save(tenant, token, fresh)
+            rendered = await self._render(defn, tenant, token, fresh)
+            rendered.setdefault("data", {})["error_message"] = defn.label(
+                "session_expired", "Your booking session expired. Please start again.")
+            return rendered
 
         if action == BACK:
             state["step"] = max(0, int(state["step"]) - 1)
