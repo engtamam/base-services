@@ -338,10 +338,17 @@ async def logout(request: Request, body: RefreshIn) -> dict:
 async def me(request: Request, principal: Principal = Depends(require_user),
              guard=Depends(get_guard)) -> dict:
     user = await UserRepository(request.app.state.container.datastore, request.app.state.container.login_identifier).get(principal.subject)
-    if user is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
-    async with guard.step("respond") as step:
+    if user is not None:
         body = user.public()  # excludes password_hash / mfa_secret
+    else:
+        # A multi-tenant Person (created via seed_owner/add_member, not /auth/register): the token
+        # subject IS the person_id. Return its public view instead of 404-ing every real account.
+        mem = _svc(request).memberships
+        person = await mem.person(principal.subject) if mem is not None else None
+        if person is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+        body = person.public()  # id / identifier / status — never password_hash
+    async with guard.step("respond") as step:
         step.result = body
     return body
 
@@ -428,12 +435,20 @@ async def change_password(request: Request, body: ChangePwIn,
         ip=request.client.host if request.client else "")
     repo = UserRepository(request.app.state.container.datastore, request.app.state.container.login_identifier)
     user = await repo.get(principal.subject)
-    if user is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
     try:
-        ok = await _svc(request).change_password(user, body.old_password, body.new_password)
+        if user is not None:
+            ok: bool | None = await _svc(request).change_password(
+                user, body.old_password, body.new_password)
+        else:
+            # No single-tenant User row: a real account is a multi-tenant Person (created via
+            # seed_owner/add_member, never /auth/register), whose token subject IS the person_id.
+            # Change its password on the Person store instead of 404-ing every real account.
+            ok = await _svc(request).change_password_person(
+                principal.subject, body.old_password, body.new_password)
     except WeakPassword:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "WEAK_PASSWORD")
+    if ok is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")   # neither a user nor a person
     if not ok:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "INVALID_PASSWORD")
     return {"status": "ok"}

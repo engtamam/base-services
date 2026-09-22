@@ -881,6 +881,32 @@ class AuthService:
         await self._users.update(user)
         return True
 
+    async def change_password_person(self, person_id: str, old_password: str,
+                                     new_password: str) -> bool | None:
+        """Change a PERSON's password (the multi-tenant identity model). Real accounts are created as
+        Persons via seed_owner/add_member — never through /auth/register — so they have no UserRepository
+        row and the User change_password above 404s for every one of them. This is the missing twin,
+        mirroring its exact security posture on the Person store: verify the old password, enforce the
+        minimum length, re-hash and persist.
+
+        Returns None when there is NO such person (so the route falls through to 404, indistinguishable
+        from an unknown user), False on a wrong/absent old password, True on success. An INVITED person
+        who never claimed their account has an UNUSABLE hash: the verify fails → False (they recover via
+        claim/reset, never a blind change), so an unclaimed account is never an oracle here either."""
+        if self._memberships is None:
+            return None
+        person = await self._memberships.person(person_id)
+        if person is None:
+            return None
+        if person.password_hash == UNUSABLE_PASSWORD \
+                or not self._hasher.verify(old_password, person.password_hash):
+            return False
+        if len(new_password) < self._min_pw:
+            raise WeakPassword(f"password must be >= {self._min_pw} characters")
+        person.password_hash = self._hasher.hash(new_password)
+        await self._memberships.save_person(person)
+        return True
+
     def ensure_password_strength(self, new_password: str) -> None:
         """Raise WeakPassword unless the password meets the minimum length. Split out so the reset flow
         can reject a weak password BEFORE it consumes the single-use OTP — a locked-out admin must not
