@@ -50,11 +50,18 @@ SUBSCRIPTION_RENEWAL_WALLET_INSUFFICIENT = "subscription.renewal_wallet_insuffic
 # `reason` distinguishes the cause. The return direction (past_due -> active on payment) is already
 # SUBSCRIPTION_RENEWED; a terminal stop is SUBSCRIPTION_CANCELLED.
 SUBSCRIPTION_SUSPENDED = "subscription.suspended"
+# A renewal was invoiced on a gateway with NO saved-card charge (a hosted-checkout-only gateway such
+# as TuwaiqPay): there is no token to charge, so instead of a doomed card retry the service mints a
+# hosted PAY LINK for the renewal invoice and emits this so a channel (WhatsApp/email/in-app) delivers
+# it to the payer. The invoice stays open and is settled through the normal webhook/reconcile seam
+# when the payer pays; if unpaid past grace the subscription lapses like any other unpaid renewal.
+SUBSCRIPTION_RENEWAL_PAYMENT_LINK = "subscription.renewal_payment_link"
 
 EMITTED = (
     PAYMENT_SUCCEEDED, PAYMENT_FAILED, PAYMENT_REFUNDED,
     SUBSCRIPTION_RENEWED, SUBSCRIPTION_CANCELLED, INVOICE_PAID,
     SUBSCRIPTION_RENEWAL_WALLET_INSUFFICIENT, SUBSCRIPTION_SUSPENDED,
+    SUBSCRIPTION_RENEWAL_PAYMENT_LINK,
 )
 
 

@@ -388,6 +388,55 @@ async def checkout_internal(request: Request, body: CheckoutInternalIn) -> dict:
     return result
 
 
+class SubscriptionCheckoutLinkInternalIn(BaseModel):
+    """Same shape as POST /api/v1/billing/subscriptions/checkout-link, tenant in the body — a product
+    service (e.g. operations) starting a hosted-checkout subscription FOR a shop."""
+    tenant: str = Field(min_length=1, max_length=128)
+    plan_id: str = Field(min_length=1, max_length=128)
+    interval: str = Field(default="month", pattern="^(month|year|once)$")
+    quantity: int = Field(default=1, ge=1, le=1000)
+    coupon_code: str = Field(default="", max_length=128)
+    buyer_name: str = Field(default="", max_length=256)
+    buyer_vat: str = Field(default="", max_length=64)
+    buyer_cr: str = Field(default="", max_length=64)
+    return_url: str = Field(default="", max_length=1024)
+    ttl_seconds: int | None = Field(default=None, ge=0)
+    idempotency_key: str = Field(default="", max_length=128)
+
+
+@router.post("/billing/subscriptions/checkout-link", status_code=201,
+             dependencies=[Depends(require_internal_token)])
+async def start_subscription_checkout_internal(
+        request: Request, body: SubscriptionCheckoutLinkInternalIn,
+        settings: Settings = Depends(get_settings)) -> dict:
+    """Internal twin of POST /api/v1/billing/subscriptions/checkout-link — start a new paid
+    subscription that returns a hosted-checkout link, service-to-service. Same core
+    .start_subscription_checkout(); tenant in the body; X-Internal-Token auth. No new business logic —
+    exactly the relationship subscribe_internal/checkout_internal have to their user routes."""
+    from app.core.billing_service import UpgradeChargeFailed, UpgradeChargeUnavailable
+    try:
+        res = await (await build_billing(request, body.tenant)).start_subscription_checkout(
+            tenant=body.tenant, plan_id=body.plan_id, interval=body.interval, quantity=body.quantity,
+            coupon_code=body.coupon_code, buyer_name=body.buyer_name, buyer_vat=body.buyer_vat,
+            buyer_cr=body.buyer_cr, return_url=body.return_url,
+            ttl_seconds=int(body.ttl_seconds or 0), idempotency_key=body.idempotency_key)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    except UpgradeChargeUnavailable as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "GATEWAY_UNAVAILABLE") from exc
+    except UpgradeChargeFailed as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc) or "CHECKOUT_FAILED") from exc
+    await request.app.state.auditor.record(
+        "subscription.checkout_link_created", actor="", tenant=body.tenant,
+        resource=f"subscription:{res['subscription_id']}",
+        ip=request.client.host if request.client else "",
+        metadata={"plan": body.plan_id, "invoice_id": res.get("invoice_id") or "-"})
+    if res.get("checkout_required") and res.get("token"):
+        base = (settings.BILLING_PAY_LINK_BASE_URL or "").strip()
+        res["pay_url"] = (base.rstrip("/") + "/" + res["token"]) if base else res["checkout_url"]
+    return res
+
+
 class CheckoutPreviewInternalIn(BaseModel):
     """Same shape as the user checkout preview, tenant in the body."""
     tenant: str = Field(min_length=1, max_length=128)

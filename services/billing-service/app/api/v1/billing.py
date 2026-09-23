@@ -228,6 +228,10 @@ async def build_billing(request: Request, tenant: str = "") -> BillingService:
                 "wallet_topup_max_minor": s.WALLET_TOPUP_MAX_MINOR,
                 # Pay-by-link: how long a generated invoice pay-link stays valid (default 72h).
                 "pay_link_ttl_seconds": s.BILLING_PAY_LINK_TTL_SECONDS,
+                # Stable redirector base for a pay-link (BILLING_PAY_LINK_BASE_URL). When set, core
+                # builds pay_url = base/<token> for the renewal-payment-link event so a channel can
+                # send a stable link; empty falls back to the raw gateway checkout_url.
+                "pay_link_base_url": s.BILLING_PAY_LINK_BASE_URL,
                 # Entitlement resolution (Phase 42). Required by EntitlementResolver —
                 # every default lives in config.py, never inline at a call site.
                 "billable_statuses": s.billable_statuses,

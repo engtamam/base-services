@@ -1574,6 +1574,14 @@ class BillingService:
         # pinned mode: charge the subscription's OWN gateway (fail-closed if it cannot build), so a
         # renewal after a driver switch still reaches the gateway that issued the token.
         gw = await self._gw_for_sub(sub) if sub is not None else self._gw
+        # TOKEN-LESS gateway (hosted-checkout only, e.g. TuwaiqPay): there is NO saved card to charge,
+        # so a card retry would only fail and dun forever. Instead mint a hosted pay link for this
+        # renewal invoice and emit it for a channel to deliver; the invoice is settled through the
+        # normal webhook/reconcile seam when the payer pays. Placeholder `pay` is discarded — the pay
+        # link owns the pending payment (bound to the gateway session so reconcile resolves it).
+        if not getattr(gw, "supports_token_charge", True):
+            await self._collect_by_pay_link(inv, sub)
+            return
         try:
             charge = gw.charge(amount_minor=inv.total_minor, currency=inv.currency,
                                token=token, idempotency_key=inv.id, description=inv.number)
@@ -1593,6 +1601,45 @@ class BillingService:
             pay.error = charge.error
             await self._dunning(pay)
             await self._payments.save(pay)
+
+    async def _collect_by_pay_link(self, inv: Invoice, sub=None) -> None:
+        """Collect a renewal on a token-less (hosted-checkout-only) gateway by minting a hosted pay
+        link for the invoice and emitting SUBSCRIPTION_RENEWAL_PAYMENT_LINK for a channel to deliver.
+
+        Never a card charge, never dunning — there is no token. The invoice stays open; the pay link
+        carries its own pending payment (bound to the gateway session), so the existing reconcile
+        poller / webhook settles it into _mark_paid when the payer pays, and if it is never paid the
+        entitlement lapses at grace like any other unpaid renewal (the resolver fails closed).
+
+        Fail-safe: a gateway that cannot mint a link right now must NOT abort the sweep (which may be
+        renewing many subscriptions). It is logged and left for a later retry (the per-invoice
+        POST /invoices/{id}/pay-link is idempotent — single-use per invoice — so a retry reuses it).
+        """
+        try:
+            res = await self.create_invoice_pay_link(tenant=inv.tenant, invoice_id=inv.id)
+        except (UpgradeChargeUnavailable, UpgradeChargeFailed, GatewayUnavailable) as exc:
+            _log.warning("renewal_pay_link_failed",
+                         extra={"tenant": inv.tenant, "invoice": inv.id,
+                                "error": type(exc).__name__})
+            return
+        if self._events is None:
+            return
+        base = (self._cfg.get("pay_link_base_url") or "").strip()
+        token = str(res.get("token") or "")
+        checkout_url = str(res.get("checkout_url") or "")
+        pay_url = (base.rstrip("/") + "/" + token) if (base and token) else checkout_url
+        await self._events.emit(_events.SUBSCRIPTION_RENEWAL_PAYMENT_LINK, {
+            "tenant": inv.tenant,
+            "subscription_id": getattr(sub, "id", "") or inv.subscription_id or "",
+            "invoice_id": inv.id,
+            "number": inv.number,
+            "amount_minor": int(inv.total_minor),
+            "currency": inv.currency,
+            "checkout_url": checkout_url,
+            "pay_url": pay_url,
+            "token": token,
+            "expires_at": float(res.get("expires_at", 0) or 0),
+        })
 
     # ── renewal by wallet debit ─────────────────────────────────────────────────
     def _wallet_renewal_fund(self, sub) -> str | None:

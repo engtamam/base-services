@@ -47,6 +47,10 @@ def _norm(status: str) -> str:
 
 class TuwaiqPayGateway:
     driver = "tuwaiqpay"
+    # No saved-card/token charge exists on TuwaiqPay (charge() below always raises). The billing core
+    # reads this: a renewal on such a gateway is collected with a hosted PAY LINK (minted + emitted for
+    # a channel to send), not a doomed card retry. Every other adapter defaults to True (getattr).
+    supports_token_charge = False
 
     def __init__(self, api_key: str = "", base: str = "", extra_secret: str = "",
                  return_url: str = "", webhook_tolerance: int = 300, **_) -> None:
