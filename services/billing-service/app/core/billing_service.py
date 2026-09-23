@@ -778,6 +778,61 @@ class BillingService:
             trial_end=trial_end, first_period_prorated=first_period_prorated, created=iso())
         return await self._subs.save(sub)
 
+    async def subscribe_with_payment(self, *, tenant: str, plan_id: str, interval: str = "month",
+                                     quantity: int = 1, coupon_code: str = "", payment_token: str = "",
+                                     buyer_name: str = "", buyer_vat: str = "", buyer_cr: str = "",
+                                     idempotency_key: str = "") -> dict[str, Any]:
+        """Direct single-plan signup that NEVER activates a PAID plan without an immediate charge.
+
+        The safe front door for POST /subscriptions. The bare subscribe() primitive marks a non-trial
+        plan `active` and stores the token but charges NOTHING (its first real charge is a full interval
+        later, at renewal) — so a self-service caller could hold an entitled paid plan free until the
+        next cycle, and cancel before it. That primitive stays as-is because checkout() and the
+        hosted-checkout path both create the row first and settle the money themselves; this method is
+        the charge-first wrapper the customer route uses:
+
+          * trial or FREE plan (first-period total 0) → subscribe() as-is: no payment is due, so
+            `trialing`/`active` is correct and no invoice is cut.
+          * PAID plan + payment_token → routed through the SAME one-invoice-one-charge checkout() path,
+            so the first period is invoiced AND charged now (a decline dunns, exactly like a renewal) —
+            never active-without-an-attempted-charge.
+          * PAID plan + NO token → refused PAYMENT_REQUIRED (the caller should use the hosted
+            checkout-link path, which returns a pay link and activates on settlement). Nothing is
+            created — no dangling entitlement.
+
+        Returns the subscription dict (backward-compatible top-level fields) plus `paid`/`invoice_id`.
+        """
+        plan = await self._plans.fetch(plan_id)
+        if plan is None:
+            raise ValueError("PLAN_NOT_FOUND")
+        if not plan.active:
+            raise ValueError("PLAN_NOT_AVAILABLE")
+        trial_days = plan.trial_days or self._cfg["trial_days"]
+        amount = int((self._price_for(plan, interval) or {}).get("amount_minor", 0) or 0)
+        if trial_days > 0 or amount == 0:
+            # No money is due now — the bare primitive is safe (trial/free never grants paid access
+            # for free, and checkout() would only cut a noisy zero invoice).
+            sub = await self.subscribe(
+                tenant=tenant, plan_id=plan_id, interval=interval, quantity=quantity,
+                coupon_code=coupon_code, payment_token=payment_token, buyer_name=buyer_name,
+                buyer_vat=buyer_vat, buyer_cr=buyer_cr)
+            return {**sub.to_dict(), "paid": True, "invoice_id": ""}
+        if not payment_token:
+            # A paid plan with no way to charge must NOT become active — that is the vulnerability.
+            raise ValueError("PAYMENT_REQUIRED")
+        # PAID + token: issue and charge the first invoice now via the atomic checkout path (one
+        # invoice, one charge, idempotent), then return the created subscription.
+        result = await self.checkout(
+            tenant=tenant,
+            items=[{"plan_id": plan_id, "interval": interval, "quantity": quantity,
+                    "coupon_code": coupon_code}],
+            payment_token=payment_token, buyer_name=buyer_name, buyer_vat=buyer_vat,
+            buyer_cr=buyer_cr, idempotency_key=idempotency_key)
+        sub_id = result["items"][0]["subscription_id"] if result.get("items") else ""
+        sub = await self._subs.fetch(sub_id) if sub_id else None
+        base = sub.to_dict() if sub is not None else {"id": sub_id, "tenant": tenant}
+        return {**base, "paid": result.get("paid", False), "invoice_id": result.get("invoice_id", "")}
+
     async def change_plan(self, sub_id: str, *, new_plan_id: str, interval: str | None = None,
                           quantity: int | None = None) -> dict[str, Any]:
         """Change a subscription's plan, Stripe-style — and NEVER produce a credit.

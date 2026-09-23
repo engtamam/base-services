@@ -362,6 +362,7 @@ class SubscribeIn(BaseModel):
     buyer_name: str = ""
     buyer_vat: str = ""
     buyer_cr: str = ""
+    idempotency_key: str = Field(default="", max_length=128)
     tenant: str | None = None
 
 
@@ -596,18 +597,32 @@ async def delete_discount_rule(request: Request, rule_id: str,
 # ── subscriptions (customer) ────────────────────────────────────────────────────
 @router.post("/subscriptions", status_code=201)
 async def subscribe(request: Request, body: SubscribeIn, principal: Principal = Depends(_SELF)) -> dict:
+    """Start a single subscription. A PAID plan is INVOICED AND CHARGED now (via the atomic checkout
+    path) before it becomes active — a paid plan is never activated on a stored token alone. A trial or
+    free plan needs no payment and is created directly. A paid plan sent with no payment_token is
+    refused PAYMENT_REQUIRED (use POST /subscriptions/checkout-link for a hosted pay link instead)."""
+    tenant = _tenant(principal, body.tenant)
     try:
-        sub = await (await build_billing(request)).subscribe(
-            tenant=_tenant(principal, body.tenant), plan_id=body.plan_id, interval=body.interval,
+        res = await (await build_billing(request)).subscribe_with_payment(
+            tenant=tenant, plan_id=body.plan_id, interval=body.interval,
             quantity=body.quantity, coupon_code=body.coupon_code, payment_token=body.payment_token,
-            buyer_name=body.buyer_name, buyer_vat=body.buyer_vat, buyer_cr=body.buyer_cr)
+            buyer_name=body.buyer_name, buyer_vat=body.buyer_vat, buyer_cr=body.buyer_cr,
+            idempotency_key=body.idempotency_key)
     except ValueError as e:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
+        msg = str(e)
+        if msg == "PAYMENT_REQUIRED":
+            # A paid plan with no way to charge — refuse rather than grant free access.
+            raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, msg) from e
+        if msg in ("PLAN_NOT_FOUND", "PLAN_NOT_AVAILABLE"):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, msg) from e
+        # A refused signup (already subscribed, coupon, mixed state) — nothing charged.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, msg) from e
     await request.app.state.auditor.record(
-        "subscription.created", actor=principal.subject, tenant=sub.tenant,
-        resource=f"subscription:{sub.id}", ip=request.client.host if request.client else "",
-        metadata={"plan": body.plan_id})
-    return sub.to_dict()
+        "subscription.created", actor=principal.subject, tenant=res.get("tenant") or tenant,
+        resource=f"subscription:{res.get('id') or '-'}",
+        ip=request.client.host if request.client else "",
+        metadata={"plan": body.plan_id, "paid": str(res.get("paid", ""))})
+    return res
 
 
 class SubscriptionCheckoutIn(BaseModel):

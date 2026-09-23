@@ -1271,6 +1271,12 @@
             "title": "Coupon Code",
             "type": "string"
           },
+          "idempotency_key": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
           "interval": {
             "default": "month",
             "pattern": "^(month|year|once)$",
@@ -4004,6 +4010,7 @@
         ]
       },
       "post": {
+        "description": "Start a single subscription. A PAID plan is INVOICED AND CHARGED now (via the atomic checkout\npath) before it becomes active \u2014 a paid plan is never activated on a stored token alone. A trial or\nfree plan needs no payment and is created directly. A paid plan sent with no payment_token is\nrefused PAYMENT_REQUIRED (use POST /subscriptions/checkout-link for a hosted pay link instead).",
         "operationId": "subscribe_api_v1_billing_subscriptions_post",
         "requestBody": {
           "content": {
