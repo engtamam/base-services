@@ -53,6 +53,13 @@ class Wallet:
     # Reserved totals live HERE, not derived by scanning the holds table — that would put a
     # full scan on every spend. `available = funds - held`.
     held: dict[str, int] = field(default_factory=dict)
+    # The NON-FORFEITABLE floor per fund: money that a grant clawback must never confiscate — a
+    # top-up/credit made with NO expiry, and money returned to the fund by reclaim() (which becomes
+    # permanent). Grant expiry may only claw fund spare ABOVE this floor, so a forfeit grant sharing a
+    # fund with permanent money can never eat it. Monotonic-ish by design: not decremented on spend, so
+    # the floor can only OVER-protect (a forfeit claws less than it theoretically could — the
+    # customer-favourable direction the sweep already prefers), never under-protect.
+    permanent: dict[str, int] = field(default_factory=dict)
     version: int = 0                                      # compare-and-swap guard
     seq: int = 0                                          # ledger sequence for this tenant
     # The ledger row implied by the last CAS, staged so a crash before the append can replay

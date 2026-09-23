@@ -1368,9 +1368,21 @@ class BillingService:
         # ATOMIC claim, not get-then-mark: two concurrent runs of the same cycle would each create a
         # NEW invoice id, so the gateway idempotency key would differ and the card would be charged
         # TWICE. The claim lets exactly one run proceed; a duplicate replays the invoice or retries.
+        billed_end = int(sub.current_period_end)          # the period this run bills; the key is on it
         proceed, prior = await self._idempo.claim(key)
         if prior is not None:
-            return await self._invoices.fetch(prior["invoice_id"]) or Invoice(id="", tenant=sub.tenant)
+            inv = await self._invoices.fetch(prior["invoice_id"])
+            # COMPLETE a crashed run: the invoice + mark are made durable BEFORE the period advances
+            # (below), so a crash between them leaves the sub un-advanced under a marked key. On replay,
+            # finish the advance idempotently — never a second invoice, never a stuck subscription.
+            if inv is not None and int(sub.current_period_end) == billed_end:
+                sub.current_period_start = sub.current_period_end
+                sub.current_period_end += _INTERVAL.get(sub.interval, _INTERVAL["month"])
+                sub.first_period_prorated = False
+                if sub.status == "trialing":
+                    sub.status = "active"
+                await self._subs.save(sub)
+            return inv or Invoice(id="", tenant=sub.tenant)
         if not proceed:
             raise ValueError("CYCLE_IN_PROGRESS")     # a concurrent run holds it; the sweep retries
         r = await self._compute_renewal(sub)              # adopt pending + price (no side effects)
@@ -1383,6 +1395,19 @@ class BillingService:
                       meta={"grant_minor": r["granted"],
                             "period_end": sub.current_period_end} if r["granted"] > 0 else {})
         await self._invoices.save(inv)
+        # MARKER-FIRST: record the invoice under the cycle key BEFORE advancing the period and BEFORE
+        # charging. The key derives from `billed_end`, which the advance below changes — so if the mark
+        # landed only after the advance, a crash mid-charge would let a re-run derive a NEW key and cut
+        # a SECOND invoice (double-charge). Marking first means a re-run replays this invoice (and
+        # completes the advance above). A hard crash before the charge leaves an UNPAID invoice
+        # (recovered by reconcile/dunning), never a double charge — the money-safe direction.
+        await self._idempo.mark(key, {"invoice_id": inv.id})
+        # Charge BEFORE advancing the period. A normal decline/unavailable does NOT raise (it dunns and
+        # returns), so the period still rolls on a failed charge — the intended behaviour. But a hard
+        # crash mid-charge raises, leaving the sub UN-advanced under the marked key: a re-run then
+        # replays this invoice and completes the advance above, never cutting a second invoice or
+        # re-charging. (Advancing first would move the key, so a re-run would bill the next period.)
+        await self._charge_invoice(inv, sub.payment_token, sub)
         sub.current_period_start = sub.current_period_end
         sub.current_period_end += _INTERVAL.get(sub.interval, _INTERVAL["month"])
         # The partial first period is now billed; every cycle after is a full interval on the shared
@@ -1391,8 +1416,6 @@ class BillingService:
         if sub.status == "trialing":
             sub.status = "active"
         await self._subs.save(sub)
-        await self._charge_invoice(inv, sub.payment_token, sub)
-        await self._idempo.mark(key, {"invoice_id": inv.id})
         if self._events is not None:
             # Emitted for the RENEWAL, whether or not the charge succeeded — the period rolled
             # either way, and a consumer granting a plan's included allowance needs the period, not
@@ -2124,12 +2147,27 @@ class BillingService:
         gkey = f"consol:{tenant}:{self._group_gateway_key(subs[0])}:{group_ccy}:{bucket}"
         proceed, prior = await self._idempo.claim(gkey)
         if prior is not None:
-            return await self._invoices.fetch(prior.get("invoice_id", "")) if prior.get("invoice_id") else None
+            inv = await self._invoices.fetch(prior.get("invoice_id", "")) if prior.get("invoice_id") else None
+            # COMPLETE a crashed run: invoice + per-sub marks are durable BEFORE the periods advance, so
+            # finish any advance the crash skipped (its skey is marked for THIS invoice but the period
+            # never rolled). Idempotent — never a second invoice, never a stuck subscription.
+            if inv is not None:
+                for sub in subs:
+                    skey = f"cycle:{sub.id}:{int(sub.current_period_end)}"
+                    seen = await self._idempo.seen(skey)
+                    if seen and (seen.get("result") or {}).get("invoice_id") == inv.id:
+                        sub.current_period_start = sub.current_period_end
+                        sub.current_period_end += _INTERVAL.get(sub.interval, _INTERVAL["month"])
+                        sub.first_period_prorated = False
+                        if sub.status == "trialing":
+                            sub.status = "active"
+                        await self._subs.save(sub)
+            return inv
         if not proceed:
             raise ValueError("CYCLE_IN_PROGRESS")
         lines: list[dict] = []
         grants_meta: list[dict] = []
-        claimed: list[tuple[Any, str]] = []               # (sub, its per-sub idempo key)
+        claimed: list[tuple[Any, str, float]] = []        # (sub, its per-sub key, billed period end)
         subtotal = discount = tax = total = 0
         currency = None
         rep_token = ""
@@ -2149,18 +2187,11 @@ class BillingService:
             currency = currency or r["currency"]
             lines.append(r["line"])
             subtotal += r["taxable"]; discount += r["discount"]; tax += r["tax"]; total += r["total"]
-            sold_period_end = sub.current_period_end      # the period being sold (grant expiry basis)
-            sub.current_period_start = sub.current_period_end
-            sub.current_period_end += _INTERVAL.get(sub.interval, _INTERVAL["month"])
-            sub.first_period_prorated = False
-            if sub.status == "trialing":
-                sub.status = "active"
-            await self._subs.save(sub)
             if r["granted"] > 0:
                 grants_meta.append({"sub_id": sub.id, "fund": self._cfg["grant_fund"],
-                                    "amount_minor": r["granted"], "period_end": sold_period_end})
+                                    "amount_minor": r["granted"], "period_end": sub.current_period_end})
             rep_token = rep_token or sub.payment_token
-            claimed.append((sub, skey))
+            claimed.append((sub, skey, float(sub.current_period_end)))   # advance is deferred (below)
         if not claimed:
             await self._idempo.mark(gkey, {"invoice_id": ""})   # all already renewed concurrently
             return None
@@ -2173,12 +2204,24 @@ class BillingService:
                       total_minor=total, currency=currency or self._cfg["currency"], status="open",
                       created=iso(), meta=meta)
         await self._invoices.save(inv)
-        for sub, skey in claimed:
+        # MARKER-FIRST: invoice + all per-sub keys + the group key are durable BEFORE any period advances
+        # and BEFORE the charge — so a re-run replays this invoice (and completes the advances above)
+        # rather than deriving fresh keys off advanced periods and cutting a SECOND invoice.
+        for sub, skey, _billed in claimed:
             await self._idempo.mark(skey, {"invoice_id": inv.id})
         await self._idempo.mark(gkey, {"invoice_id": inv.id})
+        # Charge BEFORE advancing (same reasoning as run_cycle): a crash mid-charge leaves the subs
+        # un-advanced under marked keys, so a re-run replays this invoice and completes the advances.
         await self._charge_invoice(inv, rep_token, claimed[0][0])   # one charge, group's gateway/token
+        for sub, _skey, _billed in claimed:               # advance now — after the durable marks + charge
+            sub.current_period_start = sub.current_period_end
+            sub.current_period_end += _INTERVAL.get(sub.interval, _INTERVAL["month"])
+            sub.first_period_prorated = False
+            if sub.status == "trialing":
+                sub.status = "active"
+            await self._subs.save(sub)
         if self._events is not None:
-            for sub, _ in claimed:
+            for sub, _skey, _billed in claimed:
                 await self._events.emit(_events.SUBSCRIPTION_RENEWED, {
                     "tenant": tenant, "subscription_id": sub.id, "plan_id": sub.plan_id,
                     "invoice_id": inv.id, "period_key": f"cycle:{sub.id}:{int(sub.current_period_start)}",
@@ -2337,14 +2380,26 @@ class BillingService:
         # ── PHASE 1: validate EVERYTHING before any write (no partial carts) ──────────────────────
         norm = await self._validate_cart(tenant, items)
 
+        # A caller that omits idempotency_key must STILL be protected: checkout is the one self-service
+        # path that raises an invoice AND charges a card in one request, so a double-clicked / retried /
+        # LB-replayed POST would otherwise cut two carts and charge the token twice. Derive a
+        # deterministic key from the (validated) cart when none was supplied, so PHASE 2's claim always
+        # covers the charge. A genuine re-purchase of the identical cart is harmless — it either replays
+        # this result or fails ALREADY_SUBSCRIBED at validation, never a second charge.
+        if not ckey:
+            import hashlib
+            digest = hashlib.sha256(
+                repr([(i["plan_id"], i["interval"], i["quantity"], i["coupon_code"]) for i in norm]
+                     ).encode()).hexdigest()[:32]
+            ckey = f"checkout:{len(tenant)}:{tenant}|auto:{digest}"
+
         # ── PHASE 2: idempotency claim (covers create + charge; taken AFTER validation so a bad cart
         #    never locks the key). A retried checkout replays; a concurrent one is told to retry. ──────
-        if ckey:
-            proceed, prior = await self._idempo.claim(ckey)
-            if prior is not None:
-                return prior
-            if not proceed:
-                raise ValueError("CHECKOUT_IN_PROGRESS")
+        proceed, prior = await self._idempo.claim(ckey)
+        if prior is not None:
+            return prior
+        if not proceed:
+            raise ValueError("CHECKOUT_IN_PROGRESS")
 
         # ── PHASE 3: create every subscription (subscribe() creates the row + redeems its coupon; it
         #    does NOT charge). On any mid-create failure (a race past validation) roll the batch back so

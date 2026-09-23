@@ -462,3 +462,37 @@ def test_preview_refuses_bad_duplicate_held_and_empty():
     run(b.subscribe(tenant="t1", plan_id=a.id, payment_token="pm"))
     with pytest.raises(ValueError, match="ALREADY_SUBSCRIBED"):
         _preview(b, "t1", [{"plan_id": a.id}])
+
+
+# ── no idempotency_key: the charge is STILL protected (auto-derived key) ──────────
+def test_checkout_without_a_key_still_creates_exactly_one_cart():
+    st = MemoryDataStore(); b = _svc(st, "consolidated")
+    a = _plan(b, "A", 10000); c = _plan(b, "B", 5000)
+    run(b.checkout(tenant="t1", items=[{"plan_id": a.id}, {"plan_id": c.id}], payment_token="pm"))
+    assert len(_invoices(st)) == 1 and len(_payments(st)) == 1
+
+
+def test_checkout_without_a_key_is_guarded_against_a_concurrent_double_charge():
+    """The HIGH from the audit: with no client idempotency_key the charge must still be covered. A
+    concurrent checkout of the same cart holds the auto-derived claim, so the second is refused BEFORE
+    it can charge — no second invoice, no second charge."""
+    import hashlib
+    from app.core.models import now_ts
+    st = MemoryDataStore(); b = _svc(st, "consolidated")
+    a = _plan(b, "A", 10000)
+    digest = hashlib.sha256(repr([(a.id, "month", 1, "")]).encode()).hexdigest()[:32]
+    ckey = f"checkout:{len('t1')}:t1|auto:{digest}"
+    run(b._idempo._store.cas("idempo", ckey, 0,
+                             {"key": ckey, "status": "pending", "expires_at": now_ts() + 120}))
+    with pytest.raises(ValueError, match="CHECKOUT_IN_PROGRESS"):
+        run(b.checkout(tenant="t1", items=[{"plan_id": a.id}], payment_token="pm"))  # NO idempotency_key
+    assert _payments(st) == [] and _invoices(st) == []   # nothing charged while another holds it
+
+
+def test_checkout_without_a_key_sequential_duplicate_never_double_charges():
+    st = MemoryDataStore(); b = _svc(st, "consolidated")
+    a = _plan(b, "A", 10000)
+    run(b.checkout(tenant="t1", items=[{"plan_id": a.id}], payment_token="pm"))
+    with pytest.raises(ValueError, match="ALREADY_SUBSCRIBED"):
+        run(b.checkout(tenant="t1", items=[{"plan_id": a.id}], payment_token="pm"))
+    assert len(_invoices(st)) == 1 and len(_payments(st)) == 1   # still exactly one charge

@@ -123,8 +123,31 @@ class WalletService:
             # itself is the CAS in _mutate, not this replay.
             await self._store.put(_LEDGER, key, w.pending)
 
+    async def _credited_ledger(self, tenant: str, source: str) -> dict[str, Any] | None:
+        """Authoritative "was this source already credited?" — the CREDIT ledger row is written
+        ATOMICALLY with the money inside _mutate, so its existence ⟺ the money moved. This is the
+        crash-safe idempotency truth behind credit(): a fast _CREDIT_SEEN marker only caches a
+        FINISHED credit, but this survives a crash between the money moving and the marker landing.
+
+        Flush first so a staged-but-unlanded ledger row from the last CAS is materialized before the
+        lookup (else a just-credited source could read as absent and double-credit). find() is an
+        indexed SELECT on postgres (tenant+type+source), not a scan.
+        """
+        if not source:
+            return None
+        await self._flush(await self._wallet(tenant))
+        rows, _ = await self._store.find(
+            _LEDGER, {"tenant": tenant, "type": CREDIT, "source": source}, limit=1)
+        if not rows:
+            return None
+        row = rows[0]
+        applied = row.get("applied") or {}
+        fund = next(iter(applied), "")
+        return {"amount": int(applied.get(fund, row.get("amount", 0))), "fund": fund}
+
     async def _mutate(self, tenant: str, *, funds_delta: dict[str, int] | None = None,
                       held_delta: dict[str, int] | None = None,
+                      permanent_delta: dict[str, int] | None = None,
                       entry: dict[str, Any] | None = None) -> dict[str, Any]:
         """THE atomic step: funds, holds and the staged ledger row move in one CAS.
 
@@ -158,6 +181,13 @@ class WalletService:
                     new_held[name] = 0                    # releasing more than held: clamp
             new_held = {k: v for k, v in new_held.items() if v}
 
+            # The non-forfeitable floor moves atomically with the balance (never decremented — see the
+            # model). `w.permanent or {}` tolerates rows written before this field existed.
+            new_permanent = dict(w.permanent or {})
+            for name, delta in (permanent_delta or {}).items():
+                new_permanent[name] = int(new_permanent.get(name, 0)) + int(delta)
+            new_permanent = {k: v for k, v in new_permanent.items() if v}
+
             # ATOMIC available-invariant: funds must never fall below what is HELD (reserved), or a
             # concurrent debit that planned against available OUTSIDE this CAS would raid reserved money
             # (funds>=0 alone is not enough — it lets a spend eat a live hold). Enforced INSIDE the CAS,
@@ -174,7 +204,8 @@ class WalletService:
                 seq = w.seq + 1
                 staged = {**entry, "seq": seq, "balance_after": _funds.total(new_funds)}
 
-            candidate = Wallet(tenant=tenant, funds=new_funds, held=new_held, version=w.version,
+            candidate = Wallet(tenant=tenant, funds=new_funds, held=new_held,
+                               permanent=new_permanent, version=w.version,
                                seq=seq, pending=staged, updated=self._clock.now())
             if not await self._store.cas(_WALLETS, tenant, w.version, candidate.to_dict()):
                 continue                                   # raced; re-read and retry
@@ -328,18 +359,30 @@ class WalletService:
         if not proceed:
             raise Conflict("WALLET_OP_IN_PROGRESS")
 
-        # DURABLE backstop, independent of the idempotency TTL (audit wallet-r2-03). The _claim above
-        # only replays a duplicate while its result row is unexpired (idempotency_ttl, 24h); after that
-        # it re-claims and the credit would run a SECOND time, double-crediting a settlement webhook
-        # redelivered days later. A never-expiring seen-source marker refuses that forever. Written
-        # BEFORE the balance mutate (and rolled back with the grant on failure), so — like grant-first
-        # and withdrawal-first — a crash can only ever leave money UNcredited (a legit retry may be
-        # refused, fail-safe), never double-credited (a mint).
+        # DURABLE idempotency backstop, independent of the 24h claim TTL, and crash-safe in BOTH
+        # directions (audit money-IN finding). The LEDGER entry is written ATOMICALLY with the money, so
+        # "this source was already credited" ⟺ "a credit ledger row with this source exists" — that is
+        # the authoritative check. A `_CREDIT_SEEN` marker is only a fast O(1) cache of a FINISHED credit
+        # (written AFTER the money moves), so it can never exist without the money.
+        #   * A hard crash BEFORE the mutate leaves neither the ledger row nor the marker → a redelivery
+        #     finds nothing and CREDITS (never a dropped, paid-for credit — the old pre-mutate marker
+        #     could persist without the money and permanently suppress the credit).
+        #   * A hard crash AFTER the mutate but before the marker leaves the ledger row → a redelivery
+        #     finds it and REPLAYS (never a double credit / mint).
         seen_key = f"{tenant}|{source}" if source else ""
         if seen_key:
             seen = await self._store.get(_CREDIT_SEEN, seen_key)
             if seen and "result" in seen:
                 result = {**seen["result"], "idempotent": True}
+                await self._finalize(tenant, CREDIT, source, result)
+                return result
+            led = await self._credited_ledger(tenant, source)      # authoritative: was money moved?
+            if led is not None:
+                result = {"credited": led["amount"], "fund": led["fund"], "idempotent": True}
+                # atomic: ok — serialized by the credit _claim on `source`; rebuild the fast-path cache.
+                await self._store.put(_CREDIT_SEEN, seen_key,
+                                      {"id": seen_key, "tenant": tenant, "source": source,
+                                       "result": {"credited": led["amount"], "fund": led["fund"]}})
                 await self._finalize(tenant, CREDIT, source, result)
                 return result
 
@@ -368,26 +411,33 @@ class WalletService:
                           created=self._clock.now())
             await self._store.put(_GRANTS, grant.id, grant.to_dict())
 
-        # Stamp the durable seen-source marker BEFORE the credit lands (rolled back below on failure),
-        # so a post-TTL replay can never double-credit even across a crash mid-mutate.
-        if seen_key:
-            # atomic: ok — serialized by the credit _claim on `source`; only the claim winner reaches
-            # here, and distinct sources write distinct seen_keys, so this key has a single writer.
-            await self._store.put(_CREDIT_SEEN, seen_key,
-                                  {"id": seen_key, "tenant": tenant, "source": source,
-                                   "result": {"credited": int(amount), "fund": fund}})
-
         entry = self._entry(tenant, CREDIT, {fund: int(amount)}, +1, source=source, reason=reason)
+        # A credit with NO grant is PERMANENT (non-forfeitable) money — raise the fund's floor so a
+        # grant sharing this fund can never claw it on expiry. A grant-backed credit is forfeitable and
+        # does NOT raise the floor. The CREDIT ledger entry (carrying `source`) is written ATOMICALLY
+        # with the money inside _mutate — that ledger row, checked via _credited_ledger above, is the
+        # crash-safe idempotency truth. So the marker is written only AFTER _mutate succeeds (a fast
+        # cache of a FINISHED credit), and a crash before _mutate leaves neither ledger nor marker →
+        # a redelivery credits (never a dropped, paid credit); a crash after _mutate leaves the ledger
+        # row → a redelivery replays via _credited_ledger (never a double credit).
+        perm = {fund: int(amount)} if grant is None else None
         try:
-            out = await self._mutate(tenant, funds_delta={fund: int(amount)}, entry=entry)
+            out = await self._mutate(tenant, funds_delta={fund: int(amount)},
+                                     permanent_delta=perm, entry=entry)
         except Exception:
             if grant is not None:
                 await self._store.delete(_GRANTS, grant.id)   # nothing was credited — no orphan grant
-            if seen_key:
-                await self._store.delete(_CREDIT_SEEN, seen_key)  # roll back the marker with it
             raise
         if grant is not None:
             out["grant_id"] = grant.id
+
+        if seen_key:
+            # atomic: ok — serialized by the credit _claim on `source`; only the claim winner reaches
+            # here, distinct sources write distinct seen_keys, so this key has a single writer. Written
+            # AFTER the money moved, so the marker can never exist without the credit.
+            await self._store.put(_CREDIT_SEEN, seen_key,
+                                  {"id": seen_key, "tenant": tenant, "source": source,
+                                   "result": {"credited": int(amount), "fund": fund}})
 
         result = {"credited": int(amount), "fund": fund, **out}
         await self._finalize(tenant, CREDIT, source, result)
@@ -980,7 +1030,14 @@ class WalletService:
             # over-clawing preserved money is not. Full per-grant consumption tracking (FIFO) would be
             # exact but is a larger data-model change; this is the safe fix for now.
             reserved = await self._reserved_for_other_grants(grant.tenant, grant.fund, grant.id, now)
-            claimable = max(0, spare - reserved)
+            # ALSO protect the fund's PERMANENT floor (audit finding): money credited without a grant
+            # (a top-up) and money returned by reclaim() are non-forfeitable. Without this the clawback
+            # took spare down to `spare - reserved`, which for a fund mixing permanent money with a
+            # forfeit grant confiscated the customer's permanent balance. Claw only ABOVE reserved
+            # grants AND the permanent floor. Over-protects if permanent money was later spent (the
+            # customer-favourable direction the trade-off above already accepts) — never over-claws.
+            permanent_floor = int((w.permanent or {}).get(grant.fund, 0))
+            claimable = max(0, spare - reserved - permanent_floor)
             remaining = max(0, min(claimable, grant.amount))
             # DURABLE backstop, independent of the idempotency TTL (audit wallet-r2-03). The "sweep"
             # claim only dedups a duplicate while its result row is unexpired (24h); after that a replay
@@ -1108,7 +1165,10 @@ class WalletService:
             # winner reaches these grant writes, so there is no competing writer.
             await self._store.put(_GRANTS, grant.id, grant.to_dict())
             try:
-                out = await self._mutate(grant.tenant, funds_delta={grant.fund: amount}, entry=entry)
+                # Reclaimed money returns to the fund as PERMANENT (the grant is spent/dormant→reclaimed);
+                # raise the fund's non-forfeitable floor so a later forfeit grant can't claw it back.
+                out = await self._mutate(grant.tenant, funds_delta={grant.fund: amount},
+                                         permanent_delta={grant.fund: amount}, entry=entry)
             except Exception:
                 # atomic: ok — same single-writer reclaim claim; restores the pre-terminal row.
                 await self._store.put(_GRANTS, grant.id, orig)   # nothing credited — restore dormant
