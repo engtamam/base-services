@@ -1375,6 +1375,93 @@
         "title": "SubscribeInternalIn",
         "type": "object"
       },
+      "SubscriptionCheckoutIn": {
+        "properties": {
+          "buyer_cr": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Buyer Cr",
+            "type": "string"
+          },
+          "buyer_name": {
+            "default": "",
+            "maxLength": 256,
+            "title": "Buyer Name",
+            "type": "string"
+          },
+          "buyer_vat": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Buyer Vat",
+            "type": "string"
+          },
+          "coupon_code": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Coupon Code",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "interval": {
+            "default": "month",
+            "pattern": "^(month|year|once)$",
+            "title": "Interval",
+            "type": "string"
+          },
+          "plan_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Plan Id",
+            "type": "string"
+          },
+          "quantity": {
+            "default": 1,
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Quantity",
+            "type": "integer"
+          },
+          "return_url": {
+            "default": "",
+            "maxLength": 1024,
+            "title": "Return Url",
+            "type": "string"
+          },
+          "tenant": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant"
+          },
+          "ttl_seconds": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttl Seconds"
+          }
+        },
+        "required": [
+          "plan_id"
+        ],
+        "title": "SubscriptionCheckoutIn",
+        "type": "object"
+      },
       "UsageIn": {
         "properties": {
           "metric": {
@@ -3997,6 +4084,50 @@
           }
         },
         "summary": "Multi Plan Checkout",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/subscriptions/checkout-link": {
+      "post": {
+        "description": "Start a NEW paid subscription that returns a hosted-checkout LINK \u2014 for gateways (e.g. TuwaiqPay)\nthat only support hosted links and reject charge(token=...). Creates the subscription `incomplete`\n(grants nothing until paid) and returns `checkout_url` + `pay_url`; the subscription activates when\nthe payment settles through the same webhook/reconcile seam. A trial plan needs no payment now and\nreturns `checkout_required: false`. Pass `idempotency_key` so a retried POST replays the same link\ninstead of creating a second incomplete subscription.",
+        "operationId": "start_subscription_checkout_api_v1_billing_subscriptions_checkout_link_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubscriptionCheckoutIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Start Subscription Checkout Api V1 Billing Subscriptions Checkout Link Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Subscription Checkout",
         "tags": [
           "billing"
         ]

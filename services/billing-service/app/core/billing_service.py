@@ -690,7 +690,8 @@ class BillingService:
 
     async def subscribe(self, *, tenant: str, plan_id: str, interval: str = "month", quantity: int = 1,
                         coupon_code: str = "", payment_token: str = "", buyer_name: str = "",
-                        buyer_vat: str = "", buyer_cr: str = "") -> Subscription:
+                        buyer_vat: str = "", buyer_cr: str = "",
+                        hold_for_payment: bool = False) -> Subscription:
         plan = await self._plans.fetch(plan_id)
         if plan is None:
             raise ValueError("PLAN_NOT_FOUND")
@@ -743,6 +744,13 @@ class BillingService:
         status, period_end, first_period_prorated = self._initial_period(
             interval=interval, trial_days=trial_days, trial_end=trial_end, now=now,
             existing_rows=existing)
+        # HOSTED-CHECKOUT hold: a subscription started via start_subscription_checkout has no saved
+        # card to charge — its first payment arrives asynchronously via a hosted-checkout link. Born
+        # `incomplete` (NOT billable, NOT entitled: absent from _BILLABLE, due() and billable_statuses),
+        # it is activated only when that payment settles through _mark_paid. A trial needs no payment
+        # now, so it is left `trialing` (its first charge is raised at trial end by the normal path).
+        if hold_for_payment and status != "trialing":
+            status = "incomplete"
         if interval != "once" and not trial_days:
             # RUNTIME INVARIANT (the guard the escalation valued above the fix): after this signup the
             # tenant must have ONE renewal day for this interval. Projecting the new subscription onto
@@ -1717,6 +1725,45 @@ class BillingService:
             if sub is not None and sub.status == "paused":
                 await self.reactivate(inv.subscription_id)
 
+        # ACTIVATE a hosted-checkout signup: an `incomplete` subscription (start_subscription_checkout)
+        # becomes `active` the instant its first-period invoice is paid — the same convergence point as
+        # auto-reactivate, so a webhook, a reconcile and an off-gateway settlement all activate it
+        # identically. Idempotent: a re-delivery finds it already `active` and the guard makes it a
+        # no-op. Last, so the paid invoice (ledger + grant + events) is fully recorded first.
+        if inv.subscription_id and (inv.meta or {}).get("checkout_start"):
+            sub = await self._subs.fetch(inv.subscription_id)
+            if sub is not None and sub.status == "incomplete":
+                await self._activate_after_checkout(sub, inv)
+
+    async def _activate_after_checkout(self, sub: Subscription, inv: Invoice) -> None:
+        """Flip an `incomplete` hosted-checkout subscription to `active` once its first-period invoice
+        is paid — the exact tail of checkout()'s recurring branch, deferred to payment time.
+
+        The first period was ALREADY billed by `inv`, so we claim its cycle key (the sweep can never
+        re-bill that boundary) and advance the window one interval — identical to how checkout() and
+        run_cycle() advance after charging. A `once` item (billed_period_end == 0) never renews: no
+        claim, no advance. Idempotent by the caller's status guard; the cycle claim is idempotent too.
+        """
+        billed_end = int((inv.meta or {}).get("billed_period_end", 0) or 0)
+        if billed_end > 0:
+            skey = f"cycle:{sub.id}:{billed_end}"
+            # atomic: ok — the cycle key is single-writer per (sub, period); claim+mark mirror
+            # checkout()/run_cycle() so the sweep never re-bills this already-paid first period.
+            await self._idempo.claim(skey)
+            await self._idempo.mark(skey, {"invoice_id": inv.id})
+            sub.current_period_start = float(billed_end)
+            sub.current_period_end = float(billed_end + _INTERVAL.get(sub.interval, _INTERVAL["month"]))
+            sub.first_period_prorated = False
+        sub.status = "active"
+        await self._subs.save(sub)
+        if self._events is not None:
+            await self._events.emit(_events.SUBSCRIPTION_RENEWED, {
+                "tenant": sub.tenant, "subscription_id": sub.id, "plan_id": sub.plan_id,
+                "invoice_id": inv.id,
+                "period_key": f"cycle:{sub.id}:{int(sub.current_period_start)}",
+                "period_start": sub.current_period_start, "period_end": sub.current_period_end,
+                "limits": dict(sub.limits_snapshot or {}) if hasattr(sub, "limits_snapshot") else {}})
+
     # ── off-gateway settlement (Phase 27) ───────────────────────────────────────
     async def settle(self, *, invoice_id: str, method: str, reference: str, amount_minor: int,
                      paid_at: float, issuer: str = "", currency: str = "", actor: str = "",
@@ -2482,6 +2529,99 @@ class BillingService:
         }
         if ckey:
             await self._idempo.mark(ckey, result)
+        return result
+
+    async def start_subscription_checkout(self, *, tenant: str, plan_id: str, interval: str = "month",
+                                          quantity: int = 1, coupon_code: str = "", buyer_name: str = "",
+                                          buyer_vat: str = "", buyer_cr: str = "", return_url: str = "",
+                                          ttl_seconds: int = 0,
+                                          idempotency_key: str = "") -> dict[str, Any]:
+        """Start a NEW paid subscription that returns a hosted-checkout LINK instead of charging a
+        saved card — the token-less counterpart of subscribe()/checkout(), for gateways (e.g. TuwaiqPay)
+        that only support hosted links and reject charge(token=...).
+
+        Flow (mirrors create_invoice_pay_link, so there is ONE hosted-checkout money path):
+          1. Create the subscription `incomplete` (subscribe(hold_for_payment=True)): not billable, not
+             entitled, never swept — it grants nothing until paid.
+          2. Cut its first-period invoice (`open`), tagged meta.checkout_start so _mark_paid knows to
+             activate the subscription when the money lands.
+          3. Mint a single-use hosted-checkout link for that invoice (create_invoice_pay_link).
+          4. On payment, the SAME webhook/reconcile -> _apply_outcome -> _mark_paid seam marks the
+             invoice paid AND activates the subscription (period claimed + advanced exactly as checkout
+             does), so a hosted-checkout signup ends identical to a card one — no second code path.
+
+        IDEMPOTENT: an incomplete subscription is invisible to the duplicate-guard validation (it is not
+        billable), so a retried/double-clicked POST could otherwise create TWO incomplete subs + TWO
+        checkout sessions = two potential charges. The claim (a caller `idempotency_key`, else one
+        auto-derived from the request) is the guard — taken BEFORE anything is created; a retry replays
+        the first link, a concurrent one is refused. A trial plan needs no payment now and is returned
+        `checkout_required: False`.
+        """
+        # Claim BEFORE any write (subscribe() redeems the coupon + creates a row): unlike checkout(),
+        # validation cannot catch a duplicate here (the incomplete row is not billable), so the claim is
+        # the ONLY double-create guard and must precede creation. A caller key is preferred; otherwise a
+        # deterministic key over the request dedupes a double-click (a genuine re-subscribe of the same
+        # plan replays this result or, once active, fails ALREADY_SUBSCRIBED at the next attempt).
+        if idempotency_key:
+            ckey = f"subckout:{len(tenant)}:{tenant}|{idempotency_key}"
+        else:
+            import hashlib
+            digest = hashlib.sha256(
+                repr((plan_id, interval, int(quantity), coupon_code)).encode()).hexdigest()[:32]
+            ckey = f"subckout:{len(tenant)}:{tenant}|auto:{digest}"
+        proceed, prior = await self._idempo.claim(ckey)
+        if prior is not None:
+            return prior
+        if not proceed:
+            raise ValueError("CHECKOUT_IN_PROGRESS")
+
+        sub = await self.subscribe(
+            tenant=tenant, plan_id=plan_id, interval=interval, quantity=quantity,
+            coupon_code=coupon_code, payment_token="", buyer_name=buyer_name,
+            buyer_vat=buyer_vat, buyer_cr=buyer_cr, hold_for_payment=True)
+
+        # A trial: nothing to pay now — created `trialing`, no hosted checkout needed.
+        if sub.status == "trialing":
+            result = {"tenant": tenant, "subscription_id": sub.id, "status": "trialing",
+                      "checkout_required": False, "invoice_id": ""}
+            await self._idempo.mark(ckey, result)
+            return result
+
+        # Cut the first-period invoice for the incomplete sub, tagged so _mark_paid activates it.
+        try:
+            r = await self._compute_renewal(sub)
+            meta: dict[str, Any] = {"checkout_start": True,
+                                    "billed_period_end": int(sub.current_period_end)}
+            if r["granted"] > 0:
+                # period_end travels with the invoice so a `reset` grant expires with the period it
+                # was sold for, even though the money (and grant) land asynchronously on payment.
+                meta["grant_minor"] = r["granted"]
+                meta["period_end"] = sub.current_period_end
+            inv = Invoice(id=new_id("inv_"), tenant=tenant,
+                          number=await self._invoices.next_number(tenant),
+                          subscription_id=sub.id, lines=[r["line"]], subtotal_minor=r["taxable"],
+                          discount_minor=r["discount"], tax_minor=r["tax"], total_minor=r["total"],
+                          currency=r["currency"], status="open", created=iso(), meta=meta)
+            await self._invoices.save(inv)
+            paylink = await self.create_invoice_pay_link(
+                tenant=tenant, invoice_id=inv.id, return_url=return_url, ttl_seconds=ttl_seconds)
+        except Exception:
+            # Nothing was charged. Undo the incomplete sub (and its invoice if it was written) so a
+            # failed link never strands a dangling incomplete subscription the customer cannot pay.
+            try:
+                await self._invoices.delete(inv.id)                      # type: ignore[has-type]
+            except Exception:
+                pass
+            await self._subs.delete(sub.id)
+            raise
+
+        result = {"tenant": tenant, "subscription_id": sub.id, "status": "incomplete",
+                  "checkout_required": True, "invoice_id": inv.id, "plan_id": plan_id,
+                  "interval": sub.interval, "amount_minor": int(inv.total_minor),
+                  "currency": inv.currency, "payment_id": paylink["payment_id"],
+                  "checkout_url": paylink["checkout_url"], "token": paylink["token"],
+                  "expires_at": paylink["expires_at"]}
+        await self._idempo.mark(ckey, result)
         return result
 
     async def dunning_sweep(self) -> dict[str, Any]:

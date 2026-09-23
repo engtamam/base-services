@@ -93,6 +93,8 @@ def build_manifest(
             {"path": "/api/v1/billing/subscriptions", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/subscriptions/checkout", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/subscriptions/checkout/preview", "tier": "user", "method": "POST"},
+            # Start a NEW paid subscription that returns a hosted-checkout LINK (token-less gateways).
+            {"path": "/api/v1/billing/subscriptions/checkout-link", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/subscriptions", "tier": "user", "method": "GET"},
             {"path": "/api/v1/billing/subscriptions/renewal-preview", "tier": "user", "method": "GET"},
             {"path": "/api/v1/billing/subscriptions/{id}/change", "tier": "user", "method": "POST"},

@@ -610,6 +610,57 @@ async def subscribe(request: Request, body: SubscribeIn, principal: Principal = 
     return sub.to_dict()
 
 
+class SubscriptionCheckoutIn(BaseModel):
+    plan_id: str = Field(min_length=1, max_length=64)
+    interval: str = Field(default="month", pattern="^(month|year|once)$")
+    quantity: int = Field(default=1, ge=1, le=1000)
+    coupon_code: str = Field(default="", max_length=64)
+    buyer_name: str = Field(default="", max_length=256)
+    buyer_vat: str = Field(default="", max_length=64)
+    buyer_cr: str = Field(default="", max_length=64)
+    return_url: str = Field(default="", max_length=1024)
+    ttl_seconds: int | None = Field(default=None, ge=0)
+    idempotency_key: str = Field(default="", max_length=128)
+    tenant: str | None = None
+
+
+@router.post("/subscriptions/checkout-link", status_code=201, dependencies=[Depends(rate_limit)])
+async def start_subscription_checkout(request: Request, body: SubscriptionCheckoutIn,
+                                      principal: Principal = Depends(_SELF)) -> dict:
+    """Start a NEW paid subscription that returns a hosted-checkout LINK — for gateways (e.g. TuwaiqPay)
+    that only support hosted links and reject charge(token=...). Creates the subscription `incomplete`
+    (grants nothing until paid) and returns `checkout_url` + `pay_url`; the subscription activates when
+    the payment settles through the same webhook/reconcile seam. A trial plan needs no payment now and
+    returns `checkout_required: false`. Pass `idempotency_key` so a retried POST replays the same link
+    instead of creating a second incomplete subscription."""
+    from app.core.billing_service import UpgradeChargeFailed, UpgradeChargeUnavailable
+    s = get_settings()
+    tenant = _tenant(principal, body.tenant)
+    try:
+        res = await (await build_billing(request, tenant)).start_subscription_checkout(
+            tenant=tenant, plan_id=body.plan_id, interval=body.interval, quantity=body.quantity,
+            coupon_code=body.coupon_code, buyer_name=body.buyer_name, buyer_vat=body.buyer_vat,
+            buyer_cr=body.buyer_cr, return_url=body.return_url,
+            ttl_seconds=int(body.ttl_seconds or 0), idempotency_key=body.idempotency_key)
+    except ValueError as exc:
+        # A refused signup (unknown/inactive plan, coupon, already-subscribed, in-progress) — nothing
+        # was created or charged. 422: understood and deliberately refused.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    except UpgradeChargeUnavailable as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "GATEWAY_UNAVAILABLE") from exc
+    except UpgradeChargeFailed as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc) or "CHECKOUT_FAILED") from exc
+    await request.app.state.auditor.record(
+        "subscription.checkout_link_created", actor=principal.subject, tenant=tenant,
+        resource=f"subscription:{res['subscription_id']}",
+        ip=request.client.host if request.client else "",
+        metadata={"plan": body.plan_id, "invoice_id": res.get("invoice_id") or "-"})
+    if res.get("checkout_required") and res.get("token"):
+        base = (s.BILLING_PAY_LINK_BASE_URL or "").strip()
+        res["pay_url"] = (base.rstrip("/") + "/" + res["token"]) if base else res["checkout_url"]
+    return res
+
+
 class CartItemIn(BaseModel):
     plan_id: str = Field(min_length=1, max_length=64)
     interval: str = Field(default="month", pattern="^(month|year|once)$")
