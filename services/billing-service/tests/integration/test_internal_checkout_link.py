@@ -109,3 +109,25 @@ def test_unknown_plan_is_refused_422(client):
     r = client.post("/internal/billing/subscriptions/checkout-link",
                     json={"tenant": "shopX", "plan_id": "nope"}, headers=IT)
     assert r.status_code == 422
+
+
+def test_cart_link_returns_one_link_for_multiple_plans(client):
+    _seed_plan(client, "cl_a", 10000); _seed_plan(client, "cl_b", 5000)
+    r = client.post("/internal/billing/subscriptions/checkout/link",
+                    json={"tenant": "shopC", "items": [{"plan_id": "cl_a"}, {"plan_id": "cl_b"}],
+                          "idempotency_key": "kc"}, headers=IT)
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["checkout_required"] is True and len(body["items"]) == 2
+    assert body["amount_minor"] == int(15000 * 1.15) and body["pay_url"].startswith("https://pay.example.com/l/")
+    ds = client.app.state.container.datastore
+    for it in body["items"]:
+        sub = run(ds.get("subscriptions", it["subscription_id"]))
+        assert sub["tenant"] == "shopC" and sub["status"] == "incomplete"
+
+
+def test_cart_link_requires_the_internal_token(client):
+    _seed_plan(client, "cl_auth", 10000)
+    r = client.post("/internal/billing/subscriptions/checkout/link",
+                    json={"tenant": "shopC", "items": [{"plan_id": "cl_auth"}]})
+    assert r.status_code in (401, 403)

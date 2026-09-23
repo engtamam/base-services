@@ -724,6 +724,50 @@ async def multi_plan_checkout(request: Request, body: MultiCheckoutIn,
     return result
 
 
+class CartCheckoutLinkIn(BaseModel):
+    items: list[CartItemIn] = Field(min_length=1, max_length=50)
+    buyer_name: str = Field(default="", max_length=256)
+    buyer_vat: str = Field(default="", max_length=64)
+    buyer_cr: str = Field(default="", max_length=64)
+    return_url: str = Field(default="", max_length=1024)
+    ttl_seconds: int | None = Field(default=None, ge=0)
+    idempotency_key: str = Field(default="", max_length=128)
+    tenant: str | None = None
+
+
+@router.post("/subscriptions/checkout/link", status_code=201, dependencies=[Depends(rate_limit)])
+async def start_cart_checkout(request: Request, body: CartCheckoutLinkIn,
+                              principal: Principal = Depends(_SELF)) -> dict:
+    """Buy several plans in ONE atomic cart that returns a single hosted-checkout LINK — the token-less
+    twin of POST /subscriptions/checkout, for gateways (e.g. TuwaiqPay) with no saved-card charge. All
+    subscriptions are created `incomplete` and activate together when the one cart invoice is paid.
+    Returns one checkout_url/pay_url for the whole cart. A wholly-trial cart needs no payment and
+    returns checkout_required=false. Pass idempotency_key so a retry replays the same link."""
+    from app.core.billing_service import UpgradeChargeFailed, UpgradeChargeUnavailable
+    s = get_settings()
+    tenant = _tenant(principal, body.tenant)
+    try:
+        res = await (await build_billing(request, tenant)).start_cart_checkout(
+            tenant=tenant, items=[i.model_dump() for i in body.items], buyer_name=body.buyer_name,
+            buyer_vat=body.buyer_vat, buyer_cr=body.buyer_cr, return_url=body.return_url,
+            ttl_seconds=int(body.ttl_seconds or 0), idempotency_key=body.idempotency_key)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
+    except UpgradeChargeUnavailable as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "GATEWAY_UNAVAILABLE") from exc
+    except UpgradeChargeFailed as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc) or "CHECKOUT_FAILED") from exc
+    await request.app.state.auditor.record(
+        "subscription.checkout_link_created", actor=principal.subject, tenant=tenant,
+        resource=f"invoice:{res.get('invoice_id') or '-'}",
+        ip=request.client.host if request.client else "",
+        metadata={"plans": ",".join(i["plan_id"] for i in res["items"])})
+    if res.get("checkout_required") and res.get("token"):
+        base = (s.BILLING_PAY_LINK_BASE_URL or "").strip()
+        res["pay_url"] = (base.rstrip("/") + "/" + res["token"]) if base else res["checkout_url"]
+    return res
+
+
 class CheckoutPreviewIn(BaseModel):
     items: list[CartItemIn] = Field(min_length=1, max_length=50)
     buyer_vat: str = Field(default="", max_length=64)   # a VAT-registered buyer → reverse-charge, no VAT

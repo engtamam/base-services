@@ -95,6 +95,8 @@ def build_manifest(
             {"path": "/api/v1/billing/subscriptions/checkout/preview", "tier": "user", "method": "POST"},
             # Start a NEW paid subscription that returns a hosted-checkout LINK (token-less gateways).
             {"path": "/api/v1/billing/subscriptions/checkout-link", "tier": "user", "method": "POST"},
+            # Multi-plan cart that returns ONE hosted-checkout LINK (token-less gateways).
+            {"path": "/api/v1/billing/subscriptions/checkout/link", "tier": "user", "method": "POST"},
             {"path": "/api/v1/billing/subscriptions", "tier": "user", "method": "GET"},
             {"path": "/api/v1/billing/subscriptions/renewal-preview", "tier": "user", "method": "GET"},
             {"path": "/api/v1/billing/subscriptions/{id}/change", "tier": "user", "method": "POST"},
@@ -125,6 +127,7 @@ def build_manifest(
             {"path": "/internal/billing/subscriptions", "tier": "internal", "method": "POST"},
             {"path": "/internal/billing/subscriptions/checkout", "tier": "internal", "method": "POST"},
             {"path": "/internal/billing/subscriptions/checkout-link", "tier": "internal", "method": "POST"},
+            {"path": "/internal/billing/subscriptions/checkout/link", "tier": "internal", "method": "POST"},
             {"path": "/internal/billing/subscriptions/checkout/preview", "tier": "internal", "method": "POST"},
             {"path": "/internal/billing/subscriptions/{sub_id}/cancel", "tier": "internal", "method": "POST"},
             # Advisory read. ENFORCEMENT is /internal/billing/usage/consume (atomic).

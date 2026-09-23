@@ -59,6 +59,145 @@
         "title": "CancelInternalIn",
         "type": "object"
       },
+      "CartCheckoutLinkIn": {
+        "properties": {
+          "buyer_cr": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Buyer Cr",
+            "type": "string"
+          },
+          "buyer_name": {
+            "default": "",
+            "maxLength": 256,
+            "title": "Buyer Name",
+            "type": "string"
+          },
+          "buyer_vat": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Buyer Vat",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CartItemIn"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Items",
+            "type": "array"
+          },
+          "return_url": {
+            "default": "",
+            "maxLength": 1024,
+            "title": "Return Url",
+            "type": "string"
+          },
+          "tenant": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant"
+          },
+          "ttl_seconds": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttl Seconds"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CartCheckoutLinkIn",
+        "type": "object"
+      },
+      "CartCheckoutLinkInternalIn": {
+        "description": "Same shape as checkout_internal (items[] + tenant), but returns ONE hosted-checkout link for the\ncart instead of charging a token \u2014 for token-less gateways.",
+        "properties": {
+          "buyer_cr": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Buyer Cr",
+            "type": "string"
+          },
+          "buyer_name": {
+            "default": "",
+            "maxLength": 256,
+            "title": "Buyer Name",
+            "type": "string"
+          },
+          "buyer_vat": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Buyer Vat",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CartItemIn"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Items",
+            "type": "array"
+          },
+          "return_url": {
+            "default": "",
+            "maxLength": 1024,
+            "title": "Return Url",
+            "type": "string"
+          },
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          },
+          "ttl_seconds": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttl Seconds"
+          }
+        },
+        "required": [
+          "tenant",
+          "items"
+        ],
+        "title": "CartCheckoutLinkInternalIn",
+        "type": "object"
+      },
       "CartItemIn": {
         "properties": {
           "coupon_code": {
@@ -4224,6 +4363,50 @@
         ]
       }
     },
+    "/api/v1/billing/subscriptions/checkout/link": {
+      "post": {
+        "description": "Buy several plans in ONE atomic cart that returns a single hosted-checkout LINK \u2014 the token-less\ntwin of POST /subscriptions/checkout, for gateways (e.g. TuwaiqPay) with no saved-card charge. All\nsubscriptions are created `incomplete` and activate together when the one cart invoice is paid.\nReturns one checkout_url/pay_url for the whole cart. A wholly-trial cart needs no payment and\nreturns checkout_required=false. Pass idempotency_key so a retry replays the same link.",
+        "operationId": "start_cart_checkout_api_v1_billing_subscriptions_checkout_link_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CartCheckoutLinkIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Start Cart Checkout Api V1 Billing Subscriptions Checkout Link Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Cart Checkout",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
     "/api/v1/billing/subscriptions/checkout/preview": {
       "post": {
         "description": "Read-only PRE-PURCHASE price preview of a cart \u2014 the exact amount checkout would charge now\n(subtotal, discount/savings, tax on the discounted net, total), plus a per-item breakdown, before\nany subscription exists. Same validation and pricing as checkout (same 422 on a refused cart);\ncreates and charges NOTHING. Call it whenever the cart changes to keep the shown total live.",
@@ -6285,6 +6468,84 @@
           }
         },
         "summary": "Start Subscription Checkout Internal",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/billing/subscriptions/checkout/link": {
+      "post": {
+        "description": "Internal twin of POST /api/v1/billing/subscriptions/checkout/link \u2014 an atomic multi-plan cart\nthat returns ONE hosted-checkout link, service-to-service. Same core .start_cart_checkout(); tenant\nin the body; X-Internal-Token auth. The token-less counterpart of checkout_internal.",
+        "operationId": "start_cart_checkout_internal_internal_billing_subscriptions_checkout_link_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CartCheckoutLinkInternalIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Start Cart Checkout Internal Internal Billing Subscriptions Checkout Link Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Cart Checkout Internal",
         "tags": [
           "internal"
         ]

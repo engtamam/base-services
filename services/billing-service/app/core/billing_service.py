@@ -1827,26 +1827,33 @@ class BillingService:
             if sub is not None and sub.status == "paused":
                 await self.reactivate(inv.subscription_id)
 
-        # ACTIVATE a hosted-checkout signup: an `incomplete` subscription (start_subscription_checkout)
-        # becomes `active` the instant its first-period invoice is paid — the same convergence point as
-        # auto-reactivate, so a webhook, a reconcile and an off-gateway settlement all activate it
-        # identically. Idempotent: a re-delivery finds it already `active` and the guard makes it a
-        # no-op. Last, so the paid invoice (ledger + grant + events) is fully recorded first.
-        if inv.subscription_id and (inv.meta or {}).get("checkout_start"):
-            sub = await self._subs.fetch(inv.subscription_id)
-            if sub is not None and sub.status == "incomplete":
-                await self._activate_after_checkout(sub, inv)
+        # ACTIVATE a hosted-checkout signup: the `incomplete` subscription(s) become `active` the instant
+        # the checkout invoice is paid — the same convergence point as auto-reactivate, so a webhook, a
+        # reconcile and an off-gateway settlement all activate identically. Handles BOTH the single-plan
+        # (start_subscription_checkout) and the CART (start_cart_checkout, N subs on one invoice) shapes.
+        # Idempotent: a re-delivery finds each already `active` and the guard makes it a no-op. Last, so
+        # the paid invoice (ledger + grants + events) is fully recorded first.
+        if (inv.meta or {}).get("checkout_start"):
+            # canonical list [{sub_id, billed_period_end}]; fall back to the single-sub invoice fields.
+            entries = list((inv.meta or {}).get("checkout_subs") or [])
+            if not entries and inv.subscription_id:
+                entries = [{"sub_id": inv.subscription_id,
+                            "billed_period_end": int((inv.meta or {}).get("billed_period_end", 0) or 0)}]
+            for ent in entries:
+                sub = await self._subs.fetch(str(ent.get("sub_id", "")))
+                if sub is not None and sub.status == "incomplete":
+                    await self._activate_after_checkout(
+                        sub, inv, int(ent.get("billed_period_end", 0) or 0))
 
-    async def _activate_after_checkout(self, sub: Subscription, inv: Invoice) -> None:
-        """Flip an `incomplete` hosted-checkout subscription to `active` once its first-period invoice
-        is paid — the exact tail of checkout()'s recurring branch, deferred to payment time.
+    async def _activate_after_checkout(self, sub: Subscription, inv: Invoice, billed_end: int) -> None:
+        """Flip ONE `incomplete` hosted-checkout subscription to `active` once the checkout invoice is
+        paid — the exact tail of checkout()'s recurring branch, deferred to payment time.
 
         The first period was ALREADY billed by `inv`, so we claim its cycle key (the sweep can never
         re-bill that boundary) and advance the window one interval — identical to how checkout() and
-        run_cycle() advance after charging. A `once` item (billed_period_end == 0) never renews: no
-        claim, no advance. Idempotent by the caller's status guard; the cycle claim is idempotent too.
+        run_cycle() advance after charging. A `once` item (billed_end == 0) never renews: no claim, no
+        advance. Idempotent by the caller's status guard; the cycle claim is idempotent too.
         """
-        billed_end = int((inv.meta or {}).get("billed_period_end", 0) or 0)
         if billed_end > 0:
             skey = f"cycle:{sub.id}:{billed_end}"
             # atomic: ok — the cycle key is single-writer per (sub, period); claim+mark mirror
@@ -2692,8 +2699,11 @@ class BillingService:
         # Cut the first-period invoice for the incomplete sub, tagged so _mark_paid activates it.
         try:
             r = await self._compute_renewal(sub)
-            meta: dict[str, Any] = {"checkout_start": True,
-                                    "billed_period_end": int(sub.current_period_end)}
+            meta: dict[str, Any] = {
+                "checkout_start": True,
+                "billed_period_end": int(sub.current_period_end),
+                "checkout_subs": [{"sub_id": sub.id,
+                                   "billed_period_end": int(sub.current_period_end)}]}
             if r["granted"] > 0:
                 # period_end travels with the invoice so a `reset` grant expires with the period it
                 # was sold for, even though the money (and grant) land asynchronously on payment.
@@ -2723,6 +2733,133 @@ class BillingService:
                   "currency": inv.currency, "payment_id": paylink["payment_id"],
                   "checkout_url": paylink["checkout_url"], "token": paylink["token"],
                   "expires_at": paylink["expires_at"]}
+        await self._idempo.mark(ckey, result)
+        return result
+
+    async def start_cart_checkout(self, *, tenant: str, items: list[dict], buyer_name: str = "",
+                                  buyer_vat: str = "", buyer_cr: str = "", return_url: str = "",
+                                  ttl_seconds: int = 0,
+                                  idempotency_key: str = "") -> dict[str, Any]:
+        """Atomic MULTI-PLAN cart that returns ONE hosted-checkout LINK — the token-less counterpart of
+        checkout(), for gateways (e.g. TuwaiqPay) with no saved-card charge. Same cart validation and
+        one-invoice semantics as checkout(); the difference is the money is collected by a hosted link
+        and every subscription is created `incomplete`, activated together only when that one invoice is
+        paid.
+
+          1. VALIDATE-ALL-FIRST (same _validate_cart as checkout): any bad/duplicate/held/mixed-currency
+             item refuses the WHOLE cart, having created nothing.
+          2. Create every subscription `incomplete` (subscribe(hold_for_payment=True)); a trial item is
+             created `trialing` and is NOT part of the invoice (no payment due for it).
+          3. Cut ONE `open` invoice for the chargeable (incomplete) items, tagged meta.checkout_start +
+             meta.checkout_subs (each sub_id + its billed period end) so _mark_paid activates them ALL
+             on payment, and meta.grants for the per-sub allowances.
+          4. Mint ONE hosted pay link for that invoice (create_invoice_pay_link).
+          5. On payment, the SAME webhook/reconcile -> _mark_paid seam marks the invoice paid, records
+             every grant, and activates every incomplete sub (each period claimed + advanced) — so a
+             hosted cart ends identical to a card checkout(), just collected by link.
+
+        IDEMPOTENT: like checkout(), a retry replays the first result; a concurrent one is refused.
+        """
+        if not items:
+            raise ValueError("EMPTY_CART")
+        ckey = f"cartckout:{len(tenant)}:{tenant}|{idempotency_key}" if idempotency_key else ""
+        if ckey:
+            prior_row = await self._idempo.seen(ckey)
+            if prior_row and "result" in prior_row:
+                return prior_row["result"]
+        # PHASE 1: validate the whole cart before any write.
+        norm = await self._validate_cart(tenant, items)
+        # A caller that omits idempotency_key is still protected: an incomplete cart is invisible to the
+        # duplicate-guard validation, so without a claim a double-click would create TWO incomplete carts
+        # + TWO checkout sessions. Derive a deterministic key from the validated cart when none is given.
+        if not ckey:
+            import hashlib
+            digest = hashlib.sha256(
+                repr([(i["plan_id"], i["interval"], i["quantity"], i["coupon_code"]) for i in norm]
+                     ).encode()).hexdigest()[:32]
+            ckey = f"cartckout:{len(tenant)}:{tenant}|auto:{digest}"
+        proceed, prior = await self._idempo.claim(ckey)
+        if prior is not None:
+            return prior
+        if not proceed:
+            raise ValueError("CHECKOUT_IN_PROGRESS")
+
+        # PHASE 2: create every subscription INCOMPLETE (trial items land `trialing`). Roll the batch
+        # back on any mid-create failure so the cart stays all-or-nothing.
+        created: list = []
+        try:
+            for it in norm:
+                sub = await self.subscribe(
+                    tenant=tenant, plan_id=it["plan_id"], interval=it["interval"],
+                    quantity=it["quantity"], coupon_code=it["coupon_code"], payment_token="",
+                    buyer_name=buyer_name, buyer_vat=buyer_vat, buyer_cr=buyer_cr,
+                    hold_for_payment=True)
+                created.append(sub)
+        except Exception:
+            for sub in created:
+                await self._subs.delete(sub.id)
+            raise
+
+        # PHASE 3: ONE open invoice for the chargeable (incomplete) items; trials are left trialing.
+        lines: list[dict] = []
+        grants_meta: list[dict] = []
+        checkout_subs: list[dict] = []
+        subtotal = discount = tax = total = 0
+        inv_ccy: str | None = None
+        chargeable: list = []
+        for sub in created:
+            if sub.status == "trialing":
+                continue                                    # no payment due for a trial item
+            r = await self._compute_renewal(sub)
+            inv_ccy = inv_ccy or r["currency"]
+            lines.append(r["line"])
+            subtotal += r["taxable"]; discount += r["discount"]; tax += r["tax"]; total += r["total"]
+            if r["granted"] > 0:
+                grants_meta.append({"sub_id": sub.id, "fund": self._cfg["grant_fund"],
+                                    "amount_minor": r["granted"], "period_end": sub.current_period_end})
+            checkout_subs.append({"sub_id": sub.id, "billed_period_end": int(sub.current_period_end)})
+            chargeable.append(sub)
+
+        # An all-trial cart: nothing to pay now, no link — the trials are already `trialing`.
+        if not chargeable:
+            result = {"tenant": tenant, "checkout_required": False, "invoice_id": "",
+                      "items": [{"plan_id": s.plan_id, "subscription_id": s.id, "status": s.status,
+                                 "interval": s.interval} for s in created]}
+            await self._idempo.mark(ckey, result)
+            return result
+
+        try:
+            meta: dict[str, Any] = {"checkout": True, "checkout_start": True,
+                                    "checkout_subs": checkout_subs}
+            if grants_meta:
+                meta["grants"] = grants_meta
+            inv = Invoice(id=new_id("inv_"), tenant=tenant,
+                          number=await self._invoices.next_number(tenant),
+                          subscription_id="", lines=lines, subtotal_minor=subtotal,
+                          discount_minor=discount, tax_minor=tax, total_minor=total,
+                          currency=inv_ccy or self._cfg["currency"], status="open", created=iso(),
+                          meta=meta)
+            await self._invoices.save(inv)
+            paylink = await self.create_invoice_pay_link(
+                tenant=tenant, invoice_id=inv.id, return_url=return_url, ttl_seconds=ttl_seconds)
+        except Exception:
+            try:
+                await self._invoices.delete(inv.id)                      # type: ignore[has-type]
+            except Exception:
+                pass
+            for sub in created:
+                await self._subs.delete(sub.id)
+            raise
+
+        result = {
+            "tenant": tenant, "status": "incomplete", "checkout_required": True,
+            "invoice_id": inv.id, "amount_minor": int(inv.total_minor),
+            "currency": inv.currency, "payment_id": paylink["payment_id"],
+            "checkout_url": paylink["checkout_url"], "token": paylink["token"],
+            "expires_at": paylink["expires_at"],
+            "items": [{"plan_id": s.plan_id, "subscription_id": s.id, "status": s.status,
+                       "interval": s.interval} for s in created],
+        }
         await self._idempo.mark(ckey, result)
         return result
 

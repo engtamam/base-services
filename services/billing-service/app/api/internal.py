@@ -437,6 +437,49 @@ async def start_subscription_checkout_internal(
     return res
 
 
+class CartCheckoutLinkInternalIn(BaseModel):
+    """Same shape as checkout_internal (items[] + tenant), but returns ONE hosted-checkout link for the
+    cart instead of charging a token — for token-less gateways."""
+    tenant: str = Field(min_length=1, max_length=128)
+    items: list[CartItemIn] = Field(min_length=1, max_length=50)
+    buyer_name: str = Field(default="", max_length=256)
+    buyer_vat: str = Field(default="", max_length=64)
+    buyer_cr: str = Field(default="", max_length=64)
+    return_url: str = Field(default="", max_length=1024)
+    ttl_seconds: int | None = Field(default=None, ge=0)
+    idempotency_key: str = Field(default="", max_length=128)
+
+
+@router.post("/billing/subscriptions/checkout/link", status_code=201,
+             dependencies=[Depends(require_internal_token)])
+async def start_cart_checkout_internal(request: Request, body: CartCheckoutLinkInternalIn,
+                                       settings: Settings = Depends(get_settings)) -> dict:
+    """Internal twin of POST /api/v1/billing/subscriptions/checkout/link — an atomic multi-plan cart
+    that returns ONE hosted-checkout link, service-to-service. Same core .start_cart_checkout(); tenant
+    in the body; X-Internal-Token auth. The token-less counterpart of checkout_internal."""
+    from app.core.billing_service import UpgradeChargeFailed, UpgradeChargeUnavailable
+    try:
+        res = await (await build_billing(request, body.tenant)).start_cart_checkout(
+            tenant=body.tenant, items=[i.model_dump() for i in body.items], buyer_name=body.buyer_name,
+            buyer_vat=body.buyer_vat, buyer_cr=body.buyer_cr, return_url=body.return_url,
+            ttl_seconds=int(body.ttl_seconds or 0), idempotency_key=body.idempotency_key)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    except UpgradeChargeUnavailable as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "GATEWAY_UNAVAILABLE") from exc
+    except UpgradeChargeFailed as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc) or "CHECKOUT_FAILED") from exc
+    await request.app.state.auditor.record(
+        "subscription.checkout_link_created", actor="", tenant=body.tenant,
+        resource=f"invoice:{res.get('invoice_id') or '-'}",
+        ip=request.client.host if request.client else "",
+        metadata={"plans": ",".join(i["plan_id"] for i in res["items"])})
+    if res.get("checkout_required") and res.get("token"):
+        base = (settings.BILLING_PAY_LINK_BASE_URL or "").strip()
+        res["pay_url"] = (base.rstrip("/") + "/" + res["token"]) if base else res["checkout_url"]
+    return res
+
+
 class CheckoutPreviewInternalIn(BaseModel):
     """Same shape as the user checkout preview, tenant in the body."""
     tenant: str = Field(min_length=1, max_length=128)
