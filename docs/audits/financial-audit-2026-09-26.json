@@ -84,7 +84,7 @@
       "verification_note": "run_cycle correctly keys on int(current_period_end); overage should key on int(current_period_start) to match.",
       "fix": {
         "status": "fixed",
-        "release": "pending-hold"
+        "release": "v0.25.33"
       }
     },
     {
@@ -177,7 +177,7 @@
       "verdict": "CONFIRMED",
       "fix": {
         "status": "fixed",
-        "release": "pending-hold"
+        "release": "v0.25.33"
       }
     },
     {
@@ -192,7 +192,7 @@
       "verdict": "CONFIRMED",
       "fix": {
         "status": "fixed",
-        "release": "pending-hold"
+        "release": "v0.25.33"
       }
     },
     {
@@ -207,7 +207,7 @@
       "verdict": "CONFIRMED",
       "fix": {
         "status": "fixed",
-        "release": "pending-hold"
+        "release": "v0.25.33"
       }
     },
     {
@@ -303,7 +303,7 @@
       "verification_note": "Idempotency key is (tenant, reference) only. Fix: on reuse, if existing.amount_minor/currency differ from the request, refuse (409 REQUEST_AMOUNT_MISMATCH) rather than return the stale link.",
       "fix": {
         "status": "fixed",
-        "release": "pending-hold"
+        "release": "v0.25.33"
       }
     },
     {
@@ -319,7 +319,7 @@
       "verification_note": "Self-heals: reconcile passes row.currency and a later SUCCEEDED supersedes FAILED via CAS. Adapter has no request row to source currency from at webhook time; low priority. Optional hardening only.",
       "fix": {
         "status": "test_added_no_code_change",
-        "release": "pending-hold"
+        "release": "v0.25.33"
       }
     },
     {
@@ -335,7 +335,7 @@
       "verification_note": "Index-per-button is a clean correctness fix (assign by order). The empty-suffix falsy-drop matches the file's documented 'declared only when supplied' discipline (empty == not supplied); left as-is.",
       "fix": {
         "status": "fixed",
-        "release": "pending-hold"
+        "release": "v0.25.33"
       }
     },
     {
@@ -426,7 +426,7 @@
       "verdict": "CONFIRMED",
       "fix": {
         "status": "fixed",
-        "release": "pending-hold"
+        "release": "v0.25.33"
       }
     },
     {
@@ -441,7 +441,7 @@
       "verdict": "CONFIRMED",
       "fix": {
         "status": "fixed",
-        "release": "pending-hold"
+        "release": "v0.25.33"
       }
     },
     {
@@ -456,7 +456,7 @@
       "verdict": "CONFIRMED",
       "fix": {
         "status": "fixed",
-        "release": "pending-hold"
+        "release": "v0.25.33"
       }
     },
     {
@@ -486,7 +486,7 @@
       "verdict": "CONFIRMED",
       "fix": {
         "status": "test_added_no_code_change",
-        "release": "pending-hold"
+        "release": "v0.25.33"
       }
     }
   ],
@@ -540,7 +540,7 @@
     },
     "batch-2-2026-09-26": {
       "date": "2026-09-26",
-      "release": "HELD (user: finish all gaps before releasing)",
+      "release": "v0.25.33",
       "fixed": [
         "FIN-003",
         "FIN-009",
