@@ -270,8 +270,9 @@
       "verdict": "NEEDS_DECISION",
       "verification_note": "Documented intentional; a correct fix requires threading a refund amount through WebhookEvent across ALL gateway adapters (Tap/Geidea/Stripe/PayPal/...). Cross-adapter design change - surface to owner before building.",
       "fix": {
-        "status": "deferred",
-        "release": ""
+        "status": "partially_addressed",
+        "release": "v0.25.34",
+        "note": "Amount-verification infra now exists (FIN-016). The refund() API already does partial correctly. Remaining: a gateway-DASHBOARD partial-refund WEBHOOK still full-voids because the refunded amount is not exposed by fetch_status/ WebhookEvent without per-adapter work (user opted out of touching all adapters); not reachable on the active gateway (TuwaiqPay has no card refunds)."
       }
     },
     {
@@ -283,11 +284,11 @@
       "location": "app/core/billing_service.py:2978-2984 (_apply_outcome, payment.succeeded)",
       "scenario": "A validly-signed webhook reporting a captured amount lower than the invoice total still marks the full invoice paid, records a full charge, grants full credit, activates the sub. payments-service enforces amount_ok+currency_ok; billing does not.",
       "evidence": "if kind=='payment.succeeded' ... await self._mark_paid(inv)  # no amount compare",
-      "verdict": "NEEDS_DECISION",
+      "verdict": "CONFIRMED",
       "verification_note": "Same root as FIN-015: WebhookEvent carries no amount, so verification needs a cross-adapter change (populate + compare amount, or verify-by-fetch_status before marking paid). Surface to owner.",
       "fix": {
-        "status": "deferred",
-        "release": ""
+        "status": "fixed",
+        "release": "v0.25.34"
       }
     },
     {
@@ -573,6 +574,14 @@
         ]
       },
       "verification": "billing 1076, wallet 372, payments 465, notification 755; 55 gates + OpenAPI all green."
+    },
+    "batch-3-2026-09-26": {
+      "date": "2026-09-26",
+      "release": "v0.25.34",
+      "decision": "Researched Stripe/PSP best practice: verify the amount, but from the GATEWAY (fetch_status), not the webhook body. Chose option (a)-goal via (b)-mechanism — one central change in billing, no per-adapter touch.",
+      "FIN-016": "FIXED — _apply_outcome refuses to mark an invoice paid unless the gateway's authoritative amount (pulled via fetch_status by both the webhook and reconcile paths) matches the invoice total+currency. Underpayment/overpayment/gateway-not-confirmed are refused (invoice stays open, payment flagged, logged). 0/absent amount = unverifiable -> proceed with a WARNING. 7 tests.",
+      "FIN-015": "PARTIAL — see finding note; needs per-adapter refunded-amount, deferred by the no-adapter-touch decision.",
+      "verification": "billing 1083; 55 gates + OpenAPI green."
     }
   }
 }

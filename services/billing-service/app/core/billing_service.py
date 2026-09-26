@@ -2960,13 +2960,46 @@ class BillingService:
         if not proceed:
             # A concurrent delivery of the SAME event is mid-process; the gateway will retry.
             return {"ok": True, "reconciled": False, "in_progress": True, "type": event.type}
-        outcome = await self._apply_outcome(pay, event.type)
-        result = {"ok": True, "reconciled": True, "type": event.type,
+        # SERVER-AUTHORITATIVE AMOUNT (FIN-016): never trust the webhook body's amount. For a claimed
+        # success, pull the amount straight from the gateway (the same fetch_status the reconcile path
+        # trusts) and let _apply_outcome verify it against the invoice before marking paid. If the
+        # gateway does not confirm success, or reports a different sum, force a mismatch so it is
+        # refused. A gateway with no status endpoint leaves it unverified (proceeds, logged).
+        v_amount: int | None = None
+        v_currency = ""
+        if event.type == "payment.succeeded":
+            fetch = getattr(gw, "fetch_status", None)
+            if fetch is not None and event.provider_id:
+                try:
+                    charge = fetch(provider_id=event.provider_id, currency=pay.currency)
+                except GatewayUnavailable:
+                    charge = None
+                if charge is not None:
+                    raw = getattr(charge, "amount_minor", 0)
+                    if charge.status == "succeeded":
+                        # success confirmed: verify the amount when the gateway reports a POSITIVE one;
+                        # a 0/absent amount is UNVERIFIABLE (not "matches"), so proceed unverified
+                        # (logged) rather than refuse a gateway whose status endpoint omits the sum.
+                        v_amount = int(raw) if raw else None
+                        v_currency = getattr(charge, "currency", "")
+                    else:
+                        # the gateway does NOT confirm success though the webhook claimed it → refuse.
+                        v_amount = -1
+        outcome = await self._apply_outcome(pay, event.type, verified_amount=v_amount,
+                                            verified_currency=v_currency)
+        # `reconciled` keeps its original meaning — the callback was verified and processed (an
+        # already-terminal payment is an idempotent True) — EXCEPT an amount-mismatch refusal, which
+        # settled nothing and is surfaced as reconciled False + amount_mismatch True.
+        mismatch = bool(outcome.get("amount_mismatch"))
+        result = {"ok": True, "reconciled": not mismatch, "type": event.type,
                   "payment_status": outcome["payment_status"]}
+        if mismatch:
+            result["amount_mismatch"] = True
         await self._idempo.mark(wh_key, result)
         return result
 
-    async def _apply_outcome(self, pay: Payment, kind: str) -> dict[str, Any]:
+    async def _apply_outcome(self, pay: Payment, kind: str, *, verified_amount: int | None = None,
+                             verified_currency: str = "") -> dict[str, Any]:
         """Move a payment (and its invoice) to the outcome a gateway reports — the ONE seam a
         pushed webhook (handle_webhook) and a pulled reconcile (reconcile_payment) both funnel
         through, so the money transition is written in exactly one place.
@@ -2975,10 +3008,38 @@ class BillingService:
         target state, so a webhook and a later reconcile of the same event apply once between them —
         never a double mark-paid, a double dunning, or a double clawback. `kind` is the normalised
         WebhookEvent type: payment.succeeded | payment.failed | refund.
+
+        SERVER-AUTHORITATIVE AMOUNT (audit FIN-016): a signed webhook proves the callback is genuine,
+        NOT that it paid the right sum — so a `payment.succeeded` is marked paid ONLY when the amount
+        the GATEWAY reports (pulled via fetch_status by the callers, never read from the webhook body)
+        matches the invoice total and currency. A mismatch (an underpayment, or a webhook claiming paid
+        while the gateway does not confirm it) is REFUSED: the invoice stays unpaid, the payment is
+        flagged, and it is logged for review — never a full invoice settled for a partial capture. When
+        no authoritative amount is available (a gateway with no status endpoint), `verified_amount` is
+        None and the amount cannot be checked — the charge proceeds as before, with a WARNING logged.
         """
         inv = await self._invoices.fetch(pay.invoice_id)
         changed = False
         if kind == "payment.succeeded" and pay.status != "succeeded":
+            if inv is not None and verified_amount is not None:
+                amount_ok = int(verified_amount) == int(inv.total_minor)
+                cur_ok = (not verified_currency
+                          or str(verified_currency).upper() == str(inv.currency).upper())
+                if not (amount_ok and cur_ok):
+                    # The gateway's authoritative amount/currency does not match the invoice — refuse.
+                    pay.error = (f"AMOUNT_MISMATCH expected={inv.total_minor}{inv.currency} "
+                                 f"got={verified_amount}{verified_currency}")
+                    await self._payments.save(pay)
+                    _log.error("payment_amount_mismatch",
+                               extra={"tenant": inv.tenant, "invoice": inv.id, "payment": pay.id,
+                                      "expected_minor": int(inv.total_minor),
+                                      "captured_minor": int(verified_amount)})
+                    return {"changed": False, "payment_status": pay.status, "amount_mismatch": True}
+            elif inv is not None and verified_amount is None:
+                # No authoritative amount to check against (gateway has no fetch_status). Proceed as
+                # before, but make the un-verified settlement visible rather than silent.
+                _log.warning("payment_amount_unverified",
+                             extra={"tenant": inv.tenant, "invoice": inv.id, "payment": pay.id})
             pay.status = "succeeded"
             pay.next_retry_at = None
             await self._payments.save(pay)
@@ -3048,9 +3109,17 @@ class BillingService:
             # The provider still shows it pending/unknown — nothing definitive to apply.
             return {"ok": True, "reconciled": False, "provider_status": charge.status,
                     "payment_status": pay.status}
-        outcome = await self._apply_outcome(pay, kind)
+        # The charge we just pulled IS the authoritative amount — pass it so a succeeded reconcile
+        # verifies the captured sum against the invoice (FIN-016), same as the webhook path. A Charge
+        # that omits an amount cannot be verified → None (proceed, logged), never a false mismatch.
+        raw_amt = getattr(charge, "amount_minor", 0)
+        # 0/absent is UNVERIFIABLE (proceed, logged); only a POSITIVE amount is checked vs the invoice.
+        v_amount = int(raw_amt) if (kind == "payment.succeeded" and raw_amt) else None
+        outcome = await self._apply_outcome(pay, kind, verified_amount=v_amount,
+                                            verified_currency=(getattr(charge, "currency", "") if v_amount is not None else ""))
         return {"ok": True, "reconciled": outcome["changed"], "provider_status": charge.status,
-                "payment_status": outcome["payment_status"]}
+                "payment_status": outcome["payment_status"],
+                **({"amount_mismatch": True} if outcome.get("amount_mismatch") else {})}
 
     async def _claw_back(self, inv: Invoice, *, partial: bool = False) -> None:
         """Reverse the wallet grant an invoice made, when that invoice is refunded or charged back.
