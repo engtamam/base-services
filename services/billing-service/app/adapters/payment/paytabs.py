@@ -4,7 +4,7 @@ tran_type 'refund' with tran_ref. Webhook 'signature' header = HMAC-SHA256 of th
 from __future__ import annotations
 
 from app.adapters.billing_http import post_json
-from app.adapters.payment._common import constant_eq, hmac_sha256_hex, major
+from app.adapters.payment._common import constant_eq, hmac_sha256_hex, major, to_minor
 from app.ports.payment_gateway import Charge, GatewayUnavailable, WebhookEvent
 
 
@@ -60,5 +60,22 @@ class PayTabsGateway:
         except Exception:
             evt = {}
         status = str((evt.get("payment_result") or {}).get("response_status", ""))
-        kind = "payment.succeeded" if status in ("A", "H") else "payment.failed"
-        return WebhookEvent(verified=verified, type=kind, provider_id=str(evt.get("tran_ref", "")))
+        tran_type = str(evt.get("tran_type", "")).lower()
+        # A refund IPN is a distinct transaction with tran_type "refund" (verified 2026-09-26 against
+        # docs.paytabs.com). It was previously misread as a plain success/failure; detect it, and read
+        # this refund's amount from `tran_total` (MAJOR units). 0 → full-refund fallback.
+        if "refund" in tran_type:
+            kind = "refund"
+        elif status in ("A", "H"):
+            kind = "payment.succeeded"
+        else:
+            kind = "payment.failed"
+        refunded = 0
+        if kind == "refund":
+            raw = evt.get("tran_total", evt.get("cart_amount"))
+            try:
+                refunded = abs(to_minor(raw, str(evt.get("cart_currency", "SAR")))) if raw is not None else 0
+            except Exception:  # noqa: BLE001
+                refunded = 0
+        return WebhookEvent(verified=verified, type=kind, provider_id=str(evt.get("tran_ref", "")),
+                            refunded_minor=refunded)

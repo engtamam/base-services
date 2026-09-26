@@ -270,9 +270,9 @@
       "verdict": "NEEDS_DECISION",
       "verification_note": "Documented intentional; a correct fix requires threading a refund amount through WebhookEvent across ALL gateway adapters (Tap/Geidea/Stripe/PayPal/...). Cross-adapter design change - surface to owner before building.",
       "fix": {
-        "status": "partially_addressed",
-        "release": "v0.25.34",
-        "note": "Amount-verification infra now exists (FIN-016). The refund() API already does partial correctly. Remaining: a gateway-DASHBOARD partial-refund WEBHOOK still full-voids because the refunded amount is not exposed by fetch_status/ WebhookEvent without per-adapter work (user opted out of touching all adapters); not reachable on the active gateway (TuwaiqPay has no card refunds)."
+        "status": "fixed",
+        "release": "unreleased-committed",
+        "note": "Generic across ALL gateways: WebhookEvent.refunded_minor populated by every adapter (tap/stripe/moyasar/checkout/geidea/paypal/paytabs/aps/hyperpay) from its own signed refund payload; _apply_outcome applies a cumulative-floor amount-based refund — partial keeps the invoice paid, full voids, replay no-ops, 0/absent falls back to full. Shapes verified 2026-09-26 vs provider docs."
       }
     },
     {
@@ -582,6 +582,13 @@
       "FIN-016": "FIXED — _apply_outcome refuses to mark an invoice paid unless the gateway's authoritative amount (pulled via fetch_status by both the webhook and reconcile paths) matches the invoice total+currency. Underpayment/overpayment/gateway-not-confirmed are refused (invoice stays open, payment flagged, logged). 0/absent amount = unverifiable -> proceed with a WARNING. 7 tests.",
       "FIN-015": "PARTIAL — see finding note; needs per-adapter refunded-amount, deferred by the no-adapter-touch decision.",
       "verification": "billing 1083; 55 gates + OpenAPI green."
+    },
+    "batch-4-2026-09-26": {
+      "date": "2026-09-26",
+      "release": "UNRELEASED (user: do not release after)",
+      "FIN-015": "FIXED generically across all 9 gateway adapters + core _apply_outcome (cumulative-floor). 21 new tests (7 core partial/full/bounds/idempotency + 8 per-adapter extraction + 6 amount-verify from FIN-016).",
+      "verification": "billing 1099; 55 gates + OpenAPI green.",
+      "status": "All 29 audit findings now resolved except: FIN-004 (latent, needs migration) and FIN-028 (latent, unreachable) — both documented."
     }
   }
 }

@@ -88,6 +88,16 @@ class StripeGateway:
         t = evt.get("type", "")
         kind = "payment.succeeded" if "succeeded" in t else "payment.failed" if "failed" in t \
             else "refund" if "refund" in t else "unknown"
+        obj = ((evt.get("data") or {}).get("object") or {})
+        # Refund amount (FIN-015), Stripe amounts are already MINOR units. `charge.refunded` carries the
+        # CUMULATIVE `amount_refunded`; a refund object carries this refund's `amount`. Either is safe
+        # under the cumulative-floor in _apply_outcome. Verified 2026-09-26 against docs.stripe.com.
+        refunded = 0
+        if kind == "refund":
+            try:
+                refunded = int(obj.get("amount_refunded", obj.get("amount", 0)) or 0)
+            except Exception:  # noqa: BLE001
+                refunded = 0
         return WebhookEvent(verified=verified, type=kind,
                             event_id=str(evt.get("id", "")),   # Stripe evt_… — a true per-event id
-                            provider_id=str(((evt.get("data") or {}).get("object") or {}).get("id", "")))
+                            provider_id=str(obj.get("id", "")), refunded_minor=refunded)

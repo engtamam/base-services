@@ -43,6 +43,12 @@ class WebhookEvent:
     # the same charge (e.g. two partial refunds). Empty ⇒ the handler falls back to a composite key
     # (provider:provider_id:type). Populated per adapter where the payload carries an event id.
     event_id: str = ""
+    # For a `refund` event: the amount the gateway reports as refunded, in MINOR units. 0 = the gateway
+    # did not report an amount (a bare "refunded" signal) → the handler treats it as a FULL refund of
+    # the remainder. A POSITIVE value drives an amount-based PARTIAL refund: only that much is reversed
+    # and the invoice stays paid until the total is reached. Each adapter populates it from its own
+    # signed refund payload (see per-gateway extraction), converted to minor units for the currency.
+    refunded_minor: int = 0
     raw: dict[str, Any] = field(default_factory=dict)
 
 

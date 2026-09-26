@@ -2986,7 +2986,8 @@ class BillingService:
                         # the gateway does NOT confirm success though the webhook claimed it → refuse.
                         v_amount = -1
         outcome = await self._apply_outcome(pay, event.type, verified_amount=v_amount,
-                                            verified_currency=v_currency)
+                                            verified_currency=v_currency,
+                                            refund_amount=int(getattr(event, "refunded_minor", 0) or 0))
         # `reconciled` keeps its original meaning — the callback was verified and processed (an
         # already-terminal payment is an idempotent True) — EXCEPT an amount-mismatch refusal, which
         # settled nothing and is surfaced as reconciled False + amount_mismatch True.
@@ -2999,7 +3000,7 @@ class BillingService:
         return result
 
     async def _apply_outcome(self, pay: Payment, kind: str, *, verified_amount: int | None = None,
-                             verified_currency: str = "") -> dict[str, Any]:
+                             verified_currency: str = "", refund_amount: int = 0) -> dict[str, Any]:
         """Move a payment (and its invoice) to the outcome a gateway reports — the ONE seam a
         pushed webhook (handle_webhook) and a pulled reconcile (reconcile_payment) both funnel
         through, so the money transition is written in exactly one place.
@@ -3060,17 +3061,46 @@ class BillingService:
             already = int(inv.refunded_minor or 0) if inv else 0
             total = int(inv.total_minor) if inv else 0
             if inv is not None and total > 0 and already < total:
-                # A gateway refund webhook carries no partial amount here → it is a FULL refund of
-                # whatever remains: bring the authoritative counter up to the total and void.
-                await self._invoices_refunded_incr(inv.id, total - already, total)
-                inv.refunded_minor = total
-                inv.status = "void"
-                inv.voided_at = iso()           # WHEN the money was fully returned — for dispute timelines
+                # AMOUNT-BASED, exactly like the manual refund() API (money is the judge, one truth):
+                #   * a POSITIVE reported amount → reverse ONLY that much (bounded to what's outstanding);
+                #     the invoice stays PAID until the counter reaches the total, then it voids.
+                #   * a 0/absent amount (a gateway that only signals "refunded" with no sum) → FULL
+                #     refund of the remainder, the documented fallback.
+                # CUMULATIVE-FLOOR — safe whether a gateway reports the running refunded TOTAL (Moyasar
+                # `refunded`, Stripe `amount_refunded`) or a single refund's amount (Tap/Checkout/PayPal/
+                # PayTabs/APS/HyperPay): the reported value can only RAISE the refunded counter toward the
+                # invoice total, never lower it, and a distinct refund event is deduped upstream by
+                # event_id. So a partial reversal never voids the whole invoice, a replay is a no-op, and
+                # a full refund (reported == total) voids exactly once.
+                if refund_amount > 0:
+                    target = min(max(already, int(refund_amount)), total)
+                    delta = target - already
+                else:
+                    delta = total - already          # no amount reported → full refund of the remainder
+                if delta <= 0:
+                    # Already covered by a prior refund — nothing to do, idempotent.
+                    return {"changed": False, "payment_status": pay.status}
+                applied, refunded_after = await self._invoices_refunded_incr(inv.id, delta, total)
+                fully = refunded_after >= total
+                inv = await self._invoices.fetch(inv.id) or inv
+                inv.refunded_minor = refunded_after
+                inv.credit_note = True
+                if fully:
+                    inv.status = "void"
+                    inv.voided_at = iso()       # WHEN the money was fully returned — for dispute timelines
                 await self._invoices.save(inv)
-                await self._claw_back(inv)      # same reversal as a manual refund / a settlement recall
-                if pay.status != "refunded":
+                await self._ledger.record(tenant=inv.tenant, kind="refund", amount_minor=-delta,
+                                          currency=inv.currency, invoice_id=inv.id, source="refund")
+                # Reverse only the refunded portion. A partial reversal is opt-in (clawback_on_partial),
+                # exactly as the manual refund() path — same policy, same seam, no divergence.
+                await self._claw_back(inv, partial=not fully)
+                if fully and pay.status != "refunded":
                     pay.status = "refunded"
                     await self._payments.save(pay)
+                if self._events is not None:
+                    await self._events.emit(_events.PAYMENT_REFUNDED, {
+                        **_events.payment_payload(inv, payment_id=pay.id, source="refund"),
+                        "amount_minor": delta})
                 changed = True
             elif pay.status != "refunded":
                 # No invoice, or already fully refunded by amount: at least reflect the terminal

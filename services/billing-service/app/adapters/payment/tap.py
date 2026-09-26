@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from app.adapters.billing_http import bearer, get_json, post_json
-from app.adapters.payment._common import constant_eq, hmac_sha256_hex, major
+from app.adapters.payment._common import constant_eq, hmac_sha256_hex, major, to_minor
 from app.core.currency import decimals as _decimals
 from app.ports.payment_gateway import Charge, GatewayUnavailable, WebhookEvent
 
@@ -87,4 +87,13 @@ class TapGateway:
         status = str(evt.get("status", "")).upper()
         kind = "payment.succeeded" if status in _OK else "refund" if status == "REFUNDED" \
             else "payment.failed"
-        return WebhookEvent(verified=verified, type=kind, provider_id=str(evt.get("id", "")))
+        # Refund amount (FIN-015): Tap's refund event carries `amount` in MAJOR units + `currency`
+        # (verified 2026-09-26 against developers.tap.company). 0 when absent → full-refund fallback.
+        refunded = 0
+        if kind == "refund":
+            try:
+                refunded = to_minor(evt.get("amount", 0) or 0, currency)
+            except Exception:  # noqa: BLE001
+                refunded = 0
+        return WebhookEvent(verified=verified, type=kind, provider_id=str(evt.get("id", "")),
+                            refunded_minor=refunded)

@@ -11,7 +11,7 @@ import hashlib
 import hmac
 
 from app.adapters.billing_http import basic_auth, post_json
-from app.adapters.payment._common import constant_eq, major
+from app.adapters.payment._common import constant_eq, major, to_minor
 from app.ports.payment_gateway import Charge, GatewayUnavailable, WebhookEvent
 
 _OK = "000"
@@ -109,6 +109,25 @@ class GeideaGateway:
         provided = str(evt.get("signature", "")) or h.get("x-geidea-signature", "") or h.get("signature", "")
         verified = constant_eq(provided, expected)
         status = str(order.get("status", evt.get("responseCode", ""))).lower()
-        kind = "payment.succeeded" if status in ("success", "paid", _OK) else \
-            "refund" if "refund" in status else "payment.failed"
-        return WebhookEvent(verified=verified, type=kind, provider_id=str(order.get("orderId", "")))
+        detailed = str(order.get("detailedStatus", "")).lower()
+        # Refund FIRST: a refunded order still reports overall status "Success" (the refund itself
+        # succeeded), with the refund signalled by detailedStatus (Partially/Refunded) — so checking
+        # success before refund would misclassify every refund as a payment.
+        if "refund" in status or "refund" in detailed:
+            kind = "refund"
+        elif status in ("success", "paid", _OK):
+            kind = "payment.succeeded"
+        else:
+            kind = "payment.failed"
+        # Refund amount (FIN-015): Geidea amounts are MAJOR units; the order reports a cumulative
+        # refunded total (field spelling varies by version — totalRefundedAmount / refundedAmount).
+        # Verified 2026-09-26 against docs.geidea.net (detailedStatus PartiallyRefunded). 0 → full-refund.
+        refunded = 0
+        if kind == "refund":
+            raw = order.get("totalRefundedAmount", order.get("refundedAmount"))
+            try:
+                refunded = to_minor(raw, str(order.get("currency", evt.get("currency", "SAR")))) if raw is not None else 0
+            except Exception:  # noqa: BLE001
+                refunded = 0
+        return WebhookEvent(verified=verified, type=kind, provider_id=str(order.get("orderId", "")),
+                            refunded_minor=refunded)

@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 
 from app.adapters.billing_http import bearer, post_form
-from app.adapters.payment._common import major
+from app.adapters.payment._common import major, to_minor
 from app.ports.payment_gateway import Charge, GatewayUnavailable, WebhookEvent
 
 _OK = re.compile(r"^(000\.000\.|000\.100\.1|000\.[36])")
@@ -113,8 +113,17 @@ class HyperPayGateway:
         ok, _ = self._result_ok({"result": {"code": code}})
         kind = "refund" if str(payload.get("paymentType", "")).upper() == "RF" else (
             "payment.succeeded" if ok else "payment.failed")
+        # Refund amount (FIN-015): HyperPay (OPP) amounts are MAJOR units (decimal string); an RF payload
+        # carries this refund's `amount` + `currency`. Verified 2026-09-26 against hyperpay OPP docs.
+        refunded = 0
+        if kind == "refund":
+            try:
+                refunded = to_minor(payload.get("amount", 0) or 0,
+                                    str(payload.get("currency", "SAR")))
+            except Exception:  # noqa: BLE001
+                refunded = 0
         return WebhookEvent(
-            verified=True, type=kind, provider_id=str(payload.get("id", "")),
+            verified=True, type=kind, provider_id=str(payload.get("id", "")), refunded_minor=refunded,
             # A small projection, not the whole card-bearing payload: enough to reconcile.
             raw={"result_code": code,
                  "merchant_transaction_id": str(payload.get("merchantTransactionId", ""))})

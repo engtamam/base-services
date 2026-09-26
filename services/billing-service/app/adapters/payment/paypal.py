@@ -6,7 +6,7 @@ approves an order in the UI and billing passes the orderID as `token`; we POST
 from __future__ import annotations
 
 from app.adapters.billing_http import basic_auth, bearer, get_json, post_form, post_json
-from app.adapters.payment._common import major
+from app.adapters.payment._common import major, to_minor
 from app.ports.payment_gateway import Charge, GatewayUnavailable, WebhookEvent
 
 
@@ -96,6 +96,17 @@ class PayPalGateway:
         t = str(evt.get("event_type", ""))
         kind = "payment.succeeded" if "COMPLETED" in t or "CAPTURE.COMPLETED" in t else \
             "refund" if "REFUND" in t else "payment.failed" if "DENIED" in t or "DECLINED" in t else "unknown"
+        resource = (evt.get("resource") or {})
+        # Refund amount (FIN-015): PayPal's REFUND resource carries this refund's amount in MAJOR units
+        # under `amount.value` (+ currency_code). Verified 2026-09-26 against developer.paypal.com.
+        refunded = 0
+        if kind == "refund":
+            amt = (resource.get("amount") or {})
+            try:
+                refunded = to_minor(amt.get("value", 0) or 0,
+                                    str(amt.get("currency_code", "SAR"))) if amt else 0
+            except Exception:  # noqa: BLE001
+                refunded = 0
         return WebhookEvent(verified=verified, type=kind,
                             event_id=str(evt.get("id", "")),   # PayPal WH-… webhook event id
-                            provider_id=str(((evt.get("resource") or {})).get("id", "")))
+                            provider_id=str(resource.get("id", "")), refunded_minor=refunded)

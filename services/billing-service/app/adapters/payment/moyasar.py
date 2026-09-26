@@ -92,6 +92,16 @@ class MoyasarGateway:
             kind = "payment.succeeded"
         else:
             kind = "payment.failed"
+        # Refund amount (FIN-015): Moyasar amounts are MINOR units (halalas); the payment object carries
+        # the CUMULATIVE `refunded` total — safe under the cumulative-floor. Verified 2026-09-26 against
+        # docs.moyasar.com. 0 when absent → full-refund fallback.
+        refunded = 0
+        if kind == "refund":
+            try:
+                refunded = int((evt.get("data") or {}).get("refunded", 0) or 0)
+            except Exception:  # noqa: BLE001
+                refunded = 0
         return WebhookEvent(verified=verified, type=kind,
                             event_id=str(evt.get("id", "")),   # Moyasar top-level event id (≠ data.id)
-                            provider_id=str((evt.get("data") or {}).get("id", "")))
+                            provider_id=str((evt.get("data") or {}).get("id", "")),
+                            refunded_minor=refunded)

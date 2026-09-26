@@ -74,4 +74,13 @@ class ApsGateway:
         status = str(evt.get("status", ""))
         kind = "payment.succeeded" if status == _PURCHASE_OK else \
             "refund" if status == _REFUND_OK else "payment.failed"
-        return WebhookEvent(verified=verified, type=kind, provider_id=str(evt.get("fort_id", "")))
+        # Refund amount (FIN-015): APS amounts are MINOR units (a string), the REFUND feedback carries
+        # this refund's `amount`. Verified 2026-09-26 against paymentservices.amazon.com. 0 → full-refund.
+        refunded = 0
+        if kind == "refund":
+            try:
+                refunded = int(str(evt.get("amount", "0")).strip() or 0)
+            except Exception:  # noqa: BLE001
+                refunded = 0
+        return WebhookEvent(verified=verified, type=kind, provider_id=str(evt.get("fort_id", "")),
+                            refunded_minor=refunded)

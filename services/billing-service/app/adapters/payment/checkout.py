@@ -66,6 +66,15 @@ class CheckoutGateway:
         t = str(evt.get("type", ""))
         kind = "payment.succeeded" if t in ("payment_approved", "payment_captured") else \
             "refund" if "refund" in t else "payment.failed" if "declined" in t or "failed" in t else "unknown"
+        data = (evt.get("data") or {})
+        # Refund amount (FIN-015): Checkout.com amounts are MINOR units; the payment_refunded event's
+        # `data.amount` is this refund's amount. Verified 2026-09-26 against checkout.com docs.
+        refunded = 0
+        if kind == "refund":
+            try:
+                refunded = int(data.get("amount", 0) or 0)
+            except Exception:  # noqa: BLE001
+                refunded = 0
         return WebhookEvent(verified=verified, type=kind,
                             event_id=str(evt.get("id", "")),   # Checkout.com per-event id
-                            provider_id=str(((evt.get("data") or {})).get("id", "")))
+                            provider_id=str(data.get("id", "")), refunded_minor=refunded)
