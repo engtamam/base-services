@@ -100,6 +100,40 @@ def test_quantity_never_multiplies_a_boolean_flag():
     assert run(r.resolve("acme", NOW))["limits"]["sso"] is True   # a flag is not a quantity
 
 
+def test_quantity_scales_a_rich_gauge_inner_limit():
+    # A real per-seat plan stores its limit as a rich dict; quantity must scale the inner `limit`,
+    # not be ignored (audit: a gauge-shaped add-on was unsellable at quantity > 1).
+    store, r = _world()
+    _sub(store, "sub_a", limits={"staff.seats": {"kind": "gauge", "limit": 1}}, quantity=5)
+    got = run(r.resolve("acme", NOW))["limits"]["staff.seats"]
+    assert got["limit"] == 5 and got["kind"] == "gauge"   # inner scaled, shape preserved
+
+
+def test_quantity_scales_a_rich_counter_and_preserves_period():
+    store, r = _world()
+    _sub(store, "sub_a",
+         limits={"api.calls": {"kind": "counter", "limit": 1000, "period": "billing_period"}},
+         quantity=3)
+    got = run(r.resolve("acme", NOW))["limits"]["api.calls"]
+    assert got["limit"] == 3000 and got["kind"] == "counter" and got["period"] == "billing_period"
+
+
+def test_quantity_never_scales_a_rich_unlimited_inner():
+    store, r = _world()
+    _sub(store, "sub_a", limits={"staff.seats": {"kind": "gauge", "limit": UNLIMITED}}, quantity=5)
+    got = run(r.resolve("acme", NOW))["limits"]["staff.seats"]
+    assert got["limit"] == UNLIMITED           # a non-numeric inner limit is never multiplied
+
+
+def test_rich_gauge_scales_per_row_then_merges():
+    store, r = _world()
+    _sub(store, "sub_a", limits={"staff.seats": {"kind": "gauge", "limit": 2}},
+         quantity=5, created="2024-01-01")     # 10
+    _sub(store, "sub_b", limits={"staff.seats": {"kind": "gauge", "limit": 1}},
+         quantity=3, created="2024-01-02")     # 3
+    assert run(r.resolve("acme", NOW))["limits"]["staff.seats"]["limit"] == 13   # 10 + 3
+
+
 def test_quantity_one_is_an_exact_noop():
     # every EXISTING row defaults to quantity 1 — resolution must be byte-identical to pre-change.
     store, r = _world()

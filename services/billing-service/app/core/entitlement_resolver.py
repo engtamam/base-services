@@ -52,21 +52,36 @@ def _scale_limits(limits: dict[str, Any], quantity: Any) -> dict[str, Any]:
     N grants N× (the grant follows the price, which already bills unit × quantity). quantity 1 (every
     existing row's default) is an EXACT no-op, so no current customer's total changes.
 
-    NEVER scaled: the UNLIMITED sentinel (a string — multiplying it would produce a number smaller
-    than unlimited and quietly CAP a customer who bought no cap; same guardrail as the merge), bool
-    feature flags (a flag is not a quantity), and rich/structured limit dicts (a counter pack's
-    inner shape is not scaled here). A missing / 0 / None / bad quantity coerces to a no-op — a bad
-    quantity must NEVER zero a customer's entitlements.
+    Scales a BARE number (`{"staff.seats": 1}` → 5) AND the inner `limit` of a RICH definition
+    (`{"kind": "gauge", "limit": 1}` → `{"kind": "gauge", "limit": 5}`), preserving kind/period/overage.
+    Real plans store per-seat/counter limits as rich dicts, so scaling only bare numbers made any
+    rich-shaped add-on effectively unsellable at quantity > 1 — the customer paid unit × N but resolved
+    to the base limit (audit: gauge-shaped 'staff.seats' plan, quantity had zero effect).
+
+    NEVER scaled: the UNLIMITED sentinel (a string — multiplying it would produce a number smaller than
+    unlimited and quietly CAP a customer who bought no cap; same guardrail as the merge), bool feature
+    flags (a flag is not a quantity), a rich definition whose inner `limit` is UNLIMITED/non-numeric,
+    and any other structured value with no numeric `limit`. A missing / 0 / None / bad quantity coerces
+    to a no-op — a bad quantity must NEVER zero a customer's entitlements.
     """
     q = int(quantity or 1)
     if q <= 1:
         return limits
     out: dict[str, Any] = {}
     for key, value in limits.items():
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            out[key] = value          # flag, UNLIMITED string, or rich dict — untouched
+        if isinstance(value, bool):
+            out[key] = value          # a flag is not a quantity
+        elif isinstance(value, (int, float)):
+            out[key] = value * q      # a bare numeric limit — scaled by this row's quantity
+        elif isinstance(value, dict) and "limit" in value:
+            inner = value.get("limit")
+            if isinstance(inner, bool) or not isinstance(inner, (int, float)):
+                out[key] = value      # UNLIMITED / non-numeric inner limit — untouched
+            else:
+                # Scale ONLY the inner limit; kind/period/overage describe the shape, not the size.
+                out[key] = {**value, "limit": inner * q}
         else:
-            out[key] = value * q      # a real numeric gauge — scaled by this row's quantity
+            out[key] = value          # UNLIMITED string, or a struct with no numeric limit — untouched
     return out
 from app.observability.logging import get_logger
 
