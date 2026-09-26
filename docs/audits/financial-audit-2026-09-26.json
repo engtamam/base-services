@@ -1,0 +1,542 @@
+{
+  "audit": "financial-services",
+  "date": "2026-09-26",
+  "auditor": "6 parallel agents (vuln / bug / qa) over two scopes, each finding verified in-code by the lead before inclusion",
+  "scope": [
+    "billing-service",
+    "wallet-service",
+    "payments-service",
+    "pay-over-whatsapp (billing pay-link -> notification-service WhatsApp -> public redirector)"
+  ],
+  "lenses": [
+    "vuln",
+    "bug",
+    "qa"
+  ],
+  "verdict_legend": {
+    "CONFIRMED": "reproduced/verified in code by the lead; a real defect or gap",
+    "CONFIRMED_LATENT": "real but not currently reachable/exploitable given a stated precondition",
+    "NEEDS_DECISION": "real, but the fix reshapes a deliberate design/contract or spans all gateway adapters — owner decides",
+    "ACCEPTED": "already documented and consciously accepted in code; no action",
+    "FALSE_POSITIVE": "not a real issue on verification"
+  },
+  "summary": {
+    "total": 29,
+    "by_severity": {
+      "CRITICAL": 0,
+      "HIGH": 8,
+      "MEDIUM": 9,
+      "LOW": 12
+    },
+    "by_verdict": {
+      "CONFIRMED": 23,
+      "CONFIRMED_LATENT": 2,
+      "NEEDS_DECISION": 2,
+      "ACCEPTED": 2,
+      "FALSE_POSITIVE": 0,
+      "note": "FIN-008 and FIN-023 are the same reconcile gap seen at core and route layer"
+    },
+    "headline": "No CRITICAL. Two HIGH money-loss bugs both localized to billing _claw_back (refund reversal misses cart/consolidated grants and the top-up fund). One HIGH authz inconsistency (global plan/coupon creation reachable by tenant-scoped billing.manage). Payments-service core is very strong; gaps there are route/adapter test coverage and one stale-amount link reuse."
+  },
+  "findings": [
+    {
+      "id": "FIN-001",
+      "lens": "bug",
+      "service": "billing-service",
+      "severity": "HIGH",
+      "title": "_claw_back reverses nothing for cart / consolidated / hosted-cart invoices (grants in meta['grants'])",
+      "location": "app/core/billing_service.py:3069",
+      "scenario": "A cart of 2 plans (each +1000 credits) is paid -> meta['grants']=[{subA,1000},{subB,1000}], no grant_minor. Full refund -> _claw_back reads grant_minor=0 and returns; customer keeps 2000 credits AND the money back. Same for every consolidated renewal invoice later voided/charged-back.",
+      "evidence": "grantable = int((inv.meta or {}).get('grant_minor', 0) or 0); if grantable <= 0: return",
+      "verdict": "CONFIRMED",
+      "verification_note": "_mark_paid grants from BOTH grant_minor (single) and meta['grants'] (checkout/consolidated/cart), but _claw_back and grants._grantable read only grant_minor. record_clawback keys on clawback_source_for(invoice) with no discriminator, so N per-sub reversals would need a discriminator.",
+      "fix": {
+        "status": "fixed",
+        "release": "v0.25.33"
+      }
+    },
+    {
+      "id": "FIN-002",
+      "lens": "bug",
+      "service": "billing-service",
+      "severity": "HIGH",
+      "title": "_claw_back debits the wrong fund (ignores per-invoice grant_fund override)",
+      "location": "app/core/billing_service.py:3080",
+      "scenario": "wallet_topup credits fund 'topup' via meta.grant_fund. Refunding the top-up reaches _claw_back which debits self._cfg['grant_fund'] (e.g. 'credits') instead of 'topup' -> wrong fund driven negative / clawback fails, customer keeps the refunded top-up balance.",
+      "evidence": "await self._grants.record_clawback(tenant=inv.tenant, invoice_id=inv.id, fund=self._cfg['grant_fund'], ...)",
+      "verdict": "CONFIRMED",
+      "verification_note": "_mark_paid credit uses fund=(inv.meta or {}).get('grant_fund') or self._cfg['grant_fund'] (line ~1795); reversal must mirror it.",
+      "fix": {
+        "status": "fixed",
+        "release": "v0.25.33"
+      }
+    },
+    {
+      "id": "FIN-003",
+      "lens": "bug",
+      "service": "billing-service",
+      "severity": "LOW",
+      "title": "run_overage idempotency key (%Y-%m) can collide across two periods in one calendar month",
+      "location": "app/core/billing_service.py:1532",
+      "scenario": "A prorated partial first period + first full period whose current_period_start fall in the same %Y-%m share the overage key; the second period's overage is skipped (dropped charge).",
+      "evidence": "period = time.strftime('%Y-%m', time.gmtime(sub.current_period_start)); key = f'overage:{sub.id}:{period}'",
+      "verdict": "CONFIRMED",
+      "verification_note": "run_cycle correctly keys on int(current_period_end); overage should key on int(current_period_start) to match.",
+      "fix": {
+        "status": "pending",
+        "release": ""
+      }
+    },
+    {
+      "id": "FIN-004",
+      "lens": "bug",
+      "service": "wallet-service",
+      "severity": "LOW",
+      "title": "Wallet idempotency keys not length-prefixed (tenant|source boundary ambiguity)",
+      "location": "app/core/wallet_service.py:294,372,491",
+      "scenario": "If a tenant id could contain '|', tenant 'a'+source 'b|c' and tenant 'a|b'+source 'c' collide on 'a|b|c' (cross-tenant idempotency aliasing). payments-service length-prefixes the trusted part; wallet does not.",
+      "evidence": "f'{tenant}|{op}|{source}' and f'{tenant}|{source}'",
+      "verdict": "CONFIRMED_LATENT",
+      "verification_note": "Not reachable: tenant ids are system-assigned and '|'-free. Changing the key format is risky (would orphan existing durable *_SEEN markers -> a redelivered old credit could double-credit during transition, cf. the v0.25.6 AAD incident). Defer unless a migration ships with it.",
+      "fix": {
+        "status": "deferred",
+        "release": ""
+      }
+    },
+    {
+      "id": "FIN-005",
+      "lens": "vuln",
+      "service": "billing-service",
+      "severity": "HIGH",
+      "title": "Tenant-scoped billing.manage can create GLOBAL plans + coupons (edit twins are correctly platform-only)",
+      "location": "app/core/api/v1/billing.py:388,490,521,537 (create) vs :458,556,577,592 (edit, _PLATFORM)",
+      "scenario": "If billing.manage is issued tenant-scoped (the code's own comment says it may be), a tenant operator POSTs a public 100%-off coupon then subscribes for 0.00, and injects global plans onto /public/plans and /offers for every tenant. create_plan/coupon CRUD are _ADMIN (platform.billing OR billing.manage) while update_plan and discount-rules are _PLATFORM only.",
+      "evidence": "_ADMIN = require_any_capability('platform.billing','billing.manage'); @router.post('/plans', Depends(_ADMIN)); @router.post('/coupons', Depends(_ADMIN))  # vs update_plan Depends(_PLATFORM)",
+      "verdict": "CONFIRMED",
+      "verification_note": "Plans and coupons are global (no tenant field). Gating create_plan + coupon CRUD to _PLATFORM matches the already platform-only edits and closes the escalation; platform staff hold platform.billing so no legitimate flow breaks. Peers create scoped coupons via the internal create_scoped_coupon route.",
+      "fix": {
+        "status": "fixed",
+        "release": "v0.25.33"
+      }
+    },
+    {
+      "id": "FIN-006",
+      "lens": "vuln",
+      "service": "billing-service",
+      "severity": "LOW",
+      "title": "Platform-wide dunning sweep triggerable by tenant-scoped billing.manage",
+      "location": "app/api/v1/billing.py:1490",
+      "scenario": "dunning_sweep() runs across ALL tenants; the user route is _ADMIN (no _guard), so a tenant admin can drive the fleet-wide dunning pass. Idempotent, but unexpected fleet charge attempts / gateway load.",
+      "evidence": "@router.post('/dunning/run') ... principal: Principal = Depends(_ADMIN)",
+      "verdict": "CONFIRMED",
+      "verification_note": "The internal twin is correctly require_internal_token. Fix = make the user route _PLATFORM.",
+      "fix": {
+        "status": "fixed",
+        "release": "v0.25.33"
+      }
+    },
+    {
+      "id": "FIN-007",
+      "lens": "qa",
+      "service": "wallet-service",
+      "severity": "HIGH",
+      "title": "Wallet payout HTTP routes (withdraw / settle / reclaim) have no integration test",
+      "location": "app/api/internal.py:196,215,329 ; tests/integration/test_wallet_api.py",
+      "scenario": "Core is unit-tested but the route layer that moves money OUT of the platform is not: a router that defaulted/omitted the mandatory withdraw source, mis-mapped an error, or dropped auth would ship with no failing test.",
+      "evidence": "test_wallet_api.py covers credit/spend/reserve/confirm/release/refund/reconcile/ledger only",
+      "verdict": "CONFIRMED",
+      "fix": {
+        "status": "fixed",
+        "release": "v0.25.33"
+      }
+    },
+    {
+      "id": "FIN-008",
+      "lens": "qa",
+      "service": "payments-service",
+      "severity": "MEDIUM",
+      "title": "reconcile() cross-tenant guard and EXPIRED-recovery branch untested",
+      "location": "app/core/payments.py:307,312",
+      "scenario": "reconcile() is only driven via the sweep on PENDING rows. Its own cross-tenant guard (tenant mismatch -> None) and EXPIRED re-query branch are unexercised; tightening either would silently stop recovering after-expiry money / lose the IDOR guard with no failing test.",
+      "evidence": "if row is None or row.get('tenant') != tenant: return None   # untested branch",
+      "verdict": "CONFIRMED",
+      "fix": {
+        "status": "fixed",
+        "release": "v0.25.33"
+      }
+    },
+    {
+      "id": "FIN-009",
+      "lens": "qa",
+      "service": "billing-service",
+      "severity": "MEDIUM",
+      "title": "refund() REFUND_AMOUNT_INVALID (amount <= 0) branch untested",
+      "location": "app/core/billing_service.py:3102",
+      "scenario": "A zero/negative explicit refund amount is a plausible caller bug; the guard is unverified, so a regression letting 0 reach the gateway would not be caught.",
+      "evidence": "no test references REFUND_AMOUNT_INVALID (only REFUND_EXCEEDS_OUTSTANDING / already_refunded)",
+      "verdict": "CONFIRMED",
+      "fix": {
+        "status": "pending",
+        "release": ""
+      }
+    },
+    {
+      "id": "FIN-010",
+      "lens": "qa",
+      "service": "payments-service",
+      "severity": "MEDIUM",
+      "title": "Redirector 410 branches untested (expired link mark_expired; spent/terminal generic refusal)",
+      "location": "app/core/payments.py:198-222 ; app/api/v1/payments_public.py:35",
+      "scenario": "A regression that 302'd a completed/failed/expired link to the gateway, or that leaked the concrete terminal state, would pass CI. Only the happy 302 + unknown-id 404 + http-downgrade refusal are tested.",
+      "evidence": "no test for is_expired->mark_expired->410 nor the terminal-refusal path",
+      "verdict": "CONFIRMED",
+      "fix": {
+        "status": "pending",
+        "release": ""
+      }
+    },
+    {
+      "id": "FIN-011",
+      "lens": "qa",
+      "service": "wallet-service",
+      "severity": "LOW",
+      "title": "Wallet zero-amount credit/spend/reserve edges not asserted",
+      "location": "app/core/wallet_service.py:341",
+      "scenario": "validate_credit permits amount=0; spend(net=0)/reserve(net=0) have no test. A zero credit still writes a ledger row + permanent-floor entry (before the zero filter). Behaviour unverified (not a money-loss path).",
+      "evidence": "validate_credit only require_non_negative",
+      "verdict": "CONFIRMED",
+      "fix": {
+        "status": "pending",
+        "release": ""
+      }
+    },
+    {
+      "id": "FIN-012",
+      "lens": "vuln",
+      "service": "payments-service",
+      "severity": "LOW",
+      "title": "DNS-rebind window on tenant-controlled gateway base",
+      "location": "app/adapters/payment_http.py:52-70",
+      "scenario": "guard_fetch_url resolves+checks IPs but urllib re-resolves at connect (TOCTOU); a tenant-set MERCHANT_API_BASE could resolve public then connect to an internal IP.",
+      "evidence": "code comment: '(A resolve->connect DNS-rebind window remains; acceptable for a server-to-server gateway call where the host is a stored credential, not live request input.)'",
+      "verdict": "ACCEPTED",
+      "verification_note": "Base is set only via internal token AND validated https/non-private at write; redirects blocked. Consciously documented as accepted.",
+      "fix": {
+        "status": "no_action",
+        "release": ""
+      }
+    },
+    {
+      "id": "FIN-013",
+      "lens": "vuln",
+      "service": "payments-service",
+      "severity": "LOW",
+      "title": "Redirector existence oracle (404 unknown vs 410 exists-but-unusable)",
+      "location": "app/core/payments.py:198-222",
+      "scenario": "A holder can distinguish exists vs not via status code.",
+      "evidence": "documented as I2 in code",
+      "verdict": "ACCEPTED",
+      "verification_note": "Tokens are 128/256-bit; enumeration infeasible; terminal states are indistinguishable from each other. Accepted.",
+      "fix": {
+        "status": "no_action",
+        "release": ""
+      }
+    },
+    {
+      "id": "FIN-014",
+      "lens": "vuln",
+      "service": "billing-service",
+      "severity": "LOW",
+      "title": "resolve_pay_link proceeds (returns checkout_url) when the invoice row is missing",
+      "location": "app/core/billing_service.py:3281",
+      "scenario": "A pay-link whose invoice was hard-deleted still 302s to the live gateway page; intent ('dead once the invoice is not open') is not enforced for the missing-invoice case.",
+      "evidence": "blocks only when 'inv_row is not None and status != open'",
+      "verdict": "CONFIRMED",
+      "verification_note": "Low impact (completion needs the invoice), but should fail closed on a missing invoice.",
+      "fix": {
+        "status": "fixed",
+        "release": "v0.25.33"
+      }
+    },
+    {
+      "id": "FIN-015",
+      "lens": "bug",
+      "service": "billing-service",
+      "severity": "MEDIUM",
+      "title": "A partial gateway refund webhook voids the WHOLE invoice and claws ALL grants",
+      "location": "app/core/billing_service.py:2990-3010 (_apply_outcome, kind=='refund')",
+      "scenario": "Merchant issues a partial dashboard refund (20 of 100). Tap/Geidea sends status REFUNDED -> _apply_outcome treats it as full: refunded_minor=total, invoice void, full clawback. Books show a 100 refund that never happened; customer loses all credit for a partial refund.",
+      "evidence": "comment: 'A gateway refund webhook carries no partial amount here -> it is a FULL refund of whatever remains'; WebhookEvent has no amount field (tap.py)",
+      "verdict": "NEEDS_DECISION",
+      "verification_note": "Documented intentional; a correct fix requires threading a refund amount through WebhookEvent across ALL gateway adapters (Tap/Geidea/Stripe/PayPal/...). Cross-adapter design change - surface to owner before building.",
+      "fix": {
+        "status": "deferred",
+        "release": ""
+      }
+    },
+    {
+      "id": "FIN-016",
+      "lens": "bug",
+      "service": "billing-service",
+      "severity": "MEDIUM",
+      "title": "Billing webhook marks invoice paid without verifying captured amount",
+      "location": "app/core/billing_service.py:2978-2984 (_apply_outcome, payment.succeeded)",
+      "scenario": "A validly-signed webhook reporting a captured amount lower than the invoice total still marks the full invoice paid, records a full charge, grants full credit, activates the sub. payments-service enforces amount_ok+currency_ok; billing does not.",
+      "evidence": "if kind=='payment.succeeded' ... await self._mark_paid(inv)  # no amount compare",
+      "verdict": "NEEDS_DECISION",
+      "verification_note": "Same root as FIN-015: WebhookEvent carries no amount, so verification needs a cross-adapter change (populate + compare amount, or verify-by-fetch_status before marking paid). Surface to owner.",
+      "fix": {
+        "status": "deferred",
+        "release": ""
+      }
+    },
+    {
+      "id": "FIN-017",
+      "lens": "bug",
+      "service": "payments-service",
+      "severity": "MEDIUM",
+      "title": "create_link reuses an existing link for the same reference WITHOUT revalidating amount/currency",
+      "location": "app/core/payments.py:115-117",
+      "scenario": "Order R link minted at 100 SAR. Order edited to 150; shop calls create again with reference='R', amount=15000. Service silently returns the stale 100 SAR link -> shop under-collects, no error.",
+      "evidence": "existing = await self._req.active_by_reference(...); if existing is not None: return self._to_link(existing)",
+      "verdict": "CONFIRMED",
+      "verification_note": "Idempotency key is (tenant, reference) only. Fix: on reuse, if existing.amount_minor/currency differ from the request, refuse (409 REQUEST_AMOUNT_MISMATCH) rather than return the stale link.",
+      "fix": {
+        "status": "pending",
+        "release": ""
+      }
+    },
+    {
+      "id": "FIN-018",
+      "lens": "bug",
+      "service": "payments-service",
+      "severity": "LOW",
+      "title": "TuwaiqPay webhook re-query passes no currency; an absent status currency can mis-mark a real success as FAILED",
+      "location": "app/adapters/payment/tuwaiqpay.py:183",
+      "scenario": "A real SETTLED webhook whose status response omits bill.currency yields cur='' -> apply_outcome currency_ok False -> FAILED with amount_mismatch.",
+      "evidence": "confirmed = self.fetch_status(provider_ref=tx_id)   # no currency passed",
+      "verdict": "CONFIRMED",
+      "verification_note": "Self-heals: reconcile passes row.currency and a later SUCCEEDED supersedes FAILED via CAS. Adapter has no request row to source currency from at webhook time; low priority. Optional hardening only.",
+      "fix": {
+        "status": "deferred",
+        "release": ""
+      }
+    },
+    {
+      "id": "FIN-019",
+      "lens": "bug",
+      "service": "notification-service",
+      "severity": "LOW",
+      "title": "WhatsApp template buttons hardcode index '0'; multiple dynamic buttons in one send collide",
+      "location": "app/adapters/whatsapp/meta.py:92,99,107",
+      "scenario": "If a send supplies more than one dynamic button component (e.g. quick_reply + url), both are emitted at index '0', which Meta rejects/misroutes. (b) An empty url suffix is a falsy-guard drop -> the button falls back to its fixed base URL (a pay link with no token).",
+      "evidence": "components.append({'type':'button','sub_type':'url','index':'0', ...})",
+      "verdict": "CONFIRMED",
+      "verification_note": "Index-per-button is a clean correctness fix (assign by order). The empty-suffix falsy-drop matches the file's documented 'declared only when supplied' discipline (empty == not supplied); left as-is.",
+      "fix": {
+        "status": "pending",
+        "release": ""
+      }
+    },
+    {
+      "id": "FIN-020",
+      "lens": "qa",
+      "service": "payments-service",
+      "severity": "HIGH",
+      "title": "Dead assertion masks the wrong-secret webhook rejection ('test that stops testing')",
+      "location": "tests/unit/test_payments_core.py:182",
+      "scenario": "'assert ... is not None or True' always passes. If wrong-secret verification regressed to accepting a forged body, this line would not catch it (only the incidental event-count check partially covers).",
+      "evidence": "assert await svc.handle_webhook(...) is not None or True",
+      "verdict": "CONFIRMED",
+      "fix": {
+        "status": "fixed",
+        "release": "v0.25.33"
+      }
+    },
+    {
+      "id": "FIN-021",
+      "lens": "qa",
+      "service": "payments-service",
+      "severity": "HIGH",
+      "title": "TuwaiqPay verify_webhook (the only production money gate) has no test",
+      "location": "app/adapters/payment/tuwaiqpay.py:171-191",
+      "scenario": "The unsigned-webhook-re-query trust contract is untested: trusts only transactionId then re-queries fetch_status; verified only on a terminal fetched status; missing id / GatewayUnavailable -> unverified. A regression trusting the POSTed status would ship silently.",
+      "evidence": "test_tuwaiqpay_adapter.py covers fetch_status/prepare_checkout but never verify_webhook",
+      "verdict": "CONFIRMED",
+      "fix": {
+        "status": "fixed",
+        "release": "v0.25.33"
+      }
+    },
+    {
+      "id": "FIN-022",
+      "lens": "qa",
+      "service": "billing-service",
+      "severity": "HIGH",
+      "title": "Billing public redirector route has no integration test (incl. open-redirect defense)",
+      "location": "app/api/v1/billing.py:866-899 (GET /api/v1/billing/pay/{token})",
+      "scenario": "The host-allowlist branch (503 when unset, 502 CHECKOUT_HOST_NOT_ALLOWED) could regress to an open redirect with no failing test. Only resolve_pay_link core is tested, not the route's status mapping.",
+      "evidence": "test_pay_link.py tests resolve_pay_link only",
+      "verdict": "CONFIRMED",
+      "fix": {
+        "status": "fixed",
+        "release": "v0.25.33"
+      }
+    },
+    {
+      "id": "FIN-023",
+      "lens": "qa",
+      "service": "payments-service",
+      "severity": "HIGH",
+      "title": "Payments reconcile HTTP route untested",
+      "location": "app/api/internal_payments.py:162-173",
+      "scenario": "502 GATEWAY_UNAVAILABLE / 404 wrong-tenant / happy 'recover missed webhook -> completes' at the HTTP layer are unproven; reconcile only exercised via the sweep core.",
+      "evidence": "zero matches for '/reconcile' in payments-service/tests",
+      "verdict": "CONFIRMED",
+      "verification_note": "Route-layer view of FIN-008.",
+      "fix": {
+        "status": "fixed",
+        "release": "v0.25.33"
+      }
+    },
+    {
+      "id": "FIN-024",
+      "lens": "qa",
+      "service": "payments-service",
+      "severity": "MEDIUM",
+      "title": "TuwaiqPay prepare_checkout / auth failure branches untested",
+      "location": "app/adapters/payment/tuwaiqpay.py:85-151",
+      "scenario": "Missing customerName/phone -> ok=False; bill code==0 or empty link -> ok=False; _access_token auth failure -> GatewayUnavailable; token caching. A regression minting an ok=True-but-linkless session would strand a claim / hand out a broken link.",
+      "evidence": "test_tuwaiqpay_adapter.py:57 covers only the happy prepare_checkout",
+      "verdict": "CONFIRMED",
+      "fix": {
+        "status": "fixed",
+        "release": "v0.25.33"
+      }
+    },
+    {
+      "id": "FIN-025",
+      "lens": "qa",
+      "service": "payments-service",
+      "severity": "MEDIUM",
+      "title": "Webhook route actual-body oversize branch untested (only declared content-length is)",
+      "location": "app/api/v1/payments_public.py:52-54",
+      "scenario": "The len(body) > max_bytes guard when content-length is absent/understated has no test; a memory-pressure bypass via a lying header could regress.",
+      "evidence": "test_H5 covers only declared content-length -> 413",
+      "verdict": "CONFIRMED",
+      "fix": {
+        "status": "pending",
+        "release": ""
+      }
+    },
+    {
+      "id": "FIN-026",
+      "lens": "qa",
+      "service": "payments-service",
+      "severity": "MEDIUM",
+      "title": "Console gateway empty-webhook-secret fail-closed untested",
+      "location": "app/adapters/payment/console.py:47",
+      "scenario": "No test drives an empty secret to assert it never verifies. It is the pattern real adapters copy; the empty-signing-secret fail-closed case is in scope.",
+      "evidence": "verified = bool(self._secret) and ...",
+      "verdict": "CONFIRMED",
+      "fix": {
+        "status": "pending",
+        "release": ""
+      }
+    },
+    {
+      "id": "FIN-027",
+      "lens": "qa",
+      "service": "payments-service",
+      "severity": "LOW",
+      "title": "Webhook route broad-except (200 {applied:false}) anti-retry-storm path untested",
+      "location": "app/api/v1/payments_public.py:59-63",
+      "scenario": "A regression that 500'd (retry storm) or hid the error when handle_webhook raises would not be caught.",
+      "evidence": "no test forces handle_webhook to raise",
+      "verdict": "CONFIRMED",
+      "fix": {
+        "status": "pending",
+        "release": ""
+      }
+    },
+    {
+      "id": "FIN-028",
+      "lens": "qa",
+      "service": "payments-service",
+      "severity": "LOW",
+      "title": "Amount/currency mismatch not exercised at a non-exponent-2 currency (latent)",
+      "location": "app/core/payments.py:239-246",
+      "scenario": "SUPPORTED_CURRENCIES is SAR/USD/EUR (all exp-2); a 3-dp currency can't reach apply_outcome today. If the set is widened to KWD/BHD without a mismatch test at that exponent, the minor-unit compare is unproven for it.",
+      "evidence": "create rejects non-supported currencies",
+      "verdict": "CONFIRMED_LATENT",
+      "fix": {
+        "status": "deferred",
+        "release": ""
+      }
+    },
+    {
+      "id": "FIN-029",
+      "lens": "qa",
+      "service": "payments-service",
+      "severity": "LOW",
+      "title": "TuwaiqPay adapter status-currency-absent path (mis-mark) has no regression test",
+      "location": "app/adapters/payment/tuwaiqpay.py:164-183",
+      "scenario": "Pairs with FIN-018: no test proves the webhook path stays unverified/self-heals when bill.currency is absent.",
+      "evidence": "no test for the currency-absent fetch_status branch",
+      "verdict": "CONFIRMED",
+      "fix": {
+        "status": "deferred",
+        "release": ""
+      }
+    }
+  ],
+  "well_covered_confirmed_correct": [
+    "Money math: Decimal ROUND_HALF_UP for VAT/coupon/rule/proration; currency exponents (KWD/BHD/OMR 3dp, JPY 0dp) via Decimal; no float tails.",
+    "Discount composition: MAX(coupon, rule), never summed, both clamped to subtotal.",
+    "Idempotency/crash windows: wallet _mutate single CAS + staged ledger _flush replay; marker-first ordering with rollback + durable *_SEEN backstops; billing run_cycle/consolidated/checkout/start_*_checkout/credit claim-before-mutate, mark-before-advance, replay-completes-advance.",
+    "payments-service apply_outcome: version-pinned CAS, server-authoritative amount+currency (refuses 0/absent as unverifiable), success-supersedes-non-success only, webhook+reconcile share one seam.",
+    "Webhook empty-secret forgery: fail-closed in both billing and payments; tenant binding + event dedupe + Stripe replay window.",
+    "Redirectors: https + host-allowlist fail-closed (empty allowlist permits nothing); single-use per invoice; TTL/terminal refusal.",
+    "Entitlement resolver: fails closed on lapsed period, scales quantity into rich limit dicts (v0.25.32), grandfathers per-row before merge; merge refuses unknown strategy / mixed kind.",
+    "Secrets/PII: operator secret routes write-only; tokens never echoed; audit resource= uses subject_ref pseudonyms; conduit never carries card/PAN data; WhatsApp privacy mode fails closed to private."
+  ],
+  "remediation": {
+    "v0.25.33": {
+      "date": "2026-09-26",
+      "fixed": [
+        "FIN-001",
+        "FIN-002",
+        "FIN-005",
+        "FIN-006",
+        "FIN-007",
+        "FIN-008",
+        "FIN-014",
+        "FIN-020",
+        "FIN-021",
+        "FIN-022",
+        "FIN-023",
+        "FIN-024"
+      ],
+      "note": "All 8 HIGH fixed with deep per-unit tests; companion LOWs FIN-006/FIN-014 and MEDIUM FIN-024 bundled. FIN-008 covered at the route layer by FIN-023 tests. Full suites green (billing 1074, wallet 367, payments 458), 55 gates + OpenAPI.",
+      "still_open_needs_decision": [
+        "FIN-015 (partial-refund full-void)",
+        "FIN-016 (billing webhook amount verification)"
+      ],
+      "still_open_deferred": [
+        "FIN-003",
+        "FIN-004",
+        "FIN-017",
+        "FIN-018",
+        "FIN-019",
+        "FIN-025",
+        "FIN-026",
+        "FIN-027",
+        "FIN-028",
+        "FIN-029",
+        "FIN-010",
+        "FIN-011",
+        "FIN-009"
+      ]
+    }
+  }
+}

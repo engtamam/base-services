@@ -330,8 +330,13 @@ class ReclaimIn(BaseModel):
 async def reclaim_grant(request: Request, body: ReclaimIn) -> dict:
     """Restore a DORMANT grant's preserved remainder to spendable — the primitive a future 'reclaim
     idle balance' flow calls. Recorded: moving money back into a customer's balance is a privileged act."""
-    result = await build_wallet(request).reclaim(
-        grant_id=body.grant_id, source=body.source, reason=body.reason)
+    try:
+        result = await build_wallet(request).reclaim(
+            grant_id=body.grant_id, source=body.source, reason=body.reason)
+    except Exception as exc:  # noqa: BLE001
+        # Map GRANT_NOT_FOUND / GRANT_NOT_DORMANT / contention to a status, like withdraw/settle —
+        # an unmapped raise would surface as a 500 instead of a clean 400/409.
+        raise _handle(exc) from exc
     await request.app.state.auditor.record(
         "wallet.grant_reclaimed", actor="system", resource=f"grant:{body.grant_id}",
         ip=request.client.host if request.client else "",

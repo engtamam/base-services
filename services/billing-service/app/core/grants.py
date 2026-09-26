@@ -66,6 +66,60 @@ def clawback_source_for(invoice_id: str) -> str:
     return f"billing:invoice:{invoice_id}:clawback"
 
 
+def grant_items(inv_meta: dict | None, default_fund: str) -> list[dict[str, Any]]:
+    """The EXACT set of wallet credits an invoice's meta represents — the ONE reading shared by the
+    credit path (_mark_paid), the reversal path (_claw_back) and both self-heal reconcilers, so a
+    refund reverses precisely what the payment granted, per fund and per subscription.
+
+    An invoice carries grants in one of two shapes, and historically only the first was read on
+    reversal — so cart / consolidated / hosted-cart invoices (which use the SECOND shape) reversed
+    nothing on refund (audit FIN-001), and a fund override was ignored (FIN-002):
+      * `grant_minor` (+ optional `grant_fund`, `period_end`): a SINGLE grant (run_cycle, wallet
+        top-up, single checkout) — discriminator "" (one grant per invoice).
+      * `grants`: a LIST of per-subscription grants (checkout cart, consolidated renewal,
+        start_cart_checkout), each `{sub_id, fund?, amount_minor, period_end}` — the sub_id is the
+        discriminator so each is an independently-idempotent promise.
+    Returns [{fund, amount_minor, period_end, discriminator}] with the fund fallback and the
+    per-item period_end resolved exactly as _mark_paid resolves them when crediting.
+    """
+    meta = inv_meta or {}
+    items: list[dict[str, Any]] = []
+    single = int(meta.get("grant_minor", 0) or 0)
+    if single > 0:
+        items.append({"fund": meta.get("grant_fund") or default_fund,
+                      "amount_minor": single,
+                      "period_end": float(meta.get("period_end", 0) or 0),
+                      "discriminator": ""})
+    for g in meta.get("grants", []) or []:
+        amt = int(g.get("amount_minor", 0) or 0)
+        if amt <= 0:
+            continue
+        items.append({"fund": g.get("fund") or default_fund,
+                      "amount_minor": amt,
+                      "period_end": float(g.get("period_end", 0) or 0),
+                      "discriminator": str(g.get("sub_id", ""))})
+    return items
+
+
+def clawback_items(inv_meta: dict | None, *, default_fund: str, grant_mode: str,
+                   skip_expired: bool, now: float) -> list[dict[str, Any]]:
+    """`grant_items` filtered to what a refund should actually REVERSE.
+
+    A `reset` grant whose period has already ended lapsed in the wallet on its own; reversing it
+    would drive the balance negative for credits the customer never effectively held — so it is
+    dropped (per item, on its own period_end), exactly as the live reversal path decided for the
+    single-grant shape before this was generalized.
+    """
+    out: list[dict[str, Any]] = []
+    for it in grant_items(inv_meta, default_fund):
+        if skip_expired and grant_mode == "reset":
+            pe = it["period_end"]
+            if pe and pe <= now:
+                continue
+        out.append(it)
+    return out
+
+
 @dataclass
 class Grant:
     id: str
@@ -144,16 +198,22 @@ class GrantOutbox:
         return grant
 
     async def record_clawback(self, *, tenant: str, invoice_id: str, fund: str, amount_minor: int,
-                              reason: str = "", allow_negative: bool = False) -> Grant | None:
+                              reason: str = "", allow_negative: bool = False,
+                              discriminator: str = "") -> Grant | None:
         """Write down the promise to REVERSE a grant. Returns None when there is nothing to reverse.
 
         Keyed on `clawback_source_for` — DISTINCT from the grant — so a redelivered refund reverses
         once and is never mistaken for the credit. Recording twice overwrites one row, exactly like
         a grant, so a double refund produces one clawback.
+
+        `discriminator` mirrors `record`: a consolidated / cart invoice granted one credit PER
+        subscription (distinct sub_id sources), so its reversal must key per subscription too, or the
+        N per-sub clawbacks would collapse onto ONE row and reverse only a single subscription's
+        credit while the invoice claimed to void them all.
         """
         if amount_minor <= 0:
             return None
-        source = clawback_source_for(invoice_id)
+        source = clawback_source_for(invoice_id) + (f":{discriminator}" if discriminator else "")
         existing = await self._s.get(_COLL, source)
         if existing:
             return Grant.from_dict(existing)
@@ -254,17 +314,22 @@ class GrantOutbox:
         a delay rather than a customer's credits.
         """
         rows, _ = await invoices.find_paid(limit=limit)
+        default_fund = self._cfg["grant_fund"]
+        reset = self._cfg.get("plan_credit_grant_mode") == "reset"
         created = 0
         for inv in rows:
-            amount = self._grantable(inv)
-            if amount <= 0:
-                continue
-            if await self._s.get(_COLL, source_for(inv["id"])):
-                continue
-            await self.record(tenant=inv["tenant"], invoice_id=inv["id"],
-                              fund=self._cfg["grant_fund"], amount_minor=amount,
-                              reason="reconciled")
-            created += 1
+            # Per-item (per fund, per subscription) so a cart / consolidated invoice's several grants
+            # are each rebuilt on their OWN fund and expiry — not collapsed onto one default-fund grant.
+            for it in grant_items(inv.get("meta"), default_fund):
+                disc = it["discriminator"]
+                gsrc = source_for(inv["id"]) + (f":{disc}" if disc else "")
+                if await self._s.get(_COLL, gsrc):
+                    continue
+                expires = (it["period_end"] or None) if reset else None
+                await self.record(tenant=inv["tenant"], invoice_id=inv["id"], fund=it["fund"],
+                                  amount_minor=it["amount_minor"], reason="reconciled",
+                                  expires_at=expires, discriminator=disc)
+                created += 1
         return {"scanned": len(rows), "created": created}
 
     async def reconcile_clawbacks(self, *, invoices, limit: int = 200) -> dict[str, int]:
@@ -277,27 +342,28 @@ class GrantOutbox:
         and no clawback row exists yet.
         """
         rows, _ = await invoices.find_voided(limit=limit)
+        default_fund = self._cfg["grant_fund"]
+        items_kw = {"default_fund": default_fund,
+                    "grant_mode": self._cfg.get("plan_credit_grant_mode"),
+                    "skip_expired": bool(self._cfg.get("clawback_skip_expired", True)),
+                    "now": self._clock()}
+        allow_negative = bool(self._cfg.get("clawback_allow_negative", True))
         created = 0
         for inv in rows:
-            amount = self._grantable(inv)
-            if amount <= 0:
-                continue
-            grant = await self._s.get(_COLL, source_for(inv["id"]))
-            if not grant or grant.get("status") != DELIVERED:
-                continue                      # nothing delivered → nothing to reverse
-            if await self._s.get(_COLL, clawback_source_for(inv["id"])):
-                continue                      # already reversing
-            await self.record_clawback(
-                tenant=inv["tenant"], invoice_id=inv["id"], fund=self._cfg["grant_fund"],
-                amount_minor=amount, reason="reconciled",
-                allow_negative=bool(self._cfg.get("clawback_allow_negative", True)))
-            created += 1
+            # Per-item, mirroring the live reversal path: check the MATCHING grant (same discriminator)
+            # was delivered and its clawback not yet recorded, so a cart / consolidated invoice reverses
+            # every delivered per-sub grant, on its own fund, not just the first.
+            for it in clawback_items(inv.get("meta"), **items_kw):
+                disc = it["discriminator"]
+                suffix = f":{disc}" if disc else ""
+                grant = await self._s.get(_COLL, source_for(inv["id"]) + suffix)
+                if not grant or grant.get("status") != DELIVERED:
+                    continue                  # nothing delivered → nothing to reverse
+                if await self._s.get(_COLL, clawback_source_for(inv["id"]) + suffix):
+                    continue                  # already reversing
+                await self.record_clawback(
+                    tenant=inv["tenant"], invoice_id=inv["id"], fund=it["fund"],
+                    amount_minor=it["amount_minor"], reason="reconciled",
+                    allow_negative=allow_negative, discriminator=disc)
+                created += 1
         return {"scanned": len(rows), "created": created}
-
-    def _grantable(self, inv: dict) -> int:
-        """How much a paid invoice is worth in wallet funds.
-
-        Read from the invoice's own recorded grant amount rather than recomputed from the live
-        plan: a plan repriced after the sale must not change what an old invoice grants.
-        """
-        return int((inv.get("meta") or {}).get("grant_minor", 0) or 0)

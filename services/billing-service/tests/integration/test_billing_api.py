@@ -145,6 +145,38 @@ def test_platform_subscription_list_is_platform_capability_only(client):
                       headers=_adm(caps=("billing.manage",))).status_code == 403
 
 
+# ── FIN-005 / FIN-006: global config + fleet actions are PLATFORM-only ───────────────
+def test_create_plan_is_platform_only_not_tenant_billing_manage(client):
+    # A Plan is GLOBAL (shown on the unauthenticated /public/plans). A tenant-scoped billing.manage
+    # must not inject one; only platform.billing may.
+    body = {"name": "Escalate", "prices": [{"interval": "month", "amount_minor": 10000,
+                                            "currency": "SAR", "type": "flat"}]}
+    assert client.post("/api/v1/billing/plans", json=body,
+                       headers=_adm(caps=("billing.manage",))).status_code == 403
+    assert client.post("/api/v1/billing/plans", json=body, headers=_adm()).status_code == 201
+
+
+def test_coupon_crud_is_platform_only(client):
+    # The escalation: a tenant billing.manage could mint a public 100%-off code for every tenant.
+    coup = {"code": "FIN005", "type": "percent", "value": 100, "public": True}
+    mgr = _adm(caps=("billing.manage",))
+    assert client.post("/api/v1/billing/coupons", json=coup, headers=mgr).status_code == 403
+    assert client.get("/api/v1/billing/coupons", headers=mgr).status_code == 403
+    # platform.billing may, and then the escalated caller still cannot edit/delete it
+    assert client.post("/api/v1/billing/coupons", json=coup, headers=_adm()).status_code == 201
+    assert client.get("/api/v1/billing/coupons/FIN005", headers=mgr).status_code == 403
+    assert client.patch("/api/v1/billing/coupons/FIN005", json={"value": 50},
+                        headers=mgr).status_code == 403
+    assert client.delete("/api/v1/billing/coupons/FIN005", headers=mgr).status_code == 403
+
+
+def test_dunning_run_is_platform_only(client):
+    # dunning_sweep() retries charges across ALL tenants — not a tenant-scoped action.
+    assert client.post("/api/v1/billing/dunning/run",
+                       headers=_adm(caps=("billing.manage",))).status_code == 403
+    assert client.post("/api/v1/billing/dunning/run", headers=_adm()).status_code == 200
+
+
 def test_canceled_at_is_stamped_on_immediate_cancel(client):
     plan = _plan(client)
     sub = client.post("/api/v1/billing/subscriptions",

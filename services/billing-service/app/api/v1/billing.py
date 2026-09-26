@@ -385,7 +385,10 @@ class UsageIn(BaseModel):
 # ── catalog (admin) ────────────────────────────────────────────────────────────
 @router.post("/plans", status_code=201)
 async def create_plan(request: Request, body: PlanIn,
-                      principal: Principal = Depends(_ADMIN)) -> dict:
+                      principal: Principal = Depends(_PLATFORM)) -> dict:
+    # PLATFORM-only, matching update_plan / plan_availability / discount-rules: a Plan is GLOBAL config
+    # (no tenant field) shown on the unauthenticated /public/plans. Leaving creation at _ADMIN let a
+    # tenant-scoped billing.manage inject plans into every tenant's catalogue (audit FIN-005).
     p = await (await build_billing(request)).create_plan(**body.model_dump())
     await request.app.state.auditor.record(
         "plan.created", actor=principal.subject, tenant=principal.tenant,
@@ -487,7 +490,7 @@ async def plan_availability(request: Request, plan_id: str, body: PlanAvailabili
     return plan.to_dict()
 
 
-@router.post("/coupons", status_code=201, dependencies=[Depends(_ADMIN)])
+@router.post("/coupons", status_code=201, dependencies=[Depends(_PLATFORM)])
 async def create_coupon(request: Request, body: CouponIn,
                         principal: Principal = Depends(require_user)) -> dict:
     await request.app.state.auditor.record(
@@ -496,7 +499,7 @@ async def create_coupon(request: Request, body: CouponIn,
     return (await (await build_billing(request)).upsert_coupon(**body.model_dump())).to_dict()
 
 
-@router.get("/coupons", dependencies=[Depends(_ADMIN)])
+@router.get("/coupons", dependencies=[Depends(_PLATFORM)])
 async def list_coupons(request: Request,
                        status_: str = Query(default="", alias="status", max_length=16)) -> dict:
     """Every coupon, with why each is or is not discounting.
@@ -510,7 +513,7 @@ async def list_coupons(request: Request,
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
 
-@router.get("/coupons/{code}", dependencies=[Depends(_ADMIN)])
+@router.get("/coupons/{code}", dependencies=[Depends(_PLATFORM)])
 async def get_coupon(request: Request, code: str) -> dict:
     row = await (await build_billing(request)).get_coupon(code)
     if row is None:
@@ -518,7 +521,7 @@ async def get_coupon(request: Request, code: str) -> dict:
     return row
 
 
-@router.patch("/coupons/{code}", dependencies=[Depends(_ADMIN)])
+@router.patch("/coupons/{code}", dependencies=[Depends(_PLATFORM)])
 async def update_coupon(request: Request, code: str, body: CouponPatchIn,
                         principal: Principal = Depends(require_user)) -> dict:
     """Edit a coupon without resetting what customers have already redeemed."""
@@ -534,7 +537,7 @@ async def update_coupon(request: Request, code: str, body: CouponPatchIn,
         raise HTTPException(code_, str(exc)) from exc
 
 
-@router.delete("/coupons/{code}", dependencies=[Depends(_ADMIN)])
+@router.delete("/coupons/{code}", dependencies=[Depends(_PLATFORM)])
 async def delete_coupon(request: Request, code: str,
                         principal: Principal = Depends(require_user)) -> dict:
     """Remove a coupon outright.
@@ -1487,7 +1490,10 @@ async def list_pending_topups(request: Request,
 
 
 @router.post("/dunning/run")
-async def dunning(request: Request, principal: Principal = Depends(_ADMIN)) -> dict:
+async def dunning(request: Request, principal: Principal = Depends(_PLATFORM)) -> dict:
+    # PLATFORM-only: dunning_sweep() retries charges across ALL tenants (no _guard), so a tenant-scoped
+    # billing.manage must not drive the whole-fleet pass (audit FIN-006). The internal twin is
+    # require_internal_token; per-sub run_cycle/run_overage stay _ADMIN because they _guard the sub.
     result = await (await build_billing(request)).dunning_sweep()
     await request.app.state.auditor.record(
         "dunning.run", actor=principal.subject, tenant=principal.tenant,

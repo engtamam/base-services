@@ -156,3 +156,67 @@ def test_H5_oversized_webhook_is_refused(client):
                       headers={"content-length": str(10_000_000)},
                       content=b"x" * 100)   # declared length over cap -> 413 before reading
     assert big.status_code == 413
+
+
+# ── FIN-023 / FIN-008: the reconcile HTTP route (recover a missed webhook, at the route layer) ───────
+def _open_request(client, tenant="acme", ref="rec-1", amount=15000):
+    _configure(client, tenant)
+    return client.post("/internal/payments/requests", headers=_h(),
+                       json={"tenant": tenant, "reference": ref, "amount_minor": amount,
+                             "currency": "SAR"}).json()
+
+
+def test_reconcile_requires_internal_token(client):
+    r = _open_request(client)
+    assert client.post(f"/internal/payments/requests/{r['request_id']}/reconcile?tenant=acme"
+                       ).status_code == 401
+
+
+def test_reconcile_unknown_id_is_404(client):
+    _configure(client)
+    assert client.post("/internal/payments/requests/nope/reconcile?tenant=acme",
+                       headers=_h()).status_code == 404
+
+
+def test_reconcile_wrong_tenant_is_404_idor_guard(client):
+    # A tenant must not reconcile another tenant's request id (the cross-tenant guard, FIN-008).
+    r = _open_request(client, tenant="acme", ref="rec-idor")
+    _configure(client, "intruder")
+    got = client.post(f"/internal/payments/requests/{r['request_id']}/reconcile?tenant=intruder",
+                      headers=_h())
+    assert got.status_code == 404
+
+
+def test_reconcile_recovers_a_missed_webhook_to_completed(client, monkeypatch):
+    # The webhook never arrived; a manual reconcile pulls the gateway status and completes the invoice
+    # through the SAME idempotent seam. Drive it by having the (console) gateway report SUCCEEDED.
+    import app.adapters.payment.console as console
+    from app.ports.payment_gateway import SUCCEEDED, PaymentOutcome
+    r = _open_request(client, ref="rec-ok", amount=15000)
+
+    def _succeeded(self, *, provider_ref, currency=""):
+        return PaymentOutcome(status=SUCCEEDED, provider="console", provider_ref=provider_ref,
+                              amount_minor=15000, currency="SAR", verified=True)
+
+    monkeypatch.setattr(console.ConsoleGateway, "fetch_status", _succeeded)
+    got = client.post(f"/internal/payments/requests/{r['request_id']}/reconcile?tenant=acme",
+                      headers=_h())
+    assert got.status_code == 200 and got.json()["status"] == "completed"
+    # idempotent: a second reconcile does not double-apply, still completed
+    again = client.post(f"/internal/payments/requests/{r['request_id']}/reconcile?tenant=acme",
+                        headers=_h())
+    assert again.status_code == 200 and again.json()["status"] == "completed"
+
+
+def test_reconcile_gateway_unavailable_is_502(client, monkeypatch):
+    import app.adapters.payment.console as console
+    from app.ports.payment_gateway import GatewayUnavailable
+    r = _open_request(client, ref="rec-down")
+
+    def _down(self, *, provider_ref, currency=""):
+        raise GatewayUnavailable("down")
+
+    monkeypatch.setattr(console.ConsoleGateway, "fetch_status", _down)
+    got = client.post(f"/internal/payments/requests/{r['request_id']}/reconcile?tenant=acme",
+                      headers=_h())
+    assert got.status_code == 502 and got.json()["code"] == "GATEWAY_UNAVAILABLE"

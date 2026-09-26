@@ -21,6 +21,7 @@ from app.core.entitlement_resolver import EntitlementResolver
 from app.core import periods
 from app.core import pricing
 from app.core import events as _events
+from app.core.grants import clawback_items
 from app.core import settlement as _stl
 from app.core import tax_profile
 from app.core.models import (Coupon, DiscountRule, Invoice, Payment, Plan, Settlement, Subscription,
@@ -3066,20 +3067,22 @@ class BillingService:
             return
         if partial and not self._cfg.get("clawback_on_partial", False):
             return
-        grantable = int((inv.meta or {}).get("grant_minor", 0) or 0)
-        if grantable <= 0:
-            return
-        # An expired `reset` grant already lapsed in the wallet; reversing it would drive the
-        # balance negative for credits the customer never effectively held. Skip by default.
-        if (self._cfg.get("clawback_skip_expired", True)
-                and self._cfg.get("plan_credit_grant_mode") == "reset"):
-            period_end = float((inv.meta or {}).get("period_end", 0) or 0)
-            if period_end and period_end <= now_ts():
-                return
-        await self._grants.record_clawback(
-            tenant=inv.tenant, invoice_id=inv.id, fund=self._cfg["grant_fund"],
-            amount_minor=grantable, reason=f"refund:{inv.number}",
-            allow_negative=bool(self._cfg.get("clawback_allow_negative", True)))
+        # Reverse EXACTLY what this invoice granted — every fund, every per-subscription grant — using
+        # the same reading _mark_paid credited with. Historically this read only `grant_minor`, so a
+        # cart / consolidated / hosted-cart invoice (whose grants live in meta["grants"]) reversed
+        # nothing on refund (the customer kept the credits AND the money), and a per-invoice grant_fund
+        # override (e.g. a wallet top-up's "topup" fund) was clawed from the wrong fund. `clawback_items`
+        # yields one item per (fund, subscription) with its own discriminator, dropping reset-expired
+        # grants per their own period_end. Each item is an independently-idempotent reversal.
+        allow_negative = bool(self._cfg.get("clawback_allow_negative", True))
+        for it in clawback_items(inv.meta, default_fund=self._cfg["grant_fund"],
+                                 grant_mode=self._cfg.get("plan_credit_grant_mode"),
+                                 skip_expired=bool(self._cfg.get("clawback_skip_expired", True)),
+                                 now=now_ts()):
+            await self._grants.record_clawback(
+                tenant=inv.tenant, invoice_id=inv.id, fund=it["fund"],
+                amount_minor=it["amount_minor"], reason=f"refund:{inv.number}",
+                allow_negative=allow_negative, discriminator=it["discriminator"])
 
     async def refund(self, payment_id: str, amount_minor: int | None = None,
                      refund_id: str = "") -> dict[str, Any]:
@@ -3276,10 +3279,14 @@ class BillingService:
             return None
         if self._clock() > float(row.get("expires_at", 0) or 0):
             return {"expired": True}
-        # STATUS-AWARE: a link must stop working once its invoice is no longer open — otherwise a payer
-        # could pay an already-paid (or voided) invoice through a still-"pending" link. Re-fetch live.
+        # STATUS-AWARE, FAIL-CLOSED: a link must stop working once its invoice is no longer open —
+        # otherwise a payer could pay an already-paid (or voided) invoice through a still-"pending" link.
+        # A MISSING invoice row (hard-deleted/purged) is treated as dead too (audit FIN-014): the
+        # redirector must never 302 to a live gateway page for an invoice we can no longer settle.
         inv_row = await self._invoices.get(str(row.get("invoice_id", "") or ""))
-        if inv_row is not None and str(inv_row.get("status", "")) != "open":
+        if inv_row is None:
+            return {"settled": True, "status": "missing"}
+        if str(inv_row.get("status", "")) != "open":
             return {"settled": True, "status": str(inv_row.get("status", ""))}
         return {"checkout_url": str(row.get("checkout_url", "") or ""),
                 "invoice_id": row.get("invoice_id", ""), "payment_id": row.get("payment_id", "")}

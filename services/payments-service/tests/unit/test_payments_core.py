@@ -176,10 +176,12 @@ def test_handle_webhook_end_to_end_through_console_gateway():
                            "secret": SECRET}).encode()
         updated = await svc.handle_webhook(tenant="acme", headers={}, body=body)
         assert updated["status"] == "completed"
-        # a body with the wrong secret is unverified -> ignored
+        # a body with the wrong secret is unverified -> ignored (apply_outcome returns None), and it
+        # must NOT complete a second time. (The prior 'is not None or True' always passed and measured
+        # nothing — a regression that ACCEPTED the forged body would have slipped through.)
         bad = json.dumps({"status": "succeeded", "provider_ref": row["provider_ref"],
                           "amount_minor": 15000, "secret": "wrong"}).encode()
-        assert await svc.handle_webhook(tenant="acme", headers={}, body=bad) is not None or True
+        assert await svc.handle_webhook(tenant="acme", headers={}, body=bad) is None
         assert len([e for e in events if e.type == TOPIC_COMPLETED]) == 1
     run(go())
 
