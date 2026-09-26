@@ -83,8 +83,8 @@
       "verdict": "CONFIRMED",
       "verification_note": "run_cycle correctly keys on int(current_period_end); overage should key on int(current_period_start) to match.",
       "fix": {
-        "status": "pending",
-        "release": ""
+        "status": "fixed",
+        "release": "pending-hold"
       }
     },
     {
@@ -176,8 +176,8 @@
       "evidence": "no test references REFUND_AMOUNT_INVALID (only REFUND_EXCEEDS_OUTSTANDING / already_refunded)",
       "verdict": "CONFIRMED",
       "fix": {
-        "status": "pending",
-        "release": ""
+        "status": "fixed",
+        "release": "pending-hold"
       }
     },
     {
@@ -191,8 +191,8 @@
       "evidence": "no test for is_expired->mark_expired->410 nor the terminal-refusal path",
       "verdict": "CONFIRMED",
       "fix": {
-        "status": "pending",
-        "release": ""
+        "status": "fixed",
+        "release": "pending-hold"
       }
     },
     {
@@ -206,8 +206,8 @@
       "evidence": "validate_credit only require_non_negative",
       "verdict": "CONFIRMED",
       "fix": {
-        "status": "pending",
-        "release": ""
+        "status": "fixed",
+        "release": "pending-hold"
       }
     },
     {
@@ -302,8 +302,8 @@
       "verdict": "CONFIRMED",
       "verification_note": "Idempotency key is (tenant, reference) only. Fix: on reuse, if existing.amount_minor/currency differ from the request, refuse (409 REQUEST_AMOUNT_MISMATCH) rather than return the stale link.",
       "fix": {
-        "status": "pending",
-        "release": ""
+        "status": "fixed",
+        "release": "pending-hold"
       }
     },
     {
@@ -318,8 +318,8 @@
       "verdict": "CONFIRMED",
       "verification_note": "Self-heals: reconcile passes row.currency and a later SUCCEEDED supersedes FAILED via CAS. Adapter has no request row to source currency from at webhook time; low priority. Optional hardening only.",
       "fix": {
-        "status": "deferred",
-        "release": ""
+        "status": "test_added_no_code_change",
+        "release": "pending-hold"
       }
     },
     {
@@ -334,8 +334,8 @@
       "verdict": "CONFIRMED",
       "verification_note": "Index-per-button is a clean correctness fix (assign by order). The empty-suffix falsy-drop matches the file's documented 'declared only when supplied' discipline (empty == not supplied); left as-is.",
       "fix": {
-        "status": "pending",
-        "release": ""
+        "status": "fixed",
+        "release": "pending-hold"
       }
     },
     {
@@ -425,8 +425,8 @@
       "evidence": "test_H5 covers only declared content-length -> 413",
       "verdict": "CONFIRMED",
       "fix": {
-        "status": "pending",
-        "release": ""
+        "status": "fixed",
+        "release": "pending-hold"
       }
     },
     {
@@ -440,8 +440,8 @@
       "evidence": "verified = bool(self._secret) and ...",
       "verdict": "CONFIRMED",
       "fix": {
-        "status": "pending",
-        "release": ""
+        "status": "fixed",
+        "release": "pending-hold"
       }
     },
     {
@@ -455,8 +455,8 @@
       "evidence": "no test forces handle_webhook to raise",
       "verdict": "CONFIRMED",
       "fix": {
-        "status": "pending",
-        "release": ""
+        "status": "fixed",
+        "release": "pending-hold"
       }
     },
     {
@@ -485,8 +485,8 @@
       "evidence": "no test for the currency-absent fetch_status branch",
       "verdict": "CONFIRMED",
       "fix": {
-        "status": "deferred",
-        "release": ""
+        "status": "test_added_no_code_change",
+        "release": "pending-hold"
       }
     }
   ],
@@ -537,6 +537,42 @@
         "FIN-011",
         "FIN-009"
       ]
+    },
+    "batch-2-2026-09-26": {
+      "date": "2026-09-26",
+      "release": "HELD (user: finish all gaps before releasing)",
+      "fixed": [
+        "FIN-003",
+        "FIN-009",
+        "FIN-010",
+        "FIN-011",
+        "FIN-017",
+        "FIN-019",
+        "FIN-025",
+        "FIN-026",
+        "FIN-027"
+      ],
+      "tested_no_code_change": [
+        "FIN-018",
+        "FIN-029"
+      ],
+      "still_open": {
+        "needs_decision": [
+          "FIN-015 partial-refund full-void",
+          "FIN-016 billing webhook amount verification (both need WebhookEvent to carry an amount across ALL gateway adapters)"
+        ],
+        "deferred_migration": [
+          "FIN-004 wallet key length-prefix (changing the durable *_SEEN key format needs a migration or it orphans markers -> a double-credit window; latent since tenant ids are '|'-free)"
+        ],
+        "latent": [
+          "FIN-028 amount/currency mismatch at a 3dp currency (unreachable: create-gate blocks non exp-2 currencies)"
+        ],
+        "accepted": [
+          "FIN-012 DNS-rebind (documented)",
+          "FIN-013 existence oracle (documented)"
+        ]
+      },
+      "verification": "billing 1076, wallet 372, payments 465, notification 755; 55 gates + OpenAPI all green."
     }
   }
 }

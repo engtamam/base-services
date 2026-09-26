@@ -149,6 +149,18 @@ def test_refund_over_outstanding_is_rejected():
     assert gw.refund_calls == 0              # never reached the gateway
 
 
+def test_refund_zero_or_negative_amount_is_rejected_before_the_gateway():
+    # FIN-009: an explicit amount_minor <= 0 must be refused (REFUND_AMOUNT_INVALID), never fall through
+    # to a gateway call that refunds nothing / an undefined amount.
+    st = MemoryDataStore(); gw = MockGW(); b = _svc(st, gw)
+    run(b.wallet_topup(tenant="t1", amount_minor=10000, payment_token="pm_1", fund="credits"))
+    pays, _ = run(b._payments.browse("t1", limit=10))
+    for bad in (0, -100):
+        res = run(b.refund(pays[0]["id"], amount_minor=bad))
+        assert not res["ok"] and res["reason"] == "REFUND_AMOUNT_INVALID"
+    assert gw.refund_calls == 0              # never reached the gateway
+
+
 # ── 03: webhook fail-closed on an empty secret ────────────────────────────────
 def test_webhook_rejects_when_no_secret_configured():
     st = MemoryDataStore(); b = _svc(st)

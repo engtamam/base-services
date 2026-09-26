@@ -29,3 +29,13 @@ def test_uses_constant_time_compare_not_equality():
     src = inspect.getsource(ConsoleGateway.verify_webhook)
     assert "compare_digest" in src
     assert "== self._secret" not in src
+
+
+def test_empty_configured_secret_fails_closed():
+    # FIN-027: an EMPTY configured secret must NEVER verify any callback — even one that supplies an
+    # empty secret — or a misconfigured tenant would accept forged webhooks. `bool(self._secret)` gates
+    # the compare, so an empty secret can never match.
+    g = ConsoleGateway(webhook_secret="")
+    assert g.verify_webhook(headers={}, body=_body(secret="")).verified is False
+    assert g.verify_webhook(headers={}, body=_body(secret="anything")).verified is False
+    assert g.verify_webhook(headers={"x-console-secret": ""}, body=_body()).verified is False

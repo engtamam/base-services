@@ -78,34 +78,42 @@ class MetaWhatsApp:
                 "type": "body",
                 "parameters": [{"type": "text", "text": str(v)} for v in variables],
             })
+        # A template's dynamic buttons are indexed by their POSITION among the buttons (0, 1, 2 …). More
+        # than one dynamic button can be supplied in a single send (e.g. a quick-reply AND a url button),
+        # so each gets the NEXT index in declaration order — hardcoding "0" for all made Meta reject or
+        # misroute a multi-button send (audit FIN-019). A single dynamic button is index "0", unchanged.
+        _btn_index = 0
         if flow_token:
             # A Flow button that is a component OF THE APPROVED TEMPLATE (business-initiated, no 24h
             # window needed) — distinct from the interactive-message Flow (build_flow), which needs the
             # window. The button + its flow are declared and APPROVED at template creation; here we only
             # supply the per-send action. Verified against Meta's "Sending a Flow" guide (Sep 2026):
-            # type "button", sub_type "flow", index "0" (single button), one parameter of type "action"
-            # whose `action` carries flow_token and flow_action_data. flow_action_data seeds the first
-            # screen and MUST be non-empty if present — so it is OMITTED when empty, never sent as {}.
+            # type "button", sub_type "flow", one parameter of type "action" whose `action` carries
+            # flow_token and flow_action_data. flow_action_data seeds the first screen and MUST be
+            # non-empty if present — so it is OMITTED when empty, never sent as {}.
             action: dict = {"flow_token": flow_token}
             if flow_action_data:
                 action["flow_action_data"] = dict(flow_action_data)
-            components.append({"type": "button", "sub_type": "flow", "index": "0",
+            components.append({"type": "button", "sub_type": "flow", "index": str(_btn_index),
                                "parameters": [{"type": "action", "action": action}]})
+            _btn_index += 1
         if button_payload:
             # A quick-reply button declared+APPROVED on the template, whose PAYLOAD varies per send —
             # the same shape the carousel path builds per card (core/whatsapp_carousel). For a
             # single-message campaign ("Book now") where the button is fixed but which service the
             # customer tapped must differ each send. Declared only when supplied.
-            components.append({"type": "button", "sub_type": "quick_reply", "index": "0",
+            components.append({"type": "button", "sub_type": "quick_reply", "index": str(_btn_index),
                                "parameters": [{"type": "payload", "payload": button_payload}]})
+            _btn_index += 1
         if url_button_param:
             # A URL button declared+APPROVED on the template with a dynamic suffix — the template's url
             # is "https://…/{{1}}" and this supplies {{1}} for THIS send (e.g. a per-customer rating
             # page token). Verified against Meta's send API (Sep 2026): type "button", sub_type "url",
-            # index "0" (single button), one parameter of type "text" carrying the suffix. Declared only
-            # when supplied — a template with no dynamic URL button ignores it, same discipline as above.
-            components.append({"type": "button", "sub_type": "url", "index": "0",
+            # one parameter of type "text" carrying the suffix. Declared only when supplied — a template
+            # with no dynamic URL button ignores it, same discipline as above.
+            components.append({"type": "button", "sub_type": "url", "index": str(_btn_index),
                                "parameters": [{"type": "text", "text": url_button_param}]})
+            _btn_index += 1
         if components:
             template["components"] = components
         payload: dict = {"messaging_product": "whatsapp", "to": to, "type": "template",

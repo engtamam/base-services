@@ -144,3 +144,19 @@ def test_access_token_auth_failure_raises(monkeypatch):
     monkeypatch.setattr(tp, "post_json", lambda *a, **k: (0, {}))         # auth unreachable
     with pytest.raises(GatewayUnavailable):
         g.fetch_status(provider_ref="abc123", currency="SAR")
+
+
+# ── FIN-018 / FIN-029: a status response with NO currency must not fabricate a paid outcome ─────────
+def test_webhook_with_absent_status_currency_does_not_verify(monkeypatch):
+    # The webhook re-query passes no currency; if the status response also omits bill.currency, the
+    # outcome carries currency="" -> apply_outcome cannot confirm it -> it stays UNVERIFIED (the
+    # reconcile path, which passes the request's own currency, later self-heals it). Never a fabricated
+    # paid on a currency we could not confirm.
+    resp = (200, {"data": {"transactionStatus": "SETTLED", "transactionId": "abc123",
+                           "bill": {"amount": 150.00}}})   # NO 'currency' key
+    monkeypatch.setattr(tp, "get_json", lambda *a, **k: resp)
+    out = _gw().verify_webhook(headers={}, body=_wh())
+    # The adapter does NOT fabricate a currency; it returns "" — and apply_outcome refuses a SUCCEEDED
+    # with no confirmable currency (currency_ok is False), so this never completes off the webhook. The
+    # reconcile path (which passes the request's own currency) self-heals it later.
+    assert out.currency == ""

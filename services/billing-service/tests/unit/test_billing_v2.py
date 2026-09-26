@@ -185,6 +185,38 @@ def test_overage_zero_issues_nothing():
     assert run(b.run_overage(sub.id)) is None                 # under the included units
 
 
+def test_overage_key_is_per_period_start_not_calendar_month():
+    # FIN-003: two distinct periods whose starts fall in the SAME calendar month (a prorated partial
+    # first period + the first full period) must NOT share the overage idempotency key, or the second
+    # period's overage is silently dropped. The key is now the exact period-start seconds.
+    from app.core.stores import SubscriptionStore
+    st = MemoryDataStore(); b = _svc(st)
+    plan = run(b.create_plan(name="API", prices=[{"interval": "month", "amount_minor": 0, "currency": "SAR",
+                                                  "type": "hybrid", "usage_metric": "calls",
+                                                  "included_units": 100, "overage_minor": 10}]))
+    sub = run(b.subscribe(tenant="t1", plan_id=plan.id, payment_token="pm"))
+
+    keys: list[str] = []
+    orig = b._idempo.claim
+
+    async def _spy(k):
+        keys.append(k)
+        return await orig(k)
+
+    b._idempo.claim = _spy
+    run(b.record_usage(tenant="t1", subscription_id=sub.id, metric="calls", quantity=150))
+    run(b.run_overage(sub.id))                                 # period 1
+
+    # advance the sub to a SECOND period that starts a few days later — same %Y-%m as period 1
+    row = run(SubscriptionStore(st).get(sub.id))
+    row["current_period_start"] = float(row["current_period_start"]) + 3 * 86400
+    run(SubscriptionStore(st).put(sub.id, row))
+    run(b.run_overage(sub.id))                                 # period 2
+
+    overage_keys = [k for k in keys if k.startswith(f"overage:{sub.id}:")]
+    assert len(overage_keys) == 2 and overage_keys[0] != overage_keys[1]   # distinct, not month-collided
+
+
 # ── ledger ─────────────────────────────────────────────────────────────────────
 def test_ledger_records_and_balances():
     st = MemoryDataStore()

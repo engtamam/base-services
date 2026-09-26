@@ -10,7 +10,6 @@ from __future__ import annotations
 import datetime as _dt
 import json as _json
 import secrets as _secrets
-import time
 from decimal import ROUND_HALF_UP as _ROUND_HALF_UP
 from decimal import Decimal as _Decimal
 from typing import Any
@@ -1530,8 +1529,11 @@ class BillingService:
         metric = price.get("usage_metric")
         if not metric or int(price.get("overage_minor", 0)) <= 0:
             return None
-        period = time.strftime("%Y-%m", time.gmtime(sub.current_period_start))
-        key = f"overage:{sub.id}:{period}"
+        # Key on the EXACT period start (seconds), not its calendar month: a prorated partial first
+        # period and the first full period can both start in the same %Y-%m, and a month key would make
+        # the second period's overage collide with the first and be silently skipped — a dropped charge
+        # (audit FIN-003). run_cycle keys on int(current_period_end) for the same reason.
+        key = f"overage:{sub.id}:{int(sub.current_period_start)}"
         # Atomic claim — same reasoning as run_cycle: a concurrent double run would double-charge the
         # overage on two distinct invoice ids.
         proceed, prior = await self._idempo.claim(key)

@@ -57,6 +57,12 @@ class PaymentsDisabled(Exception):
     """The tenant is not permitted to take payments (locked, or the option is off). Fail-closed."""
 
 
+class RequestConflict(Exception):
+    """A create for a reference that already has an ACTIVE request with a DIFFERENT amount/currency.
+    Returning the stale link would bill the old amount for an order that was edited (audit FIN-017);
+    the caller must settle/expire the old one or use a new reference. Fail-loud, never silently stale."""
+
+
 class PaymentNotConfigured(Exception):
     """The tenant has no gateway configured — nothing to mint a link with."""
 
@@ -112,8 +118,15 @@ class PaymentService:
         await self._ensure_enabled(tenant)
 
         # Fast path: a still-valid or completed request already exists → return it, no claim needed.
+        # But it must be the SAME order: reusing a link whose amount/currency differs from this request
+        # would bill the stale amount for an edited order (FIN-017). Refuse loudly instead.
         existing = await self._req.active_by_reference(tenant=tenant, reference=reference)
         if existing is not None:
+            if (int(existing.get("amount_minor", -1)) != int(amount_minor)
+                    or str(existing.get("currency", "")).upper() != currency.upper()):
+                raise RequestConflict(
+                    f"reference {reference!r} already has an active pay-link for a different "
+                    f"amount/currency; settle or expire it, or use a new reference")
             return self._to_link(existing)
 
         import uuid as _uuid

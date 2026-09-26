@@ -2,11 +2,16 @@
 follow the redirector, receive a verified webhook, and confirm write-only + fail-closed behaviour."""
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 
 import pytest
 from fastapi.testclient import TestClient
+
+
+def run(c):
+    return asyncio.run(c)
 
 ITOKEN = "t" * 40
 KEK = "k" * 48
@@ -111,6 +116,25 @@ def test_full_flow_create_redirect_webhook(client):
                         json={"status": "succeeded", "provider_ref": provider_ref,
                               "amount_minor": 15000, "secret": SECRET})
     assert hook2.status_code == 200
+
+
+def test_recreate_same_reference_different_amount_is_409(client):
+    # FIN-017: an edited order (same reference, new amount) must NOT silently return the stale link.
+    _configure(client)
+    a = client.post("/internal/payments/requests", headers=_h(),
+                    json={"tenant": "acme", "reference": "ord-9", "amount_minor": 10000,
+                          "currency": "SAR"})
+    assert a.status_code == 200
+    # identical amount reuses the same request (idempotent)
+    same = client.post("/internal/payments/requests", headers=_h(),
+                       json={"tenant": "acme", "reference": "ord-9", "amount_minor": 10000,
+                             "currency": "SAR"})
+    assert same.status_code == 200 and same.json()["request_id"] == a.json()["request_id"]
+    # a DIFFERENT amount for the same reference is refused, not billed at the stale amount
+    diff = client.post("/internal/payments/requests", headers=_h(),
+                       json={"tenant": "acme", "reference": "ord-9", "amount_minor": 15000,
+                             "currency": "SAR"})
+    assert diff.status_code == 409 and diff.json()["code"] == "REQUEST_MISMATCH"
 
 
 def test_unconfigured_tenant_create_is_409(client):
@@ -220,3 +244,56 @@ def test_reconcile_gateway_unavailable_is_502(client, monkeypatch):
     got = client.post(f"/internal/payments/requests/{r['request_id']}/reconcile?tenant=acme",
                       headers=_h())
     assert got.status_code == 502 and got.json()["code"] == "GATEWAY_UNAVAILABLE"
+
+
+# ── FIN-010: the redirector refuses a terminal / expired link (410), never 302s it ───────────────────
+def test_redirector_refuses_a_completed_link_410(client):
+    r = _open_request(client, ref="red-done")
+    prov = client.get(f"/internal/payments/requests/{r['request_id']}?tenant=acme",
+                      headers=_h()).json()["provider_ref"]
+    client.post("/api/v1/payments/webhook/acme",
+                json={"status": "succeeded", "provider_ref": prov, "amount_minor": 15000,
+                      "currency": "SAR", "secret": SECRET})
+    dead = client.get(f"/api/v1/payments/pay/{r['request_id']}", follow_redirects=False)
+    assert dead.status_code == 410                          # a paid link is dead, not a 302 to the gateway
+
+
+def test_redirector_refuses_an_expired_link_410(client):
+    r = _open_request(client, ref="red-exp")
+    ds = client.app.state.container.datastore
+    row = run(ds.get("payment_requests", r["request_id"]))
+    row["expires_at"] = 1                                   # force past-TTL while still pending
+    run(ds.put("payment_requests", r["request_id"], row))
+    dead = client.get(f"/api/v1/payments/pay/{r['request_id']}", follow_redirects=False)
+    assert dead.status_code == 410
+
+
+def test_redirector_hides_which_terminal_state(client):
+    # I2: a completed and an expired link refuse IDENTICALLY (generic 410 body) — no state leak.
+    done = _open_request(client, ref="hide-done")
+    prov = client.get(f"/internal/payments/requests/{done['request_id']}?tenant=acme",
+                      headers=_h()).json()["provider_ref"]
+    client.post("/api/v1/payments/webhook/acme",
+                json={"status": "succeeded", "provider_ref": prov, "amount_minor": 15000,
+                      "currency": "SAR", "secret": SECRET})
+    exp = _open_request(client, ref="hide-exp")
+    ds = client.app.state.container.datastore
+    row = run(ds.get("payment_requests", exp["request_id"])); row["expires_at"] = 1
+    run(ds.put("payment_requests", exp["request_id"], row))
+    a = client.get(f"/api/v1/payments/pay/{done['request_id']}", follow_redirects=False)
+    b = client.get(f"/api/v1/payments/pay/{exp['request_id']}", follow_redirects=False)
+    assert a.status_code == b.status_code == 410 and a.json()["reason"] == b.json()["reason"]
+
+
+# ── FIN-026: an oversized webhook body is refused (413) ──────────────────────────────────────────────
+def test_oversized_webhook_body_is_refused_413():
+    from app.config import get_settings
+    saved = dict(os.environ)
+    try:
+        c = _make_app(PAYMENTS_MAX_WEBHOOK_BYTES="20")     # tiny cap
+        _configure(c)
+        big = c.post("/api/v1/payments/webhook/acme", content=b"x" * 500)
+        assert big.status_code == 413                       # refused before processing
+    finally:
+        os.environ.clear(); os.environ.update(saved)
+        get_settings.cache_clear()

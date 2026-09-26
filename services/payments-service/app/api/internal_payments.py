@@ -17,7 +17,8 @@ from app.api.internal import require_internal_token
 from app.api.payments_deps import build_merchant_secrets, build_payment_service
 from app.core.currency import SUPPORTED_CURRENCIES
 from app.core.merchant_credentials import API_BASE, SETTABLE_NAMES
-from app.core.payments import GatewayUnavailable, PaymentNotConfigured, PaymentsDisabled
+from app.core.payments import (GatewayUnavailable, PaymentNotConfigured, PaymentsDisabled,
+                               RequestConflict)
 from app.core.secret_store import SecretError
 
 router = APIRouter(prefix="/internal/payments", tags=["internal-payments"])
@@ -132,6 +133,9 @@ async def create_request(request: Request, body: _CreateIn) -> dict:
         return JSONResponse({"ok": False, "reason": str(exc), "code": "NOT_CONFIGURED"}, status_code=409)
     except PaymentsDisabled as exc:
         return JSONResponse({"ok": False, "reason": str(exc), "code": "DISABLED"}, status_code=403)
+    except RequestConflict as exc:
+        return JSONResponse({"ok": False, "reason": str(exc), "code": "REQUEST_MISMATCH"},
+                            status_code=409)
     except GatewayUnavailable as exc:
         return JSONResponse({"ok": False, "reason": str(exc), "code": "GATEWAY_UNAVAILABLE"},
                             status_code=502)
