@@ -89,7 +89,10 @@ def forbidden_caps(
         if not c or c in seen:
             continue
         denied = (
-            any(c.startswith(p) for p in denied_prefixes if p)
+            c == "*"                                   # the god wildcard — cap_matches treats it as
+                                                       # "holds everything", incl. platform.* (FIN authz-001)
+            or _wildcard_reaches_denied(c, denied_prefixes)   # e.g. "platform.*" / "plat*" reach platform.
+            or any(c.startswith(p) for p in denied_prefixes if p)
             or c in denied_caps
             or (bool(allowlist) and c not in allowlist)
         )
@@ -97,3 +100,23 @@ def forbidden_caps(
             seen.add(c)
             bad.append(c)
     return bad
+
+
+def _wildcard_reaches_denied(cap: str, denied_prefixes: tuple[str, ...]) -> bool:
+    """True when a PREFIX-wildcard capability (e.g. "platform.*", "plat*", "*") could grant something
+    under a denied prefix. `cap_matches` honours `x.*` as "everything under x", so a tenant-scoped
+    caller assigning "platform.*" (or a broader stem like "plat*") would mint exactly the platform
+    power the denylist exists to forbid — the same class as the bare "*". Non-wildcard caps are handled
+    by the plain startswith check."""
+    if not cap.endswith("*"):
+        return False
+    stem = cap[:-1]                                     # "platform.*" -> "platform." ; "*" -> ""
+    for p in denied_prefixes:
+        if not p:
+            continue
+        # the wildcard's space overlaps the denied prefix's space in EITHER direction:
+        #   cap "platform.*" (stem "platform.") ⊇/= denied "platform."  -> stem.startswith(p)
+        #   cap "plat*"      (stem "plat")       ⊇ denied "platform."    -> p.startswith(stem)
+        if stem.startswith(p) or p.startswith(stem):
+            return True
+    return False

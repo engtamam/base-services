@@ -1,0 +1,279 @@
+{
+  "service": "payments-service",
+  "date": "2026-09-27",
+  "summary": {
+    "total": 24,
+    "by_severity": {
+      "CRITICAL": 0,
+      "HIGH": 4,
+      "MEDIUM": 13,
+      "LOW": 7
+    }
+  },
+  "findings": [
+    {
+      "id": "payments-001",
+      "category": "PERFORMANCE / CONCURRENCY (blocking sync in async)",
+      "severity": "HIGH",
+      "title": "Gateway HTTP is synchronous http.client run directly on the event loop (no asyncio.to_thread)",
+      "file": "services/payments-service/app/adapters/payment_http.py",
+      "line": 101,
+      "scenario": "PaymentService.create_link/handle_webhook/reconcile call gateway.prepare_checkout / verify_webhook / fetch_status synchronously (payments.py:186, 313, 328). Those adapter methods call post_json/get_json -> _send, which does a BLOCKING http.client round trip (connect + read) with a 30s timeout. Because it is not wrapped in asyncio.to_thread, a single slow/hung shop gateway freezes the whole uvicorn event loop for up to PAYMENTS_GATEWAY_TIMEOUT_SECONDS (30s) — every other request, including /healthz, stalls. This is exactly the failure the team already fixed elsewhere (audit_sink/http.py:75 and consent_gate/http.py:49 both use asyncio.to_thread and the /healthz-froze incident is cited in memory 'blocking-sync-in-async'); the payment gateway path is the one hot money path that still blocks.",
+      "evidence": "def _send(url, data, headers, method='POST', timeout=None) -> tuple[int, dict]: ... conn.request(method, path, body=data, headers=...); resp = conn.getresponse(); return resp.status, _parse(resp.read())  # called via gateway.prepare_checkout(...) at payments.py:186 with no to_thread",
+      "recommendation": "Wrap every gateway adapter call in asyncio.to_thread at the PaymentService seam (or make the adapters async), mirroring audit_sink/http.py. The reconcile sweep magnifies this: run_sweep_once awaits service.reconcile per row sequentially, so one slow gateway blocks the loop for the whole page."
+    },
+    {
+      "id": "payments-002",
+      "category": "OBSERVABILITY / SECURITY (audit wiring gap)",
+      "severity": "HIGH",
+      "title": "Internal merchant-credential set/clear is completely unaudited and undeclared, unlike the operator panel path",
+      "file": "services/payments-service/app/api/internal_payments.py",
+      "line": 55,
+      "scenario": "set_credential and clear_credential on /internal/payments/merchant-credentials mutate a shop's sealed MERCHANT_* secrets — including MERCHANT_API_BASE (where money is routed) and MERCHANT_API_KEY. Neither calls request.app.state.auditor.record(), and AUDITABLE_ACTIONS declares no internal credential action. The equivalent operator-panel routes (operator.py:129/149) audit write-ahead and mark it critical=True, with a why line stating 'the previous value is gone the moment it happens'. So the SAME credential change is fully attributed through one door and leaves zero trail through the other. A compromised or misused internal token can rotate a shop's gateway credentials/base with no record, which auditable_actions.py itself calls out as 'THE MOST-MISSED CATEGORY' (source=internal).",
+      "evidence": "async def set_credential(request, body): bad = _reject_unknown(body.name) ... info = await secrets.set(tenant=body.tenant, name=body.name, value=body.value, actor_ref=body.actor_ref)  # no auditor.record() anywhere; AUDITABLE_ACTIONS = [operator.secret_set, operator.secret_cleared, operator.config_changed, operator.option_changed] only",
+      "recommendation": "Record a critical, write-ahead audit event (e.g. payments.merchant_credential_set / _cleared, source=internal) before the write, add both to AUDITABLE_ACTIONS with a why, and pass the caller identity from require_internal_token as the actor."
+    },
+    {
+      "id": "payments-003",
+      "category": "CORRECTNESS (money-losing / status mapping)",
+      "severity": "HIGH",
+      "title": "Webhook verify-by-fetch drops the stored currency, so a real success can be flagged mismatch and marked FAILED",
+      "file": "services/payments-service/app/adapters/payment/tuwaiqpay.py",
+      "line": 183,
+      "scenario": "verify_webhook re-queries the gateway with fetch_status(provider_ref=tx_id) and NO currency argument, so fetch_status falls back to currency='' (tuwaiqpay.py:153/164). If the status response's currency shape is not one of the three _iso_currency handles (dict nameEn/code/name, ISO string, or numeric id), _iso_currency returns the '' fallback. apply_outcome then computes currency_ok = bool(outcome.currency) and ... -> '' is falsy -> mismatch=True -> a VERIFIED SUCCEEDED is downgraded to FAILED (payments.py:258-266). The reconcile path passes the stored currency (payments.py:328-329) so it would NOT mismatch — the two settlement paths disagree, and the webhook path can strand real money as 'failed'.",
+      "evidence": "confirmed = self.fetch_status(provider_ref=tx_id)   # no currency= passed; def fetch_status(self, *, provider_ref, currency='' ): ... cur = _iso_currency(bill.get('currency'), currency)",
+      "recommendation": "verify_webhook cannot know the stored currency, so it should not settle on currency alone: either resolve the stored PaymentRequest currency before fetch, or have apply_outcome treat an empty confirmed-currency from a same-provider_ref match as 'trust the stored currency' rather than an automatic mismatch. At minimum, make the webhook and reconcile paths pass currency identically."
+    },
+    {
+      "id": "payments-004",
+      "category": "API / CONTRACT (manifest drift)",
+      "severity": "HIGH",
+      "title": "Manifest declares events.emitted = [] while the service publishes payment.completed and payment.failed",
+      "file": "services/payments-service/app/manifest.py",
+      "line": 112,
+      "scenario": "PaymentService._emit publishes TOPIC_COMPLETED ('payment.completed') and TOPIC_FAILED ('payment.failed') on the event bus for every settled request (payments.py:30-31, 287-299). The manifest served at /internal/manifest declares 'events': {'emitted': [], 'consumed': []}. The manifest's own inline comment warns this exact trap: 'an empty emitted reads as this service publishes nothing, so a consumer wiring against it subscribes to nothing and fails silently.' A downstream order-fulfilment consumer built from the manifest subscribes to no topic and never fulfils paid orders.",
+      "evidence": "\"events\": {\"emitted\": [], \"consumed\": []},  # e.g. {\"emitted\": [\"wallet.credited\"], ...}   vs   TOPIC_COMPLETED = \"payment.completed\"; TOPIC_FAILED = \"payment.failed\"; await self._bus.publish(topic, Event(...))",
+      "recommendation": "Populate events.emitted with 'payment.completed' and 'payment.failed' (and their payload shape) so the fan-out and consumers discover them."
+    },
+    {
+      "id": "payments-005",
+      "category": "PERFORMANCE (N+1 / hot path)",
+      "severity": "MEDIUM",
+      "title": "TuwaiqPay adapter re-authenticates on every request because adapters are per-request short-lived",
+      "file": "services/payments-service/app/core/merchant_credentials.py",
+      "line": 95,
+      "scenario": "MerchantGateways.gateway_for builds a brand-new TuwaiqPayGateway on every call, and PaymentService builds MerchantGateways per request (payments_deps.py:39-46, 55-68). TuwaiqPayGateway caches the access token in self._token/self._token_exp (tuwaiqpay.py:82-101), but since the instance lives for one operation, the cache never hits. Every create/webhook/reconcile therefore performs TWO sequential blocking HTTPS round trips to TuwaiqPay: /auth/authenticate then the bill/status call. Combined with payments-001 that is up to 2x30s of loop-blocking per money op, and it wastes the gateway's auth quota.",
+      "evidence": "async def gateway_for(self, tenant): cfg = await self._config(tenant); ... return build_gateway(cfg.driver, {...})  # fresh instance each call; self._token cache in TuwaiqPayGateway.__init__ resets to '' every time",
+      "recommendation": "Cache the gateway auth token per (tenant, driver) in a process-level TTL cache (like _DERIVED_KEY_CACHE in secret_store.py), keyed off the credential hint/version so a rotation invalidates it, so repeated ops reuse a live bearer token."
+    },
+    {
+      "id": "payments-006",
+      "category": "CORRECTNESS (idempotency edge)",
+      "severity": "MEDIUM",
+      "title": "active_by_reference caps at limit=10, so a heavily-reused reference can miss the live request and mint a duplicate link",
+      "file": "services/payments-service/app/core/payment_requests.py",
+      "line": 124,
+      "scenario": "active_by_reference reads only the newest 10 rows for (tenant, reference) and scans them for a COMPLETED or live PENDING. If a shop reuses one order reference many times (retries, edits, failed attempts), and 10 newer rows are all failed/expired/cancelled, a still-live PENDING or the COMPLETED row that is older than the 10th newest is invisible. create_link then treats the order as new, wins a fresh claim, and mints a SECOND gateway bill/link for an order that may already be paid — a double-charge risk the claim guard is meant to prevent.",
+      "evidence": "rows, _ = await self._s.find(_COLL, {\"tenant\": tenant, \"reference\": reference}, limit=10, sort=(\"created_at\", \"desc\")) ... for r in rows: if r.get('status') == COMPLETED: return r; if r.get('status') == PENDING and float(r.get('expires_at',0)) > now: return r",
+      "recommendation": "Do not bound the idempotency lookup by an arbitrary 10: query specifically for status in (completed, pending) with a filter, or key an index so the completed/live row is always found regardless of how many terminal rows precede it."
+    },
+    {
+      "id": "payments-007",
+      "category": "SECURITY / CORRECTNESS (webhook retry suppression)",
+      "severity": "MEDIUM",
+      "title": "Webhook always returns 200 even when verify-by-fetch could not reach the gateway, suppressing the gateway's retry",
+      "file": "services/payments-service/app/api/v1/payments_public.py",
+      "line": 60,
+      "scenario": "If the gateway is transiently unreachable during verify, TuwaiqPayGateway.verify_webhook catches GatewayUnavailable and returns verified=False (tuwaiqpay.py:184-186); apply_outcome then returns None and the route replies {ok:true, applied:false} with HTTP 200. The gateway, having received a 200, will NOT re-deliver the webhook. Recovery now depends entirely on the reconcile sweep, which is OFF by default (PAYMENTS_RECONCILE_SWEEP_ENABLED=false). Result: a settlement whose single webhook arrived during a brief gateway blip is silently never applied — order stuck pending forever.",
+      "evidence": "except GatewayUnavailable: return PaymentOutcome(status=PENDING, provider=self.driver, provider_ref=tx_id, verified=False)  # -> apply_outcome returns None -> route returns 200 applied:false",
+      "recommendation": "Distinguish 'verified not-applicable' from 'could not verify (gateway unreachable)'. On an unreachable-gateway verify, return a 5xx so the gateway retries, or enable/require the reconcile sweep as the documented safety net rather than defaulting it off."
+    },
+    {
+      "id": "payments-008",
+      "category": "SECURITY (fail-open default on the money-routing route)",
+      "severity": "MEDIUM",
+      "title": "Internal route policy is default-open, so any authenticated internal caller can write any tenant's merchant credentials",
+      "file": "services/payments-service/app/api/internal.py",
+      "line": 57,
+      "scenario": "require_internal_token authorises a route only if INTERNAL_ROUTE_POLICY_JSON names it; a route with no policy 'admits any authenticated caller (default-open)' (config.py:200-203). INTERNAL_ROUTE_POLICY_JSON defaults to '' (empty), so out of the box every /internal/payments/* route — including merchant-credentials set/clear and create-request for ANY tenant (tenant is a body field, never checked against the caller) — is reachable by any holder of the shared internal token. Together with the missing audit (payments-002), one over-broad or leaked internal token can repoint any shop's gateway credentials with no attribution.",
+      "evidence": "if not resolve_internal_policy(settings).permits(request.url.path, identity.caller): raise HTTPException(403)  # but INTERNAL_ROUTE_POLICY_JSON: str = '' => default-open, and INTERNAL_CALLER_ALLOW_TOKEN_FALLBACK: bool = True",
+      "recommendation": "Ship a default policy that restricts /internal/payments/merchant-credentials* to the specific product service(s) that legitimately manage a shop's gateway, rather than leaving the highest-privilege money-routing route default-open."
+    },
+    {
+      "id": "payments-009",
+      "category": "CORRECTNESS (money-losing / falsy-default)",
+      "severity": "MEDIUM",
+      "title": "fetch_status coerces a missing/zero gateway amount to 0, which apply_outcome then refuses as a mismatch",
+      "file": "services/payments-service/app/adapters/payment/tuwaiqpay.py",
+      "line": 168,
+      "scenario": "fetch_status builds amount_minor = to_minor(bill.get('amount', 0) or 0, cur). If the TuwaiqPay status response nests the amount somewhere other than data.bill.amount (the code notes the shapes are UNCONFIRMED against live UAT, tuwaiqpay.py:56-61), bill.get('amount') is 0 -> amount_minor=0. apply_outcome computes amount_ok = bool(outcome.amount_minor) and ... -> 0 is falsy -> mismatch=True -> a verified SUCCEEDED is marked FAILED (payments.py:253-266). A schema mismatch in the unconfirmed status shape thus converts real settlements into 'failed', not a retryable error.",
+      "evidence": "amount_minor=to_minor(bill.get(\"amount\", 0) or 0, cur)  # bill shape is 'UNCONFIRMED against live UAT (2026-09-19)' per _iso_currency docstring",
+      "recommendation": "Capture a real UAT status fixture and lock the amount/currency path down; until confirmed, treat an unparseable amount from a verified success as GatewayUnavailable (retry) rather than as a confirmed 0 that fails the request."
+    },
+    {
+      "id": "payments-010",
+      "category": "TESTS / QA (test that stops testing)",
+      "severity": "MEDIUM",
+      "title": "SSRF/DNS-rebind test only exercises the guard_fetch_url wrapper, never the actual pinned connect used at fetch time",
+      "file": "services/payments-service/tests/unit/test_ssrf_guard.py",
+      "line": 8,
+      "scenario": "The FIN-012 fix that closes the resolve->connect rebind window lives in _send / _PinnedHTTPSConnection (payment_http.py:74-132): validate all resolved IPs, then CONNECT to the pinned IP. The test suite only calls guard_fetch_url() (a thin wrapper over _resolve_pinned that returns the reason string) and validate_gateway_base. Nothing asserts that _send actually connects to the pinned IP rather than re-resolving, so a regression that reintroduces re-resolution at connect (the exact rebind bug) would pass every test. guard_fetch_url is also otherwise unused in production code — the tested surface is not the enforced one.",
+      "evidence": "from app.adapters.payment_http import guard_fetch_url, validate_gateway_base  # tests call only these; _PinnedHTTPSConnection.connect() (the actual pin) is never exercised",
+      "recommendation": "Add a test that drives _send against a resolver returning a public IP first and a private IP second and asserts the socket connects to the pinned public IP (and that TLS SNI/Host use the original hostname)."
+    },
+    {
+      "id": "payments-011",
+      "category": "CONCURRENCY / API (request timeout)",
+      "severity": "MEDIUM",
+      "title": "create_link contention loop can sleep up to ~32s, exceeding the request timeout",
+      "file": "services/payments-service/app/core/payments.py",
+      "line": 135,
+      "scenario": "create_link retries up to 64 times, and each lost claim calls _resolve_claim, which polls up to 50 times with asyncio.sleep(0.01) (~0.5s) waiting for a concurrent mint (payments.py:157-175). Under sustained contention on one (tenant, reference), worst-case wall time approaches 64 * 0.5s = 32s, which exceeds REQUEST_TIMEOUT_MS (30_000ms). The request is killed by the timeout middleware mid-loop; because the mint may already be in flight, the caller gets a 504 for an order that is actually being created, and will likely retry.",
+      "evidence": "for _ in range(64): ... resolved = await self._resolve_claim(...)   and   for _ in range(50): ... await asyncio.sleep(0.01)",
+      "recommendation": "Bound total wait against the request budget (e.g. a deadline rather than 64x independent 0.5s polls), and return a fast 'retry' rather than silently consuming the whole timeout."
+    },
+    {
+      "id": "payments-012",
+      "category": "SECURITY (SSRF defense-in-depth bypass via restore)",
+      "severity": "MEDIUM",
+      "title": "MERCHANT_API_BASE write-time https/public validation is bypassable by a backup import",
+      "file": "services/payments-service/app/api/internal_payments.py",
+      "line": 63,
+      "scenario": "set_credential validates MERCHANT_API_BASE with validate_gateway_base (https + non-private) before sealing (internal_payments.py:63-66). But backup_import (internal.py:173) writes sealed rows straight into the datastore via _backup.import_archive without re-running that validation, and the fetch-time _ALLOWED_SCHEMES permits http as well as https (payment_http.py:31). A crafted or tampered archive (restored with the internal token + BACKUP_KEK) could install a MERCHANT_API_BASE of http://... or a hostname that resolves public-at-write but is attacker-controlled. The runtime _resolve_pinned still blocks private IPs, so this is not a full SSRF, but the write-time https guarantee is not actually an invariant on the stored value.",
+      "evidence": "if body.name == API_BASE: ok, reason = validate_gateway_base(body.value)  # only on the set route; backup_import.import_archive writes rows with no such check; _ALLOWED_SCHEMES = ('https','http')",
+      "recommendation": "Re-validate MERCHANT_API_BASE on read in MerchantGateways._config (or reject non-https at fetch for the merchant path), so the guarantee holds regardless of how the row got into the store."
+    },
+    {
+      "id": "payments-013",
+      "category": "OBSERVABILITY (missing audit on money lifecycle)",
+      "severity": "MEDIUM",
+      "title": "create-request and reconcile (internal, human/service-triggered money actions) emit no audit record",
+      "file": "services/payments-service/app/api/internal_payments.py",
+      "line": 116,
+      "scenario": "create_request mints a hosted pay-link for an amount, and reconcile_request forces a gateway re-query that can move a request to COMPLETED. Both are privileged internal actions with money consequences, and both rely solely on the event bus for downstream fulfilment; neither writes an audit row naming the caller. There is no witnessed trail of 'who asked the conduit to bill tenant X SAR Y for reference R' or 'who triggered a reconcile that completed request Z'. When a disputed charge or a suspicious reconcile is investigated, the internal caller is unattributable.",
+      "evidence": "async def create_request(...): ... link = await svc.create_link(...)  # no auditor.record; async def reconcile_request(...): row = await svc.reconcile(...)  # no auditor.record",
+      "recommendation": "Emit a non-critical audit event for create-request and reconcile (source=internal) with the caller identity, tenant, reference and amount, so money actions are attributable even though fulfilment goes over the bus."
+    },
+    {
+      "id": "payments-014",
+      "category": "CORRECTNESS / MAINTAINABILITY (encapsulation)",
+      "severity": "LOW",
+      "title": "get_request reaches into svc._req.get instead of the public svc.get accessor added to avoid exactly this",
+      "file": "services/payments-service/app/api/internal_payments.py",
+      "line": 160,
+      "scenario": "PaymentService.get() was added specifically 'for a route that needs to read request state without reaching into the private store (I4)' (payments.py:106-109). get_request instead calls svc._req.get(request_id), reaching past the service into the private store attribute. It works today, but it couples the route to internal wiring and defeats the accessor's purpose; a future change to how requests are stored (e.g. a read-through cache in PaymentService.get) would silently not apply here.",
+      "evidence": "row = await svc._req.get(request_id)   # vs the provided:  async def get(self, request_id): return await self._req.get(request_id)",
+      "recommendation": "Call svc.get(request_id) as intended."
+    },
+    {
+      "id": "payments-015",
+      "category": "SECURITY (timing oracle)",
+      "severity": "LOW",
+      "title": "Webhook junk-id short-circuit is a latency oracle for whether a provider_ref exists for a tenant",
+      "file": "services/payments-service/app/core/payments.py",
+      "line": 309,
+      "scenario": "handle_webhook peeks the provider_ref from the unauthenticated body and, if no request exists for (tenant, ref), returns immediately WITHOUT the outbound verify-by-fetch (payments.py:309-311). A known ref falls through to a slow gateway round trip. An unauthenticated attacker who can POST to /api/v1/payments/webhook/{tenant} can therefore distinguish 'this provider_ref is tracked for this tenant' (slow response) from 'unknown' (fast response) by timing, even though the JSON body is identical in both cases. Minor information disclosure about a shop's transaction ids.",
+      "evidence": "ref = _peek_provider_ref(body); if ref and await self._req.by_provider_ref(tenant=tenant, provider_ref=ref) is None: return None  # fast path vs outbound fetch",
+      "recommendation": "Accept the (documented) DoS trade-off but note the oracle; if it matters, add jitter or a minimum response latency, or gate the webhook per-tenant so the tenant path itself is not enumerable."
+    },
+    {
+      "id": "payments-016",
+      "category": "SECURITY (tenant enumeration on webhook)",
+      "severity": "LOW",
+      "title": "Public webhook accepts an arbitrary tenant path segment with no existence check",
+      "file": "services/payments-service/app/api/v1/payments_public.py",
+      "line": 42,
+      "scenario": "POST /api/v1/payments/webhook/{tenant} takes any string as tenant and resolves gateway_for(tenant); an unconfigured tenant yields the null gateway and a 200 {applied:false}. There is no rate-scoping per tenant beyond the generic subject,ip limiter (rate keys have no subject for an unauthenticated caller), so an attacker can freely probe tenant ids. Response is uniform, so this is low impact, but nothing bounds abuse per tenant and the tenant path is a raw, unvalidated identifier feeding credential/store lookups.",
+      "evidence": "@router.post(\"/webhook/{tenant}\", dependencies=[Depends(rate_limit)]) async def gateway_webhook(request, tenant): ... row = await svc.handle_webhook(tenant=tenant, ...)",
+      "recommendation": "Validate the tenant segment shape and consider a per-tenant webhook secret/path token so the endpoint is not a global unauthenticated fan-in over every tenant id."
+    },
+    {
+      "id": "payments-017",
+      "category": "CONFIG (hardcoded-should-be-config)",
+      "severity": "LOW",
+      "title": "Amount ceiling and metadata caps are module constants, not config knobs",
+      "file": "services/payments-service/app/api/internal_payments.py",
+      "line": 27,
+      "scenario": "_MAX_AMOUNT_MINOR (1e9), _MAX_METADATA_KEYS (32) and _MAX_METADATA_BYTES (8192) bound the create-request body, but they are hardcoded module constants with a comment admitting 'config-owned by another task, so a commented module constant lives here for now'. A shop legitimately billing above 10,000,000.00 in an exp-2 currency, or needing richer metadata, cannot be accommodated without a code change and release — contrary to the service's stated ZERO-HARDCODED config policy (config.py header).",
+      "evidence": "_MAX_AMOUNT_MINOR = 1_000_000_000            # 10,000,000.00 in an exp-2 currency  ... # config-owned by another task, so a commented module constant lives here for now",
+      "recommendation": "Promote these to Settings knobs (PAYMENTS_MAX_AMOUNT_MINOR, PAYMENTS_MAX_METADATA_KEYS/BYTES) like the other PAYMENTS_* limits."
+    },
+    {
+      "id": "payments-018",
+      "category": "CORRECTNESS (currency exponent assumption)",
+      "severity": "LOW",
+      "title": "amount_minor is trusted from the caller with no exponent cross-check; widening SUPPORTED_CURRENCIES to a 3dp/0dp currency is a latent 10x/100x bug",
+      "file": "services/payments-service/app/core/currency.py",
+      "line": 22,
+      "scenario": "create_request accepts amount_minor as an opaque integer and only validates the currency string against SUPPORTED_CURRENCIES (all exp-2 today: SAR/USD/EUR). currency.py correctly handles 3dp (KWD/BHD...) and 0dp (JPY/KRW) exponents, and the docstring invites widening SUPPORTED_CURRENCIES 'as more gateways/currencies are onboarded.' The moment a 3dp currency is added, a caller (or a UI) that keeps sending 'cents' (x100) will silently under/over-bill by 10x when to_major converts for TuwaiqPay, and nothing at the boundary catches it because amount_minor is trusted verbatim.",
+      "evidence": "SUPPORTED_CURRENCIES = frozenset({\"SAR\", \"USD\", \"EUR\"})  # all exponent 2; amount_minor: int = Field(gt=0, le=_MAX_AMOUNT_MINOR) with no exponent-aware validation",
+      "recommendation": "When widening SUPPORTED_CURRENCIES, add an explicit contract/test that amount_minor is in the currency's true minor units, and consider a sanity bound tied to exponent(currency)."
+    },
+    {
+      "id": "payments-019",
+      "category": "CONCURRENCY / DATA (background loop blocking + sequential)",
+      "severity": "MEDIUM",
+      "title": "reconcile sweep awaits a blocking gateway fetch per row sequentially, blocking the loop for the whole page",
+      "file": "services/payments-service/app/core/reconcile_sweep.py",
+      "line": 78,
+      "scenario": "run_sweep_once iterates each PENDING row and awaits service.reconcile(tenant, request_id) inline. reconcile ultimately performs the synchronous blocking gateway fetch (payments-001). With page_size default 200, one pass can serialize up to 200 blocking HTTPS round trips, each up to 30s, all on the event loop — the sweep can freeze the whole process for minutes. Even ignoring the blocking-on-loop issue, the strictly sequential design means a single slow tenant delays reconciliation for every later tenant in the page.",
+      "evidence": "elif (now() - float(row.get(\"created_at\", 0))) >= int(min_age_seconds): await service.reconcile(tenant=tenant, request_id=request_id)  # blocking http.client under the hood, one at a time",
+      "recommendation": "Run gateway calls off-loop (asyncio.to_thread) and consider bounded concurrency (gather with a semaphore) so one slow gateway does not stall the pass."
+    },
+    {
+      "id": "payments-020",
+      "category": "SECURITY (cross-tenant write via operator body.tenant)",
+      "severity": "LOW",
+      "title": "Operator secret/config/option writes act on body.tenant, not the principal's tenant",
+      "file": "services/payments-service/app/api/v1/operator.py",
+      "line": 129,
+      "scenario": "set_secret/set_config/set_option take the target tenant from the request body and never reconcile it with principal.tenant; authorization is only the platform.secrets / platform.config capability. This is presumably intentional (a platform operator manages all shops, per the 'platform-admin cross-tenant reads' pattern), but it means anyone granted platform.secrets can seal a MERCHANT_* credential into ANY tenant's scope. The blast radius of that single capability is the entire fleet's money routing, and nothing in-code scopes or double-confirms a cross-tenant credential write.",
+      "evidence": "info = await _secret_store(request).set(tenant=body.tenant, name=body.name, value=body.value, actor_ref=_actor(principal))  # body.tenant, not principal.tenant",
+      "recommendation": "If cross-tenant is intended, document it explicitly at the route and ensure the audit metadata records the target tenant distinctly from the actor's tenant (it currently passes tenant=body.tenant, which is correct); if not intended, scope writes to principal.tenant."
+    },
+    {
+      "id": "payments-021",
+      "category": "OBSERVABILITY (log-and-continue hides a bug class)",
+      "severity": "LOW",
+      "title": "Webhook handler swallows ALL exceptions (including programming errors) as applied:false",
+      "file": "services/payments-service/app/api/v1/payments_public.py",
+      "line": 61,
+      "scenario": "gateway_webhook wraps handle_webhook in `except Exception` and returns 200 {applied:false} after logging. This correctly avoids retry-storms for malformed bodies, but it also masks genuine bugs (a KeyError in apply_outcome, a bad store call) as a benign 'not applied' — the gateway is told success, will not retry, and the only signal is a log line. A latent crash on the settlement path would present as chronically unapplied payments rather than as errors/alerts.",
+      "evidence": "except Exception:   # noqa: BLE001 — a malformed webhook must not 500 the gateway into retries ... return JSONResponse({\"ok\": True, \"applied\": False})",
+      "recommendation": "Narrow the catch to expected parse/gateway errors, or increment an error metric / raise an alert distinct from the normal not-applied path so a real bug is not indistinguishable from an unknown-ref no-op."
+    },
+    {
+      "id": "payments-022",
+      "category": "CORRECTNESS (event payload completeness)",
+      "severity": "LOW",
+      "title": "payment.completed/failed event omits amount_mismatch flag except when true, and never carries paid_amount for a mismatch",
+      "file": "services/payments-service/app/core/payments.py",
+      "line": 291,
+      "scenario": "_emit builds the payload from the request's own recorded amount_minor/currency and only adds amount_mismatch when it is True. A consumer receiving payment.failed with amount_mismatch=true has no way to see WHAT the gateway actually reported (paid_amount_minor/paid_currency are on the row but not emitted). Reconciling a suspected tampered/short payment from the event alone is impossible; the consumer must call back for the row. Minor, but the event is advertised as 'the facts a consumer needs to fulfil the order' and a mismatch is exactly when the reported figures matter.",
+      "evidence": "payload = {... \"amount_minor\": row.get(\"amount_minor\", 0), \"currency\": row.get(\"currency\", \"\"), ...}; if mismatch: payload[\"amount_mismatch\"] = True  # paid_amount_minor / paid_currency never included",
+      "recommendation": "When amount_mismatch is set, include the gateway-reported paid_amount_minor/paid_currency so a consumer can act on the discrepancy without a follow-up read."
+    },
+    {
+      "id": "payments-023",
+      "category": "CORRECTNESS (timezone / monotonic clock for token expiry)",
+      "severity": "LOW",
+      "title": "TuwaiqPay token expiry uses time.monotonic mixed with a re-created instance, so the cached expiry is never meaningfully compared",
+      "file": "services/payments-service/app/adapters/payment/tuwaiqpay.py",
+      "line": 86,
+      "scenario": "_access_token uses time.monotonic() for now and stores self._token_exp = now + max(60, ttl-100). monotonic() is process-relative and correct in isolation, but since the adapter instance is recreated per operation (payments-005), self._token/self._token_exp start at ''/0.0 every time, so the `if self._token and now < self._token_exp` branch is never taken. The token-caching code is dead as written. It is not a wrong-time bug, but the intended optimization does nothing and gives a false impression that auth is cached.",
+      "evidence": "def _access_token(self): now = time.monotonic(); if self._token and now < self._token_exp: return self._token  # self._token is always '' on a fresh per-request instance",
+      "recommendation": "Move the token cache to a process/tenant-scoped store (see payments-005); once cached across ops, monotonic-based expiry is fine."
+    },
+    {
+      "id": "payments-024",
+      "category": "CONFIG (declared-but-unread / dev host in prod default)",
+      "severity": "LOW",
+      "title": "PAYMENTS_CONSOLE_LINK_BASE defaults to a real-looking example host and is the only PAYMENTS_* default that points somewhere",
+      "file": "services/payments-service/app/config.py",
+      "line": 151,
+      "scenario": "PAYMENTS_CONSOLE_LINK_BASE defaults to 'https://pay.example.test/checkout'. The console gateway is disabled in production (build_gateways passes allow_console = ENV != 'production'), so this default is inert there, but it is the one PAYMENTS_* knob whose default is a concrete URL rather than empty/fail-closed, contrary to the config header's 'defaults reach NO external system' claim. If a non-production ENV is ever deployed to real traffic (staging pointed at prod data), the console gateway would mint fake links against this host and the redirector would 302 to it if the host were allow-listed.",
+      "evidence": "PAYMENTS_CONSOLE_LINK_BASE: str = \"https://pay.example.test/checkout\"  # only PAYMENTS_* default that is a live-looking URL",
+      "recommendation": "Default it to '' and require it to be set when the console driver is actually enabled, keeping the 'defaults reach nothing' invariant true for every knob."
+    }
+  ]
+}

@@ -1,0 +1,252 @@
+{
+  "service": "onboarding-service",
+  "date": "2026-09-27",
+  "summary": {
+    "total": 22,
+    "by_severity": { "CRITICAL": 0, "HIGH": 5, "MEDIUM": 9, "LOW": 8 }
+  },
+  "findings": [
+    {
+      "id": "onboarding-001",
+      "category": "CONCURRENCY/DATA",
+      "severity": "HIGH",
+      "title": "Provisioning advisory lock has no TTL — a crash wedges all future provisioning for that subject forever",
+      "file": "app/core/provisioning.py",
+      "line": 73,
+      "scenario": "provision() acquires a lock with cas('provisioning_locks', run_key, 0, ...) and only releases it in a finally: delete. If the worker dies between acquire and finally (SIGKILL, OOM-kill, pod eviction, node loss) the lock row survives with no expiry. Every subsequent /provision for that (tenant, subject) then returns {'error': 'provisioning_in_progress'} permanently, so a customer who timed out mid-signup can never complete provisioning and there is no self-heal — only a manual datastore delete recovers it.",
+      "evidence": "if not await self._store.cas(\"provisioning_locks\", run_key, 0, {\"id\": run_key, \"at\": self._clock.now()}): return {\"ok\": False, \"error\": \"provisioning_in_progress\", ...}  ...  finally: await self._store.delete(\"provisioning_locks\", run_key)",
+      "recommendation": "Stamp the lock with an acquired-at timestamp (already present as 'at') and treat a lock older than a bounded lease (e.g. ONBOARDING_PROVISION_TIMEOUT_SECONDS * steps + margin) as stale: on cas failure, read the row and if expired, steal it via a version-pinned cas. Add a test that a stale lock is reclaimed."
+    },
+    {
+      "id": "onboarding-002",
+      "category": "OBSERVABILITY",
+      "severity": "HIGH",
+      "title": "Successful tenant + owner-membership provisioning is never audited",
+      "file": "app/api/v1/onboarding.py",
+      "line": 138,
+      "scenario": "provision() creates a tenant and an owner membership — the initial-admin/bootstrap step, the single most escalation-relevant action this service performs. On success nothing is recorded: ProvisioningService.provision() only calls the auditor when 'not outcome.ok' (provisioning.compensated), and auditable_actions.py declares no success action. An investigator asking 'who created tenant X and who was seeded as its owner, when' has no record. Compare grant.issued and flow.force_completed, both correctly audited.",
+      "evidence": "if not outcome.ok and self._auditor is not None: await self._auditor.record(\"provisioning.compensated\", ...)   # (provisioning.py:95) — no record on the ok path",
+      "recommendation": "Declare a 'provisioning.completed' auditable action (source=user, critical appropriate to bootstrap) and record it on the ok path with tenant, subject_ref, and the list of provisioned kinds/references."
+    },
+    {
+      "id": "onboarding-003",
+      "category": "SECURITY",
+      "severity": "HIGH",
+      "title": "Critical grant.issued audit runs after the money moves; a fail-closed audit outage loses the record permanently",
+      "file": "app/core/grants.py",
+      "line": 115,
+      "scenario": "issue() delivers the grant via entitlement, records it in the ledger, THEN calls auditor.record('grant.issued', ...) which is declared critical:True. With AUDIT_FAIL_CLOSED=true and the audit log briefly down, record() raises AuditUnavailable -> the customer gets a 503 even though the credit already went out and the ledger row is written. On retry, issue() hits the existing ledger row and returns ALREADY at line 92-95, short-circuiting BEFORE the auditor.record call — so grant.issued is never written for a grant that was actually delivered. This is exactly the unattributable money-like grant that marking the action critical exists to prevent (see memory: marker-first money ordering).",
+      "evidence": "existing = await self._ledger.find(key); if existing: return GrantOutcome(status=ALREADY, ...)  ...  await self._ledger.record(...); ... if self._auditor is not None: await self._auditor.record(\"grant.issued\", ...)",
+      "recommendation": "Write the audit record (or a durable audit-intent marker) BEFORE crediting the entitlement, or make the ALREADY branch re-emit/verify the audit record. The audit for a delivered grant must never be skippable by a retry that short-circuits on the ledger."
+    },
+    {
+      "id": "onboarding-004",
+      "category": "API/CONTRACT",
+      "severity": "HIGH",
+      "title": "Admin /admin/flows reads the wrong keys and returns null names, empty match, and null requirements",
+      "file": "app/api/v1/onboarding.py",
+      "line": 186,
+      "scenario": "list_flows builds its response with f.get('name'), f.get('match', {}) and r.get('name'), but flow declarations use the keys 'flow', 'audience', and requirements use 'id' (see onboarding_flows.py:69, 72, 81). So every flow comes back as {'name': None, 'match': {}, 'requirements': [None, None, ...]}. Only 'provisions' (p.get('kind')) is correct. The 'see-before-you-act' read an operator relies on before force-completing or resuming a stuck customer is blank.",
+      "evidence": "{\"name\": f.get(\"name\"), \"match\": f.get(\"match\", {}), \"requirements\": [r.get(\"name\") for r in (f.get(\"requirements\") or [])], \"provisions\": [p.get(\"kind\") for p in (f.get(\"provisions\") or [])]}",
+      "recommendation": "Read f.get('flow'), f.get('audience', {}) and r.get('id'). Add a test asserting /admin/flows returns the shipped flow names and requirement ids (the current tests never call this route, which is why the drift shipped)."
+    },
+    {
+      "id": "onboarding-005",
+      "category": "SECURITY",
+      "severity": "HIGH",
+      "title": "SSRF egress allowlist is declared but never enforced on any real outbound call",
+      "file": "app/security/checks.py",
+      "line": 111,
+      "scenario": "The service builds an SsrfAllowlistCheck from EGRESS_ALLOWED_HOSTS and wires it into the CweGuard, and the manifest reports SSRF coverage. But no outbound adapter ever runs a guard.step('egress', url=...): HttpProvisioner._call, HttpRequirementSource.check, HttpIdentityLookup.claim_ref_for, WalletEntitlement.issue and the http audit sink all call urllib.request.urlopen directly. The only guard.step in the codebase is 'respond' in api/v1/__init__.py. So EGRESS_ALLOWED_HOSTS is an advertised-but-unread knob (see memory: advertised-but-unread knobs) and the CWE-918 control is theater — a misconfigured/attacker-influenced ONBOARDING_* URL egresses with no allowlist check.",
+      "evidence": "SsrfAllowlistCheck(settings.egress_allowed_hosts),  # built, but grep shows guard.step only in api/v1/__init__.py:28 ('respond'); adapters call urlopen(req, ...) with '# nosec B310 - config-only host'",
+      "recommendation": "Either wrap every outbound urlopen in guard.step('egress', url=url) so the allowlist actually gates egress, or remove EGRESS_ALLOWED_HOSTS and the SSRF check and document that egress is constrained solely by config-only URLs. A declared control that nothing invokes is worse than an absent one."
+    },
+    {
+      "id": "onboarding-006",
+      "category": "CONCURRENCY/DATA",
+      "severity": "MEDIUM",
+      "title": "resume() mutates the run record with put() without holding the provisioning lock",
+      "file": "app/core/provisioning.py",
+      "line": 188,
+      "scenario": "provision() serializes all writes to provisioning_runs under the cas advisory lock, but resume() reads the record, mutates 'unfinished'/'resumed_at' and writes it back with put() with no lock. A concurrent provision() (or a second concurrent resume, e.g. the admin route and the internal /internal/onboarding/resume-provisioning fired together) interleaves: one path's put() clobbers the other's, losing an unfinished-cleanup entry. The very queue that must not be lost (onboarding-r2-02 was fixed for provision() via _merge_run_record but resume() bypasses that merge and the lock).",
+      "evidence": "record[\"unfinished\"] = still; record[\"resumed_at\"] = self._clock.now(); await self._store.put(\"provisioning_runs\", record[\"id\"], record)  # no cas lock, no _merge_run_record",
+      "recommendation": "Take the same (tenant, subject) advisory lock in resume(), or perform the unfinished-queue update with a version-pinned cas and retry-on-conflict rather than a blind put()."
+    },
+    {
+      "id": "onboarding-007",
+      "category": "SECURITY",
+      "severity": "MEDIUM",
+      "title": "Platform-operator cross-tenant support is silently broken — admin routes always scope to the caller's own tenant",
+      "file": "app/api/v1/onboarding.py",
+      "line": 149,
+      "scenario": "The admin tier is gated by require_any_capability('platform.onboarding', 'onboarding.manage'). platform.* capabilities exist precisely for cross-tenant support (see memory: platform-admin cross-tenant reads). But inspect/force_complete/provisioning_run/resume_provisioning all pass tenant=principal.tenant while taking subject as a path/query param. A platform operator (whose token carries the platform tenant, not the customer's) inspecting customer C's subject evaluates the flow for the WRONG tenant, force() writes the override under the operator's tenant, and provisioning_run/resume look up ProvisioningService._run_key(operator_tenant, subject) — a key that never matches the customer's run. Support for a stuck customer in another tenant does not work, and force() can silently write an override into the operator's own tenant.",
+      "evidence": "state = await build_evaluator(request).evaluate(flow, tenant=principal.tenant, subject=subject)  ...  key = ProvisioningService._run_key(principal.tenant, subject)  ...  await ledger.force(tenant=principal.tenant, subject=subject, ...)",
+      "recommendation": "Accept an explicit target tenant for platform.* callers (defaulting to principal.tenant only for the onboarding.manage same-tenant case), and audit the acting-tenant vs target-tenant distinction. Reject a platform action with no target tenant rather than defaulting to the operator's own."
+    },
+    {
+      "id": "onboarding-008",
+      "category": "SECURITY",
+      "severity": "MEDIUM",
+      "title": "A forced requirement is permanent and short-circuits the live check forever",
+      "file": "app/core/local_facts.py",
+      "line": 30,
+      "scenario": "check() reads the forced row first and returns SATISFIED unconditionally before ever consulting the live source. force() writes that row with no expiry. So once an operator force-completes 'business_verified' (which gates the welcome_credit money grant), the requirement reads satisfied forever — even after the underlying verification lapses or is revoked, and even if the force was a mistake or an attacker with an operator token. The whole design (evaluator.py) prides itself on regression being honest ('an expired verification reverts the flow'); a forced fact defeats that silently and indefinitely.",
+      "evidence": "forced = await self._store.get(_FORCED, self._key(tenant, subject, req.get(\"id\", fact))); if forced: return Answer(status=SATISFIED, detail=f\"forced by {forced.get('actor', ...)}\")",
+      "recommendation": "Store an expiry/TTL on a forced fact and treat an expired force as absent so the live check resumes; provide an un-force path; and re-audit on force expiry. At minimum bound force to a configured max duration."
+    },
+    {
+      "id": "onboarding-009",
+      "category": "SECURITY",
+      "severity": "MEDIUM",
+      "title": "A grant whose flow omits once_per is issued uncapped per call (farmable) — validator only warns",
+      "file": "app/core/grants.py",
+      "line": 136,
+      "scenario": "flows.validate() treats a grant with no once_per as a non-fatal warning (_warning) and boot does not reject it. When claim_grant calls issue() with once_per='' , _uniqueness_key returns 'call:'+uuid4 — a key that never collides — so the ledger.find never matches and the entitlement idempotency_key differs every call. The customer can call /claim-grant repeatedly (subject only to the rate limiter) and collect the money-like grant on every call. The file's own docstring names this the exact drain vector of the reference implementations, yet the code path implements it.",
+      "evidence": "if once_per in (\"\", ONCE_PER_NONE): import uuid; return f\"call:{uuid.uuid4().hex}\"   # + flows.py:74 req.setdefault(\"_warning\", \"grants without once_per can be issued repeatedly\")",
+      "recommendation": "Make a money-like grant (amount>0 / non-empty currency) without once_per a FATAL flow-validation error at boot rather than a warning, so an uncapped monetary grant cannot ship. Reserve the per-call key strictly for explicitly non-monetary grants (once_per='none')."
+    },
+    {
+      "id": "onboarding-010",
+      "category": "PERFORMANCE",
+      "severity": "MEDIUM",
+      "title": "Requirement sources are queried sequentially on the hot /next path (latency = sum, not max)",
+      "file": "app/core/evaluator.py",
+      "line": 110,
+      "scenario": "evaluate() awaits _ask() inside a for-loop over every requirement, and each remote source is a blocking urlopen offloaded to a thread with ONBOARDING_SOURCE_TIMEOUT_SECONDS (default 5s). For the shipped b2b flow (identity, tenant, verification, plus locals) that is several internal round-trips run back-to-back, so /next and /claim-grant latency is the SUM of all source latencies and, worst case, N * 5s on a slow platform. These are independent reads that could run concurrently.",
+      "evidence": "for req in flow.get(\"requirements\") or []: source_name, _, fact = req[\"satisfied_by\"].partition(\".\"); answer = await self._ask(source_name, fact, tenant, subject, req)",
+      "recommendation": "Gather the independent source lookups with asyncio.gather (dedupe by source so one service is asked once per distinct fact), then compute blocking after all answers are in as today. This turns worst-case latency from sum to max."
+    },
+    {
+      "id": "onboarding-011",
+      "category": "TESTS/QA",
+      "severity": "MEDIUM",
+      "title": "test_concurrent_claims_grant_once never actually interleaves — the TOCTOU is untested",
+      "file": "tests/unit/test_onboarding.py",
+      "line": 224,
+      "scenario": "The test asserts one grant under asyncio.gather of 5 issue() calls, but the fake _Ledger.find/record and _Ent.issue are async defs with NO await inside, so each coroutine runs to completion without yielding the event loop. The 5 calls therefore execute serially; the find()->issue()->record() window between line 92 and 115 of grants.py is never straddled by another coroutine. The real concurrency guarantee rests entirely on the downstream entitlement idempotency key, which this test does not model. It passes while measuring nothing about the race it claims to cover (see memory: tests that stop testing).",
+      "evidence": "async def race(): return await asyncio.gather(*[g.issue(...) for _ in range(5)])  # fakes never await -> no interleave",
+      "recommendation": "Insert an await asyncio.sleep(0) inside the fake ledger.find (or between find and record) so the coroutines genuinely interleave, and assert the ledger/entitlement was written once. Model a non-idempotent entitlement to prove the ledger (not just the backend) closes the window."
+    },
+    {
+      "id": "onboarding-012",
+      "category": "SECURITY",
+      "severity": "MEDIUM",
+      "title": "A token with no 'sub' resolves to Principal(subject='') instead of 401",
+      "file": "app/api/auth.py",
+      "line": 31,
+      "scenario": "_extract_principal sets subject=str(claims.get('sub', '')) with no rejection of an empty subject. A verified token lacking sub (or with sub=null) yields subject='' , and require_user returns it as a valid principal. provision() then runs with subject='' -> step keys hashed over tenant|''|kind, and subject-scoped grants keyed on 'subject:tenant:' . All such callers within a tenant collapse onto one identity and one set of provisioning/grant keys, so one caller's provisioning run and grant ledger entry can be read/resumed as another's.",
+      "evidence": "return Principal(subject=str(claims.get(\"sub\", \"\")), caps=caps, tenant=str(tenant) if tenant else None, raw=claims)",
+      "recommendation": "Reject a token whose sub is empty with 401 (the subject is load-bearing for every key and audit resource in this service), the same way a missing tenant is handled downstream."
+    },
+    {
+      "id": "onboarding-013",
+      "category": "CONCURRENCY/DATA",
+      "severity": "MEDIUM",
+      "title": "Crash window between forward-step completion and persisting the run record",
+      "file": "app/core/provisioning.py",
+      "line": 78,
+      "scenario": "provision() runs the Saga forward, then builds and persists the run record (lines 78-91), then releases the lock in finally. If the process dies AFTER the forward steps succeed but BEFORE put('provisioning_runs') completes, the lock is gone (finally never ran, so it leaks per finding 001 — but if it did run) there is no run record at all. A subsequent identical /provision re-runs every forward step. Reversible steps are saved by downstream idempotency keys, but an 'irreversible' step (e.g. an email send / a credit with no downstream dedup) fires a second time, and no record shows the first run happened.",
+      "evidence": "outcome = await Saga(saga_steps, ...).run(); record = {...}; record = await self._merge_run_record(run_key, record); await self._store.put(\"provisioning_runs\", record[\"id\"], record)",
+      "recommendation": "Persist a run record (state=in_progress) BEFORE executing the forward steps and update it after, so a crash leaves a discoverable partial record; and require irreversible provisioning steps to carry a downstream idempotency key so a re-run cannot double-fire them."
+    },
+    {
+      "id": "onboarding-014",
+      "category": "CORRECTNESS",
+      "severity": "MEDIUM",
+      "title": "run_key ignores the flow/steps — two different flows for one subject share and merge one record",
+      "file": "app/core/provisioning.py",
+      "line": 160,
+      "scenario": "_run_key hashes only tenant|subject. A caller who can present a different profile (ProfileIn is free-form) selects a different flow with different provisions, but /provision for the same (tenant, subject) reuses the same run_key and _merge_run_record unions the two runs' unfinished/residue. An operator reading /admin/provisioning/{subject} sees a record blending steps from two distinct flows, and a resume drains a queue that mixes kinds from both — with no record of which flow each step belonged to.",
+      "evidence": "return \"run_\" + hashlib.sha256(f\"{tenant}|{subject}\".encode()).hexdigest()[:32]",
+      "recommendation": "Incorporate the flow name (and/or the ordered step kinds) into run_key, or store the flow on the record and refuse to merge entries across differing flows. At minimum record the flow name on each run so operators can disambiguate."
+    },
+    {
+      "id": "onboarding-015",
+      "category": "OBSERVABILITY",
+      "severity": "LOW",
+      "title": "Internal resume-provisioning performs downstream undos with no audit record",
+      "file": "app/api/internal.py",
+      "line": 101,
+      "scenario": "The admin route /onboarding/admin/resume/{subject} records provisioning.resumed before resuming, but the internal-tier /internal/onboarding/resume-provisioning does the same work (re-attempts DELETEs against downstream services on a customer's behalf) with no auditor.record call. A targeted internal job draining a subject's cleanup leaves no trace of who/what invoked it.",
+      "evidence": "svc = ProvisioningService(...); result = await svc.resume(tenant, subject); if result is None: return {\"resumed\": False, ...}   # no auditor.record",
+      "recommendation": "Emit provisioning.resumed from the internal route too (actor = the internal caller identity available from require_internal_token), matching the admin route."
+    },
+    {
+      "id": "onboarding-016",
+      "category": "CORRECTNESS",
+      "severity": "LOW",
+      "title": "WalletEntitlement refuses any grant with amount=0, breaking a legitimately days-only grant",
+      "file": "app/adapters/entitlement/wallet.py",
+      "line": 43,
+      "scenario": "issue() returns FAILED whenever request.amount is falsy. ONBOARDING_GRANTS permits a days-only spec (the config comment shows 'welcome=days:14'), and GrantRequest.amount then defaults to 0. Under ONBOARDING_ENTITLEMENT=wallet such a grant always fails with 'has no amount configured', while the flow reports a credit the customer never receives — the exact false-completion the rest of the code guards against.",
+      "evidence": "if not request.amount: return Receipt(status=FAILED, detail=f\"grant {request.kind!r} has no amount configured\")",
+      "recommendation": "Either validate at boot that wallet-backed grants define a non-zero amount (assert_onboarding_config_ok), or accept a days-only grant path explicitly. Do not let a config shape the validator permits fail only at issue time."
+    },
+    {
+      "id": "onboarding-017",
+      "category": "CONCURRENCY/DATA",
+      "severity": "LOW",
+      "title": "Grant ledger has a TOCTOU and records with put() (no insert-if-absent)",
+      "file": "app/core/grants.py",
+      "line": 92,
+      "scenario": "issue() does find(key) then entitlement.issue() then ledger.record(key). Two genuinely concurrent calls (real awaits over HTTP) both miss find(), both call entitlement.issue(); correctness against a double-credit rests solely on the downstream idempotency key, and the ledger write is GrantLedger.record -> store.put (blind overwrite) rather than a cas insert-if-absent. The service's own convention (memory: cas() put/cas divergence, CREATE via cas never put) is not followed for the ledger create, so the ledger cannot itself detect a concurrent create.",
+      "evidence": "existing = await self._ledger.find(key); if existing: return ...ALREADY  ...  await self._ledger.record(key, ...)  # grant_ledger.record -> self._store.put(_LEDGER, key, {...})",
+      "recommendation": "Create the ledger row with cas(insert-if-absent) and treat a losing cas as ALREADY, so the ledger closes the window without depending on every entitlement backend being idempotent."
+    },
+    {
+      "id": "onboarding-018",
+      "category": "CORRECTNESS",
+      "severity": "LOW",
+      "title": "Saga records residue/unfinished reference as step.result, losing a falsy-but-valid locator",
+      "file": "app/core/saga.py",
+      "line": 119,
+      "scenario": "Residue uses 'reference': step.result or '' and unfinished uses 'reference': step.result. A provisioner that legitimately returns a falsy reference (empty string, or a downstream id like '0') loses the locator: residue records '' and an operator cannot find the orphan the irreversible step left behind — the exact regression onboarding-r2-08 aimed to fix. HttpProvisioner already rejects an empty reference on create, but a custom provisioner or a '0' id slips through.",
+      "evidence": "outcome.residue.append({\"step\": step.name, \"why\": ..., \"reference\": step.result or \"\"})  ...  outcome.unfinished.append({\"step\": step.name, \"error\": str(exc), \"reference\": step.result})",
+      "recommendation": "Preserve the reference as-is (str(step.result) when not None) rather than coercing falsy values to '', and only default to '' when result is genuinely None."
+    },
+    {
+      "id": "onboarding-019",
+      "category": "CORRECTNESS",
+      "severity": "LOW",
+      "title": "A blank answer field is mapped to UNSATISFIED (hard 'no'), not UNKNOWN",
+      "file": "app/adapters/requirement_source/http.py",
+      "line": 24,
+      "scenario": "_FALSE includes the empty string, so when a source returns 200 with the answer field present but blank (value=''), check() returns UNSATISFIED — a definite negative. That is inconsistent with the file's stated safety stance that anything unreadable is UNKNOWN, and with the missing-field path (value is None -> text '' -> also UNSATISFIED). A source that emits an empty string on an internal error is read as a firm 'requirement not met' rather than 'we could not tell', which is the wrong (over-confident) direction for a value the service cannot actually interpret.",
+      "evidence": "_FALSE = frozenset({\"false\", \"0\", \"no\", \"none\", \"pending\", \"expired\", \"refused\", \"\"})  ...  text = str(value).strip().casefold() if value is not None else \"\"; ... if text in _FALSE: return Answer(status=UNSATISFIED)",
+      "recommendation": "Treat a missing/blank answer field as UNKNOWN (fail-closed for completion, but honest) rather than as an affirmative UNSATISFIED; reserve _FALSE for explicit negative tokens."
+    },
+    {
+      "id": "onboarding-020",
+      "category": "CONFIG",
+      "severity": "LOW",
+      "title": "Malformed JSON map env vars are swallowed to {} — fail-open on internal-route policy and caller keys",
+      "file": "app/config.py",
+      "line": 21,
+      "scenario": "_json_any_map returns {} on any ValueError/TypeError. INTERNAL_ROUTE_POLICY_JSON, INTERNAL_CALLER_PUBLIC_KEYS_JSON and INTERNAL_CALLER_JWKS_JSON are all parsed through this path. A typo in INTERNAL_ROUTE_POLICY_JSON silently yields an empty policy, and internal.py documents that a route absent from the policy admits any authenticated caller (default-open) — so a broken policy string quietly widens access instead of failing the boot. A typo'd caller-keys map yields no keys with no error.",
+      "evidence": "try: val = _json.loads(raw) except (ValueError, TypeError): return {}   # used by INTERNAL_ROUTE_POLICY_JSON / *_PUBLIC_KEYS_JSON / *_JWKS_JSON",
+      "recommendation": "For security-relevant maps, raise at boot on malformed JSON (fail-closed) rather than returning {}. A settings validator that parses these once and rejects a non-empty-but-unparseable value would catch the typo before traffic."
+    },
+    {
+      "id": "onboarding-021",
+      "category": "SECURITY",
+      "severity": "LOW",
+      "title": "Provisioning failure 502 echoes raw downstream detail strings, unscanned for secret leakage",
+      "file": "app/api/v1/onboarding.py",
+      "line": 143,
+      "scenario": "On provisioning failure the route returns HTTPException(502, {... 'failed_step', 'compensated', 'residue', 'unfinished'}). The unfinished/residue entries and failed_step carry detail strings built from downstream HTTP responses (HttpProvisioner returns f'{kind}: HTTP {status}' and undo errors include result.detail from the downstream body). The NoSecretLeakCheck (CWE-200) only wraps the /whoami demo 'respond' step, so a downstream error body that includes a token/secret is relayed to the caller unscanned.",
+      "evidence": "raise HTTPException(502, {\"error\": \"PROVISIONING_FAILED\", **{k: result[k] for k in (\"failed_step\", \"compensated\", \"residue\", \"unfinished\")}})",
+      "recommendation": "Return only structured, service-authored fields (step names, kinds, status codes) to the client and log the raw downstream detail server-side; or run the outgoing error body through the NoSecretLeak check."
+    },
+    {
+      "id": "onboarding-022",
+      "category": "CORRECTNESS",
+      "severity": "LOW",
+      "title": "Erasure reads a single capped page and reports success without a continuation",
+      "file": "app/core/erasure.py",
+      "line": 63,
+      "scenario": "erase() calls store.find(collection, {tenant, subject}, limit=self._max) once per collection and deletes the returned rows. ERASURE_MAX_SCAN defaults to 100000 and find() returns at most one page; if a subject's onboarding_grants/onboarding_forced rows exceed the cap, the surplus is never read and never deleted, yet the ack reports 'erased: [...]' as if complete. The DSAR contract this file is at pains to honour ('never report success for work that did not happen') is then violated for a large subject.",
+      "evidence": "rows, _ = await self._store.find(collection, {\"tenant\": tenant, \"subject\": subject}, limit=self._max, sort=(\"id\", \"asc\")); for row in rows: await self._store.delete(collection, row[\"id\"])   # ignores the returned next-cursor",
+      "recommendation": "Page with the returned cursor until exhausted (or until the cap, then report the remainder as not-yet-erased/needs-followup) rather than silently truncating at one page while acking success."
+    }
+  ]
+}

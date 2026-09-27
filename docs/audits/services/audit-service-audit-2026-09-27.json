@@ -1,0 +1,274 @@
+{
+  "service": "audit-service",
+  "date": "2026-09-27",
+  "summary": {
+    "total": 24,
+    "by_severity": { "CRITICAL": 0, "HIGH": 3, "MEDIUM": 13, "LOW": 8 }
+  },
+  "findings": [
+    {
+      "id": "audit-001",
+      "category": "concurrency",
+      "severity": "HIGH",
+      "title": "purge() commits the head BEFORE persisting row re-anchors/deletes — crash window permanently breaks the chain",
+      "file": "app/core/audit_service.py",
+      "line": 421,
+      "scenario": "purge re-anchors survivors in memory (new prev_hash/hash), then does set_head_versioned() as the 'single serialization point', and ONLY AFTER that persists delete()s and replace()s. If the process crashes (OOM/SIGKILL/pod eviction) between the head cas and the row writes, the _META head names the new re-anchored last hash while every survivor row still holds its OLD prev_hash/hash and the purged prefix rows are still present. On restart verify() reads seq<=head_seq (including the not-yet-deleted prefix), walks with the old prev_hashes, and reports 'broken chain' forever. Unlike append() (documented row-first/crash-safe), purge() is head-first and is NOT crash-atomic.",
+      "evidence": "if not await self._repo.set_head_versioned(partition, ver, last_seq, prev):\n    continue\n# The head now reflects the re-anchored survivors; persist the row changes.\nfor e in purged:\n    await self._repo.delete(e[\"id\"])\nfor e in kept:\n    await self._repo.replace(e)",
+      "recommendation": "Persist the re-anchored survivor rows and deletes FIRST (idempotently, tolerating a re-run), then move the head as the commit — or write a purge journal row so an interrupted purge can be resumed. The head must never advance to hashes no stored row yet carries."
+    },
+    {
+      "id": "audit-002",
+      "category": "security",
+      "severity": "HIGH",
+      "title": "EventBus topic-ingest bypasses the PII policy — raw identities written permanently into the chain",
+      "file": "app/main.py",
+      "line": 80,
+      "scenario": "The lifespan EventBus subscriber builds its own AuditService WITHOUT pii_policy (the argument is simply omitted, so it defaults to None) and records event payloads straight from the bus (actor=p.get('actor'), metadata=p). The whole design premise (pii_policy.py: 'applied at THIS boundary, where no caller can bypass it') is defeated for every event that arrives via AUDIT_SUBSCRIBE_TOPICS: an emitter that publishes actor='alice@x.com' or metadata with email/national_id gets it HMAC-sealed into the append-only chain forever, unerasable.",
+      "evidence": "svc = AuditService(\n    repo=AuditRepository(container.datastore), integrity=container.integrity,\n    exporters={\"json\": JsonExporter()}, default_format=\"json\",\n    partition_mode=settings.AUDIT_PARTITION, query_limit=settings.AUDIT_QUERY_LIMIT)",
+      "recommendation": "Construct this AuditService with the same PiiPolicy(mode=..., fields=..., salt=...) the request path and in_process sink use, so bus-ingested events are folded identically."
+    },
+    {
+      "id": "audit-003",
+      "category": "correctness",
+      "severity": "HIGH",
+      "title": "Cross-partition query returns the wrong 'newest' set — drops newer events in later partitions",
+      "file": "app/core/audit_service.py",
+      "line": 204,
+      "scenario": "For a platform caller with no tenant filter in tenant-partition mode, the fan-out iterates partitions() (sorted alphabetically) and breaks as soon as accumulated rows reach limit, THEN sorts by seq desc. Partitions are visited alphabetically, not by recency, so if the first alphabetical partitions already yield `limit` rows the loop breaks and never inspects later partitions that may hold the actually-newest events. The docstring claims it 'returns the newest limit merged across partitions' — it does not. A platform-wide 'latest activity' view silently omits whole tenants.",
+      "evidence": "for partition in await self._repo.partitions():\n    events, _ = await self._repo.query(filters, limit, partition)\n    out.extend(events)\n    if len(out) >= limit:\n        break\nout.sort(key=lambda r: r[\"seq\"], reverse=True)",
+      "recommendation": "Fetch up to `limit` newest from EVERY partition before merging/sorting/truncating (heap-merge), or document the result as 'sampled, not newest'. Do not break early when the goal is a global newest-N."
+    },
+    {
+      "id": "audit-004",
+      "category": "concurrency",
+      "severity": "MEDIUM",
+      "title": "EventBus topic-ingest records without an idempotency key — redelivery duplicates chain events",
+      "file": "app/main.py",
+      "line": 86,
+      "scenario": "The topic handler calls svc.record(...) directly (not record_idempotent) with no idempotency key. Redis/eventbus delivery is at-least-once; a redelivered message (consumer restart, ack lost) appends a SECOND event for the same action to the tamper-evident chain. There is no dedupe, so the chain accumulates duplicate audit records that an investigator cannot distinguish from two real actions.",
+      "evidence": "await svc.record(service=p.get(\"service\", event.type.split(\".\")[0]),\n                 action=event.type, actor=p.get(\"actor\", \"\"),\n                 resource=p.get(\"resource\", \"\"), tenant=p.get(\"tenant\", \"\"),\n                 metadata=p)",
+      "recommendation": "Route bus ingest through record_idempotent() using a stable key from the message (bus message id / payload idempotency field)."
+    },
+    {
+      "id": "audit-005",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "Default retention has NO legal-hold protection — deletes held evidence while reporting hold_protected:false",
+      "file": "app/api/internal.py",
+      "line": 89,
+      "scenario": "HOLD_REFS_DRIVER defaults to 'null'. enforce-retention only wires holds when the driver is non-null, so with the default configuration the nightly purge deletes every expired event unconditionally, including events belonging to a subject under legal hold. The response says hold_protected:false, but an operator who set RETENTION_DAYS and never noticed the driver default has spoliated evidence. Fail-open on a compliance control that should be opt-OUT, not opt-in.",
+      "evidence": "gate = request.app.state.container.hold_refs\nholds = gate.for_tenant if gate is not None and gate.driver != \"null\" else None",
+      "recommendation": "Refuse to run destructive retention in production when RETENTION_DAYS>0 and HOLD_REFS_DRIVER=='null' (or require an explicit ACK flag), so an unprotected purge is a deliberate decision."
+    },
+    {
+      "id": "audit-006",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "purge() writes its self-audit 'audit.purged' record to the GLOBAL partition even when purging a tenant partition",
+      "file": "app/core/audit_service.py",
+      "line": 432,
+      "scenario": "After purging partition X (a tenant partition in AUDIT_PARTITION=tenant mode), purge() calls self.record(service='audit-service', action='audit.purged', ...) with no tenant, so _partition('') resolves to 'global'. The evidence that tenant X's partition was purged lands in a DIFFERENT partition. A tenant-scoped investigator reading tenant X's trail never sees that a purge touched their data, and per-tenant verify()/coverage of the purge action is misfiled.",
+      "evidence": "await self.record(service=\"audit-service\", action=\"audit.purged\",\n                  metadata={\"before_ts\": before_ts, \"purged\": len(purged),\n                            \"held\": len(held)})",
+      "recommendation": "Pass tenant=partition (or the originating tenant) so the purge self-record is written into the same partition it acted on."
+    },
+    {
+      "id": "audit-007",
+      "category": "observability",
+      "severity": "MEDIUM",
+      "title": "Every purge produces TWO 'audit.purged' events (route + core)",
+      "file": "app/api/v1/audit.py",
+      "line": 152,
+      "scenario": "POST /api/v1/audit/purge records 'audit.purged' write-ahead at the route (actor=principal), and build_audit().purge() ALSO calls self.record(action='audit.purged') at the end (actor=''/system). One user purge therefore appends two audit.purged records with different actors and metadata. Counting purges, or attributing who purged, double-counts and conflates the human actor with the internal system record.",
+      "evidence": "await request.app.state.auditor.record(\n    \"audit.purged\", actor=principal.subject, tenant=principal.tenant, resource=\"audit_log\",\n    ip=request.client.host if request.client else \"\")",
+      "recommendation": "Emit the audit.purged record in exactly one place (either the route with the human actor, or the core with the outcome metadata), not both."
+    },
+    {
+      "id": "audit-008",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "purge() 'remaining' count hardcodes +1, assuming the trailing self-record append always lands",
+      "file": "app/core/audit_service.py",
+      "line": 435,
+      "scenario": "purge() returns {'remaining': len(kept) + 1, ...}. The +1 presumes the subsequent self.record('audit.purged') append will succeed and be the one extra survivor. If that record() raises (append could-not-converge after 64 retries, or datastore error), the reported 'remaining' overcounts by one; and the number is fragile documentation of an implementation side effect rather than a real count of stored rows.",
+      "evidence": "return {\"purged\": len(purged), \"remaining\": len(kept) + 1, \"held\": len(held)}",
+      "recommendation": "Compute 'remaining' from actual state after the append (or drop the +1 and report kept survivors only), and record the self-audit event before computing the return."
+    },
+    {
+      "id": "audit-009",
+      "category": "tests",
+      "severity": "MEDIUM",
+      "title": "assert_no_pii() is dead code with a stale hardcoded field list, yet is unit-tested as if it guards writes",
+      "file": "app/core/erasure.py",
+      "line": 75,
+      "scenario": "assert_no_pii() is defined and covered by tests/unit/test_erasure_chain.py, but grep shows it is never called on the record/write path — the actual enforcement is PiiPolicy. Its field list _PII_FIELDS is hardcoded to ('email','phone','name','username','address','ip') and diverges from the configurable AUDIT_PII_FIELDS default (which also includes national_id, iqama, passport). The test gives false confidence that these fields are blocked at write time; they are only blocked by PiiPolicy, and only the config list — a reader trusting this function is misled.",
+      "evidence": "_PII_FIELDS = (\"email\", \"phone\", \"name\", \"username\", \"address\", \"ip\")",
+      "recommendation": "Delete assert_no_pii() (and its test) as superseded by PiiPolicy, or wire it in and drive it from AUDIT_PII_FIELDS so the two enforcement points cannot diverge."
+    },
+    {
+      "id": "audit-010",
+      "category": "security",
+      "severity": "MEDIUM",
+      "title": "PiiPolicy redacts only TOP-LEVEL metadata keys — nested PII sails into the permanent chain",
+      "file": "app/core/pii_policy.py",
+      "line": 108,
+      "scenario": "The metadata leak check is `[k for k in meta if k.lower() in self.fields]` — a flat scan of top-level keys only. A caller sending metadata={'user': {'email': 'a@b.com'}} or metadata={'contacts': [{'phone': '...'}]} passes the check untouched and the raw email/phone is HMAC-sealed into the append-only chain forever. Values are never inspected either (an email under key 'note' is not caught). The 'no caller can bypass' guarantee holds only for flat metadata.",
+      "evidence": "leaked = [k for k in meta if k.lower() in self.fields]",
+      "recommendation": "Walk metadata recursively (dicts and lists) redacting matching keys at every depth, and consider value-pattern detection for the highest-risk fields."
+    },
+    {
+      "id": "audit-011",
+      "category": "performance",
+      "severity": "MEDIUM",
+      "title": "Every /internal/privacy/erase triggers a full O(N) chain verify() walk",
+      "file": "app/core/erasure.py",
+      "line": 55,
+      "scenario": "AuditErasure.erase() calls self._audit.verify(part), which iterate()s the WHOLE partition chain to exhaustion and re-seals every event. Erasure is driven by DSARs which can arrive in bursts; each one walks the entire (potentially millions of rows) partition. On the default single 'global' partition this is an O(all-events) scan-and-hash per erase request, a cheap DoS and a slow DSAR path.",
+      "evidence": "part = partition if partition is not None else self._audit._partition(tenant)\nreport = await self._audit.verify(part)",
+      "recommendation": "Return the ack without a full re-verify (the chain's integrity is proven by the scheduled verify-all), or gate/rate-limit the on-demand verify, or verify only the head rather than the whole chain."
+    },
+    {
+      "id": "audit-012",
+      "category": "config",
+      "severity": "MEDIUM",
+      "title": "READYZ_TIMEOUT_SECONDS is read via getattr default but never declared in Settings — an un-tunable phantom knob",
+      "file": "app/api/health.py",
+      "line": 65,
+      "scenario": "readyz reads getattr(get_settings(), 'READYZ_TIMEOUT_SECONDS', _DEFAULT_READYZ_TIMEOUT). Settings (config.py) declares no such field, so the getattr ALWAYS falls back to 5.0 and the environment variable is silently ignored. An operator who sets READYZ_TIMEOUT_SECONDS to fit a slow node sees no effect, and there is no boot error telling them the knob does not exist. Defensive getattr hides the missing declaration.",
+      "evidence": "timeout = getattr(get_settings(), \"READYZ_TIMEOUT_SECONDS\", _DEFAULT_READYZ_TIMEOUT)",
+      "recommendation": "Declare READYZ_TIMEOUT_SECONDS on Settings and read settings.READYZ_TIMEOUT_SECONDS directly, or remove the phantom knob."
+    },
+    {
+      "id": "audit-013",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "Actor query folds with tenant-or-empty, silently returning nothing for a platform actor query without a tenant",
+      "file": "app/core/audit_service.py",
+      "line": 188,
+      "scenario": "query() folds the actor filter with `tenant or \"\"`. subject_ref is tenant-scoped, so a platform.audit caller who queries actor=alice@x.com without naming a tenant folds against tenant='' and matches ONLY events that happened to be recorded with an empty tenant — for every real tenant the events exist but the query returns zero. The result is an empty page indistinguishable from 'this person did nothing', which for an investigation tool is a dangerous false negative.",
+      "evidence": "if self._pii is not None and actor:\n    folded, _, _ = self._pii.apply(tenant=tenant or \"\", actor=actor, ip=\"\", metadata=None)\n    filters = {**filters, \"actor\": folded}",
+      "recommendation": "When an actor filter is given without a tenant, either require a tenant, or return a clear error/warning rather than a silently empty result set."
+    },
+    {
+      "id": "audit-014",
+      "category": "config",
+      "severity": "MEDIUM",
+      "title": "AUDIT_PII_MODE=off is permitted in production with no boot guard",
+      "file": "app/config.py",
+      "line": 394,
+      "scenario": "assert_audit_config_ok() guards the sink driver and integrity driver in production, and assert_pii_config_ok() only checks that PII_SALT is present. Nothing refuses AUDIT_PII_MODE='off' in production. With mode=off, apply() is a passthrough and every raw identity a caller sends is HMAC-sealed into the append-only chain permanently — the exact irreversible outcome the whole pseudonymization design exists to prevent — with no loud failure.",
+      "evidence": "def assert_audit_config_ok(self) -> None:\n    ...\n    if self.AUDIT_SINK_DRIVER == \"null\": ...",
+      "recommendation": "Refuse AUDIT_PII_MODE='off' in production (or require an explicit acknowledged opt-out flag, as done for INTEGRITY_ALLOW_UNKEYED)."
+    },
+    {
+      "id": "audit-015",
+      "category": "concurrency",
+      "severity": "MEDIUM",
+      "title": "Append convergence loop can exhaust 64 retries and raise, 503-ing a fail-closed critical action",
+      "file": "app/core/audit_service.py",
+      "line": 72,
+      "scenario": "record() loops at most 64 times on cas contention, then raises RuntimeError('could not converge'). On a single hot partition (the default 'global' partition, where ALL events serialize on one _META cell) under high concurrent audit volume, a burst can lose 64 cas races and raise. The in_process sink turns that into AuditReceipt(FAILED); for a critical action with AUDIT_FAIL_CLOSED the Auditor then raises AuditUnavailable -> 503, refusing a real privileged action purely due to self-contention.",
+      "evidence": "for _ in range(64):\n    seq, head, ver = await self._repo.head_versioned(partition)\n    ...\nraise RuntimeError(f\"audit append could not converge on partition {partition!r}\")",
+      "recommendation": "Add backoff/jitter between cas attempts and/or make the bound time-based rather than a fixed 64, so ordinary contention degrades to latency rather than a hard failure of the witnessed action."
+    },
+    {
+      "id": "audit-016",
+      "category": "security",
+      "severity": "MEDIUM",
+      "title": "is_subject_ref() accepts any 'sub_'+32-char string (no charset check) — spoofable pseudonym bypasses folding",
+      "file": "app/core/pii.py",
+      "line": 59,
+      "scenario": "is_subject_ref() checks only the 'sub_' prefix and total length 36; it does not verify the 32 chars are hex. A caller can send actor='sub_' + 32 arbitrary characters and PiiPolicy.apply() treats it as already-pseudonymized and passes it through unfolded (fold mode) — writing an attacker-chosen 'pseudonym' into the chain. It also lets junk that merely looks like a ref poison actor queries and evade the enforce-mode raw-identity check.",
+      "evidence": "return isinstance(value, str) and value.startswith(_PREFIX) and len(value) == len(_PREFIX) + _LEN",
+      "recommendation": "Validate the suffix is 32 lowercase hex characters (e.g. a regex) before treating a value as an existing subject_ref."
+    },
+    {
+      "id": "audit-017",
+      "category": "config",
+      "severity": "MEDIUM",
+      "title": "Malformed policy JSON silently degrades to default-open instead of failing boot",
+      "file": "app/config.py",
+      "line": 21,
+      "scenario": "_json_any_map()/_json_str_map() catch ValueError/TypeError and return {} for malformed input. INTERNAL_ROUTE_POLICY_JSON is parsed this way: a typo in the per-route caller allow-list JSON silently yields {} (no policy), and per require_internal_token a route with no policy is default-open (admits any authenticated caller). A security control (the per-route allow-list) fails OPEN on a config typo with no error at boot.",
+      "evidence": "try:\n    val = _json.loads(raw)\nexcept (ValueError, TypeError):\n    return {}",
+      "recommendation": "For security-relevant maps (route policy, caller keys), fail fast at boot on malformed JSON rather than returning an empty map that disables the control."
+    },
+    {
+      "id": "audit-018",
+      "category": "security",
+      "severity": "LOW",
+      "title": "Shared-token internal ingest cannot prevent service-spoofed audit events",
+      "file": "app/api/internal.py",
+      "line": 186,
+      "scenario": "The anti-spoof check (recorded service must equal the proven caller identity) only fires when caller != '' — i.e. only with the static/jwks assertion drivers. Under the default INTERNAL_CALLER_DRIVER='shared', caller is always '', so any service (or anything) holding the shared INTERNAL_SERVICE_TOKEN can POST an audit event with service set to ANY other service's name and it is recorded as that service. Documented, but the residual risk is real until per-caller assertions are provisioned.",
+      "evidence": "caller = getattr(identity, \"caller\", \"\") or \"\"\nif caller and body.service != caller:\n    raise HTTPException(status.HTTP_403_FORBIDDEN, \"SERVICE_MISMATCH\")",
+      "recommendation": "Move the fleet to static/jwks caller assertions for ingest, and/or restrict POST /internal/audit via INTERNAL_ROUTE_POLICY_JSON so only known callers can reach it."
+    },
+    {
+      "id": "audit-019",
+      "category": "api",
+      "severity": "LOW",
+      "title": "Inconsistent metadata typing for audit.queried ('returned' int vs str) across the two query routes",
+      "file": "app/api/internal.py",
+      "line": 167,
+      "scenario": "The user-tier query records metadata={'returned': len(events)} (an int), while the internal-tier query records metadata={'returned': str(len(events))} (a string). The same action 'audit.queried' is written with two different value types for the same field, breaking any downstream query/aggregation that assumes a consistent type and complicating export/analysis.",
+      "evidence": "metadata={\"returned\": str(len(events))})",
+      "recommendation": "Use a single consistent type (int) for 'returned' in both routes."
+    },
+    {
+      "id": "audit-020",
+      "category": "security",
+      "severity": "LOW",
+      "title": "/readyz is public and discloses dependency failure reasons to unauthenticated callers",
+      "file": "app/api/health.py",
+      "line": 71,
+      "scenario": "readyz returns per-check reason strings verbatim, including postgres health_state() values like 'pool exhausted (max_connections reached)'. Anyone who can reach the pod (no auth on health routes) learns backend topology and current capacity/outage state, useful for timing an attack or fingerprinting the datastore.",
+      "evidence": "return JSONResponse(\n    {\"status\": \"ready\" if all_ok else \"not_ready\", \"checks\": results},\n    status_code=status_code,\n)",
+      "recommendation": "Return a coarse ready/not_ready to unauthenticated callers and expose the detailed reason only to internal/authenticated probes or logs."
+    },
+    {
+      "id": "audit-021",
+      "category": "performance",
+      "severity": "LOW",
+      "title": "build_audit() reconstructs AuditService + exporters + PiiPolicy on every request",
+      "file": "app/api/v1/audit.py",
+      "line": 26,
+      "scenario": "Each query/verify/export/purge request calls build_audit(request), which news up three exporter objects, a PiiPolicy (re-parsing AUDIT_PII_FIELDS and re-validating the salt) and an AuditService/AuditRepository. This is pure per-request churn on the hot read path; the objects are stateless over the datastore and could be built once.",
+      "evidence": "exporters = {\"json\": JsonExporter(), \"csv\": CsvExporter(), \"ndjson\": NdjsonExporter()}\nreturn AuditService(\n    repo=AuditRepository(c.datastore), integrity=c.integrity, exporters=exporters, ...)",
+      "recommendation": "Build one AuditService at startup (like InProcessAuditSink does) and reuse it, or cache it on app.state."
+    },
+    {
+      "id": "audit-022",
+      "category": "correctness",
+      "severity": "LOW",
+      "title": "verify() duplicate-seq resolution falls back to rows[0] arbitrarily when no on-chain sibling matches",
+      "file": "app/core/audit_service.py",
+      "line": 254,
+      "scenario": "When a seq has multiple rows and none matches the head hash or any referenced prev_hash, verify() picks rows[0] (insertion/iteration order) as the 'real' event. If a genuine tamper produced two same-seq rows neither of which is on the chain, the choice of rows[0] is arbitrary and can make the subsequent prev_hash walk report the break at the wrong seq (or, in edge cases, mask which sibling is authoritative).",
+      "evidence": "on_chain = [r for r in rows\n            if r.get(\"hash\", \"\") == head_hash or r.get(\"hash\", \"\") in referenced]\nevents.append(on_chain[0] if on_chain else rows[0])",
+      "recommendation": "When no sibling is on-chain, report a tamper/ambiguity for that seq explicitly rather than silently choosing rows[0]."
+    },
+    {
+      "id": "audit-023",
+      "category": "concurrency",
+      "severity": "LOW",
+      "title": "idempo_prune can delete a pending reservation whose ts is just under the cutoff, racing an in-flight append",
+      "file": "app/core/audit_repository.py",
+      "line": 160,
+      "scenario": "idempo_prune() scan_all()s the idempotency collection and deletes any row with ts < before_ts, without checking state=='done'. The retention sweep runs prune with a wide TTL, but if a 'pending' reservation's ts falls under the cutoff (a genuinely slow/long-running append, or clock skew) prune deletes the reservation mid-flight; a concurrent retry then reserves fresh and can append a duplicate for the same idempotent operation.",
+      "evidence": "for row in await self._store.scan_all(_IDEMPO, limit):\n    if float(row.get(\"ts\", 0)) < before_ts and row.get(\"key\"):\n        if await self._store.delete(_IDEMPO, row[\"key\"]):",
+      "recommendation": "Only prune rows with state=='done' (or pending rows older than several times the stale window), never a fresh pending reservation."
+    },
+    {
+      "id": "audit-024",
+      "category": "observability",
+      "severity": "LOW",
+      "title": "Auditor gap telemetry is best-effort and swallowed — a dropped audit can itself go uncounted",
+      "file": "app/core/audit.py",
+      "line": 117,
+      "scenario": "_count_gap() emits the 'audit.gap' telemetry inside try/except that silently passes on any error. When the telemetry backend is itself unavailable (the exact moment a fail-open audit gap is most likely), the gap is neither recorded in the chain nor counted anywhere — reproducing, one level down, the invisible-hole problem the fail-open design claims to close.",
+      "evidence": "except Exception:\n    pass          # observability must never break the action, or the audit, or both",
+      "recommendation": "Fall back to a local structured log line (WARN) when telemetry.event() fails, so a gap during a telemetry outage still leaves a durable trace."
+    }
+  ]
+}

@@ -28,6 +28,31 @@ def test_an_operator_is_never_restricted():
     assert _f(["platform.authz", "authz.manage"], is_operator=True) == []
 
 
+# ── FIN authz-001: wildcard capabilities must not slip past the platform denylist ──────────────────
+def test_bare_star_wildcard_is_forbidden_for_a_tenant_admin():
+    # cap_matches treats "*" as "holds everything" (incl. platform.*), so a tenant caller assigning it
+    # would mint a platform-god role. Must be refused.
+    assert _f(["*"]) == ["*"]
+
+
+def test_platform_prefix_wildcard_is_forbidden():
+    assert _f(["platform.*"]) == ["platform.*"]
+
+
+def test_broader_stem_wildcard_that_covers_platform_is_forbidden():
+    # "plat*" covers "platform.…" → reaches the denied prefix → forbidden.
+    assert _f(["plat*"]) == ["plat*"]
+
+
+def test_an_unrelated_namespace_wildcard_is_still_allowed():
+    # a tenant granting a wildcard within its OWN namespace (not reaching platform.) is fine.
+    assert _f(["billing.*", "tickets.*"]) == []
+
+
+def test_operator_may_still_hold_star():
+    assert _f(["*", "platform.*"], is_operator=True) == []
+
+
 def test_allowlist_rejects_anything_outside_it():
     assert _f(["billing.self", "reports.export"], allowlist=frozenset({"billing.self"})) == \
         ["reports.export"]

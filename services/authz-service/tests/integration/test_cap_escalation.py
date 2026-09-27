@@ -137,6 +137,42 @@ def test_direct_subject_grant_is_subset_gated(env_guard):
     assert r.status_code == 403
 
 
+# ── FIN authz-002: assigning a ROLE whose caps exceed the granter is refused ───────────────────────
+def test_tenant_admin_cannot_assign_a_role_whose_caps_exceed_its_own(env_guard):
+    app = _make_app()
+    # operator creates a privileged role in tenant-A
+    priv = app.post("/api/v1/roles", headers=_operator(),
+                    json={"name": "payouts", "capabilities": ["wallet.payout"], "tenant": "tenant-A"})
+    assert priv.status_code == 201
+    rid = priv.json()["id"]
+    # a tenant admin holding only billing.self tries to ASSIGN that role (not direct caps) → refused,
+    # because the role carries wallet.payout which the admin does not hold (the caps<=granter gate now
+    # covers body.roles, not just body.capabilities).
+    hdr = _tenant_admin(["billing.self"])
+    r = app.put("/api/v1/subjects/victim/roles", headers=hdr, json={"roles": [rid], "capabilities": []})
+    assert r.status_code == 403
+
+
+def test_tenant_admin_may_assign_a_role_within_its_caps(env_guard):
+    app = _make_app()
+    ok_role = app.post("/api/v1/roles", headers=_operator(),
+                       json={"name": "support", "capabilities": ["billing.self"], "tenant": "tenant-A"})
+    rid = ok_role.json()["id"]
+    hdr = _tenant_admin(["billing.self"])
+    r = app.put("/api/v1/subjects/agent/roles", headers=hdr, json={"roles": [rid], "capabilities": []})
+    assert r.status_code == 200
+
+
+def test_bootstrap_route_rejects_the_star_wildcard(env_guard):
+    # FIN authz-001 at the route: the internal bootstrap must refuse a role carrying "*".
+    app = _make_app()
+    r = app.post("/internal/authz/tenants/tenant-Z/bootstrap",
+                 headers={"X-Internal-Token": ITOKEN},
+                 json={"subject": "owner-1", "assign": ["owner"],
+                       "roles": [{"name": "owner", "capabilities": ["*"]}]})
+    assert r.status_code == 400
+
+
 def test_denylist_beats_subset_even_if_caller_holds_the_platform_cap(env_guard):
     # A tenant caller that somehow holds platform.foo (but not platform.authz, so not an operator)
     # still cannot hand it out: the platform.* wall refuses it independent of the subset rule.

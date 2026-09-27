@@ -1,0 +1,268 @@
+{
+  "service": "search-service",
+  "date": "2026-09-27",
+  "summary": {
+    "total": 23,
+    "by_severity": {
+      "CRITICAL": 0,
+      "HIGH": 4,
+      "MEDIUM": 12,
+      "LOW": 7
+    }
+  },
+  "findings": [
+    {
+      "id": "search-001",
+      "category": "SECURITY",
+      "severity": "HIGH",
+      "title": "Highlight snippets inject document text into HTML markup without escaping (stored/reflected XSS, CWE-79)",
+      "file": "app/core/search_service.py",
+      "line": 215,
+      "scenario": "A peer service indexes a document whose title field contains `<script>steal()</script> fox`. A user searches 'fox' with highlight=True (the default). _highlight() splits the field on whitespace and, for the matching word, emits `<em>fox</em>` but for every OTHER word it emits the raw word verbatim inside the joined HTML string — so `<script>steal()</script>` is returned inside the `highlights` field as live markup. Any operator panel or app that renders `highlights` as HTML (the whole point of an <em> wrapper) executes attacker-supplied script. The service manufactures the HTML, so the injection originates here.",
+      "evidence": "marked.append(f\"<em>{word}</em>\")  ...  else: marked.append(word)  ...  hl[fname] = \" \".join(marked)",
+      "recommendation": "HTML-escape each word (html.escape(word)) BEFORE wrapping/joining, so only the <em> tags this code adds are ever live markup; the field content is always escaped."
+    },
+    {
+      "id": "search-002",
+      "category": "OBSERVABILITY",
+      "severity": "HIGH",
+      "title": "Critical `search.deleted` audit record carries no tenant and no document identity — defeats the audit's stated purpose",
+      "file": "app/api/internal.py",
+      "line": 127,
+      "scenario": "delete_doc records the audit event with actor=\"\", tenant=\"\" and a constant resource=\"search_index\", then deletes body.index/body.id for body.tenant. The action is declared critical=True precisely because 'nothing here can show what was removed afterwards' (auditable_actions.py). But the recorded row cannot say WHICH document, WHICH tenant, or WHO — so the fail-closed audit still answers nothing during an investigation. Compare index_doc (line 108) which correctly records resource=f\"{body.index}:{body.id}\" and tenant=body.tenant.",
+      "evidence": "await request.app.state.auditor.record(\"search.deleted\", actor=\"\", tenant=\"\", resource=\"search_index\", ip=...)",
+      "recommendation": "Record tenant=body.tenant and resource=f\"{body.index}:{body.id}\" (and a caller actor if resolvable), matching the index path, so the irreversible delete is actually attributable."
+    },
+    {
+      "id": "search-003",
+      "category": "SECURITY",
+      "severity": "HIGH",
+      "title": "Internal query/suggest tier lets any token-holding peer read ANY tenant's documents (default-open policy + shared token)",
+      "file": "app/api/internal.py",
+      "line": 146,
+      "scenario": "internal_query and internal_suggest take `tenant` from the request BODY/query and pass it straight to SearchService with no per-caller tenant authorization. The default INTERNAL_CALLER_DRIVER=shared means every peer presents the same flat token, and INTERNAL_ROUTE_POLICY_JSON defaults to empty => 'a route absent here admits any authenticated caller (default-open)'. So any service (or anything that obtains the one shared internal token) can read every tenant's indexed documents by naming the tenant in the body. The user tier is hard-isolated to the JWT tenant, but the internal tier is a wide-open cross-tenant read by default.",
+      "evidence": "tenant=body.tenant, ...  # QueryIn: tenant in the body; require_internal_token default-open when INTERNAL_ROUTE_POLICY_JSON is empty",
+      "recommendation": "Ship a default route policy that restricts /internal/search/query and /internal/search/suggest to the specific caller services that need them, or require the RS256 caller assertion (INTERNAL_CALLER_DRIVER=static/jwks) in production; do not leave cross-tenant read default-open."
+    },
+    {
+      "id": "search-004",
+      "category": "CORRECTNESS",
+      "severity": "HIGH",
+      "title": "Negative `size` is not rejected — page slicing silently drops results and pagination breaks",
+      "file": "app/core/search_service.py",
+      "line": 109,
+      "scenario": "SearchIn.size / QueryIn.size are `int | None` with no ge=1 bound. A client sends size=-1. `size = min(int(size or default), max)` = min(-1, 100) = -1. Then `page = ordered[:size]` = `ordered[:-1]` returns all-but-the-last hit, and `next_cursor = ... if len(ordered) > size` (len > -1 is always True) emits a cursor into a nonsensical page. size=-5 drops the last 5 hits. No error, just wrong results.",
+      "evidence": "size = min(int(size or self._cfg[\"default_size\"]), self._cfg[\"max_size\"])  ...  page = ordered[:size]",
+      "recommendation": "Constrain size in the Pydantic models (Field(ge=1, le=MAX_PAGE_SIZE)) and clamp with max(1, ...) in SearchService before slicing."
+    },
+    {
+      "id": "search-005",
+      "category": "SECURITY",
+      "severity": "MEDIUM",
+      "title": "Bulk index bypasses the field validation (index pattern, id/tenant bounds) that single-index enforces",
+      "file": "app/api/internal.py",
+      "line": 36,
+      "scenario": "BulkIn.docs is `list[dict[str, Any]]` with no schema, and SearchService.bulk reads d[\"index\"], d.get(\"id\",\"\"), d.get(\"fields\"). IndexIn/DeleteIn were hardened (r2-12) to bound index (pattern ^[A-Za-z0-9._-]+$, max 128), id (max 256) and tenant (max 128) — but bulk accepts an index name with arbitrary characters, an unbounded id, and (worse) an empty id. Every bulk doc with a missing id upserts under storage key \"<index>:\" so multiple docs collide on one key and silently overwrite each other (data loss), and arbitrary index strings become datastore keys.",
+      "evidence": "class BulkIn(BaseModel): tenant: str = ...; docs: list[dict[str, Any]] = Field(default_factory=list)   |   doc_id = str(d.get(\"id\", \"\"))",
+      "recommendation": "Type BulkIn.docs as list[IndexIn-equivalent] (or validate each doc with the same bounds/pattern before indexing) and reject an empty id."
+    },
+    {
+      "id": "search-006",
+      "category": "CONCURRENCY/DATA",
+      "severity": "MEDIUM",
+      "title": "upsert() is a non-atomic multi-step write — a crash mid-way leaves an orphan doc or drifted BM25 counters",
+      "file": "app/adapters/index/builtin.py",
+      "line": 97,
+      "scenario": "upsert does: _remove_existing -> put(_DOCS) -> per-term CAS on postings -> CAS on meta (n_docs/total_len). These are separate store operations with no transaction. A crash after put(_DOCS) but before the postings loop leaves a document row that no query can ever reach (it is in no posting list) yet is later counted. A crash mid postings loop indexes the doc under some terms but not others. A crash before the meta CAS leaves n_docs/total_len understated, skewing avgdl and IDF for every future query on that index. The individual steps are CAS-safe against concurrency but the sequence is not crash-atomic.",
+      "evidence": "await self._store.put(_DOCS, ...); for term, tf in weighted_tf.items(): await self._cas_update(_POST, ...); ... await self._cas_update(_META, index, ...)",
+      "recommendation": "Order writes so the doc row is the LAST thing written (postings+meta first, doc row commits visibility), or add a reconcile/self-heal sweep that rebuilds postings/meta from the doc rows and detects orphans."
+    },
+    {
+      "id": "search-007",
+      "category": "CONCURRENCY/DATA",
+      "severity": "MEDIUM",
+      "title": "Re-index removes the document from all postings before adding it back — a concurrent search misses it entirely",
+      "file": "app/adapters/index/builtin.py",
+      "line": 97,
+      "scenario": "upsert calls _remove_existing(index, doc_id) which strips the doc from every posting list and decrements meta, THEN puts the new record and re-adds postings. A search that runs in the window between removal and re-add finds zero postings for the doc and returns it in no results — an existing, still-present document briefly vanishes from search on every routine re-index/update, not just on failure.",
+      "evidence": "await self._remove_existing(index, doc_id, tenant=record.get(\"tenant\"))   # idempotent re-index  ...  await self._store.put(_DOCS, self._dk(index, doc_id), stored)",
+      "recommendation": "Compute the term delta and update postings in place (add new terms, remove only stale terms) rather than full-remove-then-re-add, so a live doc is never transiently unindexed."
+    },
+    {
+      "id": "search-008",
+      "category": "PERFORMANCE",
+      "severity": "MEDIUM",
+      "title": "Search hot path issues one sequential datastore get() per candidate document (N+1, up to max_candidates=10,000 round-trips)",
+      "file": "app/core/search_service.py",
+      "line": 161,
+      "scenario": "After gathering candidates from posting lists, _run loops `for doc_id in candidate_tf: rec = await self._index.get(index, doc_id)`. The postgres datastore get() (postgres.py:113) is a single-key query, so a query matching N candidates fires N sequential awaited round-trips before ranking — up to SEARCH_MAX_CANDIDATES (10,000). On postgres this is 10k serial queries on the request path for a common term, dominating latency and pinning a pool connection.",
+      "evidence": "for doc_id, wtf in candidate_tf.items(): rec = await self._index.get(index=index, doc_id=doc_id)",
+      "recommendation": "Add a batch multi-get to the index/datastore port (single WHERE key IN (...) / pipelined reads) and fetch all candidate records at once; the posting rows already carry enough to rank before hydrating only the page."
+    },
+    {
+      "id": "search-009",
+      "category": "TESTS/QA",
+      "severity": "MEDIUM",
+      "title": "Cross-tenant isolation test passes on an empty result — it never proves the isolating query still returns the caller's own data",
+      "file": "tests/integration/test_search_api.py",
+      "line": 62,
+      "scenario": "test_cross_tenant_isolation indexes 'secret' for other-tenant, then searches as t1 and asserts `all(h[\"id\"] != \"secret\")`. That assertion is vacuously true if hits is empty — which it would be even if the tenant filter were removed AND t1 simply had no 'fox' doc, or if search were entirely broken. The test never indexes a t1 'fox' doc and never asserts t1 sees its own hit while excluding the other tenant's, so a regression that leaks OR one that returns nothing both pass. This is the service's only cross-tenant-leak test and it is a test-that-stops-testing.",
+      "evidence": "hits = client.post(...headers=_tok(\"t1\")).json()[\"hits\"]  assert all(h[\"id\"] != \"secret\" for h in hits)",
+      "recommendation": "Index a t1 doc containing 'fox' too, then assert the t1 search returns the t1 doc AND does not contain 'secret' (assert the result is non-empty and equals exactly the t1 id)."
+    },
+    {
+      "id": "search-010",
+      "category": "API/CONTRACT",
+      "severity": "MEDIUM",
+      "title": "suggest prefix and index parameters are unvalidated/unbounded (cost + key-shape drift from the POST path)",
+      "file": "app/api/v1/search.py",
+      "line": 74,
+      "scenario": "GET /api/v1/search/suggest and /internal/search/suggest take `index` and `prefix` as bare str query params with no length limit and no pattern. `prefix` is never run through query.validate_text (which enforces MAX_QUERY_LEN and forbids operator chars); a client can send a megabyte prefix that is normalized/analyzed on every keystroke, and `index` skips the ^[A-Za-z0-9._-]+$ / max 128 bound that SearchIn.index enforces on the POST path. Same missing bounds on internal_suggest.",
+      "evidence": "async def suggest(request: Request, index: str, prefix: str, principal: Principal = Depends(_READ))",
+      "recommendation": "Validate index with the same Field pattern/bounds and cap prefix length (reuse validate_text or a Query(max_length=...)) on both the user and internal suggest routes."
+    },
+    {
+      "id": "search-011",
+      "category": "CORRECTNESS",
+      "severity": "MEDIUM",
+      "title": "BM25 ranking uses corpus-wide (cross-tenant) n_docs/avgdl/idf on a shared index",
+      "file": "app/core/search_service.py",
+      "line": 131,
+      "scenario": "stats(index) returns per-INDEX meta (n_docs, total_len) that aggregates ALL tenants sharing the index name, and _run feeds those into avgdl and idf. A tenant with 3 docs sharing an index with a tenant of 3,000,000 gets IDF/length-normalization computed against the 3,000,003-doc corpus, so its own relevance scores are distorted by another tenant's term distribution. Ranking is not tenant-correct even though results are tenant-filtered.",
+      "evidence": "stats = await self._index.stats(index=index); n_docs = int(stats.get(\"n_docs\", 0)) or 1; avgdl = (float(stats.get(\"total_len\", 0)) / n_docs) ...",
+      "recommendation": "Maintain per-(index,tenant) meta counters and compute IDF/avgdl within the caller's tenant, or document that ranking stats are index-global and acceptable only for single-tenant indexes."
+    },
+    {
+      "id": "search-012",
+      "category": "CORRECTNESS",
+      "severity": "MEDIUM",
+      "title": "Candidate cap leaves doc_freq unset for later query terms, corrupting IDF/ranking when the cap is hit",
+      "file": "app/core/search_service.py",
+      "line": 145,
+      "scenario": "The candidate loop iterates `for term in set(terms)` and breaks out entirely once len(candidate_tf) >= max_candidates. doc_freq[term] is only assigned inside that loop, so any query term not yet visited when the cap trips never gets a doc_freq entry. ranking.score then calls doc_freq.get(term, 0) => idf(n_docs, 0) = log(1 + (n+0.5)/0.5), an artificially huge IDF, so a rare/late term dominates scoring for exactly the pathological queries the cap is meant to tame. set() iteration order is also nondeterministic, so which terms are penalized varies run to run.",
+      "evidence": "for term in set(terms): postings = ...; doc_freq[term] = len(postings); ... if len(candidate_tf) >= cap: break",
+      "recommendation": "Compute doc_freq for ALL query terms (posting-list lengths are cheap counts) before/independently of the candidate materialization cap, so IDF is correct even when candidate hydration is bounded."
+    },
+    {
+      "id": "search-013",
+      "category": "API/CONTRACT",
+      "severity": "MEDIUM",
+      "title": "`total` is reported as the full match count but is silently capped at max_candidates, and IndexUnavailable returns a different response shape",
+      "file": "app/core/search_service.py",
+      "line": 174,
+      "scenario": "total = len(ordered) but `ordered` is derived only from the (<= max_candidates) candidates that were materialized, so for a common query the client is told total=10000 (or fewer) as if it were the complete count and paginates against a truncated set with no signal. Separately, the IndexUnavailable branch returns {\"unavailable\": True, \"hits\": [], \"total\": 0} which omits next_cursor and facets present in every normal response — consumers that read result[\"next_cursor\"]/[\"facets\"] KeyError on degrade.",
+      "evidence": "return {\"unavailable\": True, \"hits\": [], \"total\": 0}   # degraded, never a 500   |   total = len(ordered)",
+      "recommendation": "Return a boolean like `total_is_estimate`/`capped` when the candidate cap is reached, and make the degraded response the same shape (include next_cursor=\"\", facets={})."
+    },
+    {
+      "id": "search-014",
+      "category": "CONCURRENCY/DATA",
+      "severity": "MEDIUM",
+      "title": "Erasure loop can spin forever if a matching row is not actually deleted",
+      "file": "app/core/erasure.py",
+      "line": 58,
+      "scenario": "erase() loops `while True: rows = find(_DOCS, {tenant, owner=subject}); if not rows: break; for r in rows: index.delete(index=r[index], doc_id=r[id], tenant=tenant)`. It relies on delete removing each row so the next find shrinks. But _index.delete no-ops when the stored record's tenant differs from the passed tenant (builtin.py _remove_existing). If any row matched by owner==subject somehow has a tenant field that does not equal the query tenant (data inconsistency, or a row whose _DOCS key was written under a different tenant), find keeps returning it and delete keeps skipping it — an unbounded loop on a DSAR request path.",
+      "evidence": "while True: rows, _ = await self._store.find(_DOCS, {\"tenant\": tenant, \"owner\": subject}, limit=500, ...); if not rows: break; for r in rows: await self._index.delete(...)",
+      "recommendation": "Bound the loop (max passes) or track deleted keys and break when a pass deletes zero rows; raise/alert rather than spin if rows remain undeleted."
+    },
+    {
+      "id": "search-015",
+      "category": "PERFORMANCE",
+      "severity": "MEDIUM",
+      "title": "Autocomplete re-scans and re-analyzes every field of every tenant document on each keystroke, uncached",
+      "file": "app/core/search_service.py",
+      "line": 233,
+      "scenario": "suggest() calls iter_docs(index, tenant, limit=list_limit) then, for every returned record, iterates every field value and re-runs the analyzer over the full text, plus an edit_distance_le1 check per term, to collect prefix matches. This is O(tenant_docs x fields x terms) work per keystroke with no suggestion cache and no prefix/term index — a typing user issues one of these per character. There is no result caching layer for suggest (unlike search, which is generation-cached).",
+      "evidence": "docs = await self._index.iter_docs(index=index, tenant=tenant, limit=self._cfg[\"list_limit\"]); for rec in docs: ... for term in self._an(value): ...",
+      "recommendation": "Maintain a per-(index,tenant) term/prefix structure (e.g. a sorted term set or trie updated at index time) so suggest is a bounded prefix lookup, and/or cache suggest results per (tenant, prefix, generation)."
+    },
+    {
+      "id": "search-016",
+      "category": "CORRECTNESS",
+      "severity": "MEDIUM",
+      "title": "Filter equality conflates bool with int (True == 1), matching unintended documents",
+      "file": "app/core/query.py",
+      "line": 61,
+      "scenario": "normalize_filters accepts bool values and matches_filters uses Python `!=`. Because True == 1 and False == 0 in Python, a filter {\"in_stock\": True} matches a document whose in_stock field was indexed as the integer 1, and {\"flagged\": False} matches a stored 0. A caller filtering on a genuine boolean silently pulls in numeric-0/1 documents (and vice versa), which for an access-style flag can widen a result set beyond intent.",
+      "evidence": "elif have != want:  return False   (with want possibly a bool, have possibly int, and True == 1)",
+      "recommendation": "Compare with type awareness for booleans (e.g. reject cross-type matches: `type(have) is type(want) and have == want`, or normalize bools to a distinct sentinel) so bool filters never match ints."
+    },
+    {
+      "id": "search-017",
+      "category": "CONCURRENCY/DATA",
+      "severity": "MEDIUM",
+      "title": "Bulk indexing reports per-doc failures only by exception class name — a caller cannot distinguish a transient from a permanent failure to retry safely",
+      "file": "app/core/search_service.py",
+      "line": 99,
+      "scenario": "bulk() catches every exception and appends {\"id\": doc_id, \"error\": type(exc).__name__}. A CrossTenantConflict (permanent — must not retry) and a RuntimeError('CAS exhausted under contention') (transient — should retry) are both surfaced as opaque class names with no retryable flag, and a KeyError from a malformed doc (missing 'index') looks the same. The comment promises 'a retry of only the failed ids is safe', but the caller has no signal for WHICH failures are safe to retry, and blindly retrying a CrossTenantConflict will loop forever.",
+      "evidence": "except Exception as exc:  errors.append({\"id\": doc_id, \"error\": type(exc).__name__})",
+      "recommendation": "Classify failures (retryable vs permanent) in the error entries, and validate doc shape up front so a malformed doc returns a distinct permanent error."
+    },
+    {
+      "id": "search-018",
+      "category": "OBSERVABILITY",
+      "severity": "LOW",
+      "title": "Cache and event-bus failures are swallowed with bare `except Exception: pass/return`, hiding a degraded hot path",
+      "file": "app/core/search_service.py",
+      "line": 262,
+      "scenario": "_cache_get, _cache_set, _emit and _gen all catch every exception and silently return/pass (only _bump logs). A misconfigured or failing cache turns every search into a full recompute with zero telemetry, and a broken event bus means doc.indexed events are dropped invisibly. Only the generation-bump path was made observable (r2-09); the read/write/emit paths remain silent, so a cache outage looks identical to a healthy cache in logs/metrics.",
+      "evidence": "async def _cache_get(...): ... except Exception: return None   |   async def _emit(...): ... except Exception: pass",
+      "recommendation": "Emit a rate-limited warning / telemetry counter on cache and bus failures (as _bump now does) so a degraded dependency is visible."
+    },
+    {
+      "id": "search-019",
+      "category": "CORRECTNESS",
+      "severity": "LOW",
+      "title": "Malformed or tampered cursor silently restarts pagination at page 1 instead of erroring",
+      "file": "app/core/cursor.py",
+      "line": 29,
+      "scenario": "cursor.decode returns None on any exception and _run treats pos=None as 'start from the top'. A client that sends a corrupted/tampered/truncated cursor gets page 1 again with no error, which can produce an infinite pagination loop (client keeps 'advancing' but keeps receiving the first page) and masks a real client bug. There is also no integrity binding of the cursor to (tenant,index,query), so a cursor from one query is accepted for another.",
+      "evidence": "except Exception:  return None  # a malformed cursor -> start from the top, never crash",
+      "recommendation": "Return a 422 on a structurally invalid cursor (distinguish 'absent' from 'malformed'), and bind the cursor to the query/tenant so a cursor cannot be replayed across contexts."
+    },
+    {
+      "id": "search-020",
+      "category": "CONFIG",
+      "severity": "LOW",
+      "title": "`_cfg()` rebuilds the config dict and re-reads settings on every single search/suggest request",
+      "file": "app/api/v1/search.py",
+      "line": 29,
+      "scenario": "build_search() calls _cfg() which calls get_settings() (lru-cached, fine) but then constructs a fresh 12-key dict and a new SearchService instance on every request. get_settings is cached, but the per-request dict/instance construction is avoidable churn on the hottest path; more importantly the config snapshot is taken per-request so there is no single audited place the effective search limits are pinned.",
+      "evidence": "def build_search(request): ... return SearchService(index=..., cache=..., config=_cfg(), event_bus=...)",
+      "recommendation": "Build the config dict and (optionally) the SearchService once at app startup and stash on app.state, reusing it per request."
+    },
+    {
+      "id": "search-021",
+      "category": "API/CONTRACT",
+      "severity": "LOW",
+      "title": "Rate-limit module header/comment names the wrong service (identity-service) — copy-paste drift",
+      "file": "app/api/ratelimit.py",
+      "line": 2,
+      "scenario": "app/api/ratelimit.py opens with '# identity-service - Rate limiting'. This is search-service. The banner is cosmetic but is exactly the kind of copy-paste artifact that signals the module was lifted wholesale; a reviewer trusting the banner may assume identity-specific behavior/policy applies here.",
+      "evidence": "# identity-service — Rate limiting (policy-driven, honest headers)",
+      "recommendation": "Correct the banner to search-service and audit the module for any other identity-specific assumptions carried over."
+    },
+    {
+      "id": "search-022",
+      "category": "SECURITY",
+      "severity": "LOW",
+      "title": "index catalogue / stats meta is index-global; a shared index name leaks another tenant's document volume to any platform reader — but per-tenant volumes are unobtainable, masking cross-tenant sharing",
+      "file": "app/api/v1/search.py",
+      "line": 78,
+      "scenario": "list_indexes and index_stats are correctly restricted to platform.search (a real fix), but the underlying meta (n_docs) is per-index across all tenants. There is no per-tenant stat available at all, so an operator cannot answer 'how many docs does tenant X have' and, conversely, the aggregate count silently blends tenants that happen to share an index name via the internal index route (index name is caller-chosen, not tenant-prefixed). Two tenants colliding on an index name is only guarded at write time by CrossTenantConflict on a shared (index,doc_id), not by namespacing the index itself.",
+      "evidence": "meta is per-index, not per-(tenant,index) ... \"n_docs\": int(r.get(\"n_docs\", 0))",
+      "recommendation": "Namespace indexes per tenant (or key meta by (tenant,index)) so counts are tenant-scoped and index names cannot be shared across tenants by accident or design."
+    },
+    {
+      "id": "search-023",
+      "category": "TESTS/QA",
+      "severity": "LOW",
+      "title": "No test covers highlight output, negative size, bulk-doc validation, or crash-window atomicity",
+      "file": "tests/integration/test_search_api.py",
+      "line": 1,
+      "scenario": "The suite tests deny-by-default, operator-char rejection, tenant-from-token, arabic folding and cap gating, but has no test that (a) highlight output is HTML-safe, (b) a negative/zero size is rejected, (c) a bulk doc with a bad index name or empty id is rejected, or (d) postings/meta stay consistent after a re-index. These are exactly the branches findings 001, 004, 005, 006/007 live in, so those defects would not be caught by CI.",
+      "evidence": "test_deny_by_default, test_no_raw_query_passthrough, test_cross_tenant_isolation, test_arabic_search, test_suggest_prefix (no highlight/size/bulk-validation/atomicity tests)",
+      "recommendation": "Add tests: highlight escapes embedded markup; size<=0 -> 422; bulk with malformed index/empty id -> per-doc error; re-index leaves postings+meta consistent."
+    }
+  ]
+}

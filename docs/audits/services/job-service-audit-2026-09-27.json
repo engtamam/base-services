@@ -1,0 +1,263 @@
+{
+  "service": "job-service",
+  "date": "2026-09-27",
+  "summary": {
+    "total": 23,
+    "by_severity": { "CRITICAL": 1, "HIGH": 4, "MEDIUM": 11, "LOW": 7 }
+  },
+  "findings": [
+    {
+      "id": "job-001",
+      "category": "SECURITY / tenant-isolation",
+      "severity": "CRITICAL",
+      "title": "unique_key / idempotency_key live in a GLOBAL namespace — cross-tenant dedupe collision and job suppression",
+      "file": "app/core/job_service.py",
+      "line": 41,
+      "scenario": "The internal enqueue endpoint accepts a caller-supplied `tenant` AND a raw `unique_key`/`idempotency_key` (app/api/internal.py EnqueueIn), and the dedupe store keys on the bare string with no tenant prefix. Tenant A enqueues unique_key='daily-report'; tenant B independently enqueues unique_key='daily-report'. `unique_reserve` finds the key already held and returns B the EXISTING job (created=False) — which belongs to tenant A. B's report job is silently never created/run, and B's caller believes it was accepted. A malicious or careless tenant can suppress another tenant's jobs, or read back another tenant's job id. This directly violates the platform's established tenant-scoped-idempotency invariant (memory: tenant-scoped-idempotency — a global key = cross-tenant unbilled/lost work).",
+      "evidence": "for key in (idempotency_key, unique_key):\n    if key:\n        existing_id = await self._jobs.unique_get(key, now=now, ttl=ttl)  ... return existing, False",
+      "recommendation": "Length-prefix and namespace every dedupe key with the job's tenant (e.g. f\"{len(tenant)}:{tenant}:{key}\") in JobService.enqueue before calling unique_get/unique_reserve/unique_clear, exactly as the scheduler already namespaces with 'sched:{id}:{fire}'. Add a cross-tenant collision test."
+    },
+    {
+      "id": "job-002",
+      "category": "SECURITY / API-CONTRACT",
+      "severity": "HIGH",
+      "title": "Operator job list and dead-letter list are silently scoped to the literal tenant \"global\", not fleet-wide",
+      "file": "app/api/v1/jobs.py",
+      "line": 119,
+      "scenario": "`_tenant(p)` returns `body_tenant or p.tenant or 'global'` for a platform.jobs holder. `stats` (line 164) was fixed to pass `tenant=None` for operators (fleet-wide), but `list_jobs` (line 119) and `dead_letters` (line 127) still pass `_tenant(principal)`, and there is NO tenant query param on these routes. A platform operator calling GET /api/v1/jobs or /api/v1/jobs/dead-letters therefore sees ONLY jobs whose tenant field equals the string 'global' — every real tenant's jobs and dead-letters are invisible. An operator triaging the fleet DLQ is blind to almost everything and can wrongly conclude the DLQ is empty.",
+      "evidence": "jobs = await build_jobs(request)._jobs.list(tenant=_tenant(principal), status=status_filter, ...)\n... rows = await build_jobs(request)._jobs.dead_letters(_tenant(principal), ...)",
+      "recommendation": "Mirror stats: pass tenant=None when 'platform.jobs' in principal.caps for list_jobs and dead_letters (optionally accept an explicit ?tenant= filter for operators)."
+    },
+    {
+      "id": "job-003",
+      "category": "PERFORMANCE / CORRECTNESS (DoS)",
+      "severity": "HIGH",
+      "title": "next_after() blocks the event loop for ~2.1M iterations on a validated-but-never-matching cron",
+      "file": "app/core/cron.py",
+      "line": 82,
+      "scenario": "validate()/parse() accept syntactically valid expressions that can never fire, e.g. '0 0 30 2 *' (Feb 30) or '0 0 31 2 *'. create_schedule/update call self._cron.next_after() on the REQUEST path. next_after steps minute-by-minute up to _MAX_MINUTES (4*366*24*60 ≈ 2.1M) before raising CronError. That is a multi-second CPU-bound loop running synchronously inside the async handler (single-worker event loop), blocking /healthz and every other request. A caller can POST several such schedules to stall the pod. Even for normal expressions the same minute-by-minute walk runs for every schedule on every tick.",
+      "evidence": "for _ in range(_MAX_MINUTES):\n    if _matches(p, t):\n        return t.timestamp()\n    t += _dt.timedelta(minutes=1)\nraise CronError(f\"expression never matches within 4 years: {expr!r}\")",
+      "recommendation": "Reject impossible day/month combinations at validate() time (e.g. dom={30,31} with month={2}), and/or compute next fire by advancing per-field instead of per-minute. At minimum run next_after via run_in_threadpool on the request path."
+    },
+    {
+      "id": "job-004",
+      "category": "SECURITY / tenant-isolation",
+      "severity": "HIGH",
+      "title": "Internal enqueue lets any peer forge the tenant; claim is only queue-scoped, so a worker can pull another tenant's jobs from a shared queue",
+      "file": "app/api/internal.py",
+      "line": 101,
+      "scenario": "POST /internal/jobs/enqueue does `enqueue(**body.model_dump())` where body.tenant is arbitrary and never bound to the authenticated caller's identity — a holder of the shared internal token can enqueue work stamped as any tenant. claim() filters only by queue, never by tenant, so if two tenants share a queue name, a worker leases and receives jobs (payload/PII) belonging to a different tenant. This is 'internal trust' by design for enqueue, but the lack of any caller->tenant binding plus queue-only claim scoping means one compromised/buggy internal caller taints tenant attribution across the whole queue.",
+      "evidence": "job, created = await build_jobs(request).enqueue(**body.model_dump())  # body.tenant is caller-controlled",
+      "recommendation": "Bind tenant to the verified caller assertion where possible, or at least document the trust boundary and ensure per-tenant queues; add the tenant to the claim contract so a worker can restrict to its own tenant."
+    },
+    {
+      "id": "job-005",
+      "category": "CONCURRENCY / at-least-once",
+      "severity": "HIGH",
+      "title": "Push dispatch never heartbeats during a batch — a slow batch lets reclaim re-queue in-flight jobs and double-deliver",
+      "file": "app/core/dispatcher.py",
+      "line": 122,
+      "scenario": "dispatch_batch claims a whole batch (PUSH_DISPATCH_BATCH default 20) then delivers them one at a time, each POST up to PUSH_DISPATCH_TIMEOUT_SECONDS (default 10s), with NO heartbeat. 20 x 10s = 200s > LEASE_SECONDS (60s). The leases of jobs late in the batch expire while still being POSTed; a concurrent reclaim() moves them back to QUEUED and another dispatch pass re-delivers them (a second charge/email), and the original ack then fails the fencing check. Default config already makes this reachable under a slow receiver.",
+      "evidence": "claimed = await self._jobs.claim(worker=f\"push:{target.queue}\", queue=target.queue, batch=self._cfg[\"batch\"])\nfor job in claimed:\n    ok = await self._deliver_one(target, job)",
+      "recommendation": "Either heartbeat each job before its POST, size batch so batch*timeout << lease, or deliver with bounded concurrency and per-job lease renewal. At minimum assert batch*timeout < lease at config load."
+    },
+    {
+      "id": "job-006",
+      "category": "PERFORMANCE",
+      "severity": "MEDIUM",
+      "title": "dispatch_batch delivers strictly sequentially across all queues and jobs — one slow receiver stalls every push queue",
+      "file": "app/core/dispatcher.py",
+      "line": 122,
+      "scenario": "The nested `for target ... for job` loop awaits each POST before the next. A single unresponsive receiver (up to timeout seconds per job) blocks delivery for every other job on that queue AND every other push-enabled queue in the pass. Throughput is capped at 1/timeout deliveries/sec regardless of how many queues are ready.",
+      "evidence": "for target in await self._targets.active():\n    claimed = await self._jobs.claim(...)\n    for job in claimed:\n        ok = await self._deliver_one(target, job)",
+      "recommendation": "Deliver with bounded concurrency (asyncio.gather over a semaphore) per target and/or across targets; a stuck receiver should not head-of-line-block the fleet."
+    },
+    {
+      "id": "job-007",
+      "category": "CORRECTNESS / DATA",
+      "severity": "MEDIUM",
+      "title": "Erasure cancels queued/leased jobs with a blind put and leaves the due-index entry behind",
+      "file": "app/core/erasure.py",
+      "line": 104,
+      "scenario": "When erase() finds a QUEUED job mentioning the subject it sets status=CANCELED and writes with self._store.put(collection, id, row) — a blind write that (a) does NOT remove the jobs_due index row, so the job stays in the claimable index until a later claim happens to notice it is not QUEUED and self-heals, and (b) for a LEASED job races the worker's ack/heartbeat with no version check (only the fencing token later saves correctness). Between erasure and the next claim pass, a stale due-index row exists; the erasure endpoint also does not touch jobs_leased.",
+      "evidence": "if _is_pending(row, collection):\n    row[\"status\"] = CANCELED ...\nawait self._store.put(collection, row[\"id\"], row)",
+      "recommendation": "Route cancellation through JobService.cancel (which unindexes due+leased and clears the unique slot) or explicitly delete the jobs_due/jobs_leased rows during erasure."
+    },
+    {
+      "id": "job-008",
+      "category": "CORRECTNESS / cron",
+      "severity": "MEDIUM",
+      "title": "No missed-run catch-up: a delayed or paused ticker silently drops schedule occurrences",
+      "file": "app/core/scheduler.py",
+      "line": 95,
+      "scenario": "tick() advances s.next_run_at = self._cron.next_after(s.cron, now) using the wall-clock time of the tick, not the fire_time it just processed. If the deployment cron that calls /internal/scheduler/tick is delayed or paused for an hour, every '*/5' occurrence in that hour is skipped — only one job fires and next_run jumps forward from `now`. For a billing-dunning or retention sweep this is a silent lost run with no DLQ, no alert.",
+      "evidence": "s.last_job_id, s.last_run_at = job.id, now\ns.next_run_at = self._cron.next_after(s.cron, now)",
+      "recommendation": "Advance from the fire_time (next_after(cron, s.next_run_at)) and optionally loop to fire each missed occurrence, or emit a metric/log when now - next_run_at exceeds one interval so dropped runs are observable."
+    },
+    {
+      "id": "job-009",
+      "category": "CORRECTNESS / OBSERVABILITY",
+      "severity": "MEDIUM",
+      "title": "counts() for a tenant silently caps the reported count and omits zero-count statuses",
+      "file": "app/core/stores.py",
+      "line": 89,
+      "scenario": "The tenant path does find(..., limit=cap+1) per status and reports out[st] = len(rows). A tenant with more than cap (default 10_000) jobs in a status reports exactly 10001, understating the true count with no truncation flag — stats()/by_status and dead_letters silently misreport. Statuses with zero rows are omitted entirely, so the tenant by_status shape differs from the operator aggregate (which counts every status seen).",
+      "evidence": "rows, _ = await self._store.find(_JOBS, {\"tenant\": tenant, \"status\": st}, limit=cap + 1, ...)\nif rows:\n    out[st] = len(rows)",
+      "recommendation": "Use a real COUNT (or a bounded count with an explicit `truncated`/`>=` marker) and always populate all statuses with 0 so the shape is stable and the cap is visible."
+    },
+    {
+      "id": "job-010",
+      "category": "OBSERVABILITY",
+      "severity": "MEDIUM",
+      "title": "_emit swallows ALL event-bus exceptions with no telemetry — event stream loss is invisible",
+      "file": "app/core/job_service.py",
+      "line": 259,
+      "scenario": "Every lifecycle event (job.enqueued/claimed/done/dead_lettered) is published inside a bare try/except that discards the exception with `pass` and no counter/log. If the event bus is down or misconfigured, every downstream consumer that reacts to job.dead_lettered (alerting, retries) stops receiving events and nothing anywhere records the gap — the exact 'log-and-continue hiding errors' pattern.",
+      "evidence": "try:\n    payload = {...}\n    await self._bus.publish(...)\nexcept Exception:\n    pass",
+      "recommendation": "Emit a telemetry counter (e.g. event.publish_failed) on the except branch, matching the Auditor._count_gap discipline used elsewhere in this service."
+    },
+    {
+      "id": "job-011",
+      "category": "PERFORMANCE / hot-path scan",
+      "severity": "MEDIUM",
+      "title": "Operator stats/counts run scan_all over the whole job table per request; the 'rate-limited at the route' comment is not backed by any route limit",
+      "file": "app/core/stores.py",
+      "line": 104,
+      "scenario": "counts(tenant=None) (operator stats) does `for r in await self._store.scan_all(_JOBS, _INDEX_MAX)` — a capped full-table scan of up to 50_000 rows on the request path each call, plus a due_page. The docstring claims it is 'rate-limited at the route', but RATELIMIT_ROUTES defaults to only an /api/v1/auth entry (core/ratelimit_policy.py) and no /api/v1/jobs/stats class exists, so only the global default limit applies. Repeated operator /stats calls are an easy way to load the datastore.",
+      "evidence": "for r in await self._store.scan_all(_JOBS, _INDEX_MAX):\n    out[r.get(\"status\", \"?\")] = out.get(r.get(\"status\", \"?\"), 0) + 1",
+      "recommendation": "Add a dedicated rate-limit class for the operator stats route, cache the fleet counts, or maintain per-status counters incrementally instead of scanning."
+    },
+    {
+      "id": "job-012",
+      "category": "CORRECTNESS / uniqueness",
+      "severity": "MEDIUM",
+      "title": "Non-active unique-key match 'falls through' and creates a duplicate job the unique_key no longer protects",
+      "file": "app/core/job_service.py",
+      "line": 58,
+      "scenario": "When unique_reserve loses the race and the existing job is NOT active (done/dead/canceled) for a unique_key (not idempotency_key), the loop deliberately falls through and create() inserts a NEW job with a fresh id. But the unique_key row still points at the OTHER job, so now two live jobs share unique_key with the invariant 'no second identical pending job' quietly broken. If the other job was concurrently re-activated, both can run.",
+      "evidence": "if existing and (key == idempotency_key or existing.status in ACTIVE):\n    return existing, False\n# else: fall through and create anyway",
+      "recommendation": "On a lost reserve, re-attempt reservation of the expired/non-active slot atomically (unique_reserve already handles TTL expiry) rather than creating alongside a live reservation; document the intended semantics explicitly if duplicates are acceptable."
+    },
+    {
+      "id": "job-013",
+      "category": "CONFIG / declared-but-unread",
+      "severity": "MEDIUM",
+      "title": "PUSH_SIGNATURE_MAX_SKEW_SECONDS is plumbed into the dispatcher config but never read by the sender",
+      "file": "app/api/v1/jobs.py",
+      "line": 54,
+      "scenario": "_dispatch_cfg() sets 'max_skew_seconds': s.PUSH_SIGNATURE_MAX_SKEW_SECONDS, but Dispatcher only ever reads enabled/batch/timeout/allowed_hosts/signing_secret. The skew is a RECEIVER-side parameter; on the sender it is a dead knob. An operator tuning PUSH_SIGNATURE_MAX_SKEW_SECONDS on job-service changes nothing, contradicting the zero-unread-knob rule (memory: advertised-but-unread knobs).",
+      "evidence": "\"max_skew_seconds\": s.PUSH_SIGNATURE_MAX_SKEW_SECONDS}  # consumed by nobody in Dispatcher",
+      "recommendation": "Drop max_skew_seconds from the sender config (it belongs only to the receiver's verify()), or document that this service exposes it solely for receivers and remove it from _dispatch_cfg."
+    },
+    {
+      "id": "job-014",
+      "category": "SECURITY / SSRF (defense-in-depth)",
+      "severity": "MEDIUM",
+      "title": "Dispatch target URL is validated only at register time, never re-checked against the allowlist at delivery",
+      "file": "app/core/dispatcher.py",
+      "line": 133,
+      "scenario": "_validate_url runs in register(). _deliver_one recomputes the host only to build headers and POSTs to the stored target.url without re-checking EGRESS_ALLOWED_HOSTS. If an operator tightens EGRESS_ALLOWED_HOSTS to remove a host, previously-registered targets keep delivering to the now-disallowed host until manually unregistered. Allowlisting is also by hostname string, so it does not defend against DNS re-binding of an allow-listed name to an internal IP.",
+      "evidence": "status = await self._post(target.url, body, headers, float(self._cfg[\"timeout\"]))  # no re-validation",
+      "recommendation": "Re-run _validate_url(target.url) in dispatch_batch/_deliver_one and skip (or deactivate) a target whose host is no longer allow-listed; consider resolving+pinning to allow-listed IP ranges."
+    },
+    {
+      "id": "job-015",
+      "category": "CONCURRENCY / at-scale correctness",
+      "severity": "MEDIUM",
+      "title": "reclaim() reads jobs_leased via scan_all capped at 50k — beyond the cap, expired leases are never reclaimed (lost jobs)",
+      "file": "app/core/stores.py",
+      "line": 141,
+      "scenario": "leased_index() = scan_all(_LEASED, _INDEX_MAX=50_000). If more than 50_000 jobs are simultaneously in-flight (a fleet-wide worker crash after a big claim burst), reclaim only ever sees the first 50k rows the store returns; leases past the cap silently never expire back to the queue. The docstring frames the cap as a 'blast radius', but nothing surfaces the truncation, so those jobs are effectively lost until manual intervention — contradicting the 'no lost jobs' guarantee.",
+      "evidence": "return await self._store.scan_all(_LEASED, _INDEX_MAX)",
+      "recommendation": "Page the leased index (find with a cursor, like ScheduleStore.enabled) so reclaim covers all in-flight jobs, and/or emit a metric when the cap is hit."
+    },
+    {
+      "id": "job-016",
+      "category": "OBSERVABILITY / audit",
+      "severity": "MEDIUM",
+      "title": "Operator cross-tenant replay/cancel is audited under the operator's own tenant (or None), losing which tenant's job was acted on",
+      "file": "app/api/v1/jobs.py",
+      "line": 142,
+      "scenario": "replay() and cancel() pass tenant=principal.tenant to JobService (operator bypasses the tenant check via is_operator), then record the audit event with tenant=principal.tenant — which for a platform operator is the operator's own tenant or None, NOT the job's tenant. An investigator reading the audit trail cannot tell which tenant's job was replayed/cancelled, defeating the stated purpose ('an unattributable replay is indistinguishable from a duplicate someone caused deliberately').",
+      "evidence": "await request.app.state.auditor.record(\"job.replayed\", actor=principal.subject, tenant=principal.tenant, resource=f\"job:{job_id}\", ...)",
+      "recommendation": "Fetch the job (already done in replay/cancel) and record tenant=job.tenant so the audit row names the affected tenant."
+    },
+    {
+      "id": "job-017",
+      "category": "SECURITY / sentinel-collision",
+      "severity": "LOW",
+      "title": "\"__none__\" tenant sentinel collides with a real job whose tenant is the literal string \"__none__\"",
+      "file": "app/api/v1/jobs.py",
+      "line": 178,
+      "scenario": "A tenant reader with no tenant claim is mapped to '__none__' (jobs.py get_job line 178 and JobService._owns). Any job enqueued (over the internal token, which accepts arbitrary tenant) with tenant exactly '__none__' becomes readable/cancelable by every tokenless-tenant principal. The sentinel is in the same value space as caller-controlled tenant strings.",
+      "evidence": "if job is None or (\"platform.jobs\" not in principal.caps and job.tenant != (principal.tenant or \"__none__\")):",
+      "recommendation": "Require a non-empty tenant claim for tenant-scoped reads (401/403 when absent) instead of falling back to a magic string, or reject enqueue tenants matching reserved sentinels."
+    },
+    {
+      "id": "job-018",
+      "category": "CORRECTNESS / backoff math",
+      "severity": "LOW",
+      "title": "First retry waits base*2 rather than base — attempt is incremented before the delay is computed",
+      "file": "app/core/job_service.py",
+      "line": 144,
+      "scenario": "_fail does job.attempt += 1 THEN calls next_delay(job.attempt, ...), and next_delay uses ceiling = base_seconds * (2 ** n) with n = attempt. So the first failure (attempt becomes 1) computes n=1 -> ceiling = base*2, not the documented base·2⁰ = base. The very first backoff is double what the 'base·2ⁿ' doc implies, and the exhaustion count is effectively one attempt off from a naive reading.",
+      "evidence": "job.attempt += 1\n...\ndelay = _backoff.next_delay(job.attempt, base_seconds=..., ...)\n# next_delay: ceiling = min(base_seconds * (2 ** n), max_seconds)",
+      "recommendation": "Compute the delay from (attempt - 1) for the just-failed attempt, or document that n counts from 1; add a test asserting the first retry delay equals base (or the intended value)."
+    },
+    {
+      "id": "job-019",
+      "category": "TESTS/QA",
+      "severity": "LOW",
+      "title": "Concurrency test 'two dispatchers never deliver the same job twice' does not create real interleaving",
+      "file": "tests/unit/test_dispatcher.py",
+      "line": 154,
+      "scenario": "The test asyncio.gather()s two dispatch_batch() calls over a MemoryDataStore whose async methods never await/yield inside cas/get, so the event loop runs each coroutine to a suspension point that never occurs mid-CAS — the two dispatchers actually run effectively serially. It passes whether or not the CAS is correct, so it reassures about the double-dispatch guarantee without exercising a genuine race. Same limitation applies to the claim CAS tests.",
+      "evidence": "async def both():\n    return await asyncio.gather(d1.dispatch_batch(), d2.dispatch_batch())",
+      "recommendation": "Add a datastore test-double that injects an await/yield (or a real postgres contract test) between the get and the cas so two claimers genuinely interleave and only one CAS wins."
+    },
+    {
+      "id": "job-020",
+      "category": "OBSERVABILITY / audit",
+      "severity": "LOW",
+      "title": "subject.erased (a critical, irreversible DSAR action) is recorded with an empty actor",
+      "file": "app/api/internal.py",
+      "line": 219,
+      "scenario": "The erase endpoint records 'subject.erased' with actor=\"\". The action is declared critical precisely so the record can 'prove we erased the right person', but with no actor there is no attribution for who/what service triggered the irreversible erasure. If challenged, the trail shows the erasure happened but not on whose authority.",
+      "evidence": "await request.app.state.auditor.record(\"subject.erased\", actor=\"\", tenant=body.tenant, resource=f\"subject:{subject_ref(...)}\", ...)",
+      "recommendation": "Populate actor from the verified internal caller identity (the resolve_internal_caller identity.caller) so the erasure names its requester."
+    },
+    {
+      "id": "job-021",
+      "category": "API-CONTRACT / validation",
+      "severity": "LOW",
+      "title": "Enqueue priority is an unbounded int — a caller can permanently jump the queue and starve fair scheduling",
+      "file": "app/api/internal.py",
+      "line": 27,
+      "scenario": "EnqueueIn.priority has no bounds. _order() sorts by -priority first, so a caller enqueuing priority=2**31 guarantees its jobs are always claimed before everyone else's, ahead of the round-robin tenant fairness that only operates WITHIN a priority tier. One tenant can starve all others by inflating priority, defeating the documented fairness guarantee.",
+      "evidence": "priority: int = 0   # no ge/le bound; JobService._order sorts by -int(priority) first",
+      "recommendation": "Constrain priority to a small documented range (e.g. Field(ge=0, le=9)) and/or scope priority within a tenant so cross-tenant fairness is not overridable by a raw integer."
+    },
+    {
+      "id": "job-022",
+      "category": "CORRECTNESS / replay",
+      "severity": "LOW",
+      "title": "replay() re-queues a dead job without restoring/clearing its unique-key reservation",
+      "file": "app/core/job_service.py",
+      "line": 231,
+      "scenario": "cancel()/ack() clear the unique slot (unique_clear), and a dead-lettered job's unique row may still exist or have expired. replay() resets status/attempt/error/next_run_at and re-indexes as due but never re-reserves unique_key. A replayed job with a unique_key can now run concurrently with a NEW enqueue of the same unique_key (if the slot was cleared/expired), reintroducing the duplicate the unique_key was meant to prevent.",
+      "evidence": "job.status, job.attempt, job.error, job.next_run_at, job.updated = QUEUED, 0, \"\", now, now\nawait self._jobs.save(job)\nawait self._jobs.index_due(job)  # no unique_reserve",
+      "recommendation": "On replay, re-reserve the job's unique_key/idempotency_key (or explicitly document that a replayed job is exempt from unique-key dedupe)."
+    },
+    {
+      "id": "job-023",
+      "category": "CORRECTNESS / falsy-default",
+      "severity": "LOW",
+      "title": "max_attempts falsy-default trap: max_attempts=0 is silently replaced by the configured default",
+      "file": "app/core/job_service.py",
+      "line": 51,
+      "scenario": "enqueue does `max_attempts=max_attempts or self._cfg[\"retry_max_attempts\"]`. A caller passing max_attempts=0 (meaning 'do not retry / run at most conceptually zero') is silently overridden with the default (5). `0` is falsy, so the intent is lost with no error — the classic falsy-default trap. A caller cannot express a low/zero attempt budget.",
+      "evidence": "max_attempts=max_attempts or self._cfg[\"retry_max_attempts\"],",
+      "recommendation": "Use `max_attempts if max_attempts is not None else self._cfg[...]` and validate max_attempts >= 1 explicitly (EnqueueIn already types it as int|None)."
+    }
+  ]
+}

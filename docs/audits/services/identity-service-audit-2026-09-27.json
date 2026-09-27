@@ -1,0 +1,268 @@
+{
+  "service": "identity-service",
+  "date": "2026-09-27",
+  "summary": {
+    "total": 23,
+    "by_severity": {
+      "CRITICAL": 0,
+      "HIGH": 5,
+      "MEDIUM": 12,
+      "LOW": 6
+    }
+  },
+  "findings": [
+    {
+      "id": "identity-001",
+      "category": "SECURITY / privilege-escalation",
+      "severity": "HIGH",
+      "title": "Role grants are ungoverned — a members:write admin can assign a high-privilege role (e.g. 'owner') that derives caps the granter never held (authz caps source)",
+      "file": "app/core/auth_service.py",
+      "line": 386,
+      "scenario": "IDENTITY_MEMBER_CAPS_POLICY governs only DIRECT caps (caps_grant.check is called on `caps`, never on `roles`). But with IDENTITY_CAPS_SOURCE=authz, capabilities are DERIVED from roles at mint (claims_for -> AuthzCaps.resolve). A tenant admin who holds only members:write (not 'owner', not any platform role) can call POST /api/v1/tenancy/members or PUT /members/{id} with roles=['owner'] (or any powerful role authz recognises) — on themselves via a second membership, or on a colleague they control. add_member/update_member_roles pass body.roles straight through with no subset/allowlist check, so the resulting token carries every capability that role derives. This rebuilds the exact escalation the direct-caps governance (r2) was added to close, one level of indirection away.",
+      "evidence": "caps_grant.check(caps, granter_caps=granter_caps, policy=caps_policy, grantable=grantable_caps)  # only `caps` is checked; `roles` (the real authority input under the authz resolver) is never governed",
+      "recommendation": "Govern roles at the human admin routes the same way caps are governed: refuse a role the granter does not itself hold (or a configured grantable-roles allowlist), keeping the internal-bootstrap (granter_caps is None) exemption. Assigning 'owner' or any platform-shaped role must not be grantable by a non-owner."
+    },
+    {
+      "id": "identity-002",
+      "category": "SECURITY / availability (DoS) + CORRECTNESS state-transition",
+      "severity": "HIGH",
+      "title": "A naturally-EXPIRED (never-rotated) refresh token, when replayed, is treated as theft and revokes the user's ENTIRE active refresh family",
+      "file": "app/core/refresh_store.py",
+      "line": 54,
+      "scenario": "RefreshStore.status() collapses 'expired' into 'revoked' (`if row.get('revoked') or exp<=now: return 'revoked'`). AuthService.refresh() then does `if state == 'revoked': await self._refresh.revoke_family(sub); return None`. So a client that presents an old refresh token which simply timed out (not a rotated/stolen one) trips reuse-detection and nukes EVERY refresh token the user holds — including a currently-valid session established on another device. A user with a stale tab is silently logged out everywhere. It also fires revoke_family (a scan-to-exhaustion write) on a benign event, an amplification vector.",
+      "evidence": "def status(self, jti): ... if row.get(\"revoked\") or float(row.get(\"exp\", 0)) <= _now_ts(): return \"revoked\"   # expiry indistinguishable from a rotated/stolen token",
+      "recommendation": "Return a distinct 'expired' state and treat it as a plain invalid-refresh (401, no family revocation). Reserve revoke_family for a jti that was actually rotated (revoked=True) — genuine reuse — not for one that merely aged out."
+    },
+    {
+      "id": "identity-003",
+      "category": "OBSERVABILITY / SECURITY",
+      "severity": "HIGH",
+      "title": "Multi-tenant person-login failures are never audited — the primary MT login/stuffing signal is invisible (no person.login_failed action exists)",
+      "file": "app/api/v1/tenancy.py",
+      "line": 308,
+      "scenario": "Single-tenant /auth/login records auth.login_failed on every failure (the brute-force / credential-stuffing signal the code itself argues ISO 27001 A.8.15 / NIST AU-2 / PCI 10.2 require). But the multi-tenant primary paths — POST /auth/person/login and the credential branch of POST /auth/tenant — record NOTHING on failure. person_login only records person.login_succeeded; select_tenant records neither success nor failure. auditable_actions.py declares person.login_succeeded but no person.login_failed at all. On a multi-tenant deployment (the target architecture) a distributed stuffing campaign against the person store leaves no audit trail whatsoever.",
+      "evidence": "await request.app.state.auditor.record(\"person.login_succeeded\", ...)   # no corresponding failed-login record anywhere; grep shows person.login_failed is not defined",
+      "recommendation": "Add a person.login_failed auditable action and record it in person_login and the credential branch of select_tenant on every failed authenticate_person (actor=attempted identifier + source IP, per the partial-identifier rule), mirroring auth.login_failed."
+    },
+    {
+      "id": "identity-004",
+      "category": "OBSERVABILITY / SECURITY",
+      "severity": "HIGH",
+      "title": "Detected refresh-token reuse (theft) and family revocation are performed SILENTLY — no audit or security event is emitted",
+      "file": "app/core/auth_service.py",
+      "line": 819,
+      "scenario": "refresh() detects a reused/rotated refresh token (the canonical token-theft signal) and calls revoke_family(sub), invalidating every session for the user. This is the single most security-relevant event in the token subsystem, yet it is entirely unlogged: no auditor.record, no telemetry, no WARN. An investigation into an account takeover has no record that identity ever detected and responded to the theft, and an operator cannot alert on it.",
+      "evidence": "if state == \"revoked\":\n    await self._refresh.revoke_family(sub)\n    return None   # no audit / no alert on a theft-signal that just killed every session",
+      "recommendation": "Emit a CRITICAL audit event (e.g. auth.refresh_reuse_detected, actor=sub) and a telemetry counter whenever revoke_family fires from reuse detection, both here and in the consume()-lost branch."
+    },
+    {
+      "id": "identity-005",
+      "category": "SECURITY / token-validation (CWE-1390)",
+      "severity": "HIGH",
+      "title": "Audience and issuer are unbound by default — with TOKEN_AUDIENCE/TOKEN_ISSUER empty the verifier accepts any RS256 token signed by the trusted key/JWKS",
+      "file": "app/adapters/token_verifier/common.py",
+      "line": 37,
+      "scenario": "decode() and the JWKS verifier only enforce aud/iss when TOKEN_AUDIENCE / TOKEN_ISSUER are configured, and both default to \"\" (config.py). When empty, `options['verify_aud'] = False` and no issuer check runs. In a fleet where multiple services verify against the SAME identity JWKS/public key (the documented model), a token minted for service A is accepted verbatim by service B — there is no audience binding to stop cross-service token replay. The defaults ship the weaker posture, so a deployment that forgets to set TOKEN_AUDIENCE silently has no audience enforcement.",
+      "evidence": "if self._audience:\n    kwargs[\"audience\"] = self._audience\nelse:\n    options[\"verify_aud\"] = False   # default config => audience never checked",
+      "recommendation": "Add a boot guard that refuses to start in production with TOKEN_VERIFIER_DRIVER in {rs256,jwks} and TOKEN_AUDIENCE empty (mirror the other assert_*_ok guards). At minimum require an audience whenever a shared key/JWKS is verified across services."
+    },
+    {
+      "id": "identity-006",
+      "category": "CORRECTNESS / SECURITY (OTP)",
+      "severity": "MEDIUM",
+      "title": "OTP attempt counter is not reset when a code is re-issued — a resent code inherits the previous code's wrong-attempt count",
+      "file": "app/core/otp_service.py",
+      "line": 82,
+      "scenario": "verify() tracks attempts in a SEPARATE key `<key>:attempts` (an atomic incr). issue() writes a fresh record under `<key>` but never deletes `<key>:attempts`. So: user requests a code, makes 3 wrong guesses (attempts=3, ttl bound to the old code), then requests a resend after the cooldown. The new code's first verify does incr on the surviving `:attempts` key -> 4, giving the user only 2 attempts instead of max_attempts=5 (and the counter's TTL is still tied to the OLD code's expiry, not the new one). A legitimate user can be denied their fresh code; the invariant 'each issued code gets max_attempts tries' does not hold across a resend.",
+      "evidence": "await self._cache.set(self._key(purpose, identifier), json.dumps(record), self._ttl)   # issue() never deletes self._key(...)+\":attempts\"",
+      "recommendation": "In issue(), delete `<key>:attempts` (and any stale record) before writing the new code, so every freshly-issued code starts with a clean attempt budget and a TTL aligned to that code."
+    },
+    {
+      "id": "identity-007",
+      "category": "CORRECTNESS / SECURITY (account recovery)",
+      "severity": "MEDIUM",
+      "title": "reset-password can 500 AFTER consuming the single-use reset OTP — resolve_for_reset calls normalize() (which may raise ValidationError) outside any handler",
+      "file": "app/api/v1/auth.py",
+      "line": 501,
+      "scenario": "reset_password() verifies+CONSUMES the OTP using _canonical() (which falls back to identifier.strip() on a ValidationError), then calls svc.resolve_for_reset(body.identifier), which internally does self._identifier.normalize(identifier) with NO try/except. For an identifier that _canonical accepted via the strip fallback but that normalize() rejects strictly (e.g. a phone/composite deployment and a slightly-off input), normalize raises ValidationError, which is not caught in reset_password -> unhandled 500. The single-use OTP has already been spent, so a locked-out admin has burned their only recovery code AND gets a 500 — the exact failure the 'strength-check-before-consume' ordering was designed to avoid.",
+      "evidence": "person = await svc.resolve_for_reset(body.identifier)   # resolve_for_reset -> self._identifier.normalize(identifier) can raise ValidationError, uncaught",
+      "recommendation": "Wrap resolve_for_reset (or its normalize) so a normalization failure collapses to the same INVALID_RESET as an unknown identifier, and/or resolve the account with the SAME _canonical value the OTP was verified under so the two never disagree."
+    },
+    {
+      "id": "identity-008",
+      "category": "SECURITY / DoS (JWKS fetch amplification)",
+      "severity": "MEDIUM",
+      "title": "Every verify of a token bearing an unknown kid forces a JWKS refetch — an attacker sending distinct bogus kids amplifies one request into one upstream JWKS fetch each",
+      "file": "app/adapters/token_verifier/jwks.py",
+      "line": 48,
+      "scenario": "_signing_key() calls self._client.get_jwk_set(refresh=True) whenever a token's kid is not in the cache. The docstring claims this 'cannot turn into a fetch amplifier beyond one refresh per verify' — but one refetch PER verify across many crafted requests is precisely an amplification: an unauthenticated attacker posts N refresh/switch requests each with a syntactically-valid JWT header carrying a random, never-seen kid, and each drives a fresh outbound GET to the JWKS URL. That is N upstream fetches against the JWKS host from N cheap requests, a DoS lever on the key-serving endpoint and the event loop's threadpool.",
+      "evidence": "except jwt.PyJWKClientError:\n    self._client.get_jwk_set(refresh=True)   # forced network fetch on any unknown kid, once per verify",
+      "recommendation": "Rate-limit / debounce forced JWKS refreshes (e.g. at most one refresh per cache_lifespan regardless of unknown-kid volume, or a short negative-cache of recently-missed kids) so a flood of bogus kids cannot each trigger an upstream fetch."
+    },
+    {
+      "id": "identity-009",
+      "category": "OBSERVABILITY / SECURITY",
+      "severity": "MEDIUM",
+      "title": "Tenant selection (the multi-tenant mint) records no audit on success or failure",
+      "file": "app/api/v1/tenancy.py",
+      "line": 336,
+      "scenario": "select_tenant() is described in-file as 'THE mint, the only door between every company on the platform', yet it emits no audit record at all — not on a successful token mint for a tenant, not on a TenantAccessDenied, not on a failed authenticate_person in its credential branch. Every token that actually grants cross-company access on a multi-tenant deployment is minted with no trail of who obtained access to which tenant when, and a probing attacker trying tenant ids leaves nothing behind.",
+      "evidence": "return await svc.select_tenant(person, body.tenant)   # no auditor.record for the mint, the denial, or the failed credential path",
+      "recommendation": "Record an audit event on a successful mint (actor=person.id, tenant=membership.tenant) and on TenantAccessDenied / failed authenticate_person, consistent with the single-tenant login route."
+    },
+    {
+      "id": "identity-010",
+      "category": "CONFIG / SECURITY (PII correlation)",
+      "severity": "MEDIUM",
+      "title": "OTP_SALT silently falls back to the frozen PII_SALT with no boot guard — OTP digests share the salt space the design explicitly wanted isolated",
+      "file": "app/container.py",
+      "line": 307,
+      "scenario": "_build_otp_service uses `salt=settings.OTP_SALT or settings.PII_SALT`. The OTP module docstring and config comment both state OTP must have its 'own salt so a leaked OTP store can't be correlated with any other digest table', and 'production should set it explicitly' — but nothing enforces it. With OTP_SALT unset (the default), OTP HMAC keys reuse PII_SALT, the platform-wide FROZEN pseudonym salt, defeating the isolation property. There is no assert_otp_config_ok() analogous to the other boot guards.",
+      "evidence": "salt=settings.OTP_SALT or settings.PII_SALT,      # own salt; PII_SALT only to avoid empty",
+      "recommendation": "Add a production boot guard that requires OTP_SALT to be set and distinct from PII_SALT (or at least warns loudly at boot), matching the fail-fast posture used for PII_SALT, AUDIT, and signing rotation."
+    },
+    {
+      "id": "identity-011",
+      "category": "CONCURRENCY / CORRECTNESS (bounded scan)",
+      "severity": "MEDIUM",
+      "title": "has_other_active_owner / founding_owner cap the walk at max_pages*page (~10k rows) — beyond that the sole-owner guard and owner-phone read silently return the wrong answer",
+      "file": "app/core/membership.py",
+      "line": 189,
+      "scenario": "Both helpers page with max_pages=50 * page=200 = 10,000 memberships then stop. For a large tenant, has_other_active_owner() can return False when another active owner exists past the bound, causing _owner_safe_write to raise SoleOwnerError and REFUSE a legitimate owner removal/de-own (availability). founding_owner() can return None when a real owner sits past the bound, making /internal/tenancy/owner-phone answer 404 (a renewal notification never reaches the shop). The bound is a silent correctness ceiling, not a documented limit callers can detect.",
+      "evidence": "async def has_other_active_owner(self, tenant, person_id, *, page=200, max_pages=50): ... for _ in range(max_pages): ...   # after 50 pages it returns its running answer, which may be wrong",
+      "recommendation": "Either push the predicate fully into the datastore (a keyed query for 'active owner in tenant != person') so no page bound is needed, or make exceeding max_pages raise rather than return a possibly-wrong False/None on a decision path."
+    },
+    {
+      "id": "identity-012",
+      "category": "SECURITY / griefing (single-use code)",
+      "severity": "MEDIUM",
+      "title": "Publicly reachable /api/v1/otp/verify consumes a single-use code with no side effect — it can spend a code a user needs for reset/login",
+      "file": "app/api/v1/otp.py",
+      "line": 88,
+      "scenario": "verify_otp is a public route (only rate_limit dependency) that, on a correct code, deletes it (single-use) and returns {verified:true} while recording nothing. reset_password explicitly warns callers 'must NOT pre-call /otp/verify (that would spend the single-use code)'. The service still exposes the footgun: any client (a buggy SPA, or a malicious one that has the code, e.g. over a shared device / shoulder-surf / a leaked SMS preview) can burn the reset/login code via /otp/verify so the legitimate reset then fails with INVALID_RESET, and nothing is audited. The 'record nothing' verify is the class of endpoint the team's own incident note says to keep off the gateway.",
+      "evidence": "result = await otp.verify(identifier=key, code=body.code, purpose=purpose)   # consumes the code; the route records nothing",
+      "recommendation": "Do not expose a standalone consuming /otp/verify for purposes (reset/login) that have a combined verify-and-act endpoint; scope /otp/verify to 'verify'-purpose only, or make it non-consuming (peek) for those flows, and audit consumption."
+    },
+    {
+      "id": "identity-013",
+      "category": "SECURITY / MFA enforcement",
+      "severity": "MEDIUM",
+      "title": "MFA is only enforced for users who happen to have a secret — enabling MFA fleet-wide does not require existing/non-enrolled accounts to set it up",
+      "file": "app/api/v1/auth.py",
+      "line": 269,
+      "scenario": "The gate is `if c.mfa.enabled and user.mfa_secret`. A user with no mfa_secret is logged in on password alone even when MFA_DRIVER=totp. There is no 'MFA required' policy knob: turning MFA on platform-wide silently leaves every not-yet-enrolled account (and every attacker who compromises a password before the victim enrolls) fully password-only. Same pattern in person_login/select_tenant. For a security control an operator believes they enabled, this is fail-open.",
+      "evidence": "if c.mfa.enabled and user.mfa_secret:\n    if not body.code or not c.mfa.verify(user.mfa_secret, body.code): ...   # no branch that DEMANDS enrollment",
+      "recommendation": "Add an MFA_REQUIRED policy (per-tenant/role) that, when set, blocks token issuance for an account with no mfa_secret and forces enrollment, instead of silently admitting non-enrolled users."
+    },
+    {
+      "id": "identity-014",
+      "category": "SECURITY / session (CWE-613)",
+      "severity": "MEDIUM",
+      "title": "Tenant switch on an existing session (REAUTH off) mints a new-tenant token with no re-check of account lockout or credential state",
+      "file": "app/api/v1/tenancy.py",
+      "line": 357,
+      "scenario": "With IDENTITY_TENANT_SWITCH_REAUTH off (the default), select_tenant proves the person from a bearer access token and mints a token for the requested tenant. authorize_tenant checks person.status ACTIVE and membership.active — good — but a stolen access token (valid for up to ACCESS_TTL) can be walked across EVERY tenant the person is a member of, minting a fresh scoped token for each, with no password, no MFA, and bypassing both lockout counters. The blast radius of a single stolen access token is the person's entire tenant footprint for the remaining TTL. This is a documented tradeoff (T10) but the default is the weaker one and there is no per-tenant sensitivity gating short of the global REAUTH switch.",
+      "evidence": "elif not s.IDENTITY_TENANT_SWITCH_REAUTH:\n    ... claims = await run_in_threadpool(c.token_verifier.verify, token) ... person = await svc.memberships.person(sub)   # no MFA / lockout / step-up",
+      "recommendation": "Support per-tenant step-up (require re-auth only when switching INTO a higher-sensitivity tenant) rather than an all-or-nothing global flag, so the safe default does not force retyping a password on every low-trust switch."
+    },
+    {
+      "id": "identity-015",
+      "category": "OBSERVABILITY / PII consistency",
+      "severity": "MEDIUM",
+      "title": "reset-password audit is inconsistent with every other credential-change audit: raw person.id resource and tenant=\"\" instead of the pseudonymized, tenant-scoped form",
+      "file": "app/api/v1/auth.py",
+      "line": 505,
+      "scenario": "change_password, mfa_enroll, delete_me all audit with resource=f\"user:{subject_ref(PII_SALT, tenant, subject)}\" and the real tenant. reset_password instead records actor=person.id, tenant=\"\", resource=f\"user:{person.id}\". A password reset is exactly the high-value event an investigation correlates by subject_ref across the immutable chain; recording it under a different key shape (raw id, no tenant) means it will not join the subject's other events, and account-recovery abuse is harder to trace. It also drops the tenant dimension the rest of the trail carries.",
+      "evidence": "await request.app.state.auditor.record(\"auth.password_reset\", actor=person.id, tenant=\"\", resource=f\"user:{person.id}\", ...)",
+      "recommendation": "Record the reset with the same subject_ref-based resource and a real tenant (or the person's canonical tenant) so it correlates with change_password / self_deleted on the audit chain."
+    },
+    {
+      "id": "identity-016",
+      "category": "SECURITY / logout (CWE-613)",
+      "severity": "LOW",
+      "title": "logout revokes whatever jti a signature-valid token carries, without checking token type — a held refresh token can be used to force-revoke, and an access token no-ops silently",
+      "file": "app/core/auth_service.py",
+      "line": 863,
+      "scenario": "logout() verifies only signature/exp (not type) and revokes claims['jti']. An access token has no jti, so a client that posts its access token to /logout gets {status:ok} while nothing is revoked (the session lives on) — a false sense of having logged out. Conversely anyone who holds a victim's refresh token can force-revoke that jti at will. Neither is a fresh compromise, but the type-agnostic behaviour makes 'ok' not mean 'logged out'.",
+      "evidence": "claims = await asyncio.to_thread(self._verifier.verify, refresh_token)\njti = claims.get(\"jti\")\nif jti:\n    await self._refresh.revoke(jti)   # never checks claims['type']=='refresh'",
+      "recommendation": "Require claims['type']=='refresh' in logout; if an access token (no jti) is presented, return a distinct result rather than a success that revoked nothing."
+    },
+    {
+      "id": "identity-017",
+      "category": "CORRECTNESS / robustness",
+      "severity": "LOW",
+      "title": "Lockout source key collapses to one shared bucket when request.client is None",
+      "file": "app/api/v1/tenancy.py",
+      "line": 302,
+      "scenario": "_source() returns request.client.host or \"\" when the client is unknown. authenticate_person then keys the per-source lockout on (\"\", ident). Behind a misconfigured proxy that strips the peer, or in any path where request.client is None, every source folds into one \"\" bucket per identifier — either over-locking (one bucket for all such traffic) or, combined with the account_lockout, distorting the T5 availability property the two-counter design is built around. The empty source is a silent degradation, not an error.",
+      "evidence": "def _source(request): return request.client.host if request.client else \"\"",
+      "recommendation": "Prefer a validated forwarded-for/real-IP (already trusted at the gateway) and treat a missing source as a distinct, loudly-logged condition rather than a shared empty bucket."
+    },
+    {
+      "id": "identity-018",
+      "category": "CORRECTNESS / DEV (fail-shut in non-prod)",
+      "severity": "LOW",
+      "title": "Credential-change/erase audit paths 500 in any non-production deployment that lacks PII_SALT because subject_ref refuses an empty salt",
+      "file": "app/api/v1/auth.py",
+      "line": 434,
+      "scenario": "change_password, mfa_enroll, delete_me and internal erase compute resource=f\"user:{subject_ref(get_settings().PII_SALT, ...)}\". subject_ref raises ValueError on an empty salt. assert_pii_config_ok only enforces PII_SALT in production, so a staging/dev/test deployment with PII_SALT unset boots fine, passes health checks, then 500s the first time anyone changes a password or is erased — the same 'fails months later on a real person' trap the boot guard was written to prevent, just moved to non-prod.",
+      "evidence": "resource=f\"user:{subject_ref(get_settings().PII_SALT, principal.tenant, principal.subject)}\"   # subject_ref raises if PII_SALT empty; guard only runs in production",
+      "recommendation": "Either extend the PII_SALT boot guard to every environment (with a documented dev default), or have these routes degrade to a non-pseudonymized-but-safe resource when no salt is configured, so a dev deployment does not 500 on password change."
+    },
+    {
+      "id": "identity-019",
+      "category": "PERFORMANCE / DoS",
+      "severity": "MEDIUM",
+      "title": "revoke_family pages the whole refresh collection to exhaustion on a request path and can be triggered by benign/expired-token replay",
+      "file": "app/core/refresh_store.py",
+      "line": 102,
+      "scenario": "revoke_family walks {user_id, revoked:False} to exhaustion writing put() per row. Combined with finding identity-002 (an expired token replay is classed as 'revoked' and triggers revoke_family), a client repeatedly retrying with a stale/expired refresh token drives repeated full-family scans-and-writes for that user on the refresh hot path. Even legitimately, a user with many devices takes an unbounded number of datastore round-trips synchronously inside a single /auth/refresh request.",
+      "evidence": "while True:\n    rows, cursor = await self._store.find(_COLL, {\"user_id\": user_id, \"revoked\": False}, limit=_PAGE, after=cursor, sort=(\"jti\",\"asc\"))\n    for row in rows: ... await self._store.put(_COLL, row[\"jti\"], row)",
+      "recommendation": "Fix identity-002 so benign expiry does not call revoke_family; consider a bounded/batched revocation or a generation counter (bump a per-user token generation to invalidate the family in O(1)) instead of paging every row on the request path."
+    },
+    {
+      "id": "identity-020",
+      "category": "CORRECTNESS / concurrency (crash window)",
+      "severity": "LOW",
+      "title": "create_person claims the identifier index via CAS, then put()s the person as a separate non-atomic step — a crash between them strands the identifier permanently",
+      "file": "app/core/membership.py",
+      "line": 136,
+      "scenario": "create_person does cas(_PERSON_INDEX, identifier, 0, {id}) (insert-if-absent) and THEN put(_PERSONS, id, ...). If the process crashes (or the datastore write fails) between the two, the index row exists pointing at a person row that was never written. person_by_identifier then returns None (idx present, person absent), while a retry of create_person fails PersonExists because the index is claimed — the identifier is now unregisterable and unloginnable with no person behind it, requiring the reindex/repair path to notice. add_member/seed_owner inherit this window.",
+      "evidence": "if not await self._store.cas(_PERSON_INDEX, p.identifier, 0, {\"id\": p.id}):\n    raise PersonExists(...)\nawait self._store.put(_PERSONS, p.id, p.to_dict())   # separate write; a crash here strands the index",
+      "recommendation": "Write the person row first (keyed by its own id, harmless if orphaned) then claim the index, or make create_person self-heal a dangling index (re-claim when the pointed-at person is absent). The _reindex path rebuilds the index but only on a backup import."
+    },
+    {
+      "id": "identity-021",
+      "category": "API / CONTRACT (error shape)",
+      "severity": "LOW",
+      "title": "add_member direct-caps refusal (CapsNotGrantable) is not translated in the user route — an ungrantable cap yields an unhandled 500 instead of 400/403",
+      "file": "app/api/v1/tenancy.py",
+      "line": 106,
+      "scenario": "add_member/update_member call svc.add_member(...) with granter_caps/caps_policy, and the docstring says 'CapsNotGrantable -> handled'. But the try/except around the call catches ValidationError, WeakPassword, CredentialNotYours, TenantAccessDenied, SoleOwnerError — NOT CapsNotGrantable (raised by caps_grant.check). Unless a global handler in api/errors.py maps it, a caller passing a cap it does not hold gets a 500 rather than the intended 400 (policy=off) / 403 (not yours) with the offending cap named. At minimum this is a contract/observability defect; if there is no global handler it is an unhandled exception on a governance path.",
+      "evidence": "except (ValidationError, WeakPassword, CredentialNotYours, TenantAccessDenied): ...   # CapsNotGrantable is not among the caught types here",
+      "recommendation": "Catch CapsNotGrantable in add_member/update_member and return 400 (policy off) / 403 (not grantable) with cap+policy, or confirm/add a dedicated exception handler in api/errors.py and reference it."
+    },
+    {
+      "id": "identity-022",
+      "category": "SECURITY / enumeration (timing)",
+      "severity": "LOW",
+      "title": "reset-password verifies the OTP before resolving the account, so a valid-code-for-nonexistent-identifier path is observably cheaper than the valid-account path",
+      "file": "app/api/v1/auth.py",
+      "line": 495,
+      "scenario": "reset_password() verifies the OTP first, then resolves the account and (only for a real account) does an argon2 set_password. Both the 'valid code, unknown identifier' and 'wrong code' cases return INVALID_RESET, which is good — but the success path performs a slow password hash while the unknown-identifier path returns immediately after resolve_for_reset returns None. For an attacker who controls a code for their own identifier, the response-time difference between 'this identifier resolves to an active person' and 'it does not' is a (weak) existence oracle that the uniform error string was meant to close.",
+      "evidence": "person = await svc.resolve_for_reset(body.identifier)\nif person is None:\n    return _err(\"INVALID_RESET\")   # returns before the slow set_password the real-account path runs",
+      "recommendation": "Equalize timing on the not-found branch (e.g. a dummy hash, as authenticate() already does for a missing user) so a valid-code-with-unknown-identifier is indistinguishable in latency from the real-account path."
+    },
+    {
+      "id": "identity-023",
+      "category": "TESTS / QA",
+      "severity": "MEDIUM",
+      "title": "No test coverage asserts a failed multi-tenant person login is audited, nor that role-based escalation via add/update-member is refused — the two highest-severity gaps here are untested",
+      "file": "tests/integration/test_tenancy_api.py",
+      "line": 1,
+      "scenario": "The suite has extensive membership/caps tests (test_caps_grant, test_caps_resolution, test_registration_privilege) but they exercise DIRECT-caps governance only. There is no test that a members:write-but-not-owner caller is refused when assigning roles=['owner'] under the authz caps source (identity-001), and no test asserting a person.login_failed / select_tenant failure is recorded (identity-003/009) — because the audit action does not exist, a test cannot be measuring it. This is the 'tests that stop testing' pattern: deny/audit paths on the multi-tenant login and role-grant surfaces have no red-on-regression coverage, so both escalation and the observability gap could regress silently.",
+      "evidence": "grep of tests/ shows caps-only governance assertions; no assertion on role-grant subset enforcement and no person.login_failed assertion (the action is undefined in auditable_actions.py)",
+      "recommendation": "Add tests: (a) a non-owner members:write caller assigning a privileged role is refused; (b) a failed authenticate_person on /auth/person/login and /auth/tenant produces the (new) person.login_failed audit record; (c) select_tenant success emits a mint audit."
+    }
+  ]
+}

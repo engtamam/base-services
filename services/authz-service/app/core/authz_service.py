@@ -54,13 +54,18 @@ class AuthzService:
         self._unknown_role = unknown_role
 
     # ── cache (generation-keyed; a PAP write bumps the tenant generation) ───────
-    async def _gen(self, tenant: str) -> str:
+    async def _gen(self, tenant: str) -> str | None:
+        """The tenant's cache generation. None means the cache is UNUSABLE — callers must then BYPASS
+        the cache and recompute from the store (FIN authz-003). Returning "0" on a cache error was
+        fail-OPEN: a transient blip after a revoke bumped the gen to e.g. "5" would key the lookup back
+        at gen "0" and resurrect a stale pre-revoke entry — serving revoked capabilities. No cache
+        configured is a stable "0" (nothing is ever cached, so nothing can be stale)."""
         if self._cache is None:
             return "0"
         try:
             return (await self._cache.get(f"authzgen:{tenant}")) or "0"
         except Exception:
-            return "0"
+            return None      # cache down → do NOT trust any cached decision; recompute from source
 
     async def _bump(self, tenant: str) -> None:
         if self._cache is None:
@@ -162,16 +167,18 @@ class AuthzService:
         """The stored (assignment + role) caps — cacheable, independent of per-request caps."""
         gen = await self._gen(tenant)
         key = f"authz:sc:{gen}:{len(tenant)}:{tenant}:{subject}"  # len-prefixed: no (tenant,subject) collision
-        cached = await self._cache_get(key)
-        if cached is not None:
-            return set(cached)
+        if gen is not None:                       # gen None → cache unusable → recompute from store
+            cached = await self._cache_get(key)
+            if cached is not None:
+                return set(cached)
         a = await self._assign.get(subject, tenant)
         caps = set(a.capabilities)
         for role_id in a.roles:
             role = await self._roles.get(role_id)
             if role and role.tenant == tenant:
                 caps |= set(role.capabilities)
-        await self._cache_set(key, sorted(caps))
+        if gen is not None:
+            await self._cache_set(key, sorted(caps))
         return caps
 
     async def _role_caps(self, tenant: str, roles: list[str]) -> set[str]:
@@ -191,13 +198,14 @@ class AuthzService:
         never silently grants.
         """
         caps: set[str] = set()
-        gen = await self._gen(tenant)
+        gen = await self._gen(tenant)               # None → cache unusable → recompute from store
         for ref in roles or []:
             key = f"authz:rc:{gen}:{len(tenant)}:{tenant}:{ref}"  # len-prefixed: no (tenant,ref) collision
-            cached = await self._cache_get(key)
-            if cached is not None:
-                caps |= set(cached)
-                continue
+            if gen is not None:
+                cached = await self._cache_get(key)
+                if cached is not None:
+                    caps |= set(cached)
+                    continue
             role = await self._resolve_role(tenant, ref)
             if role is None:
                 # EMPTY MUST MEAN "HE HOLDS NONE" — NEVER "I DID NOT UNDERSTAND YOU".
@@ -211,10 +219,12 @@ class AuthzService:
                 # refusal instead of a user who mysteriously cannot do their job.
                 if self._unknown_role == REJECT:
                     raise UnknownRole(ref)
-                await self._cache_set(key, [])
+                if gen is not None:
+                    await self._cache_set(key, [])
                 continue
             granted = set(role.capabilities)
-            await self._cache_set(key, sorted(granted))
+            if gen is not None:
+                await self._cache_set(key, sorted(granted))
             caps |= granted
         return caps
 
@@ -246,13 +256,15 @@ class AuthzService:
                 | set(extra_caps or []))
 
     async def _tenant_policies(self, tenant: str) -> list[dict]:
-        gen = await self._gen(tenant)
+        gen = await self._gen(tenant)               # None → cache unusable → read from store
         key = f"authz:pol:{gen}:{tenant}"
-        cached = await self._cache_get(key)
-        if cached is not None:
-            return cached
+        if gen is not None:
+            cached = await self._cache_get(key)
+            if cached is not None:
+                return cached
         policies = await self._policies.all_for(tenant)
-        await self._cache_set(key, policies)
+        if gen is not None:
+            await self._cache_set(key, policies)
         return policies
 
     # ── decision (PDP) — the platform hot path ──────────────────────────────────

@@ -1,0 +1,263 @@
+{
+  "service": "api-gateway",
+  "date": "2026-09-27",
+  "summary": {
+    "total": 23,
+    "by_severity": { "CRITICAL": 0, "HIGH": 3, "MEDIUM": 13, "LOW": 7 }
+  },
+  "findings": [
+    {
+      "id": "api-gateway-001",
+      "category": "correctness",
+      "severity": "HIGH",
+      "title": "Upstream verify errors (non-InvalidToken) 500 the request, including on auth=optional",
+      "file": "app/core/gateway.py",
+      "line": 106,
+      "scenario": "On the proxy hot path the JWT is verified inside a try that catches ONLY InvalidToken. The jwks/rs256 verifiers raise other exceptions (a JWKS fetch failure raises jwt.PyJWKClientError / URLError, not InvalidToken). When the JWKS endpoint is briefly unreachable, a request to an auth=optional route — which should simply proceed as anonymous — instead propagates to the catch-all and returns 500 INTERNAL_ERROR. require_user and optional_principal both catch broad Exception; the edge hot path does not, so the same token yields different outcomes on different code paths and a transient IdP blip becomes a fleet-wide 500 storm at the edge.",
+      "evidence": "try:\n    claims = await run_in_threadpool(self._verifier.verify, auth_header[7:])\n    identity = self._identity_from(claims)\nexcept InvalidToken:\n    identity = None",
+      "recommendation": "Catch broad Exception here (as auth.require_user and ratelimit.optional_principal already do) so a verifier/IdP outage degrades to identity=None; let the auth==required check turn that into a clean 401, and let auth=optional proceed anonymously."
+    },
+    {
+      "id": "api-gateway-002",
+      "category": "correctness",
+      "severity": "HIGH",
+      "title": "Bare `except Exception` on the rate-limit block masks all defects as 429",
+      "file": "app/core/gateway.py",
+      "line": 124,
+      "scenario": "The entire rate-limit stanza (policy.classify, policy.key, limiter.check) is wrapped in `except Exception: return _err('RATE_LIMITED', 429)`. Fail-closed is correct for a limiter outage, but this also swallows genuine programming errors — a KeyError in classify, an AttributeError from a mis-wired policy, a bug in key() — and reports every one as a routine 429 with no log line. A real defect that breaks routing for a whole route class is invisible: operators see '429s', assume load, and the true cause never surfaces.",
+      "evidence": "except Exception:\n    return _err(\"RATE_LIMITED\", 429)  # fail-closed",
+      "recommendation": "Log the exception (type + request id) before returning 429, and/or narrow the catch to the limiter's own error/timeout types so a limiter outage fails closed but a logic bug is not disguised as throttling."
+    },
+    {
+      "id": "api-gateway-003",
+      "category": "correctness",
+      "severity": "HIGH",
+      "title": "Redis GCRA Lua uses the absolute-time formulation the pure algorithm was rewritten to avoid",
+      "file": "app/adapters/rate_limiter/redis.py",
+      "line": 46,
+      "scenario": "sliding_window.check documents at length that `allow_at = tat + cost*interval - window` on a LARGE clock with interval==window (the limit==1 case) can, through float64 cancellation, land an epsilon above `now` and wrongly DENY a fresh key — and was deliberately rewritten to compare small relative quantities (debt vs headroom). The Redis Lua path (which the comment claims 'mirrors sliding_window.check exactly') still uses the exact rejected absolute form `local allow_at = new_tat - window; if allow_at <= now`, on an epoch-millisecond clock (~1.7e12). The two limiters can therefore disagree on the boundary the design says they must agree on, and the redis path can re-introduce the magnitude-dependent false-deny for strict (limit=1) surfaces such as a login endpoint.",
+      "evidence": "local new_tat = tat + cost * interval\nlocal allow_at = new_tat - window\n\nif allow_at <= now then",
+      "recommendation": "Rewrite the Lua to the same relative-time comparison used in sliding_window.check (debt = tat-now; headroom = window - cost*interval; allow when debt <= headroom) so both drivers are provably identical, and add a boundary test at an epoch-scale clock with limit=1."
+    },
+    {
+      "id": "api-gateway-004",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "Tenant claim key drift: forwarded X-Tenant-Id ignores the `tid` claim",
+      "file": "app/core/gateway.py",
+      "line": 194,
+      "scenario": "The edge derives the tenant it injects as X-Tenant-Id from `claims.get('tenant') or claims.get('org')`, but auth._extract_principal (used by the gateway's own routes and the rate limiter) reads `tenant or org or tid`. A token that carries the tenant only in `tid` is bucketed correctly by the rate limiter but forwarded upstream with a BLANK X-Tenant-Id. Upstreams that trust the gateway's injected tenant header then see no tenant — a tenant-isolation gap (requests attributed to the empty/default tenant) for any issuer using `tid`.",
+      "evidence": "\"tenant\": str(claims.get(\"tenant\") or claims.get(\"org\") or \"\"),",
+      "recommendation": "Use one shared claim-extraction helper (include `tid`) for both _identity_from and _extract_principal so the forwarded identity headers and the rate-limit key can never derive tenant differently."
+    },
+    {
+      "id": "api-gateway-005",
+      "category": "config",
+      "severity": "MEDIUM",
+      "title": "Route-level rate_limit dependency ignores GATEWAY_TRUSTED_PROXY_HOPS (buckets on socket peer)",
+      "file": "app/api/ratelimit.py",
+      "line": 88,
+      "scenario": "The gateway's own routes (app/admin/assistant catalog) rate-limit via the FastAPI `rate_limit` dependency, which keys IP as `request.client.host` — the raw socket peer. Behind the k3s ingress/LB (the documented deployment) that is ALWAYS the ingress IP, so every anonymous caller of these routes collapses into one shared bucket and one tenant's burst throttles everyone. The proxy hot path correctly uses Gateway._client_ip (X-Forwarded-For + trusted_hops), so the two rate-limit surfaces disagree and the trusted-proxy config knob silently does not apply to half of them.",
+      "evidence": "ip = request.client.host if request.client else None",
+      "recommendation": "Resolve the client IP with the same trusted-proxy-hop logic (share Gateway._client_ip) in the rate_limit dependency so both surfaces honor GATEWAY_TRUSTED_PROXY_HOPS."
+    },
+    {
+      "id": "api-gateway-006",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "RateLimitPolicy.classify uses unbounded prefix match (no path-segment boundary)",
+      "file": "app/core/ratelimit_policy.py",
+      "line": 66,
+      "scenario": "classify() matches with `path.startswith(r.prefix)`, unlike Route.matches_path which requires `== prefix or startswith(prefix + '/')`. A class configured for prefix '/api/v1/auth' therefore also captures '/api/v1/authors', '/api/v1/authentication-status', etc., applying the strict auth budget (e.g. limit 10/min) to unrelated endpoints — or, with a loosely written prefix, applying a loose budget to a stricter sibling. Rate-limit class assignment silently diverges from routing.",
+      "evidence": "for r in self._routes:\n    if path.startswith(r.prefix):\n        return r",
+      "recommendation": "Match with a segment boundary: `path == r.prefix or path.startswith(r.prefix.rstrip('/') + '/')`, matching Route.matches_path."
+    },
+    {
+      "id": "api-gateway-007",
+      "category": "config",
+      "severity": "MEDIUM",
+      "title": "Malformed security-relevant JSON config silently becomes empty (fail-open on typo)",
+      "file": "app/config.py",
+      "line": 28,
+      "scenario": "_json_any_map swallows ValueError/TypeError and returns {} for any malformed JSON. It backs INTERNAL_ROUTE_POLICY_JSON, INTERNAL_CALLER_PUBLIC_KEYS_JSON and INTERNAL_CALLER_JWKS_JSON. A typo in INTERNAL_ROUTE_POLICY_JSON yields an EMPTY policy — and InternalRoutePolicy is default-OPEN, so every /internal route silently admits any authenticated caller instead of the intended named allow-list. A typo in the public-keys/JWKS map yields no keys, so (with token fallback on) callers silently fall back to the flat shared token. A misconfiguration that weakens an access control must fail boot, not degrade quietly.",
+      "evidence": "try:\n    val = _json.loads(raw)\nexcept (ValueError, TypeError):\n    return {}",
+      "recommendation": "For access-control maps, parse strictly and raise a ConfigError at boot on malformed JSON (fail-fast), rather than returning {} which fails open."
+    },
+    {
+      "id": "api-gateway-008",
+      "category": "performance",
+      "severity": "MEDIUM",
+      "title": "Unbounded module-level per-caps cache in app catalog (memory growth + stale across rebuilds)",
+      "file": "app/api/v1/app_catalog.py",
+      "line": 30,
+      "scenario": "_CACHE is a module-global dict keyed by the sorted caps string, with entries only ever added or overwritten — expired entries are never evicted and there is no size cap. With many distinct capability combinations across the tenant base, this grows without bound (a slow memory leak / DoS vector). It also directly contradicts the sibling rate-limit code's stated rule ('never a module global, so it cannot go stale across a config reload or two apps in tests'): two apps in one process share this cache.",
+      "evidence": "_CACHE: dict[str, tuple[float, dict]] = {}",
+      "recommendation": "Store the cache on app.state with a bounded LRU and periodic eviction of expired keys, mirroring build_policy's app.state pattern."
+    },
+    {
+      "id": "api-gateway-009",
+      "category": "performance",
+      "severity": "MEDIUM",
+      "title": "Catalog fan-out creates a new httpx.AsyncClient per target per request",
+      "file": "app/api/v1/app_catalog.py",
+      "line": 52,
+      "scenario": "Both /api/v1/app/catalog and /internal/assistant-catalog open `async with httpx.AsyncClient(...)` inside fetch(), i.e. one fresh client (new connection pool, new TLS handshake) per target per request. The app catalog blocks the app's first screen after login; on every cache miss it pays a full connect/TLS to each ADMIN_SERVICES target with no connection reuse, multiplying latency and socket churn on the login hot path.",
+      "evidence": "async with httpx.AsyncClient(timeout=timeout) as client:\n    r = await client.get(f\"{t.base_url}/internal/manifest\", ...)",
+      "recommendation": "Reuse a single long-lived AsyncClient (e.g. on app.state / the container) across catalog fetches so connections and TLS sessions are pooled."
+    },
+    {
+      "id": "api-gateway-010",
+      "category": "performance",
+      "severity": "MEDIUM",
+      "title": "Forwarder buffers the entire upstream body in RAM despite the 'STREAM' claim",
+      "file": "app/adapters/forwarder/httpx_forwarder.py",
+      "line": 35,
+      "scenario": "The docstring says it streams to bound memory, but it appends every chunk to a list and returns b''.join(chunks) — the whole response is materialized in RAM (up to MAX_RESPONSE_BYTES = 16 MiB) before a single byte reaches the client. Under concurrency the edge can hold (in-flight requests x 16 MiB); the cap bounds a single response but not aggregate memory, and it defeats streaming latency for large legitimate exports.",
+      "evidence": "chunks.append(chunk)\ncontent = b\"\".join(chunks)\n...\nreturn resp.status_code, out, content",
+      "recommendation": "Return a StreamingResponse that forwards chunks as they arrive (still counting bytes against the cap), so memory is bounded per-chunk and TTFB is preserved."
+    },
+    {
+      "id": "api-gateway-011",
+      "category": "observability",
+      "severity": "MEDIUM",
+      "title": "Edge proxy path emits no request/access logging for forwarded (incl. state-changing) traffic",
+      "file": "app/core/gateway.py",
+      "line": 74,
+      "scenario": "Gateway.handle imports no logger and logs nothing — not the matched route, not a 401/403/404/429 decision, not an upstream 5xx/UpstreamError. Every proxied POST/PUT/DELETE to an upstream passes through the edge with zero record at the gateway. When an upstream is attacked or a caller is throttled/forbidden, there is no edge-side trail to correlate; investigations depend entirely on each upstream's own logs and the Prometheus RED counters (which are aggregate, not per-request).",
+      "evidence": "async def handle(self, request: Request) -> Response:\n    ... (no logger referenced anywhere in the module)",
+      "recommendation": "Emit a structured log line per proxied request (request id, method, matched route prefix, status, upstream latency, auth/limit decision) at the edge, redacting tokens."
+    },
+    {
+      "id": "api-gateway-012",
+      "category": "api",
+      "severity": "MEDIUM",
+      "title": "Upstream failure returns HTTP 504 tagged with the code string 'BAD_GATEWAY'",
+      "file": "app/core/gateway.py",
+      "line": 168,
+      "scenario": "An UpstreamError (which includes plain connection failures / transport errors, not only timeouts) returns status 504 with body {'error': 'BAD_GATEWAY'}. 504 is 'Gateway Timeout' and 'Bad Gateway' is 502; the status code and the error string contradict each other. Clients and dashboards keying off either signal get an inconsistent contract, and a non-timeout upstream refusal is mislabeled as a timeout (misdirecting on-call).",
+      "evidence": "except UpstreamError:\n    return _err(\"BAD_GATEWAY\", 504)",
+      "recommendation": "Use 502 for a generic upstream failure (code 'BAD_GATEWAY') and reserve 504 for an actual upstream timeout, distinguishing the two UpstreamError causes."
+    },
+    {
+      "id": "api-gateway-013",
+      "category": "security",
+      "severity": "MEDIUM",
+      "title": "/metrics uses only the flat-token compare, bypassing the pluggable internal-caller policy",
+      "file": "app/api/metrics.py",
+      "line": 26,
+      "scenario": "internal.py authenticates the internal tier through resolve_internal_caller (shared|static|jwks) + per-route policy, and is designed so a deployment can flip INTERNAL_CALLER_ALLOW_TOKEN_FALLBACK off to REQUIRE signed assertions. /metrics instead hard-codes a raw hmac.compare_digest against INTERNAL_SERVICE_TOKEN. After a fleet cuts over to assertion-only internal auth, /metrics still accepts the bare flat token — an inconsistent, weaker auth tier for an endpoint that leaks route surface + traffic shape.",
+      "evidence": "if not (x_internal_token and hmac.compare_digest(x_internal_token, expected)):\n    raise HTTPException(status.HTTP_401_UNAUTHORIZED, \"UNAUTHORIZED\")",
+      "recommendation": "Guard /metrics with the same require_internal_token (resolve_internal_caller + policy) used by the /internal tier so its auth strength tracks the fleet's configuration."
+    },
+    {
+      "id": "api-gateway-014",
+      "category": "security",
+      "severity": "MEDIUM",
+      "title": "capmatch wildcard has no dot-segment boundary — short wildcards over-grant",
+      "file": "app/core/capmatch.py",
+      "line": 25,
+      "scenario": "holds() treats any held cap ending in '*' as matching by raw string prefix: `h.endswith('*') and needed.startswith(h[:-1])`. A held cap 'p*' therefore satisfies 'platform.admin', 'payments.write', etc., and 'platform.a*' satisfies 'platform.admin' AND 'platform.anything'. Because this is the single source of truth for both what the catalog shows and what the edge allows, an over-broad or malformed wildcard grant issued in a token silently authorizes far more than intended, with no boundary requiring the wildcard to align to a '.' segment.",
+      "evidence": "for h in held:\n    if h.endswith(\"*\") and needed.startswith(h[:-1]):\n        return True",
+      "recommendation": "Require the wildcard to align to a namespace boundary (e.g. only honor `a.b.*` where the prefix ends in '.', and treat bare '*' as the sole full grant), rejecting sub-token prefixes like 'p*'."
+    },
+    {
+      "id": "api-gateway-015",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "Corrupted cache entry raises inside _decode_cached → 500 instead of cache miss",
+      "file": "app/core/gateway.py",
+      "line": 234,
+      "scenario": "A cache hit is decoded with json.loads + base64.b64decode with no guard. If a stored entry is truncated/corrupted (Redis eviction mid-write, a schema change between versions, a poisoned value), _decode_cached raises and the request 500s instead of falling through to a fresh upstream fetch. A cache is supposed to be best-effort; a bad entry should degrade to a miss, not fail the request.",
+      "evidence": "def _decode_cached(raw: str) -> Response:\n    d = json.loads(raw)\n    return Response(content=base64.b64decode(d[\"body\"]), ...)",
+      "recommendation": "Wrap the decode in try/except and treat a decode failure as a cache miss (optionally deleting the bad key), so a corrupt entry never fails the request."
+    },
+    {
+      "id": "api-gateway-016",
+      "category": "security",
+      "severity": "MEDIUM",
+      "title": "Raw client Authorization header forwarded upstream on auth=none routes alongside the internal token",
+      "file": "app/core/gateway.py",
+      "line": 198,
+      "scenario": "_forward_headers strips identity/internal headers but deliberately keeps the client's Authorization header, and does so on EVERY route including auth='none' (where the gateway never verifies the token). The request also carries the gateway-injected X-Internal-Token that tells the upstream 'trust me'. An upstream that (reasonably) trusts a gateway-fronted request and also reads Authorization could act on an entirely unverified bearer for a route the gateway treated as public. The trust boundary between 'verified by the edge' and 'raw client-supplied' is not signaled to the upstream.",
+      "evidence": "# The original Authorization header is still\n# forwarded so upstreams may re-verify (defense in depth).",
+      "recommendation": "Document/enforce that upstreams must independently verify Authorization and never treat it as edge-vouched; consider stripping Authorization on auth=none routes, or add a header signaling whether the edge verified identity."
+    },
+    {
+      "id": "api-gateway-017",
+      "category": "correctness",
+      "severity": "LOW",
+      "title": "Client-supplied lowercase x-request-id is forwarded as a duplicate header",
+      "file": "app/core/gateway.py",
+      "line": 200,
+      "scenario": "_forward_headers copies through all non-stripped client headers preserving original casing, then sets out['X-Request-Id'] = get_request_id(). A client sending 'x-request-id' (lowercase) leaves that entry in the dict; the added 'X-Request-Id' is a distinct key, so the forwarded request carries TWO request-id headers (one attacker-chosen). Downstream correlation and any request-id-based logic can be confused by the duplicate.",
+      "evidence": "out[k] = v\n...\nout[\"X-Request-Id\"] = get_request_id()",
+      "recommendation": "Add 'x-request-id' to the client-strip set (or normalize header keys to lower-case before setting), so only the gateway's request id is forwarded."
+    },
+    {
+      "id": "api-gateway-018",
+      "category": "correctness",
+      "severity": "LOW",
+      "title": "_identity_from drops caps supplied as a comma/space string, forcing a wrongful 403",
+      "file": "app/core/gateway.py",
+      "line": 195,
+      "scenario": "Caps are joined only when the claim is a list/tuple; any other shape yields caps=''. If an issuer encodes caps as a space- or comma-delimited string (a common JWT scope convention), the edge sees NO caps and a route with auth='required' + a capability list 403s a caller who actually holds the capability. auth._extract_principal has the mirror problem (only list/tuple/set), so the behavior is at least consistent but both silently discard string-encoded scopes.",
+      "evidence": "\"caps\": \",\".join(caps) if isinstance(caps, (list, tuple)) else \"\",",
+      "recommendation": "Also accept a string caps/scope claim (split on space/comma) in the shared extractor, or explicitly document that only array caps are supported."
+    },
+    {
+      "id": "api-gateway-019",
+      "category": "config",
+      "severity": "LOW",
+      "title": "RATELIMIT_ROUTES parsed with unguarded json.loads (inconsistent with tolerant config elsewhere)",
+      "file": "app/core/ratelimit_policy.py",
+      "line": 57,
+      "scenario": "from_config does `json.loads(routes_json or '[]')` and indexes r['prefix'], r['limit'], r['window_s'] with no try/except. This is actually the safer (fail-fast) choice, but it is inconsistent with config.py's tolerant _json_any_map, and a malformed RATELIMIT_ROUTES raises a raw json/KeyError at build_policy time (app startup and again lazily in build_gateway) rather than a ConfigError with a clear message.",
+      "evidence": "for r in json.loads(routes_json or \"[]\"):\n    routes.append(RouteClass(\n        name=r.get(\"class\", r[\"prefix\"]), prefix=r[\"prefix\"], ...))",
+      "recommendation": "Wrap parsing and raise ConfigError('RATELIMIT_ROUTES invalid: ...') so the failure is a clear, actionable boot error like the other config validators."
+    },
+    {
+      "id": "api-gateway-020",
+      "category": "tests",
+      "severity": "MEDIUM",
+      "title": "No test covers the edge's fail-closed rate-limit path or verifier-outage behavior",
+      "file": "tests/security/test_gateway_security.py",
+      "line": 1,
+      "scenario": "Tests cover spoof-stripping, SSRF-safe URL build and prefix stripping, but there is no test that a limiter raising an exception yields 429 (the fail-closed branch at gateway.py:124), nor that a verifier raising a non-InvalidToken error is handled (finding 001). Both are load-bearing security/availability branches; the untested 500-on-verifier-error path (001) would have been caught by a test that makes the verifier raise a generic exception on an auth=optional route.",
+      "evidence": "\"\"\"Security: identity/internal-token spoof stripping, SSRF-safe URL build.\"\"\"",
+      "recommendation": "Add tests: (a) limiter.check raising → 429; (b) verifier.verify raising a non-InvalidToken exception on auth=optional → request proceeds anonymously (currently 500); (c) auth=required with same → clean 401."
+    },
+    {
+      "id": "api-gateway-021",
+      "category": "correctness",
+      "severity": "LOW",
+      "title": "Legitimate upstream resource whose path segment equals 'internal' is unconditionally 404'd",
+      "file": "app/core/gateway.py",
+      "line": 37,
+      "scenario": "_targets_internal returns True for ANY path with a segment exactly 'internal' (e.g. /api/v1/docs/internal or an upstream resource literally named 'internal'), so the edge 404s it before routing. This is an intentional belt-and-braces guard, but it silently makes any public resource named 'internal' unreachable through the gateway with no diagnostic, and the rule is invisible to route authors.",
+      "evidence": "return \"internal\" in [seg for seg in p.split(\"/\") if seg]",
+      "recommendation": "Restrict the guard to a leading '/internal' segment (the actual internal tier mount) rather than any segment anywhere in the path, or document the reserved word prominently for route authors."
+    },
+    {
+      "id": "api-gateway-022",
+      "category": "security",
+      "severity": "LOW",
+      "title": "assistant/app catalog fetch does not disable redirects explicitly",
+      "file": "app/api/internal.py",
+      "line": 104,
+      "scenario": "The per-target manifest fetch uses httpx.AsyncClient(timeout=timeout) without follow_redirects=False. httpx defaults to no redirects today, so this is currently safe, but the SSRF posture relies on an implicit library default rather than an explicit setting — a future httpx default change or a copy-paste into a client that enables redirects would let a compromised ADMIN_SERVICES target 3xx the internal-token'd request to an arbitrary host. The main forwarder sets follow_redirects=False explicitly; these do not.",
+      "evidence": "async with httpx.AsyncClient(timeout=timeout) as client:\n    r = await client.get(f\"{t.base_url}/internal/manifest\", headers={...})",
+      "recommendation": "Pass follow_redirects=False explicitly on all internal-token-bearing clients, matching HttpxForwarder."
+    },
+    {
+      "id": "api-gateway-023",
+      "category": "config",
+      "severity": "LOW",
+      "title": "GATEWAY_TRUSTED_PROXY_HOPS defaults to 0 while the documented deployment sits behind an ingress",
+      "file": "app/config.py",
+      "line": 250,
+      "scenario": "The default of 0 (trust no XFF) is the safe direction, but the field's own comment states the gateway runs behind a k3s ingress/LB where the value 'MUST be set (usually 1)' or every client collapses to the ingress IP and one tenant's burst rate-limits the whole fleet. There is no boot guard tying this to the presence of a proxy, so a production deploy that forgets it silently over-buckets (a self-inflicted availability incident) with no warning.",
+      "evidence": "GATEWAY_TRUSTED_PROXY_HOPS: int = 0",
+      "recommendation": "Emit a startup WARN when ENV=production and GATEWAY_TRUSTED_PROXY_HOPS==0, or require it to be set explicitly in production, so the ingress case is a deliberate choice."
+    }
+  ]
+}

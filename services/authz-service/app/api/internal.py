@@ -302,6 +302,16 @@ async def backup_import(request: Request, body: BackupImportIn,
                         settings: Settings = Depends(get_settings)) -> dict:
     """Restore an archive this service produced. Idempotent; leaves newer rows alone by default."""
     _, unseal = _sealer(settings)
+    # Write-ahead audit (FIN authz-004): import can OVERWRITE/PRUNE the entire authz state — roles,
+    # policies, assignments — which is the most privilege-relevant mutation this service has, yet it was
+    # the one mutation with no trail (every role/policy/assignment write is audited). Record it before
+    # the restore, like every other critical action, so a state rewrite is never silent.
+    await request.app.state.auditor.record(
+        "authz.backup_imported", actor="", tenant=str(body.into_tenant or ""),
+        resource="authz:backup",
+        ip=request.client.host if request.client else "",
+        metadata={"overwrite": str(body.overwrite), "prune": str(body.prune),
+                  "into_tenant": str(body.into_tenant or "")})
     try:
         return await _backup.import_archive(
             request.app.state.container.datastore, body.archive,

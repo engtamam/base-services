@@ -1,0 +1,296 @@
+{
+  "service": "zatca-service",
+  "date": "2026-09-27",
+  "summary": {
+    "total": 26,
+    "by_severity": {"CRITICAL": 2, "HIGH": 7, "MEDIUM": 12, "LOW": 5}
+  },
+  "findings": [
+    {
+      "id": "zatca-001",
+      "category": "CORRECTNESS",
+      "severity": "CRITICAL",
+      "title": "Caller-supplied vat_rate is never validated → decimal.InvalidOperation 500 that BURNS an ICV",
+      "file": "app/core/zatca_service.py",
+      "line": 33,
+      "scenario": "A caller posts {number, lines[...], vat_rate: \"abc\"} (or \"15%\", or \"\") to /internal/zatca/finalize. _validate_invoice_input validates number, currency, issued_at, amount_minor and qty but NOT vat_rate. allocate_slot then reserves and persists a real ICV slot, and build_ubl runs Decimal(rate) / Decimal(str(rate))*100 on the bad value, raising decimal.InvalidOperation. That is a subclass of ArithmeticError, NOT ValueError, so it is not caught by the ZatcaInputError branch in the route — it surfaces as an unhandled 500 AND the reserved ICV can now never be signed, permanently gapping the PIH/ICV chain. This is exactly the zatca-r2-05 failure class (\"validate every field build_ubl coerces before allocating a slot\") but vat_rate was missed.",
+      "evidence": "if \"qty\" in ln:   # build_ubl: int(lines[i].get('qty', 1))  ...  (no vat_rate check anywhere)   /  rate = str(inv.get(\"vat_rate\", \"0.15\")); vat_pct = str(int((Decimal(rate) * 100).quantize(...)))",
+      "recommendation": "Validate vat_rate in _validate_invoice_input before allocate_slot: attempt Decimal(str(vat_rate)) and reject non-numeric/negative values with ZatcaInputError (422). Also broaden the route's except to catch ArithmeticError, or convert build_ubl's Decimal failures into ZatcaInputError."
+    },
+    {
+      "id": "zatca-002",
+      "category": "CONCURRENCY",
+      "severity": "CRITICAL",
+      "title": "mark_signed advances the signed-head CAS BEFORE persisting the body — a crash between the two wedges that ICV forever",
+      "file": "app/core/stores.py",
+      "line": 87,
+      "scenario": "mark_signed does the version-pinned CAS on signed::{tenant} (setting signed_icv=inv.icv, last_hash=inv.hash) and only THEN calls save(inv) to persist signed_xml/hash/status. These are two non-atomic datastore ops. If the process crashes (or save() raises) between them, the signed head now reports ICV N as signed with hash H, but the invoice row N is still status='pending' with hash=''. On recovery: verify_chain sees row N's hash='' (reason pih_mismatch / a broken chain), and _sign for row N computes signed_head()=(N, H) so int(inv.icv) != signed_icv+1 (N != N+1) and defers 'awaiting ICV N+1' forever — invoice N is unsignable and unsubmittable permanently. The reverse-order bug was fixed (zatca-r2-02) but the residual non-atomic window remains.",
+      "evidence": "if await self._store.cas(_INDEX, f\"signed::{inv.tenant}\", ver, {\"signed_icv\": int(inv.icv), \"last_hash\": inv.hash}):\n    await self.save(inv)  # WON the head — now durably persist the signed body\n    return True",
+      "recommendation": "Persist the signed body and advance the head in one atomic unit (transaction), or make recovery self-healing: when signed::head.last_hash matches a row whose signed_xml is empty, treat the head as not-yet-committed and let the winner re-drive save(); alternatively write the signed body first under a body-CAS keyed by icv, then advance the head, so a crash leaves a signable row rather than a wedged head."
+    },
+    {
+      "id": "zatca-003",
+      "category": "PERFORMANCE",
+      "severity": "HIGH",
+      "title": "allocate_slot busy-waits up to 10,000 datastore reads per contended invoice number",
+      "file": "app/core/stores.py",
+      "line": 200,
+      "scenario": "When two finalizes race on the same (tenant, number), the loser enters `for _ in range(10_000): existing = await self.by_number(...); await asyncio.sleep(0)`. by_number is a real datastore.get on every iteration, so under contention (or if the winner is slow because signing/DB latency is high) the loser can issue up to 10,000 DB round-trips in a tight yield loop. On postgres this is a self-inflicted read storm and, with several concurrent duplicate submissions, an easy way to exhaust the connection pool (DATASTORE_POOL_MAX=10). The memory-store tests never expose it because the winner's save() lands on the first sleep(0).",
+      "evidence": "for _ in range(10_000):                          # a concurrent winner is mid-flight; wait for\n    existing = await self.by_number(tenant, number)   # its invoice row, then return it\n    if existing is not None:\n        return existing, False\n    await asyncio.sleep(0)",
+      "recommendation": "Replace the spin with a bounded backoff (e.g. exponential sleep capped at a few hundred ms, ~10-20 attempts) and a hard timeout that returns 503/retry, so a contended number costs a handful of reads over a short window, not 10k reads as fast as the loop can run."
+    },
+    {
+      "id": "zatca-004",
+      "category": "PERFORMANCE",
+      "severity": "HIGH",
+      "title": "Blocking synchronous HTTP (CSR + onboarding) runs on the event loop during onboarding",
+      "file": "app/core/zatca_service.py",
+      "line": 378,
+      "scenario": "onboard_compliance calls self._signer.generate_csr(csr_meta) and self._fatoora.onboard_compliance(...) directly (not via asyncio.to_thread), and onboard_production calls self._fatoora.onboard_production(...) directly. Both adapters use the stdlib urllib post_json with a 30s timeout. Unlike _sign/_submit (which correctly wrap the blocking SDK/gateway in asyncio.to_thread), these onboarding calls block the single-worker event loop for the full round-trip to the Java sidecar and to ZATCA. Per the team's own 'Blocking sync in async' incident, a blocked loop fails even /healthz and crash-loops the pod. An onboarding against a slow ZATCA sandbox stalls every other in-flight request for up to 30s.",
+      "evidence": "csr = self._signer.generate_csr(csr_meta)          # raises SignerUnavailable if no signer\n        code, resp = self._fatoora.onboard_compliance(csr_pem=csr[\"csrPem\"], otp=otp)",
+      "recommendation": "Wrap generate_csr, onboard_compliance and onboard_production in asyncio.to_thread exactly as _sign and _submit already do."
+    },
+    {
+      "id": "zatca-005",
+      "category": "CORRECTNESS",
+      "severity": "HIGH",
+      "title": "Invoice IssueDate/IssueTime built from UTC (gmtime), not KSA local time",
+      "file": "app/core/ubl.py",
+      "line": 58,
+      "scenario": "build_ubl derives IssueDate and IssueTime with time.gmtime(issued_at) — UTC. ZATCA invoices are dated in the seller's local time (Asia/Riyadh, UTC+3), and simplified invoices must be reported within 24h of issuance. A sale at 01:30 local (22:30 UTC the previous day) is stamped with the previous calendar date and a 3-hour-off time on a SIGNED, immutable document. Near midnight this puts the invoice on the wrong tax day, and the mismatch between the printed local time and the XML time is a compliance finding that cannot be corrected without a credit note.",
+      "evidence": "t = time.gmtime(int(inv.get(\"issued_at\") or 0))\n    issue_date, issue_time = time.strftime(\"%Y-%m-%d\", t), time.strftime(\"%H:%M:%S\", t)",
+      "recommendation": "Render IssueDate/IssueTime in the ZATCA-required local timezone (Asia/Riyadh, or a configurable tz), converting the epoch with a fixed +03:00 offset (KSA has no DST). Add a test asserting a near-midnight epoch lands on the correct local date."
+    },
+    {
+      "id": "zatca-006",
+      "category": "CORRECTNESS",
+      "severity": "HIGH",
+      "title": "Missing/zero issued_at silently dates the invoice 1970-01-01 (falsy-default trap)",
+      "file": "app/core/ubl.py",
+      "line": 58,
+      "scenario": "_validate_invoice_input only checks that issued_at, if present, is int-parseable; it accepts issued_at absent. build_ubl then does int(inv.get('issued_at') or 0) — so a missing issued_at, or an explicit 0, becomes epoch 0 and the invoice is dated 1970-01-01T00:00:00 on a signed document. `or 0` also turns a legitimately-provided 0 into the same value. The invoice signs and files with a nonsensical date instead of failing loudly or defaulting to 'now'.",
+      "evidence": "t = time.gmtime(int(inv.get(\"issued_at\") or 0))",
+      "recommendation": "Require issued_at explicitly (reject None in _validate_invoice_input) or default a missing one to the current time; never coerce a missing timestamp to epoch 0. Distinguish 'absent' from an explicit numeric 0."
+    },
+    {
+      "id": "zatca-007",
+      "category": "OBSERVABILITY",
+      "severity": "HIGH",
+      "title": "unseal() swallows all exceptions to None — a wrong ZATCA_SEAL_KEY silently means 'not onboarded' forever",
+      "file": "app/core/seal.py",
+      "line": 50,
+      "scenario": "unseal wraps everything in `except Exception: return None`. If ZATCA_SEAL_KEY (or the INTERNAL_SERVICE_TOKEN it falls back to) is rotated or misconfigured, every CSID cert/key decrypts to None, load_secrets returns None, and finalize/sweep treat the tenant as 'not onboarded (no CSID); staying pending' — every invoice silently parks in pending and no one is told the seal key is wrong. Contrast SecretStore._open, which raises a loud SecretError precisely so an operator is sent to the KEK rather than the provider dashboard. Here the same failure class is invisible.",
+      "evidence": "    except Exception:\n        return None",
+      "recommendation": "Distinguish a genuinely-absent CSID (return None) from a decryption FAILURE (raise/log loudly). Mirror SecretStore._open: on InvalidTag-after-legacy-fallback, raise a typed error and surface it as a 503/alert instead of masquerading as 'not onboarded'."
+    },
+    {
+      "id": "zatca-008",
+      "category": "CORRECTNESS",
+      "severity": "HIGH",
+      "title": "Direct Fatoora client double-base64-encodes the PCSID token in Basic auth",
+      "file": "app/core/zatca_service.py",
+      "line": 209,
+      "scenario": "load_secrets returns cert_base64 = base64.b64encode(cert.encode()) where cert is resp['binarySecurityToken'] — which ZATCA already returns base64-encoded. _submit passes creds={'token': cert_base64}, and DirectFatoora._headers builds Authorization: basic_auth(cred['token'], secret) = Basic base64(base64(BST) + ':' + secret). ZATCA's REST API expects the binarySecurityToken itself (already base64) as the Basic-auth username, so this adds a second encoding layer and every direct clearance/reporting call would be rejected with 401 (which classify() then treats as transient and retries forever, masking the misconfiguration). The sidecar path avoids this because it doesn't pass creds, so the bug only bites the direct client.",
+      "evidence": "creds = {\"token\": secrets.get(\"cert_base64\"), \"secret\": secrets.get(\"secret\")}  ...  cert_base64 = base64.b64encode(cert.encode()).decode()",
+      "recommendation": "Pass the binarySecurityToken as-is (the stored certificate_pem string) as the Basic-auth username for the direct client, not a re-encoded copy. Add an integration test against a stubbed ZATCA direct endpoint asserting the Authorization header decodes to BST:secret."
+    },
+    {
+      "id": "zatca-009",
+      "category": "CONFIG",
+      "severity": "HIGH",
+      "title": "FATOORA_BASE_URL / signer URL host is never actually checked against EGRESS_ALLOWED_HOSTS (comment claims it is)",
+      "file": "app/adapters/zatca_http.py",
+      "line": 24,
+      "scenario": "config.py and direct.py both say the Fatoora/sidecar host 'must be egress-allowlisted', and zatca_http says the CWE egress-guard covers user URLs. But post_json calls urllib.request.urlopen on whatever base_url is configured with no allowlist enforcement, and build_container has no boot check that FATOORA_BASE_URL/ZATCA_SIGNER_URL hosts are in EGRESS_ALLOWED_HOSTS — the SsrfAllowlistCheck in security/checks.py is a self-reported cwe_guard report, not an interceptor on the actual egress. An operator who fat-fingers FATOORA_BASE_URL to an internal metadata endpoint (169.254.169.254) or an attacker-controlled host would have signed invoices + PCSID Basic-auth credentials POSTed there with no guard, despite the documented promise. Config-sourced so severity is bounded, but the enforcement gap contradicts the stated control.",
+      "evidence": "with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310 - fixed https config hosts",
+      "recommendation": "Either enforce it — validate FATOORA_BASE_URL and ZATCA_SIGNER_URL hosts against egress_allowed_hosts at boot (fail-fast) and/or check the resolved host in post_json — or correct the comments to state that the URLs are trusted config with no runtime egress check."
+    },
+    {
+      "id": "zatca-010",
+      "category": "OBSERVABILITY",
+      "severity": "MEDIUM",
+      "title": "onboard_production audits the wrong tenant (principal.tenant instead of the tenant onboarded)",
+      "file": "app/api/v1/zatca.py",
+      "line": 124,
+      "scenario": "onboard_production computes the target with op_tenant(principal, tenant) (which honors a platform operator's ?tenant=X) for the actual mutation, but the write-ahead audit record uses tenant=principal.tenant. So when a platform.zatca operator onboards tenant X's production CSID, the audit row is filed under the operator's own tenant (or none), not X. onboard_compliance right above it correctly uses op_tenant(principal, body.tenant) for the audit tenant AND resource — this one diverges, so a production-CSID exchange (a high-value credential action) is recorded against the wrong tenant.",
+      "evidence": "await request.app.state.auditor.record(\n        \"zatca.onboarded_production\", actor=principal.subject, tenant=principal.tenant, resource=\"csid\", ...)\n    return await (await build_zatca(request, op_tenant(principal, tenant))).onboard_production(op_tenant(principal, tenant))",
+      "recommendation": "Compute t = op_tenant(principal, tenant) once and use it for both the audit record (tenant=t) and the service call, matching onboard_compliance."
+    },
+    {
+      "id": "zatca-011",
+      "category": "CORRECTNESS",
+      "severity": "MEDIUM",
+      "title": "verify_chain's unsigned-tail check omits 'failed' and 'submitted' — mid-chain unsigned rows report the wrong break reason",
+      "file": "app/core/chain.py",
+      "line": 15,
+      "scenario": "_UNSIGNED = {'none','pending'} only. A capped-while-unsigned invoice is moved to status='failed' with hash='' (see _schedule_retry). If such a row sits mid-chain (not the tail), verify_chain does not classify it as unsigned_link; instead its empty hash becomes prev_hash and the NEXT link fails with reason='pih_mismatch'. The operator is told 'pih_mismatch' at ICV N+1 when the real defect is an unsigned/failed predecessor at ICV N — a misdiagnosis that sends recovery to the wrong invoice.",
+      "evidence": "_UNSIGNED = frozenset({\"none\", \"pending\"})  ...  if not is_tail and str(link.get(\"status\") or \"\") in _UNSIGNED: return _break(icv, \"unsigned_link\")",
+      "recommendation": "Include every not-yet-finalized status ('failed','submitted') in the unsigned set, or detect an empty hash on a non-tail link and report unsigned_link at that ICV rather than pih_mismatch at the successor."
+    },
+    {
+      "id": "zatca-012",
+      "category": "PERFORMANCE",
+      "severity": "MEDIUM",
+      "title": "GET /chain/verify reads the taxpayer's entire invoice history (up to 100k rows) into memory on a request path",
+      "file": "app/core/stores.py",
+      "line": 47,
+      "scenario": "chain_verify → verify_chain → chain_links → _rows pages the whole tenant history up to _TENANT_MAX=100,000 rows on every call, then sorts and walks it in Python. This is an authenticated admin GET; a taxpayer with years of invoices pays the full O(all) cost each time the page is opened, and 100k rows per request is a memory + latency spike an operator can trigger repeatedly. The team already fixed the equivalent on the invoice list (browse() with a cursor) but left verify unbounded.",
+      "evidence": "async def chain_links(self, tenant: str) -> list[dict]:\n        return [{...} for r in await self._rows(tenant)]   # _rows caps at _TENANT_MAX = 100_000",
+      "recommendation": "Maintain the chain state incrementally (the signed:: head already tracks contiguous progress) and verify against a bounded window, or paginate verify and cache the last-verified ICV so a re-verify only walks new links."
+    },
+    {
+      "id": "zatca-013",
+      "category": "SECURITY",
+      "severity": "MEDIUM",
+      "title": "CSID material at rest is sealed with a raw SHA-256 of the seal key (no KDF/salt), and defaults to reusing INTERNAL_SERVICE_TOKEN",
+      "file": "app/core/seal.py",
+      "line": 14,
+      "scenario": "seal/unseal derive the AES-256-GCM key as hashlib.sha256(seal_key) — a single unsalted hash, no scrypt/PBKDF work factor — for the tenant's ZATCA private key and CSID. The very next module (SecretStore) uses scrypt(n=2**14) for the same class of data, so the CSID path is markedly weaker for no reason. Worse, seal_key defaults to INTERNAL_SERVICE_TOKEN (config.seal_key property): the tax-signing private keys are then encrypted under the same secret used for internal service auth, so a leak of the internal token also decrypts every stored PCSID, and rotating the internal token silently makes all CSIDs undecryptable.",
+      "evidence": "def _key(seal_key: str) -> bytes:\n    return hashlib.sha256((seal_key or \"\").encode()).digest()   /   @property def seal_key(self): return self.ZATCA_SEAL_KEY or self.INTERNAL_SERVICE_TOKEN",
+      "recommendation": "Derive the CSID seal key with scrypt/HKDF and a fixed salt (as SecretStore does), and require a dedicated ZATCA_SEAL_KEY in production (boot guard) rather than silently falling back to the internal auth token."
+    },
+    {
+      "id": "zatca-014",
+      "category": "CORRECTNESS",
+      "severity": "MEDIUM",
+      "title": "_validate_ok uses the request-wide signer, not the per-tenant signer, during a cross-tenant sweep",
+      "file": "app/core/zatca_service.py",
+      "line": 195,
+      "scenario": "When ZATCA_VALIDATE_BEFORE_SUBMIT is on, _submit → _validate_ok calls self._signer.validate(...). self._signer is the signer resolved for the REQUEST tenant in build_zatca (or the default for a sweep, tenant=''); the per-tenant signer_provider is used only in _sign. So during a multi-tenant sweep the pre-submit validation is performed against a signer/sidecar that may not correspond to the invoice's tenant (and for a plain sweep is the boot/default signer). Since _validate_ok fails OPEN on SignerUnavailable, a misrouted validator quietly returns True and the pre-submit check becomes a no-op for most sweep invoices — the control silently does nothing.",
+      "evidence": "def _validate_ok(self, inv): ... result = self._signer.validate(inv.signed_xml)",
+      "recommendation": "Resolve the validator via signer_provider(inv.tenant) inside _validate_ok, consistent with _sign, so validation runs against the invoice's own tenant signer."
+    },
+    {
+      "id": "zatca-015",
+      "category": "CORRECTNESS",
+      "severity": "MEDIUM",
+      "title": "Per-line RoundingAmount vs document PayableAmount can disagree by a halala on multi-line invoices",
+      "file": "app/core/ubl.py",
+      "line": 92,
+      "scenario": "Document VAT is correctly computed as round(Σnet × rate) (BR-CO-14), but each line emits RoundingAmount = net_i + round(net_i × rate) using per-line half-up VAT. On a multi-line invoice the sum of per-line rounded VATs can differ from the document VAT by a halala, so Σ(line RoundingAmount) ≠ TaxInclusive/PayableAmount. Depending on the SDK/ZATCA cross-field checks this line-vs-document inconsistency can trip a validation rule the document-level fix was meant to avoid.",
+      "evidence": "vats = [_vat_of(n, rate) for n in nets]  ...  <cbc:RoundingAmount currencyID=\"{cur}\">{_major(nets[i] + vats[i])}</cbc:RoundingAmount>  ...  vat = _vat_of(line_extension, rate)  # document",
+      "recommendation": "Make the line-level tax figures reconcile to the document total (e.g., allocate the document VAT across lines with a residual adjustment on the last line) or add a test asserting Σ line RoundingAmount == PayableAmount for representative multi-line inputs."
+    },
+    {
+      "id": "zatca-016",
+      "category": "SECURITY",
+      "severity": "MEDIUM",
+      "title": "classify() treats HTTP 401 as transient, so an expired/wrong PCSID retries silently for the full schedule",
+      "file": "app/core/classify.py",
+      "line": 11,
+      "scenario": "_TRANSIENT includes 401. A 401 from ZATCA means the CSID/credentials are invalid or expired — a configuration/onboarding problem, not a transient network blip. Because it is classified 'pending', the invoice is retried up to ZATCA_RETRY_MAX_ATTEMPTS (12) over up to 6h before being marked 'failed', with no distinct signal that authentication is the cause. Combined with zatca-008 (double-encoded token) an operator sees invoices quietly pile up in pending with a generic 'HTTP 401' message and no alert that the credential is the problem.",
+      "evidence": "_TRANSIENT = frozenset({401, 408, 425, 429, 500, 502, 503, 504})",
+      "recommendation": "Split 401 from the network-transient set: surface it as an auth/credential error (distinct message, and ideally a head-lag-style alert or a bounded retry with a loud warning) so a bad CSID is diagnosed as such rather than hidden behind the generic retry."
+    },
+    {
+      "id": "zatca-017",
+      "category": "CORRECTNESS",
+      "severity": "MEDIUM",
+      "title": "finalize's ACCEPTED short-circuit can return before ever building/validating for an idempotent replay, but a pending replay re-validates only via draft — number-only idempotency masks payload changes",
+      "file": "app/core/zatca_service.py",
+      "line": 105,
+      "scenario": "Idempotency is keyed solely on (tenant, number). If a caller re-POSTs the SAME number with a DIFFERENT payload (corrected amounts, different buyer) while the first invoice is still 'pending' with a draft already built, allocate_slot returns the existing invoice and finalize skips _validate_invoice_input (guarded by `if not by_number(...)`) and reuses the already-built draft — the new payload is silently ignored, and the caller gets back the OLD invoice's totals with status pending as if accepted-in-progress. There is no detection that the resubmitted body differs from the one on file.",
+      "evidence": "if not (await self._inv.by_number(tenant, number)):\n            _validate_invoice_input(invoice_in, self._currency)  ...  if not inv.draft:   # build the unsigned UBL once",
+      "recommendation": "Either reject a re-finalize whose payload hash differs from the stored draft (409/conflict, pointing the caller to correct-and-resign) or document that (tenant, number) is the immutable idempotency key and the body after first submission is ignored; add a test for the differing-payload replay."
+    },
+    {
+      "id": "zatca-018",
+      "category": "SECURITY",
+      "severity": "MEDIUM",
+      "title": "Internal tier is default-open per-route with token fallback on — any holder of the flat token can call finalize/erase/backup-export for any tenant",
+      "file": "app/api/internal.py",
+      "line": 61,
+      "scenario": "INTERNAL_ROUTE_POLICY_JSON defaults to '' (empty), so resolve_internal_policy.permits() admits any authenticated caller to every /internal route (default-open, documented). With INTERNAL_CALLER_ALLOW_TOKEN_FALLBACK defaulting True and INTERNAL_CALLER_DRIVER='shared', identity reduces to possession of the single INTERNAL_SERVICE_TOKEN. Any service that holds that token can therefore POST /internal/zatca/finalize for an arbitrary tenant, POST /internal/privacy/erase for any subject, and POST /internal/backup/export to pull a sealed archive of ALL tenants' invoices. There is no per-route caller restriction shipped, so the least-privilege story exists in config but is off by default.",
+      "evidence": "if not resolve_internal_policy(settings).permits(request.url.path, identity.caller): raise HTTPException(403)   # policy JSON empty => permits everything",
+      "recommendation": "Ship a non-empty INTERNAL_ROUTE_POLICY_JSON default (or a production boot guard) restricting backup/export, privacy/erase and sweep to the specific caller services that need them, and plan to flip INTERNAL_CALLER_ALLOW_TOKEN_FALLBACK off once callers sign assertions."
+    },
+    {
+      "id": "zatca-019",
+      "category": "CORRECTNESS",
+      "severity": "MEDIUM",
+      "title": "Erasure draft-match is a naive substring containment — over-matches short subjects and under-matches structured identifiers",
+      "file": "app/core/erasure.py",
+      "line": 115,
+      "scenario": "_mentions does `subject in xml` over the unsigned draft. A short or common subject value (e.g. a 2-3 char id, or a name that is a substring of another buyer's name/address) matches unrelated invoices, so a DSAR erase can drop the working-copy XML of invoices belonging to OTHER buyers (breaking their re-sign path if they were not yet accepted — though the code only drops drafts of ACCEPTED invoices, mitigating this). Conversely, if the subject is an email but the UBL stores only a VAT number/ORG id, `subject in xml` never matches and the ack reports already_absent=True even though the person's data is present under a different identifier. The erasure correctness depends entirely on the subject string form the caller happens to send.",
+      "evidence": "xml = draft.get(\"unsigned_xml\") or \"\"\n    return subject in xml",
+      "recommendation": "Match on structured, normalized identifiers (buyer id / VAT number / email fields extracted from the draft) rather than raw containment, and require a minimum subject length; add tests for the substring-collision and wrong-identifier-form cases."
+    },
+    {
+      "id": "zatca-020",
+      "category": "CONCURRENCY",
+      "severity": "MEDIUM",
+      "title": "head:: reserved-hint advanced with a non-atomic get-then-put (last-writer-wins) — can regress the hint and re-open reconcile work",
+      "file": "app/core/stores.py",
+      "line": 237,
+      "scenario": "After minting an ICV, allocate_slot re-reads head::{tenant} and puts reserved_icv without a version check. release_tail_slot does the same to roll it back. Two concurrent allocations (or an allocation racing a tail release) can lose an update: the read-modify-write is not atomic, so the persisted reserved_icv can end up lower than the true highest claimed ICV. The icv:: claim is the real authority so no duplicate ICV results, but a regressed hint makes the next allocate probe from a stale point (mitigated by the advance-past-taken loop) and makes reconcile_orphans/head_lag under-report the reserved head. The code comments assert this is safe, but head_lag (the stuck-tail alarm) reads reserved_head directly and can therefore momentarily under-count the lag.",
+      "evidence": "cur = await self._store.get(_INDEX, f\"head::{tenant}\") or {...}\n        if icv > int(cur.get(\"reserved_icv\", 0)):\n            cur[\"reserved_icv\"] = icv\n            await self._store.put(_INDEX, f\"head::{tenant}\", cur)",
+      "recommendation": "Use a CAS/max-merge for the reserved_icv hint (only ever move it up to max(existing, icv)) so a concurrent writer cannot lower it, keeping head_lag monotonic and honest."
+    },
+    {
+      "id": "zatca-021",
+      "category": "TESTS",
+      "severity": "MEDIUM",
+      "title": "No test covers a malformed vat_rate (the zatca-001 gap) or the crash-between-CAS-and-save window",
+      "file": "tests/unit/test_zatca_r2_fixes.py",
+      "line": 196,
+      "scenario": "test_bad_qty_or_issued_at_is_422_and_burns_no_icv parametrizes bad qty and bad issued_at but NOT bad vat_rate, so the un-validated vat_rate path (zatca-001) has no regression coverage and shipped unnoticed. Likewise there is no test simulating a save() failure after the signed-head CAS wins (zatca-002), so the wedged-ICV window is unguarded by tests. The suite asserts the fixes it was written for and stops at the boundary of the same class of bug.",
+      "evidence": "@pytest.mark.parametrize(\"bad\", [ {**INV, \"issued_at\": \"not-epoch\"}, ...])  # no vat_rate case",
+      "recommendation": "Add cases for vat_rate in {'abc','15%','',None,'-0.1'} asserting a 422 and zero ICV burned, and a fault-injection test that fails save() after mark_signed's CAS and asserts the invoice remains recoverable (signable/submittable)."
+    },
+    {
+      "id": "zatca-022",
+      "category": "API",
+      "severity": "MEDIUM",
+      "title": "Admin/finalize routes have no rate limiting; only operator credential/config routes do",
+      "file": "app/api/v1/zatca.py",
+      "line": 19,
+      "scenario": "The operator.py routes attach Depends(rate_limit), but api/v1/zatca.py (settings, onboarding, invoice list/detail/qr/resubmit, chain verify, sweep) and internal.py finalize attach none. GET /chain/verify and GET /invoices are O(history) reads (see zatca-012) and POST /sweep triggers a fleet-wide submission pass; without a limiter an authenticated caller can hammer these to exhaust the DB pool or drive repeated ZATCA submissions. The rate-limit machinery exists and is wired for one router only.",
+      "evidence": "router = APIRouter(prefix=\"/api/v1/zatca\", ...)   # no Depends(rate_limit) on any route here",
+      "recommendation": "Apply rate_limit to the expensive/mutating admin routes (chain/verify, invoices list, sweep, resubmit, correct-and-resign) and to internal finalize, consistent with the operator surface."
+    },
+    {
+      "id": "zatca-023",
+      "category": "SECURITY",
+      "severity": "MEDIUM",
+      "title": "Compliance/production onboarding is not tenant-isolated for a tenant admin who supplies a body tenant they don't own",
+      "file": "app/api/v1/zatca.py",
+      "line": 60,
+      "scenario": "op_tenant returns body_tenant only when the caller holds platform.zatca; a plain zatca.manage admin is pinned to principal.tenant, which is correct. But SettingsIn/OnboardIn accept an arbitrary `tenant` field and op_tenant is the ONLY guard — every settings/onboarding/invoice route relies on remembering to call op_tenant(principal, body.tenant). onboard_production takes `tenant` as a bare query param (not in a model) and passes it through op_tenant, so the isolation holds only because op_tenant ignores it for non-platform callers. This is a fragile, easy-to-regress pattern: any future route that reads body.tenant directly instead of via op_tenant silently grants cross-tenant access. (No concrete bypass found today, but the invariant is enforced by convention, not structurally.)",
+      "evidence": "def op_tenant(principal, body_tenant=None): if \"platform.zatca\" in principal.caps: return body_tenant or principal.tenant or \"global\"; return principal.tenant or \"__none__\"",
+      "recommendation": "Centralize tenant resolution so a route cannot accidentally trust body.tenant (e.g., a dependency that yields the resolved tenant), and add a test that a zatca.manage token with body tenant='other' operates only on its own tenant across every settings/onboarding route."
+    },
+    {
+      "id": "zatca-024",
+      "category": "CORRECTNESS",
+      "severity": "LOW",
+      "title": "InvoiceStore.list() reads the full tenant history and is superseded by browse() but still present",
+      "file": "app/core/stores.py",
+      "line": 93,
+      "scenario": "list() loads _rows (up to 100k), filters in Python and slices — the exact anti-pattern browse() was written to replace, and its docstring says so. It is not used by the routes (which call browse()), so it is dead-but-dangerous surface: a future caller reaching for the obvious name list() reintroduces the O(all) read. Dead code that models the wrong pattern.",
+      "evidence": "async def list(self, tenant, *, needs_attention=False, limit=100): rows = await self._rows(tenant)  ...  # whole history",
+      "recommendation": "Delete list() (callers use browse()) or make it delegate to browse() so the unbounded read pattern cannot be revived."
+    },
+    {
+      "id": "zatca-025",
+      "category": "CORRECTNESS",
+      "severity": "LOW",
+      "title": "amount_minor and qty are validated int-parseable but not sign/range-checked — negative or zero-qty lines produce a signed invoice with nonsense totals",
+      "file": "app/core/zatca_service.py",
+      "line": 58,
+      "scenario": "_validate_invoice_input accepts any int for amount_minor and qty, including negative amounts and qty<=0. build_ubl then emits negative LineExtensionAmount / negative VAT / negative PayableAmount on a signed, chained tax document (InvoicedQuantity can be 0 or negative). A B2C simplified invoice with a negative total is not a valid tax invoice (a refund is a credit note, a separate document type), and it consumes a real ICV.",
+      "evidence": "int(ln[\"amount_minor\"])  # accepted with no >=0 check; int(ln[\"qty\"]) # accepted with no >0 check",
+      "recommendation": "Reject amount_minor < 0 and qty <= 0 in _validate_invoice_input (before slot allocation), directing negatives to the credit-note flow."
+    },
+    {
+      "id": "zatca-026",
+      "category": "OBSERVABILITY",
+      "severity": "LOW",
+      "title": "post_json collapses every transport error (DNS, TLS, connection refused) to (0, {}) with no logging",
+      "file": "app/adapters/zatca_http.py",
+      "line": 28,
+      "scenario": "The bare `except Exception: return 0, {}` maps DNS failure, TLS handshake error, timeout and connection-refused all to the same silent (0, {}). Callers raise FatooraUnavailable on code==0, so the invoice stays pending, but the underlying cause (e.g. a wrong FATOORA_BASE_URL host vs. a genuine outage vs. a TLS/cert problem) is never logged anywhere, making a persistent onboarding/clearance failure hard to diagnose from the service side.",
+      "evidence": "    except Exception:\n        return 0, {}   # network/transport error (no HTTP answer) — caller treats as unreachable",
+      "recommendation": "Log the exception type/message (never headers/body/secrets) at warning level before returning (0, {}) so a persistent transport failure is diagnosable, distinguishing DNS/TLS/refused from a timeout."
+    }
+  ]
+}

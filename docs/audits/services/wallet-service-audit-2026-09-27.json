@@ -1,0 +1,263 @@
+{
+  "service": "wallet-service",
+  "date": "2026-09-27",
+  "summary": {
+    "total": 23,
+    "by_severity": { "CRITICAL": 0, "HIGH": 3, "MEDIUM": 10, "LOW": 10 }
+  },
+  "findings": [
+    {
+      "id": "wallet-001",
+      "category": "concurrency",
+      "severity": "HIGH",
+      "title": "withdraw(): a crash between writing the PENDING Withdrawal and the debit CAS leaves an un-backed payout the sidecar will pay",
+      "file": "app/core/wallet_service.py",
+      "line": 619,
+      "scenario": "withdraw() writes the PENDING Withdrawal row (put(_WITHDRAWALS, ...)) and THEN debits via _mutate. The rollback (delete on exception) only fires for an in-process exception. On a hard process crash between the put and the _mutate CAS, the PENDING Withdrawal survives with NO corresponding debit ledger entry and the wallet still holds the funds. Unlike reserve()/Hold, a Withdrawal has no 'counted'/'debited' flag and nothing reconciles a PENDING withdrawal against a matching WITHDRAW ledger row before the payout sidecar executes it. The sidecar pays out money that was never debited: the customer keeps the balance AND receives the payout.",
+      "evidence": "await self._store.put(_WITHDRAWALS, wd.id, wd.to_dict())\n        entry = self._entry(tenant, WITHDRAW, applied, -1, source=source, reason=reason, ref=wd.id)\n        try:\n            out = await self._mutate(tenant, funds_delta={k: -v for k, v in applied.items()}, entry=entry)\n        except Exception:\n            await self._store.delete(_WITHDRAWALS, wd.id)     # the debit never landed",
+      "recommendation": "Give Withdrawal the same crash-safe marker discipline reserve() gives Hold: write it uncounted/unconfirmed, only mark it payable after the debit CAS lands, and have the payout sidecar (or a settle guard) refuse to pay a withdrawal that has no matching WITHDRAW ledger row for its seq. A withdrawal reconcile pass should assert every non-failed withdrawal has its debit."
+    },
+    {
+      "id": "wallet-002",
+      "category": "correctness",
+      "severity": "HIGH",
+      "title": "Caller-supplied expires_at on a fund with no policy silently forfeits (clawback) stored value — a SAMA violation for a cashable/withdrawable fund",
+      "file": "app/core/wallet_service.py",
+      "line": 434,
+      "scenario": "CreditIn.expires_at is caller-controlled. credit() builds the grant with idle_behavior=str(pol.get('idle_behavior','')) — for a fund with NO configured policy this freezes idle_behavior='' on the grant. At sweep time sweep_grants sees the empty idle_behavior, falls back to the live policy (still {}), and defaults behavior='forfeit'. So crediting a WITHDRAWABLE/cashable fund with an explicit expires_at and no policy causes the unspent remainder to be CLAWED BACK (irreversible forfeiture) rather than preserved as dormant — exactly the SAMA stored-value forfeiture the whole dormant/forfeit design exists to prevent. The safe default per WALLET_FUND_EXPIRY_POLICIES parsing is 'dormant', but the ad-hoc expires_at path bypasses that and lands on forfeit.",
+      "evidence": "grant = Grant(... idle_behavior=str(pol.get(\"idle_behavior\", \"\")), ttl_days=int(pol.get(\"ttl_days\", 0)), ...)   # pol={} when no policy\n... sweep_grants: else: pol = self._policy(grant.fund) or {}; behavior, ttl_days = str(pol.get(\"idle_behavior\", \"forfeit\")), int(pol.get(\"ttl_days\", 0))",
+      "recommendation": "When credit() gets an explicit expires_at but no policy, freeze idle_behavior='dormant' (the config validator's own safe default), or refuse an expires_at on a fund with no policy, or refuse forfeit on a withdrawable fund. Never let the fallback default (forfeit) apply to a grant created via the raw expires_at path on a cashable fund."
+    },
+    {
+      "id": "wallet-003",
+      "category": "concurrency",
+      "severity": "HIGH",
+      "title": "_active() filters only by state, so already-noticed grants and stuck extend grants refill the sweep page and starve genuinely-due rows",
+      "file": "app/core/wallet_service.py",
+      "line": 916,
+      "scenario": "_active() pages rows WHERE state=='active' sorted by expires_at asc. notice_grants() then skips rows already noticed (noticed==1) but those rows remain state=='active' and are re-fetched at the front of every run. A tenant/fleet with many long-lived, already-noticed active grants fills the entire page (limit rows) with rows that are skipped after fetch, so grants that just entered their notice window but sort later are NEVER reached and never warned. The same starvation hits sweep_grants for extend grants and for any active grant not yet expired. The 'sweeper acts on the small shrinking set' assumption is false because active+noticed and active+not-yet-expired grants live in the same state bucket indefinitely.",
+      "evidence": "rows, cursor = await self._store.find(collection, {\"state\": state}, limit=_SWEEP_PAGE, after=cursor, sort=(\"expires_at\", \"asc\"))\n... notice_grants: if int(row.get(\"noticed\", 0)) or not row.get(\"expires_at\"): continue",
+      "recommendation": "Push the discriminating predicate into the query: for notice, filter on a persisted 'notice_pending' state or index (noticed==0); for expiry, query grants whose expires_at<=now. Do not rely on the state bucket alone when rows legitimately stay 'active' for their whole life."
+    },
+    {
+      "id": "wallet-004",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "extend policy with ttl_days=0 is accepted at config validation but produces a grant that is re-scanned forever and never resolves",
+      "file": "app/config.py",
+      "line": 424,
+      "scenario": "fund_expiry_policies accepts idle_behavior='extend' with ttl_days=0 (the validator allows ttl>=0 for any behavior). At sweep time the extend branch guards the money (if ttl_days>0) but then `continue`s without advancing the grant's expiry or state. The grant stays active+expired, sorts first by expires_at asc, and is re-fetched by _active on EVERY sweep run permanently, consuming page budget and never doing anything. A misconfiguration therefore silently degrades the whole grant sweep.",
+      "evidence": "if behavior == \"extend\":\n    if ttl_days > 0:  # a 0-ttl extend would busy-loop the sweep\n        grant.expires_at = now + ttl_days * 86400 ...\n    continue",
+      "recommendation": "Reject idle_behavior=='extend' with ttl_days==0 in the config validator (an extend that cannot extend is a config error), or transition such a grant to a terminal state so it leaves the active bucket."
+    },
+    {
+      "id": "wallet-005",
+      "category": "security",
+      "severity": "MEDIUM",
+      "title": "Falsy-default tenant sentinel: a token with no tenant claim collapses to a shared '__none__' wallet",
+      "file": "app/api/v1/wallet.py",
+      "line": 54,
+      "scenario": "_tenant() returns `p.tenant or \"__none__\"`. require_user accepts a token whose claims contain no tenant/org/tid. Every such principal (a mis-issued token, a platform-service token used as a user, a token from an issuer that omits tenant) reads and shares ONE wallet keyed '__none__'. balance()/ledger() auto-create that wallet on read, so distinct tenant-less subjects see each other's projected balance/statement — a cross-principal data exposure that never raises.",
+      "evidence": "def _tenant(p: Principal) -> str:\n    \"\"\"Pinned to the token. A tenant id is never taken from the request.\"\"\"\n    return p.tenant or \"__none__\"",
+      "recommendation": "Reject a user-tier wallet request whose principal has no tenant (401/403), rather than routing it to a shared sentinel bucket. A missing tenant claim on a wallet read is a misconfiguration, not a valid tenant."
+    },
+    {
+      "id": "wallet-006",
+      "category": "observability",
+      "severity": "MEDIUM",
+      "title": "Internal balance and reconcile reads are unaudited while the internal ledger twin is audited",
+      "file": "app/api/internal.py",
+      "line": 127,
+      "scenario": "GET /internal/wallet/{tenant} (balance) and GET /internal/wallet/{tenant}/reconcile perform cross-tenant reads of a customer's money for any internal caller but record NO audit event. The sibling GET /internal/wallet/{tenant}/ledger deliberately records wallet.inspected 'because an internal caller reading a customer's money is exactly the access a review asks about'. The same justification applies to balance and reconcile, yet they leave no trail — an internal caller can enumerate every tenant's balance invisibly.",
+      "evidence": "@router.get(\"/wallet/{tenant}\", dependencies=[Depends(require_internal_token)])\nasync def get_balance(tenant: str, request: Request) -> dict:\n    return await build_wallet(request).balance(tenant)",
+      "recommendation": "Record wallet.inspected (view=balance / view=reconcile) on the internal balance and reconcile routes, matching the internal ledger route."
+    },
+    {
+      "id": "wallet-007",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "reconcile() proves only funds==sum(ledger); it never checks the held or permanent invariants, giving false 'consistent' confidence",
+      "file": "app/core/wallet_service.py",
+      "line": 254,
+      "scenario": "reconcile() derives per-fund totals from the ledger and compares them to w.funds only. It ignores w.held and w.permanent entirely. A corrupted held map (e.g. from the release/sweep double-decrement class the claims were added to prevent, or a clamp-masked underflow) or a wrong permanent floor still reports consistent==True. Since available=funds-held and grant clawback is bounded by the permanent floor, a broken held/permanent value is a real money-safety defect that this integrity check — the one support uses to answer 'the numbers look wrong' — cannot detect.",
+      "evidence": "stored = {k: int(v) for k, v in w.funds.items() if int(v)}\nderived = {k: v for k, v in derived.items() if v}\nreturn {\"tenant\": tenant, \"consistent\": stored == derived, ...}",
+      "recommendation": "Extend reconcile to verify held == sum of applied over ACTIVE holds for the tenant, and that permanent floor <= funds per fund, reporting each dimension. A reconcile that only checks funds gives false assurance about the invariant (funds>=held) money safety depends on."
+    },
+    {
+      "id": "wallet-008",
+      "category": "observability",
+      "severity": "MEDIUM",
+      "title": "settle_withdrawal audit records tenant=\"\" — a money-moving reversal/settlement cannot be attributed to a tenant",
+      "file": "app/api/internal.py",
+      "line": 224,
+      "scenario": "settle_withdrawal (paid or reversal) is declared critical/auditable, but the audit call passes tenant=\"\" because settle_withdrawal()'s result dict has no tenant field. When paid=False this REVERSES a debit (credits the customer back); the durable record of who got money back carries no tenant, so a fraud/review query 'which tenant's withdrawals were reversed' returns nothing usable.",
+      "evidence": "await request.app.state.auditor.record(\"wallet.withdrawal_settled\", actor=\"\", tenant=\"\", resource=f\"withdrawal:{body.withdrawal_id}\", ...)",
+      "recommendation": "Return wd.tenant in settle_withdrawal()'s result and pass it as tenant= in the audit record, so the settlement/reversal is attributable like every other money move."
+    },
+    {
+      "id": "wallet-009",
+      "category": "performance",
+      "severity": "MEDIUM",
+      "title": "ledger() and reconcile() issue one sequential get() per sequence number (N+1 round-trips on a request path)",
+      "file": "app/core/wallet_service.py",
+      "line": 248,
+      "scenario": "ledger() loops `for seq in range(top, ...): await self._store.get(_LEDGER, key)` — up to LEDGER_LIST_LIMIT (100) serial DB round trips per statement page. reconcile() does the same for seq 1..w.seq, up to RECONCILE_MAX_ENTRIES (20,000) serial round trips inside ONE HTTP request. Even bounded, 20k sequential awaits against Postgres is minutes of latency and a single-connection hog; the ledger collection is keyed and indexed but never batch-read.",
+      "evidence": "for seq in range(1, w.seq + 1):\n    row = await self._store.get(_LEDGER, _ledger_key(tenant, seq))",
+      "recommendation": "Batch these with a single find()/range query (the composite key tenant:{seq:012d} is range-scannable) instead of per-seq gets. Reconcile in particular should read the ledger in pages, not one row per await."
+    },
+    {
+      "id": "wallet-010",
+      "category": "performance",
+      "severity": "LOW",
+      "title": "Every money op pays for permanent migration-fallback reads (legacy idempo key + both seen-marker keys)",
+      "file": "app/core/wallet_service.py",
+      "line": 308,
+      "scenario": "_idempo_key() does an extra get(_IDEMPO, legacy) on every credit/spend/reserve/confirm/release/refund/settle/reclaim to honor pre-FIN-004 keys. credit()/spend() additionally read BOTH seen_key and seen_legacy from _CREDIT_SEEN/_SPEND_SEEN. These are correct for the migration window but there is no config knob to retire the legacy reads once no legacy rows remain, so the hot path carries 1–2 extra datastore round trips forever.",
+      "evidence": "legacy = self._legacy_key(tenant, op, source)\nif await self._store.get(_IDEMPO, legacy) is not None:\n    return legacy\n... seen = (await self._store.get(_CREDIT_SEEN, seen_key) or await self._store.get(_CREDIT_SEEN, seen_legacy))",
+      "recommendation": "Add a config flag (e.g. WALLET_IDEMPO_LEGACY_FALLBACK, default on) that can be turned off after a one-time backfill/expiry of legacy rows, eliminating the extra reads."
+    },
+    {
+      "id": "wallet-011",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "Low-balance threshold measures raw funds, not available (funds - held)",
+      "file": "app/core/wallet_service.py",
+      "line": 1232,
+      "scenario": "_measured() returns funds.get(fund) or total(funds) — the raw balance, ignoring held. A wallet whose entire balance is reserved by in-flight holds has available==0 but reports low_balance=False (funds still high). The next spend fails with 402 even though the customer was never warned — precisely the 'a 402 at spend time is not a warning, it is an outage' failure the low-balance feature exists to prevent.",
+      "evidence": "def _measured(self, funds: dict[str, int]) -> int:\n    return int(funds.get(self._low_fund, 0)) if self._low_fund else _funds.total(funds)",
+      "recommendation": "Measure against available (funds minus held), or at least document and test the choice; the warning should reflect what is actually spendable."
+    },
+    {
+      "id": "wallet-012",
+      "category": "correctness",
+      "severity": "LOW",
+      "title": "CreditIn.expires_at accepts NaN/inf (no allow_inf_nan guard), producing grants with degenerate expiry",
+      "file": "app/api/internal.py",
+      "line": 70,
+      "scenario": "expires_at: float | None has no bounds and pydantic float accepts NaN/inf by default. A caller passing NaN yields a grant with expires_at=NaN: `if expires_at:` is truthy (NaN), the grant is stored, and sweep_grants comparisons (float(expires_at) > now) are always False for NaN so the grant is neither skipped as unexpired nor sanely handled — it is treated as expired and clawed on the first sweep. inf yields a grant that effectively never expires yet occupies the active bucket. Neither is a validated, intended state.",
+      "evidence": "expires_at: float | None = None                    # a grant: unused remainder is clawed back",
+      "recommendation": "Constrain expires_at (allow_inf_nan=False, and a sane lower bound such as > now) at the API boundary, and reject a past/degenerate expiry rather than silently minting a grant that will be clawed immediately."
+    },
+    {
+      "id": "wallet-013",
+      "category": "correctness",
+      "severity": "LOW",
+      "title": "Zero-amount credit/spend are accepted and write real ledger rows, increment seq, and emit events",
+      "file": "app/core/money.py",
+      "line": 19,
+      "scenario": "require_non_negative allows 0 and CreditIn.amount/SpendIn.net are ge=0. A zero credit writes a CREDIT ledger row, increments the tenant seq, emits WALLET_CREDITED, and (if expires_at set) creates a zero-amount grant; a zero spend writes a SPEND row and marks _SPEND_SEEN. A caller can inflate the ledger (and reconcile cost, which is O(seq)) and generate event noise with no-op money ops, and zero grants clutter the sweep bucket.",
+      "evidence": "def require_non_negative(amount: int, what: str = \"amount\") -> int:\n    a = int(amount)\n    if a < 0:\n        raise MoneyError(...)\n    return a",
+      "recommendation": "Reject amount<=0 for credit/spend/reserve at the API (Field(ge=1)) or short-circuit a zero op before any write. Only withdraw currently enforces ge=1."
+    },
+    {
+      "id": "wallet-014",
+      "category": "observability",
+      "severity": "LOW",
+      "title": "_check_low_balance swallows all exceptions with a bare pass and no log",
+      "file": "app/core/wallet_service.py",
+      "line": 1287,
+      "scenario": "The whole low-balance bookkeeping is wrapped in `except Exception: pass`. The intent (never break a money move for an alert) is sound, but there is no log/telemetry, so a persistently failing alert path (bad _ALERTS row, datastore error, bad config) is completely invisible — the platform believes low-balance alerting works while it silently never fires.",
+      "evidence": "except Exception:      # noqa: BLE001 — see the docstring: never break the money movement\n            pass",
+      "recommendation": "Log a warning (rate-limited) or increment a telemetry counter in the except block so a chronically broken alert path is observable, while still not raising."
+    },
+    {
+      "id": "wallet-015",
+      "category": "config",
+      "severity": "LOW",
+      "title": "config.py annotates with Any without importing it — safe only by accident of `from __future__ import annotations`",
+      "file": "app/config.py",
+      "line": 401,
+      "scenario": "fund_expiry_policies is annotated `-> dict[str, dict[str, Any]]` and uses `out: dict[str, dict[str, Any]]`, but config.py imports only `from typing import Literal` — `Any` is never imported. This does not crash today only because `from __future__ import annotations` makes all annotations strings that are never evaluated. Removing that future import (or any tool that evaluates annotations, e.g. get_type_hints) would raise NameError at import time and fail boot. This is the exact fragility the repo's config-imports gate exists to catch.",
+      "evidence": "from typing import Literal\n... def fund_expiry_policies(self) -> dict[str, dict[str, Any]]:",
+      "recommendation": "Add `Any` to the typing import (from typing import Any, Literal). Do not rely on lazy annotations to hide a missing import in the config module."
+    },
+    {
+      "id": "wallet-016",
+      "category": "correctness",
+      "severity": "LOW",
+      "title": "refund credits back as non-permanent even when the original spend consumed permanent (top-up) money",
+      "file": "app/core/wallet_service.py",
+      "line": 902,
+      "scenario": "refund() replays applied via funds_delta only (no permanent_delta). Spend never raised the permanent floor, and the floor is monotonic-ish (not decremented on spend), so after refunding a spend that had drawn down a fund's permanent (top-up) money, the fund balance is restored but the permanent floor may no longer cover it in the sense that refunded money is now treated as forfeitable. If a forfeit grant later shares that fund, the sweep could claw refunded money that originated as non-forfeitable top-up. The direction is edge-case and the monotonic floor partly protects it, but the refund path does not restore the permanent character of the money it returns.",
+      "evidence": "entry = self._entry(tenant, REFUND, applied, +1, ...)\n... out = await self._mutate(tenant, funds_delta=applied, entry=entry)   # no permanent_delta",
+      "recommendation": "Decide and encode the permanence of refunded money: if the refunded spend consumed permanent balance, restore the permanent floor on refund; add a test asserting a refund of a top-up-funded spend cannot later be clawed by a forfeit grant."
+    },
+    {
+      "id": "wallet-017",
+      "category": "concurrency",
+      "severity": "MEDIUM",
+      "title": "Memory datastore only locks cas(); get/put/delete/find are unsynchronized, so get+put read-modify-write pairs are not atomic in-process",
+      "file": "app/adapters/datastore/memory.py",
+      "line": 26,
+      "scenario": "Only cas() takes self._lock. The service performs many get-then-put sequences that are NOT under the wallet CAS: seen-marker writes, grant state writes, hold writes, withdrawal writes, _finalize's get+put on _IDEMPO. In the in-memory adapter each individual method is sync (no internal await) so a single call is atomic, but a get in one task and the put in another task interleave across awaits, so these read-modify-write pairs can race in the single-process test/dev harness. This means the memory-backed test suite can pass while masking a race that the claim serialization is assumed to cover — the tests-that-stop-testing risk for the concurrency guarantees.",
+      "evidence": "async def put(self, collection, key, value): self._data.setdefault(collection, {})[key] = copy.deepcopy(value)   # no self._lock",
+      "recommendation": "Either document that only cas() is the atomicity primitive (and ensure every multi-writer path uses cas, not put), or take self._lock in put/delete/find as well so the reference adapter models the same atomicity as Postgres row locks. Add a concurrency test that fails if a claimed path relied on put atomicity it does not have."
+    },
+    {
+      "id": "wallet-018",
+      "category": "api",
+      "severity": "LOW",
+      "title": "notice-grants internal route has no exception mapping — a WalletError/Conflict surfaces as 500",
+      "file": "app/api/internal.py",
+      "line": 316,
+      "scenario": "reclaim, withdraw, settle, spend, reserve, confirm, release, refund all wrap the service call in try/except and map via _handle. notice_grants (and reconcile, get_balance) do not. If notice_grants() raises a WalletError or Conflict (e.g. a datastore contention bubbling up), the caller gets an opaque 500 instead of the clean 400/409 contract the other money routes present, and the scheduler cannot distinguish 'retryable contention' from 'server crash'.",
+      "evidence": "@router.post(\"/wallet/notice-grants\", dependencies=[Depends(require_internal_token)])\nasync def notice_grants(request: Request) -> dict:\n    return await build_wallet(request).notice_grants()",
+      "recommendation": "Wrap notice_grants (and the read routes) in the same try/except -> _handle mapping so contention returns 409 and money errors return 400, consistently across the internal tier."
+    },
+    {
+      "id": "wallet-019",
+      "category": "security",
+      "severity": "LOW",
+      "title": "erase_subject computes subject_ref inline and 500s (ValueError) when PII_SALT is empty in non-production",
+      "file": "app/api/internal.py",
+      "line": 381,
+      "scenario": "The write-ahead audit for subject.erased builds resource=f\"subject:{subject_ref(get_settings().PII_SALT, body.tenant, body.subject)}\". assert_pii_config_ok only guards PRODUCTION, so in a development/test deployment with an empty PII_SALT the very first erase call raises ValueError from subject_ref and returns a 500 — a DSAR proof endpoint that fails hard exactly where a regulator distinguishes 'we ran erasure' from 'we errored'. The raw subject is also passed straight into subject_ref only after the audit line is constructed, coupling the audit build to the crash.",
+      "evidence": "resource=f\"subject:{subject_ref(get_settings().PII_SALT, body.tenant, body.subject)}\"",
+      "recommendation": "Guard PII_SALT for any environment that exposes the erase/audit path, or degrade gracefully (skip the pseudonym in the resource) when the salt is absent, so the DSAR-proof endpoint never 500s on a config gap."
+    },
+    {
+      "id": "wallet-020",
+      "category": "observability",
+      "severity": "LOW",
+      "title": "settle_withdrawal paid=True writes no ledger entry — the ledger cannot distinguish PENDING from PAID",
+      "file": "app/core/wallet_service.py",
+      "line": 658,
+      "scenario": "The debit ledger row is written at withdraw() time. When settle marks paid=True it only flips Withdrawal.state and writes no ledger entry (only the failure path writes a WITHDRAW_REVERSAL). A party reading only the immutable ledger (reconcile, a dispute-defense report) sees the debit but has no ledger evidence the payout actually completed vs is still pending — the finalization lives only in a mutable Withdrawal row and the audit sink. For money leaving the platform, the ledger is not the full record it is claimed to be.",
+      "evidence": "if paid:\n    wd.state = WITHDRAW_PAID\n    wd.settled_at = self._clock.now()\n    await self._store.put(_WITHDRAWALS, wd.id, wd.to_dict())   # no ledger append",
+      "recommendation": "Consider a terminal ledger marker (or a WITHDRAW_PAID ledger row with zero balance impact) so the immutable history records settlement, not just the mutable withdrawal state; at minimum document that PAID/PENDING is only knowable from the withdrawals collection."
+    },
+    {
+      "id": "wallet-021",
+      "category": "api",
+      "severity": "LOW",
+      "title": "balance()/ledger() auto-create an empty wallet for any tenant string, so a non-existent tenant is indistinguishable from an empty one",
+      "file": "app/core/wallet_service.py",
+      "line": 108,
+      "scenario": "_wallet() returns Wallet(tenant=tenant) when no row exists. Operator and internal balance/ledger reads for an unknown or typo'd tenant therefore return a valid zero balance and an empty statement (HTTP 200) rather than a 404. Support tooling and cross-repo callers cannot tell 'this tenant has never had a wallet' from 'this tenant's wallet is empty', which masks integration bugs (wrong tenant id) and makes an operator's cross-tenant probe silently succeed against a non-existent tenant.",
+      "evidence": "row = await self._store.get(_WALLETS, tenant)\nreturn Wallet.from_dict(row) if row else Wallet(tenant=tenant)",
+      "recommendation": "For the read/operator surfaces, distinguish existence (e.g. a 404 or an 'exists' flag) from an empty wallet, so a wrong tenant id does not read as a valid empty account."
+    },
+    {
+      "id": "wallet-022",
+      "category": "tests",
+      "severity": "MEDIUM",
+      "title": "No test covers the forfeit-of-a-withdrawable-fund and caller-supplied-expires_at forfeiture paths",
+      "file": "tests/unit/test_grant_expiry_policy.py",
+      "line": 1,
+      "scenario": "The grant expiry tests exercise policy-driven forfeit/dormant/extend, but there is no test that a credit with a raw expires_at (no policy) on a withdrawable fund ends up forfeited rather than dormant (wallet-002), nor that a withdrawable fund is protected from forfeiture. Because the defect only manifests via the frozen empty idle_behavior + sweep default, the current tests pass while the SAMA-safety invariant ('a withdrawable/cashable fund is never silently forfeited') is unenforced by any assertion.",
+      "evidence": "tests/unit/test_grant_expiry_policy.py exercises WALLET_FUND_EXPIRY_POLICIES paths only; no test asserts behaviour for an explicit expires_at on a fund with no policy.",
+      "recommendation": "Add a test: credit a withdrawable fund with an explicit expires_at and no policy, run sweep_grants, and assert the remainder is preserved (dormant/reclaimable), not clawed. This test should fail today and lock in the wallet-002 fix."
+    },
+    {
+      "id": "wallet-023",
+      "category": "correctness",
+      "severity": "LOW",
+      "title": "withdraw() builds the payout split from a stale `avail` read taken before the claim serialization",
+      "file": "app/core/wallet_service.py",
+      "line": 604,
+      "scenario": "withdraw() reads w = await self._wallet(tenant) and computes avail and the per-fund `applied` split BEFORE the _mutate CAS. Between that read and the CAS a concurrent spend on a non-withdrawable fund cannot affect withdrawable funds, but a concurrent withdraw/confirm on the same withdrawable fund can. The _mutate invariant (funds>=held, funds>=0) will correctly abort the losing CAS (safe — the withdrawal row is then deleted), so there is no overdraw; but the pre-mutate pool check and the fixed split add avoidable 402/rollback churn under contention and could pick a fund split that no longer matches balances, forcing an InsufficientFunds abort where a re-planned split inside the CAS retry loop would have succeeded.",
+      "evidence": "w = await self._wallet(tenant)\navail = _funds.available(w.funds, w.held)\npool = sum(int(avail.get(n, 0)) for n in withdrawable)\n... take = min(int(avail.get(f.name, 0)), remaining)   # computed once, outside the CAS retry",
+      "recommendation": "Compute the withdrawable split inside the _mutate retry loop (like spend's plan is re-evaluated) or re-plan on CAS failure, so a concurrent balance change re-splits rather than aborting a still-satisfiable payout."
+    }
+  ]
+}

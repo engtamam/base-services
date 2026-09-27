@@ -1,0 +1,263 @@
+{
+  "service": "backup-service",
+  "date": "2026-09-27",
+  "summary": {
+    "total": 23,
+    "by_severity": { "CRITICAL": 0, "HIGH": 5, "MEDIUM": 9, "LOW": 9 }
+  },
+  "findings": [
+    {
+      "id": "backup-001",
+      "category": "concurrency",
+      "severity": "HIGH",
+      "title": "Alert/drill webhook push does blocking urllib I/O on the event loop",
+      "file": "app/core/alerts.py",
+      "line": 31,
+      "scenario": "backup_health_check and backup_drill are async FastAPI handlers that call _alerts.push(...) directly (internal.py:374, 439). push() runs post_json(), which is synchronous urllib.request.open with timeout_seconds=BACKUP_TARGET_TIMEOUT_SECONDS (120s). A slow/hung alert webhook blocks the whole asyncio event loop for up to 120s, freezing every other request and the /healthz probe on that worker — the exact v0.18.3 'blocking sync in async' class of bug the orchestrator/restore paths were careful to wrap in asyncio.to_thread, but the alert path was not.",
+      "evidence": "status, _ = post_json(webhook_url, payload, token=\"\", allowed_hosts=allowed_hosts, timeout_seconds=timeout_seconds)",
+      "recommendation": "Call _alerts.push via `await asyncio.to_thread(...)` like every other outbound call in orchestrator/restore/drill, and give the webhook its own short timeout knob instead of the 120s target timeout."
+    },
+    {
+      "id": "backup-002",
+      "category": "observability",
+      "severity": "HIGH",
+      "title": "The actual data-overwriting restore endpoint (/internal/backup/import) is unaudited",
+      "file": "app/api/internal.py",
+      "line": 191,
+      "scenario": "backup.restored is audited at the orchestrator side (operator.py:275), but the endpoint that actually mutates a service's live data — POST /internal/backup/import, which inserts/overwrites/prunes rows via import_archive — writes NO audit record on the target's own side. When backup-service is restored as a target of itself, or any service is restored/undone/cloned, the bulk overwrite of its data leaves no trail on the mutated service. An incident review of 'who overwrote this service's rows' finds nothing on the service that was changed.",
+      "evidence": "@router.post(\"/backup/import\", dependencies=[Depends(require_internal_token)])\nasync def backup_import(request: Request, body: BackupImportIn, ...):\n    ...\n    return await _backup.import_archive(...)",
+      "recommendation": "Emit a critical auditable action (e.g. backup.data_restored) in backup_import with inserted/overwritten/pruned counts, into_tenant and prune flags, before/around the mutation."
+    },
+    {
+      "id": "backup-003",
+      "category": "performance",
+      "severity": "HIGH",
+      "title": "RunStore.recent ignores its limit and scan_all(10000)+sorts on every call, including hot paths",
+      "file": "app/core/runs.py",
+      "line": 38,
+      "scenario": "recent(limit) always calls scan_all(_COLL, 10_000) and sorts the full set in Python, then slices. tenant_coverage (internal.py:300) calls runs.recent(1) on a request path to get 'the latest run' — so a per-dispute coverage lookup deserializes and sorts up to 10,000 run records every call. Health, drill, retention and every restore/list path do the same. As run history grows (see backup-005, prune gap), this becomes an O(all-runs) JSON deserialize+sort on request paths.",
+      "evidence": "rows = await self._s.scan_all(_COLL, _RECENT_SCAN)\nreturn sorted(rows, key=lambda r: r.get(\"started_at\", \"\"), reverse=True)[:limit]",
+      "recommendation": "Store runs with a sortable key and use find()/keyset pagination for recent(limit), or at minimum bound scan by the requested limit; do not scan 10k rows to answer recent(1)."
+    },
+    {
+      "id": "backup-004",
+      "category": "config",
+      "severity": "HIGH",
+      "title": "assert_consent_config_ok boot guard is defined and tested but never invoked",
+      "file": "app/main.py",
+      "line": 45,
+      "scenario": "create_app() calls assert_audit_config_ok, assert_pii_config_ok and assert_cors_config_ok, but NOT assert_consent_config_ok (config.py:435). If a future revision sets CONSENT_GATED=True with CONSENT_GATE_DRIVER=null (or http with no URL), the service boots green and every consent check silently answers UNKNOWN — the precise 'control built, nothing consults it' failure the guard was written to prevent. The guard is dead code giving false assurance.",
+      "evidence": "settings.assert_audit_config_ok()\nsettings.assert_pii_config_ok()\nsettings.assert_cors_config_ok()",
+      "recommendation": "Add settings.assert_consent_config_ok() to create_app() alongside the other boot guards."
+    },
+    {
+      "id": "backup-005",
+      "category": "correctness",
+      "severity": "HIGH",
+      "title": "Retention only sees the newest scan_limit runs, so older runs and their archives are never pruned",
+      "file": "app/core/retention.py",
+      "line": 57,
+      "scenario": "prune() reads all_runs = runs.recent(scan_limit) with scan_limit=BACKUP_RUN_HISTORY (200), and only iterates/prunes those. RunStore.recent itself caps at scan_all(10_000). Any run older than the newest 200 is never enumerated, so its record is never removed and its stored archives are never deleted — the object store grows without bound. 'index >= keep_runs' can never fire for runs beyond the 200-row window because they are not in the list at all.",
+      "evidence": "all_runs = await self._runs.recent(scan_limit)      # newest first\n...\nfor index, run in enumerate(all_runs):\n    ... too_old = index >= keep_runs or ...",
+      "recommendation": "Iterate the full run collection (paged) when pruning, decoupled from BACKUP_RUN_HISTORY, so every run past the retention window and its archives are actually deleted."
+    },
+    {
+      "id": "backup-006",
+      "category": "security",
+      "severity": "MEDIUM",
+      "title": "verify_restore writes DECRYPTED archive rows into the live datastore; a crash leaves plaintext PII behind",
+      "file": "app/core/backup.py",
+      "line": 315,
+      "scenario": "verify_restore unseals the archive (decrypting every row) and datastore.put()s each cleartext row into a throwaway namespace collection in the SAME datastore that holds live data. Teardown is best-effort in a finally block. If the process is killed mid-verify (OOM, pod eviction), decrypted customer rows from another service's backup remain as orphan rows in kv_store, unencrypted, under a __bkpverify__<token>__<name> collection that no sweeper ever cleans. The at-rest encryption guarantee is momentarily and, on crash, durably broken.",
+      "evidence": "await datastore.put(ns, key, row)\nwritten.append((ns, key))\nback = await datastore.get(ns, key)",
+      "recommendation": "Verify into an isolated ephemeral store (or a dedicated table dropped as a unit), and add a startup/retention sweep that deletes any residual __bkpverify__ collections."
+    },
+    {
+      "id": "backup-007",
+      "category": "security",
+      "severity": "MEDIUM",
+      "title": "SSRF egress guard blocks metadata only by literal IP; an allowlisted DNS name (or rebinding) reaches metadata",
+      "file": "app/core/internal_http.py",
+      "line": 59,
+      "scenario": "_check_host compares the URL hostname string against _METADATA_HOSTS (literal IPs / metadata.google.internal) and against EGRESS_ALLOWED_HOSTS, but never resolves DNS. A target base_url whose allow-listed hostname resolves to 169.254.169.254 (or a DNS-rebinding host that resolves differently at connect time than at check time) sends the internal token and the resolved operator secret (assertion header) to the metadata service. The literal-IP metadata block is bypassed by any name that resolves there.",
+      "evidence": "host = (parts.hostname or \"\").lower()\n...\nif host in _METADATA_HOSTS:\n    raise TargetUnreachable(\"egress to a cloud metadata endpoint is refused\")",
+      "recommendation": "Resolve the host, reject any resolution to link-local/loopback/metadata/private ranges, and pin the connection to the resolved-and-checked address (or enforce this at NetworkPolicy) to close the check-then-connect gap."
+    },
+    {
+      "id": "backup-008",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "S3 delete()/exists() swallow all exceptions, reporting transient errors as 'object absent'",
+      "file": "app/adapters/object_store/s3.py",
+      "line": 115,
+      "scenario": "delete() does head_object then 'except Exception: return False' — a timeout, 403, or throttling on head_object makes delete() report False ('never existed') for an object that is present. exists() does the same. An erasure receipt built on delete() (the very bug the docstring says it fixed for the True case) then confidently claims a person's file was absent/deleted when the store was merely unreachable — a compliance answer that is wrong in the opposite direction.",
+      "evidence": "try:\n    await s3.head_object(Bucket=self._bucket, Key=k)\nexcept Exception:\n    return False",
+      "recommendation": "Catch only NoSuchKey/404 as 'absent'; let transport/permission errors propagate (or return a distinct error) so callers do not treat an outage as a confirmed absence."
+    },
+    {
+      "id": "backup-009",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "undo forces whole-service prune, which can delete unrelated rows written after the restore",
+      "file": "app/core/restore.py",
+      "line": 296,
+      "scenario": "_undo_one always sends overwrite=True, prune=True with the pre-restore snapshot (captured whole-service, tenant=\"\"). prune deletes every key absent from the snapshot. Any legitimate row written to that service between the restore and the undo — including rows belonging to tenants unrelated to a clone, or normal traffic — is deleted because it is 'absent from the archive'. For an into_tenant clone especially, the pre-restore snapshot predates the clone, so undo prunes the whole service back, not just the clone, silently destroying newer live data.",
+      "evidence": "{\"archive\": archive, \"overwrite\": True, \"prune\": True},",
+      "recommendation": "Scope undo/prune to the keys the restore actually touched (record inserted/overwritten keys in the restore record) rather than authoritatively pruning the entire service against a stale snapshot; forbid prune-undo of an into_tenant clone."
+    },
+    {
+      "id": "backup-010",
+      "category": "config",
+      "severity": "MEDIUM",
+      "title": "SECRETS_KEK is declared twice in Settings",
+      "file": "app/config.py",
+      "line": 78,
+      "scenario": "SECRETS_KEK: str = \"\" appears at line 78 (inside the backup-orchestration block, documented as sealing target tokens) and again at line 151 (documented as the operator-credential KEK). The second class attribute silently shadows the first. Both currently default to \"\", so behaviour is unaffected today, but the duplication is a latent trap: a reader editing the first declaration's default or validator would have it silently overridden by the second, and the two conflicting docstrings misdescribe one field.",
+      "evidence": "    SECRETS_KEK: str = \"\"\n    ENV: Literal[...] = \"production\"\n    ...\n    SECRETS_KEK: str = \"\"",
+      "recommendation": "Remove the duplicate declaration; keep a single SECRETS_KEK field with one authoritative docstring."
+    },
+    {
+      "id": "backup-011",
+      "category": "observability",
+      "severity": "MEDIUM",
+      "title": "Internal DELETE /internal/backup/targets/{service} is unaudited",
+      "file": "app/api/internal.py",
+      "line": 256,
+      "scenario": "remove_target on the internal tier deletes a target — meaning that service is no longer backed up — with no auditor.record call, while the operator-tier equivalent (operator.py:393) audits backup.target_removed. A service-to-service caller (or anyone holding the internal token) can stop a service being protected and leave no record of who or when.",
+      "evidence": "@router.delete(\"/backup/targets/{service}\", dependencies=[Depends(require_internal_token)])\nasync def remove_target(request: Request, service: str) -> dict:\n    return {\"removed\": await TargetStore(request.app.state.container.datastore).remove(service)}",
+      "recommendation": "Emit backup.target_removed in the internal remove_target handler as the operator route does."
+    },
+    {
+      "id": "backup-012",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "backup-service does not back up its own operator_secrets, so restoring it loses every target token",
+      "file": "app/backup_manifest.py",
+      "line": 13,
+      "scenario": "BACKUP declares backup_targets, backup_runs, backup_restores, backup_drills — but NOT operator_secrets, where the sealed internal tokens for every target (referenced by Target.token_ref) live. If backup-service is restored from its own backup, the target registry returns but the secrets it points at do not, so make_token_resolver returns '' for every token_ref and no target can be reached — the orchestrator that 'knows what to back up' comes back unable to authenticate to anything.",
+      "evidence": "\"collections\": [\n    {\"name\": \"backup_targets\", \"tenant_scoped\": False},\n    {\"name\": \"backup_runs\", \"tenant_scoped\": False},\n    {\"name\": \"backup_restores\", \"tenant_scoped\": False},\n    {\"name\": \"backup_drills\", \"tenant_scoped\": False},\n]",
+      "recommendation": "Either include operator_secrets in the manifest (its rows are already sealed under SECRETS_KEK, and re-sealed under BACKUP_KEK in the archive) or document explicitly that target credentials must be re-provisioned after a self-restore."
+    },
+    {
+      "id": "backup-013",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "Memory and Postgres scan_all differ in row ordering, making exports non-deterministic across drivers",
+      "file": "app/adapters/datastore/memory.py",
+      "line": 76,
+      "scenario": "PostgresDataStore.scan_all orders by key (deterministic), but MemoryDataStore.scan_all returns dict insertion order. export() and prune's current-key read rely on scan_all(scan_cap+1) both for content and for truncation detection. On the memory driver the FIRST scan_cap rows sealed (when a collection exceeds the cap) are insertion-ordered, not key-ordered, so which rows land in a (near-cap) archive differs from postgres, and tests exercising truncation on memory do not reflect production ordering.",
+      "evidence": "rows = list(self._data.get(collection, {}).values())\nreturn copy.deepcopy(rows[: max(0, int(limit))])",
+      "recommendation": "Order MemoryDataStore.scan_all by key to match the postgres contract, so export content and truncation behaviour are identical across drivers."
+    },
+    {
+      "id": "backup-014",
+      "category": "performance",
+      "severity": "MEDIUM",
+      "title": "Backup run and drill capture targets strictly sequentially",
+      "file": "app/core/orchestrator.py",
+      "line": 181,
+      "scenario": "run() does `results = [await self._capture_one(t, ...) for t in targets]` — each target is exported, stored and verified before the next begins, each bounded by target_timeout_seconds (120s). With BACKUP_TARGET_LIMIT=500, a run's worst case is 500*120s of wall time, and one slow target delays every later target's backup. The drill (drill.py:86) has the same sequential shape. A nightly window can be blown by a handful of slow services.",
+      "evidence": "results = [await self._capture_one(t, run_id, tenant) for t in targets]",
+      "recommendation": "Fan out captures/drills with bounded concurrency (asyncio.gather over a semaphore) so one slow target does not serialize the rest."
+    },
+    {
+      "id": "backup-015",
+      "category": "config",
+      "severity": "LOW",
+      "title": "Alert and drill webhook pushes reuse the 120s target timeout as their HTTP timeout",
+      "file": "app/api/internal.py",
+      "line": 376,
+      "scenario": "_alerts.push in backup_health_check (line 376) and backup_drill (line 439) pass timeout_seconds=settings.BACKUP_TARGET_TIMEOUT_SECONDS (default 120s). An alert push is a small POST to a chat/incident webhook; giving it the full 120s export budget means a wedged webhook ties the call up for two minutes (compounding backup-001).",
+      "evidence": "delivery = _alerts.push(report, webhook_url=settings.BACKUP_ALERT_WEBHOOK_URL, allowed_hosts=settings.egress_allowed_hosts, timeout_seconds=settings.BACKUP_TARGET_TIMEOUT_SECONDS)",
+      "recommendation": "Add a dedicated short BACKUP_ALERT_TIMEOUT_SECONDS (a few seconds) for webhook pushes."
+    },
+    {
+      "id": "backup-016",
+      "category": "config",
+      "severity": "LOW",
+      "title": "No boot guard for BACKUP_KEK — backup-service can silently fail to back itself up",
+      "file": "app/config.py",
+      "line": 158,
+      "scenario": "BACKUP_KEK has no assert_*_config_ok guard. If it is unset, _sealer raises 503 only when the export endpoint is hit; backup-service (a target of itself) then reports MISSED in its own runs ('target has no backup key (503)'). The platform boots green and the orchestrator that protects everything is itself unprotected until someone notices a MISSED entry — the same silent-gap failure mode the audit/pii/consent guards exist to prevent.",
+      "evidence": "if not settings.BACKUP_KEK:\n    raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, \"BACKUP_KEK not configured ...\")",
+      "recommendation": "Add a production boot guard requiring BACKUP_KEK (backup-service cannot do its job without it), mirroring assert_audit_config_ok."
+    },
+    {
+      "id": "backup-017",
+      "category": "correctness",
+      "severity": "LOW",
+      "title": "subject_ref treats any raw subject shaped like sub_<32hex> as an already-wrapped pseudonym",
+      "file": "app/core/pii.py",
+      "line": 64,
+      "scenario": "is_subject_ref returns True for any string starting 'sub_' of the exact length, and subject_ref then returns it unchanged. A real subject identifier that happens to match that shape is never hashed, so an erasure over it matches zero rows and reports already_absent — the exact double-wrap failure the guard warns about, in reverse (a legitimate value mistaken for a pseudonym).",
+      "evidence": "return isinstance(value, str) and value.startswith(_PREFIX) and len(value) == len(_PREFIX) + _LEN",
+      "recommendation": "Distinguish genuine pseudonyms structurally (e.g. an internal marker/HMAC verification) rather than by prefix+length shape alone, or forbid raw subjects in that format at the edge."
+    },
+    {
+      "id": "backup-018",
+      "category": "correctness",
+      "severity": "LOW",
+      "title": "Retention treats a run with an unparseable timestamp as brand-new (age 0), exempting it from max-age pruning",
+      "file": "app/core/retention.py",
+      "line": 66,
+      "scenario": "age = now - (_epoch(started_at) or now). If started_at is missing/malformed, _epoch returns None, so the fallback is `now`, making age 0 — the run looks fresh and max_age_seconds pruning never removes it. Combined with count-based pruning it may still go, but an age-only retention policy (keep_runs high, max_age set) would keep such runs and their archives forever.",
+      "evidence": "age = now - (_epoch(run.get(\"started_at\", \"\")) or now)",
+      "recommendation": "Treat an unparseable timestamp as very old (age = +inf) for pruning, or log and skip with an explicit reason, rather than defaulting it to 'new'."
+    },
+    {
+      "id": "backup-019",
+      "category": "api",
+      "severity": "LOW",
+      "title": "Target base_url is not validated against the egress allowlist or scheme at registration time",
+      "file": "app/api/internal.py",
+      "line": 237,
+      "scenario": "register_target/register_backup_target accept any base_url (min/max length only). The egress allowlist and scheme are checked only later, at call time in _check_host. An operator who registers a target whose host is not on EGRESS_ALLOWED_HOSTS, or uses a non-http scheme, gets a successful-looking registration and only discovers the service is un-backup-able as a MISSED entry on the next run — a silent-until-later failure for a config value that could be validated up front.",
+      "evidence": "class _TargetIn(BaseModel):\n    service: str = Field(min_length=1, max_length=128)\n    base_url: str = Field(min_length=1, max_length=512)",
+      "recommendation": "Validate scheme (http/https) and that the host is on EGRESS_ALLOWED_HOSTS at registration, returning a clear refusal so misconfiguration surfaces immediately."
+    },
+    {
+      "id": "backup-020",
+      "category": "correctness",
+      "severity": "LOW",
+      "title": "into_tenant clone still takes a whole-service pre-restore snapshot it does not need and cannot safely undo",
+      "file": "app/core/restore.py",
+      "line": 189,
+      "scenario": "For an into_tenant clone the import is additive (no overwrite of existing rows unless overwrite=True and ids collide), so a pre-restore snapshot is not required for safety, yet _restore_one still exports and stores a whole-service snapshot. Worse, the resulting undo (backup-009) would prune the whole service. The snapshot both costs a full export per clone and records an undo point that is dangerous to use for a clone.",
+      "evidence": "snapshot_key = await self._snapshot(base, service, restore_id, token, \"\", allowed, timeout)",
+      "recommendation": "Skip the safety snapshot for additive into_tenant clones (or make its undo clone-scoped), and record that a clone has no whole-service undo point."
+    },
+    {
+      "id": "backup-021",
+      "category": "correctness",
+      "severity": "LOW",
+      "title": "A restore whose services filter matches nothing is recorded as status 'empty' with no error",
+      "file": "app/core/restore.py",
+      "line": 141,
+      "scenario": "restore() filters run results by `want = set(services or [])`. If the operator typos a service name (or passes names not in the run), the loop appends nothing, _status([]) returns 'empty', and a restore record is written with restored/skipped/failed all empty and no indication the filter matched nothing. The operator cannot distinguish 'nothing to do' from 'I misspelled every service and nothing ran'.",
+      "evidence": "if not results:\n    return \"empty\"",
+      "recommendation": "When a non-empty services filter matches no target in the run, raise RestoreError (400) naming the unmatched services rather than silently recording an empty restore."
+    },
+    {
+      "id": "backup-022",
+      "category": "security",
+      "severity": "LOW",
+      "title": "Archive and run records disclose tenant IDs and per-collection row counts in the clear",
+      "file": "app/core/backup.py",
+      "line": 126,
+      "scenario": "export() writes row_counts and tenants_covered outside the sealed body, and the orchestrator copies them into the (unencrypted) run record and object metadata. A reader with the object store or the run log but NOT the BACKUP_KEK still learns exactly which tenant IDs each service holds and how many rows are in each collection — a meaningful metadata leak about customers and data volumes. This is documented as intentional ('no more disclosure than the manifest'), but tenant IDs are arguably more sensitive than the manifest and should be weighed.",
+      "evidence": "\"row_counts\": {name: len(rows) for name, rows in payload.items()},\n\"tenants_covered\": tenants_covered,",
+      "recommendation": "Confirm the threat model tolerates cleartext tenant enumeration from a stolen store/run log; if not, seal tenants_covered or store it only in the access-controlled run DB, not in the object-store archive."
+    },
+    {
+      "id": "backup-023",
+      "category": "tests",
+      "severity": "LOW",
+      "title": "Restore tests do not cover the into_tenant comingle guard, no-prune-on-clone, or the dangerous whole-service undo",
+      "file": "tests/unit/test_restore.py",
+      "line": 198,
+      "scenario": "test_into_tenant_is_forwarded_to_the_importer only asserts the into_tenant field is passed through. There is no test that a multi-tenant archive is refused for into_tenant, that prune is refused with into_tenant, or that undo after a clone does not destroy unrelated rows (backup-009/020). The most dangerous restore behaviours are unverified, so a regression that prunes the whole service on a clone-undo would pass CI.",
+      "evidence": "run(_orch(st, objects, fleet).restore(\"run_1\", into_tenant=\"beta\"))\nimp = [p for u, p in fleet.calls if u.endswith(\"/backup/import\")][0]\nassert imp[\"into_tenant\"] == \"beta\"",
+      "recommendation": "Add tests asserting: into_tenant + multi-tenant archive is refused, into_tenant + prune is refused, and clone-undo scope; assert the import payload for a clone does not carry prune=True."
+    }
+  ]
+}

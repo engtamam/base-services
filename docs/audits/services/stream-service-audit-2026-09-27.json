@@ -1,0 +1,275 @@
+{
+  "service": "stream-service",
+  "date": "2026-09-27",
+  "summary": {
+    "total": 24,
+    "by_severity": {"CRITICAL": 2, "HIGH": 3, "MEDIUM": 11, "LOW": 8}
+  },
+  "note": "stream-service is a camera/RTSP-HLS-WebRTC video service, not an SSE/WebSocket pub-sub. The audit re-mapped the requested lenses (connect/per-message auth, tenant isolation of streams, backpressure, replay, connection limits) onto the equivalent surfaces here: source/session auth, tenant scoping of sources/sessions/recordings/exports, playback-token signing, recording/export pipelines, concurrency quotas, and viewer/storage caps.",
+  "findings": [
+    {
+      "id": "stream-001",
+      "category": "SECURITY / secrets-at-rest / credential-disclosure (CWE-312, CWE-522, CWE-200)",
+      "severity": "CRITICAL",
+      "title": "ONVIF camera credentials stored UNSEALED and returned to any stream.view caller",
+      "file": "services/stream-service/app/core/models.py",
+      "line": 61,
+      "scenario": "The source URL is carefully sealed (AES-GCM) and redacted everywhere, but the parallel `onvif` credential dict is not. register_source stores `onvif=onvif or {}` verbatim; Source.to_dict() persists `onvif` in plaintext in the datastore, and Source.public_dict() returns `onvif` verbatim in GET /sources, GET /sources/{id}, and POST /discovery. An operator registering an authenticated PTZ camera naturally puts host/port/username/password in the onvif dict (the PTZ path in _ptz_source/onvif_ptz consumes exactly those). Result: (a) a leaked datastore row leaks the camera password although the whole sealing design exists to prevent that, and (b) any holder of the weakest capability (stream.view) can read every camera's ONVIF password via the list/get endpoints.",
+      "evidence": "def public_dict(self) -> dict[str, Any]:\n    return {\"id\": self.id, \"tenant\": self.tenant, \"name\": self.name,\n            \"url\": self.url_host,          # redacted — never the sealed blob or credentials\n            ... \"onvif\": self.onvif, ...}",
+      "recommendation": "Seal onvif credential fields at rest exactly like url (bind AAD to source id), and strip username/password (and any secret onvif fields) from public_dict() and from the discovery response. Return only non-secret capability data to clients."
+    },
+    {
+      "id": "stream-002",
+      "category": "SECURITY / tenant-isolation / falsy-default-trap (CWE-639, CWE-284)",
+      "severity": "CRITICAL",
+      "title": "Missing tenant claim collapses every tenant-less principal into a shared \"\" tenant bucket",
+      "file": "services/stream-service/app/api/v1/stream.py",
+      "line": 92,
+      "scenario": "_extract_principal sets tenant=None when a token carries no tenant/org/tid claim. Every route then uses `p.tenant or \"\"` for both writes and reads (register_source tenant=p.tenant or \"\", get_source tenant=p.tenant or \"\", list_for_tenant(p.tenant or \"\"), etc.). Two different customers whose tokens lack a tenant claim (or where the claim is present but empty/0/falsy) both resolve to tenant \"\" and can read and delete each other's sources, sessions, recordings and exports. The tenant is the single wall between companies and it is silently defaulted rather than required.",
+      "evidence": "tenant = claims.get(\"tenant\") or claims.get(\"org\") or claims.get(\"tid\")\n... Principal(... tenant=str(tenant) if tenant else None ...)\n# and in every route:\nsrc = await svc.register_source(tenant=p.tenant or \"\", ...)",
+      "recommendation": "Reject a token with no tenant claim at require_user (401/403) for tenant-scoped routes, or fail closed in the service when tenant is falsy. Never map an absent tenant onto a real shared bucket."
+    },
+    {
+      "id": "stream-003",
+      "category": "CORRECTNESS / data-integrity / evidence (CWE-682)",
+      "severity": "HIGH",
+      "title": "Recording segments are stamped with SHIP time, not footage time — export windowing is broken",
+      "file": "services/stream-service/app/core/recording.py",
+      "line": 69,
+      "scenario": "RecordingShipper.ship_session stores every segment with start=now() and end=now() (the moment it is shipped), not the actual recorded time range. ExportService._sources_for selects segments with _overlaps(seg.start, seg.end, exp.start, exp.end) and _uncovered_seconds measures coverage from the same fields. Because every segment has start==end==ship-instant, a request for footage over a real window (e.g. 10:00-10:05) matches only segments whose ship instant happens to fall inside the window, and _uncovered_seconds reports nearly the whole window as missing on essentially every export. An incident-review clip pulls the wrong (or no) footage and reports a false gap.",
+      "evidence": "ref = await self._sink.put_segment(\n    tenant=tenant, session_id=session_id, seq=seq, data=data,\n    content_type=\"video/mp4\", start=now(), end=now())\nrec.segments.append({\"ref\": ref.ref, \"bytes\": ref.bytes, \"start\": ref.start, \"end\": ref.end, \"seq\": seq})",
+      "recommendation": "Derive each segment's start/end from the footage timeline (segment sequence * record_segment_seconds relative to the session/recording start, or the mtime/duration ffmpeg wrote), not from the ship time. Add a test that exports a window and asserts the correct segments are chosen and missing_seconds is 0 for fully-covered footage."
+    },
+    {
+      "id": "stream-004",
+      "category": "CONFIG / advertised-but-unread / resource-exhaustion",
+      "severity": "HIGH",
+      "title": "Storage/usage caps (RETENTION_MAX_BYTES, STREAM_MAX_STORAGE_BYTES, STREAM_MAX_HOURS_MONTH) are advertised but never enforced",
+      "file": "services/stream-service/app/core/stream_service.py",
+      "line": 240,
+      "scenario": "enforce_retention deletes only by age (days). RETENTION_MAX_BYTES, STREAM_MAX_STORAGE_BYTES and STREAM_MAX_HOURS_MONTH are surfaced in the manifest (manifest.py:136-140) and documented as caps, but no code reads them for enforcement (grep shows only config + manifest references). A tenant recording continuously within RETENTION_DAYS grows storage without bound; the operator sees a byte/hours ceiling in the manifest that does nothing. Per the project's advertised-but-unread-knobs rule, a knob nothing reads is worse than an absent one.",
+      "evidence": "async def enforce_retention(self, *, days: int, recordings, sink, limit: int = 200) ... # age-based only; no byte/hours ceiling read\n# manifest.py: \"retention_max_bytes\": settings.RETENTION_MAX_BYTES, \"max_hours_month\": settings.STREAM_MAX_HOURS_MONTH, \"max_storage_bytes\": settings.STREAM_MAX_STORAGE_BYTES",
+      "recommendation": "Either enforce these caps (byte-budget retention pass; monthly hours/storage quota checked at session start alongside concurrency) or remove them from config and manifest. Do not advertise a limit nothing applies."
+    },
+    {
+      "id": "stream-005",
+      "category": "CONFIG / advertised-but-unread / DoS via unbounded viewers",
+      "severity": "HIGH",
+      "title": "WEBRTC_MAX_VIEWERS_PER_SESSION is wired into config but never enforced",
+      "file": "services/stream-service/app/core/stream_service.py",
+      "line": 54,
+      "scenario": "WEBRTC_MAX_VIEWERS_PER_SESSION is read, passed through StreamConfig as webrtc_max_viewers, and stored on cfg — but grep shows self.webrtc_max_viewers is only ASSIGNED, never read. _playback hands out the WHEP url and ICE servers with no per-session viewer accounting or cap. The declared per-session viewer limit does nothing, so a single session can be subscribed by unlimited WebRTC viewers against the media server — the exact resource-exhaustion the knob claims to bound.",
+      "evidence": "self.webrtc_max_viewers = webrtc_max_viewers   # set...\n# ...and never referenced again anywhere in the service",
+      "recommendation": "Enforce the cap where viewers are admitted (track active WHEP viewers per session, refuse or 429 beyond the cap), or delete the knob and its manifest advertisement."
+    },
+    {
+      "id": "stream-006",
+      "category": "OBSERVABILITY / data / error-swallowing (CWE-703)",
+      "severity": "MEDIUM",
+      "title": "delete_recording reports deleted:true even when segment-blob deletes all fail — orphaned footage",
+      "file": "services/stream-service/app/api/v1/stream.py",
+      "line": 418,
+      "scenario": "delete_recording loops segments calling recording_sink.delete(seg.ref) inside try/except Exception: pass, then deletes the recording row and returns {deleted: True}. If the sink is unreachable or the ref is wrong, every blob delete silently fails, the index row is removed, and the caller/DSAR receipt says the footage is gone while the actual video persists in file-service/S3 — the false-erasure-receipt failure the erasure module explicitly warns about, reintroduced on the ordinary delete path.",
+      "evidence": "for seg in rec.segments:\n    try:\n        await c.recording_sink.delete(seg.get(\"ref\", \"\"))\n    except Exception:   # noqa: BLE001\n        pass\nawait _recordings(request).delete(recording_id)\nreturn {\"deleted\": True}",
+      "recommendation": "Track per-segment delete outcomes; if any blob delete failed, keep the row (or mark it pending-purge) and report partial deletion rather than an unconditional deleted:true. Log the failure at WARN."
+    },
+    {
+      "id": "stream-007",
+      "category": "SECURITY / key-management / secret-reuse",
+      "severity": "MEDIUM",
+      "title": "SEAL_KEY and PLAYBACK_SIGNING_SECRET both silently fall back to INTERNAL_SERVICE_TOKEN",
+      "file": "services/stream-service/app/container.py",
+      "line": 204,
+      "scenario": "_seal_key() returns SEAL_KEY or INTERNAL_SERVICE_TOKEN and _playback_secret() returns PLAYBACK_SIGNING_SECRET or INTERNAL_SERVICE_TOKEN. In any deployment that leaves either empty (all of dev/test, and production leaves PLAYBACK_SIGNING_SECRET optional — only SEAL_KEY is boot-guarded), one secret does three jobs: internal service-to-service auth, at-rest credential sealing, and playback URL signing. A leak of the internal token then also forges playback tokens and unseals stored camera credentials, and rotating it breaks all three at once.",
+      "evidence": "def _seal_key(s: Settings) -> str:\n    return s.SEAL_KEY or s.INTERNAL_SERVICE_TOKEN\ndef _playback_secret(s: Settings) -> str:\n    return s.PLAYBACK_SIGNING_SECRET or s.INTERNAL_SERVICE_TOKEN",
+      "recommendation": "Require a distinct PLAYBACK_SIGNING_SECRET in production (boot guard, as SEAL_KEY already is). Keep the internal-token fallback only for dev, and document that these must be independent keys."
+    },
+    {
+      "id": "stream-008",
+      "category": "CORRECTNESS / incomplete-feature (WebRTC/TURN)",
+      "severity": "MEDIUM",
+      "title": "TurnMediaEgress advertises TURN servers with no usable credentials",
+      "file": "services/stream-service/app/adapters/stream/null_adapters.py",
+      "line": 64,
+      "scenario": "ice_servers() returns {\"urls\": [...], \"credentialType\": \"password\"} but never sets `username` or `credential`. The comment claims the coturn REST username/expiry is 'minted per client at offer time', but no code mints it — the secret is only used to toggle credentialType. A browser behind symmetric NAT receives TURN URLs it cannot authenticate to, so relay candidates fail and the exact NAT-traversal case TURN exists for does not work. The feature looks configured and is silently broken.",
+      "evidence": "if self._secret:\n    server[\"credentialType\"] = \"password\"\nreturn [server] if self._urls else []   # no username/credential ever set",
+      "recommendation": "Generate coturn REST ephemeral credentials (username=expiry:random, credential=base64(HMAC-SHA1(secret, username))) per playback response with a TTL, or remove the false credentialType and document that only static/long-term TURN creds are supported."
+    },
+    {
+      "id": "stream-009",
+      "category": "CORRECTNESS / contract-drift (PTZ auth)",
+      "severity": "MEDIUM",
+      "title": "ONVIF PTZ factory reads credentials from the wrong keys, so PTZ auth uses empty user/password",
+      "file": "services/stream-service/app/adapters/stream/onvif_ptz.py",
+      "line": 22,
+      "scenario": "_default_factory builds ONVIFCamera(host, port, source.get('user',''), source.get('password','')) — it reads top-level `user`/`password`. But _ptz_source (stream.py) passes {\"onvif\": <onvif dict>, \"url\": ...}, and register_source stores credentials inside the onvif dict, not at top level. So on a real (non-fake) camera the controller authenticates with empty username/password and PTZ move/goto/presets fail on any camera that requires auth. It is never caught because all PTZ tests inject a client_factory over an empty {} source.",
+      "evidence": "cam = ONVIFCamera(onvif.get(\"host\"), int(onvif.get(\"port\", 80)),\n                  source.get(\"user\", \"\"), source.get(\"password\", \"\"))",
+      "recommendation": "Read credentials from the onvif dict (onvif.get('user'/'username'), onvif.get('password')) consistently with how they are stored, and add a test that asserts the factory is passed the registered credentials."
+    },
+    {
+      "id": "stream-010",
+      "category": "SECURITY / DoS / physical-device abuse",
+      "severity": "MEDIUM",
+      "title": "PTZ move/stop/goto endpoints have no rate limit",
+      "file": "services/stream-service/app/api/v1/stream.py",
+      "line": 291,
+      "scenario": "POST /sources/{id}/ptz/move, /ptz/stop, /ptz/goto/{token} and GET /ptz/presets carry only capability deps (_MANAGE/_READ), no Depends(rate_limit) (unlike sources/sessions/exports). A holder of stream.manage can loop PTZ commands, hammering the physical camera's ONVIF service and motor and the service's outbound connections, with no throttle. Playback and per-source reads are similarly unlimited but PTZ drives real hardware.",
+      "evidence": "@router.post(\"/sources/{source_id}/ptz/move\", dependencies=[Depends(_MANAGE)])\nasync def ptz_move(... )  # no Depends(rate_limit)",
+      "recommendation": "Add Depends(rate_limit) to the PTZ routes (and ideally a per-source cooldown for continuous moves), consistent with the write routes that already carry it."
+    },
+    {
+      "id": "stream-011",
+      "category": "CORRECTNESS / retention (falsy/absent-field)",
+      "severity": "MEDIUM",
+      "title": "iter_expired filters on {\"locked\": False} — recordings missing the field are never retention-deleted",
+      "file": "services/stream-service/app/core/stores.py",
+      "line": 173,
+      "scenario": "RecordingStore.iter_expired queries find(_RECORDINGS, {\"locked\": False}). On a datastore backend that matches by exact equality, any recording row written without a `locked` key (legacy rows, or rows imported/restored from an archive predating the field) will not equal False and will be excluded — so it is never aged out and its storage grows forever, while looking fine. The retention sweep silently under-collects.",
+      "evidence": "rows, cursor = await self._s.find(_RECORDINGS, {\"locked\": False}, limit=limit, after=after, sort=(\"started\", \"asc\"))",
+      "recommendation": "Do not key retention on locked==False in the query; fetch by age and skip rec.locked in Python (Recording.from_dict already defaults locked to False), or normalize the field on read/migration."
+    },
+    {
+      "id": "stream-012",
+      "category": "CORRECTNESS / validation / resource-waste",
+      "severity": "MEDIUM",
+      "title": "Export request never validates the source exists or belongs to the tenant",
+      "file": "services/stream-service/app/core/exporting.py",
+      "line": 55,
+      "scenario": "ExportService.request (POST /exports) validates the time range and format but never checks that source_id names a real source owned by the tenant. A caller can submit exports for arbitrary/garbage source_ids; each creates a PENDING Export row and enqueues a worker job. The worker later finds no overlapping recordings and marks it FAILED, but the tenant can spray unlimited junk export rows + queue jobs (audited as export.requested) with no upfront rejection.",
+      "evidence": "exp = Export(id=f\"exp_{new_id()}\", tenant=tenant, source_id=source_id, start=start, end=end, status=PENDING, fmt=fmt)\nawait self._exports.create(exp)  # source_id never verified",
+      "recommendation": "Resolve the source via SourceStore.get and confirm src.tenant == tenant before creating the export; 404 otherwise, matching the other source-scoped routes."
+    },
+    {
+      "id": "stream-013",
+      "category": "PERFORMANCE / hot-path write amplification",
+      "severity": "MEDIUM",
+      "title": "Every playback poll writes the session row and there is no rate limit on GET playback",
+      "file": "services/stream-service/app/core/stream_service.py",
+      "line": 193,
+      "scenario": "playback() calls _note_viewer(sess) then _sessions.save(sess) on every GET /sessions/{id}/playback, and that route has no Depends(rate_limit). An HLS player polling for a fresh signed URL (or many viewers of one session) turns each poll into a datastore write of the full session document — write amplification and lock contention on a hot row, unthrottled. save() also bumps updated and (via put) is last-writer-wins against concurrent heartbeats.",
+      "evidence": "async def playback(self, session_id: str, *, tenant: str):\n    sess = await self.get_session(session_id, tenant=tenant)\n    self._note_viewer(sess)\n    await self._sessions.save(sess)\n    return self._playback(sess)",
+      "recommendation": "Debounce viewer marking (only write if last_viewer_at is older than N seconds), add Depends(rate_limit) to the playback route, and avoid rewriting the whole session doc on a read-shaped call."
+    },
+    {
+      "id": "stream-014",
+      "category": "CONFIG / advertised-but-unread",
+      "severity": "MEDIUM",
+      "title": "RECONNECT_MAX / RECONNECT_BACKOFF_MS plumbed into config but never applied to the engine",
+      "file": "services/stream-service/app/core/stream_service.py",
+      "line": 52,
+      "scenario": "RECONNECT_MAX and RECONNECT_BACKOFF_MS are read, passed into StreamConfig and stored as self.reconnect_max / self.reconnect_backoff_ms, and shown in the manifest health block. But they are only assigned — never read, and never placed onto EngineSpec — so the ffmpeg engine's reconnect behavior is not actually governed by these knobs. An operator tuning reconnection changes nothing.",
+      "evidence": "self.reconnect_max = reconnect_max\nself.reconnect_backoff_ms = reconnect_backoff_ms   # never read; not passed to EngineSpec",
+      "recommendation": "Pass reconnect_max/backoff onto EngineSpec and into the ffmpeg reconnect flags, or drop the knobs and their manifest advertisement."
+    },
+    {
+      "id": "stream-015",
+      "category": "CONFIG / advertised-but-unread",
+      "severity": "MEDIUM",
+      "title": "VIEWER_GRACE_SECONDS is configured but never honored",
+      "file": "services/stream-service/app/core/stream_service.py",
+      "line": 61,
+      "scenario": "VIEWER_GRACE_SECONDS is threaded through as cfg.viewer_grace_s and documented as 'last viewer left -> wait this long before stopping', but _guard_breached uses only idle_timeout_s for idle stop and self.viewer_grace_s is never read. The advertised grace period before a viewer_driven session stops does not exist; sessions stop purely on idle_timeout, contradicting the documented behavior.",
+      "evidence": "self.viewer_grace_s = viewer_grace_s   # assigned, never referenced in _guard_breached or elsewhere",
+      "recommendation": "Apply the grace window in the idle/viewer-driven stop logic, or remove the knob and its docstring/manifest claims."
+    },
+    {
+      "id": "stream-016",
+      "category": "OBSERVABILITY / audit / attribution",
+      "severity": "MEDIUM",
+      "title": "Operator and erasure audit records use an empty actor when PII_SALT is unset",
+      "file": "services/stream-service/app/api/v1/operator.py",
+      "line": 50,
+      "scenario": "_actor returns '' when PII_SALT is empty, and every operator mutation (secret set/clear, config change) is then recorded with actor='' — an unattributable privileged action in the append-only chain. /internal/privacy/erase similarly records actor=''. In production PII_SALT is boot-guarded, but in staging/dev (and any environment that skips the guard) privileged credential and policy changes are witnessed with no actor, defeating the write-ahead audit the module is built around.",
+      "evidence": "def _actor(principal: Principal) -> str:\n    s = get_settings()\n    if not s.PII_SALT:\n        return \"\"\n    return subject_ref(s.PII_SALT, principal.tenant or \"\", principal.subject)",
+      "recommendation": "Refuse the mutation (or fall back to a non-reversible but non-empty actor token) when no salt is configured, rather than recording a privileged action with an empty actor."
+    },
+    {
+      "id": "stream-017",
+      "category": "SECURITY / information-exposure (CWE-200)",
+      "severity": "LOW",
+      "title": "/metrics is served with no authentication",
+      "file": "services/stream-service/app/api/metrics.py",
+      "line": 15,
+      "scenario": "The /metrics route returns generate_latest() with no auth dependency. Anyone able to reach the pod/service port can scrape process metrics and the RED metrics grouped by route template, revealing traffic volumes, error rates and internal route inventory. Common for scrape targets locked down by NetworkPolicy, but there is no in-app guard and no config to require the internal token.",
+      "evidence": "@router.get(\"/metrics\")\nasync def metrics() -> Response:\n    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)",
+      "recommendation": "Confirm /metrics is only reachable from the scrape network (NetworkPolicy) and consider gating it behind the internal token or a dedicated metrics port."
+    },
+    {
+      "id": "stream-018",
+      "category": "OBSERVABILITY / doc-drift",
+      "severity": "LOW",
+      "title": "ratelimit.py header comment mislabels the module as identity-service",
+      "file": "services/stream-service/app/api/ratelimit.py",
+      "line": 2,
+      "scenario": "The module banner reads '# identity-service — Rate limiting'. This is copy-paste drift from another service. It misleads a reader about provenance and, per the self-contained-service rule, hints the file was lifted without review — a small but real correctness/provenance smell in a security-relevant module.",
+      "evidence": "# identity-service — Rate limiting (policy-driven, honest headers)",
+      "recommendation": "Fix the banner to stream-service; grep the tree for other identity-service banners copied into this service."
+    },
+    {
+      "id": "stream-019",
+      "category": "API / CONTRACT / defense-in-depth (design note)",
+      "severity": "LOW",
+      "title": "Playback token verify() does not bind the token to the requested resource",
+      "file": "services/stream-service/app/adapters/stream/signed_playback.py",
+      "line": 40,
+      "scenario": "verify() checks the HMAC and expiry and returns {tenant, session_id, output} but performs no comparison against the resource actually being requested — it relies entirely on an external media origin to compare token.session_id/output to the URL path. This service ships no /media route, so the check lives elsewhere; but the contract is fragile: any consumer (or a future in-service media handler) that trusts verify()==valid without matching session_id/output/tenant would let a token minted for session A play session B.",
+      "evidence": "return {\"tenant\": payload.get(\"t\"), \"session_id\": payload.get(\"s\"), \"output\": payload.get(\"o\"), \"exp\": payload.get(\"exp\")}",
+      "recommendation": "Offer a verify_for(token, *, session_id, output, tenant) helper that fails unless the claims match the requested resource, and document that verify() alone is not authorization."
+    },
+    {
+      "id": "stream-020",
+      "category": "CONFIG / doc-drift",
+      "severity": "LOW",
+      "title": "EXPORT_MAX_RANGE_SECONDS explanatory comment is attached to the wrong knob",
+      "file": "services/stream-service/app/config.py",
+      "line": 415,
+      "scenario": "The multi-line comment beginning 'Longest window a single export may cover. This knob existed and was NEVER READ...' sits above EXPORT_LEASE_SECONDS, while the knob it describes (EXPORT_MAX_RANGE_SECONDS) is defined several lines lower with no comment. A maintainer editing the lease will read range documentation and vice-versa. (The knob itself is now correctly read in ExportService.request.)",
+      "evidence": "# Longest window a single export may cover. This knob existed and was NEVER READ ...\n    EXPORT_LEASE_SECONDS: int = 1_800\n    EXPORT_MAX_RANGE_SECONDS: int = 3_600",
+      "recommendation": "Move the range comment down to EXPORT_MAX_RANGE_SECONDS and give EXPORT_LEASE_SECONDS its own (the lease rationale currently floats above the range comment)."
+    },
+    {
+      "id": "stream-021",
+      "category": "CONFIG / advertised-but-unread",
+      "severity": "LOW",
+      "title": "Snapshot/thumbnail/health knobs are only surfaced in the manifest, never enforced",
+      "file": "services/stream-service/app/manifest.py",
+      "line": 128,
+      "scenario": "SNAPSHOT_MIN_INTERVAL_SECONDS, THUMBNAIL_INTERVAL_SECONDS, SNAPSHOT_MAX_WIDTH, HLS_LOW_LATENCY, SOURCE_OFFLINE_AFTER_SECONDS and SOURCE_PROBE_TTL_SECONDS appear only in config.py and the manifest — grep shows no enforcement anywhere. They advertise behavior (snapshot throttling, low-latency HLS, offline detection, probe caching) the service does not implement, which is the advertised-but-unread-knob anti-pattern the project explicitly forbids.",
+      "evidence": "\"snapshot\": {\"min_interval_seconds\": settings.SNAPSHOT_MIN_INTERVAL_SECONDS, \"thumbnail_interval_seconds\": settings.THUMBNAIL_INTERVAL_SECONDS, \"max_width\": settings.SNAPSHOT_MAX_WIDTH}",
+      "recommendation": "Wire each knob to real behavior or remove it from config and manifest so the manifest reflects what the service actually does."
+    },
+    {
+      "id": "stream-022",
+      "category": "TESTS / weak-assertion (test that stops testing)",
+      "severity": "LOW",
+      "title": "WebRTC playback test asserts TURN urls but never a usable credential",
+      "file": "services/stream-service/tests/unit/test_webrtc.py",
+      "line": 34,
+      "scenario": "test_playback_returns_whep_url_and_ice_when_enabled asserts ice_servers[0]['urls'] == ['turn:t:3478'] but never checks for username/credential. Because TurnMediaEgress never mints credentials (stream-008), the test passes while the emitted TURN config is unusable in a real browser. The test measures URL plumbing, not that WebRTC relay would work.",
+      "evidence": "assert playback[\"webrtc\"][\"ice_servers\"][0][\"urls\"] == [\"turn:t:3478\"]   # no credential asserted",
+      "recommendation": "Assert that an ephemeral username and credential are present and validate against the secret; the failing assertion will drive the stream-008 fix."
+    },
+    {
+      "id": "stream-023",
+      "category": "TESTS / untested-branch",
+      "severity": "LOW",
+      "title": "PTZ tests never exercise the real client factory, hiding the credential-mapping bug",
+      "file": "services/stream-service/tests/unit/test_ptz_onvif.py",
+      "line": 41,
+      "scenario": "Every PTZ test injects client_factory=lambda source: _FakeCam(...) over an empty {} source, so _default_factory (which reads source['user']/source['password']) is never run and the credential-location mismatch in stream-009 goes undetected. The suite proves the command shapes but not that a real camera would receive the operator's credentials.",
+      "evidence": "def _controller(ptz, timeout=5):\n    return OnvifPtzController(move_timeout_seconds=timeout, client_factory=lambda source: _FakeCam(ptz))",
+      "recommendation": "Add a test that calls _default_factory with a realistic source dict and asserts ONVIFCamera receives host/port/user/password from where register_source actually stores them (mock the onvif import)."
+    },
+    {
+      "id": "stream-024",
+      "category": "SECURITY / SSRF-surface (CWE-918, mitigated)",
+      "severity": "LOW",
+      "title": "probe_source performs outbound connections under the read (stream.view) capability with no per-source throttle",
+      "file": "services/stream-service/app/api/v1/stream.py",
+      "line": 120,
+      "scenario": "POST /sources/{id}/probe is gated by _READ (stream.view) and triggers an outbound connection to the (SSRF-validated, IP-pinned) source URL. It does carry Depends(rate_limit), but a stream.view user — the lowest privilege — can drive repeated outbound probes to registered hosts. The SSRF guard and STREAM_ALLOWED_HOSTS bound the destinations, so this is low risk, but read-only viewers being able to initiate egress is worth noting; a view token that leaks becomes a light egress trigger against on-prem NVR ranges when STREAM_ALLOW_PRIVATE is set.",
+      "evidence": "@router.post(\"/sources/{source_id}/probe\", dependencies=[Depends(_READ), Depends(rate_limit)])\nasync def probe_source(...): probe = await svc.probe_source(source_id, tenant=p.tenant or \"\")",
+      "recommendation": "Consider requiring _MANAGE for probe (it is an active operation, not a read) and/or a per-source probe cooldown backed by SOURCE_PROBE_TTL_SECONDS (currently unused)."
+    }
+  ]
+}

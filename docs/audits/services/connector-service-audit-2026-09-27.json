@@ -1,0 +1,274 @@
+{
+  "service": "connector-service",
+  "date": "2026-09-27",
+  "summary": {
+    "total": 24,
+    "by_severity": {"CRITICAL": 0, "HIGH": 4, "MEDIUM": 13, "LOW": 7}
+  },
+  "findings": [
+    {
+      "id": "connector-001",
+      "category": "CORRECTNESS/DATA-LOSS",
+      "severity": "HIGH",
+      "title": "oauth2-rest push() treats any provider 4xx (except 401/403/429) as a successful write",
+      "file": "app/adapters/provider/oauth2_rest.py",
+      "line": 81,
+      "scenario": "A push maps a record and POSTs it to the provider. The provider rejects it with 400 (validation), 404 (endpoint gone) or 409 (conflict). connector_http._request returns `(exc.code, body, headers)` for any 4xx that is not 401/403/429 instead of raising. push() does `_code, body, _h = post_json(...); return body`, discarding `_code`. SyncEngine.push sees no exception, increments `sent`, and the reservation stands as committed. The record is reported pushed, is idempotency-reserved so a retry skips it, and is NEVER written to the destination system — silent, unrecoverable data loss for every push whose provider returns a non-auth 4xx.",
+      "evidence": "url = f\"{spec['base_url'].rstrip('/')}{ep['path']}\"\n        headers = {\"Authorization\": bearer(access_token), \"Idempotency-Key\": idempotency_key}\n        _code, body, _h = post_json(url, record, headers)\n        return body",
+      "recommendation": "Have push() (and the generic adapter) inspect the returned status: raise ProviderUnavailable/CredentialInvalid (or a mapping-level failure that dead-letters) for any non-2xx, so a rejected record is dead-lettered and the reservation is released, never counted as sent."
+    },
+    {
+      "id": "connector-002",
+      "category": "CORRECTNESS/DATA-LOSS",
+      "severity": "HIGH",
+      "title": "oauth2-rest fetch() ignores HTTP status; a provider 4xx becomes an empty page that advances the watermark",
+      "file": "app/adapters/provider/oauth2_rest.py",
+      "line": 70,
+      "scenario": "fetch() does `_code, body, _h = get_json(url, ...)` and discards `_code`. A provider 400/404 returns `body == {}` (from _parse) with no exception. get_path yields `records = []` and `next_cursor = ''`. SyncEngine.pull then records `records_in=0`, status 'succeeded', and (default mode) since next_cursor is empty leaves the watermark unchanged but reports success — the run looks healthy while the provider is actually rejecting the request. A transient auth/param error is indistinguishable from a genuinely empty resource, so monitoring shows green while no data flows.",
+      "evidence": "_code, body, _h = get_json(url, {\"Authorization\": bearer(access_token)})\n        records = get_path(body, ep.get(\"records_path\", \"results\")) or []",
+      "recommendation": "Check the returned status in fetch(): raise ProviderUnavailable/CredentialInvalid on non-2xx so the run is marked failed and the circuit/backoff engage, rather than silently returning an empty page."
+    },
+    {
+      "id": "connector-003",
+      "category": "CONCURRENCY/DATA",
+      "severity": "HIGH",
+      "title": "Connection row is persisted with put() (last-writer-wins), so concurrent runs lose watermark / circuit / pending updates",
+      "file": "app/core/stores.py",
+      "line": 20,
+      "scenario": "ConnectionStore.save() does `store.put(_CONN, c.id, c.to_dict())`. Per-record idempotency uses atomic cas() on sync_seen, but the Connection aggregate (watermarks, pending, circuit_state, failure_count, sync_count) is a blind overwrite. Two concurrent pulls for two different resources on the same connection both load the connection, each mutates `watermarks[its_resource]`, and both save; the second save overwrites the first's watermark for the OTHER resource back to its old value, causing re-fetch or skip. The same lost-update corrupts circuit breaker counters and at-least-once `pending` bookkeeping. job-service is documented to schedule and retry internal_sync, so concurrent runs on one connection are expected.",
+      "evidence": "async def save(self, c: Connection) -> Connection:\n        await self._store.put(_CONN, c.id, c.to_dict())\n        return c",
+      "recommendation": "Persist the connection with an optimistic-concurrency cas() on a version field (retry on conflict), or serialize state mutations per connection, so concurrent runs cannot clobber each other's watermarks/circuit state."
+    },
+    {
+      "id": "connector-004",
+      "category": "SECURITY/CRYPTO",
+      "severity": "HIGH",
+      "title": "seal.unseal has no legacy no-AAD fallback although token_aad/spec_secret_aad were added — an AAD upgrade orphans pre-existing connection tokens and spec secrets",
+      "file": "app/core/seal.py",
+      "line": 46,
+      "scenario": "token_aad() and spec_secret_aad() bind sealed blobs to (connection, field) / spec id. Blobs sealed before that binding existed were sealed with aad=None. unseal() now always passes the AAD and, on GCM tag failure, returns None (no fallback). secret_store._open() has an explicit legacy no-AAD decrypt fallback for exactly this case (documented pre-v0.25.6 incident in MEMORY 'AEAD AAD backward-compat'), but seal.py does not. Result: after the AAD upgrade, every connection whose access/refresh token was sealed pre-AAD unseals to None -> credentials() raises CredentialInvalid / NEEDS_REAUTH for all of them, and resolve_spec loses every pre-AAD client secret — a mass re-auth outage, the same class the memory note says must ship a fallback in the same release.",
+      "evidence": "def unseal(token: str, seal_key: str, aad: str = \"\") -> str | None:\n    if not token:\n        return None\n    try:\n        raw = base64.b64decode(token)\n        ad = aad.encode() if aad else None\n        return AESGCM(_key(seal_key)).decrypt(raw[:12], raw[12:], ad).decode()\n    except Exception:\n        return None",
+      "recommendation": "Mirror secret_store._open: on AAD-decrypt failure, retry with ad=None (legacy) before giving up, and re-seal with the AAD on next write; or confirm/perform a one-time migration re-sealing all connection tokens and spec secrets with the AAD."
+    },
+    {
+      "id": "connector-005",
+      "category": "CONFIG/FAIL-OPEN",
+      "severity": "MEDIUM",
+      "title": "No production boot guard against INSTANCE_ALLOW_PRIVATE_IPS=true or INSTANCE_REQUIRE_HTTPS=false",
+      "file": "app/config.py",
+      "line": 312,
+      "scenario": "CORS has assert_cors_config_ok() refusing '*' in production, and audit/PII have boot guards, but the SSRF-relevant knobs do not. The comment says 'dev/test only — NEVER true in production' yet nothing enforces it. An operator who flips INSTANCE_ALLOW_PRIVATE_IPS=true (e.g. copied from a dev .env) turns off the private-IP block fleet-wide: connector_http.configure() binds it and every outbound token/api/revoke fetch will then happily hit 10.x/127.x/192.168.x internal services. Likewise INSTANCE_REQUIRE_HTTPS=false allows plaintext credential exchange in production.",
+      "evidence": "INSTANCE_REQUIRE_HTTPS: bool = True\n    INSTANCE_ALLOW_PRIVATE_IPS: bool = False  # dev/test only — NEVER true in production\n    INSTANCE_ALLOWED_HOSTS: str = \"\"",
+      "recommendation": "Add a boot guard: raise if is_production and (INSTANCE_ALLOW_PRIVATE_IPS or not INSTANCE_REQUIRE_HTTPS), matching the existing assert_cors_config_ok / assert_audit_config_ok pattern."
+    },
+    {
+      "id": "connector-006",
+      "category": "SECURITY/SSRF",
+      "severity": "MEDIUM",
+      "title": "connector_http follows HTTP redirects with no re-validation of the Location and no size re-cap",
+      "file": "app/adapters/connector_http.py",
+      "line": 62,
+      "scenario": "_pinned_opener uses urllib.request.build_opener(...), which includes the default HTTPRedirectHandler. A 3xx from the provider is followed automatically. The socket is pinned to the originally validated IP (which limits classic SSRF), but the redirected request is never re-run through _ssrf.validate, the allowed_hosts allow-list is not re-checked against the new URL, and the Authorization/bearer header the caller passed can be replayed onto the redirect target's path. A malicious or compromised provider spec host can bounce the request to arbitrary paths and cause the credential header to be sent on requests the operator never authorised.",
+      "evidence": "return urllib.request.build_opener(_HTTPSHandler, _HTTPHandler)",
+      "recommendation": "Install a redirect handler that either refuses redirects (raise) or re-runs _ssrf.validate + allowed_hosts on each Location and strips the Authorization header on cross-host hops."
+    },
+    {
+      "id": "connector-007",
+      "category": "CORRECTNESS/DATA",
+      "severity": "MEDIUM",
+      "title": "MAX_BYTES truncation plus _parse-returns-{} silently converts an oversized response into an empty body",
+      "file": "app/adapters/connector_http.py",
+      "line": 78,
+      "scenario": "The response is read as `resp.read(MAX_BYTES)` — capped, not rejected. If a provider page exceeds MAX_RESPONSE_BYTES (1 MiB) the JSON is truncated mid-stream, `_parse` fails to json.loads it and returns `{}` (swallowing the error). fetch() then sees zero records and an empty next_cursor and reports a successful empty/terminal page, silently dropping every record in an oversized page and potentially advancing past them. There is no signal that truncation occurred.",
+      "evidence": "with _pinned_opener(target).open(req, timeout=TIMEOUT) as resp:  # nosec B310 ...\n            return resp.status, _parse(resp.read(MAX_BYTES)), dict(resp.getheaders())",
+      "recommendation": "Read MAX_BYTES+1 and raise ProviderUnavailable('response too large') when the cap is exceeded instead of truncating, and distinguish a JSON parse failure from an empty body rather than both mapping to {}."
+    },
+    {
+      "id": "connector-008",
+      "category": "SECURITY/OBSERVABILITY",
+      "severity": "MEDIUM",
+      "title": "TokenManager.bump swallows all cache errors, so disconnect-time revocation can silently fail",
+      "file": "app/core/token_manager.py",
+      "line": 61,
+      "scenario": "disconnect() destroys the sealed credentials and calls build_tokens(request).bump(conn.tenant) to make cached tokens die immediately ('revocation is immediate'). bump() wraps the cache read+set in `try/except Exception: pass`. If the cache set fails (redis blip, auth error) the generation is NOT bumped and no error is raised or logged. The credentials() hot path serves the previously cached access token for up to CONNECTION_CACHE_TTL_SECONDS (60s) — and the cached path never re-checks connection status — so a just-disconnected/revoked connection keeps making authenticated provider calls with no signal.",
+      "evidence": "async def bump(self, tenant: str) -> None:\n        ...\n        try:\n            g = await self._cache.get(f\"conngen:{tenant}\")\n            await self._cache.set(f\"conngen:{tenant}\", str(int(g or 0) + 1), None)\n        except Exception:\n            pass",
+      "recommendation": "Log/telemeter a failed bump and surface it to the disconnect caller (or fail the disconnect), since silent failure defeats the immediate-revocation guarantee the design promises."
+    },
+    {
+      "id": "connector-009",
+      "category": "SECURITY",
+      "severity": "MEDIUM",
+      "title": "credentials() cached path never re-checks connection status, relying solely on the generation bump",
+      "file": "app/core/token_manager.py",
+      "line": 104,
+      "scenario": "On a cache hit credentials() returns cached['access_token'] without loading the connection or checking `conn.status != ACTIVE`. Revocation depends entirely on bump() invalidating the generation. Combined with connector-008 (bump can silently fail) or any cache that returns a stale generation, a REVOKED/NEEDS_REAUTH connection's token is still served. The non-cached path does check status; the cached path is the fail-open gap.",
+      "evidence": "if cached is not None and not self._expiring_at(cached.get(\"expires_at\", 0)):\n            return cached[\"access_token\"]",
+      "recommendation": "Include a status/revocation epoch in the cached entry or verify connection status cheaply, so a revoked connection cannot be served from cache even if a generation bump is missed."
+    },
+    {
+      "id": "connector-010",
+      "category": "OBSERVABILITY/AUDIT",
+      "severity": "MEDIUM",
+      "title": "connect() records 'connector.connected' write-ahead BEFORE SSRF/spec/exchange validation, and without the connection id",
+      "file": "app/api/v1/connectors.py",
+      "line": 167,
+      "scenario": "The audit record for connector.connected is emitted at the very top of connect(), before instance_url SSRF validation, before the spec-ownership IDOR check, and before the OAuth code exchange. Every failed attempt — a rejected internal instance_url, another tenant's spec_id, a bad OAuth code — produces a 'connected' audit row for a connection that never actually connected. The resource is the literal string 'connection' (the id is not yet minted), so the row cannot even be tied to a specific connection. This pollutes the tamper-evident chain investigators rely on with connections that do not exist.",
+      "evidence": "await request.app.state.auditor.record(\n        \"connector.connected\", actor=principal.subject, tenant=principal.tenant, resource=\"connection\",\n        ip=request.client.host if request.client else \"\")\n    s = get_settings()",
+      "recommendation": "Mint the connection id and run the SSRF + spec-ownership checks first, then record write-ahead with resource=connection:<id> right before the state mutation (store_tokens), matching the disconnect route which already includes the id."
+    },
+    {
+      "id": "connector-011",
+      "category": "TESTS/QA",
+      "severity": "MEDIUM",
+      "title": "IDOR test re-implements the tenant check instead of exercising the connect route — the guard is untested",
+      "file": "tests/security/test_connector_security.py",
+      "line": 120,
+      "scenario": "test_connect_rejects_another_tenants_spec claims to prove 'a connection may only use a spec in the caller's own tenant', but it never calls POST /connect. It saves a spec, fetches it back, and asserts `got.tenant == 'shop_a'` and `got.tenant != 'shop_b'` — i.e. it tests SpecStore.get and Python's `!=` operator. If the real guard in connect() (`spec_row.tenant != caller_tenant`) were deleted, this test still passes. A tests-that-stop-testing case: the security control has a green test but no real coverage.",
+      "evidence": "# the check the connect route performs: fetch by id, compare tenant\n        got = await SpecStore(st).get(spec.id)\n        assert got is not None and got.tenant == \"shop_a\"\n        # a caller from shop_b would fail the `got.tenant != caller_tenant` guard\n        assert got.tenant != \"shop_b\"",
+      "recommendation": "Drive the actual endpoint with a shop_b principal and a shop_a spec_id and assert 404 SPEC_NOT_FOUND, so removing the guard turns the test red."
+    },
+    {
+      "id": "connector-012",
+      "category": "CORRECTNESS",
+      "severity": "MEDIUM",
+      "title": "Slack fetch()/push() raise CredentialInvalid for ANY {\"ok\": false}, misclassifying non-credential errors as auth failures",
+      "file": "app/adapters/provider/slack.py",
+      "line": 49,
+      "scenario": "Slack answers 200 with {\"ok\": false, \"error\": ...} for many non-auth conditions (channel_not_found, not_in_channel, invalid_arguments, ratelimited). Both fetch() and push() raise CredentialInvalid on any ok=false. In SyncEngine.pull/push a CredentialInvalid on push marks the connection failed and, via TokenManager on the credentials path, can drive a connection to NEEDS_REAUTH. A transient/benign Slack error thus looks like a dead credential and needlessly forces re-authorisation, while a genuine 'ratelimited' error bypasses the Retry-After/RateLimited path entirely.",
+      "evidence": "if not body.get(\"ok\", False):\n            raise CredentialInvalid(f\"slack error: {body.get('error', 'unknown')}\")",
+      "recommendation": "Map Slack error codes: invalid_auth/token_revoked/account_inactive -> CredentialInvalid, ratelimited -> RateLimited(retry_after), transient/5xx-ish -> ProviderUnavailable, and per-record errors -> a mapping failure that dead-letters that record."
+    },
+    {
+      "id": "connector-013",
+      "category": "CONFIG",
+      "severity": "MEDIUM",
+      "title": "seal_key silently falls back to INTERNAL_SERVICE_TOKEN, so rotating the internal token bricks every sealed credential",
+      "file": "app/config.py",
+      "line": 323,
+      "scenario": "When CREDENTIAL_SEAL_KEY is empty, seal_key returns INTERNAL_SERVICE_TOKEN. All connection access/refresh tokens and spec client secrets are then sealed under the internal token. INTERNAL_SERVICE_TOKEN is a rotate-able shared secret (gen-secrets mints it). If an operator rotates the internal token in production without having set CREDENTIAL_SEAL_KEY, the seal key changes underneath every stored blob: unseal returns None for all of them, every connection goes NEEDS_REAUTH and every spec loses its client secret — a fleet-wide credential outage triggered by a routine token rotation, with no warning at config time.",
+      "evidence": "@property\n    def seal_key(self) -> str:\n        \"\"\"Fall back to the internal token so a dev boot never stores creds in the clear.\"\"\"\n        return self.CREDENTIAL_SEAL_KEY or self.INTERNAL_SERVICE_TOKEN",
+      "recommendation": "Require an explicit CREDENTIAL_SEAL_KEY in production (boot guard) so the seal key is never coupled to a rotate-able transport secret; keep the fallback for dev only."
+    },
+    {
+      "id": "connector-014",
+      "category": "CORRECTNESS/DATA-HYGIENE",
+      "severity": "MEDIUM",
+      "title": "connect() persists the Connection (status=ACTIVE) before the OAuth exchange, leaving an orphan credential-less ACTIVE connection on failure",
+      "file": "app/api/v1/connectors.py",
+      "line": 189,
+      "scenario": "connect() calls ConnectionStore.save(conn) and only afterwards runs c.provider.exchange(...). Connection defaults to status=ACTIVE (models.py). If exchange raises (bad code, provider down) the route returns 400 but the connection row already persisted with status ACTIVE and empty access_sealed. It shows up in list_connections as connected=false, and any sync against it calls credentials() -> unseal('') -> CredentialInvalid, tripping failure counters/circuit on a connection that was never really established. These orphans accumulate with no cleanup path.",
+      "evidence": "conn = Connection(id=new_id(\"cn_\"), tenant=caller_tenant, provider=body.provider,\n                      spec_id=body.spec_id, instance_url=body.instance_url, created=c.clock.now())\n    await ConnectionStore(c.datastore).save(conn)\n    spec = await _spec_for(request, conn)\n    try:\n        tokens = c.provider.exchange(code=body.code, redirect_uri=body.redirect_uri, spec=spec)",
+      "recommendation": "Perform the exchange first (or create the connection in a 'connecting' status and only promote to ACTIVE after store_tokens succeeds; delete/roll back the row if exchange fails)."
+    },
+    {
+      "id": "connector-015",
+      "category": "SECURITY/PERFORMANCE",
+      "severity": "MEDIUM",
+      "title": "No rate limiting on the v1 connector routes (connect, sync, specs) — only operator routes are limited",
+      "file": "app/api/v1/connectors.py",
+      "line": 242,
+      "scenario": "operator.py mounts Depends(rate_limit) on every route, but connectors.py mounts none. POST /sync triggers unbounded outbound provider traffic (a whole batch pull/push per call) and POST /connect triggers an OAuth token exchange, both authenticated but unthrottled. A caller (or a compromised token) with connectors.manage can hammer /sync to drive the service to exhaust provider rate limits, spin the event loop on to_thread work, and generate cost, with no per-subject/tenant ceiling.",
+      "evidence": "@router.post(\"/sync\")\nasync def sync(request: Request, body: SyncIn, principal: Principal = Depends(_ADMIN)) -> dict:",
+      "recommendation": "Add Depends(rate_limit) (with an appropriate route class/cost for the expensive sync path) to the connector v1 routes as done throughout the operator surface."
+    },
+    {
+      "id": "connector-016",
+      "category": "CONCURRENCY/DATA",
+      "severity": "MEDIUM",
+      "title": "SeenStore.prune only scans the first `cap` rows via scan_all, so an idempotency ledger larger than the cap never fully prunes",
+      "file": "app/core/stores.py",
+      "line": 114,
+      "scenario": "prune() calls scan_all(_SEEN, cap) with cap defaulting to 100_000 and no cursor. MemoryDataStore.scan_all returns rows[:cap] in dict-insertion order; there is no pagination and no ordering by ts. If sync_seen exceeds the cap (high-volume tenants over the 14-day TTL), each prune run repeatedly scans the same first `cap` rows and can never reach older rows beyond the window — the collection the pruning was introduced to bound (connector-r2-04) grows without limit past the cap, defeating the retention guarantee.",
+      "evidence": "for row in await self._store.scan_all(_SEEN, cap):\n            if float(row.get(\"ts\", 0)) < cutoff:\n                await self._store.delete(_SEEN, row.get(\"k\") or row.get(\"id\", \"\"))",
+      "recommendation": "Prune with a paged/indexed query on ts (find with a ts<cutoff filter and cursor) that walks the whole eligible set across runs, rather than a single capped unordered scan."
+    },
+    {
+      "id": "connector-017",
+      "category": "SECURITY/TENANT-ISOLATION",
+      "severity": "MEDIUM",
+      "title": "Operator secret/config routes accept an arbitrary `tenant` param never checked against the caller's tenant",
+      "file": "app/api/v1/operator.py",
+      "line": 113,
+      "scenario": "set_secret/list_secrets/clear_secret and the config routes take body.tenant / a tenant query param and pass it straight to SecretStore/RuntimeConfig, gated only by the platform.secrets / platform.config capability. Nothing binds the operation to principal.tenant. If any non-platform (tenant-scoped) principal is ever issued platform.secrets, they can read hints for, set, or clear any other tenant's provider credentials by naming that tenant. Even for platform admins this is an unbounded cross-tenant write with no per-tenant authorisation check — the isolation depends entirely on the capability being platform-exclusive, which is not enforced here.",
+      "evidence": "info = await _secret_store(request).set(\n            tenant=body.tenant, name=body.name, value=body.value, actor_ref=_actor(principal))",
+      "recommendation": "Require an explicit platform-scope capability for cross-tenant (tenant!=principal.tenant) operations, or reject a body.tenant that differs from the caller's tenant unless a distinct platform.* capability is held."
+    },
+    {
+      "id": "connector-018",
+      "category": "OBSERVABILITY",
+      "severity": "LOW",
+      "title": "SyncEngine._emit swallows all event-bus errors with no log",
+      "file": "app/core/sync_engine.py",
+      "line": 309,
+      "scenario": "Every run terminal event (sync.succeeded/partial/failed) is published through _emit, which does `try: await bus.publish(...) except Exception: pass`. A consumer that keys off these events (dashboards, downstream triggers) silently misses runs whenever the bus is degraded, with no telemetry that the emit failed.",
+      "evidence": "try:\n            await self._bus.publish(event, payload)\n        except Exception:\n            pass",
+      "recommendation": "Log/telemeter the emit failure so lost run events are observable."
+    },
+    {
+      "id": "connector-019",
+      "category": "OBSERVABILITY",
+      "severity": "LOW",
+      "title": "TokenManager cache helpers swallow every exception, hiding a broken cache and its performance impact",
+      "file": "app/core/token_manager.py",
+      "line": 71,
+      "scenario": "_gen, _cache_get and _cache_set each `except Exception: return None / pass`. A misconfigured or failing cache turns the documented zero-datastore-read hot path into a full datastore read + unseal on every single outbound provider call (and disables single-flight coordination across the generation), with no error, log or metric — the exact class of silent degradation the memory 'blocking-sync-in-async' / hot-path notes warn about.",
+      "evidence": "async def _cache_get(self, key: str):\n        if self._cache is None:\n            return None\n        try:\n            raw = await self._cache.get(key)\n            return json.loads(raw) if raw else None\n        except Exception:\n            return None",
+      "recommendation": "Emit a rate-limited warning/metric on cache errors so a silently-degraded cache is visible."
+    },
+    {
+      "id": "connector-020",
+      "category": "OBSERVABILITY",
+      "severity": "LOW",
+      "title": "disconnect() wraps provider revoke in a bare `except Exception`, masking bugs as 'not revoked'",
+      "file": "app/api/v1/connectors.py",
+      "line": 230,
+      "scenario": "The provider revoke call is wrapped in `except Exception: revoked = False`. This is described as best-effort, but the blanket catch also swallows programming errors (a bad spec shape, a serialization bug) and reports provider_revoked=false with no diagnostic. An operator cannot distinguish 'provider declined the revoke' from 'our revoke code threw'.",
+      "evidence": "except Exception:\n        revoked = False                      # provider revoke is best-effort; local revoke stands",
+      "recommendation": "Catch the provider error types (ProviderUnavailable/CredentialInvalid) and log anything else, so genuine bugs are not silently reported as a failed revoke."
+    },
+    {
+      "id": "connector-021",
+      "category": "CORRECTNESS/FALSY-TRAP",
+      "severity": "LOW",
+      "title": "mapping concat drops legitimately falsy source values (0, False)",
+      "file": "app/core/mapping.py",
+      "line": 54,
+      "scenario": "concat builds `parts = [str(get_path(record, p) or \"\") for p in ...]` then joins `p for p in parts if p`. A source field whose real value is 0 or False (a quantity, a boolean flag rendered numerically) becomes '' via `or \"\"` and is then filtered out by `if p`. A record with amount 0 concatenated into a target string silently loses the 0, producing a wrong mapped value.",
+      "evidence": "parts = [str(get_path(record, p) or \"\") for p in rule.get(\"value\", [])]\n            joined = (rule.get(\"sep\", \" \")).join(p for p in parts if p)",
+      "recommendation": "Distinguish None (missing) from a falsy value: use `v = get_path(...); '' if v is None else str(v)` and filter only on None."
+    },
+    {
+      "id": "connector-022",
+      "category": "CORRECTNESS/OBSERVABILITY",
+      "severity": "LOW",
+      "title": "connector_http._request's catch-all masks programming errors as ProviderUnavailable, feeding the retry/circuit machinery",
+      "file": "app/adapters/connector_http.py",
+      "line": 90,
+      "scenario": "The final `except Exception as exc: raise ProviderUnavailable(type(exc).__name__)` is meant to keep secrets out of errors, but it also converts genuine local bugs (a TypeError building the request, a JSON encoding error) into ProviderUnavailable. SyncEngine then treats them as provider outages: increments failure_count, trips the circuit, and schedules backoff/retries against a 'dead provider' that is actually a code defect, so the real bug is hidden behind repeated retries.",
+      "evidence": "except Exception as exc:\n        raise ProviderUnavailable(type(exc).__name__) from None   # secret-free",
+      "recommendation": "Catch only the network/IO exception families (urllib.error.URLError, socket.timeout, ssl.SSLError, OSError) as ProviderUnavailable and let unexpected exceptions surface (still secret-free) so they are not mistaken for provider outages."
+    },
+    {
+      "id": "connector-023",
+      "category": "PERFORMANCE/CORRECTNESS",
+      "severity": "LOW",
+      "title": "health route double-reads the connection and can return None on a delete race",
+      "file": "app/api/v1/connectors.py",
+      "line": 207,
+      "scenario": "health() calls _owned(request, connection_id, principal) (which loads the connection) and then build_sync(request).health(connection_id), which loads it again — an avoidable second datastore read per health check. If the connection is disconnected/deleted between the two reads, SyncEngine.health returns None, and the route (declared `-> dict`) returns null.",
+      "evidence": "await _owned(request, connection_id, principal)\n    return await build_sync(request).health(connection_id)",
+      "recommendation": "Pass the already-loaded connection into a health(conn) variant (single read) and handle the None case explicitly with a 404."
+    },
+    {
+      "id": "connector-024",
+      "category": "CORRECTNESS/FALSY-TRAP",
+      "severity": "LOW",
+      "title": "_idem_key treats a falsy natural id (0, empty string) as 'no id' and falls back to content hashing",
+      "file": "app/core/sync_engine.py",
+      "line": 49,
+      "scenario": "`source_id = record.get(\"id\") or record.get(\"vid\") or record.get(\"_id\")`. A provider that uses integer id 0, or returns id as an empty string for a valid record, is treated as having no source id and falls through to content-hashing. If such a record's content later changes (a legitimate update to the same logical record with id 0), its content hash changes and it is processed again as a new record — breaking idempotency for that record, and conversely two different id-less records with identical content collide onto one key.",
+      "evidence": "source_id = record.get(\"id\") or record.get(\"vid\") or record.get(\"_id\")\n        if not source_id:",
+      "recommendation": "Test for key presence and None explicitly (e.g. first key among id/vid/_id whose value is not None), so a valid falsy id is used as the stable idempotency key."
+    }
+  ]
+}

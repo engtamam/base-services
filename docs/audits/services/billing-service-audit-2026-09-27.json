@@ -1,0 +1,230 @@
+{
+  "service": "billing-service",
+  "date": "2026-09-27",
+  "summary": {
+    "total": 20,
+    "by_severity": {"CRITICAL": 0, "HIGH": 2, "MEDIUM": 6, "LOW": 12}
+  },
+  "findings": [
+    {
+      "id": "billing-001",
+      "category": "security",
+      "severity": "HIGH",
+      "title": "Internal subscribe route activates a PAID plan without charging (free service)",
+      "file": "app/api/internal.py",
+      "line": 343,
+      "scenario": "A peer service (e.g. operations) POSTs /internal/billing/subscriptions for a paid, non-trial plan with a payment_token. subscribe_internal calls the BARE subscribe() primitive, which marks the subscription 'active', stores the token, and charges NOTHING now — the first real charge is a full interval later at renewal. The user route deliberately avoids this by routing through subscribe_with_payment (charge-first). So the internal twin grants an entitled paid plan for free for a whole cycle, and the shop can cancel before the first renewal ever charges.",
+      "evidence": "sub = await (await build_billing(request, body.tenant)).subscribe(tenant=body.tenant, plan_id=body.plan_id, ...)  # internal.py; vs subscribe_with_payment docstring: 'The bare subscribe() primitive marks a non-trial plan active and stores the token but charges NOTHING ... so a self-service caller could hold an entitled paid plan free until the next cycle, and cancel before it.'",
+      "recommendation": "Route the internal subscribe through subscribe_with_payment() (charge-first / PAYMENT_REQUIRED) exactly like the user POST /subscriptions, so the internal and user paths cannot diverge on the money invariant."
+    },
+    {
+      "id": "billing-002",
+      "category": "correctness",
+      "severity": "HIGH",
+      "title": "Internal payable-invoice read reports amount_due as the full total for a partially-settled invoice",
+      "file": "app/api/internal.py",
+      "line": 293,
+      "scenario": "An enterprise invoice for 100000 is partially settled by a first bank tranche of 40000. settle() deliberately does NOT write inv.settled_minor on a partial (only on the closing tranche) — the atomic counter is the truth. GET /internal/billing/invoices/{id} then reads settled = int(inv.settled_minor or 0) = 0 and returns amount_due_minor = total - 0 = 100000. A WhatsApp Flow / checkout screen shows the payer the FULL amount again after they already paid 40000 → double-collection.",
+      "evidence": "get_payable_invoice_internal: 'settled = int(inv.settled_minor or 0); total = int(inv.total_minor or 0); ... \"amount_due_minor\": max(0, total - settled)'. settle() comment: 'The invoice row is not written for a partial payment ... the only invoice write during settlement is the single paid transition below.'",
+      "recommendation": "Compute settled/amount_due from the authoritative counter (BillingService.settled_minor / invoice_state), not from the inv.settled_minor row field, in the internal payable read (and anywhere else amount_due is shown). Same defect affects settle()'s own pre-check already_settled_minor=inv.settled_minor (line 1916), which reads the stale row rather than the counter."
+    },
+    {
+      "id": "billing-003",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "reconcile_payment queries the ACTIVE gateway, not the pinned/charging gateway",
+      "file": "app/core/billing_service.py",
+      "line": 3126,
+      "scenario": "In PAYMENT_RENEWAL_GATEWAY_MODE=pinned the platform switches its active driver from tap to stripe. A tap-charged payment's webhook was missed, so an operator calls POST /payments/{id}/reconcile. reconcile_payment uses self._gw (stripe, the active gateway) to fetch_status(provider_id=<a tap id>) — the recovery path hits the wrong provider and either errors or returns 'unknown', so the invoice stays unpaid though the money moved. handle_webhook routes correctly via _gw_for_webhook(provider, tenant); reconcile does not.",
+      "evidence": "fetch = getattr(self._gw, \"fetch_status\", None) ... charge = fetch(provider_id=pay.provider_id, currency=pay.currency)  # self._gw, never _gw_for_refund(pay)/the pinned gateway",
+      "recommendation": "Resolve the gateway from the payment's own provider (mirror _gw_for_refund) before fetch_status in reconcile_payment, so recovery reaches the gateway that actually charged."
+    },
+    {
+      "id": "billing-004",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "change_plan does not verify the target plan offers the requested interval → silent mispricing",
+      "file": "app/core/billing_service.py",
+      "line": 860,
+      "scenario": "A shop upgrades to new_plan with interval='year' but new_plan only defines a 'month' price. change_plan calls _price_for(new_plan, 'year'), which falls back to prices[0] (the month price) and prices the upgrade — and the post-change price_snapshot — off the wrong interval. checkout()/_validate_cart guard this with PLAN_INTERVAL_UNAVAILABLE; change_plan has no such check.",
+      "evidence": "new_price = pricing.line_amount(self._price_for(new_plan, new_interval), quantity=new_qty)  # _price_for: 'return plan.prices[0] if plan.prices else {...}'",
+      "recommendation": "Refuse a change to an interval the target plan does not offer (raise PLAN_INTERVAL_UNAVAILABLE), exactly as _validate_cart does, before pricing the upgrade."
+    },
+    {
+      "id": "billing-005",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "Fixed-value coupon currency is never checked against the plan currency (cross-currency discount)",
+      "file": "app/core/pricing.py",
+      "line": 40,
+      "scenario": "A coupon of type='fixed', value=5000, currency='USD' is attached to a SAR subscription. coupon_discount subtracts 5000 minor units from the SAR subtotal (i.e. 50 SAR off, not $50). subscribe(), attach_coupon(), and _validate_cart validate the coupon's status/plan scope but never compare coupon.currency to the price currency, so a fixed coupon silently discounts in the wrong currency.",
+      "evidence": "elif ctype == \"fixed\": disc = value   # pricing.coupon_discount ignores coupon.get('currency'); CouponIn carries a currency field that nothing compares",
+      "recommendation": "When a fixed coupon carries a currency, refuse (or ignore) it if it differs from the subscription/price currency; validate this in _validate_cart, subscribe() and attach_coupon() alongside the plan-scope check."
+    },
+    {
+      "id": "billing-006",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "Included-allowance grant is not scaled by quantity, and discount-aware vs list-price modes disagree on quantity",
+      "file": "app/core/billing_service.py",
+      "line": 1330,
+      "scenario": "A per_seat plan (credit_percent_of_price=True) is bought with quantity=5. line_amount bills 5×unit, and the entitlement resolver scales the limit map by quantity (5×). But _granted_allowance receives list_base=price.amount_minor (the UNIT price, NOT ×quantity), so the wallet grant is computed on one seat. In discount-aware mode net_base=subtotal (which IS ×quantity), so the SAME plan grants a different amount depending only on BILLING_CREDIT_DISCOUNT_AWARE. Static-limit plans likewise grant plan.limits[key] with no quantity factor. Result: a multi-seat customer pays N× but is granted 1× credits (under-grant), and the two config modes disagree.",
+      "evidence": "granted = self._granted_allowance(plan, list_base=int(price.get(\"amount_minor\", 0) or 0), net_base=int(subtotal - discount))  # list_base is the unit amount; net_base is quantity-scaled",
+      "recommendation": "Apply sub.quantity consistently to the granted allowance in both modes (scale list_base by quantity, and scale the static plan.limits[key] path too), so the grant follows the price the customer actually paid regardless of the discount-aware flag."
+    },
+    {
+      "id": "billing-007",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "wallet_topup has no idempotency_key escape hatch — legitimate identical repeat top-ups are silently swallowed",
+      "file": "app/core/billing_service.py",
+      "line": 1010,
+      "scenario": "A shop tops up 50 SAR to the 'topup' fund with a saved token, then genuinely tops up another identical 50 SAR to the same fund with the same token within USAGE_IDEMPOTENCY_TTL. The claim key topup:{tenant}:{token}:{total}:{fund} matches the first, so wallet_topup returns {..., 'duplicate': True} WITHOUT charging or crediting — the second real top-up is lost. refund() solved exactly this class by adding a caller refund_id to distinguish two equal partial refunds; wallet_topup exposes no such parameter (WalletTopupIn has none).",
+      "evidence": "topup_key = f\"topup:{tenant}:{payment_token}:{total}:{fund}\" ... if prior is not None: return {**prior, \"duplicate\": True}",
+      "recommendation": "Accept an optional idempotency_key on the top-up routes/method and fold it into the claim key (fall back to the amount+token+fund key only when absent), mirroring refund_id, so distinct legitimate top-ups are not deduped."
+    },
+    {
+      "id": "billing-008",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "Refund via webhook trusts the callback body's refunded amount (not server-authoritative like FIN-016 did for succeeded)",
+      "file": "app/core/billing_service.py",
+      "line": 2990,
+      "scenario": "handle_webhook passes refund_amount=int(getattr(event, 'refunded_minor', 0)) straight from the parsed webhook body into _apply_outcome for a 'refund' event. Unlike payment.succeeded (which FIN-016 re-verifies via gw.fetch_status), the refund path never pulls the authoritative refunded total from the gateway. A gateway that mis-reports a refund total (bug, or a message crafted by anyone able to satisfy the signature) can drive refunded_minor to the invoice total, void the invoice and claw back wallet grants without a corresponding server-confirmed refund.",
+      "evidence": "refund_amount=int(getattr(event, \"refunded_minor\", 0) or 0))  # handle_webhook — no fetch_status verification for refunds, while payment.succeeded pulls v_amount from the gateway",
+      "recommendation": "Apply the same server-authoritative discipline to refunds: pull the gateway's refunded total via fetch_status and reconcile refunded_minor against it, or at minimum bound the refund to the payment's real captured amount confirmed by the gateway."
+    },
+    {
+      "id": "billing-009",
+      "category": "correctness",
+      "severity": "LOW",
+      "title": "checkout coupon redemption is not released when the cart is rolled back or the charge declines",
+      "file": "app/core/billing_service.py",
+      "line": 2568,
+      "scenario": "A one-time coupon (max_redemptions=1) is used in a 2-item cart where the second item races past validation and fails during PHASE 3 create; the rollback deletes the created subs but the coupon.redeemed the first subscribe() already claimed via CAS is never decremented — the coupon is now exhausted for a cart that produced nothing. Likewise a checkout whose PHASE 4 charge DECLINES keeps the subscriptions (active, dunning) and the consumed redemption, but if an operator then deletes those subs the redemption is still spent.",
+      "evidence": "except Exception: for sub in created: await self._subs.delete(sub.id)  # deletes rows but never releases coupons redeemed inside subscribe()",
+      "recommendation": "On cart rollback, release the coupon redemptions claimed by the created subscriptions (a redeem-release counterpart), or defer coupon redemption until after the batch is fully created."
+    },
+    {
+      "id": "billing-010",
+      "category": "observability",
+      "severity": "LOW",
+      "title": "Crash-recovery replay of run_cycle completes the period advance but emits no SUBSCRIPTION_RENEWED",
+      "file": "app/core/billing_service.py",
+      "line": 1441,
+      "scenario": "run_cycle crashes after mark+charge but before the period advance. A re-run hits the prior-claim branch, fetches the invoice, advances the period and saves the sub — but returns without emitting SUBSCRIPTION_RENEWED. A consumer that grants a plan's included allowance off the renewal event (rather than the durable grant outbox) misses this cycle's period signal; only the grant reconcile sweep repairs it.",
+      "evidence": "if inv is not None and int(sub.current_period_end) == billed_end: ... await self._subs.save(sub)\\n            return inv or Invoice(id=\"\", tenant=sub.tenant)   # no self._events.emit(SUBSCRIPTION_RENEWED) on this path",
+      "recommendation": "Emit SUBSCRIPTION_RENEWED (idempotently, keyed on the same period_key) on the replay-completion branch too, so a crash does not drop the renewal signal."
+    },
+    {
+      "id": "billing-011",
+      "category": "security",
+      "severity": "LOW",
+      "title": "POST /checkouts (prepare_checkout) creates an arbitrary-amount gateway session with no audit and no amount cap",
+      "file": "app/api/v1/billing.py",
+      "line": 803,
+      "scenario": "Any _SELF caller can POST /checkouts with amount_minor of their choosing and have the service open a real gateway checkout session. Unlike wallet top-ups (WALLET_TOPUP_MIN/MAX + audit) and pay-links (audited), this route writes no audit record and enforces no min/max, so unbounded session creation across tenants is unwitnessed.",
+      "evidence": "@router.post(\"/checkouts\", ...) async def create_checkout(...): return await (...).prepare_checkout(amount_minor=body.amount_minor, ...)  # no auditor.record, no amount bounds",
+      "recommendation": "Add an audit record (write-ahead) and a configurable amount ceiling to /checkouts, consistent with the wallet-topup and pay-link routes."
+    },
+    {
+      "id": "billing-012",
+      "category": "performance",
+      "severity": "LOW",
+      "title": "Discount-aware list_plans and discount_preview resolve entitlements + all rules uncached on every call",
+      "file": "app/core/billing_service.py",
+      "line": 318,
+      "scenario": "When BILLING_CREDIT_DISCOUNT_AWARE is on and a tenant is passed, list_plans() calls self._entitlements.resolve(tenant) (a subscription scan+merge) plus self._rules.all() and best_rule_percent per opted-in plan on EVERY plan-list request — bypassing the generation-keyed _active_limits cache used elsewhere. discount_preview() does the same uncached. A storefront that re-lists plans on each render pays the full resolve cost each time.",
+      "evidence": "resolved = await self._entitlements.resolve(tenant, now) ... for r in rows: ... pricing.best_rule_percent(drules, ...)  # inside list_plans, no cache",
+      "recommendation": "Reuse the cached _active_limits(tenant) (or a dedicated generation-keyed cache) for the held-key set in list_plans/discount_preview instead of an uncached resolve on every request."
+    },
+    {
+      "id": "billing-013",
+      "category": "config",
+      "severity": "LOW",
+      "title": "wallet_topup_min_minor is threaded into the service config but never read by the service",
+      "file": "app/api/v1/billing.py",
+      "line": 227,
+      "scenario": "build_billing puts 'wallet_topup_min_minor': s.WALLET_TOPUP_MIN_MINOR into the BillingService config, but BillingService.wallet_topup()/wallet_topup_checkout() only read wallet_topup_max_minor (and >0). The minimum is enforced solely at the HTTP route (_check_topup_amount). If another entrypoint (e.g. a future internal top-up) calls the service directly, the min is silently unenforced — an advertised-but-unread knob at the service layer.",
+      "evidence": "\"wallet_topup_min_minor\": s.WALLET_TOPUP_MIN_MINOR,  # config dict — grep shows the service never reads this key; only _check_topup_amount (route) reads WALLET_TOPUP_MIN_MINOR",
+      "recommendation": "Enforce the minimum inside BillingService.wallet_topup/wallet_topup_checkout (as it already does the max), so the floor holds regardless of caller, or drop the unused config key."
+    },
+    {
+      "id": "billing-014",
+      "category": "observability",
+      "severity": "LOW",
+      "title": "Duplicate/replayed refund still writes a second payment.refunded audit record though no money moves",
+      "file": "app/api/v1/billing.py",
+      "line": 1446,
+      "scenario": "The refund route records the audit 'payment.refunded' write-ahead, then calls svc.refund(). A retry with the same refund identity hits the idempotency replay inside refund() and returns {duplicate: True} without a second gateway call — but the audit trail already logged a second payment.refunded, so the audit shows two refunds for one real reversal.",
+      "evidence": "await request.app.state.auditor.record(\"payment.refunded\", ...)  # before svc.refund(); refund() returns {**prior, \"duplicate\": True} on replay",
+      "recommendation": "Either record the refund audit after a real state change (with the invariant that a critical action must still be witnessed), or annotate the record with duplicate/idempotent so the trail reflects reality."
+    },
+    {
+      "id": "billing-015",
+      "category": "correctness",
+      "severity": "LOW",
+      "title": "_tenant() falls back to the synthetic 'global' tenant for a platform principal with no tenant",
+      "file": "app/api/v1/billing.py",
+      "line": 262,
+      "scenario": "A platform.billing principal whose token carries no tenant calls POST /usage or GET /usage. _tenant(principal) returns body_tenant or p.tenant or 'global', so usage is recorded/read under a literal 'global' tenant that no real customer owns — silently creating a phantom tenant's meters instead of failing loudly.",
+      "evidence": "def _tenant(p, body_tenant=None): if \"platform.billing\" in p.caps: return body_tenant or p.tenant or \"global\"",
+      "recommendation": "Require an explicit tenant for platform principals on write/usage paths (reject rather than defaulting to 'global'), reserving the fallback for read-only listings that already treat tenant as optional."
+    },
+    {
+      "id": "billing-016",
+      "category": "correctness",
+      "severity": "LOW",
+      "title": "checkout auto-derived idempotency key excludes payment_token, so a fixed-card retry replays the stale unpaid result",
+      "file": "app/core/billing_service.py",
+      "line": 2550,
+      "scenario": "A caller supplies an explicit idempotency_key, the charge DECLINES (result paid=False, marked under ckey). The customer fixes their card and retries with the SAME idempotency_key: checkout replays the stored declined result (paid=False) before validation and never charges the new token. The auto-derived key likewise hashes only (plan_id, interval, quantity, coupon_code), never the payment_token, so the money outcome is bound to the cart shape rather than the payment attempt.",
+      "evidence": "digest = hashlib.sha256(repr([(i[\"plan_id\"], i[\"interval\"], i[\"quantity\"], i[\"coupon_code\"]) for i in norm]).encode()).hexdigest()[:32]  # payment_token not included",
+      "recommendation": "Document that a new payment attempt requires a new idempotency_key, and/or only replay a stored SUCCESSFUL checkout result (let a prior unpaid/declined result fall through to a fresh charge)."
+    },
+    {
+      "id": "billing-017",
+      "category": "observability",
+      "severity": "LOW",
+      "title": "Invoice listings show raw 'open' status for partially-settled invoices (derived partially_paid not applied)",
+      "file": "app/api/v1/billing.py",
+      "line": 1247,
+      "scenario": "list_invoices / list_invoices_platform return the stored row status. invoice_state() derives 'partially_paid' from the atomic counter, but the browse listings never call it, so a finance page cannot distinguish an untouched 'open' invoice from one that is 40% settled — both read 'open'.",
+      "evidence": "rows, nxt = await svc._invoices.browse(...)  # returns raw rows; invoice_state()'s 'partially_paid' derivation is not applied to list results",
+      "recommendation": "Enrich listing rows with the derived state (partially_paid) computed from the settled counter, or expose settled_minor/amount_due in the listing so partial payments are visible."
+    },
+    {
+      "id": "billing-018",
+      "category": "tests",
+      "severity": "LOW",
+      "title": "No test asserts the internal subscribe path charges a paid plan (lets billing-001 exist)",
+      "file": "tests/integration/test_internal_checkout.py",
+      "line": 1,
+      "scenario": "There is coverage for internal checkout and for user-side charge-first (test_subscribe_charge_first.py), but no test exercises POST /internal/billing/subscribes with a PAID plan and asserts an invoice/charge is produced (or PAYMENT_REQUIRED). The gap is exactly what allows subscribe_internal to activate a paid plan for free (billing-001) unnoticed.",
+      "evidence": "grep of tests shows test_subscribe_charge_first.py covers the user route; internal subscribe (subscribe_internal) has no paid-plan charge assertion",
+      "recommendation": "Add an integration test: POST /internal/billing/subscriptions for a paid plan asserts the plan is not entitled/active until an immediate charge (or PAYMENT_REQUIRED), matching the user route contract."
+    },
+    {
+      "id": "billing-019",
+      "category": "security",
+      "severity": "LOW",
+      "title": "Public gateway webhook endpoint has no rate limiting",
+      "file": "app/api/internal.py",
+      "line": 79,
+      "scenario": "POST /internal/billing/webhook/{provider} is unauthenticated by design (the signature is the auth) and carries no rate_limit dependency (unlike /offers, /public/plans, pay-links, top-ups). A flood of unsigned/forged callbacks forces per-request HMAC verification against every candidate secret before rejection, and this route is a cross-tenant entrypoint an attacker can hammer freely.",
+      "evidence": "@router.post(\"/billing/webhook/{provider}\") async def payment_webhook(...)  # no dependencies=[Depends(rate_limit)]",
+      "recommendation": "Apply a rate limit (keyed by IP/provider) to the webhook route, and/or cap signature-candidate work, so a callback flood cannot burn CPU or amplify against fetch_status."
+    },
+    {
+      "id": "billing-020",
+      "category": "correctness",
+      "severity": "LOW",
+      "title": "_apply_outcome skips the currency check when the gateway reports an amount but an empty currency",
+      "file": "app/core/billing_service.py",
+      "line": 3027,
+      "scenario": "For a verified payment.succeeded, cur_ok = (not verified_currency or currency-matches). A gateway/fetch_status that returns a positive amount but an empty currency string yields cur_ok=True, so only the numeric amount is checked. A capture of 10000 units in a currency different from the SAR invoice (but the same integer amount) would pass the mismatch guard purely because the currency came back blank.",
+      "evidence": "cur_ok = (not verified_currency or str(verified_currency).upper() == str(inv.currency).upper())",
+      "recommendation": "When an authoritative amount is present but currency is absent, treat currency as unverified (log) rather than as a match, or require the gateway status to carry a currency before marking paid."
+    }
+  ]
+}

@@ -71,4 +71,13 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "and made whom an admin, and when, is the record a security review starts from, and "
                "it is unavailable anywhere else once the saga has run",
     },
+    {
+        "action": "authz.backup_imported",
+        "source": "internal",
+        "critical": True,
+        "why": "a backup import can overwrite or prune the ENTIRE authz state (roles, policies, "
+               "assignments) — the most privilege-relevant mutation this service has. Without a record "
+               "a state rewrite (accidental or malicious, via a leaked internal token) leaves no trail, "
+               "unlike every individual role/policy/assignment write which is audited",
+    },
 ]

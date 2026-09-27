@@ -84,6 +84,29 @@ def _guard_caps(principal: Principal, caps: list[str] | None) -> None:
             f"capabilities not assignable by a tenant admin: {', '.join(bad)}")
 
 
+async def _guard_role_caps(request, principal: Principal, tenant: str,
+                           role_refs: list[str] | None) -> None:
+    """Refuse a tenant-scoped caller ASSIGNING a role whose capabilities exceed their own (FIN
+    authz-002). `_guard_caps` only governs a DIRECT `capabilities` grant; assigning `roles` was the
+    same escalation one indirection away — a tenant admin could attach an existing role (e.g. one
+    carrying `authz.manage` or `platform.*`) it does not itself hold. Resolve each role's caps and run
+    them through the SAME subset + denylist gate. An operator (platform.authz) is unrestricted."""
+    if "platform.authz" in principal.caps or not role_refs:
+        return
+    svc = build_authz(request)
+    roles = await svc.list_roles(tenant)
+    by_id = {r.get("id"): r for r in roles}
+    by_name = {r.get("name"): r for r in roles}
+    caps: list[str] = []
+    for ref in role_refs:
+        r = by_id.get(ref) or by_name.get(ref)
+        if r is None:
+            # Fail closed: a role the caller can't even resolve in its tenant is not assignable.
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"unknown role: {ref}")
+        caps.extend(r.get("capabilities", []) or [])
+    _guard_caps(principal, caps)     # same subset (caps<=granter) + platform denylist as direct caps
+
+
 def _guard_policy(principal: Principal, *, effect: str, action: str, resource: str) -> None:
     """Refuse a tenant-scoped caller creating an ALLOW policy that escalates beyond their tenant.
 
@@ -264,6 +287,8 @@ async def set_roles(request: Request, subject: str, body: AssignIn,
     # tenant claim writes to 'global', not to a None tenant), matching create_role/update_role — a
     # later "who was granted what in <tenant>" query must find this event where the grant landed.
     tenant = _op_tenant(principal)
+    # ALSO gate the caps carried by the assigned ROLES, not just the direct capabilities (FIN authz-002).
+    await _guard_role_caps(request, principal, tenant, body.roles)
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.

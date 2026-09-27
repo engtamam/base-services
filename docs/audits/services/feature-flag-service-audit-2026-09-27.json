@@ -1,0 +1,279 @@
+{
+  "service": "feature-flag-service",
+  "date": "2026-09-27",
+  "summary": {
+    "total": 24,
+    "by_severity": {
+      "CRITICAL": 0,
+      "HIGH": 6,
+      "MEDIUM": 8,
+      "LOW": 10
+    }
+  },
+  "findings": [
+    {
+      "id": "feature-flag-001",
+      "category": "SECURITY/PERFORMANCE",
+      "severity": "HIGH",
+      "title": "Rate limiting is fully implemented but never wired to any route (DoS + declared-but-unread knobs)",
+      "file": "app/api/ratelimit.py",
+      "line": 81,
+      "scenario": "app/main.py calls build_policy + register_ratelimit_refund but never adds a rate-limit middleware, and NO route in app/api/v1/flags.py or app/api/internal.py declares Depends(rate_limit). A grep for rate_limit shows it is defined and referenced only inside ratelimit.py itself. Result: the hot-path POST /api/v1/flags/evaluate and POST /internal/flags/evaluate (each of which fans out to evaluate_all over the whole catalogue with per-flag entitlement/segment resolution) have zero request throttling. An unauthenticated-token or single tenant can hammer evaluate and exhaust the event loop / datastore. Every RATELIMIT_* setting (RATELIMIT_MAX, RATELIMIT_WINDOW_SECONDS, RATELIMIT_KEY_PARTS, RATELIMIT_ROUTES, RATELIMIT_DEGRADE) is a declared-but-unread knob — the panel advertises limits that nothing enforces.",
+      "evidence": "async def rate_limit(request: Request, response: Response, principal: \"Principal | None\" = Depends(optional_principal)) -> None:  # never referenced by any router",
+      "recommendation": "Attach Depends(rate_limit) to the user + internal routers (at minimum the evaluate endpoints) or mount it as middleware, and add a test that asserts a 429 once RATELIMIT_MAX is exceeded."
+    },
+    {
+      "id": "feature-flag-002",
+      "category": "SECURITY/IDOR",
+      "severity": "HIGH",
+      "title": "GET /api/v1/flags leaks every tenant's overrides to any flags.read/flags.manage holder",
+      "file": "app/api/v1/flags.py",
+      "line": 121,
+      "scenario": "list_flags is guarded by _READ (platform.flags OR flags.manage OR flags.read). flags.manage/flags.read are described in this same file as tenant-delegatable caps. The returned Flag.to_dict() includes tenant_overrides {tenant: bool} and user_overrides {user_id: bool} for EVERY flag in the global catalogue. A tenant admin holding flags.read can call GET /api/v1/flags (and GET /api/v1/flags/stale) and read which other tenants and which global user ids have overrides on every flag — the exact cross-tenant leak the evaluate route (line 219-229) was carefully scoped to prevent. The evaluate path was fixed; the list/read path was not.",
+      "evidence": "@router.get(\"/flags\", dependencies=[Depends(_READ)])\nasync def list_flags(request: Request, include_archived: bool = False) -> dict:\n    return {\"flags\": await build_flags(request).list(include_archived)}",
+      "recommendation": "Either restrict list/get of full definitions to platform.flags, or strip tenant_overrides/user_overrides down to the caller's own tenant for non-platform callers (as evaluate already scopes tenant)."
+    },
+    {
+      "id": "feature-flag-003",
+      "category": "SECURITY/OBSERVABILITY",
+      "severity": "HIGH",
+      "title": "Internal route policy silently fails OPEN when INTERNAL_ROUTE_POLICY_JSON is malformed",
+      "file": "app/config.py",
+      "line": 21,
+      "scenario": "_json_any_map returns {} on any JSON parse error ('a mis-set map must not crash boot'). INTERNAL_ROUTE_POLICY_JSON feeds InternalRoutePolicy, which is default-open: a route with no entry admits any authenticated caller (internal_policy.py line 35). If an operator sets a policy to lock /internal/backup/import or /internal/privacy/erase to specific callers but makes a JSON typo, the whole map parses to {} and EVERY internal route reverts to default-open with no boot error and no log — the tightening the operator intended silently does not exist. Same silent-swallow applies to INTERNAL_CALLER_PUBLIC_KEYS_JSON / INTERNAL_CALLER_JWKS_JSON, where a typo leaves the static/jwks driver with no keys and it falls back to the flat shared token.",
+      "evidence": "except (ValueError, TypeError):\n        return {}   # a mis-set map must not crash boot; the driver it feeds simply sees no keys",
+      "recommendation": "Fail boot (or at least emit a WARN + telemetry) when a SECURITY-relevant map env var is non-empty but does not parse as a JSON object, instead of degrading to default-open silently."
+    },
+    {
+      "id": "feature-flag-004",
+      "category": "PERFORMANCE",
+      "severity": "HIGH",
+      "title": "Blocking sync HTTP on the async evaluation hot path for unleash/launchdarkly providers",
+      "file": "app/core/flag_service.py",
+      "line": 166,
+      "scenario": "_definition awaits self._provider.get(key) directly. For the unleash provider that calls get_json (blocking urllib) and for launchdarkly it calls the synchronous ldclient.all_flags_state — both are declared `async def` but do blocking I/O with no offload. On a cache miss (every FLAG_CACHE_TTL_SECONDS, or after any write invalidation) this freezes the single-worker event loop for the whole HTTP round-trip, stalling every concurrent evaluation. Note the code already learned this lesson for the entitlement checker (asyncio.to_thread, line 240) and token verify (run_in_threadpool), but the flag provider fetch was left inline.",
+      "evidence": "try:\n            flag = await self._provider.get(key)\n        except ProviderUnavailable:\n            return None",
+      "recommendation": "Wrap provider.get/list in asyncio.to_thread (or make the adapters truly async), matching the offload already applied to entitlement and token verification."
+    },
+    {
+      "id": "feature-flag-005",
+      "category": "CONCURRENCY/DATA",
+      "severity": "HIGH",
+      "title": "Default memory cache invalidation is per-process — a kill-switch does not propagate across replicas",
+      "file": "app/adapters/cache/memory.py",
+      "line": 33,
+      "scenario": "CACHE_DRIVER defaults to 'memory' (config.py line 204). FlagService._invalidate deletes flag:<key>/flags:all only from the LOCAL cache. In a multi-replica deployment on the memory driver, an admin flipping a flag's `enabled` to False (kill switch) or setting a tenant override on replica A does not invalidate replicas B/C, which keep serving the OLD definition for up to FLAG_CACHE_TTL_SECONDS (30s). For a kill switch used during an incident, 30s of continued exposure across most replicas is a real safety gap, and it is invisible in a single-process test.",
+      "evidence": "async def delete(self, key: str) -> bool:\n        return self._data.pop(key, None) is not None   # local process dict only",
+      "recommendation": "Require the redis cache driver in production (boot guard when replicas>1), or add a pub/sub invalidation channel so writes fan out; at minimum document that memory cache is single-replica-only."
+    },
+    {
+      "id": "feature-flag-006",
+      "category": "SECURITY/PII",
+      "severity": "HIGH",
+      "title": "Raw user ids and full user_overrides maps published to the event bus unpseudonymised",
+      "file": "app/core/flag_service.py",
+      "line": 109,
+      "scenario": "upsert emits flag.changed with before/after = flag.to_dict(), which includes the full user_overrides {user_id: bool} and tenant_overrides maps — personal data (global user identifiers) broadcast in cleartext to every event-bus subscriber. Separately _expose publishes flag.exposed with the raw 'subject' (which is the user id when bucket_by=user) and 'tenant'. Everywhere else the service is careful to write only subject_ref pseudonyms (core/pii.py, erasure), yet the event stream carries raw identifiers.",
+      "evidence": "await self._emit(\"flag.changed\", {\"key\": flag.key, \"actor\": actor, \"before\": before, \"after\": flag.to_dict()})   ...   \"subject\": subject, ... \"tenant\": ctx.get(\"tenant\", \"\")",
+      "recommendation": "Pseudonymise subject via subject_ref in flag.exposed, and omit or hash user_overrides/tenant_overrides from flag.changed payloads (emit only the changed keys/counts, not the raw per-person map)."
+    },
+    {
+      "id": "feature-flag-007",
+      "category": "OBSERVABILITY",
+      "severity": "MEDIUM",
+      "title": "Flag updates (including kill-switch flips) are audited as non-critical 'flag.created'; no flag.updated action exists",
+      "file": "app/api/v1/flags.py",
+      "line": 109,
+      "scenario": "upsert_flag records 'flag.created' for BOTH create and update (upsert re-applies over an existing flag). Changing `enabled` (kill switch), rollout_pct, rules, segments or prerequisites is a production change with no deployment, yet it is logged as flag.created, which auditable_actions.py marks critical:False. So flipping a kill switch or retargeting rollout via POST /flags fails OPEN if the audit log is down (only flag.deleted/override/config are critical). There is no distinct flag.updated action to mark critical.",
+      "evidence": "await request.app.state.auditor.record(\"flag.created\", actor=principal.subject, ...)   # upsert path records created even on update",
+      "recommendation": "Distinguish create vs update in FlagService.upsert (before is None vs not) and record a 'flag.updated' action marked critical for enabled/rollout/rules changes."
+    },
+    {
+      "id": "feature-flag-008",
+      "category": "CORRECTNESS",
+      "severity": "MEDIUM",
+      "title": "LaunchDarkly adapter evaluates every flag as a hardcoded anonymous user and discards LD targeting/rollout",
+      "file": "app/adapters/flags/launchdarkly.py",
+      "line": 24,
+      "scenario": "get()/list() call all_flags_state({\"key\": \"anonymous\"}) — the real request context (user/tenant/attrs) is never passed to LD, so all LD targeting and percentage rollout is resolved for the single anonymous user, and _map hardcodes rollout_pct=100 and default=False. A flag that LD rolls out to 10% of real users will read as either fully on or fully off (whatever anonymous gets), and our engine then re-rolls at 100%. LD-driven per-user decisions are silently wrong.",
+      "evidence": "all_flags = self._client.all_flags_state({\"key\": \"anonymous\"}).to_values_map()\n        return self._map(key, all_flags[key]) if key in all_flags else None",
+      "recommendation": "Either pass the evaluation context through to LD (evaluate per user), or document that the LD driver only imports on/off definitions and must not be used for LD-side targeting."
+    },
+    {
+      "id": "feature-flag-009",
+      "category": "API/CONTRACT",
+      "severity": "MEDIUM",
+      "title": "GET /internal/flags/{key} hardcodes attrs={}, so targeting-rule flags evaluate wrongly for internal callers",
+      "file": "app/api/internal.py",
+      "line": 83,
+      "scenario": "evaluate_one builds ctx with attrs={} always (no query param to supply attributes). Any flag whose decision depends on targeting rules or segments (which match on attrs) will skip rule_match/segment_match and fall through to rollout/default. A service calling GET /internal/flags/{key}?tenant=..&user=.. for a country- or plan-gated flag gets a decision that ignores the very targeting that flag was created for — a silent wrong answer, distinct from the POST /internal/flags/evaluate path which does accept attrs.",
+      "evidence": "return await build_flags(request).evaluate(key, {\"tenant\": tenant, \"user\": user, \"attrs\": {}})",
+      "recommendation": "Accept attrs on this endpoint (or drop it in favour of the POST body path) so rule/segment evaluation is possible; at minimum document that the GET form ignores targeting."
+    },
+    {
+      "id": "feature-flag-010",
+      "category": "CORRECTNESS/PERFORMANCE",
+      "severity": "MEDIUM",
+      "title": "evaluate_all silently caps at FLAG_LIST_LIMIT — flags beyond the cap appear absent/OFF",
+      "file": "app/core/flag_service.py",
+      "line": 269,
+      "scenario": "_definitions() calls provider.list(self._limit) with self._limit = FLAG_LIST_LIMIT (default 500). evaluate_all iterates only those rows. In a deployment with >500 live flags, evaluate_all (POST /flags/evaluate with keys=None, the documented 'one call answers every flag') returns only the first 500 by store order; the rest are simply missing from the response, and a client treats a missing key as OFF/unknown. No error, no truncation signal.",
+      "evidence": "for flag in await self._definitions():  # provider.list(self._limit) — capped at FLAG_LIST_LIMIT",
+      "recommendation": "Paginate _definitions() to cover the full catalogue (bounded by _CATALOG_MAX like the stale sweep), or return an explicit 'truncated' marker so callers know the set is incomplete."
+    },
+    {
+      "id": "feature-flag-011",
+      "category": "CONFIG/SECURITY",
+      "severity": "MEDIUM",
+      "title": "ROLLOUT_SALT ships a predictable hardcoded default ('base-services')",
+      "file": "app/config.py",
+      "line": 274,
+      "scenario": "ROLLOUT_SALT defaults to the literal 'base-services'. The rollout bucket is sha256(salt:key:subject); with a known salt an outsider can compute exactly which subjects land in any percentage bucket for any flag key, and predict/forge which users a rollout will hit. Unlike PII_SALT and INTERNAL_SERVICE_TOKEN there is no boot guard forcing it to be set, so most deployments run on the shared public default.",
+      "evidence": "ROLLOUT_SALT: str = \"base-services\"       # salts the rollout hash (change -> re-buckets)",
+      "recommendation": "Either require ROLLOUT_SALT in production (boot guard) or default it to a per-deployment random value; do not ship a well-known constant salt."
+    },
+    {
+      "id": "feature-flag-012",
+      "category": "CONFIG",
+      "severity": "MEDIUM",
+      "title": "READYZ_TIMEOUT_SECONDS is read via getattr but never declared in Settings",
+      "file": "app/api/health.py",
+      "line": 65,
+      "scenario": "readyz reads getattr(get_settings(), \"READYZ_TIMEOUT_SECONDS\", _DEFAULT_READYZ_TIMEOUT). Settings (config.py) never defines READYZ_TIMEOUT_SECONDS, so the getattr always falls to the 5.0 default and the env var (if an operator sets it) is silently ignored — a declared-but-unread/unsettable knob. An operator tuning the readiness timeout for a slow dependency has no working lever.",
+      "evidence": "timeout = getattr(get_settings(), \"READYZ_TIMEOUT_SECONDS\", _DEFAULT_READYZ_TIMEOUT)",
+      "recommendation": "Add READYZ_TIMEOUT_SECONDS to Settings so the env var is honoured, or remove the getattr and use the constant so it is not implied to be configurable."
+    },
+    {
+      "id": "feature-flag-013",
+      "category": "CORRECTNESS",
+      "severity": "MEDIUM",
+      "title": "Non-numeric start/end from a provider throws on the evaluation hot path",
+      "file": "app/core/evaluate.py",
+      "line": 32,
+      "scenario": "in_schedule does float(flag.get(\"start\", 0) or 0). Flags authored through FlagIn are validated as float, but definitions coming from an external provider (unleash/launchdarkly) or a corrupted/hand-edited datastore row are not validated by this service. A start/end that is a non-numeric string raises ValueError inside evaluate, which is NOT caught in FlagService.evaluate — turning one bad definition into a 500 on the evaluation hot path (and, via evaluate_all, breaking the whole bulk response).",
+      "evidence": "start, end = float(flag.get(\"start\", 0) or 0), float(flag.get(\"end\", 0) or 0)",
+      "recommendation": "Coerce defensively (helper returning 0.0 on non-numeric) or wrap per-flag evaluation in try/except so one malformed definition degrades to its default rather than 500ing the request."
+    },
+    {
+      "id": "feature-flag-014",
+      "category": "CORRECTNESS",
+      "severity": "MEDIUM",
+      "title": "evaluate() default now=0.0 treats every scheduled flag as before-start",
+      "file": "app/core/evaluate.py",
+      "line": 40,
+      "scenario": "evaluate() defaults now=0.0. FlagService always passes now=now_ts(), but the pure function is a reusable primitive and the unknown-flag call site (flag_service.py line 260) and tests call it without now. With now=0.0, in_schedule sees `if start and now < start` -> 0 < start -> True -> returns default for ANY flag that has a start set, silently bypassing overrides/rules. Any future reuse of evaluate() that forgets to pass now disables all scheduled flags with no error.",
+      "evidence": "def evaluate(flag, ctx, *, salt, entitled=None, now: float = 0.0, prereqs_ok=True, in_segment=False):",
+      "recommendation": "Default now to now_ts() inside evaluate (or make it required) so the scheduled window is correct regardless of call site."
+    },
+    {
+      "id": "feature-flag-015",
+      "category": "TESTS/QA",
+      "severity": "LOW",
+      "title": "Tautological assertion that always passes (tests nothing)",
+      "file": "tests/unit/test_evaluation.py",
+      "line": 19,
+      "scenario": "The bucket-difference assertion is `... != ... or True`, which is unconditionally True regardless of the bucket function's behaviour. It gives the appearance of testing that different subjects bucket differently while asserting nothing — a 'test that stopped testing'. If bucket() regressed to returning a constant, this test would still pass.",
+      "evidence": "assert bucket(SALT, \"f\", \"u1\") != bucket(SALT, \"f\", \"u2\") or True   # different subjects may differ",
+      "recommendation": "Replace with a real distribution/collision check across many subjects, or drop the line."
+    },
+    {
+      "id": "feature-flag-016",
+      "category": "TESTS/QA",
+      "severity": "LOW",
+      "title": "No test asserts rate limiting is enforced (would have caught the unwired limiter)",
+      "file": "tests/security/test_flags_security.py",
+      "line": 16,
+      "scenario": "The security suite sets RATELIMIT_MAX=1000 in the test env but never sends >limit requests nor asserts a 429 on any endpoint. Because there is no coverage that the limiter actually rejects, finding feature-flag-001 (limiter never wired to any route) went undetected. A single test hitting an endpoint past the limit and asserting 429 would fail today.",
+      "evidence": "os.environ.update(ENV=\"test\", ..., RATELIMIT_MAX=\"1000\")   # set but never exercised for a 429",
+      "recommendation": "Add a test that exceeds the configured limit on evaluate and asserts 429 + Retry-After."
+    },
+    {
+      "id": "feature-flag-017",
+      "category": "CORRECTNESS",
+      "severity": "LOW",
+      "title": "MemoryCache treats ttl_seconds=0 as 'never expire'",
+      "file": "app/adapters/cache/memory.py",
+      "line": 30,
+      "scenario": "set() computes exp = time.monotonic() + ttl_seconds if ttl_seconds else None. A caller passing ttl_seconds=0 (meaning 'expire immediately' in most cache APIs) gets a permanent entry instead. Any future call site that computes a 0 TTL (e.g. a clamped/negative-derived value) would poison the cache with a non-expiring entry.",
+      "evidence": "exp = time.monotonic() + ttl_seconds if ttl_seconds else None",
+      "recommendation": "Test ttl_seconds is None explicitly (`if ttl_seconds is not None`) so 0 means immediate expiry, not eternal."
+    },
+    {
+      "id": "feature-flag-018",
+      "category": "SECURITY",
+      "severity": "LOW",
+      "title": "User-override existence can be probed via the evaluate endpoint",
+      "file": "app/api/v1/flags.py",
+      "line": 225,
+      "scenario": "evaluate scopes tenant to the caller for non-platform holders, but body.user is passed through unconstrained. Since user_overrides are global (platform-scoped to set), a flags.read holder can iterate candidate global user ids in body.user and observe reason=='user_override' in the response, learning which specific users have overrides on a flag — cross-tenant information about individuals via an oracle.",
+      "evidence": "ctx = {\"tenant\": tenant, \"user\": body.user, \"attrs\": body.attrs}   # body.user not scoped",
+      "recommendation": "For non-platform callers, either drop the reason detail to a coarse value or restrict user-scoped evaluation to the caller's own subject."
+    },
+    {
+      "id": "feature-flag-019",
+      "category": "OBSERVABILITY",
+      "severity": "LOW",
+      "title": "Override audit record is written before the flag-existence check (false record on 404)",
+      "file": "app/api/v1/flags.py",
+      "line": 179,
+      "scenario": "set_override records 'flag.override_set' (critical) BEFORE calling set_override, which returns None -> 404 when the flag does not exist. The audit trail then contains an override-set entry for an action that never happened. This is the deliberate write-ahead pattern, but for a non-existent flag it produces a false positive record an investigator would read as a real change. Same in clear_override.",
+      "evidence": "await request.app.state.auditor.record(\"flag.override_set\", ...)\n    ...\n    flag = await build_flags(request).set_override(...)\n    if flag is None:\n        raise HTTPException(404, \"NOT_FOUND\")",
+      "recommendation": "Check flag existence first (or record an outcome/annotation), so the audit reflects only overrides that could actually apply."
+    },
+    {
+      "id": "feature-flag-020",
+      "category": "PERFORMANCE",
+      "severity": "LOW",
+      "title": "Double authentication on the evaluate hot path",
+      "file": "app/api/v1/flags.py",
+      "line": 219,
+      "scenario": "POST /flags/evaluate declares _READ both as a route dependency (dependencies=[Depends(_READ)]) and as the `principal` parameter (principal: Principal = Depends(_READ)). FastAPI does dedupe identical Depends callables, but _READ is a freshly-created closure used once here so the decorator form and the param form are the same object — still, the pattern is redundant and, if the two ever diverge, would run require_user (token verify, offloaded to a threadpool) twice per request on the highest-QPS endpoint.",
+      "evidence": "@router.post(\"/flags/evaluate\", dependencies=[Depends(_READ)])\nasync def evaluate(request: Request, body: EvalIn, principal: Principal = Depends(_READ)) -> dict:",
+      "recommendation": "Keep only the parameter form (which yields the principal); drop the decorator dependency."
+    },
+    {
+      "id": "feature-flag-021",
+      "category": "CORRECTNESS",
+      "severity": "LOW",
+      "title": "Integer truncation biases fractional rollout percentages and variant bands downward",
+      "file": "app/core/rollout.py",
+      "line": 25,
+      "scenario": "in_rollout uses `bucket < int(pct * BUCKETS / 100)` and pick_variant uses `upper += int(float(weight) * BUCKETS / 100)`. int() truncates, so a fractional percentage (e.g. 0.99%) rounds down and every rounding remainder is swept into the LAST declared variant via `next(reversed(variants))`. A 3-way 33.33/33.33/33.34 split, or any sub-percent rollout, is systematically skewed, and the last variant silently absorbs the remainder. Documented for variants, undocumented for rollout_pct.",
+      "evidence": "return bucket(salt, key, subject) < int(pct * BUCKETS / 100)",
+      "recommendation": "Use round() (or a larger bucket space) for rollout_pct and distribute the variant remainder deterministically rather than always to the last band."
+    },
+    {
+      "id": "feature-flag-022",
+      "category": "SECURITY",
+      "severity": "LOW",
+      "title": "/metrics is exposed publicly with no authentication",
+      "file": "app/api/metrics.py",
+      "line": 15,
+      "scenario": "GET /metrics serves the full Prometheus registry with no auth (router has no dependency; main.py mounts it before internal/user routers). Alongside process metrics the RED instrumentator exposes per-route request counts/latencies, letting an unauthenticated caller enumerate which endpoints exist and their traffic. Metrics are typically served on the internal tier or IP-restricted.",
+      "evidence": "@router.get(\"/metrics\")\nasync def metrics() -> Response:\n    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)",
+      "recommendation": "Guard /metrics behind the internal token or a network policy, consistent with the /internal tier."
+    },
+    {
+      "id": "feature-flag-023",
+      "category": "OBSERVABILITY",
+      "severity": "LOW",
+      "title": "Exposure sampling drops all anonymous-subject events, silently biasing experiment data",
+      "file": "app/core/flag_service.py",
+      "line": 304,
+      "scenario": "_expose, when EXPOSURE_SAMPLE_PCT < 100, gates on in_rollout(salt, ...__exposure__..., subject, pct). in_rollout returns False for an empty subject (rollout.py line 23). For a flag bucketed by user with no user in ctx (or by tenant with no tenant), subject is '' so NO exposure event is ever emitted for anonymous traffic once sampling is below 100% — the A/B measurement silently loses the entire anonymous cohort while appearing to sample uniformly.",
+      "evidence": "if not _rollout.in_rollout(self._salt, f\"__exposure__{flag.get('key','')}\", subject, self._exposure_pct):\n                return",
+      "recommendation": "Fall back to a random sample (or a synthetic subject) when the subject is empty, so anonymous evaluations are represented in exposure data."
+    },
+    {
+      "id": "feature-flag-024",
+      "category": "SECURITY",
+      "severity": "LOW",
+      "title": "Internal caller keys silently absent when INTERNAL_CALLER_PUBLIC_KEYS_JSON/JWKS_JSON is malformed, falling back to shared token",
+      "file": "app/config.py",
+      "line": 33,
+      "scenario": "_json_str_map/_json_any_map return {} on malformed input. With INTERNAL_CALLER_DRIVER=static/jwks and INTERNAL_CALLER_ALLOW_TOKEN_FALLBACK=True (the default), a typo in the keys map yields zero configured caller keys, so every per-caller assertion fails to match and each request instead succeeds via the flat shared-token fallback — the operator believes assertion-based per-caller identity is enforced while in reality only the shared token is checked. No boot error surfaces the downgrade.",
+      "evidence": "def _json_str_map(raw: str) -> dict[str, str]:\n    return {str(k): str(v) for k, v in _json_any_map(raw).items() if k and v}",
+      "recommendation": "When the caller driver is static/jwks, fail boot if its keys map is empty/unparseable, and log when a request authenticates via the token fallback so the downgrade is observable."
+    }
+  ]
+}

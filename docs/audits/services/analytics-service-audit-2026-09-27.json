@@ -1,0 +1,263 @@
+{
+  "service": "analytics-service",
+  "date": "2026-09-27",
+  "summary": {
+    "total": 23,
+    "by_severity": {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 11, "LOW": 11}
+  },
+  "findings": [
+    {
+      "id": "analytics-001",
+      "category": "correctness",
+      "severity": "HIGH",
+      "title": "Query filters silently ignored when no dimensions are requested (over-broad, wrong answer)",
+      "file": "app/core/query_service.py",
+      "line": 83,
+      "scenario": "A user POSTs /api/v1/analytics/query with metric='orders', filters={'status':'failed'} and NO dimensions. `normalize_filters` accepts the filter, but the non-grouped branch reads the no-dims rollup total and never applies `norm_filters`. The response is the tenant's TOTAL order count, not failed orders — a silently wrong (over-counting) answer the caller believes is filtered. Filters are only honoured in the `if dimensions:` branch.",
+      "evidence": "norm_filters = _q.normalize_filters(filters)\n...\n        else:\n            keys = [rollup_key(tenant, metric, granularity, b, {}) for b in bucket_keys]\n            rollups = await self._rollups.get_many(keys)      # keyed reads — no scan\n            result = {\"series\": self._series(rollups, agg, percentile, tz, granularity),\n                      \"total\": self._aggregate([r for r in rollups], agg, percentile)}",
+      "recommendation": "If filters are present but no dimensions are requested, either refuse with a QueryError (filters require the dimensioned cells) or route through the grouped/range_cells path so `_matches` is applied. Never accept a filter and silently ignore it."
+    },
+    {
+      "id": "analytics-002",
+      "category": "observability",
+      "severity": "MEDIUM",
+      "title": "update_report mutates a saved report with no audit record while create/delete are audited",
+      "file": "app/api/v1/analytics.py",
+      "line": 171,
+      "scenario": "An operator changes a saved report's stored query via PUT /api/v1/analytics/reports/{id}. create_report records 'analytics.report_created' and delete_report records 'analytics.report_deleted', but update_report records nothing. A report whose query was silently repointed (e.g. to another metric) leaves no trail; the auditable_actions.py declaration also omits any 'analytics.report_updated' action.",
+      "evidence": "async def update_report(report_id: str, body: ReportIn, request: Request,\n                        p: Principal = Depends(_MANAGE)) -> dict:\n    ...\n    await ReportStore(c.datastore).save(r)\n    return r.to_dict()",
+      "recommendation": "Declare and emit an 'analytics.report_updated' audit event in update_report, matching create/delete."
+    },
+    {
+      "id": "analytics-003",
+      "category": "api",
+      "severity": "MEDIUM",
+      "title": "Percentile contract mismatch: UI/help says 0-100, validator requires 0<p<1",
+      "file": "app/core/query.py",
+      "line": 37,
+      "scenario": "admin_actions.py and admin help text document percentile as '0-100, only used when agg is percentile'. A caller following the docs sends percentile=95 for a p95 query; query.validate raises 'PERCENTILE_MUST_BE_BETWEEN_0_AND_1' → a guaranteed 400. The documented contract cannot succeed.",
+      "evidence": "if agg == \"percentile\":\n        if percentile is None or not (0.0 < float(percentile) < 1.0):\n            raise QueryError(\"PERCENTILE_MUST_BE_BETWEEN_0_AND_1\")   # while admin_actions help says \"0-100\"",
+      "recommendation": "Make the API and the help text agree — either accept 0-100 and divide by 100 internally, or fix the help/params to say 0<p<1."
+    },
+    {
+      "id": "analytics-004",
+      "category": "api",
+      "severity": "MEDIUM",
+      "title": "Admin/user action help advertises unsupported aggregations (min/max) and omits a supported one (unique)",
+      "file": "app/admin_actions.py",
+      "line": 26,
+      "scenario": "The agg help reads 'count, sum, avg, min, max or percentile'. AGGREGATIONS = ('count','sum','avg','unique','percentile'). An operator following the panel chooses agg='max' → 400 AGG_MUST_BE_ONE_OF; and the real 'unique' (distinct-count, the flagship HLL feature) is never surfaced to operators at all.",
+      "evidence": "\"help\": \"count, sum, avg, min, max or percentile. Defaults to count.\"   # vs AGGREGATIONS = (\"count\", \"sum\", \"avg\", \"unique\", \"percentile\")",
+      "recommendation": "Correct the help strings in admin_actions.py (query + export params) to the actual aggregation set."
+    },
+    {
+      "id": "analytics-005",
+      "category": "performance",
+      "severity": "MEDIUM",
+      "title": "for_tenant_window scans from the oldest event forward with no lower-bound predicate",
+      "file": "app/core/stores.py",
+      "line": 61,
+      "scenario": "funnel/retention on a recent window (e.g. last 24h) for a tenant with years of events: find() is called with only {'tenant': tenant} sorted by event_time asc and pages forward, `continue`-skipping every row with et<lo. For a tenant with 10M historical events it reads and discards millions of rows before reaching the window — the docstring claims it 'reads only the window' but the store has no >= predicate.",
+      "evidence": "rows, cursor = await self._store.find(_EVENTS, {\"tenant\": tenant}, limit=_PAGE,\n                                                  after=cursor, sort=(\"event_time\", \"asc\"))\n            for r in rows:\n                et = float(r.get(\"event_time\", 0))\n                if et < lo:\n                    continue",
+      "recommendation": "Push a lower bound into the datastore query (event_time >= lo) or add a range-scan seam so the read starts at lo instead of the beginning of history."
+    },
+    {
+      "id": "analytics-006",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "into_tenant backup clone cannot duplicate id-keyed tenant-scoped collections (events, reports)",
+      "file": "app/core/backup.py",
+      "line": 257,
+      "scenario": "backup/import with into_tenant='sandbox' to clone tenant A. events and reports are tenant_scoped but use the default key template '{id}'. The remapped row keeps its original id, so key is unchanged; datastore.get finds the pre-existing source row and the clone SKIPs it. Result: the clone silently contains zero events/reports for the new tenant (only rollups, which are '{key}'-templated and also collide). A support/sandbox clone appears to succeed but restores almost nothing.",
+      "evidence": "row = {**row, \"tenant\": into_tenant}\n                remapped += 1\n            key = _row_key(template, name, row)   # template '{id}' -> unchanged key -> collides with source\n            existing = await datastore.get(name, key)\n            if existing is None:\n                ...\n            else:\n                skipped += 1",
+      "recommendation": "For into_tenant clones, derive a destination-scoped key (include into_tenant in the key) for id-keyed collections, or document that clone requires a distinct target datastore/namespace."
+    },
+    {
+      "id": "analytics-007",
+      "category": "config",
+      "severity": "LOW",
+      "title": "READYZ_TIMEOUT_SECONDS is read via getattr but is not a Settings field (silently unread knob)",
+      "file": "app/api/health.py",
+      "line": 65,
+      "scenario": "An operator sets READYZ_TIMEOUT_SECONDS=10 to widen the readiness probe budget. Settings has no such field and uses extra='ignore', so getattr always falls back to _DEFAULT_READYZ_TIMEOUT (5.0). The knob appears configurable (referenced in code + comment) but has no effect — an advertised-but-unread knob.",
+      "evidence": "timeout = getattr(get_settings(), \"READYZ_TIMEOUT_SECONDS\", _DEFAULT_READYZ_TIMEOUT)",
+      "recommendation": "Add READYZ_TIMEOUT_SECONDS to Settings, or remove the getattr indirection and comment so the constant is clearly the only source."
+    },
+    {
+      "id": "analytics-008",
+      "category": "observability",
+      "severity": "MEDIUM",
+      "title": "Data-reading routes run_report/funnel/retention are not audited while /query is",
+      "file": "app/api/v1/analytics.py",
+      "line": 105,
+      "scenario": "run_query records 'analytics.queried'. funnel, retention, and run_report execute equivalent (often heavier, raw-event) reads over tenant data — including a platform operator reading another tenant via body.tenant — with no audit record. An investigator cannot tell that an operator ran a funnel/retention over a customer's raw events.",
+      "evidence": "async def run_funnel(body: FunnelIn, request: Request, p: Principal = Depends(_READ)) -> dict:\n    \"\"\"Sequence question — reads raw events, bounded by the range. Not the hot path.\"\"\"\n    try:\n        return await build_query(request).funnel(...)   # no auditor.record(...)",
+      "recommendation": "Record an audit event for funnel/retention/run_report consistent with /query (at least for platform cross-tenant reads)."
+    },
+    {
+      "id": "analytics-009",
+      "category": "observability",
+      "severity": "MEDIUM",
+      "title": "Export records 'analytics.exported' before the query runs, so failed/no-op exports are audited as successful exports",
+      "file": "app/api/v1/analytics.py",
+      "line": 205,
+      "scenario": "export_query write-aheads the critical audit record, then runs the query. If the query raises QueryError (400) or the warehouse is null (501 WAREHOUSE_NOT_CONFIGURED), nothing was ever exported, yet the audit log now shows 'analytics.exported' for that actor/tenant. For a critical, fail-closed action this over-records data exfiltration that did not happen, muddying breach investigations.",
+      "evidence": "await request.app.state.auditor.record(\n        \"analytics.exported\", actor=p.subject, tenant=export_tenant, resource=\"analytics_export\", ...)\n    svc = build_query(request)\n    try:\n        result = await svc.query(...)\n    except QueryError as e:\n        raise HTTPException(status_code=400, ...)\n    ...\n    if out is None:\n        raise HTTPException(status_code=501, ...)",
+      "recommendation": "Validate the query and warehouse availability before the write-ahead record, or emit a distinct outcome (attempted vs. completed) so a 400/501 is not logged as a completed export."
+    },
+    {
+      "id": "analytics-010",
+      "category": "security",
+      "severity": "MEDIUM",
+      "title": "Internal route policy is default-open for destructive endpoints (erase, backup/import, prune-raw)",
+      "file": "app/core/internal_policy.py",
+      "line": 35,
+      "scenario": "With the default INTERNAL_ROUTE_POLICY_JSON='' and the default 'shared' caller driver, ANY service holding the fleet-wide INTERNAL_SERVICE_TOKEN can call POST /internal/privacy/erase (irreversible subject deletion), /internal/backup/import (overwrite/prune restore), and /internal/analytics/prune-raw. permits() returns True whenever no policy entry matches, so least-privilege on these high-impact routes is opt-in and ships off.",
+      "evidence": "allowed = self._match(path)\n        if allowed is None:\n            return True                       # no policy for this route → any authenticated caller",
+      "recommendation": "Ship a default allow-list for the destructive internal routes (erase/backup-import/prune) so they require a named caller, or document a required production INTERNAL_ROUTE_POLICY_JSON and guard it at boot."
+    },
+    {
+      "id": "analytics-011",
+      "category": "tests",
+      "severity": "MEDIUM",
+      "title": "No test exercises filters, percentile, or unique aggregation — the filter-ignore bug goes undetected",
+      "file": "tests/integration/test_analytics_api.py",
+      "line": 126,
+      "scenario": "The integration suite tests count/sum only. There is no test that a filtered query returns only matching rows (which would have caught analytics-001), no test of agg='unique' (HLL union) correctness, and no test of agg='percentile' (histogram quantile). The two headline features and the filter path are unverified end-to-end.",
+      "evidence": "def test_query_is_cached_and_invalidated_by_a_write(client):\n    q = {\"metric\": \"cq\", \"agg\": \"count\", ...}   # only count/sum appear in the API tests; no filters/percentile/unique",
+      "recommendation": "Add tests: filtered query returns only matching cells; unique across buckets equals distinct subjects; percentile over merged buckets is within tolerance."
+    },
+    {
+      "id": "analytics-012",
+      "category": "correctness",
+      "severity": "LOW",
+      "title": "CSV formula-injection guard quote-prefixes legitimate negative numbers, corrupting numeric exports",
+      "file": "app/adapters/warehouse/csv_export.py",
+      "line": 17,
+      "scenario": "A 'sum' or 'value' column with a negative value (e.g. -100 for a refund/delta metric) has str()[:1]=='-', which is in _DANGEROUS, so it is emitted as the text \"'-100\". Every negative numeric export cell becomes a quoted string, breaking downstream numeric parsing in Excel/warehouses.",
+      "evidence": "_DANGEROUS = (\"=\", \"+\", \"-\", \"@\", \"\\t\", \"\\r\")\n\ndef _safe(value: Any) -> Any:\n    s = \"\" if value is None else str(value)\n    return f\"'{s}\" if s[:1] in _DANGEROUS else value",
+      "recommendation": "Only neutralize when the value is a string; leave int/float cells untouched (a numeric cell cannot be a formula-injection vector)."
+    },
+    {
+      "id": "analytics-013",
+      "category": "concurrency",
+      "severity": "LOW",
+      "title": "Cache-generation bump is a non-atomic get-then-set; concurrent ingests can lose a bump and serve stale query cache",
+      "file": "app/core/ingest_service.py",
+      "line": 81,
+      "scenario": "Two ingests for the same tenant both read generation g, both set g+1 (not g+2). The generation still increments by one, but under a read/write interleave a query cached at generation g between the two sets can survive because the second write applied the same value the first did — the invalidation the second write should have forced is lost, so a query briefly returns stale totals.",
+      "evidence": "g = await self._cache.get(f\"analyticsgen:{tenant}\")\n            await self._cache.set(f\"analyticsgen:{tenant}\", str(int(g or 0) + 1), None)",
+      "recommendation": "Use an atomic INCR on the cache generation key instead of get-then-set."
+    },
+    {
+      "id": "analytics-014",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "prune_before scans the first _PRUNE_MAX rows by KEY order, not by event_time, so old events can be missed indefinitely",
+      "file": "app/core/stores.py",
+      "line": 86,
+      "scenario": "prune_raw calls scan_all(_EVENTS, 100000). scan_all returns the first 100k rows ordered by datastore key (the random uuid id), then deletes only those older than cutoff. If the collection exceeds 100k rows, whether a given expired event is even examined depends on where its random id sorts — old events with high-sorting ids may never enter a pass, so retention/RAW_RETENTION_DAYS is not actually enforced within a bounded time on a large collection.",
+      "evidence": "for r in await self._store.scan_all(_EVENTS, _PRUNE_MAX):\n            if float(r.get(\"event_time\", 0)) < cutoff:\n                await self._store.delete(_EVENTS, r[\"id\"])",
+      "recommendation": "Prune by an event_time-ordered/indexed query (delete oldest-first up to a batch) rather than a key-ordered scan cap."
+    },
+    {
+      "id": "analytics-015",
+      "category": "api",
+      "severity": "LOW",
+      "title": "QueryIn.metric / tenant / filters have no size bounds (only the 1 MiB body limit)",
+      "file": "app/api/v1/analytics.py",
+      "line": 52,
+      "scenario": "metric: str, tenant: str | None and filters: dict have no Field length/size constraints, unlike ReportIn.name (max_length=200). A caller can send a ~1 MiB metric string that flows into rollup_key, the cache key JSON, and audit metadata {'metric': ...}, bloating cache/audit rows. FunnelIn.steps is bounded but the query fields are not.",
+      "evidence": "class QueryIn(BaseModel):\n    metric: str\n    ...\n    filters: dict[str, Any] | None = None\n    ...\n    tenant: str | None = None",
+      "recommendation": "Add max_length to metric/tenant and a max size / key-count bound to filters and dimensions at the schema level."
+    },
+    {
+      "id": "analytics-016",
+      "category": "tests",
+      "severity": "LOW",
+      "title": "Readiness probe registry is a module-global dict mutated at app build, leaking across app instances",
+      "file": "app/api/health.py",
+      "line": 23,
+      "scenario": "_readiness_checks is a module global; create_app() calls register_readiness_check for each container probe. Building a second app in the same process (tests, or a reload) appends the new app's probes to the same dict without clearing, so /readyz runs stale probes bound to a previous container. The ratelimit policy deliberately avoids exactly this by living on app.state.",
+      "evidence": "_readiness_checks: dict[str, ReadinessCheck] = {}\n\ndef register_readiness_check(name: str, check: ReadinessCheck) -> None:\n    _readiness_checks[name] = check",
+      "recommendation": "Store readiness checks on app.state (per-app) rather than in a module global, or clear the registry at the start of create_app()."
+    },
+    {
+      "id": "analytics-017",
+      "category": "correctness",
+      "severity": "LOW",
+      "title": "Late events (>48h) are counted under '{name}.late' so ordinary metric queries silently undercount",
+      "file": "app/core/ingest_service.py",
+      "line": 149,
+      "scenario": "An event arriving more than LATE_EVENT_MAX_SECONDS after event_time is rolled up under metric '{name}.late', never '{name}'. A dashboard querying metric='checkout.completed' silently omits all late-arriving completions, with no field in the query response indicating that a separate late bucket exists. Documented as intentional, but the query API gives no signal.",
+      "evidence": "if late:\n                await self._update_rollups(tenant, f\"{name}.late\", et, subj, value, dims)\n            else:\n                await self._update_rollups(tenant, name, et, subj, value, dims)",
+      "recommendation": "Expose late counts in the query response (e.g. include the '.late' companion total) or document the '.late' metric convention in the user/admin action help."
+    },
+    {
+      "id": "analytics-018",
+      "category": "api",
+      "severity": "LOW",
+      "title": "ratelimit.py carries identity-service header and /login references (copy-paste drift)",
+      "file": "app/api/ratelimit.py",
+      "line": 1,
+      "scenario": "The module header says 'identity-service — Rate limiting' and inline comments reference '/login' and 'an account pending approval (a 403, not a 401)'. This is analytics-service, which has no login surface; the comments misdescribe the code's purpose and will mislead a future maintainer configuring RATELIMIT_COUNT_STATUSES here.",
+      "evidence": "# identity-service — Rate limiting (policy-driven, honest headers)",
+      "recommendation": "Update the header and comments to analytics-service; drop the login-specific narrative."
+    },
+    {
+      "id": "analytics-019",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "funnel/retention silently compute over a truncated event subset when the window exceeds 100k rows",
+      "file": "app/core/query_service.py",
+      "line": 169,
+      "scenario": "for_tenant_window caps at _EXPORT_MAX (100,000) and returns truncated=True. funnel/retention then compute conversion/retention rates over whatever 100k rows fit, returning fully-formed rates as if complete. The only signal is a 'truncated' boolean many clients ignore; a high-volume tenant gets materially wrong funnel/retention numbers that look authoritative.",
+      "evidence": "rows, truncated = await self._events.for_tenant_window(tenant, start_ts, end_ts)\n        ...\n        return {\"steps\": conv, \"entered\": counts[0], \"converted\": counts[-1] if counts else 0, \"truncated\": truncated}",
+      "recommendation": "When truncated, either 400 with RANGE_TOO_LARGE-style guidance or refuse to return rates; at minimum elevate the truncation to a top-level error field, not a silent boolean."
+    },
+    {
+      "id": "analytics-020",
+      "category": "security",
+      "severity": "LOW",
+      "title": "/internal/manifest returns full CWE-guard report and wired driver inventory to any shared-token caller",
+      "file": "app/api/internal.py",
+      "line": 130,
+      "scenario": "GET /internal/manifest (default-open internal route) returns build_manifest plus security.cwe_guard = guard.report() and the ports->drivers map to any peer holding the shared internal token. This discloses the service's exact adapter drivers and security self-assessment to every internal caller, widening the blast radius of a leaked fleet token.",
+      "evidence": "guard = getattr(request.app.state, \"cwe_guard\", None)\n    if guard is not None:\n        manifest[\"security\"] = {\"cwe_guard\": guard.report()}\n    return manifest",
+      "recommendation": "Gate the security/cwe_guard detail behind a named caller allow-list, or omit driver/security internals from the manifest response."
+    },
+    {
+      "id": "analytics-021",
+      "category": "security",
+      "severity": "LOW",
+      "title": "Tenantless principals collapse to a shared '__none__' tenant, cross-visible for saved reports",
+      "file": "app/api/v1/analytics.py",
+      "line": 49,
+      "scenario": "_tenant returns '__none__' for a non-platform principal whose token carries no tenant/org/tid claim. Two distinct tenantless users both resolve to tenant '__none__', so one can list/get/run/delete another's saved reports (they share the bucket). A misconfigured token issuer that drops the tenant claim silently produces cross-user data sharing rather than a hard failure.",
+      "evidence": "if requested and requested != p.tenant:\n        raise HTTPException(status_code=403, detail=\"FORBIDDEN\")\n    return p.tenant or \"__none__\"",
+      "recommendation": "Reject a non-platform principal with no tenant claim (401/403) instead of bucketing it under a shared sentinel."
+    },
+    {
+      "id": "analytics-022",
+      "category": "correctness",
+      "severity": "LOW",
+      "title": "Batch ingest coerces a non-numeric/falsy 'value' to 0 via `or 0`, silently discarding the payload",
+      "file": "app/core/ingest_service.py",
+      "line": 216,
+      "scenario": "ingest_batch computes value=float(e.get('value', 0) or 0). A value of [] , '' or False (malformed producer payload) is coerced to 0.0 and ingested as a zero-value event rather than rejected, so a broken producer silently records zeros into sum/percentile rollups instead of getting a 400.",
+      "evidence": "out = await self.ingest(event_id=e[\"id\"], tenant=tenant, name=e[\"name\"],\n                                    ..., value=float(e.get(\"value\", 0) or 0), props=e.get(\"props\"))",
+      "recommendation": "Reject non-numeric value types explicitly (the single-ingest path already floats via _validate); do not `or 0` a value that is present but the wrong type."
+    },
+    {
+      "id": "analytics-023",
+      "category": "observability",
+      "severity": "LOW",
+      "title": "Non-critical audit failures (query/report_created/report_deleted) fail open with only a telemetry counter",
+      "file": "app/core/audit.py",
+      "line": 100,
+      "scenario": "analytics.queried / report_created / report_deleted are declared critical:false, so on a FAILED sink receipt Auditor.record only calls _count_gap (a telemetry event that itself swallows exceptions) and returns. If the audit sink is degraded, these state/read actions proceed with no durable record and no log line — only a metric an operator must be actively watching. For report_created/report_deleted (real state changes) this is a silent audit gap.",
+      "evidence": "self._count_gap(action, receipt)\n        ...\n        if receipt.status == FAILED and self.is_critical(action) and self._fail_closed:\n            raise AuditUnavailable(...)\n        return receipt",
+      "recommendation": "Consider marking report_created/report_deleted critical, or emit a WARN log (not only telemetry) on any audit gap so a degraded sink is visible without a metrics dashboard."
+    }
+  ]
+}

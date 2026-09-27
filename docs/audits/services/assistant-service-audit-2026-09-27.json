@@ -1,0 +1,274 @@
+{
+  "service": "assistant-service",
+  "date": "2026-09-27",
+  "summary": {
+    "total": 24,
+    "by_severity": { "CRITICAL": 0, "HIGH": 5, "MEDIUM": 11, "LOW": 8 }
+  },
+  "findings": [
+    {
+      "id": "assistant-001",
+      "category": "security",
+      "severity": "HIGH",
+      "title": "SSRF delivery-time re-validation discards the pinned IP, leaving the DNS-rebinding TOCTOU window open",
+      "file": "app/adapters/model/http_provider.py",
+      "line": 536,
+      "scenario": "ssrf.py goes to great lengths to return a Target whose validated IP the transport must connect to, precisely to close the DNS-rebinding window. But _httpx_transport calls ssrf.validate(url, ...) and THROWS AWAY the returned Target, then does client.post(url, ...) which makes httpx re-resolve the hostname independently. A tenant registers a connection at https://evil.example (resolving to a public IP at write and at the validate() call), then flips DNS to 169.254.169.254 / 127.0.0.1 in the microseconds before httpx resolves. The credential-bearing POST then hits the internal target the validate() call was supposed to prevent.",
+      "evidence": "if self._ssrf_revalidate is not None:\n    ...\n    ssrf.validate(url, **self._ssrf_revalidate)\n    ...\nasync with httpx.AsyncClient(timeout=timeout) as client:\n    resp = await client.post(url, headers=headers, json=payload)",
+      "recommendation": "Use the Target.ip returned by validate(): connect to the pinned IP with the original host in the Host/SNI header (httpx transport with a resolved-IP connection), never let httpx re-resolve. Otherwise the pin in ssrf.py is dead code."
+    },
+    {
+      "id": "assistant-002",
+      "category": "correctness",
+      "severity": "HIGH",
+      "title": "Daily spend quota is refunded even for abstentions that DID call the model, bypassing the cost ceiling",
+      "file": "app/api/v1/assistant.py",
+      "line": 119,
+      "scenario": "The daily quota exists specifically to bound the model bill (its own docstring: 'the one that reaches an invoice'). /ask refunds the quota unit whenever answer.abstained is true. But two of the three abstention reasons — UNSUPPORTED (model returned text but no honest citation) and MODEL_FAILED (provider called then errored) — happen AFTER a real, paid model round trip. An attacker crafts questions that retrieve KB hits (so hits is non-empty and the model IS called) but that reliably yield no surviving citation; every such call is refunded, so the daily ceiling never decrements while real provider tokens are consumed. Only NO_EVIDENCE (empty hits, no model call) is a genuine no-work case.",
+      "evidence": "if answer.abstained:\n    # Refunded: an abstention did no work worth paying for\n    await quota.refund(tenant=principal.tenant or \"\", subject_ref=spender)",
+      "recommendation": "Refund only answer.abstained_because == NO_EVIDENCE (the pre-model gate). UNSUPPORTED and MODEL_FAILED consumed provider compute and must count against the daily spend ceiling."
+    },
+    {
+      "id": "assistant-003",
+      "category": "security",
+      "severity": "HIGH",
+      "title": "All /internal AI-connection routes are default-open, so any internal caller can CRUD/invoke any tenant's credential-bearing connections",
+      "file": "app/api/internal.py",
+      "line": 300,
+      "scenario": "require_internal_token authorises per-route via a policy that is DEFAULT-OPEN (a route with no allow-list admits any authenticated internal caller). The connection routes (create/get/list/update/delete/invoke/usage) declare no policy, and tenant is taken from the request body/query, never verified against the caller. Any service holding the shared internal token (or the flat-token peer) can create a connection for tenant B, read tenant B's usage/billing, invoke tenant B's LLM line on B's credential, or delete B's connections. These routes handle stored provider credentials and per-tenant billing — exactly the surface that should be locked, not default-open.",
+      "evidence": "@router.post(\"/assistant/connections\", dependencies=[Depends(require_internal_token)])\nasync def create_connection(request: Request, body: ConnIn) -> dict:",
+      "recommendation": "Add an explicit InternalRoutePolicy allow-list for /internal/assistant/connections* naming only the services that legitimately manage connections; do not rely on default-open for a credential+billing surface."
+    },
+    {
+      "id": "assistant-004",
+      "category": "security",
+      "severity": "HIGH",
+      "title": "Support triage/draft send raw ticket content to the third-party LLM with no PII redaction (unlike /ask)",
+      "file": "app/core/support.py",
+      "line": 55,
+      "scenario": "The /ask path redacts the question (cards, IBAN, national ID, phone, secrets) BEFORE it reaches a third-party model. The internal triage/draft path builds a Passage straight from the ticket subject+body (and the whole reply thread) and posts it to the same external provider with no redaction. Support tickets are the single richest source of card numbers, national IDs and phone numbers on the platform, and they leave the process in cleartext to an external endpoint — the exact exposure the redactor was written to prevent.",
+      "evidence": "passage = Passage(ref=\"ticket\", title=subject or \"ticket\",\n                  text=f\"Subject: {subject}\\n\\n{body}\")\n...\nans = await model.answer(question=question, passages=(passage,), lang=lang)",
+      "recommendation": "Run redact() on subject/body/thread in triage() and draft() before constructing the Passage, mirroring the /ask path, gated by REDACT_PII."
+    },
+    {
+      "id": "assistant-005",
+      "category": "security",
+      "severity": "HIGH",
+      "title": "Connection invoke prompt/messages are sent to the LLM unredacted; no size/round-trip guard on caller-driven tool loop",
+      "file": "app/api/internal.py",
+      "line": 399,
+      "scenario": "invoke_connection forwards body.prompt (up to 100000 chars) or body.messages verbatim to the connection endpoint with no PII redaction and no server-side accounting of how many round trips a tool-calling loop performs. While the connection endpoint is tenant-configured, the content and transcript often originate from end users, and combined with finding assistant-003 (any internal caller, any tenant) this is an unbounded, unredacted egress of user content to an arbitrary (SSRF-revalidated but see assistant-001) URL. Each round trip meters, but nothing caps the loop or the content leaving.",
+      "evidence": "messages = body.messages if body.messages is not None else body.prompt\n...\nreturn await _invoke_conv(conn, messages=messages, converse=model.converse,\n                          store=cstore, max_tokens=body.max_tokens)",
+      "recommendation": "Apply redaction to outbound content per policy, and consider a per-connection max round-trip / max transcript-size ceiling enforced server-side rather than trusting the caller."
+    },
+    {
+      "id": "assistant-006",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "Conversation persistence is entirely unwired — /ask never stores a conversation, so history/retention/encryption/erasure are inert",
+      "file": "app/api/v1/assistant.py",
+      "line": 155,
+      "scenario": "The ConversationStore (start/add), MessageCrypto AES-GCM sealing, CONVERSATION_RETENTION_DAYS sweeper, and DSAR erase_subject are all fully built and container-wired, but NO production code path ever calls conversations.start()/add() (grep finds writers only in tests/). /ask mints a message_id and returns it as 'the attribution anchor' but persists nothing. Result: GET /conversations always returns an empty list, the retention sweeper always purges 0, and DSAR erasure always reports already_absent — an entire advertised feature and its compliance machinery are dead in production.",
+      "evidence": "message_id = uuid.uuid4().hex\n# ... no conversations.add(...) anywhere ...\nreturn { \"answer\": answer.text, \"message_id\": message_id, ... }",
+      "recommendation": "Either wire /ask to persist the turn into ConversationStore when CONVERSATIONS_ENABLED, or remove the conversation feature/endpoints so the compliance surface reflects reality."
+    },
+    {
+      "id": "assistant-007",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "create_connection persists the connection row before the credential; a missing secret store orphans a keyless connection",
+      "file": "app/api/internal.py",
+      "line": 306,
+      "scenario": "create() writes the connection row first; only afterward, if body.credential is set and the secret store is None (no SECRETS_KEK), the handler raises 503. The connection row is already persisted with no credential and no audit line (the connection_created audit is emitted even later, line 318, and never runs on this path). The caller sees a 503 but a half-created, uninvokable connection now exists and will 401/502 forever until manually cleaned up.",
+      "evidence": "conn = await _connections(request).create(...)\n...\nif body.credential:\n    store = getattr(request.app.state, \"secret_store\", None)\n    if store is None:\n        raise HTTPException(503, \"SECRETS_UNAVAILABLE — a credential needs SECRETS_KEK set\")",
+      "recommendation": "Check secret-store availability BEFORE creating the row (fail fast), or delete the row on credential-store failure so create is all-or-nothing."
+    },
+    {
+      "id": "assistant-008",
+      "category": "observability",
+      "severity": "MEDIUM",
+      "title": "Storing a connection's provider credential during create is not audited as a secret write",
+      "file": "app/api/internal.py",
+      "line": 317,
+      "scenario": "The operator /secrets route audits every secret_set write-ahead and critical (the module docstring calls this the guarantee). But create_connection stores a provider credential directly via store.set() with NO secret-set audit record — only a connection_created line carrying auth/shape. A provider key is written to the secret store with no auditable trail of the credential write, defeating the 'every credential change is auditable' property for this path.",
+      "evidence": "await store.set(tenant=body.tenant, name=_conn_secret_name(conn.id), value=body.credential)\nawait request.app.state.auditor.record(\n    \"assistant.connection_created\", ...)",
+      "recommendation": "Emit a write-ahead secret_set audit (name only, never value) for the connection credential, consistent with the operator secrets route."
+    },
+    {
+      "id": "assistant-009",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "Zero-usage metering floor sets BOTH input and output tokens to the response-body size estimate, mis-billing tool-call rounds",
+      "file": "app/adapters/model/http_provider.py",
+      "line": 238,
+      "scenario": "When a provider omits usage (common on tool-call responses), _extract/_extract_converse estimate approx = len(json.dumps(body))//4 and set tin = tout = approx. Input tokens are estimated from the RESPONSE size (which excludes the prompt/transcript that is the real input cost), so input is drastically under-counted, while output is set to the whole-body size (over-counted). For a tool-calling connection that routinely returns usage-less tool_call rounds, every such round is billed on a fabricated symmetric estimate that tracks neither the true prompt nor the true completion.",
+      "evidence": "if tin == 0 and tout == 0 and body:\n    approx = max(1, len(json.dumps(body)) // 4)\n    tin = tout = approx",
+      "recommendation": "Estimate input tokens from the serialized REQUEST payload (prompt+transcript+tools) and output from the response text/tool_use blocks separately, rather than assigning both sides the response-body size."
+    },
+    {
+      "id": "assistant-010",
+      "category": "security",
+      "severity": "MEDIUM",
+      "title": "Main KB model endpoint (MODEL_URL) has no SSRF validation and the credential resolver is tenant-scoped from an unauthenticated hint on some paths",
+      "file": "app/container.py",
+      "line": 201,
+      "scenario": "The container builds HttpModel for the KB path with ssrf_revalidate omitted (None), so the KB model call performs no SSRF check. This is acceptable while MODEL_URL is strictly operator config, but the same adapter resolves a per-tenant key via current_tenant, and support triage/draft set current_tenant from body.tenant (internal, caller-asserted). A caller who can influence tenant selection can cause the platform to bill/serve on another tenant's configured MODEL_API_KEY. The trust boundary rests entirely on MODEL_URL never being tenant-influenced and on internal callers being honest about tenant.",
+      "evidence": "\"http\": lambda s: HttpModel(s.MODEL_URL, s.MODEL_API_KEY, ... )   # no ssrf_revalidate",
+      "recommendation": "Document/assert MODEL_URL is non-tenant-controlled, and verify body.tenant on internal triage/draft against the authenticated internal caller's authorised tenant set rather than trusting it."
+    },
+    {
+      "id": "assistant-011",
+      "category": "security",
+      "severity": "MEDIUM",
+      "title": "SSRF guard allows plain HTTP (and any non-standard port) when ASSISTANT_CONN_REQUIRE_HTTPS is turned off, sending credentials in cleartext",
+      "file": "app/core/ssrf.py",
+      "line": 56,
+      "scenario": "validate() permits scheme 'http' whenever require_https is False, and never restricts the port to a standard set (the docstring promises 'no non-standard ports unless explicitly allowed' but no port allow-list is implemented). An operator who sets ASSISTANT_CONN_REQUIRE_HTTPS=false (a single boolean) causes the service to POST a tenant's provider API key over cleartext HTTP to any public port. The safeguard the comment claims (port restriction) does not exist in code.",
+      "evidence": "if require_https and scheme != \"https\":\n    raise SsrfBlocked(\"https is required\")\n...\nport = port or (443 if scheme == \"https\" else 80)   # no port allow-list anywhere",
+      "recommendation": "Implement the promised non-standard-port restriction, and warn/deny credential POSTs over http even when require_https is relaxed for testing."
+    },
+    {
+      "id": "assistant-012",
+      "category": "concurrency",
+      "severity": "MEDIUM",
+      "title": "ModelCredentials and VertexTokenSource caches are mutated without locking; concurrent refresh causes redundant token mints",
+      "file": "app/core/model_credentials.py",
+      "line": 65,
+      "scenario": "Under a single-worker event loop, several concurrent /ask requests for the same tenant that arrive after the TTL expires each miss the cache, each await the secret-store decrypt (and, for Vertex, each sign a JWT + do a token-exchange network round trip), then all overwrite self._cache. There is no in-flight de-dup, so a cache-expiry moment under load produces a thundering herd of scrypt-backed decrypts / JWT signings on the hot path — the exact cost the cache exists to avoid.",
+      "evidence": "hit = self._cache.get(tenant)\nnow = self._now()\nif hit and now < hit[0]:\n    return hit[1]\n... await self._secrets.get(...) ...\nself._cache[tenant] = (now + self._ttl, value)",
+      "recommendation": "Add a per-key asyncio.Lock (single-flight) around the refresh, as the KB index rebuild already does, so only one refresh runs per tenant at expiry."
+    },
+    {
+      "id": "assistant-013",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "converse() raises ModelError on an empty-text response even when it is a legitimate tool_call with empty text",
+      "file": "app/adapters/model/http_provider.py",
+      "line": 470,
+      "scenario": "converse() treats result kind 'text' with blank text as an error. That is correct, but _extract_converse only classifies as tool_call when it finds tool_use/tool_calls/functionCall blocks. If a provider returns a stop with empty content and omits the tool structure the adapter expects (schema drift or a provider variant), the round trip 502s as MODEL_CALL_FAILED and the metered usage for that round is lost — while the caller cannot distinguish a real outage from an unrecognised-but-valid response shape.",
+      "evidence": "result = self._extract_converse(self._shape, body)\nif result[\"kind\"] == \"text\" and not result[\"text\"].strip():\n    raise ModelError(\"model returned no text\")",
+      "recommendation": "Record usage before raising, and/or return a distinct 'empty' discriminant so a blank completion is not conflated with a transport failure."
+    },
+    {
+      "id": "assistant-014",
+      "category": "security",
+      "severity": "MEDIUM",
+      "title": "Redaction 'secret' pattern misses raw provider keys and JWTs; card pattern misses 15-digit Amex",
+      "file": "app/core/redaction.py",
+      "line": 42,
+      "scenario": "The secret pattern only matches prefixed tokens (sk-/pk-/ghp-/api_key-). A user pasting a bare Anthropic/Google API key without a recognised prefix, a Bearer JWT (eyJ...), or a Google service-account private key block passes through unredacted into the model call. The card rule \\d{4}(?:[ -]?\\d{4}){2,4} requires groups of exactly 4, so a 15-digit Amex written 4-6-5 (e.g. 3782 822463 10005) is not matched. Users paste exactly these when a payment fails.",
+      "evidence": "(\"card\", re.compile(r\"\\b\\d{4}(?:[ -]?\\d{4}){2,4}\\b\"), \"[card]\"),\n...\n(\"secret\", re.compile(r\"\\b(?:sk|pk|ghp|gho|api[_-]?key)[-_][A-Za-z0-9]{16,64}\\b\", re.I), \"[secret]\"),",
+      "recommendation": "Add an Amex-shaped card pattern and a JWT/high-entropy-token pattern (bounded), and document that prefix-less keys are out of scope so operators aren't falsely reassured."
+    },
+    {
+      "id": "assistant-015",
+      "category": "config",
+      "severity": "MEDIUM",
+      "title": "ssrf_revalidate at delivery uses a snapshot of allow/deny lists captured at connection-model build time, not current config",
+      "file": "app/api/internal.py",
+      "line": 226,
+      "scenario": "_conn_model builds the ssrf_revalidate dict from get_settings() at the time the HttpModel is constructed (per invoke). That is fine for a single request, but the allowed/denied host frozensets are parsed from CSV on every invoke with no caching, and more importantly the delivery-time guard cannot see a runtime-config override of ASSISTANT_CONN_* because it reads the static Settings, not the RuntimeConfig used by the operator panel. An operator who tightens ASSISTANT_CONN_DENIED_HOSTS at runtime does not affect in-flight connection deliveries.",
+      "evidence": "ssrf_revalidate = {\n    \"require_https\": s.ASSISTANT_CONN_REQUIRE_HTTPS,\n    ... frozenset(h.strip() for h in s.ASSISTANT_CONN_ALLOWED_HOSTS.split(\",\") ...)\n}",
+      "recommendation": "Resolve ASSISTANT_CONN_* through the same RuntimeConfig path the operator panel writes to, so SSRF host policy changes take effect without redeploy."
+    },
+    {
+      "id": "assistant-016",
+      "category": "correctness",
+      "severity": "MEDIUM",
+      "title": "invoke() single-shot path ignores connection tools; a tools-declaring connection invoked with prompt-only still runs conversation path — but a tools connection can be silently downgraded",
+      "file": "app/core/connections.py",
+      "line": 253,
+      "scenario": "invoke_connection routes to the conversation path when conn.tools OR body.messages is present, else to invoke() (single-shot complete()). invoke() never passes tools. This is correct only because the route guards on conn.tools; however the plain invoke() in connections.py is a public core function that silently drops tools if a future caller uses it directly for a tools-bearing connection, sending the model no tool declarations and producing a text answer that looks valid but ignored the connection's contract. The isolation/contract lives in the route, not in the core function.",
+      "evidence": "async def invoke(conn, *, prompt, caller, store, max_tokens=0):\n    text, tin, tout = await caller(conn.system_prompt, prompt, max_tokens)   # tools never consulted",
+      "recommendation": "Make invoke() refuse (or route to converse) when conn.tools is non-empty, so the tool contract cannot be dropped by a direct caller."
+    },
+    {
+      "id": "assistant-017",
+      "category": "observability",
+      "severity": "MEDIUM",
+      "title": "Attribution and abstention audit failures are swallowed silently; a persistently broken audit chain is invisible on /ask",
+      "file": "app/api/v1/assistant.py",
+      "line": 162,
+      "scenario": "Both the abstained and message_attributed audit writes are wrapped in bare `except Exception: pass`. The stated intent (never 500 a help answer over the audit log) is reasonable, but there is no counter, no rate-limited WARN, and no telemetry emitted on failure. If the audit sink is down for hours, every attribution and abstention record is silently lost with zero operational signal — the opposite of the write-ahead/critical posture the operator and internal routes take for their own audits.",
+      "evidence": "except Exception:   # noqa: BLE001 — see above: the answer outranks the record here\n    pass",
+      "recommendation": "Emit a telemetry metric / rate-limited WARN log on audit-write failure so a broken chain is observable, even though the request itself still succeeds."
+    },
+    {
+      "id": "assistant-018",
+      "category": "performance",
+      "severity": "LOW",
+      "title": "by_anchor does a full linear scan of every KB entry on each /help request",
+      "file": "app/core/retrieval.py",
+      "line": 212,
+      "scenario": "help_for_anchor is documented as the cheap, common, high-frequency path ('a dictionary lookup'), but by_anchor iterates self._entries.values() comparing entry.anchor == target for every entry on every call. For a large KB (the docstrings anticipate tens of thousands of entries) this is O(n) per ? icon click — the very cost the endpoint claims to avoid ('No ranking, no model, no cost').",
+      "evidence": "for entry in self._entries.values():\n    if entry.anchor == target and entry.visible_to(caps, held) and entry.serves(surface):\n        return entry",
+      "recommendation": "Build an anchor->entry dict once at index construction and look up by key, keeping the capability/surface filter after the O(1) fetch."
+    },
+    {
+      "id": "assistant-019",
+      "category": "correctness",
+      "severity": "LOW",
+      "title": "cost_micros rounds UP per side, systematically over-billing sub-1000-token calls",
+      "file": "app/core/connections.py",
+      "line": 100,
+      "scenario": "cost = (tokens*price + 999)//1000 ceils each side independently. A connection metering many small tool-call rounds (each a few hundred tokens) is billed a full extra micro-block per side per round, so a chatty tool loop accrues a consistent upward bias versus the true tokens/1000 * price. Documented as intentional ('a fractional block still bills'), but the per-round ceiling compounds in a way per-turn billing does not.",
+      "evidence": "ci = (int(tokens_in) * int(in_price) + 999) // 1000 if tokens_in and in_price else 0",
+      "recommendation": "Consider accumulating raw tokens in the ledger and computing cost once over the aggregate, rather than ceiling every round trip."
+    },
+    {
+      "id": "assistant-020",
+      "category": "tests",
+      "severity": "LOW",
+      "title": "Conversation store is exercised only by tests; integration coverage asserts a feature no route uses",
+      "file": "tests/integration/test_assistant_api.py",
+      "line": 177,
+      "scenario": "test_assistant_api and test_conversations drive store.start()/add() directly and assert isolation/encryption, giving false confidence that conversation history works end-to-end. Because no /ask code path writes conversations (see assistant-006), these tests validate a subsystem that is unreachable in production — a 'test that stops testing' the real behaviour: the API contract (GET /conversations returning stored turns) is never covered because nothing populates it via the API.",
+      "evidence": "asyncio.run(store.add(conversation_id=conv.id, tenant=\"acme\", subject=\"shopper1\", ...))",
+      "recommendation": "Add an API-level test that asks /ask and then reads /conversations; it will fail today, exposing the wiring gap, and should pass once persistence is wired."
+    },
+    {
+      "id": "assistant-021",
+      "category": "security",
+      "severity": "LOW",
+      "title": "GET /internal connection reads take tenant as an unverified query param (caller-asserted tenant on a read tier)",
+      "file": "app/api/internal.py",
+      "line": 325,
+      "scenario": "list_connections/get_connection/connection_usage accept tenant purely as a query parameter and pass it straight to the store's IDOR guard, which only checks that the row's tenant equals the SUPPLIED tenant. There is no binding between the authenticated internal caller and the tenant it claims, so the isolation is only as strong as the internal caller being honest — the ConnectionStore IDOR guard protects against key collisions, not against a caller naming an arbitrary tenant.",
+      "evidence": "@router.get(\"/assistant/connections\", ...)\nasync def list_connections(request: Request, tenant: str) -> dict:\n    return {\"connections\": await _connections(request).list(tenant)}",
+      "recommendation": "Combine with assistant-003: restrict these routes via InternalRoutePolicy and, where possible, derive/validate tenant from the caller identity rather than a free query param."
+    },
+    {
+      "id": "assistant-022",
+      "category": "correctness",
+      "severity": "LOW",
+      "title": "VertexTokenSource JWT uses time.time() for iat/exp while the cache expiry uses an injectable monotonic now, mixing clocks",
+      "file": "app/core/gcp_token.py",
+      "line": 83,
+      "scenario": "token() computes cache expiry from self._now (default time.monotonic, injectable for tests), but _from_service_account signs the JWT with iat=int(time.time()) and exp=iat+3600 using wall-clock time directly, bypassing the injected clock. In a test that injects a fake now, or on a host with clock skew between monotonic and wall time, the cached-token lifetime and the actual JWT/token validity can diverge, and tests cannot control the JWT timing.",
+      "evidence": "iat = int(time.time())\nassertion = jwt.encode({... \"iat\": iat, \"exp\": iat + 3600}, ...)",
+      "recommendation": "Route wall-clock JWT timestamps through an injectable time source too, or document that iat/exp intentionally use real wall time regardless of the cache clock."
+    },
+    {
+      "id": "assistant-023",
+      "category": "api",
+      "severity": "LOW",
+      "title": "invoke_connection requires prompt-or-messages only after building the model; empty body still constructs an SSRF-revalidating model needlessly",
+      "file": "app/api/internal.py",
+      "line": 415,
+      "scenario": "When conn.tools is set but the caller sends neither prompt nor messages, the handler builds _conn_model (which will parse SSRF config and, at delivery, re-resolve DNS) BEFORE checking `if not messages: raise 422`. The validation-then-build order is inverted: a malformed request does avoidable work. Minor, but the 422 for 'prompt or messages is required' should precede any model/credential construction.",
+      "evidence": "if conn.tools or body.messages is not None:\n    model = _conn_model(request, conn, body.priority)\n    messages = body.messages if body.messages is not None else body.prompt\n    if not messages:\n        raise HTTPException(422, \"prompt or messages is required\")",
+      "recommendation": "Validate that prompt/messages is present before constructing the connection model."
+    },
+    {
+      "id": "assistant-024",
+      "category": "config",
+      "severity": "LOW",
+      "title": "BRAND_OVERRIDES malformed JSON is silently swallowed to {}, hiding a misconfiguration operators can't see",
+      "file": "app/api/v1/assistant.py",
+      "line": 271,
+      "scenario": "_brand_overrides catches ValueError and returns {} for any malformed BRAND_OVERRIDES. The intent (branding must not take the service down) is fine, but a typo in the overrides blob means every tenant silently gets the deployment default branding with no log, no warning, and no way to notice short of comparing rendered output. The 'boot guard is where malformed config is meant to be caught' comment asserts a guard that this fallback lets slip through at request time.",
+      "evidence": "try:\n    parsed = json.loads(s.BRAND_OVERRIDES or \"{}\")\n    return parsed if isinstance(parsed, dict) else {}\nexcept ValueError:\n    return {}",
+      "recommendation": "Log a rate-limited WARN when BRAND_OVERRIDES fails to parse, and validate it in the boot guard so malformed branding config is caught at startup as the comment claims."
+    }
+  ]
+}

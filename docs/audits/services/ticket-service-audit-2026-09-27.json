@@ -1,0 +1,279 @@
+{
+  "service": "ticket-service",
+  "date": "2026-09-27",
+  "summary": {
+    "total": 24,
+    "by_severity": {
+      "CRITICAL": 0,
+      "HIGH": 2,
+      "MEDIUM": 9,
+      "LOW": 13
+    }
+  },
+  "findings": [
+    {
+      "id": "ticket-001",
+      "category": "CONCURRENCY/DATA",
+      "severity": "HIGH",
+      "title": "reply() writes the ticket row with a non-CAS save(), clobbering a concurrent status/assign transition (lost update)",
+      "file": "services/ticket-service/app/core/ticket_service.py",
+      "line": 131,
+      "scenario": "A customer POSTs a reply at the same moment an operator moves the ticket new->in_progress. reply() fetched the ticket at line 110 (status=new), the operator's transition() CAS-saves status=in_progress, then reply() calls the plain `self._tickets.save(t)` which serializes its stale in-memory copy (status=new, version unchanged) and put()s it back, silently reverting the status. The class's own _mutate() docstring says assign/tag/escalate were moved off plain save() for exactly this race (ticket-r2-03), but reply() was never migrated.",
+      "evidence": "t.touch()\n        await self._tickets.save(t)\n        await self._after(t, tt, \"replied\", actor_ref=actor_ref, body=body)",
+      "recommendation": "reply() mutates no ticket field except updated; either drop the row write entirely and only append the event, or route it through _mutate()/cas_save() with a refetch-on-lost-race like every other mutation."
+    },
+    {
+      "id": "ticket-002",
+      "category": "CONCURRENCY/DATA",
+      "severity": "HIGH",
+      "title": "transition/_mutate persist the projection row BEFORE appending the event; a crash in the window loses the event while the status has already moved",
+      "file": "services/ticket-service/app/core/ticket_service.py",
+      "line": 159,
+      "scenario": "The model header declares 'HISTORY IS THE TRUTH ... no reply can silently vanish' and the Ticket row is a rebuildable projection. But transition() does cas_save(t) (line 159) and only then events.append(status_changed) (line 164); _mutate() does the same (cas_save at 101, append at 103). If the process is killed between the row write and the append, the ticket is durably in the new status/assignee/tag with NO event recording it — the log can no longer rebuild the projection and 'who moved it and when' is unanswerable. Note reply() appends the event FIRST then saves (lines 128-131), the safe order for a log-authoritative model, so the two paths disagree.",
+      "evidence": "if not await self._tickets.cas_save(t):\n                continue\n            data = {\"from\": frm, \"to\": to, \"resolved\": to in tt.terminal}\n            await self._events.append(tenant=tenant, ticket_id=t.id, kind=\"status_changed\", ...)",
+      "recommendation": "Append the event before (or atomically with) the projection write, or make the projection strictly derivable so a missing event is self-healing; at minimum make the ordering consistent with reply()."
+    },
+    {
+      "id": "ticket-003",
+      "category": "OBSERVABILITY",
+      "severity": "MEDIUM",
+      "title": "Audit is recorded BEFORE the action runs and before validation, so rejected operations are logged as if they happened (phantom audit records)",
+      "file": "services/ticket-service/app/api/v1/tickets.py",
+      "line": 203,
+      "scenario": "reply_ticket() calls auditor.record('ticket.replied') at line 203, THEN svc.reply() at line 209 which can raise ReplyForbidden -> 403. The audit trail now shows a successful reply that was actually forbidden. Same pattern: open_ticket audits ticket.created (127) before open() which can 422 on UNKNOWN_TYPE/MISSING_FIELDS; transition_ticket audits ticket.status_changed (332) before transition() which can raise InvalidTransition(409)/TransitionForbidden(403). Unlike the operator secret routes, these are not irreversible write-aheads, so the pre-action audit produces false positives an investigator cannot distinguish from real actions.",
+      "evidence": "await request.app.state.auditor.record(\n        \"ticket.replied\", ...)\n    ...\n    try:\n        t = await svc.reply(...)\n    except ReplyForbidden:\n        raise HTTPException(status.HTTP_403_FORBIDDEN, \"FORBIDDEN\")",
+      "recommendation": "For non-critical, reversible ticket actions, record the audit AFTER the action succeeds (these fail open anyway); reserve write-ahead auditing for the irreversible critical actions where the prior state is destroyed."
+    },
+    {
+      "id": "ticket-004",
+      "category": "SECURITY",
+      "severity": "MEDIUM",
+      "title": "assign() accepts an arbitrary assignee string with no validation and stores it RAW in the ticket and event log, breaking the service-wide pseudonymization rule",
+      "file": "services/ticket-service/app/core/ticket_service.py",
+      "line": 188,
+      "scenario": "assign_ticket lets any tickets.manage operator set assignee to any string (min_length 1, max_length 256) with no check that it is a real member of the tenant. The value is written verbatim to Ticket.assignee and into the assigned event's data, and surfaced in KPIs (assignee_ref) and the grantee projection. Every other identity in this service is pseudonymized via subject_ref (raiser_ref, actor_ref, operators included per r2-02), but the assignee — which the model comment calls 'an operator/member id' (PII) — lands raw in the append-only, hash-chained log, making it un-erasable and inconsistent with the pII posture.",
+      "evidence": "def _apply(t: Ticket) -> dict:\n            t.assignee = assignee\n            return {\"kind\": \"assigned\", \"actor_ref\": actor_ref, \"data\": {\"assignee\": assignee}}",
+      "recommendation": "Validate assignee against the tenant's members and store it as a pseudonym (or a stable opaque member handle), not a raw id, so the log stays erasable and consistent with raiser_ref/actor_ref."
+    },
+    {
+      "id": "ticket-005",
+      "category": "OBSERVABILITY",
+      "severity": "MEDIUM",
+      "title": "tag_ticket performs an operator mutation with NO audit record (and ticket.tagged is not declared)",
+      "file": "services/ticket-service/app/api/v1/tickets.py",
+      "line": 395,
+      "scenario": "tag_ticket() (operator-only) mutates ticket.tags but never calls auditor.record, and there is no ticket.tagged entry in auditable_actions.py. status/assign/escalate all audit; tagging does not. An operator (or a write-grant partner via escalate) can add/alter tags — which feed triage, routing and dashboards — with nothing on the record. This is exactly the audit-wiring gap MEMORY.md flags (many services declare/mutate actions no record() call wires).",
+      "evidence": "@router.post(\"/tickets/{ticket_id}/tags\", dependencies=[Depends(rate_limit)])\nasync def tag_ticket(request: Request, ticket_id: str, body: TagIn,\n                     principal: Principal = Depends(_MANAGE)) -> dict:\n    tenant = _tenant(principal)\n    try:\n        t = await build_tickets(request).tag(...)",
+      "recommendation": "Declare ticket.tagged (source=admin, critical=False) and emit it in tag_ticket, matching the other operator mutations."
+    },
+    {
+      "id": "ticket-006",
+      "category": "OBSERVABILITY",
+      "severity": "MEDIUM",
+      "title": "rate_ticket performs a state-changing mutation with no audit; ticket.rated is neither declared nor emitted",
+      "file": "services/ticket-service/app/api/v1/tickets.py",
+      "line": 216,
+      "scenario": "rate_ticket() appends a `rated` event and updates the ticket but never audits, and no ticket.rated action exists in auditable_actions.py. Ratings drive the CSAT/stipend KPI (kpis.ticket_kpis reads data.score); a mutation that influences a money decision (spec stipend) has no audit trail of who submitted it and when.",
+      "evidence": "t = await svc.rate(tenant=tenant, ticket_id=ticket_id, rater=principal.subject,\n                       score=body.score, comment=body.comment)\n    return t.public()",
+      "recommendation": "Declare and emit ticket.rated (source=user), so a rating that feeds an SLA/stipend metric is attributable."
+    },
+    {
+      "id": "ticket-007",
+      "category": "SECURITY",
+      "severity": "MEDIUM",
+      "title": "suggest-reply reads full ticket subject/body and the reply thread (customer PII sent to an external model) with no audit record",
+      "file": "services/ticket-service/app/api/v1/tickets.py",
+      "line": 383,
+      "scenario": "suggest_reply() gathers up to 100 history events including created/replied bodies (ticket_service.suggest_reply lines 215-218) and ships them to assistant-service / a generative model. This is a bulk read of customer content routed off-service, yet the route emits no audit event. Compare platform_get_ticket, which treats a single cross-tenant content read as critical and audited; sending the same content to a model is at least as sensitive and is unrecorded.",
+      "evidence": "async def suggest_reply(request: Request, ticket_id: str,\n                        principal: Principal = Depends(_MANAGE)) -> dict:\n    tenant = _tenant(principal)\n    try:\n        return await build_tickets(request).suggest_reply(tenant, ticket_id)",
+      "recommendation": "Audit an ai.suggest_requested (or ticket.content_sent_to_model) action when the suggester is wired to a real provider, so off-service transfer of ticket content is attributable."
+    },
+    {
+      "id": "ticket-008",
+      "category": "CONCURRENCY/DATA",
+      "severity": "MEDIUM",
+      "title": "NotifierOutbox.deliver treats every non-refused exception as transient and retries forever — no max-attempts / dead-letter",
+      "file": "services/ticket-service/app/core/notifier.py",
+      "line": 71,
+      "scenario": "deliver() catches `(NotificationUnavailable, Exception)` and, for anything that is not a NotificationRefused, increments attempts and reschedules with exponential backoff capped at retry_max_seconds — but there is no attempt ceiling that ever moves the row to FAILED. A permanent non-refused failure (e.g. a persistent 500, or a KeyError bug in the sender) is retried on every drain forever. The audit path deliberately has AUDIT_MAX_ATTEMPTS; the notify outbox has NOTIFY_RETRY_* but no max-attempts knob, so a poison row is drained indefinitely and masks a real defect (catching bare Exception hides programming bugs as 'transient').",
+      "evidence": "except (NotificationUnavailable, Exception) as exc:  # noqa: BLE001 — any transport failure retries\n            row[\"attempts\"] = int(row.get(\"attempts\", 0)) + 1\n            ...\n            row[\"next_attempt_at\"] = self._clock() + min(base * (2 ** row[\"attempts\"]), cap)",
+      "recommendation": "Add a NOTIFY_MAX_ATTEMPTS ceiling that moves a row to FAILED (dead-letter) with telemetry, and stop catching bare Exception so a code bug surfaces instead of being retried as transport failure."
+    },
+    {
+      "id": "ticket-009",
+      "category": "API/CONTRACT",
+      "severity": "MEDIUM",
+      "title": "manifest events.emitted omits ticket.escalated (and tagged/rated); a consumer wired from the manifest never subscribes to escalations",
+      "file": "services/ticket-service/app/manifest.py",
+      "line": 124,
+      "scenario": "The service records and acts on escalations as a first-class fact (escalate route, ticket.escalated audit, kpis escalated_at), and the eventbus audit sink can publish them, but the manifest declares emitted=[ticket.created, ticket.replied, ticket.status_changed, ticket.assigned]. A downstream service (per the manifest's own warning that an omitted event 'reads as this service publishes nothing') that builds subscriptions from the manifest will silently never react to escalations, tags or ratings.",
+      "evidence": "\"events\": {\"emitted\": [\"ticket.created\", \"ticket.replied\", \"ticket.status_changed\",\n                               \"ticket.assigned\"], \"consumed\": []},",
+      "recommendation": "Reconcile emitted with the actual event/audit surface — add ticket.escalated (and tagged/rated if published) or document deliberately why they are not emitted."
+    },
+    {
+      "id": "ticket-010",
+      "category": "TESTS/QA",
+      "severity": "MEDIUM",
+      "title": "Zero tests for the entire ticket domain — CRUD, tenant/user IDOR isolation, state machine, reply authz, assign, shares are all untested",
+      "file": "services/ticket-service/tests/integration/test_endpoints.py",
+      "line": 1,
+      "scenario": "The only integration tests cover /healthz, /readyz, /metrics and the internal-token gate. There is no test that a customer cannot read/reply to another customer's ticket (the raiser_ref check at tickets.py:166/197/225), no test that a cross-tenant fetch 404s (_fetch at ticket_service.py:235), no test of an illegal transition being rejected, no test of the per-type reply capability (ReplyForbidden), no test of ShareGrant scope/expiry enforcement, and no test of the CAS transition race. The load-bearing security and state-machine logic ships with no executable proof, so a regression (e.g. dropping the raiser_ref check) would pass CI.",
+      "evidence": "def test_internal_rejects_wrong_token(client):\n    r = client.get(\"/internal/health\", headers={\"X-Internal-Token\": \"wrong\"})\n    assert r.status_code == 401",
+      "recommendation": "Add integration tests asserting cross-tenant and cross-user 404, illegal-transition 409, reply-capability 403, share scope/expiry deny, and a concurrent-transition CAS test."
+    },
+    {
+      "id": "ticket-011",
+      "category": "CORRECTNESS",
+      "severity": "LOW",
+      "title": "Invalid priority is silently coerced to 'normal' instead of rejected",
+      "file": "services/ticket-service/app/core/ticket_service.py",
+      "line": 78,
+      "scenario": "open() does `if priority not in PRIORITIES: priority = 'normal'`. A client sending priority='URGENT' (wrong case) or 'critical' gets a normal-priority ticket with a 200/201 and no signal that the value was dropped — an urgent report is silently downgraded. The route's OpenIn only bounds max_length=16, so any string reaches here.",
+      "evidence": "if priority not in PRIORITIES:\n            priority = \"normal\"",
+      "recommendation": "Validate priority in the Pydantic model (enum) and 422 on an unknown value rather than silently normalizing it."
+    },
+    {
+      "id": "ticket-012",
+      "category": "API/CONTRACT",
+      "severity": "LOW",
+      "title": "transition() and escalate() accept an is_operator parameter that is never used — implies an operator bypass that does not exist",
+      "file": "services/ticket-service/app/core/ticket_service.py",
+      "line": 137,
+      "scenario": "transition(..., is_operator: bool = False, ...) never references is_operator in its body; the route passes is_operator=True (tickets.py:339) as if it grants a bypass, but the only gate is `needed not in actor_caps`. escalate() has the same unused param. A future maintainer reading the route reasonably assumes operators bypass the capability check, and adding logic that trusts is_operator would create an escalation because is_operator is caller-supplied intent, not a verified fact.",
+      "evidence": "async def transition(self, *, tenant: str, ticket_id: str, to: str, actor: str,\n                         actor_caps: set[str], is_operator: bool = False,\n                         _max_retries: int = 5) -> Ticket:",
+      "recommendation": "Delete the unused is_operator parameter from transition()/escalate() (and the route's is_operator=True) so the capability check is unambiguously the sole authority."
+    },
+    {
+      "id": "ticket-013",
+      "category": "CORRECTNESS",
+      "severity": "LOW",
+      "title": "reply()/transition path does not handle WorkflowError; a ticket whose type was removed from config 500s instead of a clean 4xx",
+      "file": "services/ticket-service/app/core/ticket_service.py",
+      "line": 111,
+      "scenario": "reply() calls `tt = self._wf.require(t.type)`, which raises WorkflowError (a ValueError, not a TicketError) if the type is no longer configured. reply_ticket only catches ReplyForbidden, so the uncaught WorkflowError falls to the global handler as 500 INTERNAL_ERROR. An operator who removes a ticket type from TICKET_TYPES_JSON turns every existing ticket of that type into a 500 on reply/history rather than a graceful 409/422.",
+      "evidence": "t = await self._fetch(tenant, ticket_id)\n        tt = self._wf.require(t.type)",
+      "recommendation": "Map WorkflowError on an existing ticket to a domain 4xx (e.g. 409 UNKNOWN_TYPE), or guard type removal so live tickets are not orphaned."
+    },
+    {
+      "id": "ticket-014",
+      "category": "CORRECTNESS",
+      "severity": "LOW",
+      "title": "KPI resolved_at reads a data key ('terminal') that is never written, masking a potential real miss",
+      "file": "services/ticket-service/app/core/kpis.py",
+      "line": 64,
+      "scenario": "resolution is derived from `data.get('resolved') or data.get('terminal')`, but transition() only ever writes {'from','to','resolved'} — no event stores a 'terminal' key. The dead alternative is defensive noise that looks like it handles a second event shape; if the writer's key were renamed, this fallback would give false confidence that resolution is still detected when it silently is not.",
+      "evidence": "elif kind == \"status_changed\":\n            resolved_at = at if data.get(\"resolved\") or data.get(\"terminal\") else resolved_at",
+      "recommendation": "Drop the non-existent 'terminal' branch (or make transition() actually emit it) so the code matches the one event shape the writer produces."
+    },
+    {
+      "id": "ticket-015",
+      "category": "PERFORMANCE",
+      "severity": "LOW",
+      "title": "Shared-ticket KPI read pulls up to ERASURE_MAX_SCAN (100000) events for one ticket, reusing an unrelated knob as its limit",
+      "file": "services/ticket-service/app/api/internal.py",
+      "line": 360,
+      "scenario": "read_shared_ticket computes KPIs over `events.history(..., limit=settings.ERASURE_MAX_SCAN)` = 100000. A ticket's log is small, but binding a per-request read to the DSAR scan ceiling means a single grantee read can request 100k rows, and any future change to ERASURE_MAX_SCAN silently changes this read's bound. The operator list uses the dedicated OPERATOR_TICKET_KPI_MAX_EVENTS cap for the same computation; the share path should too.",
+      "evidence": "hist, _ = await events.history(tenant=tenant, ticket_id=ticket_id, limit=settings.ERASURE_MAX_SCAN)",
+      "recommendation": "Use OPERATOR_TICKET_KPI_MAX_EVENTS (or a dedicated share KPI cap) for this read, not the erasure scan limit."
+    },
+    {
+      "id": "ticket-016",
+      "category": "PERFORMANCE",
+      "severity": "LOW",
+      "title": "operator_list fans out up to 200 concurrent per-ticket history reads (each up to 1000 events) per list request",
+      "file": "services/ticket-service/app/api/v1/tickets.py",
+      "line": 257,
+      "scenario": "operator_list embeds KPIs by calling events.history(limit=OPERATOR_TICKET_KPI_MAX_EVENTS=1000) for every row via asyncio.gather. At limit=200 that is 200 concurrent queries, each potentially reading 1000 events, on a single list call on the hot operator dashboard path. It is bounded and documented, but 200 concurrent DB round trips per page against DATASTORE_POOL_MAX=10 will queue on the pool and can spike latency under load.",
+      "evidence": "enriched = await asyncio.gather(*(_with_kpis(r) for r in rows))",
+      "recommendation": "Consider a single batched event read for the page, a smaller default page size for the KPI-enriched view, or precomputed/cached per-ticket KPI summaries."
+    },
+    {
+      "id": "ticket-017",
+      "category": "CONFIG",
+      "severity": "LOW",
+      "title": "ratelimit.py header and comments are copy-pasted from identity-service (wrong service name, stale phase references)",
+      "file": "services/ticket-service/app/api/ratelimit.py",
+      "line": 2,
+      "scenario": "The module banner reads 'identity-service — Rate limiting' and comments cite 'phase-32 T10' and a /login surface this service does not have. Cosmetic, but it signals the file was copied without review, and a reader trusting the comments may believe login-specific behaviour applies here.",
+      "evidence": "# identity-service — Rate limiting (policy-driven, honest headers)",
+      "recommendation": "Correct the banner to ticket-service and prune the identity-specific comments so the file describes this service."
+    },
+    {
+      "id": "ticket-018",
+      "category": "CONCURRENCY/DATA",
+      "severity": "LOW",
+      "title": "Erasure redacts ticket rows with put() (non-CAS), which can clobber or be clobbered by a concurrent transition",
+      "file": "services/ticket-service/app/core/erasure.py",
+      "line": 49,
+      "scenario": "erase() rewrites each ticket row via `self._s.put('tickets', row['id'], row)` after mutating subject/meta/ref, bypassing the version-guarded cas_save the transition path relies on. If a status transition CAS-saves between erasure's find() and put(), the erasure put() writes the stale (pre-transition) row back with the redaction — reverting the status change — or, conversely, a transition after the put() is fine but there is no atomicity. DSARs are rare, but a redaction silently rolling back a legitimate status move is a data-integrity hazard.",
+      "evidence": "row[\"subject\"] = _REDACTED\n                row[\"meta\"] = {}\n                ...\n                await self._s.put(\"tickets\", row[\"id\"], row)",
+      "recommendation": "Perform the redaction through a version-checked update/retry (or a targeted field update) so it cannot revert a concurrent transition."
+    },
+    {
+      "id": "ticket-019",
+      "category": "CONFIG",
+      "severity": "LOW",
+      "title": "Malformed JSON map env vars are silently swallowed to {} — a mistyped INTERNAL_ROUTE_POLICY_JSON becomes default-open rather than a boot failure",
+      "file": "services/ticket-service/app/config.py",
+      "line": 22,
+      "scenario": "_json_any_map() returns {} on any ValueError/TypeError. INTERNAL_ROUTE_POLICY_JSON, INTERNAL_CALLER_PUBLIC_KEYS_JSON, etc. flow through this. Per internal.py, a route absent from the policy admits any authenticated caller (default-open); so an operator who fat-fingers the route-policy JSON gets an EMPTY policy that silently opens every /internal route to any authenticated caller, with the service booting healthy. The advertised-but-unread-knob trap: the knob looks set but reads as absent.",
+      "evidence": "try:\n        val = _json.loads(raw)\n    except (ValueError, TypeError):\n        return {}",
+      "recommendation": "Fail boot (or at least emit a WARN and refuse to treat as empty) when a non-empty JSON-map env var fails to parse, so a typo in a security policy does not silently become default-open."
+    },
+    {
+      "id": "ticket-020",
+      "category": "CONCURRENCY/DATA",
+      "severity": "LOW",
+      "title": "Suggester auto-tag on_created writes the ticket via non-CAS save(), able to clobber a human edit made immediately after creation",
+      "file": "services/ticket-service/app/core/suggester.py",
+      "line": 46,
+      "scenario": "When SUGGEST_AUTOTAG_MIN_CONFIDENCE admits a tag, on_created mutates ticket.tags and calls `self._tickets.save(ticket)` (non-CAS), then appends the tagged event. It runs as a best-effort hook after open(). If an operator assigns/tags the just-created ticket in the same window, the AI's plain save() (holding version from creation) can overwrite that concurrent change — the same lost-update class as finding ticket-001.",
+      "evidence": "ticket.tags = sorted({*ticket.tags, *fresh})\n                ticket.touch()\n                await self._tickets.save(ticket)",
+      "recommendation": "Route the auto-tag through cas_save()/_mutate with refetch-on-conflict rather than a plain save()."
+    },
+    {
+      "id": "ticket-021",
+      "category": "CORRECTNESS",
+      "severity": "MEDIUM",
+      "title": "rate() has no once-only guard; a raiser can submit unlimited ratings and last-write silently overwrites the CSAT the stipend keys on",
+      "file": "services/ticket-service/app/core/ticket_service.py",
+      "line": 201,
+      "scenario": "rate_ticket lets the raiser POST /rate any number of times; each call appends a `rated` event, and kpis.ticket_kpis takes `rating = data.get('score', rating)` in seq order — i.e. LAST rating wins. A customer can rate 1, see the stipend/KPI implication, then re-POST a 5 and overwrite it; nothing records this as a revision or blocks it. For a rating that feeds a money/stipend decision (spec 8), an ungated, silently-overwritten score is a correctness and integrity problem.",
+      "evidence": "async def rate(self, *, tenant: str, ticket_id: str, rater: str, score: int,\n                   comment: str = \"\") -> Ticket:\n        score = max(1, min(5, int(score)))\n        ...\n        return await self._mutate(tenant, ticket_id, lambda t: {\n            \"kind\": \"rated\", ...})",
+      "recommendation": "Enforce a single rating per ticket (reject or explicitly version subsequent ratings), and decide deterministically (first vs last) which the KPI uses, documented."
+    },
+    {
+      "id": "ticket-022",
+      "category": "SECURITY",
+      "severity": "LOW",
+      "title": "Grantee escalate reassigns to an arbitrary, unvalidated assignee handle written raw into the log",
+      "file": "services/ticket-service/app/api/internal.py",
+      "line": 497,
+      "scenario": "escalate_as_grantee accepts body.assignee (any string) and, when present, calls svc.assign(..., assignee=body.assignee) on a covered ticket. There is no check that the handle belongs to the tenant or falls within any scope, and (per ticket-004) the assignee is stored raw. A write-granted partner can reassign a covered ticket to an arbitrary handle, and the raw value persists in the assigned event.",
+      "evidence": "if body.assignee:\n        await svc.assign(tenant=body.tenant, ticket_id=ticket_id, assignee=body.assignee, actor=gref)",
+      "recommendation": "Validate the assignee against the tenant's members and pseudonymize it before it enters the ticket/log."
+    },
+    {
+      "id": "ticket-023",
+      "category": "API/CONTRACT",
+      "severity": "LOW",
+      "title": "Routes reach into the store's private attribute (svc._tickets) instead of a public repository seam",
+      "file": "services/ticket-service/app/api/v1/tickets.py",
+      "line": 150,
+      "scenario": "list_tickets, operator_list and platform_list_tickets call `build_tickets(request)._tickets.find(...)`, reaching past TicketService into its private _tickets store. This is fragile layering: the list/pagination/tenant-scoping logic bypasses the service that owns the domain rules, so a future invariant added to TicketService (e.g. a soft-delete filter or an extra tenant guard) would not apply to the list paths that skip it.",
+      "evidence": "rows, nxt = await svc._tickets.find(\n        tenant=tenant, raiser_ref=svc.pseudonym(tenant, principal.subject),\n        filters={\"type\": type, \"status\": status_}, limit=limit, after=cursor or None)",
+      "recommendation": "Expose list_mine/list_for_tenant methods on TicketService and call those, so list paths cannot drift from the service's invariants."
+    },
+    {
+      "id": "ticket-024",
+      "category": "SECURITY",
+      "severity": "LOW",
+      "title": "Ticket subject/body accepted and stored verbatim with no server-side sanitization; stored-XSS risk rests entirely on the consumer renderer",
+      "file": "services/ticket-service/app/api/v1/tickets.py",
+      "line": 83,
+      "scenario": "OpenIn.body/subject and ReplyIn.body accept up to 20000 chars of arbitrary content stored and returned verbatim to the operator dashboard, the platform-admin console and the AI suggester. Since responses are JSON this is not an injection in this service, but nothing flags or documents that any HTML/script in a ticket body is passed through unescaped to whatever renders it — an operator/admin console that interpolates body into the DOM is a stored-XSS sink, and there is no server-side note or content-type guard making that contract explicit.",
+      "evidence": "class ReplyIn(BaseModel):\n    body: str = Field(min_length=1, max_length=20_000)",
+      "recommendation": "Document the escaping contract (consumers must treat body/subject as untrusted text) and/or add a normalization step; ensure the operator/admin UIs render as text, not HTML."
+    }
+  ]
+}

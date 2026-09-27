@@ -1,0 +1,274 @@
+{
+  "service": "tenant-service",
+  "date": "2026-09-27",
+  "summary": {
+    "total": 24,
+    "by_severity": {"CRITICAL": 0, "HIGH": 3, "MEDIUM": 11, "LOW": 10}
+  },
+  "findings": [
+    {
+      "id": "tenant-001",
+      "category": "SECURITY / secrets exposure",
+      "severity": "HIGH",
+      "title": "DB-isolation DSN (with embedded credentials) is handed to any internal caller and any platform export",
+      "file": "services/tenant-service/app/adapters/isolation/strategies.py",
+      "line": 32,
+      "scenario": "A tenant provisioned with isolation_mode=db has scope() return {\"mode\":\"db\",\"dsn\": self._tmpl.format(slug=slug)}. ISOLATION_DB_DSN_TEMPLATE realistically contains a username and password (e.g. postgresql://svc:secret@host/t_{slug}). _internal_view() sets out[\"isolation\"] = svc.scope(tenant), so GET /internal/tenants/{id} and GET /internal/tenants/resolve return the fully-rendered DSN — including the password — to ANY caller holding the shared internal token (default-open policy). The same DSN is returned to a platform admin via GET /api/v1/tenants/{id}/export (svc.export -> scope). A logo-rendering peer that only needs branding receives the database password.",
+      "evidence": "def scope(self, tenant_id, slug): return {\"mode\": \"db\", \"dsn\": self._tmpl.format(slug=slug)}  ... _internal_view: out[\"isolation\"] = svc.scope(tenant)",
+      "recommendation": "Never return a credentialed DSN across the service boundary. Return only mode + a non-secret handle (schema name or a DSN alias/key), or strip the userinfo from the DSN before it leaves scope(); resolve credentials locally in the peer from its own secrets provider."
+    },
+    {
+      "id": "tenant-002",
+      "category": "SECURITY / secrets in logs, PII",
+      "severity": "HIGH",
+      "title": "internal_rename writes the OLD name — which by the feature's own premise may be an autofilled password — into the audit metadata permanently",
+      "file": "services/tenant-service/app/api/internal.py",
+      "line": 223,
+      "scenario": "The rename feature exists precisely because 'a signup autofill dropped a password into [the name] on a real pilot shop'. When that shop is corrected, internal_rename records metadata={\"from\": old_name[:120], \"to\": t.name[:120]}. old_name here is the garbage/password value. It is now written into the immutable, hash-chained audit trail forever, in the clear — the one place erasure can never remove it. Every credential accidentally captured in a name is preserved by the very endpoint meant to scrub it.",
+      "evidence": "old_name = tenant.name ... await request.app.state.auditor.record(\"tenant.renamed\", ..., metadata={\"from\": old_name[:120], \"to\": t.name[:120]})",
+      "recommendation": "Do not record the raw prior name. Record only that a rename occurred (and optionally the new name, which is public), or a hash/length of the old value. A field known to sometimes hold secrets must never be copied verbatim into an immutable log."
+    },
+    {
+      "id": "tenant-003",
+      "category": "SECURITY / authorization (over-broad internal tier)",
+      "severity": "HIGH",
+      "title": "Internal tier is default-open with token-fallback default-on: any holder of the shared token can delete tenants, mass-erase, or prune the whole registry",
+      "file": "services/tenant-service/app/core/internal_policy.py",
+      "line": 35,
+      "scenario": "INTERNAL_CALLER_DRIVER defaults to 'shared' and INTERNAL_CALLER_ALLOW_TOKEN_FALLBACK defaults to True, so callers are never individually identified out of the box. InternalRoutePolicy.permits() returns True for any route with no explicit allow-list (INTERNAL_ROUTE_POLICY_JSON defaults to \"\"). Result: any service holding INTERNAL_SERVICE_TOKEN can call DELETE /internal/tenants/{id} (delete any tenant), POST /internal/tenants/close-sweep (erase every suspended-past-grace tenant), and POST /internal/backup/import with prune=true/overwrite=true (authoritatively rewrite or wipe the entire tenant registry). None of these destructive verbs is restricted by default.",
+      "evidence": "if allowed is None: return True   # no policy for this route -> any authenticated caller",
+      "recommendation": "Ship a non-empty INTERNAL_ROUTE_POLICY_JSON for the destructive routes (delete, close-sweep, backup/import) so they require a named, assertion-proven caller, or make those specific routes fail-closed when no policy is declared. Default-open is acceptable for reads, not for registry-wide destruction."
+    },
+    {
+      "id": "tenant-004",
+      "category": "OBSERVABILITY / false audit entry",
+      "severity": "MEDIUM",
+      "title": "Self-close records the critical close_requested audit BEFORE the tenant/ownership check, producing a false audit for a caller with no tenant claim",
+      "file": "services/tenant-service/app/api/internal.py",
+      "line": 243,
+      "scenario": "close_my_tenant() records 'tenant.close_requested' (critical, fail-closed) write-ahead, THEN calls _own(), which 403s when principal.tenant is empty. A caller holding tenant.manage but no tenant claim thus produces a permanent 'close_requested' audit entry (with tenant=\"\") for a close that never happened and could never happen — a probe-able false record. This is exactly the anti-pattern the suspend() route explicitly fixed by moving _load ahead of the audit ('Authorize existence BEFORE recording'), but the fix was not applied here.",
+      "evidence": "await request.app.state.auditor.record(\"tenant.close_requested\", ...)\n    svc, tenant = await _own(request, principal)   # 403 happens AFTER the record",
+      "recommendation": "Resolve and authorize the tenant via _own() BEFORE recording the audit, matching suspend/reactivate/delete."
+    },
+    {
+      "id": "tenant-005",
+      "category": "OBSERVABILITY / missing audit on cross-tenant reads",
+      "severity": "MEDIUM",
+      "title": "Platform cross-tenant reads (list, get, export) are unaudited, and export returns full config + branding + credentialed scope",
+      "file": "services/tenant-service/app/api/v1/tenants.py",
+      "line": 184,
+      "scenario": "Per the platform-admin-cross-tenant-reads memory rule, platform.* cross-tenant reads are legitimate but must be AUDITED. GET /api/v1/tenants (list), GET /api/v1/tenants/{id}, and GET /api/v1/tenants/{id}/export record no audit event. export in particular returns the entire tenant document (config, branding) plus scope() (which for db-isolation includes the DSN — see tenant-001). An operator can enumerate and dump every tenant's configuration with no trace of who read what.",
+      "evidence": "@admin_router.get(\"/{tenant_id}/export\", dependencies=[Depends(_PLATFORM)])\nasync def export(request, tenant_id): svc, tenant = await _load(...); return await svc.export(tenant)",
+      "recommendation": "Declare and record a read/export auditable action (e.g. tenant.exported) for these cross-tenant platform reads, binding the principal, matching the established pattern."
+    },
+    {
+      "id": "tenant-006",
+      "category": "CONFIG / declared-but-unread knob",
+      "severity": "MEDIUM",
+      "title": "ERASURE_MAX_SCAN (and the _PAGE constant) are configured and passed but never used by TenantErasure.erase",
+      "file": "services/tenant-service/app/core/erasure.py",
+      "line": 31,
+      "scenario": "erase_subject() constructs TenantErasure(..., max_scan=s.ERASURE_MAX_SCAN); the constructor stores self._max and the module defines _PAGE = 500. erase() then does a single self._store.get(_TENANTS, tenant) and never scans, so neither self._max nor _PAGE is ever read. Per the advertised-but-unread-knobs rule, a config knob whose value has no effect is worse than an absent one: an operator tuning ERASURE_MAX_SCAN believes they are bounding an erasure scan that does not exist.",
+      "evidence": "self._max = max_scan   ... _PAGE = 500   (neither referenced anywhere in erase())",
+      "recommendation": "Remove ERASURE_MAX_SCAN, the max_scan parameter and _PAGE, or implement the bounded scan they imply. Do not advertise a knob nothing reads."
+    },
+    {
+      "id": "tenant-007",
+      "category": "API / correctness — silent truncation",
+      "severity": "MEDIUM",
+      "title": "Admin tenant listing silently truncates at TENANT_LIST_LIMIT with no pagination cursor",
+      "file": "services/tenant-service/app/api/v1/tenants.py",
+      "line": 93,
+      "scenario": "GET /api/v1/tenants calls build_service(request).list(limit) with TENANT_LIST_LIMIT (default 100), which is repo.list -> store.scan_all(_TENANTS, limit). Once a platform has more than 100 tenants, the operator UI shows only the first 100 (unordered — see scan_all) with no next cursor and no 'more exist' signal. Tenants beyond the limit are invisible to platform operators, and there is no way to page to them.",
+      "evidence": "@admin_router.get(\"\") ... limit = get_settings().TENANT_LIST_LIMIT; return {\"tenants\": await build_service(request).list(limit)}",
+      "recommendation": "Add cursor pagination to the admin list (reuse store.find/after like iter_suspended, or a scan_all cursor) and return a next cursor / total signal so operators can see every tenant."
+    },
+    {
+      "id": "tenant-008",
+      "category": "CONFIG / fail-open on parse error",
+      "severity": "MEDIUM",
+      "title": "Malformed internal-route-policy / caller-key JSON silently parses to {}, degrading to default-open instead of failing fast",
+      "file": "services/tenant-service/app/config.py",
+      "line": 21,
+      "scenario": "_json_any_map() swallows ValueError/TypeError and returns {} for INTERNAL_ROUTE_POLICY_JSON, INTERNAL_CALLER_PUBLIC_KEYS_JSON, INTERNAL_CALLER_JWKS_JSON, etc. An operator who tightens the internal tier by setting INTERNAL_ROUTE_POLICY_JSON but makes a JSON typo gets an empty policy — which InternalRoutePolicy treats as default-open (every route admits any caller). A security control silently reverts to the permissive state on a config typo, with no boot error and no log line.",
+      "evidence": "except (ValueError, TypeError): return {}   # a mis-set map must not crash boot; the driver it feeds simply sees no keys",
+      "recommendation": "For security-relevant maps (route policy, caller keys), fail fast at boot on malformed JSON rather than returning {}. A policy that cannot be parsed must not silently become 'allow all'."
+    },
+    {
+      "id": "tenant-009",
+      "category": "CONCURRENCY / atomicity",
+      "severity": "MEDIUM",
+      "title": "Tombstone/purge destructive write uses put()/delete() without a version-checked CAS, so it can clobber a concurrent config write",
+      "file": "services/tenant-service/app/core/tenant_repository.py",
+      "line": 140,
+      "scenario": "Every lifecycle/config mutation goes through cas_update() to avoid lost updates (tenant-r2-01), EXCEPT delete/tombstone. tombstone() bumps version = tenant.version + 1 based on the SNAPSHOT passed in and then store.put()s unconditionally (no CAS). close(grace<=0)->delete() and delete() operate on a caller-loaded snapshot. If a concurrent update_config CASes the row between load and tombstone, the tombstone's version bump can be stale and the unconditional put overwrites the concurrent writer's row anyway. The write path that is supposed to be lose-safe has a non-CAS hole exactly on the most destructive operation.",
+      "evidence": "row[\"version\"] = int(tenant.version) + 1 ... await self._store.put(_TENANTS, tenant.id, row)   # put, not cas",
+      "recommendation": "Perform the tombstone/purge through cas_update on the expected version (retry on loss), so a delete racing a concurrent config write is serialized like every other lifecycle transition."
+    },
+    {
+      "id": "tenant-010",
+      "category": "SECURITY / default posture",
+      "severity": "MEDIUM",
+      "title": "Per-caller internal identity is off by default (shared driver + token fallback on), so caller-level authz is effectively never enforced unless a deployment opts in",
+      "file": "services/tenant-service/app/config.py",
+      "line": 125,
+      "scenario": "INTERNAL_CALLER_DRIVER='shared' and INTERNAL_CALLER_ALLOW_TOKEN_FALLBACK=True by default. Combined with the default-open route policy (tenant-003), the identity half of least-privilege never runs: every internal caller is the anonymous shared-token peer (caller=\"\") and every route admits it. The machinery exists but the shipped defaults leave the whole internal tier authenticated only by one shared secret, so a single leaked token is full compromise of tenant lifecycle + backup restore.",
+      "evidence": "INTERNAL_CALLER_DRIVER: str = \"shared\"   ... INTERNAL_CALLER_ALLOW_TOKEN_FALLBACK: bool = True",
+      "recommendation": "Document a production hardening step (and ideally a boot warning in production) to move to static/jwks with fallback off; at minimum couple destructive routes to named callers so the shared token alone cannot destroy the registry."
+    },
+    {
+      "id": "tenant-011",
+      "category": "OBSERVABILITY / audit field semantics",
+      "severity": "MEDIUM",
+      "title": "Audit `tenant` field records the ACTOR's tenant (empty for platform operators), not the affected tenant, so lifecycle events are unfindable by affected-tenant",
+      "file": "services/tenant-service/app/api/v1/tenants.py",
+      "line": 149,
+      "scenario": "suspend/reactivate/delete/config/branding record tenant=principal.tenant. A platform operator's token carries no tenant claim, so principal.tenant is None -> tenant=\"\". The affected tenant id lives only inside resource=f\"tenant:{tenant_id}\". An investigator querying the audit log by the tenant dimension ('everything that happened to tenant X') will find none of the suspend/delete events for X, because the tenant column is blank. provision has the same issue (tenant=principal.tenant while the created tenant is t.id).",
+      "evidence": "await request.app.state.auditor.record(\"tenant.suspended\", actor=principal.subject, tenant=principal.tenant, resource=f\"tenant:{tenant_id}\", ...)",
+      "recommendation": "Set the audit tenant field to the AFFECTED tenant id (tenant_id / t.id) for cross-tenant admin actions, so the log is queryable by the organisation the action was performed on."
+    },
+    {
+      "id": "tenant-012",
+      "category": "SECURITY / rate limiting coverage",
+      "severity": "MEDIUM",
+      "title": "Rate limiting is applied only to provision and self-close; every other write (config, branding, suspend, reactivate, delete) is unthrottled",
+      "file": "services/tenant-service/app/api/v1/tenants.py",
+      "line": 105,
+      "scenario": "Only provision (line 69) and close_my_tenant (line 237) declare Depends(rate_limit). update_config, set_branding, suspend, reactivate, delete (admin and self) have no limiter. A compromised or buggy client can hammer PUT /api/v1/tenant/config or the admin suspend/delete routes unbounded — each is a datastore CAS loop (up to 8 reads+writes per call via _apply) and an audit emit, so a flood is an amplified load and audit-sink storm with no throttle.",
+      "evidence": "@self_router.put(\"/config\", dependencies=[Depends(_TENANT_ADMIN)])   # no Depends(rate_limit)",
+      "recommendation": "Add Depends(rate_limit) to all mutating routes (or a route-class policy in RATELIMIT_ROUTES covering them). Destructive admin routes especially should be throttled."
+    },
+    {
+      "id": "tenant-013",
+      "category": "OBSERVABILITY / log-and-continue",
+      "severity": "MEDIUM",
+      "title": "close_sweep counts failed erasures but never logs which tenant failed or why",
+      "file": "services/tenant-service/app/core/tenant_service.py",
+      "line": 306,
+      "scenario": "In close_sweep, a delete() that raises is swallowed with `except Exception: failed += 1` and no logging. The scheduler sees {\"failed\": 3} but nothing records WHICH three tenants could not be erased or the exception. A tenant whose owner requested closure/erasure can be stuck failing every sweep indefinitely, silently, and an operator has no thread to pull — an erasure obligation (DSAR/close) is quietly not being met.",
+      "evidence": "except Exception:   # noqa: BLE001 — one stuck tenant must not block the rest (r2-06)\n    failed += 1",
+      "recommendation": "Log the tenant id and exception (and/or emit a telemetry event) on each failed erasure so stuck closures are visible and actionable, while still continuing the sweep."
+    },
+    {
+      "id": "tenant-014",
+      "category": "CORRECTNESS / stale-snapshot read",
+      "severity": "LOW",
+      "title": "close() returns an idempotent no-op decision from the caller-supplied (possibly stale) tenant before re-reading",
+      "file": "services/tenant-service/app/core/tenant_service.py",
+      "line": 248,
+      "scenario": "Before entering the CAS mutate, close() reads existing = tenant.config.get(\"_close\") from the snapshot passed in and, if status==SUSPENDED with a grace_until, returns an idempotent response early WITHOUT re-reading. If a reactivate raced between the route's _own load and this call, the snapshot still says SUSPENDED/closing and close() reports the tenant is closing when it is actually live again. The _m mutate path re-reads correctly, but the early return bypasses it.",
+      "evidence": "existing = tenant.config.get(\"_close\") or {}\n    if tenant.status == SUSPENDED and existing.get(\"grace_until\"): return {... \"idempotent\": True}",
+      "recommendation": "Drop the pre-CAS early return and rely solely on the fresh read inside _m (which already handles the idempotent case), or re-read before deciding."
+    },
+    {
+      "id": "tenant-015",
+      "category": "TESTS / test that stopped testing",
+      "severity": "LOW",
+      "title": "Isolation test-double scope() signature diverged from the real port, so scope-dependent paths are untested",
+      "file": "services/tenant-service/tests/unit/test_tombstone.py",
+      "line": 40,
+      "scenario": "The test's Isolation.scope(self, tenant) takes one argument, but the real strategies and TenantService.scope call strategy.scope(tenant.id, tenant.slug) with two. The double only survives because these tests never exercise scope()/export(). Any test using this double against export/scope would raise TypeError, and the mismatch means no unit test here validates the real scope contract. This is the exact 'rename a port method and the fakes measure nothing' trap.",
+      "evidence": "class Isolation:\n    def scope(self, tenant):\n        return {\"mode\": \"shared-row\"}",
+      "recommendation": "Align the double with the real signature scope(tenant_id, slug) and add a test exercising export()/scope() per isolation mode."
+    },
+    {
+      "id": "tenant-016",
+      "category": "OBSERVABILITY / silent swallow",
+      "severity": "LOW",
+      "title": "_emit swallows all event-bus exceptions with a bare pass and no telemetry",
+      "file": "services/tenant-service/app/core/tenant_service.py",
+      "line": 127,
+      "scenario": "_emit wraps bus.publish in try/except Exception: pass. Events are documented best-effort, but a bus that is misconfigured or persistently failing produces zero signal — peers that rely on tenant.created/suspended/deleted hints silently stop receiving them, and no counter or log ever indicates the emit path is broken. The tombstone design assumes the event is a 'hint that saves a round trip'; if it silently never fires, the assumption is wrong with no visibility.",
+      "evidence": "except Exception:\n    pass  # events are best-effort; never block a lifecycle op",
+      "recommendation": "Count/log emit failures via telemetry (as the auditor does for audit gaps) so a broken bus is observable, while still not blocking the lifecycle op."
+    },
+    {
+      "id": "tenant-017",
+      "category": "SECURITY / least-privilege (data exposure)",
+      "severity": "LOW",
+      "title": "Internal tenant read exposes full config (feature_flags, limits) and branding to any authenticated internal caller by default",
+      "file": "services/tenant-service/app/api/internal.py",
+      "line": 77,
+      "scenario": "TENANT_INTERNAL_FIELDS defaults to 'id,slug,name,status,branding,config,deleted_at'. _internal_view strips only leading-underscore config keys, so the full non-underscore config (business limits, feature flags) and branding go to every peer that holds the shared token. A peer that only needs status/slug receives the whole tenant configuration. The field list is configurable, but the default is maximally exposing.",
+      "evidence": "TENANT_INTERNAL_FIELDS: str = \"id,slug,name,status,branding,config,deleted_at\"",
+      "recommendation": "Default to the minimal field set (id, slug, name, status, deleted_at) and let deployments add branding/config only for the peers/routes that need them; or scope fields per caller."
+    },
+    {
+      "id": "tenant-018",
+      "category": "CORRECTNESS / defaulting hides corruption",
+      "severity": "LOW",
+      "title": "Tenant.from_dict defaults missing created_at/updated_at to now(), masking corrupt rows and skewing iter_suspended ordering",
+      "file": "services/tenant-service/app/core/models.py",
+      "line": 61,
+      "scenario": "from_dict does created_at=d.get(\"created_at\", now()). A row missing created_at (corruption, a bad restore, an old schema) silently loads with created_at=NOW. iter_suspended sorts by created_at asc to page the close-sweep; a row that keeps materializing 'now' each read never sorts into a stable position and could be re-visited or skipped across pages. A missing timestamp should be a loud data problem, not silently backfilled to the current time.",
+      "evidence": "created_at=d.get(\"created_at\", now()), updated_at=d.get(\"updated_at\", now()),",
+      "recommendation": "Treat a missing created_at as an error (or a fixed sentinel), not now(); at minimum log when backfilling so corrupt rows are visible and sort deterministically."
+    },
+    {
+      "id": "tenant-019",
+      "category": "CORRECTNESS / timestamp format inconsistency",
+      "severity": "LOW",
+      "title": "grace deadline comparison relies on lexical ISO compare while the service mixes '+00:00' and 'Z' timestamp formats",
+      "file": "services/tenant-service/app/api/internal.py",
+      "line": 251,
+      "scenario": "close() writes grace_until via datetime.isoformat() ('...+00:00') and close_sweep compares grace_until <= now_iso where now_iso is also isoformat() ('...+00:00') — lexically valid only because both use the same offset form. But _now_iso() (backup) emits strftime('...Z'). The service therefore stores two different UTC string formats, and any future path that compares a 'Z' timestamp against a '+00:00' one lexically will be wrong ('Z' > '+' byte-wise). The correctness of the sweep's cutoff depends on an undocumented format coupling.",
+      "evidence": "grace_until = (now_dt + timedelta(days=grace_days)).isoformat()   vs   _now_iso -> strftime(\"%Y-%m-%dT%H:%M:%SZ\")",
+      "recommendation": "Standardize on one UTC serialization across the service (parse to aware datetimes and compare as datetimes for cutoffs, rather than lexically comparing strings)."
+    },
+    {
+      "id": "tenant-020",
+      "category": "PERFORMANCE / redundant work",
+      "severity": "LOW",
+      "title": "internal_resolve builds the TenantService twice per request",
+      "file": "services/tenant-service/app/api/internal.py",
+      "line": 71,
+      "scenario": "internal_resolve calls build_service(request) once for resolve_by_host and AGAIN inside the return to pass to _internal_view. build_service constructs a new TenantRepository, reads settings, and builds a TenantService each time. It is on the domain-resolution hot path (peers routing by host on many requests), so it does the wiring work twice for every call.",
+      "evidence": "tenant = await build_service(request).resolve_by_host(host) ... return _internal_view(tenant, build_service(request))",
+      "recommendation": "Build the service once (svc = build_service(request)) and reuse it for both the resolve and the view."
+    },
+    {
+      "id": "tenant-021",
+      "category": "API / manifest-route drift",
+      "severity": "LOW",
+      "title": "Manifest lists admin lifecycle routes under tier 'user', obscuring that they require platform.tenants (cross-tenant)",
+      "file": "services/tenant-service/app/manifest.py",
+      "line": 92,
+      "scenario": "The manifest declares /api/v1/tenants/{id}/suspend, /reactivate, DELETE, /config, /branding, /export as tier 'user'. These are platform-admin, cross-tenant operations gated on platform.tenants — not tenant-self. A gateway or catalog consumer reading the manifest to reason about exposure sees them as ordinary user routes, understating that they can act on ANY tenant. The self routes (/api/v1/tenant/*) are the real user tier.",
+      "evidence": "{\"path\": \"/api/v1/tenants/{id}/suspend\", \"tier\": \"user\", \"method\": \"POST\"}",
+      "recommendation": "Distinguish platform-admin routes from tenant-self routes in the manifest (e.g. a tier 'admin' or a required-capability field) so consumers can see the cross-tenant blast radius."
+    },
+    {
+      "id": "tenant-022",
+      "category": "CORRECTNESS / erasure completeness",
+      "severity": "LOW",
+      "title": "Branding erasure only removes an exact whole-string match of the subject, missing formatted or embedded addresses",
+      "file": "services/tenant-service/app/core/erasure.py",
+      "line": 43,
+      "scenario": "erase() removes branding values only where isinstance(v, str) and v == subject. A real email_sender is often stored as 'Owner Name <owner@shop.com>' or with different casing, so a DSAR erasure for 'owner@shop.com' finds no hit and reports already_absent, leaving the person's address in branding while the DSAR is closed COMPLETED. The endpoint's whole purpose (prove we erased the right person) is defeated by the too-strict match.",
+      "evidence": "hits = [k for k, v in branding.items() if isinstance(v, str) and v == subject]",
+      "recommendation": "Match case-insensitively and detect the subject as a substring/parsed address within branding contact fields, or restrict/validate branding contact storage to a canonical form so the equality check is reliable."
+    },
+    {
+      "id": "tenant-023",
+      "category": "CORRECTNESS / provenance comment",
+      "severity": "LOW",
+      "title": "ratelimit.py header attributes the module to identity-service (copy-paste), misleading maintainers",
+      "file": "services/tenant-service/app/api/ratelimit.py",
+      "line": 2,
+      "scenario": "The module banner reads 'identity-service — Rate limiting'. Per the self-contained-services rule each service owns its own copy; a wrong service name in the header invites a maintainer to assume the file is shared or to sync it from identity, and obscures which service's behaviour a change affects. Cosmetic but a real provenance defect in a fleet that forbids shared libraries.",
+      "evidence": "# identity-service — Rate limiting (policy-driven, honest headers)",
+      "recommendation": "Correct the banner to tenant-service."
+    },
+    {
+      "id": "tenant-024",
+      "category": "SECURITY / CWE-guard coverage inconsistency",
+      "severity": "LOW",
+      "title": "CWE guard.step is used only on the self GET route, not on other read/write handlers",
+      "file": "services/tenant-service/app/api/v1/tenants.py",
+      "line": 201,
+      "scenario": "my_tenant wraps its response in `async with guard.step(\"respond\")`, but no other route (admin get/list/export, config/branding writes, lifecycle) uses the CWE self-guard at all. The guard's pre/post-step checks (the point of Phase 3) therefore cover exactly one read endpoint, so its report() (surfaced in the manifest security block) overstates coverage while the sensitive write and cross-tenant export paths run unguarded.",
+      "evidence": "async with guard.step(\"respond\") as step:  (present only in my_tenant)",
+      "recommendation": "Apply guard.step consistently across handlers (at least the write and export paths) or document that the guard is intentionally scoped, so its report reflects real coverage."
+    }
+  ]
+}

@@ -1,0 +1,252 @@
+{
+  "service": "webhook-service",
+  "date": "2026-09-27",
+  "summary": {
+    "total": 22,
+    "by_severity": {"CRITICAL": 0, "HIGH": 3, "MEDIUM": 7, "LOW": 12}
+  },
+  "findings": [
+    {
+      "id": "webhook-001",
+      "category": "CONCURRENCY/PERFORMANCE",
+      "severity": "HIGH",
+      "title": "Blocking DNS resolution in SSRF validate() runs on the event loop, not offloaded like the transport send",
+      "file": "app/core/ssrf.py",
+      "line": 48,
+      "scenario": "deliver() calls self._validate_url(ep.url) directly (webhook_service.py:188) which calls _resolve() -> socket.getaddrinfo(). The outbound HTTP send is carefully offloaded with asyncio.to_thread (webhook_service.py:228), but the DNS lookup that precedes it is NOT. A tenant registers a URL whose authoritative nameserver is slow or hangs; getaddrinfo blocks the single-worker event loop for the full resolver timeout (often 5-30s), freezing EVERY other tenant's requests (health checks, inbound, dispatch) for that whole time. register()/update() run the same blocking resolve directly on the request path.",
+      "evidence": "def _resolve(host: str, port: int) -> list[str]:\n    try:\n        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)",
+      "recommendation": "Wrap validate()/resolution in asyncio.to_thread from deliver()/register()/update(), or make an async resolve seam; DNS for tenant-supplied hosts must never run synchronously on the loop."
+    },
+    {
+      "id": "webhook-002",
+      "category": "CORRECTNESS",
+      "severity": "HIGH",
+      "title": "Inbound event permanently lost on EventBus outage (dedupe reserved but publish swallowed)",
+      "file": "app/core/inbound_service.py",
+      "line": 65,
+      "scenario": "ingest() first calls reserve() which durably marks (source, provider_event_id) as seen, THEN calls _publish(). _publish swallows every exception. If the bus is down, the event is stored + deduped and returns accepted:false-error-free with duplicate:false, but nothing is ever published to subscribers and nothing re-publishes it. The provider's retry hits reserve() -> duplicate:true and is dropped. The event silently never reaches any subscriber — a broken at-least-once guarantee for the inbound path, on the hot path the whole service exists for.",
+      "evidence": "async def _publish(self, source: str, ev: InboundEvent) -> None:\n        if self._bus is None:\n            return\n        try:\n            await self._bus.publish(f\"inbound.{source}\", ev.to_dict())\n        except Exception:\n            pass          # the event is already durably stored; a bus outage never 500s the provider",
+      "recommendation": "Persist an outbox/pending-publish flag on the stored InboundEvent and drive publication from a durable sweep (as the outbound path does), or return a 5xx on publish failure so the provider retries. 'Durably stored' is not 'delivered' when nothing replays the store."
+    },
+    {
+      "id": "webhook-003",
+      "category": "API/CONTRACT",
+      "severity": "HIGH",
+      "title": "GitHub (and any non-timestamped) inbound signatures can never verify",
+      "file": "app/core/signing.py",
+      "line": 46,
+      "scenario": "The docstrings across inbound_service.py and inbound_credentials.py name GitHub as a supported source. But verify() delegates to parse(), which only extracts a 't=' timestamp and 'v*=' signatures and returns (None, []) when no 't=' is present. GitHub sends 'X-Hub-Signature-256: sha256=<hex>' — no timestamp, an HMAC of the raw body only. parse() yields ts=None, so verify() returns False on line 46 for every GitHub callback. Every genuine GitHub event is rejected as INVALID_SIGNATURE; the provider eventually stops retrying and the events are lost.",
+      "evidence": "ts, sigs = parse(header)\n    if ts is None or not sigs or not secrets:\n        return False",
+      "recommendation": "Either restrict documented inbound sources to the Stripe-style t=,v1= scheme, or add a per-source verification strategy (GitHub sha256=HMAC(body), no timestamp) instead of assuming one universal header format."
+    },
+    {
+      "id": "webhook-004",
+      "category": "SECURITY",
+      "severity": "MEDIUM",
+      "title": "SSRF deny-list bypassable with a literal IP host",
+      "file": "app/core/ssrf.py",
+      "line": 73,
+      "scenario": "denied_hosts is compared only against the URL hostname (parts.hostname). An operator who denies 'evil.example.com' is trivially bypassed by registering https://<the-ip-evil-resolves-to>/ — the hostname check never fires, and if that IP is a public unicast address the request proceeds. The deny-list therefore blocks a name but not the destination it points to.",
+      "evidence": "if denied_hosts and host in denied_hosts:\n        raise SsrfBlocked(f\"host is denied: {host}\")",
+      "recommendation": "Resolve first and evaluate the deny-list against BOTH the hostname and every resolved IP, or treat a bare-IP host on the deny-list's resolved set as denied. Document that deny-by-hostname is not a security boundary on its own."
+    },
+    {
+      "id": "webhook-005",
+      "category": "OBSERVABILITY",
+      "severity": "MEDIUM",
+      "title": "register() writes 'endpoint_created' audit BEFORE URL validation, leaving phantom audit rows",
+      "file": "app/api/v1/webhooks.py",
+      "line": 108,
+      "scenario": "The write-ahead audit fires before register() validates the URL. When the URL is an SSRF target, register() raises SsrfBlocked, the endpoint is never created, and a 400 is returned — but the audit chain now holds a 'webhook.endpoint_created' row for an endpoint that does not exist. An investigator counting created endpoints, or diffing audit against reality, sees a creation that never happened.",
+      "evidence": "await request.app.state.auditor.record(\n        \"webhook.endpoint_created\", actor=principal.subject, tenant=principal.tenant, resource=\"endpoint\",\n        ip=request.client.host if request.client else \"\")\n    try:\n        ep = await build_webhooks(request).register(",
+      "recommendation": "Validate the URL (cheap, pre-mutation) before recording the write-ahead audit, or record the audit only once the endpoint id exists and include it in resource=. Write-ahead should precede the mutation, not the validation."
+    },
+    {
+      "id": "webhook-006",
+      "category": "OBSERVABILITY",
+      "severity": "MEDIUM",
+      "title": "update_endpoint audits AFTER the mutation, inconsistent with the write-ahead pattern",
+      "file": "app/api/v1/webhooks.py",
+      "line": 138,
+      "scenario": "register, rotate, delete and erase all record their audit BEFORE the mutation (documented as critical write-ahead). update_endpoint records AFTER svc.update() persists the change. If webhook.endpoint_updated is treated as fail-closed, an update that already persisted a new (possibly attacker-chosen) URL then fails to audit returns 503 to the caller while the change is live and unrecorded — precisely the 'unprovable change already applied' outcome the write-ahead pattern exists to prevent.",
+      "evidence": "ep = await svc.update(endpoint_id, **body.model_dump())\n    except SsrfBlocked as e:\n        raise HTTPException(400, f\"URL_REJECTED: {e}\")\n    await request.app.state.auditor.record(\n        \"webhook.endpoint_updated\", actor=principal.subject, tenant=principal.tenant,",
+      "recommendation": "Move the update audit ahead of svc.update() for consistency with the other mutating routes, so an endpoint URL change is never applied without a recorded intent."
+    },
+    {
+      "id": "webhook-007",
+      "category": "CONCURRENCY/DATA",
+      "severity": "MEDIUM",
+      "title": "Inbound event store grows unbounded — TTL governs dedupe acceptance, never deletion",
+      "file": "app/core/stores.py",
+      "line": 234,
+      "scenario": "InboundStore.reserve()/record() put one row per accepted provider event and nothing ever deletes them. seen()/reserve() only use ttl_seconds to decide whether an OLD row still suppresses a duplicate — the row itself stays forever. Over time the 'inbound' collection grows without bound; list() with no source then relies on scan_all(_INBOUND, 50_000), so past 50k rows operator listings are silently truncated, and postgres storage grows unmonitored.",
+      "evidence": "_INBOUND_MAX = 50_000\n...\n    async def record(self, ev: InboundEvent) -> InboundEvent:\n        await self._store.put(_INBOUND, self._key(ev.source, ev.provider_event_id), ev.to_dict())",
+      "recommendation": "Add a retention/pruning job that deletes inbound (and delivered/dead) rows past a configured age, keyed off received_ts, so the dedupe window and storage footprint stay bounded together."
+    },
+    {
+      "id": "webhook-008",
+      "category": "SECURITY",
+      "severity": "MEDIUM",
+      "title": "replay_event() service method defaults is_operator=True (fail-open cross-tenant replay)",
+      "file": "app/core/webhook_service.py",
+      "line": 297,
+      "scenario": "by_event() spans all tenants. The tenant scoping in replay_event depends entirely on the caller passing is_operator=False. The default is True. The v1 route currently passes the flag correctly, but any new caller (an internal route, a background job, a future refactor) that calls replay_event(event_id) without the kwarg re-fires EVERY tenant's deliveries for that event id — a cross-tenant IDOR enabled by a fail-open default.",
+      "evidence": "async def replay_event(self, event_id: str, *, tenant: str | None = None,\n                           is_operator: bool = True) -> dict[str, Any]:",
+      "recommendation": "Default is_operator=False (fail-closed). A privileged caller must opt IN to cross-tenant replay, never inherit it by omission."
+    },
+    {
+      "id": "webhook-009",
+      "category": "PERFORMANCE/CORRECTNESS",
+      "severity": "MEDIUM",
+      "title": "Retry queue selected and ordered by created, not by next_retry_at — due rows starve behind not-yet-due history",
+      "file": "app/core/stores.py",
+      "line": 199,
+      "scenario": "due() pages queued/failed rows sorted by ('created','asc') and filters next_retry_at<=now in Python. A delivery created early but scheduled far in the future (long backoff, or pushed +recheck for a disabled/open-circuit endpoint) sits at the front of every page and is fetched-then-discarded on every sweep. Under a large backlog the sweep pages through creation-order history to find the handful actually due, doing far more datastore reads than the due count, and freshly-due deliveries created later can be reached only after many _SWEEP_PAGE iterations.",
+      "evidence": "rows, cursor = await self._store.find(_DELIVERIES, {\"status\": [\"queued\", \"failed\"]},\n                                                  limit=_SWEEP_PAGE, after=cursor,\n                                                  sort=(\"created\", \"asc\"))\n            out.extend(Delivery.from_dict(r) for r in rows\n                       if r.get(\"next_retry_at\") is not None and float(r[\"next_retry_at\"]) <= now)",
+      "recommendation": "Push the due-time predicate into the datastore (WHERE next_retry_at<=now) and sort by next_retry_at asc, so the sweep reads only actually-due rows in due order."
+    },
+    {
+      "id": "webhook-010",
+      "category": "TESTS/QA",
+      "severity": "MEDIUM",
+      "title": "The core DNS-rebinding defense branch and IP-pinning are asserted only by comment, not by a test",
+      "file": "tests/unit/test_ssrf.py",
+      "line": 14,
+      "scenario": "Every SSRF test uses a literal private/metadata IP as the URL host. There is no test where a HOSTNAME resolves (via getaddrinfo) to a private or mixed public+private address — i.e. the ssrf.py:90-93 'ANY non-public resolved address disqualifies the host' branch, which is the actual DNS-rebinding defense, is never exercised. There is also no test asserting the transport connects to Target.ip rather than re-resolving the hostname. The service's headline guarantee (rebinding closed) rests on comments.",
+      "evidence": "ATTACKS = [\n    (\"http://169.254.169.254/latest/meta-data/iam/\", \"aws metadata\"),\n    ... all literal IPs ...\n]",
+      "recommendation": "Add a test that monkeypatches socket.getaddrinfo to return a private (and a mixed public+private) result for a public-looking hostname and asserts SsrfBlocked; and a transport test asserting the socket connects to pinned_ip while Host/SNI stay the hostname."
+    },
+    {
+      "id": "webhook-011",
+      "category": "CORRECTNESS",
+      "severity": "LOW",
+      "title": "Backoff off-by-one — first retry delay is base*2 instead of base",
+      "file": "app/core/webhook_service.py",
+      "line": 254,
+      "scenario": "deliver() increments d.attempt (line 196) BEFORE the failure path computes next_delay(d.attempt). On the first failed send d.attempt==1, so next_delay uses n=1 and ceiling=base_seconds*2**1 — the first backoff is double the configured RETRY_BASE_SECONDS. Operators setting RETRY_BASE_SECONDS=30 get a first retry at up to 60s, not 30s. The exponent tracks 'attempts made' rather than 'retries taken'.",
+      "evidence": "delay = _backoff.next_delay(d.attempt, base_seconds=self._cfg[\"retry_base_seconds\"], ...)\n# with n = max(0, int(attempt)); ceiling = min(base_seconds * (2 ** n), max_seconds)",
+      "recommendation": "Pass attempt-1 (the number of retries already taken) to next_delay, or document that the base applies to the second attempt. Align the exponent with the intended schedule."
+    },
+    {
+      "id": "webhook-012",
+      "category": "CONCURRENCY",
+      "severity": "LOW",
+      "title": "Half-open circuit does not enforce 'exactly one probe' under concurrency",
+      "file": "app/core/circuit.py",
+      "line": 22,
+      "scenario": "can_attempt(HALF_OPEN) returns True for every caller. The single-probe property holds only because sweep() is sequential. A manual POST /internal/webhooks/deliver/{id} concurrent with a running sweep (or two overlapping sweeps) both read state HALF_OPEN and both send to a recovering endpoint, contradicting the documented 'let exactly one probe through'. A flapping endpoint can receive a burst instead of one probe.",
+      "evidence": "def can_attempt(state: str) -> bool:\n    return state in (CLOSED, HALF_OPEN)",
+      "recommendation": "Gate the half-open probe with a CAS/claim on the endpoint (e.g. move circuit_state to a 'probing' marker atomically) so only one attempt proceeds while half-open, mirroring the delivery claim."
+    },
+    {
+      "id": "webhook-013",
+      "category": "SECURITY",
+      "severity": "LOW",
+      "title": "httpx transport relies on the library default to disable redirects (no explicit follow_redirects=False)",
+      "file": "app/adapters/transport/httpx_transport.py",
+      "line": 39,
+      "scenario": "The stdlib transport is single-shot, but the httpx Client is constructed without follow_redirects=False; it depends on httpx's current default being False. If a dependency bump ever changed that default (or a maintainer copies this pattern), a 3xx from a tenant receiver would be followed and RE-RESOLVED by httpx to a new host, reopening the exact SSRF/rebinding window core.ssrf closed by pinning. classify() treats 3xx as terminal, but only because the transport is assumed not to follow it.",
+      "evidence": "with self._httpx.Client(transport=transport, timeout=timeout_seconds,\n                                    verify=True) as client:",
+      "recommendation": "Pass follow_redirects=False explicitly to the httpx Client as a defense-in-depth invariant that does not depend on a library default."
+    },
+    {
+      "id": "webhook-014",
+      "category": "PERFORMANCE/CORRECTNESS",
+      "severity": "LOW",
+      "title": "dispatch() size gate serializes with default separators; wire body uses compact — double serialize, mismatched byte count",
+      "file": "app/core/webhook_service.py",
+      "line": 134,
+      "scenario": "The payload-size gate does json.dumps(payload).encode() with default separators (', ' and ': '), while the delivered body is re-serialized with separators=(',',':') (line 202). The gate therefore counts MORE bytes than are actually sent, so a payload just under MAX_PAYLOAD_BYTES on the wire can be rejected 413. It also serializes the whole payload twice on the hot path (once per dispatch for the check, again per delivery).",
+      "evidence": "raw = json.dumps(payload).encode()\n        if len(raw) > self._cfg[\"max_payload_bytes\"]:\n            raise ValueError(\"PAYLOAD_TOO_LARGE\")",
+      "recommendation": "Serialize once with the compact separators used on the wire, measure that buffer for the gate, and reuse it. The gate should measure what is actually sent."
+    },
+    {
+      "id": "webhook-015",
+      "category": "SECURITY",
+      "severity": "LOW",
+      "title": "Tenantless non-platform principals share one '__none__' tenant bucket",
+      "file": "app/api/v1/webhooks.py",
+      "line": 62,
+      "scenario": "_tenant() maps a non-platform principal with no tenant claim to the literal string '__none__'. _owned() and replay_delivery() compare against (p.tenant or '__none__'). Two distinct users whose tokens carry caps but no tenant both resolve to tenant '__none__' and can therefore list, read, replay and delete each other's endpoints and deliveries — a cross-account leak among any tokens that omit a tenant.",
+      "evidence": "def _tenant(p: Principal, body_tenant: str | None = None) -> str:\n    if \"platform.webhooks\" in p.caps:\n        return body_tenant or p.tenant or \"global\"\n    return p.tenant or \"__none__\"",
+      "recommendation": "Reject a non-platform principal that carries no tenant (401/403) rather than folding them all into a shared sentinel tenant; a tenantless user has no scope to operate in."
+    },
+    {
+      "id": "webhook-016",
+      "category": "API/CONTRACT",
+      "severity": "LOW",
+      "title": "Platform operator cannot list another tenant's endpoints/events/deliveries via the standard routes",
+      "file": "app/api/v1/webhooks.py",
+      "line": 122,
+      "scenario": "list_endpoints/list_events/list_deliveries resolve the tenant via _tenant(principal) with no tenant query parameter, and for a platform.webhooks caller that yields principal.tenant or 'global'. A legitimate platform operator investigating tenant X's failing webhooks cannot scope the listing to X through these routes — the documented platform cross-tenant read pattern is unreachable here, undercutting the very replay/DLQ workflows the code comments describe.",
+      "evidence": "rows = await build_webhooks(request)._endpoints.list(_tenant(principal), get_settings().WEBHOOK_LIST_LIMIT)",
+      "recommendation": "Accept an optional tenant query param on the read routes and honor it for platform.webhooks callers (audited), mirroring the platform-admin cross-tenant read pattern used elsewhere in the fleet."
+    },
+    {
+      "id": "webhook-017",
+      "category": "PERFORMANCE/OBSERVABILITY",
+      "severity": "LOW",
+      "title": "Successful-delivery audit is awaited inline in the delivery funnel (per-delivery network call on the sweep hot path)",
+      "file": "app/core/webhook_service.py",
+      "line": 271,
+      "scenario": "_finalize() awaits auditor.record('webhook.delivered', ...) for every DELIVERED row. With AUDIT_SINK_DRIVER=http this puts a synchronous (awaited) HTTP round-trip to audit-service inside sweep()'s sequential loop, once per successful delivery. A large fan-out sweep serializes N delivery sends with N audit calls; a slow-but-up audit sink stretches the whole sweep even though the delivery audit is 'non-critical'.",
+      "evidence": "if status == DELIVERED and self._auditor is not None:\n            await self._auditor.record(\n                \"webhook.delivered\", actor=\"system\", tenant=d.tenant, ...)",
+      "recommendation": "Batch or fire-and-forget the routine delivered audit (or emit via the event bus) so per-delivery witnessing does not gate the sweep throughput; reserve inline awaited audit for the critical mutating actions."
+    },
+    {
+      "id": "webhook-018",
+      "category": "OBSERVABILITY",
+      "severity": "LOW",
+      "title": "Internal /webhooks/deliver/{id} route records no audit",
+      "file": "app/api/internal.py",
+      "line": 86,
+      "scenario": "The internal dispatch and sweep routes both record an audit event, but the internal deliver route returns build_webhooks(request).deliver(delivery_id) with no auditor.record call. A single forced delivery triggered by an internal caller (or an operator via that caller) leaves no witness of who forced which delivery, unlike every neighboring action.",
+      "evidence": "@router.post(\"/webhooks/deliver/{delivery_id}\", dependencies=[Depends(require_internal_token)])\nasync def deliver(request: Request, delivery_id: str) -> dict:\n    return await build_webhooks(request).deliver(delivery_id)",
+      "recommendation": "Record a webhook.deliver_forced (or reuse an existing action) with the delivery id and caller identity, consistent with dispatch/sweep."
+    },
+    {
+      "id": "webhook-019",
+      "category": "CONFIG",
+      "severity": "LOW",
+      "title": "SecretStore.list_info uses a hardcoded limit of 200",
+      "file": "app/core/secret_store.py",
+      "line": 209,
+      "scenario": "list_info() reads operator secrets with find(..., limit=200) and returns no cursor. A tenant/platform that has stored more than 200 operator-managed credentials (e.g. many per-source inbound secrets via the INBOUND_SECRET: convention) silently sees only 200 in the panel and in InboundSecretPool._resolve, which iterates list_info to build the accepted-secrets map — sources beyond 200 would never be resolved and their callbacks rejected as UNKNOWN_SOURCE.",
+      "evidence": "rows, _ = await self._s.find(_COLL, {\"tenant\": tenant}, limit=200, sort=(\"name\", \"asc\"))",
+      "recommendation": "Make the ceiling config-driven and page the resolution in InboundSecretPool, or assert a documented max source count; a silent 200-row cap on the credential set that gates inbound trust is a latent outage."
+    },
+    {
+      "id": "webhook-020",
+      "category": "PERFORMANCE",
+      "severity": "LOW",
+      "title": "Cross-source inbound listing scans up to 50k rows and sorts in Python every call",
+      "file": "app/core/stores.py",
+      "line": 263,
+      "scenario": "InboundStore.list() with no source calls scan_all(_INBOUND, 50_000) then sorts the whole result in Python on every operator call. Combined with the unbounded growth (webhook-007), this loads and sorts a large slice of the inbound table per request, and past 50k rows the listing is silently truncated to the first 50k by scan order (before the sort), so 'newest first' is not guaranteed once the cap is hit.",
+      "evidence": "rows = await self._store.scan_all(_INBOUND, _INBOUND_MAX)\n        rows.sort(key=lambda r: r.get(\"received\", \"\"), reverse=True)\n        return rows[:limit]",
+      "recommendation": "Push ordering/limit into the datastore (indexed on received desc) with a cursor, rather than scan-all + in-memory sort; and surface truncation when the cap is reached."
+    },
+    {
+      "id": "webhook-021",
+      "category": "CORRECTNESS",
+      "severity": "LOW",
+      "title": "Permanent TLS/cert failures are classified retryable and burn the full multi-hour retry budget",
+      "file": "app/core/webhook_service.py",
+      "line": 31,
+      "scenario": "classify() maps any transport failure (ok=False / status 0) to 'retryable'. A receiver with a permanently misconfigured or expired TLS certificate fails verify=True on every attempt with the same error, yet is retried through all RETRY_MAX_ATTEMPTS across up to RETRY_MAX_SECONDS (6h) before dead-lettering — the endpoint will never succeed, so the budget and worker cycles are spent on a certain failure. The transport collapses all errors to a type name, so a permanent TLS error is indistinguishable from a transient timeout.",
+      "evidence": "def classify(status: int, transport_ok: bool) -> str:\n    if not transport_ok or status == 0:\n        return \"retryable\"                       # timeout / DNS / connection reset",
+      "recommendation": "Have the transport surface an error class (tls_verification vs timeout vs connreset) and classify persistent TLS/cert validation failures as terminal (or open the circuit fast), so a certificate error does not consume the full retry schedule."
+    },
+    {
+      "id": "webhook-022",
+      "category": "SECURITY",
+      "severity": "LOW",
+      "title": "Internal deliver/sweep routes are default-open to any authenticated internal caller with no tenant scoping",
+      "file": "app/api/internal.py",
+      "line": 62,
+      "scenario": "require_internal_token treats a route absent from INTERNAL_ROUTE_POLICY_JSON as admitting any authenticated internal caller (default-open, documented). /internal/webhooks/deliver/{delivery_id} therefore lets any service holding the flat token force delivery of ANY delivery_id regardless of tenant, and /internal/webhooks/sweep lets any such caller drive the global sweep. delivery_id is opaque, but there is no per-tenant or per-caller restriction on which deliveries an internal caller may trigger.",
+      "evidence": "if not resolve_internal_policy(settings).permits(request.url.path, identity.caller):\n        raise HTTPException(status.HTTP_403_FORBIDDEN, \"FORBIDDEN\")\n# (a route with no policy entry is default-open)",
+      "recommendation": "Ship a default INTERNAL_ROUTE_POLICY entry restricting /internal/webhooks/deliver and /sweep to the specific caller(s) that legitimately drive delivery (e.g. the scheduler), rather than relying on operators to tighten a default-open sensitive route."
+    }
+  ]
+}

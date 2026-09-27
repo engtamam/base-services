@@ -1,0 +1,290 @@
+{
+  "service": "file-service",
+  "date": "2026-09-27",
+  "summary": {
+    "total": 25,
+    "by_severity": {
+      "CRITICAL": 1,
+      "HIGH": 4,
+      "MEDIUM": 12,
+      "LOW": 8
+    }
+  },
+  "findings": [
+    {
+      "id": "file-001",
+      "category": "CORRECTNESS / API-CONTRACT",
+      "severity": "HIGH",
+      "title": "internal_signed_url references build_files without importing it — endpoint 500s on every call",
+      "file": "app/api/internal.py",
+      "line": 102,
+      "scenario": "A background job (e.g. a notification/renewal service with no human JWT) calls POST /internal/files/{file_id}/signed-url to mint a download link. The handler executes `svc = await build_files(request)`, but `build_files` is only imported locally inside drain_scan_queue (129), sweep_uploads (151) and link_subjects (200) — never at module scope and NOT inside internal_signed_url. Python raises NameError at call time, which the error handler turns into a 500. The single documented purpose of this endpoint (let a sibling service hand a user a download without proxying bytes) is completely non-functional in production, and it is advertised in the manifest as an available internal endpoint.",
+      "evidence": "svc = await build_files(request)   # line 102, with no `from app.api.v1.files import build_files` in scope",
+      "recommendation": "Add `from app.api.v1.files import build_files` inside internal_signed_url (mirroring the other three internal handlers), or hoist a single module-level import. Add an integration test that actually POSTs to /internal/files/{id}/signed-url and asserts a 200 + token — the existing test only inspects the source string."
+    },
+    {
+      "id": "file-002",
+      "category": "TESTS/QA — tests that stop testing",
+      "severity": "HIGH",
+      "title": "internal signed-url endpoint is 'tested' only via inspect.getsource, so the NameError (file-001) is invisible",
+      "file": "tests/unit/test_file_tenant_scoping.py",
+      "line": 97,
+      "scenario": "test_the_internal_endpoint_requires_the_tenant_to_MATCH and test_the_internal_endpoint_does_not_take_a_caller_supplied_TTL both assert on `inspect.getsource(internal.internal_signed_url)` text and `inspect.signature(...)` rather than invoking the endpoint. Because they never call it through the app, the runtime NameError from file-001 passes CI green forever. This is a textbook 'test that measures nothing' — it verifies a substring is present in the source, not that the behaviour works.",
+      "evidence": "src = inspect.getsource(internal.internal_signed_url)\\n    assert 'if not f.tenant or f.tenant != tenant:' in src",
+      "recommendation": "Replace source-string assertions with real request-level tests using the FastAPI TestClient and the internal token: assert a matching tenant returns 200 with a token, a mismatched tenant returns 404, and a caller-supplied ttl query is ignored."
+    },
+    {
+      "id": "file-003",
+      "category": "PERFORMANCE / CONCURRENCY — blocking sync in async",
+      "severity": "HIGH",
+      "title": "Small-upload path calls the synchronous ClamAV scanner inline on the event loop",
+      "file": "app/core/file_service.py",
+      "line": 251,
+      "scenario": "FileService.upload runs `self._scanner.scan(data, ct)` directly in the async request handler. With SCANNER_DRIVER=clamav, ClamavScanner.scan performs a blocking `self._client.instream(io.BytesIO(data))` — a synchronous socket round-trip to clamd that scans up to MAX_UPLOAD_BYTES (25 MiB). On the single-worker event loop this freezes every other coroutine (including /healthz and other requests' rate-limit Redis reads) for the whole scan. The large path correctly offloads via asyncio.to_thread in scan_stream; the small path does not. This is the same class of defect recorded in memory 'blocking-sync-in-async' that previously crash-looped /healthz.",
+      "evidence": "self._scanner.scan(data, ct)  # raises Rejected   (file_service.py:251)  ->  ClamavScanner.scan: result = self._client.instream(io.BytesIO(data))",
+      "recommendation": "Wrap the synchronous scan in `await run_in_threadpool(self._scanner.scan, data, ct)` (or asyncio.to_thread), matching how token verification and the streaming scan already offload blocking work."
+    },
+    {
+      "id": "file-004",
+      "category": "SECURITY / PRIVACY — erasure completeness",
+      "severity": "HIGH",
+      "title": "Erasure leaves terminal upload_session rows (owner, filename, sha) for the subject un-erased",
+      "file": "app/core/erasure.py",
+      "line": 117,
+      "scenario": "_erase_sessions only aborts/rewrites sessions whose status is NOT terminal (`if sess.status not in _TERMINAL`). A subject who completed a large upload has a session in status READY (or QUARANTINED) that still stores owner=subject, filename, declared_sha256 and content_type. After erase(), that row survives untouched, so the subject's identifier and original filename remain in the datastore. The DSAR receipt reports 'all erased' while personal data (owner id + filename, which is frequently PII like 'passport-ahmed.pdf') persists in upload_sessions. This contradicts the class's own promise ('a receipt that cannot say why data survived has not really answered the person').",
+      "evidence": "if sess.status not in _TERMINAL and self._objects is not None:  # terminal sessions are skipped entirely, owner/filename never cleared",
+      "recommendation": "For terminal sessions belonging to the subject, either delete the session row or scrub owner/filename/declared_sha256 to the pseudonym, and count them in the erasure receipt. The blob itself is already released via the FileObject delete path; the metadata row must not outlive it."
+    },
+    {
+      "id": "file-005",
+      "category": "SECURITY — unrestricted file type (CWE-434/CWE-79)",
+      "severity": "MEDIUM",
+      "title": "Magic scanner only validates content whose declared type is in _SIGNATURES; SVG/HTML and unlisted types pass unchecked",
+      "file": "app/adapters/scanner/magic.py",
+      "line": 52,
+      "scenario": "In strict mode _check only rejects when a signature is KNOWN for the declared type (`if self._strict and expected and ...`). A caller uploading active content declared as `image/svg+xml`, `text/html`, or any type absent from _SIGNATURES bypasses the byte/type match entirely; the only backstop is the four _DANGEROUS prefixes (MZ/ELF/#!/cafebabe), which do not include `<svg onload=...>` or `<html><script>`. Combined with ALLOWED_CONTENT_TYPES defaulting to '' (allow any), an attacker stores an SVG/HTML payload. Inline download does set Content-Disposition: attachment + nosniff + CSP, and presigned GET forces attachment, which mitigates rendering in this origin — but a signed-URL consumer that re-serves the bytes, or an SVG opened directly by a victim, is still exposed.",
+      "evidence": "if self._strict and expected and not any(head.startswith(s) for s in expected):  # `expected is None` for svg/html/unlisted types => no check",
+      "recommendation": "Add signatures/explicit rejection for active types (svg, html, xml with DOCTYPE), and when strict + unknown declared type, fail closed rather than allow. Document that ALLOWED_CONTENT_TYPES should be set to a real allowlist in production."
+    },
+    {
+      "id": "file-006",
+      "category": "SECURITY — stream magic check header window (CWE-434)",
+      "severity": "MEDIUM",
+      "title": "Streaming magic scan inspects only the first 16 bytes, so a dangerous signature not at offset 0 is never seen",
+      "file": "app/adapters/scanner/magic.py",
+      "line": 37,
+      "scenario": "scan_stream accumulates at most 16 header bytes and checks _DANGEROUS/_SIGNATURES against that header only. A large upload whose malicious payload is not at the very start (e.g. a polyglot, a ZIP whose local file header sits after a benign prefix, or an object with leading whitespace/padding before `MZ`) drains the whole stream to the hasher but is scanned only on its first 16 bytes. For the async large path this is the ONLY content inspection when SCANNER_DRIVER=magic, so multi-GB objects are effectively unscanned past byte 16.",
+      "evidence": "header = b\"\"\\n        async for chunk in chunks:\\n            if len(header) < 16:\\n                header += chunk[: 16 - len(header)]",
+      "recommendation": "Document magic as a header-only heuristic and require SCANNER_DRIVER=clamav for the large path in production (or gate large uploads on a real content scanner), rather than letting a 16-byte sniff satisfy LARGE_UPLOAD_SCAN=async."
+    },
+    {
+      "id": "file-007",
+      "category": "OBSERVABILITY — missing audit for read access",
+      "severity": "MEDIUM",
+      "title": "Ordinary downloads and public signed downloads are never audited; only cross-tenant operator reads are",
+      "file": "app/api/v1/files.py",
+      "line": 243,
+      "scenario": "The download handler audits only when _crosses_tenant is true; a normal owner GET /{file_id} and every public GET /files/signed/{token} record nothing. For a file service this means 'who downloaded this document and when' is unanswerable for the common case. A leaked or over-shared signed URL that is used by an attacker leaves no access record at all (the public route emits no audit event whatsoever). The code comments call routine reads 'too noisy', which is a defensible product choice, but the absence of any sampled or aggregate access log is a real gap for an evidence/compliance posture aiming at ISO 27001.",
+      "evidence": "signed_download (public_router) returns bytes/redirect with no auditor.record call anywhere in the function body (files.py:335-351)",
+      "recommendation": "Emit at least a low-cardinality access event for signed-URL redemptions (the token IS a bearer credential leaving the platform), even if owner self-reads stay unlogged. Consider a config knob FILE_AUDIT_DOWNLOADS."
+    },
+    {
+      "id": "file-008",
+      "category": "CONCURRENCY/DATA — sweeper unbounded paging",
+      "severity": "MEDIUM",
+      "title": "find_stale_pending filters staleness in Python AFTER the store page, so sweep pages through ALL pending/scanning sessions",
+      "file": "app/core/upload_session.py",
+      "line": 138,
+      "scenario": "find_stale_pending asks the store for status in [pending,scanning] ordered by created asc, then filters `r.get('created','') < before_iso` in Python. sweep_stale_sessions loops until the store cursor is exhausted. Because the staleness bound is not pushed into the store, the loop walks every pending/scanning session in the table each run, not just the stale ones — the cost is O(all in-flight sessions), the exact 'scan wearing a limit's clothes' pattern the codebase elsewhere calls out. A tenant with many concurrent live uploads makes each cron sweep progressively heavier even though almost nothing is actually stale.",
+      "evidence": "rows, cursor = await self._store.find(_SESSIONS, {\"status\": [PENDING, SCANNING]}, ...)\\n        stale = [r for r in rows if r.get(\"created\", \"\") < before_iso]",
+      "recommendation": "Since rows come back sorted by created asc, break out of the sweep loop as soon as a returned row has created >= before_iso (all subsequent rows are newer), or push a created<cutoff range predicate into the datastore find contract."
+    },
+    {
+      "id": "file-009",
+      "category": "CONCURRENCY/DATA — sweeper vs live scan race",
+      "severity": "MEDIUM",
+      "title": "sweep aborts SCANNING sessions past UPLOAD_SESSION_TTL even while a worker may hold a valid lease, discarding staging under it",
+      "file": "app/core/file_service.py",
+      "line": 211,
+      "scenario": "sweep_stale_sessions treats any pending OR scanning session older than UPLOAD_SESSION_TTL_SECONDS (3600s) as stale and calls _discard_staging + sets ABORTED. FILE_SCAN_LEASE_SECONDS is 900s, but a legitimately slow multi-GB scan (or a job repeatedly re-leased/retried) can still be actively SCANNING after an hour. The sweeper then aborts the multipart and deletes the staging object while the ScanWorker is streaming it, causing the in-flight scan to fail mid-read. finalize then no-ops (status no longer SCANNING), so the upload is silently lost and must be redone, with no clear reason surfaced to the client beyond 'aborted/expired'.",
+      "evidence": "sess.status = ABORTED\\n                sess.reason = \"expired\"  (applied to SCANNING sessions too, via find_stale_pending returning [PENDING, SCANNING])",
+      "recommendation": "Only auto-abort PENDING sessions in the TTL sweep; for stuck SCANNING sessions use a separate, longer, lease-aware timeout (e.g. > FILE_SCAN_LEASE_SECONDS * max_attempts) so the sweep never yanks staging from a worker still within its lease."
+    },
+    {
+      "id": "file-010",
+      "category": "CONFIG — declared-but-unread / getattr default hiding absence",
+      "severity": "MEDIUM",
+      "title": "readyz reads READYZ_TIMEOUT_SECONDS via getattr with a default, but Settings never declares it — the knob silently does nothing",
+      "file": "app/api/health.py",
+      "line": 65,
+      "scenario": "readyz does `getattr(get_settings(), 'READYZ_TIMEOUT_SECONDS', _DEFAULT_READYZ_TIMEOUT)`. Settings (config.py) has no READYZ_TIMEOUT_SECONDS field, so the getattr always falls through to the 5.0 default. An operator who sets READYZ_TIMEOUT_SECONDS in the environment to widen the probe budget sees no effect (env extra='ignore' silently drops it), and there is no error. This is both a declared-intent-vs-reality gap and the getattr-default anti-pattern the codebase warns about (defensive-access-hides-bugs).",
+      "evidence": "timeout = getattr(get_settings(), \"READYZ_TIMEOUT_SECONDS\", _DEFAULT_READYZ_TIMEOUT)",
+      "recommendation": "Add READYZ_TIMEOUT_SECONDS as a real Settings field (with the 5.0 default) and read it directly, or remove the getattr and document that the timeout is a fixed constant."
+    },
+    {
+      "id": "file-011",
+      "category": "CONFIG — endpoint ceiling mismatch",
+      "severity": "MEDIUM",
+      "title": "MAX_OBJECT_BYTES default (5 GiB) equals the S3 single-part copy_object limit, so promote() fails at the ceiling",
+      "file": "app/adapters/object_store/s3.py",
+      "line": 210,
+      "scenario": "MAX_OBJECT_BYTES defaults to 5_368_709_120 (5 GiB) and begin_large_upload accepts sizes up to and including it. promote() uses s3.copy_object, whose single-operation limit is 5 GiB; an object exactly at 5 GiB (or an S3 implementation that treats the boundary as exclusive) makes copy_object raise, so a clean, fully-scanned upload fails at finalize with the bytes stranded on the staging key. The comment even acknowledges 'copy_object handles objects up to 5 GiB' but the configured ceiling is set AT that boundary rather than below it.",
+      "evidence": "MAX_OBJECT_BYTES: int = 5_368_709_120    # 5 GiB — hard ceiling for the large path (S3 copy limit)  <-> await s3.copy_object(...)",
+      "recommendation": "Either lower the default MAX_OBJECT_BYTES safely below the 5 GiB single-copy limit, or use a multipart copy (UploadPartCopy) in promote() for large objects so finalize does not fail at the advertised ceiling."
+    },
+    {
+      "id": "file-012",
+      "category": "CORRECTNESS — scan worker aborts whole run on first failure",
+      "severity": "MEDIUM",
+      "title": "run_once re-raises after nacking the first failing job, leaving the rest of the queue undrained for that invocation",
+      "file": "app/core/scan_worker.py",
+      "line": 107,
+      "scenario": "In the drain loop, if process(sid) raises, the worker nacks that job and then `raise`, aborting the entire while loop. Every other job already waiting in the scan queue is left unprocessed until the next cron tick. A single poison/transiently-failing object therefore delays scanning (and thus availability) of all other pending large uploads in that batch. The docstring frames the nack as 'retry promptly', but re-raising defeats promptness for the siblings.",
+      "evidence": "except Exception:\\n                await self._queue.nack(job)\\n                raise",
+      "recommendation": "Catch the per-job exception, nack that single job, record/telemeter it, and continue the loop so one bad object does not stall the whole batch; surface repeated failures via a dead-letter or attempt counter instead of aborting the run."
+    },
+    {
+      "id": "file-013",
+      "category": "API-CONTRACT — manifest/route drift",
+      "severity": "MEDIUM",
+      "title": "Manifest advertises /internal/files/{file_id}/signed-url as available while it 500s (file-001), and large_uploads.available is derived from driver name only",
+      "file": "app/manifest.py",
+      "line": 56,
+      "scenario": "build_manifest lists /internal/files/{file_id}/signed-url as a live internal endpoint, but that route is broken (file-001), so a platform consumer that discovers and calls it via the manifest gets a 500. Separately, large_uploads.available is computed as `settings.OBJECTSTORE_DRIVER == 's3'` — a string check, not the real capability gate FileService uses (`store.supports_presign and sessions is not None`). If OBJECTSTORE_DRIVER is an s3-compatible alias, or presign is unavailable for another reason, the manifest advertises large uploads that initiate_large_upload will then reject with 501.",
+      "evidence": "large_available = settings.OBJECTSTORE_DRIVER == \"s3\"",
+      "recommendation": "Fix file-001, and derive large_uploads.available from the actual object_store.supports_presign flag on the wired container rather than a driver-name string comparison so the manifest cannot disagree with the runtime gate."
+    },
+    {
+      "id": "file-014",
+      "category": "OBSERVABILITY — false/None tenant in audit rows",
+      "severity": "MEDIUM",
+      "title": "signed_url and delete record audit with tenant=principal.tenant which can be None, unlike sibling handlers that coalesce to ''",
+      "file": "app/api/v1/files.py",
+      "line": 277,
+      "scenario": "signed_url (POST /{id}/signed-url) records `tenant=principal.tenant` and delete records `tenant=principal.tenant`, whereas upload/complete/abort all use `principal.tenant or \"\"`. A token with no tenant claim yields tenant=None in these two critical audit events (issuing a bearer download link, deleting a file). Depending on the audit sink's serialization this either stores a null tenant (breaking per-tenant audit queries) or, on a strict subject_ref/pseudonym path, risks an inconsistent record for exactly the two highest-value actions.",
+      "evidence": "\"file.signed_url_issued\", actor=principal.subject, tenant=principal.tenant, resource=f\"file:{file_id}\"  (no `or \"\"`)",
+      "recommendation": "Use `principal.tenant or \"\"` in the signed_url and delete audit calls to match every other handler and keep the tenant field a stable string."
+    },
+    {
+      "id": "file-015",
+      "category": "SECURITY — SSRF surface note (defense verification)",
+      "severity": "LOW",
+      "title": "S3 endpoint_url is config-only (good), but there is no boot allowlist tying OBJECTSTORE_ENDPOINT_URL to EGRESS_ALLOWED_HOSTS",
+      "file": "app/adapters/object_store/s3.py",
+      "line": 38,
+      "scenario": "The adapter correctly takes the endpoint from config, never from a caller, so there is no request-driven SSRF. However OBJECTSTORE_ENDPOINT_URL is not validated against the service-wide EGRESS_ALLOWED_HOSTS allowlist that the CWE guard maintains, so a misconfiguration (or a compromised config source) can point the store at an arbitrary internal host and the service will happily sign and send bucket traffic there. This is a lower-severity config-integrity gap rather than a live SSRF, but the platform otherwise treats egress hosts as an allowlist.",
+      "evidence": "self._endpoint = endpoint_url or None  # never checked against settings.egress_allowed_hosts",
+      "recommendation": "At boot, if OBJECTSTORE_ENDPOINT_URL is set and EGRESS_ALLOWED_HOSTS is non-empty, assert the endpoint host is on the allowlist, consistent with how other egress targets are governed."
+    },
+    {
+      "id": "file-016",
+      "category": "CORRECTNESS — resource leak",
+      "severity": "LOW",
+      "title": "LocalObjectStore.get opens the file inside a lambda and never explicitly closes the handle",
+      "file": "app/adapters/object_store/local.py",
+      "line": 40,
+      "scenario": "get() does `await asyncio.to_thread(lambda: open(path, 'rb').read())`. The file object is created and read but never closed explicitly; it is only reclaimed when CPython's refcount drops and GC runs. Under load (many concurrent downloads on the local driver) this can transiently hold more open descriptors than necessary and, on non-CPython or delayed-GC scenarios, leak descriptors. Every other file operation in this module uses `with` or explicit close.",
+      "evidence": "return await asyncio.to_thread(lambda: open(path, \"rb\").read())",
+      "recommendation": "Use a helper that opens with a context manager, e.g. `def _read(): \\n    with open(path,'rb') as fh: return fh.read()` and to_thread that."
+    },
+    {
+      "id": "file-017",
+      "category": "CORRECTNESS — copy/paste header",
+      "severity": "LOW",
+      "title": "ratelimit.py header banner says 'identity-service', not file-service",
+      "file": "app/api/ratelimit.py",
+      "line": 2,
+      "scenario": "The module docstring/banner reads 'identity-service — Rate limiting'. This is a copy-paste artifact from the template. It is harmless at runtime but misleads anyone reading the file to believe they are in a different service, and it undermines the 'self-contained service' discipline (a reviewer grepping for cross-service coupling sees a foreign service name).",
+      "evidence": "# identity-service — Rate limiting (policy-driven, honest headers)",
+      "recommendation": "Rename the banner to file-service."
+    },
+    {
+      "id": "file-018",
+      "category": "SECURITY — signed token lacks tenant/scope binding",
+      "severity": "LOW",
+      "title": "HMAC share-link token binds only {key(file_id), exp}; it carries no tenant or purpose, so any valid token grants the bytes regardless of later tenant changes",
+      "file": "app/adapters/signed_url/hmac_signer.py",
+      "line": 50,
+      "scenario": "sign() embeds only the file id and an expiry. resolve_signed_file() looks the file up with no tenant check (by design, 'the token is the grant'). This is acceptable, but it means a token minted for a file whose tenant/ownership later changes, or a file that gets re-owned via restore/import, still resolves — the token is not scoped to the tenant that issued it. There is also no per-file revocation: rotating SIGNED_URL_SECRET is the only kill switch, and the previous secret keeps verifying for the rotation window. For a data-exfil scenario a leaked link cannot be individually revoked.",
+      "evidence": "payload = {\"key\": key, \"exp\": int(time.time()) + self._ttl, **(extra or {})}",
+      "recommendation": "Consider embedding tenant (and optionally a monotonically-checkable version) in the payload and validating it at resolve time, and/or a per-file revocation list, so a single leaked link can be scoped and killed without a global secret rotation."
+    },
+    {
+      "id": "file-019",
+      "category": "CONFIG — fail-open scanner default in non-strict deployments",
+      "severity": "MEDIUM",
+      "title": "SCANNER_DRIVER defaults to 'none' and ALLOWED_CONTENT_TYPES to '' — the out-of-box small-upload path accepts and stores any bytes unscanned",
+      "file": "app/config.py",
+      "line": 291,
+      "scenario": "Defaults are SCANNER_DRIVER='none' and ALLOWED_CONTENT_TYPES='' (allow any). The large path has a production boot guard (assert_large_scan_ok) that refuses async/require+none, but the SMALL inline path (FileService.upload -> NoneScanner) has no equivalent guard: in production a deployment that never set SCANNER_DRIVER stores arbitrary content (including the _DANGEROUS types magic would have caught) with no scan and no type restriction. The large path is fenced; the small path is not.",
+      "evidence": "SCANNER_DRIVER: str = \"none\"   ...   ALLOWED_CONTENT_TYPES: str = \"\"          # comma list; empty = allow any",
+      "recommendation": "Add a production boot guard requiring a real SCANNER_DRIVER (or an explicit acknowledged opt-out) for the inline path too, symmetric with assert_large_scan_ok, so 'no scanning at all' cannot be the accidental production posture."
+    },
+    {
+      "id": "file-020",
+      "category": "CORRECTNESS — idempotency key regenerated per emit, not per action",
+      "severity": "LOW",
+      "title": "HttpAuditSink generates a fresh idempotency_key inside emit(); a higher-level retry of emit() defeats dedup",
+      "file": "app/adapters/audit_sink/http.py",
+      "line": 56,
+      "scenario": "emit() sets `payload['idempotency_key'] = uuid.uuid4().hex` at the top of the call. It is correctly reused across the internal attempt loop, but if any caller (or the core auditor) retries the whole emit() — e.g. a policy that re-invokes the sink after a FAILED result — each invocation gets a NEW key, so the audit ingest cannot recognize the repeat and could append a duplicate to the hash chain, contradicting the docstring's claim that the key is 'generated once per action'.",
+      "evidence": "payload[\"idempotency_key\"] = uuid.uuid4().hex",
+      "recommendation": "Derive the idempotency key deterministically from the event (e.g. hash of actor+action+resource+timestamp+request_id) or accept it from the AuditEvent so it is stable across any level of retry, not just this call's inner loop."
+    },
+    {
+      "id": "file-021",
+      "category": "CONCURRENCY/DATA — readiness registry is module-global",
+      "severity": "LOW",
+      "title": "_readiness_checks is a module-level dict shared across app instances",
+      "file": "app/api/health.py",
+      "line": 23,
+      "scenario": "register_readiness_check writes into a module-global _readiness_checks. Building two apps in one process (test suites, or an embedded scenario) accumulates/overwrites probes across instances; a probe bound to a torn-down container from a previous app can run against a closed datastore, producing spurious 'down'/'timeout' readiness or exceptions. Keys are per-adapter-name so it self-limits, but the coupling to a closed container is a real latent bug for multi-app processes.",
+      "evidence": "_readiness_checks: dict[str, ReadinessCheck] = {}   # module global, mutated by register_readiness_check",
+      "recommendation": "Store readiness checks on app.state (per-app) rather than a module global, so each app owns its own probe set bound to its own container."
+    },
+    {
+      "id": "file-022",
+      "category": "SECURITY — scanner not in readiness probes",
+      "severity": "LOW",
+      "title": "Readiness never probes the scanner, so a down clamd leaves the service 'ready' while scans silently fail/queue",
+      "file": "app/container.py",
+      "line": 201,
+      "scenario": "health_probes() enumerates datastore/cache/event_bus/queue/object_store/rate_limiter but not scanner. With SCANNER_DRIVER=clamav and clamd unreachable, /readyz stays 200 (ready) while every small upload's inline scan raises and every large-upload scan job nacks and retries forever. Operators lose the earliest signal that the malware control is down; uploads fail or pile up in QUARANTINED/SCANNING with no readiness reflection.",
+      "evidence": "for name in (\"datastore\", \"cache\", \"event_bus\", \"queue\", \"object_store\", \"rate_limiter\"):  # scanner absent",
+      "recommendation": "Give the scanner adapters a health() (clamd PING) and include 'scanner' in health_probes so a down malware scanner turns the pod not-ready (or at least surfaces a named degraded state)."
+    },
+    {
+      "id": "file-023",
+      "category": "CORRECTNESS — subject_ref double-wrap heuristic",
+      "severity": "LOW",
+      "title": "is_subject_ref treats any 'sub_'+32hex subject as already-pseudonymized, so a real subject matching that shape is never hashed",
+      "file": "app/core/pii.py",
+      "line": 59,
+      "scenario": "subject_ref short-circuits when is_subject_ref(subject) is true (starts with 'sub_' and length is 36). A genuine external subject identifier that happens to be 'sub_' followed by 32 hex chars (attacker-chosen or coincidental) is returned verbatim instead of being HMAC'd. In erasure, this subject would then be compared against stored pseudonyms as if it were already one — matching either nothing (false 'already_absent') or, if crafted to equal another subject's ref, potentially colliding. Narrow, but it is an untrusted-shaped-input path folded into an identity function.",
+      "evidence": "if is_subject_ref(subject):\\n        return subject",
+      "recommendation": "Only apply the double-wrap guard to values known to originate internally (e.g. a distinct typed wrapper), not to arbitrary caller-supplied subject strings; or namespace the prefix so it cannot be forged from an external identifier."
+    },
+    {
+      "id": "file-024",
+      "category": "SECURITY / CORRECTNESS — CRITICAL data-loss window in large-upload dedup",
+      "severity": "CRITICAL",
+      "title": "begin_large_upload dedup can leave a NEW file pointing at a blob that a concurrent delete removes, because incr_ref+exists+create is not atomic with claim_blob_delete",
+      "file": "app/core/file_service.py",
+      "line": 113,
+      "scenario": "On the dedup path: (1) first_by_owner_sha finds an existing file, (2) incr_ref(sha) bumps the count, (3) exists(sha) checks the blob, (4) create(new FileObject). Concurrently, delete() for the last other referencing file runs: decr_ref then, if remaining==0, claim_blob_delete (del_if_zero) then store.delete(blob). The ordering guard assumes incr_ref before the delete's del_if_zero keeps the count non-zero. But there is a real interleave: delete() reads remaining==0 (before our incr), passes del_if_zero (row deleted), and is about to store.delete(blob); meanwhile begin_large_upload's incr_ref RE-CREATES the ref row at count 1 and exists() still returns True (blob not yet physically deleted), so it creates a FileObject — then delete()'s store.delete(blob) removes the bytes. Result: a READY, ref-counted file whose blob is gone (download 500s / NotFound), i.e. silent data loss. The comment claims 'a re-upload has already restored the bytes,' but the DEDUP path performs NO re-upload — it relies purely on exists(), which races the physical delete.",
+      "evidence": "await self._repo.incr_ref(sha)\\n            if await self._store.exists(sha):\\n                ... await self._repo.create(f)\\n                return BeginResult(...)   # dedup with no re-upload, races delete()'s store.delete(sha)",
+      "recommendation": "Make the dedup reference atomic against deletion: after incr_ref, re-verify via a claim that the blob row was continuously non-zero (not just exists()), or fold the delete's del_if_zero + physical delete under a guard that a concurrent incr invalidates; alternatively, on the dedup path require the caller to be able to re-supply bytes (fall through to a real upload) whenever exists() is not backed by a stable non-zero ref observed AFTER incr. Add a concurrency test that interleaves begin_large_upload dedup with delete of the last other reference."
+    },
+    {
+      "id": "file-025",
+      "category": "SECURITY — untenanted file exposure via platform reader",
+      "severity": "MEDIUM",
+      "title": "A file stored with tenant='' is readable by any platform.files holder as a cross-tenant file, and _crosses_tenant logs it against tenant=''",
+      "file": "app/api/v1/files.py",
+      "line": 82,
+      "scenario": "_load_scoped returns any file to a 'platform.files' holder unconditionally. Files can legitimately be stored with tenant='' (a token with no tenant claim uploads; upload passes `principal.tenant or ''`). For a normal caller these are correctly hidden (the `not principal.tenant or f.tenant != principal.tenant` fail-closed branch). But a platform.files operator reads them, and _crosses_tenant compares f.tenant ('') to principal.tenant or '' — so an operator whose own tenant is also '' does NOT trip the cross-tenant audit, and the access to an ownerless file goes unlogged. Untenanted files are thus a small blind spot in the cross-tenant audit control.",
+      "evidence": "return \"platform.files\" in principal.caps and f.tenant != (principal.tenant or \"\")  # both '' => not audited",
+      "recommendation": "Treat an untenanted file accessed by an operator as always-auditable (record when f.tenant == '' regardless of operator tenant), and add a boot/ingest invariant that files are never persisted with an empty tenant in production."
+    }
+  ]
+}

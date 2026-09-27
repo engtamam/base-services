@@ -1,0 +1,296 @@
+{
+  "service": "notification-service",
+  "date": "2026-09-27",
+  "summary": {
+    "total": 26,
+    "by_severity": {"CRITICAL": 0, "HIGH": 6, "MEDIUM": 14, "LOW": 6}
+  },
+  "findings": [
+    {
+      "id": "notification-001",
+      "category": "CORRECTNESS/RELIABILITY",
+      "severity": "HIGH",
+      "title": "WhatsApp sends bypass the retry/queue/dead-letter machinery — a transient outage destroys the message",
+      "file": "app/core/notifier.py",
+      "line": 252,
+      "scenario": "A Meta Cloud API 5xx / network blip during a business-initiated template (or interactive, or carousel) send. _deliver_whatsapp/send_interactive/send_carousel record status 'failed' DIRECTLY and never call _on_failure(), so with NOTIFY_DELIVERY_MODE=queued (the default) the message is NOT queued, NOT retried, and NOT dead-lettered — it is silently lost, exactly the 'a five-minute outage destroys every message' bug the retry system was built to prevent. Email/SMS get the queue+retry treatment; the platform's flagship channel does not.",
+      "evidence": "return await rec(recipient, \"whatsapp\", template_key, \"failed\", provider=provider, error=\"send failed\")",
+      "recommendation": "Route WhatsApp send failures through the same _on_failure()/RetryPolicy path as email/SMS (classify retryable vs permanent, queue with backoff), and make drain() re-send WhatsApp deliveries via the delivery's OWN tenant/number rather than the default pool."
+    },
+    {
+      "id": "notification-002",
+      "category": "CONCURRENCY/CORRECTNESS",
+      "severity": "HIGH",
+      "title": "notify() failure paths bypass _finish(), leaking the idempotency reservation",
+      "file": "app/core/notifier.py",
+      "line": 177,
+      "scenario": "A caller sends with an idempotency_key on an email/SMS whose template is missing or whose render throws. These two branches return _record(...) directly instead of _finish(idempotency_key, ...). The reservation placed by _dedupe_reserve() (result=None) is therefore never released. A legitimate retry within NOTIFY_DEDUPE_TTL_SECONDS (default 24h) — even after the template is fixed — hits idempotent_get() (returns None because result is None), then reserve_idempotent() (cas fails, slot exists, not expired), and is handed a bogus {\"duplicate\": true, \"in_progress\": true} for up to 24h, never sending.",
+      "evidence": "if tmpl is None:\n            return await self._record(recipient, channel, template_key, \"failed\", tenant=tenant or \"\", error=\"template not found\")",
+      "recommendation": "Wrap both early-return failure branches in _finish(idempotency_key, tenant or \"\", await self._record(...)) so a non-remembered outcome releases the reservation, matching the unknown-channel branch above them."
+    },
+    {
+      "id": "notification-003",
+      "category": "OBSERVABILITY/SECURITY",
+      "severity": "HIGH",
+      "title": "Native-pay refund (money movement) is neither audited nor idempotent",
+      "file": "app/api/internal_native_pay.py",
+      "line": 174,
+      "scenario": "POST /internal/whatsapp/pay/refund moves money via Meta but writes NO audit record (unlike every other privileged action in the service, e.g. whatsapp.test_send, secret_set) and accepts no idempotency_key. A redelivered/duplicated internal call, or an investigation into 'who refunded this order', has no witness. The only defense is the lookup 'captured' state check, which is a two-call TOCTOU (see notification-004), not a durable audit.",
+      "evidence": "@router.post(\"/refund\", dependencies=[Depends(require_internal_token)])\nasync def refund_payment(request: Request, body: _RefundIn, ...) -> dict:",
+      "recommendation": "Add a write-ahead auditor.record('whatsapp.payment_refunded', ...) naming reference_id + amount (never card data) before the refund call, and thread an idempotency_key through the refund the same way sends dedupe."
+    },
+    {
+      "id": "notification-004",
+      "category": "PERFORMANCE/CONCURRENCY",
+      "severity": "HIGH",
+      "title": "Native-pay lookup and refund run blocking Graph I/O directly on the event loop",
+      "file": "app/api/internal_native_pay.py",
+      "line": 190,
+      "scenario": "adapter.get_payment_status() and adapter.refund() (MetaWhatsAppPayments) call get_json/post_json, which are synchronous urllib requests. Unlike every other Graph call in the service (register, media upload, status, messaging-limit all use asyncio.to_thread), these run inline on the single-worker event loop. One slow Meta payment call stalls EVERY other request in the pod, and refund makes two such calls (lookup + refund) back-to-back.",
+      "evidence": "lk = adapter.get_payment_status(configuration=body.payment_configuration, reference_id=body.reference_id)",
+      "recommendation": "Wrap get_payment_status() and refund() in await asyncio.to_thread(...) exactly as the register/status/media routes do."
+    },
+    {
+      "id": "notification-005",
+      "category": "SECURITY/COMPLIANCE",
+      "severity": "HIGH",
+      "title": "MARKETING WhatsApp templates are never forced into the consent map — they send with no consent check",
+      "file": "app/core/consent_guard.py",
+      "line": 21,
+      "scenario": "is_unmapped_marketing() (the guard that refuses an unmapped marketing template at write and boot) is only applied to the internal email/SMS Template upsert route. A WhatsApp template registered with category MARKETING (whatsapp_templates.CATEGORIES includes MARKETING) is never cross-checked against NOTIFY_CONSENT_PURPOSES. In notify(), consent is gated only when the template_key or event is present in that map, so a marketing WhatsApp campaign whose template name a developer forgot to map goes out under only the opt-out check (contract basis), with no lawful-basis check and indistinguishable in logs from a transactional send.",
+      "evidence": "return category == TEMPLATE_MARKETING and key not in (purposes or {})",
+      "recommendation": "Enforce the same unmapped-marketing refusal on WhatsApp template register/submit (registry.register when category==MARKETING and name not in NOTIFY_CONSENT_PURPOSES), and/or fail closed in _deliver_whatsapp when the resolved template category is MARKETING but no purpose maps."
+    },
+    {
+      "id": "notification-006",
+      "category": "SECURITY/TENANT-ISOLATION",
+      "severity": "HIGH",
+      "title": "Internal catch-up reads return every tenant's inbound customer messages and recipients with no tenant filter",
+      "file": "app/api/internal.py",
+      "line": 474,
+      "scenario": "GET /internal/whatsapp/inbound, /internal/notifications/receipts, and the coexistence echoes/history/contacts reads call changed_since()/*_since() with only a constant `kind` filter — no tenant scope. Any holder of X-Internal-Token (a single shared secret by default) can page the ENTIRE fleet's inbound customer message bodies, sender numbers, delivery recipients and template keys across all tenants. A single misconfigured or compromised peer service exfiltrates every shop's conversation content, defeating per-tenant isolation on the /internal tier.",
+      "evidence": "rows, cursor = await store.changed_since(after=after or None, limit=max(1, min(1000, limit)))",
+      "recommendation": "Accept a required tenant parameter on these catch-up reads and push it into the find() where-clause, OR gate them behind a distinct, narrowly-allow-listed caller in INTERNAL_ROUTE_POLICY_JSON so only the reconciliation consumer (not every peer) can read cross-tenant."
+    },
+    {
+      "id": "notification-007",
+      "category": "CONFIG/CORRECTNESS",
+      "severity": "MEDIUM",
+      "title": "BODY_LIMIT_BYTES (1 MiB) contradicts WHATSAPP_MEDIA_MAX_BYTES (16 MB) — media upload endpoints cannot accept their advertised size",
+      "file": "app/config.py",
+      "line": 61,
+      "scenario": "BodyLimitMiddleware rejects any request body over BODY_LIMIT_BYTES=1_048_576 with 413 before the handler runs. /internal/whatsapp/media/upload-handle and /upload-id take base64 bytes and validate up to WHATSAPP_MEDIA_MAX_BYTES=16*1024*1024, whose base64 form is ~21 MB. Any media upload above ~750 KB is rejected by the middleware with a generic PAYLOAD_TOO_LARGE, never reaching the handler's own 16 MB check — so carousel/header media of realistic size can never be uploaded, and the operator sees a confusing double limit.",
+      "evidence": "BODY_LIMIT_BYTES: int = 1_048_576  # 1 MiB   ... vs ...   WHATSAPP_MEDIA_MAX_BYTES: int = 16 * 1024 * 1024",
+      "recommendation": "Either raise the body limit for the media-upload routes (per-route limit), stream multipart instead of base64-in-JSON, or reconcile the two constants and document the true maximum a media upload can carry."
+    },
+    {
+      "id": "notification-008",
+      "category": "CORRECTNESS",
+      "severity": "MEDIUM",
+      "title": "Receipt monotonicity breaks on same-second out-of-order receipts (Meta timestamps are whole seconds)",
+      "file": "app/core/stores.py",
+      "line": 177,
+      "scenario": "apply_receipt guards with `if ts >= d.receipt_ts`. Meta delivery/read receipt timestamps are second-resolution, so a `read` and a `delivered` for the same message frequently carry the SAME timestamp. If the `delivered` webhook arrives AFTER the `read` (Meta does not guarantee order), ts==receipt_ts satisfies `>=` and the delivery's receipt_status is overwritten from 'read' back to 'delivered' — the exact regression the comment above claims is prevented.",
+      "evidence": "if ts >= d.receipt_ts:\n            d.receipt_status, d.receipt_ts = receipt_status, ts",
+      "recommendation": "Rank receipt statuses (sent<delivered<read<failed as applicable) and only advance when the new status outranks the current one at equal timestamps, rather than relying on `ts >=` alone."
+    },
+    {
+      "id": "notification-009",
+      "category": "CONCURRENCY",
+      "severity": "MEDIUM",
+      "title": "apply_receipt does a non-atomic read-modify-write of the delivery row",
+      "file": "app/core/stores.py",
+      "line": 174,
+      "scenario": "apply_receipt() reads the delivery via by_provider_message_id() then put()s the mutated copy. Two receipts for the same wamid processed concurrently (Meta batches + retries, multiple pods) both read the pre-update row and both write, so a later 'read' can be lost under a concurrently-written 'delivered'. No CAS/compare-and-set is used, unlike the idempotency reservation which correctly uses cas().",
+      "evidence": "d = await self.by_provider_message_id(wamid)\n        if d is None:\n            return None\n        if ts >= d.receipt_ts:\n            ... await self._store.put(_DELIVERIES, d.id, d.to_dict())",
+      "recommendation": "Use a CAS/optimistic-version update for the receipt fields, or make the receipt event log (which is already append-only) the source of truth and derive the delivery's latest receipt_status from it."
+    },
+    {
+      "id": "notification-010",
+      "category": "PERFORMANCE/CORRECTNESS",
+      "severity": "MEDIUM",
+      "title": "Operator delivery log uses scan_all() (unordered) yet claims to return 'recent' attempts",
+      "file": "app/core/stores.py",
+      "line": 101,
+      "scenario": "GET /api/v1/notifications/deliveries -> DeliveryStore.list() -> scan_all(_DELIVERIES, limit). scan_all returns the first N rows in the store's natural (insertion/arbitrary) order, NOT newest-first. As the deliveries collection grows, the operator's 'recent delivery attempts across the platform' screen actually shows the OLDEST rows and never the recent failures it exists to diagnose, and it is a whole-collection scan reachable from a request path.",
+      "evidence": "return await self._store.scan_all(_DELIVERIES, limit)",
+      "recommendation": "Replace with an indexed, sorted read (find with sort=('ts','desc')) the way whatsapp_outcome_counts and by_tenant already do; the whole-platform scan on a request path should be an ordered, bounded query."
+    },
+    {
+      "id": "notification-011",
+      "category": "API/CONTRACT",
+      "severity": "MEDIUM",
+      "title": "WhatsAppProvider port send() signature omits header_media_id/button_payload/url_button_param carried by every real adapter",
+      "file": "app/ports/whatsapp_provider.py",
+      "line": 26,
+      "scenario": "The Protocol declares send(to, template_name, language, variables, biz_opaque_callback_data, flow_token, flow_action_data) — seven params. FailoverWhatsApp, MetaWhatsApp and ConsoleWhatsApp all implement send() with three EXTRA positional params (header_media_id, button_payload, url_button_param) that the notifier passes positionally. Any new provider written to the documented port contract, or a runtime_checkable isinstance pass, is out of step; the notifier's positional call would break it.",
+      "evidence": "def send(self, to: str, template_name: str, language: str, variables: list[str], biz_opaque_callback_data: str = \"\", flow_token: str = \"\", flow_action_data: dict | None = None) -> str:",
+      "recommendation": "Update the WhatsAppProvider Protocol (and send_interactive/send_template_components as needed) to the full signature the adapters and FailoverWhatsApp actually implement, so the contract and the implementations cannot drift."
+    },
+    {
+      "id": "notification-012",
+      "category": "CORRECTNESS",
+      "severity": "MEDIUM",
+      "title": "meta.py returns a shared 'wamid:unparsed' sentinel that collides across sends and mis-attributes later receipts",
+      "file": "app/adapters/whatsapp/meta.py",
+      "line": 173,
+      "scenario": "When Meta accepts a send but the body cannot be parsed, _post() returns the fixed string 'wamid:unparsed'. Two such sends both persist provider_message_id='wamid:unparsed'. A later receipt resolved via by_provider_message_id(wamid) does find(..., limit=1) and attributes the receipt to whichever of the colliding deliveries the store returns first — the receipt lands on the wrong message.",
+      "evidence": "return \"wamid:unparsed\"",
+      "recommendation": "Make the sentinel unique per send (e.g. 'wamid:unparsed:' + uuid4) so it stays truthy but never collides, or treat an unparseable accepted body as a failure with no id."
+    },
+    {
+      "id": "notification-013",
+      "category": "CONCURRENCY/CORRECTNESS",
+      "severity": "MEDIUM",
+      "title": "Refund captured-amount guard is a two-call TOCTOU with no lock — concurrent refunds double-spend",
+      "file": "app/api/internal_native_pay.py",
+      "line": 190,
+      "scenario": "refund_payment() calls get_payment_status() ('captured' check) then refund() as two separate Graph calls. Two concurrent refund requests for the same reference_id both observe status='captured' and both proceed, issuing two refunds before Meta flips the status. The module's own comment admits 'per-tenant locking is layered in P6', so the once-only-by-state guarantee does not hold under concurrency today.",
+      "evidence": "lk = adapter.get_payment_status(...)\n    ...\n    res = adapter.refund(reference_id=body.reference_id, ...)",
+      "recommendation": "Add an idempotency/lock keyed by (tenant, reference_id) around the lookup+refund pair (the same cas() reservation pattern the notifier uses) so a redelivered or concurrent refund is refused, not repeated."
+    },
+    {
+      "id": "notification-014",
+      "category": "CORRECTNESS",
+      "severity": "MEDIUM",
+      "title": "Raw-mode WhatsApp variable ordering sorts by key lexicographically, mis-ordering numbered params",
+      "file": "app/core/notifier.py",
+      "line": 226,
+      "scenario": "When no WhatsAppTemplateRegistry is wired (self._wa_templates is None), variables are ordered by `sorted(variables.items())`. Meta template body params are positional {{1}},{{2}},...; lexicographic key sort places '10' before '2', so a template with 10+ variables (or any non-zero-padded numeric keys) receives its parameters in the wrong order and renders incorrect content.",
+      "evidence": "ordered = [str(v) for _, v in sorted(variables.items())]",
+      "recommendation": "Sort numerically when keys are integer-like, or require the caller to pass an explicit ordered list in raw mode rather than inferring order from dict keys."
+    },
+    {
+      "id": "notification-015",
+      "category": "CORRECTNESS/RELIABILITY",
+      "severity": "MEDIUM",
+      "title": "drain()/_deliver misclassifies a queued whatsapp delivery as in-app",
+      "file": "app/core/notifier.py",
+      "line": 376,
+      "scenario": "_deliver() dispatches channel=='email' and 'sms', and everything ELSE (the else branch) to the in-app store. It is only saved today because _deliver_whatsapp never queues (finding notification-001). The moment WhatsApp failures are correctly routed to the queue, drain() will call _deliver('whatsapp', ...), fall into the else branch, and silently write the customer's message into the in-app feed instead of re-sending it via WhatsApp.",
+      "evidence": "else:  # inapp — our own store, not a third party (whatsapp handled in _deliver_whatsapp)\n                await self._inapp.add(InAppItem(...))",
+      "recommendation": "Make the else branch explicit for 'inapp' and raise/record 'unroutable channel' for anything unexpected, and give WhatsApp its own re-send path in drain() so fixing notification-001 does not silently divert messages."
+    },
+    {
+      "id": "notification-016",
+      "category": "SECURITY/PRIVACY",
+      "severity": "MEDIUM",
+      "title": "Inbound message content + contact PII is fanned onto the at-most-once bus even when conversation storage is disabled",
+      "file": "app/api/webhooks.py",
+      "line": 184,
+      "scenario": "With WHATSAPP_CONVERSATION_STORE_ENABLED off (the default) nothing is stored, but _fan_out still publishes the full raw Meta message (customer text, media refs, contact profile) to whatsapp.message for any non-private (handover mode 'us') number. If a deployment flips WHATSAPP_DEFAULT_HANDOVER_MODE to 'us' or opts a number in, every inbound customer message body and contact PII is broadcast on a best-effort bus with no retention, redaction or minimization — a wider data footprint than the 'we store nothing' switch implies.",
+      "evidence": "await bus.publish(f\"{_TOPIC}.message\", Event(type=f\"{_TOPIC}.message\", payload={**base, \"tenant\": tenant, \"message\": msg}))",
+      "recommendation": "Publish a minimized envelope (ids, type, tenant, sender) on the bus and require consumers to fetch content from the durable, retention-bounded inbound log; keep raw content off the fan-out unless a deployment explicitly opts into content-on-bus."
+    },
+    {
+      "id": "notification-017",
+      "category": "SECURITY",
+      "severity": "MEDIUM",
+      "title": "Internal embedded-signup twin has no rate limit while the operator route does",
+      "file": "app/api/internal.py",
+      "line": 381,
+      "scenario": "POST /api/v1/notifications/operator/whatsapp/embedded-signup carries Depends(rate_limit); its internal twin POST /internal/whatsapp/embedded-signup does not. A caller holding the (default single, shared) X-Internal-Token can drive unbounded code-exchange attempts against Meta — burning Meta rate budget and enabling credential-spray — with no throttle, and the audit actor is empty ('') so attribution is weaker too.",
+      "evidence": "@router.post(\"/whatsapp/embedded-signup\", dependencies=[Depends(require_internal_token)])\nasync def internal_embedded_signup(request: Request, body: EmbeddedSignupInternalIn) -> dict:",
+      "recommendation": "Apply the same rate_limit dependency (and a real caller identity via INTERNAL_CALLER_DRIVER=static/jwks) to the internal onboarding, register, two-step-pin and refund routes that perform privileged Meta mutations."
+    },
+    {
+      "id": "notification-018",
+      "category": "OBSERVABILITY",
+      "severity": "MEDIUM",
+      "title": "Tenant resolution failures on inbound webhooks are swallowed, silently mislabelling attribution",
+      "file": "app/api/webhooks.py",
+      "line": 170,
+      "scenario": "Both _tenant_of() and the inline number_index.tenant_of() calls catch every exception and return \"\". A datastore hiccup on the number index means every inbound message and echo during that window is recorded and fanned out with tenant=\"\" — attribution is lost with no counter, no WARN log, and no distinction from a genuine unbound number. A consumer then cannot tell whose message it is, and there is no signal that the index was down.",
+      "evidence": "except Exception:  # noqa: BLE001 — a lookup miss must not stop the fan-out\n                        tenant = \"\"",
+      "recommendation": "Emit a WARN/metric when tenant_of() raises (distinct from a legitimate miss) so a number-index outage is visible rather than looking like a flood of unattributable messages."
+    },
+    {
+      "id": "notification-019",
+      "category": "CORRECTNESS/CONFIG",
+      "severity": "MEDIUM",
+      "title": "Malformed internal-caller key maps are silently swallowed to {}",
+      "file": "app/config.py",
+      "line": 21,
+      "scenario": "_json_any_map() returns {} on any malformed/empty JSON. INTERNAL_CALLER_PUBLIC_KEYS_JSON / INTERNAL_CALLER_JWKS_JSON feed this. A typo in the operator's JSON does not fail boot; instead the static/jwks driver silently sees zero keys, so every per-caller assertion fails verification and — with INTERNAL_CALLER_ALLOW_TOKEN_FALLBACK on (default) — everyone quietly degrades back to unnamed flat-token access, erasing the per-caller identity the deployment thought it enabled.",
+      "evidence": "except (ValueError, TypeError):\n        return {}",
+      "recommendation": "Validate these maps at boot (raise on malformed JSON when the matching driver is selected) rather than defaulting to an empty map that silently disables per-caller identity."
+    },
+    {
+      "id": "notification-020",
+      "category": "PERFORMANCE",
+      "severity": "LOW",
+      "title": "Every WhatsApp send does three sequential preference reads",
+      "file": "app/core/notifier.py",
+      "line": 426,
+      "scenario": "_wa_recipient_allows() consults three keys (tenant-scoped, global, legacy raw-phone) with a separate await self._prefs.get(key) each, on the hot send path, for every business-initiated WhatsApp message and carousel. At campaign volume this triples the datastore reads per send purely for opt-out checking.",
+      "evidence": "keys = [wa_pref_key(tenant, recipient), wa_pref_key(\"\", recipient), recipient]\n        for key in keys:\n            pref = await self._prefs.get(key)",
+      "recommendation": "Batch the three reads (a single multi-get) or resolve them concurrently with asyncio.gather to keep the opt-out check to one round trip."
+    },
+    {
+      "id": "notification-021",
+      "category": "SECURITY",
+      "severity": "LOW",
+      "title": "Approved-template test-send bypasses opt-out and consent",
+      "file": "app/api/v1/notifications.py",
+      "line": 268,
+      "scenario": "test_send_wa mode='template' resolves the provider straight from the pool and calls provider.send() directly, deliberately bypassing build_notifier — so it also bypasses the marketing opt-out check and the consent gate that notify() applies. An operator (or a stolen notifications.templates capability) can send an approved MARKETING template to any number that has opted out. It is capability-gated and audited (last-4 only), but the diagnostic can be used to reach unsubscribed customers.",
+      "evidence": "ok, _driver, mid = await asyncio.to_thread(provider.send, to, body.template_name, body.language, body.variables)",
+      "recommendation": "For template-mode test sends, still consult the recipient's WhatsApp opt-out (and refuse a MARKETING-category template to an opted-out number), so the diagnostic cannot become a compliance bypass."
+    },
+    {
+      "id": "notification-022",
+      "category": "API/CONTRACT",
+      "severity": "LOW",
+      "title": "Internal /notify recipient has no format validation",
+      "file": "app/api/internal.py",
+      "line": 35,
+      "scenario": "NotifyIn.recipient is only length-bounded (1..256). A malformed WhatsApp MSISDN or a bogus email flows through to the provider, where the error surfaces late (a wasted send, a Meta reject, a burned slot in the daily cap) rather than as a clean 422 at the door.",
+      "evidence": "recipient: str = Field(min_length=1, max_length=256)",
+      "recommendation": "Add channel-aware recipient validation (E.164-ish for whatsapp/sms, RFC-lite for email) so a malformed address is rejected before a send is attempted."
+    },
+    {
+      "id": "notification-023",
+      "category": "CORRECTNESS",
+      "severity": "LOW",
+      "title": "erasure audit uses subject_ref which raises on an empty PII_SALT outside production",
+      "file": "app/api/internal.py",
+      "line": 697,
+      "scenario": "erase_subject() computes subject_ref(s.PII_SALT, ...) for the audit row. core.pii.subject_ref refuses an empty salt. The assert_pii_config_ok boot guard only runs in production, so in a staging/test deployment with an empty PII_SALT the first DSAR erase 500s instead of returning a clean error — the very late-failure the PII guard exists to prevent, just outside the environment it guards.",
+      "evidence": "ref = subject_ref(s.PII_SALT, body.tenant, body.subject)",
+      "recommendation": "Return a clear 503/precondition error when PII_SALT is unset on any environment that reaches this path, rather than letting subject_ref raise a 500."
+    },
+    {
+      "id": "notification-024",
+      "category": "SECURITY/PRIVACY",
+      "severity": "LOW",
+      "title": "Operator email masking discloses the full domain and first local character",
+      "file": "app/api/v1/notifications.py",
+      "line": 433,
+      "scenario": "_mask_recipient returns f\"{local[:1]}***@{domain}\" for emails, leaking the complete domain and first character. For a low-cardinality tenant (a company whose users are all @acme.sa) this plus the first initial substantially re-identifies the recipient from the cross-tenant delivery log.",
+      "evidence": "return f\"{local[:1]}***@{domain}\"",
+      "recommendation": "Mask part of the domain too (e.g. a***@a***.sa) or show only a hashed correlation token, since the log spans all tenants."
+    },
+    {
+      "id": "notification-025",
+      "category": "TESTS/QA",
+      "severity": "MEDIUM",
+      "title": "No test exercises WhatsApp send-failure retry semantics or the _finish reservation-release paths",
+      "file": "app/core/notifier.py",
+      "line": 197,
+      "scenario": "The WhatsApp failure path (notification-001) records 'failed' and never queues, and the template-not-found/render-error paths leak the idempotency reservation (notification-002), yet both live in the most exercised module. These bugs survive because the test suite asserts happy-path send + email/SMS retry, but has no case for (a) a WhatsApp provider returning failure under NOTIFY_DELIVERY_MODE=queued, nor (b) a retried idempotency_key after a template-not-found. A test that recorded 'failed' would pass while measuring nothing about resilience.",
+      "evidence": "return await self._finish(idempotency_key, tenant or \"\", await self._on_failure(...))  # reached for email/sms only, never whatsapp",
+      "recommendation": "Add tests: a queued-mode WhatsApp send that fails must produce a QUEUED delivery with retry_at; and a same-idempotency-key retry after a template-not-found must send once the template exists (asserting the reservation was released)."
+    },
+    {
+      "id": "notification-026",
+      "category": "CONFIG",
+      "severity": "LOW",
+      "title": "Graph base default is duplicated as a hardcoded constant in the adapters",
+      "file": "app/adapters/whatsapp/meta.py",
+      "line": 15,
+      "scenario": "_DEFAULT_BASE='https://graph.facebook.com/v26.0' is hardcoded in whatsapp/meta.py AND whatsapp_payments/meta.py, duplicating WHATSAPP_GRAPH_BASE from config. If an operator bumps the Graph version via config but a construction path ever omits base_url (relies on the default), sends and payment lookups silently target a different API version than the rest of the service — a split-brain version that is invisible until Meta deprecates one.",
+      "evidence": "_DEFAULT_BASE = \"https://graph.facebook.com/v26.0\"",
+      "recommendation": "Have callers always pass the configured base and drop the in-adapter default (or assert it matches config at boot) so there is one source of truth for the Graph version."
+    }
+  ]
+}
