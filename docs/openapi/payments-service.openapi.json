@@ -805,7 +805,7 @@
     },
     "/api/v1/payments/pay/{request_id}": {
       "get": {
-        "description": "302 the customer to the gateway's hosted page for this request \u2014 or refuse (expired, spent,\nor a target host that is not allow-listed). Never reveals whether an id exists beyond a generic\n404, and never redirects to an unvetted host.",
+        "description": "302 the customer to the gateway's hosted page for this request \u2014 or refuse (unknown, expired,\nspent, or a target host that is not allow-listed). NO EXISTENCE ORACLE (audit FIN-013): an unknown\nid and an existing-but-unusable one return the IDENTICAL response (404 + one generic body), so a\nlink holder cannot tell 'never existed' from 'exists but spent/expired'. Only the happy path (a\nlive, allow-listed link) differs \u2014 it 302s. Never redirects to an unvetted host.",
         "operationId": "pay_redirect_api_v1_payments_pay__request_id__get",
         "parameters": [
           {

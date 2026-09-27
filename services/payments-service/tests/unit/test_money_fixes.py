@@ -155,6 +155,40 @@ def test_a_success_in_a_different_currency_is_refused():
     run(go())
 
 
+# ── FIN-028: the minor-unit amount compare is correct at a 3-decimal currency (KWD) ─────────────────
+def test_FIN028_amount_compare_matches_at_a_3dp_currency():
+    # 1234 minor KWD = 1.234 KWD. The compare is on minor units so it is exponent-agnostic; prove it
+    # holds for a 3-dp currency (create_link's currency gate lives at the ROUTE, so a KWD request is
+    # seeded directly here to reach apply_outcome).
+    async def go():
+        svc, secrets, events = await _svc_with_events()
+        await _configure_console(secrets)
+        link = await svc.create_link(tenant="acme", reference="o-kwd", amount_minor=1234,
+                                     currency="KWD")
+        row = await svc._req.get(link.request_id)
+        assert row["amount_minor"] == 1234 and row["currency"] == "KWD"
+        updated = await svc.apply_outcome(tenant="acme",
+                                          outcome=_success(row, amount=1234, currency="KWD"))
+        assert updated["status"] == COMPLETED
+        assert len([e for e in events if e.type == TOPIC_COMPLETED]) == 1
+    run(go())
+
+
+def test_FIN028_amount_mismatch_by_one_minor_unit_at_3dp_is_refused():
+    # A 1-fils discrepancy (1233 vs 1234) at exp-3 must be caught, not rounded away.
+    async def go():
+        svc, secrets, events = await _svc_with_events()
+        await _configure_console(secrets)
+        link = await svc.create_link(tenant="acme", reference="o-kwd2", amount_minor=1234,
+                                     currency="KWD")
+        row = await svc._req.get(link.request_id)
+        updated = await svc.apply_outcome(tenant="acme",
+                                          outcome=_success(row, amount=1233, currency="KWD"))
+        assert updated["status"] == FAILED and updated["amount_mismatch"] is True
+        assert not any(e.type == TOPIC_COMPLETED for e in events)
+    run(go())
+
+
 def test_H3_matching_amount_still_completes():
     async def go():
         svc, secrets, _ = await _svc_with_events()

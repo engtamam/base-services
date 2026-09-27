@@ -246,8 +246,8 @@ def test_reconcile_gateway_unavailable_is_502(client, monkeypatch):
     assert got.status_code == 502 and got.json()["code"] == "GATEWAY_UNAVAILABLE"
 
 
-# ── FIN-010: the redirector refuses a terminal / expired link (410), never 302s it ───────────────────
-def test_redirector_refuses_a_completed_link_410(client):
+# ── FIN-010 / FIN-013: the redirector refuses a terminal/expired/unknown link IDENTICALLY (no oracle) ─
+def test_redirector_refuses_a_completed_link(client):
     r = _open_request(client, ref="red-done")
     prov = client.get(f"/internal/payments/requests/{r['request_id']}?tenant=acme",
                       headers=_h()).json()["provider_ref"]
@@ -255,34 +255,41 @@ def test_redirector_refuses_a_completed_link_410(client):
                 json={"status": "succeeded", "provider_ref": prov, "amount_minor": 15000,
                       "currency": "SAR", "secret": SECRET})
     dead = client.get(f"/api/v1/payments/pay/{r['request_id']}", follow_redirects=False)
-    assert dead.status_code == 410                          # a paid link is dead, not a 302 to the gateway
+    assert dead.status_code == 404                          # a paid link is dead, not a 302 to the gateway
 
 
-def test_redirector_refuses_an_expired_link_410(client):
+def test_redirector_refuses_an_expired_link(client):
     r = _open_request(client, ref="red-exp")
     ds = client.app.state.container.datastore
     row = run(ds.get("payment_requests", r["request_id"]))
     row["expires_at"] = 1                                   # force past-TTL while still pending
     run(ds.put("payment_requests", r["request_id"], row))
     dead = client.get(f"/api/v1/payments/pay/{r['request_id']}", follow_redirects=False)
-    assert dead.status_code == 410
+    assert dead.status_code == 404
 
 
-def test_redirector_hides_which_terminal_state(client):
-    # I2: a completed and an expired link refuse IDENTICALLY (generic 410 body) — no state leak.
-    done = _open_request(client, ref="hide-done")
+def test_redirector_no_existence_oracle_unknown_vs_spent_vs_expired_are_identical(client):
+    # FIN-013: unknown, completed, and expired must be INDISTINGUISHABLE (same status AND same body),
+    # so a link holder cannot learn whether an id exists. Only a live link differs (302).
+    unknown = client.get("/api/v1/payments/pay/does-not-exist", follow_redirects=False)
+
+    done = _open_request(client, ref="oracle-done")
     prov = client.get(f"/internal/payments/requests/{done['request_id']}?tenant=acme",
                       headers=_h()).json()["provider_ref"]
     client.post("/api/v1/payments/webhook/acme",
                 json={"status": "succeeded", "provider_ref": prov, "amount_minor": 15000,
                       "currency": "SAR", "secret": SECRET})
-    exp = _open_request(client, ref="hide-exp")
+    spent = client.get(f"/api/v1/payments/pay/{done['request_id']}", follow_redirects=False)
+
+    exp = _open_request(client, ref="oracle-exp")
     ds = client.app.state.container.datastore
     row = run(ds.get("payment_requests", exp["request_id"])); row["expires_at"] = 1
     run(ds.put("payment_requests", exp["request_id"], row))
-    a = client.get(f"/api/v1/payments/pay/{done['request_id']}", follow_redirects=False)
-    b = client.get(f"/api/v1/payments/pay/{exp['request_id']}", follow_redirects=False)
-    assert a.status_code == b.status_code == 410 and a.json()["reason"] == b.json()["reason"]
+    expired = client.get(f"/api/v1/payments/pay/{exp['request_id']}", follow_redirects=False)
+
+    codes = {unknown.status_code, spent.status_code, expired.status_code}
+    bodies = {unknown.json()["reason"], spent.json()["reason"], expired.json()["reason"]}
+    assert codes == {404} and len(bodies) == 1              # one status, one body — no leak
 
 
 # ── FIN-026: an oversized webhook body is refused (413) ──────────────────────────────────────────────

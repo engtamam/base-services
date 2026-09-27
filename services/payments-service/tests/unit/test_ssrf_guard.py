@@ -1,6 +1,10 @@
-"""H1 — SSRF guard for outbound gateway fetches + write-time MERCHANT_API_BASE validation."""
+"""H1 — SSRF guard for outbound gateway fetches + write-time MERCHANT_API_BASE validation.
+FIN-012 — the resolve→connect DNS-rebind window is closed by pinning the validated IP at connect."""
 from __future__ import annotations
 
+import socket
+
+import app.adapters.payment_http as ph
 from app.adapters.payment_http import guard_fetch_url, validate_gateway_base
 
 
@@ -27,6 +31,54 @@ def test_fetch_guard_blocks_missing_or_unresolvable_host():
 def test_fetch_guard_allows_a_public_https_host():
     # A public, resolvable host is allowed (uses real DNS; example.com is stable).
     assert guard_fetch_url("https://example.com/api/v1") is None
+
+
+# ── FIN-012: pin the validated IP at connect — no DNS-rebind ──────────────────────────────────────
+def _fake_infos(ip):
+    fam = socket.AF_INET6 if ":" in ip else socket.AF_INET
+    return [(fam, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (ip, 443))]
+
+
+def test_resolve_pinned_returns_the_validated_public_ip(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: _fake_infos("8.8.8.8"))
+    reason, ip = ph._resolve_pinned("https://gw.example/api")
+    assert reason is None and ip == "8.8.8.8"
+
+
+def test_resolve_pinned_blocks_when_any_resolved_ip_is_private(monkeypatch):
+    # If resolution yields a blocked address, refuse — with no pinned IP to connect to.
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: _fake_infos("169.254.169.254"))
+    reason, ip = ph._resolve_pinned("https://gw.example/api")
+    assert reason is not None and ip is None
+
+
+def test_send_connects_to_the_pinned_ip_and_never_reresolves(monkeypatch):
+    # The rebind attack: DNS answers a PUBLIC ip to the guard, then a PRIVATE ip at connect. We resolve
+    # ONCE (public), pin it, and the connection targets THAT ip — a later getaddrinfo is never consulted.
+    calls = {"n": 0}
+
+    def flip(*a, **k):
+        calls["n"] += 1
+        return _fake_infos("8.8.8.8" if calls["n"] == 1 else "169.254.169.254")
+
+    monkeypatch.setattr(socket, "getaddrinfo", flip)
+
+    connected_to = {}
+
+    def fake_create_connection(address, *a, **k):
+        connected_to["addr"] = address
+        raise OSError("stop before real I/O")     # we only need the target address
+
+    monkeypatch.setattr(socket, "create_connection", fake_create_connection)
+    status, _ = ph._send("https://gw.example/api", b"{}", {"Accept": "application/json"})
+    assert status == 0                             # our OSError → unreachable (never a fake decline)
+    assert connected_to["addr"][0] == "8.8.8.8"   # the PINNED public ip, not the rebind private one
+
+
+def test_pinned_https_uses_the_hostname_for_sni_and_cert_not_the_ip():
+    # The socket goes to the IP, but TLS (SNI + cert name) + the Host header use the real hostname.
+    conn = ph._PinnedHTTPSConnection("gw.example", "8.8.8.8", 443)
+    assert conn.host == "gw.example" and conn._ip == "8.8.8.8"
 
 
 def test_write_validation_requires_https_and_public_host():

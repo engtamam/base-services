@@ -285,13 +285,38 @@ class WalletService:
     # duplicate either replays the finished result or, while the winner is mid-flight, is told to
     # retry (Conflict) and gets the replay on its next attempt. Same guarantee as billing's
     # SettlementStore.claim_identity, applied to every money op here.
+    @staticmethod
+    def _pfx_key(tenant: str, *parts: str) -> str:
+        """Length-prefixed idempotency key (audit FIN-004): "{len}:{tenant}|part|part…". Prefixing the
+        tenant makes the tenant↔source boundary UNAMBIGUOUS even if a tenant id (or a caller-supplied
+        source) ever contained the "|" delimiter — mirrors the payments-service keying and the repo's
+        tenant-scoped-idempotency invariant. Without it, tenant "a"+source "b|c" and tenant "a|b"+
+        source "c" both build "a|b|c" and alias across tenants (a replayed/suppressed money op)."""
+        return f"{len(tenant)}:{tenant}|" + "|".join(parts)
+
+    @staticmethod
+    def _legacy_key(tenant: str, *parts: str) -> str:
+        """The pre-FIN-004 unprefixed key. Read-only fallback so markers/claims written before the
+        upgrade are still honored — never orphaned (which would re-run a money op). Never WRITTEN."""
+        return f"{tenant}|" + "|".join(parts)
+
+    async def _idempo_key(self, tenant: str, op: str, source: str) -> str:
+        """The claim key to use for (tenant, op, source): the new length-prefixed key, UNLESS a legacy
+        (unprefixed) row already exists for this op — then keep operating on that legacy row until it
+        ages out, so an in-flight/finished pre-upgrade claim is honored (no double mutation across the
+        deploy). Both _claim and _finalize call this, so they always agree on the same key."""
+        legacy = self._legacy_key(tenant, op, source)
+        if await self._store.get(_IDEMPO, legacy) is not None:
+            return legacy
+        return self._pfx_key(tenant, op, source)
+
     async def _claim(self, tenant: str, op: str, source: str) -> tuple[bool, dict | None]:
         """Returns (proceed, prior_result). proceed=True → this caller owns the mutation.
         prior_result set → a finished duplicate to replay. (False, None) → a concurrent attempt holds
         the claim; the caller must not mutate (raise Conflict, the client retries)."""
         if not source:
             return True, None                                # opt-out of idempotency
-        key = f"{tenant}|{op}|{source}"
+        key = await self._idempo_key(tenant, op, source)
         now = self._clock.now()
         row = await self._store.get(_IDEMPO, key)
         if row and "result" in row and float(row.get("expires_at", 0)) > now:
@@ -312,7 +337,7 @@ class WalletService:
     async def _finalize(self, tenant: str, op: str, source: str, result: dict) -> None:
         if not source:
             return
-        key = f"{tenant}|{op}|{source}"
+        key = await self._idempo_key(tenant, op, source)   # same resolver as _claim → same key
         # Only the caller that WON the claim finalizes, so there is no contention on this key — a
         # plain put is safe. A late loser never clobbers it: _claim returns the finished result
         # (replay) before it would ever attempt to re-claim, because the row now carries "result".
@@ -369,9 +394,14 @@ class WalletService:
         #     could persist without the money and permanently suppress the credit).
         #   * A hard crash AFTER the mutate but before the marker leaves the ledger row → a redelivery
         #     finds it and REPLAYS (never a double credit / mint).
-        seen_key = f"{tenant}|{source}" if source else ""
+        # Length-prefixed key (FIN-004) written going forward; the legacy unprefixed key is READ as a
+        # fallback so a marker stamped before the upgrade still dedupes (never orphaned → never a double
+        # credit across the deploy).
+        seen_key = self._pfx_key(tenant, source) if source else ""
+        seen_legacy = self._legacy_key(tenant, source) if source else ""
         if seen_key:
-            seen = await self._store.get(_CREDIT_SEEN, seen_key)
+            seen = (await self._store.get(_CREDIT_SEEN, seen_key)
+                    or await self._store.get(_CREDIT_SEEN, seen_legacy))
             if seen and "result" in seen:
                 result = {**seen["result"], "idempotent": True}
                 await self._finalize(tenant, CREDIT, source, result)
@@ -488,9 +518,13 @@ class WalletService:
         # marker refuses that forever. Mirrors credit()/wallet_credit_seen exactly: stamped BEFORE the
         # debit (rolled back on failure), so a crash can only ever leave money UNspent (a legit retry
         # may be refused, fail-safe), never double-charged. Skipped when source is empty (opt-out).
-        seen_key = f"{tenant}|{source}" if source else ""
+        # Length-prefixed key (FIN-004) written going forward; legacy unprefixed key read as a fallback
+        # so a pre-upgrade spend marker still refuses a redelivery (never orphaned → never a double spend).
+        seen_key = self._pfx_key(tenant, source) if source else ""
+        seen_legacy = self._legacy_key(tenant, source) if source else ""
         if seen_key:
-            seen = await self._store.get(_SPEND_SEEN, seen_key)
+            seen = (await self._store.get(_SPEND_SEEN, seen_key)
+                    or await self._store.get(_SPEND_SEEN, seen_legacy))
             if seen and "result" in seen:
                 result = {**seen["result"], "idempotent": True}
                 await self._finalize(tenant, SPEND, source, result)

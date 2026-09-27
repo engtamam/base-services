@@ -44,7 +44,7 @@ def _svc(store=None, clock=None):
 def test_finalized_idempotency_row_carries_a_version():
     st = MemoryDataStore(); w = _svc(st)
     run(w.credit(tenant="t", fund="cash", amount=100, source="s1"))
-    row = run(st.get(_IDEMPO, "t|credit|s1"))
+    row = run(st.get(_IDEMPO, "1:t|credit|s1"))    # FIN-004: length-prefixed key ("{len}:{tenant}|…")
     assert row is not None and "result" in row
     # The finished row MUST retain a version (dropping it wedges a Postgres re-claim after TTL at 409).
     assert int(row.get("version", 0)) >= 1

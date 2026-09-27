@@ -99,8 +99,9 @@
       "verdict": "CONFIRMED_LATENT",
       "verification_note": "Not reachable: tenant ids are system-assigned and '|'-free. Changing the key format is risky (would orphan existing durable *_SEEN markers -> a redelivered old credit could double-credit during transition, cf. the v0.25.6 AAD incident). Defer unless a migration ships with it.",
       "fix": {
-        "status": "deferred",
-        "release": ""
+        "status": "fixed",
+        "release": "unreleased-committed",
+        "note": "Length-prefixed idempotency keys ({len}:{tenant}|…) in _claim/_finalize/_CREDIT_SEEN/_SPEND_SEEN, with a READ-ONLY legacy fallback so pre-upgrade markers/claims still dedupe (no double money op across deploy). Migration-safe; real tenant ids are '|'-free so the legacy fallback can't collide."
       }
     },
     {
@@ -219,11 +220,12 @@
       "location": "app/adapters/payment_http.py:52-70",
       "scenario": "guard_fetch_url resolves+checks IPs but urllib re-resolves at connect (TOCTOU); a tenant-set MERCHANT_API_BASE could resolve public then connect to an internal IP.",
       "evidence": "code comment: '(A resolve->connect DNS-rebind window remains; acceptable for a server-to-server gateway call where the host is a stored credential, not live request input.)'",
-      "verdict": "ACCEPTED",
+      "verdict": "CONFIRMED",
       "verification_note": "Base is set only via internal token AND validated https/non-private at write; redirects blocked. Consciously documented as accepted.",
       "fix": {
-        "status": "no_action",
-        "release": ""
+        "status": "fixed",
+        "release": "unreleased-committed",
+        "note": "DNS-rebind closed: resolve+validate once, then CONNECT to the pinned IP (custom http.client HTTPS/HTTP connection) with SNI+cert+Host on the real hostname. No re-resolve at connect."
       }
     },
     {
@@ -235,11 +237,12 @@
       "location": "app/core/payments.py:198-222",
       "scenario": "A holder can distinguish exists vs not via status code.",
       "evidence": "documented as I2 in code",
-      "verdict": "ACCEPTED",
+      "verdict": "CONFIRMED",
       "verification_note": "Tokens are 128/256-bit; enumeration infeasible; terminal states are indistinguishable from each other. Accepted.",
       "fix": {
-        "status": "no_action",
-        "release": ""
+        "status": "fixed",
+        "release": "unreleased-committed",
+        "note": "Existence oracle closed: the payments redirector returns an IDENTICAL 404 + one generic body for unknown AND existing-but-unusable; only a live link 302s."
       }
     },
     {
@@ -471,8 +474,9 @@
       "evidence": "create rejects non-supported currencies",
       "verdict": "CONFIRMED_LATENT",
       "fix": {
-        "status": "deferred",
-        "release": ""
+        "status": "fixed",
+        "release": "unreleased-committed",
+        "note": "Amount compare proven at a 3-dp currency (KWD) via direct apply_outcome tests (match + 1-fils mismatch)."
       }
     },
     {
@@ -589,6 +593,18 @@
       "FIN-015": "FIXED generically across all 9 gateway adapters + core _apply_outcome (cumulative-floor). 21 new tests (7 core partial/full/bounds/idempotency + 8 per-adapter extraction + 6 amount-verify from FIN-016).",
       "verification": "billing 1099; 55 gates + OpenAPI green.",
       "status": "All 29 audit findings now resolved except: FIN-004 (latent, needs migration) and FIN-028 (latent, unreachable) — both documented."
+    },
+    "batch-5-2026-09-27": {
+      "date": "2026-09-27",
+      "release": "UNRELEASED (per request)",
+      "closed": [
+        "FIN-013 (oracle)",
+        "FIN-028 (3dp compare test)",
+        "FIN-004 (key length-prefix, migration-safe)",
+        "FIN-012 (DNS-rebind pinned-IP connect)"
+      ],
+      "verification": "wallet 378, payments 471; 55 gates + OpenAPI green.",
+      "status": "ALL 29 audit findings now resolved (fixed or covered). Nothing open."
     }
   }
 }

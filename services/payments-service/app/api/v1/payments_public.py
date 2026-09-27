@@ -24,16 +24,18 @@ router = APIRouter(prefix="/api/v1/payments", tags=["payments"])
 
 @router.get("/pay/{request_id}", dependencies=[Depends(rate_limit)])
 async def pay_redirect(request: Request, request_id: str):
-    """302 the customer to the gateway's hosted page for this request — or refuse (expired, spent,
-    or a target host that is not allow-listed). Never reveals whether an id exists beyond a generic
-    404, and never redirects to an unvetted host."""
+    """302 the customer to the gateway's hosted page for this request — or refuse (unknown, expired,
+    spent, or a target host that is not allow-listed). NO EXISTENCE ORACLE (audit FIN-013): an unknown
+    id and an existing-but-unusable one return the IDENTICAL response (404 + one generic body), so a
+    link holder cannot tell 'never existed' from 'exists but spent/expired'. Only the happy path (a
+    live, allow-listed link) differs — it 302s. Never redirects to an unvetted host."""
     svc = build_payment_service(request)
     try:
         target = await svc.redirect_target(request_id)
-    except KeyError:
-        return JSONResponse({"ok": False, "reason": "not found"}, status_code=404)
-    except PaymentsDisabled as exc:
-        return JSONResponse({"ok": False, "reason": str(exc)}, status_code=410)
+    except (KeyError, PaymentsDisabled):
+        # One indistinguishable answer for BOTH unknown and unusable — the whole point of closing the
+        # oracle. The body is generic and never names the concrete state (spent/expired/host).
+        return JSONResponse({"ok": False, "reason": "payment link is not available"}, status_code=404)
     return RedirectResponse(target, status_code=302)
 
 
