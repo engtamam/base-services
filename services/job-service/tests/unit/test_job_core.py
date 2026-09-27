@@ -51,6 +51,38 @@ def test_unique_slot_frees_after_completion():
     assert created is True and b.id != a.id   # a new run may be enqueued once the old is done
 
 
+# ── FIN job-001: dedupe keys are tenant-scoped (no cross-tenant collision/suppression) ─────────────
+def test_unique_key_does_not_collide_across_tenants():
+    svc, _ = _svc()
+    a, ca = run(svc.enqueue(tenant="tenantA", type="report", unique_key="daily-report"))
+    b, cb = run(svc.enqueue(tenant="tenantB", type="report", unique_key="daily-report"))
+    assert ca is True and cb is True          # both created — B is NOT suppressed by A's key
+    assert a.id != b.id and a.tenant == "tenantA" and b.tenant == "tenantB"  # no id leak across tenants
+
+
+def test_idempotency_key_does_not_collide_across_tenants():
+    svc, _ = _svc()
+    a, ca = run(svc.enqueue(tenant="tenantA", type="x", idempotency_key="k1"))
+    b, cb = run(svc.enqueue(tenant="tenantB", type="x", idempotency_key="k1"))
+    assert ca is True and cb is True and a.id != b.id
+
+
+def test_same_tenant_unique_key_still_dedupes():
+    # scoping must NOT weaken same-tenant dedup.
+    svc, _ = _svc()
+    a, ca = run(svc.enqueue(tenant="tenantA", type="report", unique_key="daily-report"))
+    b, cb = run(svc.enqueue(tenant="tenantA", type="report", unique_key="daily-report"))
+    assert ca is True and cb is False and a.id == b.id
+
+
+def test_tenant_ambiguity_prefix_cannot_collide():
+    # the classic length-prefix case: ("a","b:c") vs ("a:b","c") must not alias.
+    svc, _ = _svc()
+    a, _ = run(svc.enqueue(tenant="a", type="x", unique_key="b:c"))
+    b, cb = run(svc.enqueue(tenant="a:b", type="x", unique_key="c"))
+    assert cb is True and a.id != b.id
+
+
 # ── atomic claim ──────────────────────────────────────────────────────────────
 def test_two_workers_never_get_the_same_job():
     svc, _ = _svc()

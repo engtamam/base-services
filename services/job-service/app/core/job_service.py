@@ -29,6 +29,16 @@ class JobService:
         self._cfg = config
         self._bus = event_bus
 
+    @staticmethod
+    def _scoped(tenant: str, key: str) -> str:
+        """Tenant-namespaced, length-prefixed dedupe key (FIN job-001). The unique/idempotency stores
+        keyed on the BARE caller string, so tenant B enqueuing unique_key='daily-report' matched tenant
+        A's slot and got A's job back (created=False) — B's job silently lost, and A's job id leaked to
+        B. Prefixing with the length-tagged tenant makes keys unambiguous across tenants, exactly as the
+        scheduler already namespaces 'sched:{id}:{fire}' and the platform's tenant-scoped-idempotency
+        invariant requires. Empty key stays empty (dedupe opt-out)."""
+        return f"{len(tenant)}:{tenant}:{key}" if key else ""
+
     # ── enqueue (hot path) ──────────────────────────────────────────────────────
     async def enqueue(self, *, queue: str = "default", tenant: str = "", type: str = "",
                       payload: dict | None = None, priority: int = 0, delay_seconds: float = 0,
@@ -37,10 +47,12 @@ class JobService:
         """Returns (job, created?). created=False when an idempotency/unique key matched."""
         now = self._clock.now()
         ttl = self._cfg["unique_ttl"]
-        # idempotent retry → the same job, no duplicate
+        # idempotent retry → the same job, no duplicate. Keys are TENANT-SCOPED (FIN job-001) so one
+        # tenant's key can never match another's.
         for key in (idempotency_key, unique_key):
-            if key:
-                existing_id = await self._jobs.unique_get(key, now=now, ttl=ttl)
+            skey = self._scoped(tenant, key)
+            if skey:
+                existing_id = await self._jobs.unique_get(skey, now=now, ttl=ttl)
                 if existing_id:
                     existing = await self._jobs.get(existing_id)
                     if existing and (key == idempotency_key or existing.status in ACTIVE):
@@ -56,8 +68,9 @@ class JobService:
         # reserve loses, another enqueue won the key concurrently — return that job (or, for a
         # non-active unique match, fall through as the existing logic allowed).
         for key in (idempotency_key, unique_key):
-            if key and not await self._jobs.unique_reserve(key, job.id, now, ttl=ttl):
-                existing_id = await self._jobs.unique_get(key, now=now, ttl=ttl)
+            skey = self._scoped(tenant, key)
+            if skey and not await self._jobs.unique_reserve(skey, job.id, now, ttl=ttl):
+                existing_id = await self._jobs.unique_get(skey, now=now, ttl=ttl)
                 existing = await self._jobs.get(existing_id) if existing_id else None
                 if existing and (key == idempotency_key or existing.status in ACTIVE):
                     return existing, False
@@ -129,7 +142,7 @@ class JobService:
         job.lease_token = ""
         await self._jobs.save(job)
         await self._jobs.unindex_leased(job.id)
-        await self._jobs.unique_clear(job.unique_key)          # a done job frees its unique slot
+        await self._jobs.unique_clear(self._scoped(job.tenant, job.unique_key))  # done → free the (tenant-scoped) slot
         await self._emit("job.done", job)
         return {"ok": True, "status": DONE}
 
@@ -225,7 +238,7 @@ class JobService:
         await self._jobs.save(job)
         await self._jobs.unindex_due(job.id)
         await self._jobs.unindex_leased(job.id)
-        await self._jobs.unique_clear(job.unique_key)
+        await self._jobs.unique_clear(self._scoped(job.tenant, job.unique_key))
         return {"ok": True, "status": CANCELED}
 
     async def replay(self, job_id: str, *, tenant: str | None = None,
