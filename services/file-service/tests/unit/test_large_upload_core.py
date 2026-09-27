@@ -193,6 +193,42 @@ def test_dedup_does_not_short_circuit_for_a_different_owner():
     assert b2.deduped_file is None and b2.session is not None
 
 
+def test_dedup_refuses_a_blob_whose_last_reference_is_being_deleted(monkeypatch):
+    """file-024: a concurrent last-ref delete can pass del_if_zero (ref row gone) while the bytes
+    are still present for a beat. If dedup only checked exists(), it would attach a new file to a
+    blob that vanishes a moment later — silent data loss. The fix keys off the incr RETURN: a live
+    target holds >=1, so our +1 must land at >=2; landing at exactly 1 means we resurrected a row a
+    delete had already zeroed, so we must NOT dedup."""
+    store = FakePresignStore()
+    ds = MemoryDataStore()
+    svc, _ = _svc(store, ds)
+    data = b"about-to-be-deleted" * 1000
+    sha = hashlib.sha256(data).hexdigest()
+    b1 = run(svc.begin_large_upload(tenant="t", owner="u", filename="a", content_type="",
+                                    sha256=sha, size=len(data)))
+    _upload(store, b1.session.staging_key, data)
+    run(svc.complete_large_upload(session_id=b1.session.id, tenant="t", owner="u",
+                                  parts=[CompletedPart(1, "e1")]))
+    run(svc.finalize_large_upload(b1.session.id, computed_sha=sha, clean=True))
+    assert run(ds.get(_REFS, sha))["count"] == 1
+
+    # Simulate the racing delete of the LAST reference: it has already decremented to 0 and claimed
+    # the blob (ref row removed via del_if_zero) but has not yet physically deleted the bytes. The
+    # `existing` FileObject row is still resolvable, and exists() still sees the blob.
+    assert run(svc._repo.decr_ref(sha)) == 0
+    assert run(svc._repo.claim_blob_delete(sha)) is True
+    assert run(ds.get(_REFS, sha)) is None          # ref row gone
+    assert run(store.exists(sha)) is True            # bytes not yet deleted — the exists() trap
+
+    # Second begin for the same owner+hash: dedup MUST fall through to a real upload, not attach to
+    # the doomed blob. And it must leave the ref row back at 0 (our probing +1 then -1), so the
+    # racing delete's store.delete still fires and no ghost reference lingers.
+    b2 = run(svc.begin_large_upload(tenant="t", owner="u", filename="copy", content_type="",
+                                    sha256=sha, size=len(data)))
+    assert b2.deduped_file is None and b2.session is not None
+    assert run(ds.get(_REFS, sha))["count"] == 0
+
+
 def test_complete_is_idempotent_on_retry():
     store = FakePresignStore()
     svc, _ = _svc(store)
