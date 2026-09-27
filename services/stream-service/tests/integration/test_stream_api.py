@@ -97,6 +97,36 @@ def test_tenant_isolation_hides_other_tenants_source(env_guard):
     assert c.get(f"/api/v1/sources/{src['id']}", headers=_h(tenant="t2")).status_code == 404
 
 
+def _h_no_tenant(caps=("stream.manage", "stream.view"), sub="ghost"):
+    """A validly-signed token that simply carries NO tenant claim."""
+    tok = jwt.encode({"sub": sub, "caps": list(caps),
+                      "exp": dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1)}, SECRET,
+                     algorithm="HS256")
+    return {"Authorization": "Bearer " + tok}
+
+
+def test_tenantless_token_is_refused_on_scoped_routes(env_guard):
+    # stream-002: a token with no tenant/org/tid claim must NOT be silently mapped onto a shared ""
+    # bucket. Every tenant-scoped route rejects it with 403 rather than serving/writing tenant "".
+    c = _make_app()
+    assert c.get("/api/v1/sources", headers=_h_no_tenant()).status_code == 403
+    assert c.post("/api/v1/sources", headers=_h_no_tenant(),
+                  json={"name": "x", "url": "rtsp://10.0.0.9:554/s", "kind": "rtsp"}).status_code == 403
+    # An empty-string tenant claim is just as falsy and must be refused the same way.
+    assert c.get("/api/v1/sources", headers=_h(tenant="")).status_code == 403
+
+
+def test_two_tenantless_customers_do_not_share_a_bucket(env_guard):
+    # Before the fix both tenant-less principals collapsed onto tenant "" and could read/delete each
+    # other's data. Now neither can even reach the store — the write itself is refused.
+    c = _make_app()
+    r = c.post("/api/v1/sources", headers=_h_no_tenant(sub="cust-a"),
+               json={"name": "a", "url": "rtsp://10.0.0.9:554/a", "kind": "rtsp"})
+    assert r.status_code == 403      # cust-a cannot even create under the phantom shared tenant
+    # and a real tenant's listing is unaffected / never sees a "" row
+    assert c.get("/api/v1/sources", headers=_h(tenant="t1")).json()["sources"] == []
+
+
 def test_delete_source_refuses_while_live_then_forces(env_guard):
     c = _make_app()
     src = _register(c).json()

@@ -11,7 +11,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.core.sealing import redact_url
+from app.core.sealing import public_onvif, redact_url
 
 
 def now() -> str:
@@ -42,7 +42,8 @@ class Source:
     url_host: str                   # redacted scheme://host, safe to show/log
     transport: str = "tcp"
     kind: str = "rtsp"
-    onvif: dict[str, Any] = field(default_factory=dict)
+    onvif: dict[str, Any] = field(default_factory=dict)   # NON-secret connection info only (host/port)
+    onvif_sealed: str = ""                                 # AES-GCM sealed camera credentials (AAD-bound)
     tags: list[str] = field(default_factory=list)
     group_id: str = ""
     enabled: bool = True
@@ -54,6 +55,7 @@ class Source:
         return {"id": self.id, "tenant": self.tenant, "name": self.name,
                 "url_sealed": self.url_sealed, "url_host": self.url_host,
                 "transport": self.transport, "kind": self.kind, "onvif": self.onvif,
+                "onvif_sealed": self.onvif_sealed,
                 "tags": self.tags, "group_id": self.group_id, "enabled": self.enabled,
                 "default_profile": self.default_profile,
                 "created": self.created, "updated": self.updated}
@@ -61,7 +63,10 @@ class Source:
     def public_dict(self) -> dict[str, Any]:
         return {"id": self.id, "tenant": self.tenant, "name": self.name,
                 "url": self.url_host,          # redacted — never the sealed blob or credentials
-                "transport": self.transport, "kind": self.kind, "onvif": self.onvif,
+                "transport": self.transport, "kind": self.kind,
+                # public_onvif strips any credential field — sealed blob is never serialized, and a
+                # legacy row that still holds plaintext secrets in `onvif` is stripped here too.
+                "onvif": public_onvif(self.onvif),
                 "tags": self.tags, "group_id": self.group_id, "enabled": self.enabled,
                 "default_profile": self.default_profile,
                 "created": self.created, "updated": self.updated}
@@ -72,6 +77,7 @@ class Source:
                    url_sealed=d.get("url_sealed", ""),
                    url_host=d.get("url_host") or "", transport=d.get("transport", "tcp"),
                    kind=d.get("kind", "rtsp"), onvif=dict(d.get("onvif") or {}),
+                   onvif_sealed=d.get("onvif_sealed", ""),
                    tags=list(d.get("tags") or []), group_id=d.get("group_id", ""),
                    enabled=bool(d.get("enabled", True)), default_profile=d.get("default_profile", "default"),
                    created=d.get("created", now()), updated=d.get("updated", now()))

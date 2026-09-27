@@ -7,13 +7,16 @@ seconds) so guards are deterministically testable.
 """
 from __future__ import annotations
 
+import json as _json
 import time
 from typing import Any, Callable
 
 from app.core.models import (
     ERROR, LIVE, STOPPED, Guards, Session, Source, new_id, now,
 )
-from app.core.sealing import Sealer, redact_url, source_aad
+from app.core.sealing import (
+    Sealer, onvif_aad, public_onvif, redact_url, secret_onvif, source_aad,
+)
 from app.core.ssrf import SsrfBlocked, validate_source_url
 from app.core.stores import SessionStore, SourceStore
 from app.ports.stream_types import EngineSpec
@@ -100,11 +103,34 @@ class StreamService:
         # Compute the id first so the sealed URL can be bound to it (AAD): the blob is then tied to
         # this exact source row and cannot be relocated onto another under the shared SEAL_KEY.
         sid = new_id()
+        # Seal the ONVIF camera credentials at rest, AAD-bound to this source id, exactly like the URL
+        # (audit stream-001). Only the non-secret connection info (host/port) is stored in the clear;
+        # username/password/token live in onvif_sealed and never reach a client.
+        onvif = onvif or {}
+        secret = secret_onvif(onvif)
+        onvif_sealed = self._sealer.seal(_json.dumps(secret), aad=onvif_aad(sid)) if secret else ""
         src = Source(id=sid, tenant=tenant, name=name,
                      url_sealed=self._sealer.seal(url, aad=source_aad(sid)), url_host=redact_url(url),
-                     transport=transport, kind=kind, onvif=onvif or {}, tags=tags or [],
+                     transport=transport, kind=kind, onvif=public_onvif(onvif),
+                     onvif_sealed=onvif_sealed, tags=tags or [],
                      group_id=group_id, default_profile=default_profile)
         return await self._sources.create(src)
+
+    def unseal_onvif(self, src: Source) -> dict:
+        """Reassemble the FULL onvif dict (host/port + unsealed credentials) for a PTZ/capability call.
+
+        Never returned to a client — only handed to the ONVIF controller. Backward-compatible: a row
+        written by an older build still carries its secrets in the plaintext `onvif` field (no sealed
+        blob), and those flow through unchanged."""
+        full = dict(src.onvif or {})
+        if src.onvif_sealed:
+            try:
+                secret = _json.loads(self._sealer.unseal(src.onvif_sealed, aad=onvif_aad(src.id)))
+            except Exception:   # noqa: BLE001 — a tampered/undecryptable blob yields no credentials
+                secret = {}
+            if isinstance(secret, dict):
+                full.update(secret)
+        return full
 
     async def get_source(self, source_id: str, *, tenant: str) -> Source:
         src = await self._sources.get(source_id)

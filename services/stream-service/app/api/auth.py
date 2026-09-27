@@ -51,3 +51,20 @@ async def require_user(request: Request) -> Principal:
     principal = _extract_principal(claims)
     request.state.principal = principal
     return principal
+
+
+async def require_tenant(request: Request) -> Principal:
+    """Tenant-scoped variant of require_user (audit stream-002).
+
+    Every /api/v1 stream route is scoped to one tenant and historically fell back to
+    `p.tenant or ""`, collapsing every principal whose token lacks a tenant/org/tid claim (or
+    carries an empty/falsy one) into a single shared "" bucket — where two different customers could
+    read and delete each other's sources, sessions, recordings and exports. The tenant is the only
+    wall between companies, so a missing one is a hard refusal here, never a silent default onto a
+    real shared bucket. (Operator routes — service secrets/config — are legitimately tenant-less and
+    keep using require_user directly.)
+    """
+    principal = await require_user(request)
+    if not principal.tenant:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="TENANT_REQUIRED")
+    return principal

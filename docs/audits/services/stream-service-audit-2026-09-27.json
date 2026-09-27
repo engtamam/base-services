@@ -3,7 +3,12 @@
   "date": "2026-09-27",
   "summary": {
     "total": 24,
-    "by_severity": {"CRITICAL": 2, "HIGH": 3, "MEDIUM": 11, "LOW": 8}
+    "by_severity": {
+      "CRITICAL": 2,
+      "HIGH": 3,
+      "MEDIUM": 11,
+      "LOW": 8
+    }
   },
   "note": "stream-service is a camera/RTSP-HLS-WebRTC video service, not an SSE/WebSocket pub-sub. The audit re-mapped the requested lenses (connect/per-message auth, tenant isolation of streams, backpressure, replay, connection limits) onto the equivalent surfaces here: source/session auth, tenant scoping of sources/sessions/recordings/exports, playback-token signing, recording/export pipelines, concurrency quotas, and viewer/storage caps.",
   "findings": [
@@ -16,7 +21,10 @@
       "line": 61,
       "scenario": "The source URL is carefully sealed (AES-GCM) and redacted everywhere, but the parallel `onvif` credential dict is not. register_source stores `onvif=onvif or {}` verbatim; Source.to_dict() persists `onvif` in plaintext in the datastore, and Source.public_dict() returns `onvif` verbatim in GET /sources, GET /sources/{id}, and POST /discovery. An operator registering an authenticated PTZ camera naturally puts host/port/username/password in the onvif dict (the PTZ path in _ptz_source/onvif_ptz consumes exactly those). Result: (a) a leaked datastore row leaks the camera password although the whole sealing design exists to prevent that, and (b) any holder of the weakest capability (stream.view) can read every camera's ONVIF password via the list/get endpoints.",
       "evidence": "def public_dict(self) -> dict[str, Any]:\n    return {\"id\": self.id, \"tenant\": self.tenant, \"name\": self.name,\n            \"url\": self.url_host,          # redacted — never the sealed blob or credentials\n            ... \"onvif\": self.onvif, ...}",
-      "recommendation": "Seal onvif credential fields at rest exactly like url (bind AAD to source id), and strip username/password (and any secret onvif fields) from public_dict() and from the discovery response. Return only non-secret capability data to clients."
+      "recommendation": "Seal onvif credential fields at rest exactly like url (bind AAD to source id), and strip username/password (and any secret onvif fields) from public_dict() and from the discovery response. Return only non-secret capability data to clients.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "ONVIF credentials are now sealed at rest AES-GCM (AAD-bound to the source id via onvif_aad) exactly like the URL. register_source splits the onvif dict: non-secret connection info (host/port) stays in Source.onvif, credential fields (username/password/token/...) are sealed into Source.onvif_sealed. public_dict now returns public_onvif(onvif) which strips every credential field (defensive for legacy plaintext rows too). unseal_onvif() reassembles the full dict only for the PTZ controller. Regression tests in tests/unit/test_round2_fixes.py."
     },
     {
       "id": "stream-002",
@@ -27,7 +35,10 @@
       "line": 92,
       "scenario": "_extract_principal sets tenant=None when a token carries no tenant/org/tid claim. Every route then uses `p.tenant or \"\"` for both writes and reads (register_source tenant=p.tenant or \"\", get_source tenant=p.tenant or \"\", list_for_tenant(p.tenant or \"\"), etc.). Two different customers whose tokens lack a tenant claim (or where the claim is present but empty/0/falsy) both resolve to tenant \"\" and can read and delete each other's sources, sessions, recordings and exports. The tenant is the single wall between companies and it is silently defaulted rather than required.",
       "evidence": "tenant = claims.get(\"tenant\") or claims.get(\"org\") or claims.get(\"tid\")\n... Principal(... tenant=str(tenant) if tenant else None ...)\n# and in every route:\nsrc = await svc.register_source(tenant=p.tenant or \"\", ...)",
-      "recommendation": "Reject a token with no tenant claim at require_user (401/403) for tenant-scoped routes, or fail closed in the service when tenant is falsy. Never map an absent tenant onto a real shared bucket."
+      "recommendation": "Reject a token with no tenant claim at require_user (401/403) for tenant-scoped routes, or fail closed in the service when tenant is falsy. Never map an absent tenant onto a real shared bucket.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "Added require_tenant dependency (auth.py) that chains require_user and rejects a token whose tenant/org/tid claim is missing or falsy with 403 TENANT_REQUIRED. Every tenant-scoped /api/v1 stream route now depends on require_tenant and passes p.tenant directly (the 'p.tenant or \"\"' silent default is gone). Operator routes (service secrets/config) keep require_user as they are legitimately tenant-less. Regression tests in tests/integration/test_stream_api.py."
     },
     {
       "id": "stream-003",

@@ -6,7 +6,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
-from app.api.auth import Principal, require_user
+from app.api.auth import Principal, require_tenant
 from app.api.authz import require_any_capability
 from app.api.ratelimit import rate_limit
 from app.config import get_settings
@@ -84,34 +84,34 @@ class SessionIn(BaseModel):
 # ── sources ────────────────────────────────────────────────────────────────────
 @router.post("/sources", status_code=201, dependencies=[Depends(_MANAGE), Depends(rate_limit)])
 async def register_source(request: Request, body: SourceIn,
-                          p: Principal = Depends(require_user)) -> dict:
+                          p: Principal = Depends(require_tenant)) -> dict:
     svc = build_stream_service(request)
     try:
         src = await svc.register_source(
-            tenant=p.tenant or "", name=body.name, url=body.url, transport=body.transport,
+            tenant=p.tenant, name=body.name, url=body.url, transport=body.transport,
             kind=body.kind, onvif=body.onvif, tags=body.tags, group_id=body.group_id,
             default_profile=body.default_profile)
     except SsrfBlocked:
         raise HTTPException(400, "SOURCE_URL_BLOCKED")
     await request.app.state.auditor.record(
-        "source.created", actor=p.subject, tenant=p.tenant or "",
+        "source.created", actor=p.subject, tenant=p.tenant,
         resource=f"source:{src.id}", ip=request.client.host if request.client else "")
     return src.public_dict()
 
 
 @router.get("/sources", dependencies=[Depends(_READ), Depends(rate_limit)])
-async def list_sources(request: Request, p: Principal = Depends(require_user),
+async def list_sources(request: Request, p: Principal = Depends(require_tenant),
                        limit: int = Query(50, ge=1, le=200),
                        after: str | None = Query(None, max_length=512)) -> dict:
     svc = build_stream_service(request)
-    rows, cursor = await svc._sources.list_for_tenant(p.tenant or "", limit=limit, after=after)
+    rows, cursor = await svc._sources.list_for_tenant(p.tenant, limit=limit, after=after)
     return {"sources": [s.public_dict() for s in rows], "next": cursor}
 
 
 @router.get("/sources/{source_id}", dependencies=[Depends(_READ)])
-async def get_source(request: Request, source_id: str, p: Principal = Depends(require_user)) -> dict:
+async def get_source(request: Request, source_id: str, p: Principal = Depends(require_tenant)) -> dict:
     try:
-        src = await build_stream_service(request).get_source(source_id, tenant=p.tenant or "")
+        src = await build_stream_service(request).get_source(source_id, tenant=p.tenant)
     except SourceNotFound:
         raise HTTPException(404, "NOT_FOUND")
     return src.public_dict()
@@ -119,16 +119,16 @@ async def get_source(request: Request, source_id: str, p: Principal = Depends(re
 
 @router.post("/sources/{source_id}/probe", dependencies=[Depends(_READ), Depends(rate_limit)])
 async def probe_source(request: Request, source_id: str,
-                       p: Principal = Depends(require_user)) -> dict:
+                       p: Principal = Depends(require_tenant)) -> dict:
     svc = build_stream_service(request)
     try:
-        probe = await svc.probe_source(source_id, tenant=p.tenant or "")
+        probe = await svc.probe_source(source_id, tenant=p.tenant)
     except SourceNotFound:
         raise HTTPException(404, "NOT_FOUND")
     except SsrfBlocked:
         raise HTTPException(400, "SOURCE_URL_BLOCKED")
     await request.app.state.auditor.record(
-        "source.probed", actor=p.subject, tenant=p.tenant or "",
+        "source.probed", actor=p.subject, tenant=p.tenant,
         resource=f"source:{source_id}", ip=request.client.host if request.client else "")
     return {"codec": probe.codec, "width": probe.width, "height": probe.height, "fps": probe.fps,
             "has_audio": probe.has_audio, "ptz_capable": probe.ptz_capable, "ok": probe.ok}
@@ -143,10 +143,10 @@ class TriggerIn(BaseModel):
 
 @router.get("/sources/{source_id}/triggers", dependencies=[Depends(_READ)])
 async def get_triggers(request: Request, source_id: str,
-                       p: Principal = Depends(require_user)) -> dict:
+                       p: Principal = Depends(require_tenant)) -> dict:
     svc = build_stream_service(request)
     try:
-        await svc.get_source(source_id, tenant=p.tenant or "")   # tenant-scope check
+        await svc.get_source(source_id, tenant=p.tenant)   # tenant-scope check
     except SourceNotFound:
         raise HTTPException(404, "NOT_FOUND")
     return {"triggers": await TriggerStore(request.app.state.container.datastore).get(source_id)}
@@ -154,38 +154,38 @@ async def get_triggers(request: Request, source_id: str,
 
 @router.put("/sources/{source_id}/triggers", dependencies=[Depends(_MANAGE)])
 async def set_triggers(request: Request, source_id: str, body: list[TriggerIn],
-                       p: Principal = Depends(require_user)) -> dict:
+                       p: Principal = Depends(require_tenant)) -> dict:
     svc = build_stream_service(request)
     try:
-        await svc.get_source(source_id, tenant=p.tenant or "")
+        await svc.get_source(source_id, tenant=p.tenant)
     except SourceNotFound:
         raise HTTPException(404, "NOT_FOUND")
     triggers = [t.model_dump() for t in body]
-    await TriggerStore(request.app.state.container.datastore).put(source_id, p.tenant or "", triggers)
+    await TriggerStore(request.app.state.container.datastore).put(source_id, p.tenant, triggers)
     await request.app.state.auditor.record(
-        "triggers.updated", actor=p.subject, tenant=p.tenant or "",
+        "triggers.updated", actor=p.subject, tenant=p.tenant,
         resource=f"source:{source_id}", ip=request.client.host if request.client else "")
     return {"triggers": triggers}
 
 
 @router.delete("/sources/{source_id}", dependencies=[Depends(_MANAGE)])
-async def delete_source(request: Request, source_id: str, p: Principal = Depends(require_user),
+async def delete_source(request: Request, source_id: str, p: Principal = Depends(require_tenant),
                         force: bool = Query(False)) -> dict:
     svc = build_stream_service(request)
     try:
-        src = await svc.get_source(source_id, tenant=p.tenant or "")
+        src = await svc.get_source(source_id, tenant=p.tenant)
     except SourceNotFound:
         raise HTTPException(404, "NOT_FOUND")
     # Refuse to delete while a session is live unless forced (which stops them first).
-    live, _ = await svc._sessions.list_for_tenant(p.tenant or "", status="live", limit=50)
+    live, _ = await svc._sessions.list_for_tenant(p.tenant, status="live", limit=50)
     live_here = [s for s in live if s.source_id == source_id]
     if live_here and not force:
         raise HTTPException(409, "SESSION_LIVE")
     for s in live_here:
-        await svc.stop_session(s.id, tenant=p.tenant or "", reason="user")
+        await svc.stop_session(s.id, tenant=p.tenant, reason="user")
     await svc._sources.delete(source_id)
     await request.app.state.auditor.record(
-        "source.deleted", actor=p.subject, tenant=p.tenant or "",
+        "source.deleted", actor=p.subject, tenant=p.tenant,
         resource=f"source:{source_id}", ip=request.client.host if request.client else "")
     return {"deleted": True}
 
@@ -193,11 +193,11 @@ async def delete_source(request: Request, source_id: str, p: Principal = Depends
 # ── sessions ────────────────────────────────────────────────────────────────────
 @router.post("/sessions", status_code=201, dependencies=[Depends(_MANAGE), Depends(rate_limit)])
 async def start_session(request: Request, body: SessionIn,
-                        p: Principal = Depends(require_user)) -> dict:
+                        p: Principal = Depends(require_tenant)) -> dict:
     svc = build_stream_service(request)
     try:
         sess, playback = await svc.start_session(
-            tenant=p.tenant or "", source_id=body.source_id, mode=body.mode,
+            tenant=p.tenant, source_id=body.source_id, mode=body.mode,
             outputs=body.outputs, profile=body.profile,
             guards=body.guards.model_dump(exclude_none=True) if body.guards else None)
     except SourceNotFound:
@@ -207,28 +207,28 @@ async def start_session(request: Request, body: SessionIn,
     except SsrfBlocked:
         raise HTTPException(400, "SOURCE_URL_BLOCKED")
     await request.app.state.auditor.record(
-        "session.started", actor=p.subject, tenant=p.tenant or "",
+        "session.started", actor=p.subject, tenant=p.tenant,
         resource=f"session:{sess.id}", ip=request.client.host if request.client else "",
         metadata={"source": body.source_id})
     return {"session": sess.public_dict(), "playback": playback}
 
 
 @router.get("/sessions", dependencies=[Depends(_READ), Depends(rate_limit)])
-async def list_sessions(request: Request, p: Principal = Depends(require_user),
+async def list_sessions(request: Request, p: Principal = Depends(require_tenant),
                         limit: int = Query(50, ge=1, le=200),
                         after: str | None = Query(None, max_length=512),
                         session_status: str | None = Query(None, alias="status")) -> dict:
     svc = build_stream_service(request)
-    rows, cursor = await svc._sessions.list_for_tenant(p.tenant or "", limit=limit, after=after,
+    rows, cursor = await svc._sessions.list_for_tenant(p.tenant, limit=limit, after=after,
                                                        status=session_status)
     return {"sessions": [s.public_dict() for s in rows], "next": cursor}
 
 
 @router.get("/sessions/{session_id}", dependencies=[Depends(_READ)])
 async def get_session(request: Request, session_id: str,
-                      p: Principal = Depends(require_user)) -> dict:
+                      p: Principal = Depends(require_tenant)) -> dict:
     try:
-        sess = await build_stream_service(request).get_session(session_id, tenant=p.tenant or "")
+        sess = await build_stream_service(request).get_session(session_id, tenant=p.tenant)
     except SourceNotFound:
         raise HTTPException(404, "NOT_FOUND")
     return sess.public_dict()
@@ -236,22 +236,22 @@ async def get_session(request: Request, session_id: str,
 
 @router.post("/sessions/{session_id}/stop", dependencies=[Depends(_MANAGE)])
 async def stop_session(request: Request, session_id: str,
-                       p: Principal = Depends(require_user)) -> dict:
+                       p: Principal = Depends(require_tenant)) -> dict:
     try:
-        sess = await build_stream_service(request).stop_session(session_id, tenant=p.tenant or "")
+        sess = await build_stream_service(request).stop_session(session_id, tenant=p.tenant)
     except SourceNotFound:
         raise HTTPException(404, "NOT_FOUND")
     await request.app.state.auditor.record(
-        "session.stopped", actor=p.subject, tenant=p.tenant or "",
+        "session.stopped", actor=p.subject, tenant=p.tenant,
         resource=f"session:{session_id}", ip=request.client.host if request.client else "")
     return sess.public_dict()
 
 
 @router.delete("/sessions/{session_id}", dependencies=[Depends(_MANAGE)])
 async def kill_session(request: Request, session_id: str,
-                       p: Principal = Depends(require_user)) -> dict:
+                       p: Principal = Depends(require_tenant)) -> dict:
     try:
-        sess = await build_stream_service(request).stop_session(session_id, tenant=p.tenant or "",
+        sess = await build_stream_service(request).stop_session(session_id, tenant=p.tenant,
                                                                 reason="user")
     except SourceNotFound:
         raise HTTPException(404, "NOT_FOUND")
@@ -260,9 +260,9 @@ async def kill_session(request: Request, session_id: str,
 
 @router.get("/sessions/{session_id}/playback", dependencies=[Depends(_READ)])
 async def get_playback(request: Request, session_id: str,
-                       p: Principal = Depends(require_user)) -> dict:
+                       p: Principal = Depends(require_tenant)) -> dict:
     try:
-        return await build_stream_service(request).playback(session_id, tenant=p.tenant or "")
+        return await build_stream_service(request).playback(session_id, tenant=p.tenant)
     except SourceNotFound:
         raise HTTPException(404, "NOT_FOUND")
 
@@ -284,29 +284,29 @@ async def _ptz_source(request: Request, source_id: str, tenant: str) -> dict:
     # The plaintext (unsealed) creds/host are needed to reach the camera — never returned to a client.
     # Re-validate + PIN the ONVIF host to its resolved IP at connect time (DNS-rebinding-safe), since
     # this call carries the camera credentials (stream-r2-02).
-    return {"onvif": svc.pin_onvif(src.onvif),
+    return {"onvif": svc.pin_onvif(svc.unseal_onvif(src)),
             "url": svc._sealer.unseal(src.url_sealed, aad=source_aad(src.id))}
 
 
 @router.post("/sources/{source_id}/ptz/move", dependencies=[Depends(_MANAGE)])
 async def ptz_move(request: Request, source_id: str, body: PtzMove,
-                   p: Principal = Depends(require_user)) -> dict:
-    src = await _ptz_source(request, source_id, p.tenant or "")
+                   p: Principal = Depends(require_tenant)) -> dict:
+    src = await _ptz_source(request, source_id, p.tenant)
     try:
         await request.app.state.container.ptz.move(src, pan=body.pan, tilt=body.tilt,
                                                    zoom=body.zoom, mode=body.mode)
     except NotImplementedError:
         raise HTTPException(409, "PTZ_UNSUPPORTED")
     await request.app.state.auditor.record(
-        "ptz.moved", actor=p.subject, tenant=p.tenant or "",
+        "ptz.moved", actor=p.subject, tenant=p.tenant,
         resource=f"source:{source_id}", ip=request.client.host if request.client else "",
         metadata={"mode": body.mode})
     return {"moving": True}
 
 
 @router.post("/sources/{source_id}/ptz/stop", dependencies=[Depends(_MANAGE)])
-async def ptz_stop(request: Request, source_id: str, p: Principal = Depends(require_user)) -> dict:
-    src = await _ptz_source(request, source_id, p.tenant or "")
+async def ptz_stop(request: Request, source_id: str, p: Principal = Depends(require_tenant)) -> dict:
+    src = await _ptz_source(request, source_id, p.tenant)
     try:
         await request.app.state.container.ptz.stop(src)
     except NotImplementedError:
@@ -316,15 +316,15 @@ async def ptz_stop(request: Request, source_id: str, p: Principal = Depends(requ
 
 @router.get("/sources/{source_id}/ptz/presets", dependencies=[Depends(_READ)])
 async def ptz_presets(request: Request, source_id: str,
-                      p: Principal = Depends(require_user)) -> dict:
-    src = await _ptz_source(request, source_id, p.tenant or "")
+                      p: Principal = Depends(require_tenant)) -> dict:
+    src = await _ptz_source(request, source_id, p.tenant)
     return {"presets": await request.app.state.container.ptz.presets(src)}
 
 
 @router.post("/sources/{source_id}/ptz/goto/{preset_token}", dependencies=[Depends(_MANAGE)])
 async def ptz_goto(request: Request, source_id: str, preset_token: str,
-                   p: Principal = Depends(require_user)) -> dict:
-    src = await _ptz_source(request, source_id, p.tenant or "")
+                   p: Principal = Depends(require_tenant)) -> dict:
+    src = await _ptz_source(request, source_id, p.tenant)
     try:
         await request.app.state.container.ptz.goto(src, preset_token)
     except NotImplementedError:
@@ -333,10 +333,10 @@ async def ptz_goto(request: Request, source_id: str, preset_token: str,
 
 
 @router.post("/discovery", dependencies=[Depends(_MANAGE), Depends(rate_limit)])
-async def discover(request: Request, p: Principal = Depends(require_user)) -> dict:
+async def discover(request: Request, p: Principal = Depends(require_tenant)) -> dict:
     cams = await request.app.state.container.discovery.discover()
     await request.app.state.auditor.record(
-        "discovery.run", actor=p.subject, tenant=p.tenant or "",
+        "discovery.run", actor=p.subject, tenant=p.tenant,
         resource="discovery", ip=request.client.host if request.client else "",
         metadata={"found": str(len(cams))})
     return {"cameras": [{"name": c.name, "url": c.url, "kind": c.kind, "onvif_host": c.onvif_host}
@@ -349,12 +349,12 @@ def _recordings(request: Request) -> RecordingStore:
 
 
 @router.get("/recordings", dependencies=[Depends(_READ), Depends(rate_limit)])
-async def list_recordings(request: Request, p: Principal = Depends(require_user),
+async def list_recordings(request: Request, p: Principal = Depends(require_tenant),
                           source_id: str | None = Query(None),
                           limit: int = Query(50, ge=1, le=200),
                           after: str | None = Query(None, max_length=512)) -> dict:
     rows, cursor = await _recordings(request).list_for_tenant(
-        p.tenant or "", source_id=source_id, limit=limit, after=after)
+        p.tenant, source_id=source_id, limit=limit, after=after)
     return {"recordings": [r.to_dict() for r in rows], "next": cursor}
 
 
@@ -367,20 +367,20 @@ async def _load_recording(request: Request, recording_id: str, tenant: str):
 
 @router.get("/recordings/{recording_id}", dependencies=[Depends(_READ)])
 async def get_recording(request: Request, recording_id: str,
-                        p: Principal = Depends(require_user)) -> dict:
-    return (await _load_recording(request, recording_id, p.tenant or "")).to_dict()
+                        p: Principal = Depends(require_tenant)) -> dict:
+    return (await _load_recording(request, recording_id, p.tenant)).to_dict()
 
 
 @router.post("/recordings/{recording_id}/lock", dependencies=[Depends(_MANAGE)])
 async def lock_recording(request: Request, recording_id: str,
-                         p: Principal = Depends(require_user)) -> dict:
+                         p: Principal = Depends(require_tenant)) -> dict:
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
         "recording.locked", actor=p.subject, tenant=p.tenant, resource=f"recording:{recording_id}",
         ip=request.client.host if request.client else "")
-    rec = await _load_recording(request, recording_id, p.tenant or "")
+    rec = await _load_recording(request, recording_id, p.tenant)
     rec.locked = True
     await _recordings(request).save(rec)
     return rec.to_dict()
@@ -388,14 +388,14 @@ async def lock_recording(request: Request, recording_id: str,
 
 @router.post("/recordings/{recording_id}/unlock", dependencies=[Depends(_MANAGE)])
 async def unlock_recording(request: Request, recording_id: str,
-                           p: Principal = Depends(require_user)) -> dict:
+                           p: Principal = Depends(require_tenant)) -> dict:
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
         "recording.unlocked", actor=p.subject, tenant=p.tenant, resource=f"recording:{recording_id}",
         ip=request.client.host if request.client else "")
-    rec = await _load_recording(request, recording_id, p.tenant or "")
+    rec = await _load_recording(request, recording_id, p.tenant)
     rec.locked = False
     await _recordings(request).save(rec)
     return rec.to_dict()
@@ -403,14 +403,14 @@ async def unlock_recording(request: Request, recording_id: str,
 
 @router.delete("/recordings/{recording_id}", dependencies=[Depends(_MANAGE)])
 async def delete_recording(request: Request, recording_id: str,
-                           p: Principal = Depends(require_user)) -> dict:
+                           p: Principal = Depends(require_tenant)) -> dict:
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
         "recording.deleted", actor=p.subject, tenant=p.tenant, resource=f"recording:{recording_id}",
         ip=request.client.host if request.client else "")
-    rec = await _load_recording(request, recording_id, p.tenant or "")
+    rec = await _load_recording(request, recording_id, p.tenant)
     if rec.locked:
         raise HTTPException(409, "RECORDING_LOCKED")   # legal hold
     c = request.app.state.container
@@ -445,7 +445,7 @@ class ExportIn(BaseModel):
 
 @router.post("/exports", status_code=201, dependencies=[Depends(_READ), Depends(rate_limit)])
 async def request_export(request: Request, body: ExportIn,
-                         p: Principal = Depends(require_user)) -> dict:
+                         p: Principal = Depends(require_tenant)) -> dict:
     """Ask for a clip. Returns immediately with a PENDING export; a worker produces it.
 
     Not synchronous, and that is not a nicety: a two-hour remux is minutes of work, which would
@@ -461,7 +461,7 @@ async def request_export(request: Request, body: ExportIn,
         metadata={"start": body.start, "end": body.end, "format": body.fmt})
     try:
         exp = await _exports(request).request(
-            tenant=p.tenant or "", source_id=body.source_id, start=body.start, end=body.end,
+            tenant=p.tenant, source_id=body.source_id, start=body.start, end=body.end,
             fmt=body.fmt)
     except ValueError as e:
         # 422: the request is well formed and authorised — the RANGE is the problem, and the
@@ -471,7 +471,7 @@ async def request_export(request: Request, body: ExportIn,
 
 
 @router.get("/exports", dependencies=[Depends(_READ)])
-async def list_exports(request: Request, p: Principal = Depends(require_user),
+async def list_exports(request: Request, p: Principal = Depends(require_tenant),
                        status_: str | None = Query(None, alias="status", max_length=16),
                        source_id: str | None = Query(None, max_length=128),
                        limit: int = Query(50, ge=1, le=200),
@@ -483,22 +483,22 @@ async def list_exports(request: Request, p: Principal = Depends(require_user),
     storage, invisible to the operator responsible for both.
     """
     rows, cursor = await ExportStore(request.app.state.container.datastore).list_for_tenant(
-        p.tenant or "", limit=limit, after=after, status=status_, source_id=source_id)
+        p.tenant, limit=limit, after=after, status=status_, source_id=source_id)
     return {"exports": [e.public_dict() for e in rows], "next": cursor}
 
 
 @router.get("/exports/{export_id}", dependencies=[Depends(_READ)])
 async def get_export(request: Request, export_id: str,
-                     p: Principal = Depends(require_user)) -> dict:
+                     p: Principal = Depends(require_tenant)) -> dict:
     exp = await ExportStore(request.app.state.container.datastore).get(export_id)
-    if exp is None or exp.tenant != (p.tenant or ""):
+    if exp is None or exp.tenant != (p.tenant):
         raise HTTPException(404, "NOT_FOUND")     # hidden across tenants, like recordings
     return exp.public_dict()
 
 
 @router.get("/exports/{export_id}/download", dependencies=[Depends(_READ)])
 async def download_export(request: Request, export_id: str,
-                          p: Principal = Depends(require_user)) -> dict:
+                          p: Principal = Depends(require_tenant)) -> dict:
     """A short-lived link, never the bytes through this process.
 
     Streaming a multi-gigabyte clip through the API would tie up a worker for the length of the
@@ -506,7 +506,7 @@ async def download_export(request: Request, export_id: str,
     """
     c = request.app.state.container
     exp = await ExportStore(c.datastore).get(export_id)
-    if exp is None or exp.tenant != (p.tenant or ""):
+    if exp is None or exp.tenant != (p.tenant):
         raise HTTPException(404, "NOT_FOUND")
     if exp.status != "ready" or not exp.file_id:
         # 409, not 404: the export exists and is simply not finished. A 404 would send the caller

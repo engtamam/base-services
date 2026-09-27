@@ -31,6 +31,33 @@ def source_aad(source_id: str) -> str:
     return f"stream-source|{source_id}"
 
 
+# ── ONVIF credential handling (audit stream-001) ─────────────────────────────
+# An ONVIF/PTZ camera is reached with its OWN credentials, carried in the source's `onvif` dict
+# (host/port + username/password/token). Those secrets must be sealed at rest exactly like the URL
+# and must never appear in any client-facing response. Host/port are connection info (like the URL
+# host we already redact-but-show), so they stay public; only the auth fields are secret.
+ONVIF_SECRET_KEYS = frozenset({
+    "username", "user", "password", "pass", "passwd", "secret", "token", "auth", "wsse", "key"})
+
+
+def onvif_aad(source_id: str) -> str:
+    """AAD binding a sealed ONVIF credential blob to its own source row (see source_aad)."""
+    return f"stream-onvif|{source_id}"
+
+
+def public_onvif(onvif: dict | None) -> dict:
+    """The client-safe subset of an onvif dict: connection info with every credential field removed.
+
+    Defensive at READ time too — a row written by an older build still holds the plaintext secrets
+    inside `onvif`, so stripping here keeps those legacy rows from leaking through public_dict."""
+    return {k: v for k, v in (onvif or {}).items() if k.lower() not in ONVIF_SECRET_KEYS}
+
+
+def secret_onvif(onvif: dict | None) -> dict:
+    """The credential subset of an onvif dict — the fields that must be sealed at rest."""
+    return {k: v for k, v in (onvif or {}).items() if k.lower() in ONVIF_SECRET_KEYS}
+
+
 def redact_url(url: str) -> str:
     """`rtsp://user:pass@cam:554/stream` -> `rtsp://cam:554`. Never raises; a weird string returns ''."""
     try:

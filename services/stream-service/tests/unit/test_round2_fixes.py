@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json as _json
 
 import pytest
 
@@ -110,6 +111,54 @@ def test_pin_onvif_refuses_a_blocked_host():
     with pytest.raises(SsrfBlocked):
         svc.pin_onvif({"host": "169.254.169.254", "port": 80})
     assert svc.pin_onvif({}) == {}        # nothing to pin
+
+
+# stream-001 — ONVIF camera credentials are sealed at rest and NEVER returned to a client.
+def test_onvif_credentials_are_sealed_and_never_public():
+    ds = MemoryDataStore()
+    svc = _svc(ds)
+    onvif = {"host": "93.184.216.34", "port": 80, "username": "admin", "password": "s3cr3t"}
+    src = run(svc.register_source(tenant="t1", name="ptz", url="rtsp://93.184.216.34:554/s",
+                                  onvif=onvif))
+
+    # (a) public_dict — what GET /sources returns — carries only connection info, no credentials.
+    pub = src.public_dict()
+    assert pub["onvif"] == {"host": "93.184.216.34", "port": 80}
+    assert "password" not in pub["onvif"] and "username" not in pub["onvif"]
+    assert "s3cr3t" not in _json.dumps(pub) and "admin" not in _json.dumps(pub)
+
+    # (b) at rest — the stored row holds the secrets ONLY inside the sealed blob, never in plaintext.
+    row = run(ds.get("sources", src.id))
+    assert "s3cr3t" not in _json.dumps({k: v for k, v in row.items() if k != "onvif_sealed"})
+    assert row["onvif_sealed"] and "s3cr3t" not in row["onvif_sealed"]
+    assert row["onvif"] == {"host": "93.184.216.34", "port": 80}
+
+    # (c) the service can still reassemble the full credentials for a PTZ call.
+    full = svc.unseal_onvif(src)
+    assert full["username"] == "admin" and full["password"] == "s3cr3t" and full["host"] == "93.184.216.34"
+
+
+def test_onvif_sealed_blob_is_aad_bound_to_its_source():
+    # A tampered row that relocates one source's sealed onvif blob onto another id must not decrypt,
+    # so credentials cannot be moved between rows under the shared SEAL_KEY.
+    from dataclasses import replace
+    ds = MemoryDataStore()
+    svc = _svc(ds)
+    src = run(svc.register_source(tenant="t1", name="ptz", url="rtsp://93.184.216.34:554/s",
+                                  onvif={"host": "93.184.216.34", "username": "a", "password": "p"}))
+    moved = replace(src, id="other-source-id")   # same sealed blob, different row id
+    assert svc.unseal_onvif(moved) == {"host": "93.184.216.34"}   # secrets refused, only public kept
+
+
+def test_public_onvif_strips_secrets_from_a_legacy_plaintext_row():
+    # A row written by an older build still has plaintext secrets inside `onvif` and no sealed blob.
+    # public_dict must strip them defensively; unseal_onvif must still surface them for PTZ.
+    from app.core.models import Source
+    legacy = Source.from_dict({"id": "s1", "tenant": "t1", "name": "old",
+                               "onvif": {"host": "10.0.0.9", "username": "u", "password": "pw"}})
+    assert legacy.public_dict()["onvif"] == {"host": "10.0.0.9"}
+    svc = _svc(MemoryDataStore())
+    assert svc.unseal_onvif(legacy) == {"host": "10.0.0.9", "username": "u", "password": "pw"}
 
 
 # cas-create — SessionStore.create must CREATE via the insert-if-absent CAS, so the LIVE->terminal
