@@ -13,6 +13,8 @@ import jwt
 import pytest
 from fastapi.testclient import TestClient
 
+from app.adapters.datastore.memory import MemoryDataStore
+
 SECRET = "h" * 40
 ISS = "iss"
 AUD = "aud"
@@ -137,6 +139,43 @@ def test_a_policy_knob_is_accepted_and_typed(client):
                    json={"key": "VERIFY_PROVIDERS", "value": "cr=wathq"},
                    headers=_auth("platform.config"))
     assert r.status_code == 200 and r.json()["value"] == "cr=wathq"
+
+
+def test_runtime_override_faces_the_production_boot_guard():
+    """verification-002: a VERIFY_PROVIDERS value production refuses to boot with must be refused at
+    runtime too. Before the fix RuntimeConfig was built with no validate callback, so the panel
+    accepted null/urlless providers the boot guard forbids and every check then errored (or risked
+    fail-open) while the panel reported success."""
+    import asyncio
+
+    from app.config import get_settings
+    from app.core.runtime_config import RuntimeConfig, RuntimeConfigError
+    from app.runtime_policy import RUNTIME_POLICY
+
+    saved = dict(os.environ)
+    try:
+        os.environ.update({
+            "ENV": "production", "INTERNAL_SERVICE_TOKEN": "t" * 40,
+            "TOKEN_VERIFIER_DRIVER": "hs256", "TOKEN_HS256_SECRET": SECRET,
+            "TOKEN_ISSUER": ISS, "TOKEN_AUDIENCE": AUD, "PII_SALT": "s" * 32,
+            "SECRETS_KEK": KEK, "VERIFY_PROVIDERS": "cr=manual"})
+        get_settings.cache_clear()
+        s = get_settings()
+        s.assert_verify_config_ok()          # the valid boot config passes
+        rc = RuntimeConfig(MemoryDataStore(), type(s), policy=RUNTIME_POLICY,
+                           validate=s.runtime_validate)
+        # null-in-production is the exact value the boot guard forbids — now refused at runtime, 400.
+        with pytest.raises(RuntimeConfigError):
+            asyncio.run(rc.set(tenant="", key="VERIFY_PROVIDERS", value="individual=null"))
+        # a provider with no url/verdict_path is refused the same way.
+        with pytest.raises(RuntimeConfigError):
+            asyncio.run(rc.set(tenant="", key="VERIFY_PROVIDERS", value="cr=wathq"))
+        # a legitimate repoint still goes through.
+        o = asyncio.run(rc.set(tenant="", key="VERIFY_PROVIDERS", value="cr=manual"))
+        assert o.value == "cr=manual"
+    finally:
+        os.environ.clear(); os.environ.update(saved)
+        get_settings.cache_clear()
 
 
 def test_a_knob_nothing_reads_is_refused_even_though_it_is_ordinary_policy(client):

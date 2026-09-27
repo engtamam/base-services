@@ -311,3 +311,64 @@ def _urlopen(status=200, body=None, raw=None, exc=None):
         return _Resp(status, payload)
 
     return patch("app.adapters.verifier.http.urllib.request.urlopen", fake)
+
+
+# ── verification-001: the VERIFIED grant is audited BEFORE it is persisted ──────
+class _FailAuditor:
+    """A critical audit sink that is DOWN for the trust-granting action only."""
+    def __init__(self):
+        self.calls = []
+
+    async def record(self, action, **kw):
+        from app.core.audit import AuditUnavailable
+        self.calls.append(action)
+        if action == "identity.verified":
+            raise AuditUnavailable("audit log unreachable")
+
+
+class _OkAuditor:
+    def __init__(self):
+        self.calls = []
+
+    async def record(self, action, **kw):
+        self.calls.append(action)
+
+
+def test_verified_grant_is_not_committed_when_the_critical_audit_is_down():
+    # If the identity.verified audit fails, NOTHING may be stored: a 503 must mean the grant did not
+    # happen, not that it happened unprovably. Before the fix put() ran first and status() returned
+    # VERIFIED while the caller saw a 503 (verification-001).
+    from app.core.audit import AuditUnavailable
+    st = MemoryDataStore()
+    aud = _FailAuditor()
+    svc = VerificationService(store=VerificationStore(st), verifiers={"business": _Fake(vp.VERIFIED)},
+                              clock=_Clock(), pii_salt=_SALT, auditor=aud)
+    with pytest.raises(AuditUnavailable):
+        run(svc.verify(tenant="t", subject="s", claim_type="business", value="X"))
+    # write-ahead: the audit was attempted, and no VERIFIED record was persisted.
+    assert aud.calls == ["identity.verified"]
+    assert run(VerificationStore(st).latest("t", "s", "business")) is None
+    assert run(svc.status("t", "s", "business"))["trusted"] is False
+
+
+def test_verified_grant_commits_and_audits_when_the_log_is_up():
+    st = MemoryDataStore()
+    aud = _OkAuditor()
+    svc = VerificationService(store=VerificationStore(st), verifiers={"business": _Fake(vp.VERIFIED)},
+                              clock=_Clock(), pii_salt=_SALT, auditor=aud)
+    rec = run(svc.verify(tenant="t", subject="s", claim_type="business", value="X"))
+    assert rec.verdict == VERIFIED
+    assert aud.calls == ["identity.verified"]
+    assert run(VerificationStore(st).latest("t", "s", "business")).verdict == VERIFIED
+
+
+def test_a_refusal_is_not_blocked_by_a_down_audit_log():
+    # Only VERIFIED is fail-closed. A refusal must still be recorded (as REFUSED) even if the audit
+    # sink is unhappy — refusing to refuse someone because the log is down helps nobody.
+    st = MemoryDataStore()
+    aud = _FailAuditor()   # only raises on identity.verified; identity.refused is non-critical
+    svc = VerificationService(store=VerificationStore(st), verifiers={"business": _Fake(vp.REFUSED)},
+                              clock=_Clock(), pii_salt=_SALT, auditor=aud)
+    rec = run(svc.verify(tenant="t", subject="s", claim_type="business", value="X"))
+    assert rec.verdict == REFUSED
+    assert run(VerificationStore(st).latest("t", "s", "business")).verdict == REFUSED

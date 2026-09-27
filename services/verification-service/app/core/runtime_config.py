@@ -155,8 +155,15 @@ class RuntimeConfig:
 
         if self._validate is not None:
             # The boot guard, applied to the value that WOULD result. Validating only at startup
-            # means the rule lasts until somebody finds the settings page.
-            self._validate(key, typed)
+            # means the rule lasts until somebody finds the settings page. A boot guard signals a bad
+            # value with a plain ValueError; surface it as a RuntimeConfigError so the panel gets the
+            # same 400-with-a-reason it gets for any other refused knob (not an unhandled 500).
+            try:
+                self._validate(key, typed)
+            except RuntimeConfigError:
+                raise
+            except ValueError as exc:
+                raise RuntimeConfigError(f"{key}: {exc}") from exc
 
         row = {"id": self._key_of(tenant, key), "tenant": tenant, "key": key,
                "value": json.dumps(typed), "set_by": actor_ref, "set_at": self._now()}

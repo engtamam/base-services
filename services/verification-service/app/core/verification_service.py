@@ -72,8 +72,7 @@ class VerificationService:
 
         outcome = await self._ask(verifier, claim_type, value, tenant, subject, extra or {})
         self._apply(record, outcome, now)
-        await self._store.put(record)
-        await self._announce(record, outcome)
+        await self._commit(record, outcome)
         return record
 
     async def _ask(self, verifier, claim_type: str, value: str, tenant: str, subject: str,
@@ -144,8 +143,7 @@ class VerificationService:
                              reference=reference, detail=detail)
         self._apply(record, outcome, now)
         record.provider_state = {}              # the correlation token has done its job
-        await self._store.put(record)
-        await self._announce(record, outcome)
+        await self._commit(record, outcome)
         return record
 
     async def sweep_pending(self, limit: int = 500) -> int:
@@ -184,12 +182,33 @@ class VerificationService:
                 "expires_at": record.expires_at,
                 "reason": record.evidence.get("detail", "")}
 
-    async def _announce(self, record: Verification, outcome: vp.Outcome) -> None:
-        """Audit the grant of trust, and tell the platform.
+    async def _commit(self, record: Verification, outcome: vp.Outcome) -> None:
+        """Persist a settled record — write-ahead the critical grant audit BEFORE the put.
 
-        Only VERIFIED is audited as critical: affirming an identity is granting trust, and it is
-        the decision a dispute turns on. Refusals and errors are recorded as events but must not
-        block — refusing to refuse someone because the audit log is down helps nobody.
+        identity.verified is declared critical and AUDIT_FAIL_CLOSED defaults True, so its
+        auditor.record raises AuditUnavailable when the log is down. If we put() first (as the code
+        did — verification-001) an unprovable VERIFIED verdict would already be stored: status()/
+        latest() return VERIFIED and a downstream welcome-gift/account-open can act on it, while the
+        caller only sees a 503 implying nothing happened. Recording the grant intent FIRST means a
+        down audit log refuses the grant before it exists; the caller's retry then re-runs cleanly.
+        A refusal/error/pending verdict is not trust-granting, so it is stored first and audited
+        non-critically in _announce (refusing to refuse someone because the log is down helps nobody).
+        """
+        if record.verdict == VERIFIED and self._auditor is not None:
+            await self._auditor.record(
+                "identity.verified", actor=record.subject, tenant=record.tenant,
+                resource=f"{record.claim_type}:{record.id}",
+                metadata={"provider": outcome.provider, "reference": outcome.reference})
+        await self._store.put(record)
+        await self._announce(record, outcome)
+
+    async def _announce(self, record: Verification, outcome: vp.Outcome) -> None:
+        """Remember the verified identity, emit the settled event, and audit non-grant verdicts.
+
+        The critical VERIFIED audit is NOT here — it is written ahead of the put in _commit
+        (verification-001) so a down audit log refuses the grant before it is stored. Refusals and
+        errors are recorded here NON-critically: they are the signal fraud monitoring turns on, but a
+        down audit log must not block a refusal — refusing to refuse someone helps nobody.
         """
         if record.verdict == VERIFIED and self._registry is not None:
             # Remember the IDENTITY, not the person. This row survives account deletion and is the
@@ -203,16 +222,11 @@ class VerificationService:
                 pass
 
         if self._auditor is not None:
-            # A refusal and a provider error are recorded too, NON-critically: an identity check
-            # that failed or was refused is exactly the signal fraud monitoring turns on (PCI-DSS
-            # 10.2 / NIST AU-2), but — unlike the VERIFIED grant above — a down audit log must not
-            # block a refusal, since refusing to refuse someone helps nobody.
-            if record.verdict == VERIFIED:
-                await self._auditor.record(
-                    "identity.verified", actor=record.subject, tenant=record.tenant,
-                    resource=f"{record.claim_type}:{record.id}",
-                    metadata={"provider": outcome.provider, "reference": outcome.reference})
-            elif record.verdict == REFUSED:
+            # A refusal and a provider error are recorded NON-critically: an identity check that
+            # failed or was refused is exactly the signal fraud monitoring turns on (PCI-DSS 10.2 /
+            # NIST AU-2), but — unlike the VERIFIED grant written ahead in _commit — a down audit log
+            # must not block a refusal, since refusing to refuse someone helps nobody.
+            if record.verdict == REFUSED:
                 await self._auditor.record(
                     "identity.refused", actor=record.subject, tenant=record.tenant,
                     resource=f"{record.claim_type}:{record.id}",

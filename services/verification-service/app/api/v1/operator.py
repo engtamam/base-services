@@ -90,10 +90,13 @@ def _runtime_config(request: Request) -> RuntimeConfig:
     rc = getattr(request.app.state, "runtime_config", None)
     if rc is not None:
         return rc
-    from app.config import Settings
+    from app.config import Settings, get_settings
     from app.runtime_policy import RUNTIME_POLICY
 
-    return RuntimeConfig(request.app.state.container.datastore, Settings, policy=RUNTIME_POLICY)
+    # Carry the SAME boot guard as the app.state instance (verification-002): a fallback that dropped
+    # the validate callback would silently accept a VERIFY_PROVIDERS value boot refuses.
+    return RuntimeConfig(request.app.state.container.datastore, Settings, policy=RUNTIME_POLICY,
+                         validate=get_settings().runtime_validate)
 
 
 class SecretIn(BaseModel):

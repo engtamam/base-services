@@ -106,7 +106,10 @@ def create_app() -> FastAPI:
             rotation_window_s=settings.SECRETS_ROTATION_WINDOW_SECONDS)
     app.state.secret_store = secret_store
     app.state.runtime_config = RuntimeConfig(
-        container.datastore, Settings, policy=RUNTIME_POLICY)
+        container.datastore, Settings, policy=RUNTIME_POLICY,
+        # The boot guard, applied to any runtime override (verification-002): a value production
+        # refuses to start with must be refused by the panel too.
+        validate=settings.runtime_validate)
     app.state.provider_pool = make_verifier_pool(
         settings, secret_store, app.state.runtime_config, container.secrets)
 

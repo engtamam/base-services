@@ -20,7 +20,10 @@
       "line": 75,
       "scenario": "In verify() the record is persisted (self._store.put(record)) and remembered in the registry, THEN _announce() calls auditor.record('identity.verified', ...). identity.verified is declared critical (auditable_actions.py) and AUDIT_FAIL_CLOSED defaults True, so when the audit log is down auditor.record raises AuditUnavailable AFTER the record is already stored as verdict=VERIFIED. The caller receives a 503 (AUDIT_UNAVAILABLE) implying nothing happened, but status()/latest() now return VERIFIED and the downstream welcome-gift/account-open can already be issued off it. The fail-closed control it exists for (an unprovable grant must not proceed) is defeated: the grant proceeded and is unprovable. On the caller's retry a brand-new record is created — a second provider call (real money) and a second registry.remember() increment for the same identity.",
       "evidence": "outcome = await self._ask(...)\n        self._apply(record, outcome, now)\n        await self._store.put(record)\n        await self._announce(record, outcome)   # <- auditor.record('identity.verified') runs here, can raise after commit",
-      "recommendation": "Audit write-ahead for the critical grant (record the intent before _store.put, as operator.py does for secret_set), or make the put+audit atomic with rollback on AuditUnavailable. Never commit a verdict the critical audit could still refuse."
+      "recommendation": "Audit write-ahead for the critical grant (record the intent before _store.put, as operator.py does for secret_set), or make the put+audit atomic with rollback on AuditUnavailable. Never commit a verdict the critical audit could still refuse.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "The critical identity.verified audit is now WRITTEN AHEAD of the put via a new _commit(): for a VERIFIED verdict the audit is recorded first, so a down/fail-closed audit log (AUDIT_FAIL_CLOSED) raises AuditUnavailable BEFORE the verdict is stored — the caller's 503 now truthfully means nothing happened, and status()/latest() do not return a VERIFIED downstream can act on. verify() and resolve() both route through _commit. Refusals/errors stay stored-then-audited non-critically (a down log must not block a refusal). Regression tests in tests/unit/test_verification.py."
     },
     {
       "id": "verification-002",
@@ -31,7 +34,10 @@
       "line": 96,
       "scenario": "runtime_config.py's own docstring promises 'THE BOOT GUARD'S RULES APPLY AT RUNTIME TOO' and RuntimeConfig.set() only re-runs the guard when self._validate is set. But _runtime_config() in operator.py constructs RuntimeConfig(datastore, Settings, policy=RUNTIME_POLICY) with NO validate= argument (also the app.state one in main.py). VERIFY_PROVIDERS is the one settable key. An operator can PUT /operator/config VERIFY_PROVIDERS=individual=null (or a provider with no url / no verdict_path) — values assert_verify_config_ok() refuses at boot in production — and it is accepted, coerced to str, stored, and applied by the pool. Every 'individual' check then returns ERROR (or, with a mis-mapped verdict, risks fail-open), while the panel shows the change succeeded and the audit log records it. The guard that protects the whole point of the service is silently not wired at the runtime edge.",
       "evidence": "return RuntimeConfig(request.app.state.container.datastore, Settings, policy=RUNTIME_POLICY)   # validate= omitted -> self._validate is None -> set() skips assert_verify_config_ok",
-      "recommendation": "Pass a validate callback into every RuntimeConfig construction that re-runs the relevant boot guards (at minimum assert_verify_config_ok for VERIFY_PROVIDERS), so a runtime override is refused exactly as a boot value would be."
+      "recommendation": "Pass a validate callback into every RuntimeConfig construction that re-runs the relevant boot guards (at minimum assert_verify_config_ok for VERIFY_PROVIDERS), so a runtime override is refused exactly as a boot value would be.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "Every RuntimeConfig construction (main.py app.state + operator.py fallback) now passes validate=settings.runtime_validate, a new Settings method that re-runs assert_verify_config_ok() against the candidate value (model_copy with the new VERIFY_PROVIDERS). RuntimeConfig.set() converts a boot-guard ValueError into RuntimeConfigError so the panel gets a 400-with-reason. A null/urlless provider that production refuses at boot is now refused at runtime too. Regression test tests/integration/test_operator_surface.py::test_runtime_override_faces_the_production_boot_guard."
     },
     {
       "id": "verification-003",

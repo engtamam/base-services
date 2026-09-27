@@ -437,6 +437,21 @@ class Settings(BaseSettings):
                     f"provider {provider!r} has no verdict_path: we would not know where its "
                     f"answer lives, so every response would read as error")
 
+    def runtime_validate(self, key: str, value: object) -> None:
+        """Re-run the relevant boot guard against a value an operator is trying to set at runtime.
+
+        verification-002: RuntimeConfig only enforces the boot rules when it is given this callback,
+        and it was constructed without one — so VERIFY_PROVIDERS could be repointed at the null
+        verifier (or a provider with no url / no verdict_path) at runtime, values assert_verify_
+        config_ok() refuses at boot in production. The panel reported success and the audit log
+        recorded it, while every 'individual' check then returned error (or risked fail-open). Wiring
+        this callback into every RuntimeConfig makes a runtime override face exactly the boot guard.
+        """
+        if key == "VERIFY_PROVIDERS":
+            # Validate the config that WOULD result — the guard reads verify_providers/verify_profiles,
+            # so a copy carrying the candidate string is re-parsed and re-checked identically to boot.
+            self.model_copy(update={"VERIFY_PROVIDERS": value}).assert_verify_config_ok()
+
     @property
     def is_production(self) -> bool:
         return self.ENV == "production"
