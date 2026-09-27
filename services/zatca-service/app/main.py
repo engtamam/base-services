@@ -156,6 +156,19 @@ def create_app() -> FastAPI:
     # Operator controls: credentials and policy an operator changes after launch.
     app.include_router(operator_router)
 
+    # A present-but-undecryptable CSID (wrong/rotated ZATCA_SEAL_KEY or a tampered row) is a hard
+    # configuration fault, not "not onboarded" (zatca-007). Surface it as a 503 so it alerts, instead
+    # of the old behaviour where load_secrets returned None and every invoice silently parked pending.
+    from fastapi import Request
+    from fastapi.responses import JSONResponse
+
+    from app.core.seal import CsidSealError
+
+    @app.exception_handler(CsidSealError)
+    async def _csid_seal_error(_request: "Request", exc: CsidSealError) -> JSONResponse:
+        logger.error("csid_seal_error", extra={"detail": str(exc)})
+        return JSONResponse(status_code=503, content={"detail": "CSID_SEAL_ERROR"})
+
     return app
 
 

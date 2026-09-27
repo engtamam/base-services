@@ -53,6 +53,66 @@ def test_category_vat_is_rounded_on_the_total_not_summed_per_line():
     assert '<cbc:TaxAmount currencyID="SAR">0.04</cbc:TaxAmount>' not in b["xml"]
 
 
+def test_issue_date_is_ksa_local_not_utc():
+    """zatca-005: a sale at 01:30 KSA (22:30 UTC the previous day) must be dated on the KSA calendar
+    day, not the UTC one. 2023-11-15 01:30:00 +03:00 = epoch 1700000200 (22:30 UTC on 2023-11-14)."""
+    epoch = 1_700_000_200          # 2023-11-15 01:16:40 Asia/Riyadh  /  2023-11-14 22:16:40 UTC
+    b = build_ubl({**INV, "issued_at": epoch, "vat_rate": "0.15", "currency": "SAR"},
+                  icv=1, pih=GENESIS_PIH, invoice_type="simplified")
+    assert "<cbc:IssueDate>2023-11-15</cbc:IssueDate>" in b["xml"]     # KSA date, not 2023-11-14
+    assert "<cbc:IssueTime>01:16:40</cbc:IssueTime>" in b["xml"]       # KSA time (+3h), not 22:16:40
+
+
+def test_missing_issued_at_defaults_to_now_never_1970():
+    # zatca-006: an absent issued_at must NOT date the signed invoice 1970-01-01 (the `or 0` trap).
+    inv = {k: v for k, v in INV.items() if k != "issued_at"}
+    b = build_ubl({**inv, "vat_rate": "0.15", "currency": "SAR"}, icv=1, pih=GENESIS_PIH,
+                  invoice_type="simplified")
+    assert "1970-01-01" not in b["xml"]
+
+
+def test_explicit_zero_issued_at_is_rejected_before_a_slot():
+    # zatca-006: an explicit 0/negative epoch is refused up front (would date the invoice 1970).
+    from app.core.zatca_service import _validate_invoice_input, ZatcaInputError
+    with pytest.raises(ZatcaInputError):
+        _validate_invoice_input({**INV, "issued_at": 0}, "SAR")
+    with pytest.raises(ZatcaInputError):
+        _validate_invoice_input({**INV, "issued_at": -5}, "SAR")
+
+
+def test_load_secrets_uses_the_bst_directly_not_double_encoded():
+    # zatca-008: the Basic-auth token must be the binarySecurityToken (certificate_pem) itself, not a
+    # re-base64'd copy. cert_base64 is gone; certificate_pem is what the direct client uses.
+    st = MemoryDataStore()
+    ss = SettingsStore(st, "seal-key")
+    run(ss.store_csid("t1", certificate_pem="BST-TOKEN-ALREADY-B64", secret="sec",
+                      private_key_pem="key"))
+    secrets = run(ss.load_secrets("t1"))
+    assert secrets["certificate_pem"] == "BST-TOKEN-ALREADY-B64"
+    assert "cert_base64" not in secrets
+
+    # And the direct client's Authorization header decodes to exactly BST:secret (single layer).
+    import base64
+    from app.adapters.fatoora.direct import DirectFatoora
+    h = DirectFatoora("https://gw.example.test")._headers(
+        {"token": secrets["certificate_pem"], "secret": secrets["secret"]}, clearance=False)
+    decoded = base64.b64decode(h["Authorization"].split(" ", 1)[1]).decode()
+    assert decoded == "BST-TOKEN-ALREADY-B64:sec"
+
+
+def test_egress_boot_guard_rejects_an_unallowlisted_gateway_host():
+    # zatca-009: with an allowlist configured, a FATOORA_BASE_URL host outside it fails fast at boot.
+    from app.config import Settings
+    from app.container import _guard_egress_hosts, ConfigError
+    ok = Settings(EGRESS_ALLOWED_HOSTS="gw.zatca.gov.sa", FATOORA_BASE_URL="https://gw.zatca.gov.sa/e")
+    _guard_egress_hosts(ok)                                   # allow-listed → no raise
+    bad = Settings(EGRESS_ALLOWED_HOSTS="gw.zatca.gov.sa", FATOORA_BASE_URL="https://evil.example/e")
+    with pytest.raises(ConfigError):
+        _guard_egress_hosts(bad)
+    # No allowlist configured → URLs are trusted config, no enforcement.
+    _guard_egress_hosts(Settings(EGRESS_ALLOWED_HOSTS="", FATOORA_BASE_URL="https://anything.test/e"))
+
+
 def test_chain_breaks():
     good = [{"icv": 1, "pih": GENESIS_PIH, "hash": "H1", "status": "reported"},
             {"icv": 2, "pih": "H1", "hash": "H2", "status": "pending"}]
@@ -89,7 +149,10 @@ def test_seal_roundtrip():
     tok = seal("secret-key-material", "master")
     assert tok and "secret-key-material" not in tok
     assert unseal(tok, "master") == "secret-key-material"
-    assert unseal(tok, "wrong") is None
+    # A present blob under the WRONG key is a loud fault now, not a silent None (zatca-007).
+    from app.core.seal import CsidSealError
+    with pytest.raises(CsidSealError):
+        unseal(tok, "wrong")
 
 
 # ── orchestration ─────────────────────────────────────────────────────────────

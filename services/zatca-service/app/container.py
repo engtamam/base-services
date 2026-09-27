@@ -273,8 +273,33 @@ def _build_audit_sink(settings: Settings, event_bus) -> Any:
     return _pick(_AUDIT_SINK, driver, "audit_sink", settings)
 
 
+def _guard_egress_hosts(settings: Settings) -> None:
+    """Enforce the egress allowlist against the configured tax-gateway URLs at boot (zatca-009).
+
+    config/direct docstrings promised the Fatoora/sidecar host 'must be egress-allowlisted', but
+    post_json called urllib on whatever base_url was configured with no check, and nothing validated
+    FATOORA_BASE_URL / ZATCA_SIGNER_URL against EGRESS_ALLOWED_HOSTS — the SsrfAllowlistCheck only
+    covers the CWE-guard 'egress' step for user URLs. When an allowlist IS configured we now fail
+    fast on an un-allowlisted host (CWE-918); with no allowlist the URLs are trusted deploy config.
+    """
+    allow = settings.egress_allowed_hosts
+    if not allow:
+        return
+    from urllib.parse import urlsplit
+    for name, url in (("FATOORA_BASE_URL", settings.FATOORA_BASE_URL),
+                      ("ZATCA_SIGNER_URL", settings.ZATCA_SIGNER_URL)):
+        if not url:
+            continue
+        host = (urlsplit(url).hostname or "").lower()
+        if host and host not in allow:
+            raise ConfigError(
+                f"{name} host {host!r} is not in EGRESS_ALLOWED_HOSTS — refusing to start with an "
+                f"un-allowlisted tax-gateway egress target (CWE-918)")
+
+
 def build_container(settings: Settings) -> Container:
     _guard_fatoora_env(settings)
+    _guard_egress_hosts(settings)
     """Resolve every port from config. Fail-fast on any unknown driver."""
     event_bus = _pick(_EVENTBUS, settings.EVENTBUS_DRIVER, "event_bus", settings)
     return Container(

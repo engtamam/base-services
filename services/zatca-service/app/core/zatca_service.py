@@ -19,6 +19,7 @@ from app.core import ubl as _ubl
 from app.core.backoff import compute_retry_schedule
 from app.core.classify import classify
 from app.core.models import ACCEPTED, ZatcaInvoice
+from app.core.seal import CsidSealError
 from app.core.stores import InvoiceStore, SettingsStore
 from app.ports.fatoora_client import FatooraUnavailable
 from app.ports.zatca_signer import SignerUnavailable
@@ -47,11 +48,15 @@ def _validate_invoice_input(invoice_in: dict, default_currency: str) -> None:
     if not (len(cur) == 3 and cur.isalpha()):
         raise ZatcaInputError(f"invalid currency code: {invoice_in.get('currency')!r}")
     issued_at = invoice_in.get("issued_at")
-    if issued_at is not None:                       # build_ubl: int(inv.get('issued_at') or 0)
+    if issued_at is not None:                       # absent → build_ubl defaults to now (zatca-006)
         try:
-            int(issued_at)
+            issued_epoch = int(issued_at)
         except (TypeError, ValueError):
             raise ZatcaInputError(f"issued_at is not an integer epoch: {issued_at!r}") from None
+        # An explicit 0/negative epoch would date the SIGNED invoice 1970-01-01 (or earlier). Reject it
+        # rather than file a nonsensical date; a caller that means "now" simply omits the field.
+        if issued_epoch <= 0:
+            raise ZatcaInputError(f"issued_at must be a positive epoch, got {issued_at!r}")
     lines = invoice_in.get("lines")
     if not isinstance(lines, list) or not lines:
         raise ZatcaInputError("invoice has no lines")
@@ -221,7 +226,9 @@ class ZatcaService:
             return self._result(inv)
         call = self._fatoora.clear if inv.invoice_type == "standard" else self._fatoora.report
         success = "cleared" if inv.invoice_type == "standard" else "reported"
-        creds = {"token": secrets.get("cert_base64"), "secret": secrets.get("secret")}
+        # The BST (certificate_pem) is the Basic-auth username as-is; basic_auth adds the one required
+        # base64 layer. Passing a re-encoded copy double-encoded the token (zatca-008).
+        creds = {"token": secrets.get("certificate_pem"), "secret": secrets.get("secret")}
         try:
             code, resp = await asyncio.to_thread(            # blocking Fatoora gateway OFF the event loop
                 call, signed_xml=inv.signed_xml, invoice_hash=inv.hash,
@@ -276,8 +283,15 @@ class ZatcaService:
             res = await self._inv.reconcile_orphans(tenant, max_scan=self._reconcile_max_scan)
             reclaimed += res["count"]
         processed = 0
+        seal_errors = 0
         for inv in due:
-            secrets = await self._set.load_secrets(inv.tenant)
+            try:
+                secrets = await self._set.load_secrets(inv.tenant)
+            except CsidSealError:
+                # One tenant's wrong/rotated seal key must not halt the whole batch (zatca-007). Skip
+                # this invoice and count it so the sweep result surfaces the misconfiguration loudly.
+                seal_errors += 1
+                continue
             if secrets is None:
                 continue
             if inv.status in ("none", "pending"):
@@ -285,7 +299,8 @@ class ZatcaService:
                     continue
             await self._submit(inv, secrets)
             processed += 1
-        return {"processed": processed, "due": len(due), "orphans_reclaimed": reclaimed}
+        return {"processed": processed, "due": len(due), "orphans_reclaimed": reclaimed,
+                "seal_errors": seal_errors}
 
     # ── stuck-invoice recovery (zatca-r2-03 / r2-07) ────────────────────────────
     async def reconcile_orphans(self, tenant: str) -> dict[str, Any]:
@@ -390,8 +405,13 @@ class ZatcaService:
 
     # ── onboarding ────────────────────────────────────────────────────────────────
     async def onboard_compliance(self, tenant: str, *, otp: str, csr_meta: dict) -> dict[str, Any]:
-        csr = self._signer.generate_csr(csr_meta)          # raises SignerUnavailable if no signer
-        code, resp = self._fatoora.onboard_compliance(csr_pem=csr["csrPem"], otp=otp)
+        # OFFLOAD the blocking SDK/gateway calls off the event loop (zatca-004), exactly as _sign and
+        # _submit do: generate_csr and onboard_compliance both make synchronous stdlib-urllib HTTP
+        # calls with a 30s timeout that would otherwise freeze the single-worker loop for every other
+        # request during onboarding.
+        csr = await asyncio.to_thread(self._signer.generate_csr, csr_meta)   # raises SignerUnavailable
+        code, resp = await asyncio.to_thread(
+            self._fatoora.onboard_compliance, csr_pem=csr["csrPem"], otp=otp)
         ok = 200 <= code < 300
         if ok:
             await self._set.store_csid(
@@ -408,8 +428,10 @@ class ZatcaService:
         req_id = await self._set.request_id(tenant)
         if secrets is None or not req_id:
             return {"code": 0, "onboarding_status": "failed", "reason": "NOT_COMPLIANCE_ONBOARDED"}
-        code, resp = self._fatoora.onboard_production(
-            compliance_request_id=req_id, csid_token=secrets["cert_base64"], csid_secret=secrets["secret"])
+        code, resp = await asyncio.to_thread(               # blocking gateway OFF the event loop (zatca-004)
+            self._fatoora.onboard_production,
+            compliance_request_id=req_id, csid_token=secrets["certificate_pem"],
+            csid_secret=secrets["secret"])
         ok = 200 <= code < 300
         if ok:                                             # keep the compliance private key (unchanged)
             await self._set.store_csid(

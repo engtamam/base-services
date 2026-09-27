@@ -238,11 +238,18 @@ class InvoiceStore:
                 inv_id = candidate
                 break                                        # won the number claim
             row = await self._store.get(_INDEX, f"num::{tenant}::{number}")
-            for _ in range(10_000):                          # a concurrent winner is mid-flight; wait for
-                existing = await self.by_number(tenant, number)   # its invoice row, then return it
+            # A concurrent winner is mid-flight; wait for its invoice row with BOUNDED exponential
+            # backoff (zatca-003). The old `for _ in range(10_000): sleep(0)` spin issued up to 10k
+            # datastore round-trips per contended number as fast as the loop turned — a self-inflicted
+            # read storm on postgres if the winner's save() was slow. A handful of reads over a short
+            # window is enough: a real save() lands in well under a second.
+            delay = 0.005
+            for _ in range(15):                              # ~2s total worst case, ≤15 reads
+                existing = await self.by_number(tenant, number)   # winner's invoice row, then return it
                 if existing is not None:
                     return existing, False
-                await asyncio.sleep(0)                        # yield so the winner's save() can land
+                await asyncio.sleep(delay)                    # let the winner's save() land
+                delay = min(delay * 2, 0.25)
             # No invoice appeared. Free it and retry ONLY when the claim is old enough to be a crash
             # orphan (a live winner finishes in << _STALE_NUM_CLAIM_S) AND its id resolves to no
             # invoice — so an in-flight claim of the same instant is never stolen. A legacy claim with
@@ -447,8 +454,10 @@ class SettingsStore:
         key = unseal(r.get("private_key_enc", ""), self._seal_key, _csid_aad(tenant, "private_key"))
         if not (cert and key):
             return None
-        import base64
+        # NB: `cert` is ZATCA's binarySecurityToken (BST), which is ALREADY base64 text. It is the
+        # Basic-auth username as-is — do NOT re-encode it (zatca-008). basic_auth() then produces the
+        # single ZATCA-required layer: Basic base64(BST:secret). A second base64 here yielded
+        # Basic base64(base64(BST):secret) and every direct-gateway/production call authenticated wrong.
         return {"certificate_pem": cert, "private_key_pem": key,
                 "secret": unseal(r.get("csid_secret_enc", ""), self._seal_key,
-                                 _csid_aad(tenant, "csid_secret")) or "",
-                "cert_base64": base64.b64encode(cert.encode()).decode()}
+                                 _csid_aad(tenant, "csid_secret")) or ""}

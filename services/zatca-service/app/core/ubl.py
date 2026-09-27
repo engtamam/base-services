@@ -13,8 +13,16 @@ from __future__ import annotations
 
 import time
 import uuid as _uuid
+from datetime import datetime as _datetime, timedelta as _timedelta, timezone as _timezone
 from decimal import ROUND_HALF_UP, Decimal
 from xml.sax.saxutils import escape as _esc
+
+# ZATCA dates an invoice in the seller's LOCAL time. Saudi Arabia is Asia/Riyadh = a fixed UTC+3 with
+# NO daylight saving, so a constant offset is exact (zatca-005). Rendering IssueDate/IssueTime in UTC
+# stamped a near-midnight sale with the wrong calendar date and a 3-hour-off time on a SIGNED,
+# immutable document — and, for simplified invoices reported within 24h, put the reporting clock on
+# the wrong day.
+_KSA_TZ = _timezone(_timedelta(hours=3))
 
 
 def _major(minor: int, places: int = 2) -> str:
@@ -55,8 +63,13 @@ def build_ubl(inv: dict, *, icv: int, pih: str, invoice_type: str = "simplified"
     address}, buyer{name,vat_number?,id?}, lines[{description, qty, amount_minor (NET)}]}.
     Returns {xml, uuid, tax_exclusive, vat, tax_inclusive}.
     """
-    t = time.gmtime(int(inv.get("issued_at") or 0))
-    issue_date, issue_time = time.strftime("%Y-%m-%d", t), time.strftime("%H:%M:%S", t)
+    # Distinguish an ABSENT timestamp (default to now) from an explicit one — never `or 0`, which
+    # dated a missing OR a legitimately-zero value 1970-01-01 on a signed invoice (zatca-006). A bad
+    # explicit value is rejected upstream in _validate_invoice_input before a slot is burned.
+    raw_issued = inv.get("issued_at")
+    epoch = int(raw_issued) if raw_issued not in (None, "") else int(time.time())
+    dt = _datetime.fromtimestamp(epoch, _KSA_TZ)          # KSA local, per zatca-005
+    issue_date, issue_time = dt.strftime("%Y-%m-%d"), dt.strftime("%H:%M:%S")
     uuid_v = inv.get("uuid") or stable_uuid(str(inv["number"]))
     seller = inv.get("seller") or {}
     buyer = inv.get("buyer") or {}

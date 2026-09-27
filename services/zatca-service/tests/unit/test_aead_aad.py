@@ -15,6 +15,7 @@ import pytest
 
 from app.adapters.datastore.memory import MemoryDataStore
 from app.core import backup as B
+from app.core.seal import CsidSealError
 from app.core.seal import seal as csid_seal
 from app.core.seal import unseal as csid_unseal
 from app.core.secret_store import SecretError, SecretStore, _COLL
@@ -61,15 +62,18 @@ def test_a_sealed_credential_cannot_be_relocated_to_another_row():
 
 
 def test_csid_seal_is_bound_to_its_slot():
-    """A relocated/renamed CSID blob fails the tag (unseal returns None), so a tamperer cannot copy
-    tenant A's compliance cert into tenant B's row, nor swap the cert blob into the key field."""
+    """A relocated/renamed CSID blob fails the tag and now RAISES CsidSealError (zatca-007: a present
+    but undecryptable blob is a loud fault, not a silent None), so a tamperer cannot copy tenant A's
+    compliance cert into tenant B's row, nor swap the cert blob into the key field."""
     blob = csid_seal("cert-pem", "seal-key", _csid_aad("acme", "csid_cert"))
     # Same key, right slot → round-trips.
     assert csid_unseal(blob, "seal-key", _csid_aad("acme", "csid_cert")) == "cert-pem"
-    # Relocated to another tenant → fails.
-    assert csid_unseal(blob, "seal-key", _csid_aad("globex", "csid_cert")) is None
-    # Swapped into another field → fails.
-    assert csid_unseal(blob, "seal-key", _csid_aad("acme", "private_key")) is None
+    # Relocated to another tenant → fails loudly.
+    with pytest.raises(CsidSealError):
+        csid_unseal(blob, "seal-key", _csid_aad("globex", "csid_cert"))
+    # Swapped into another field → fails loudly.
+    with pytest.raises(CsidSealError):
+        csid_unseal(blob, "seal-key", _csid_aad("acme", "private_key"))
 
 
 def test_a_legacy_no_aad_csid_blob_still_unseals_after_aad_was_introduced():
@@ -78,13 +82,16 @@ def test_a_legacy_no_aad_csid_blob_still_unseals_after_aad_was_introduced():
     an upgrade orphans every existing tenant's cert/key and silently halts all signing."""
     legacy = csid_seal("cert-pem", "seal-key", "")          # pre-AAD seal (no associated data)
     assert csid_unseal(legacy, "seal-key", _csid_aad("acme", "csid_cert")) == "cert-pem"
-    # A wrong key still fails loudly (None) even on the legacy path — no silent accept.
-    assert csid_unseal(legacy, "wrong-key", _csid_aad("acme", "csid_cert")) is None
+    # A wrong key still fails loudly (raises) even on the legacy path — no silent accept (zatca-007).
+    with pytest.raises(CsidSealError):
+        csid_unseal(legacy, "wrong-key", _csid_aad("acme", "csid_cert"))
 
 
 def test_relocating_a_whole_csid_settings_row_fails_closed():
     """load_secrets on a settings row copied into another tenant must not return the original's
-    material — the AAD mismatch makes the unseals fail, so it returns None (fails closed)."""
+    material — the AAD mismatch makes the unseals fail. It now RAISES CsidSealError (zatca-007) rather
+    than returning None, so a tampered relocation surfaces loudly instead of masquerading as
+    'not onboarded'. Either way it fails closed: globex never gets acme's credentials."""
     store = MemoryDataStore()
     ss = SettingsStore(store, "seal-key")
     run(ss.store_csid("acme", certificate_pem="cert-pem", secret="sec",
@@ -92,6 +99,7 @@ def test_relocating_a_whole_csid_settings_row_fails_closed():
     acme_row = run(store.get(_SETTINGS, "acme"))
     forged = {**acme_row, "id": "globex"}
     run(store.put(_SETTINGS, "globex", forged))
-    assert run(ss.load_secrets("globex")) is None
+    with pytest.raises(CsidSealError):
+        run(ss.load_secrets("globex"))
     # The legitimate row still loads under its own tenant.
     assert run(ss.load_secrets("acme"))["certificate_pem"] == "cert-pem"

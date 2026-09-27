@@ -11,6 +11,13 @@ import os
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
+class CsidSealError(Exception):
+    """A sealed CSID blob is PRESENT but could not be decrypted — a wrong/rotated ZATCA_SEAL_KEY or a
+    tampered row. Distinct from an ABSENT blob (unseal returns None). Masking this as None made
+    load_secrets return None, which finalize/sweep read as 'not onboarded' and silently parked every
+    invoice in 'pending' with nobody told the key was wrong (zatca-007). It must surface loudly."""
+
+
 def _key(seal_key: str) -> bytes:
     return hashlib.sha256((seal_key or "").encode()).digest()
 
@@ -30,7 +37,7 @@ def seal(plaintext: str, seal_key: str, aad: str = "") -> str:
 
 def unseal(token: str, seal_key: str, aad: str = "") -> str | None:
     if not token:
-        return None
+        return None                                 # genuinely ABSENT — not onboarded
     from cryptography.exceptions import InvalidTag
     try:
         raw = base64.b64decode(token)
@@ -44,8 +51,10 @@ def unseal(token: str, seal_key: str, aad: str = "") -> str | None:
             # Backward compatibility: a CSID blob sealed BEFORE AAD binding (associated_data=None)
             # fails the AAD attempt above. Decrypt it in the legacy no-AAD format so upgrading never
             # orphans an existing tenant's cert/key (which would silently halt all signing — the same
-            # incident class the fleet AEAD fix closed elsewhere; this file was missed then). A wrong
-            # key / tampered blob fails this attempt too and falls through to None.
+            # incident class the fleet AEAD fix closed elsewhere; this file was missed then).
             return AESGCM(key).decrypt(raw[:12], raw[12:], None).decode()  # aad: ok — legacy pre-AAD CSID blob; primary decrypt above binds the AAD
-    except Exception:
-        return None
+    except Exception as exc:
+        # A PRESENT token that will not decrypt is a wrong/rotated key or a tampered row, NOT an absent
+        # CSID. Raise loudly (zatca-007) so it surfaces as a 503/alert instead of masquerading as
+        # 'not onboarded' and silently parking every invoice in pending.
+        raise CsidSealError(f"CSID blob present but undecryptable: {type(exc).__name__}") from exc

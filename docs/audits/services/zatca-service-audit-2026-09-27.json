@@ -48,7 +48,10 @@
       "line": 200,
       "scenario": "When two finalizes race on the same (tenant, number), the loser enters `for _ in range(10_000): existing = await self.by_number(...); await asyncio.sleep(0)`. by_number is a real datastore.get on every iteration, so under contention (or if the winner is slow because signing/DB latency is high) the loser can issue up to 10,000 DB round-trips in a tight yield loop. On postgres this is a self-inflicted read storm and, with several concurrent duplicate submissions, an easy way to exhaust the connection pool (DATASTORE_POOL_MAX=10). The memory-store tests never expose it because the winner's save() lands on the first sleep(0).",
       "evidence": "for _ in range(10_000):                          # a concurrent winner is mid-flight; wait for\n    existing = await self.by_number(tenant, number)   # its invoice row, then return it\n    if existing is not None:\n        return existing, False\n    await asyncio.sleep(0)",
-      "recommendation": "Replace the spin with a bounded backoff (e.g. exponential sleep capped at a few hundred ms, ~10-20 attempts) and a hard timeout that returns 503/retry, so a contended number costs a handful of reads over a short window, not 10k reads as fast as the loop can run."
+      "recommendation": "Replace the spin with a bounded backoff (e.g. exponential sleep capped at a few hundred ms, ~10-20 attempts) and a hard timeout that returns 503/retry, so a contended number costs a handful of reads over a short window, not 10k reads as fast as the loop can run.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "allocate_slot's winner-wait spin (up to 10,000 datastore reads) replaced with bounded exponential backoff (~15 reads, ~2s cap) before the stale-orphan reclaim. The icv-advance loop stays (it makes real progress per iteration)."
     },
     {
       "id": "zatca-004",
@@ -59,7 +62,10 @@
       "line": 378,
       "scenario": "onboard_compliance calls self._signer.generate_csr(csr_meta) and self._fatoora.onboard_compliance(...) directly (not via asyncio.to_thread), and onboard_production calls self._fatoora.onboard_production(...) directly. Both adapters use the stdlib urllib post_json with a 30s timeout. Unlike _sign/_submit (which correctly wrap the blocking SDK/gateway in asyncio.to_thread), these onboarding calls block the single-worker event loop for the full round-trip to the Java sidecar and to ZATCA. Per the team's own 'Blocking sync in async' incident, a blocked loop fails even /healthz and crash-loops the pod. An onboarding against a slow ZATCA sandbox stalls every other in-flight request for up to 30s.",
       "evidence": "csr = self._signer.generate_csr(csr_meta)          # raises SignerUnavailable if no signer\n        code, resp = self._fatoora.onboard_compliance(csr_pem=csr[\"csrPem\"], otp=otp)",
-      "recommendation": "Wrap generate_csr, onboard_compliance and onboard_production in asyncio.to_thread exactly as _sign and _submit already do."
+      "recommendation": "Wrap generate_csr, onboard_compliance and onboard_production in asyncio.to_thread exactly as _sign and _submit already do.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "generate_csr, onboard_compliance and onboard_production are now wrapped in asyncio.to_thread, matching _sign/_submit, so the blocking stdlib-urllib onboarding HTTP no longer freezes the event loop."
     },
     {
       "id": "zatca-005",
@@ -70,7 +76,10 @@
       "line": 58,
       "scenario": "build_ubl derives IssueDate and IssueTime with time.gmtime(issued_at) — UTC. ZATCA invoices are dated in the seller's local time (Asia/Riyadh, UTC+3), and simplified invoices must be reported within 24h of issuance. A sale at 01:30 local (22:30 UTC the previous day) is stamped with the previous calendar date and a 3-hour-off time on a SIGNED, immutable document. Near midnight this puts the invoice on the wrong tax day, and the mismatch between the printed local time and the XML time is a compliance finding that cannot be corrected without a credit note.",
       "evidence": "t = time.gmtime(int(inv.get(\"issued_at\") or 0))\n    issue_date, issue_time = time.strftime(\"%Y-%m-%d\", t), time.strftime(\"%H:%M:%S\", t)",
-      "recommendation": "Render IssueDate/IssueTime in the ZATCA-required local timezone (Asia/Riyadh, or a configurable tz), converting the epoch with a fixed +03:00 offset (KSA has no DST). Add a test asserting a near-midnight epoch lands on the correct local date."
+      "recommendation": "Render IssueDate/IssueTime in the ZATCA-required local timezone (Asia/Riyadh, or a configurable tz), converting the epoch with a fixed +03:00 offset (KSA has no DST). Add a test asserting a near-midnight epoch lands on the correct local date.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "build_ubl renders IssueDate/IssueTime in Asia/Riyadh (fixed UTC+3, no DST) via datetime.fromtimestamp(epoch, _KSA_TZ) instead of time.gmtime — a near-midnight sale is dated on the correct KSA calendar day. Regression test in test_zatca_core.py."
     },
     {
       "id": "zatca-006",
@@ -81,7 +90,10 @@
       "line": 58,
       "scenario": "_validate_invoice_input only checks that issued_at, if present, is int-parseable; it accepts issued_at absent. build_ubl then does int(inv.get('issued_at') or 0) — so a missing issued_at, or an explicit 0, becomes epoch 0 and the invoice is dated 1970-01-01T00:00:00 on a signed document. `or 0` also turns a legitimately-provided 0 into the same value. The invoice signs and files with a nonsensical date instead of failing loudly or defaulting to 'now'.",
       "evidence": "t = time.gmtime(int(inv.get(\"issued_at\") or 0))",
-      "recommendation": "Require issued_at explicitly (reject None in _validate_invoice_input) or default a missing one to the current time; never coerce a missing timestamp to epoch 0. Distinguish 'absent' from an explicit numeric 0."
+      "recommendation": "Require issued_at explicitly (reject None in _validate_invoice_input) or default a missing one to the current time; never coerce a missing timestamp to epoch 0. Distinguish 'absent' from an explicit numeric 0.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "issued_at is no longer coerced with `or 0` (which dated a missing/zero value 1970-01-01); an absent value defaults to now, and _validate_invoice_input rejects an explicit <=0 epoch before a slot is burned. Regression tests added."
     },
     {
       "id": "zatca-007",
@@ -92,7 +104,10 @@
       "line": 50,
       "scenario": "unseal wraps everything in `except Exception: return None`. If ZATCA_SEAL_KEY (or the INTERNAL_SERVICE_TOKEN it falls back to) is rotated or misconfigured, every CSID cert/key decrypts to None, load_secrets returns None, and finalize/sweep treat the tenant as 'not onboarded (no CSID); staying pending' — every invoice silently parks in pending and no one is told the seal key is wrong. Contrast SecretStore._open, which raises a loud SecretError precisely so an operator is sent to the KEK rather than the provider dashboard. Here the same failure class is invisible.",
       "evidence": "    except Exception:\n        return None",
-      "recommendation": "Distinguish a genuinely-absent CSID (return None) from a decryption FAILURE (raise/log loudly). Mirror SecretStore._open: on InvalidTag-after-legacy-fallback, raise a typed error and surface it as a 503/alert instead of masquerading as 'not onboarded'."
+      "recommendation": "Distinguish a genuinely-absent CSID (return None) from a decryption FAILURE (raise/log loudly). Mirror SecretStore._open: on InvalidTag-after-legacy-fallback, raise a typed error and surface it as a 503/alert instead of masquerading as 'not onboarded'.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "unseal now RAISES CsidSealError on a present-but-undecryptable CSID (wrong/rotated ZATCA_SEAL_KEY or tampered row) instead of returning None; load_secrets propagates it. An app exception handler maps it to 503 CSID_SEAL_ERROR (alert), and sweep skips+counts per-tenant seal_errors so one bad key doesn't halt the batch. Distinguishes this from a genuinely-absent CSID (still None)."
     },
     {
       "id": "zatca-008",
@@ -103,7 +118,10 @@
       "line": 209,
       "scenario": "load_secrets returns cert_base64 = base64.b64encode(cert.encode()) where cert is resp['binarySecurityToken'] — which ZATCA already returns base64-encoded. _submit passes creds={'token': cert_base64}, and DirectFatoora._headers builds Authorization: basic_auth(cred['token'], secret) = Basic base64(base64(BST) + ':' + secret). ZATCA's REST API expects the binarySecurityToken itself (already base64) as the Basic-auth username, so this adds a second encoding layer and every direct clearance/reporting call would be rejected with 401 (which classify() then treats as transient and retries forever, masking the misconfiguration). The sidecar path avoids this because it doesn't pass creds, so the bug only bites the direct client.",
       "evidence": "creds = {\"token\": secrets.get(\"cert_base64\"), \"secret\": secrets.get(\"secret\")}  ...  cert_base64 = base64.b64encode(cert.encode()).decode()",
-      "recommendation": "Pass the binarySecurityToken as-is (the stored certificate_pem string) as the Basic-auth username for the direct client, not a re-encoded copy. Add an integration test against a stubbed ZATCA direct endpoint asserting the Authorization header decodes to BST:secret."
+      "recommendation": "Pass the binarySecurityToken as-is (the stored certificate_pem string) as the Basic-auth username for the direct client, not a re-encoded copy. Add an integration test against a stubbed ZATCA direct endpoint asserting the Authorization header decodes to BST:secret.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "the Basic-auth token is now the binarySecurityToken (certificate_pem) itself, not a re-base64'd copy; cert_base64 removed. Both _submit and onboard_production pass certificate_pem, so the header is the single ZATCA-required layer Basic base64(BST:secret). Regression test decodes the header."
     },
     {
       "id": "zatca-009",
@@ -114,7 +132,10 @@
       "line": 24,
       "scenario": "config.py and direct.py both say the Fatoora/sidecar host 'must be egress-allowlisted', and zatca_http says the CWE egress-guard covers user URLs. But post_json calls urllib.request.urlopen on whatever base_url is configured with no allowlist enforcement, and build_container has no boot check that FATOORA_BASE_URL/ZATCA_SIGNER_URL hosts are in EGRESS_ALLOWED_HOSTS — the SsrfAllowlistCheck in security/checks.py is a self-reported cwe_guard report, not an interceptor on the actual egress. An operator who fat-fingers FATOORA_BASE_URL to an internal metadata endpoint (169.254.169.254) or an attacker-controlled host would have signed invoices + PCSID Basic-auth credentials POSTed there with no guard, despite the documented promise. Config-sourced so severity is bounded, but the enforcement gap contradicts the stated control.",
       "evidence": "with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310 - fixed https config hosts",
-      "recommendation": "Either enforce it — validate FATOORA_BASE_URL and ZATCA_SIGNER_URL hosts against egress_allowed_hosts at boot (fail-fast) and/or check the resolved host in post_json — or correct the comments to state that the URLs are trusted config with no runtime egress check."
+      "recommendation": "Either enforce it — validate FATOORA_BASE_URL and ZATCA_SIGNER_URL hosts against egress_allowed_hosts at boot (fail-fast) and/or check the resolved host in post_json — or correct the comments to state that the URLs are trusted config with no runtime egress check.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "new _guard_egress_hosts boot check validates FATOORA_BASE_URL and ZATCA_SIGNER_URL hosts against EGRESS_ALLOWED_HOSTS (fail-fast, CWE-918) when an allowlist is configured; no allowlist = trusted deploy config. Regression test added."
     },
     {
       "id": "zatca-010",
