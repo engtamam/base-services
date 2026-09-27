@@ -68,26 +68,67 @@ class InvoiceStore:
         return (int(row.get("signed_icv", 0)), row.get("last_hash", "")) if row else (0, "")
 
     async def mark_signed(self, inv: ZatcaInvoice) -> bool:
-        """Advance the signed head CONTIGUOUSLY (icv == signed_icv + 1), then — and ONLY then —
-        persist the signed body. Returns True iff THIS invoice legitimately advanced the chain.
+        """Persist the signed body durably FIRST, then advance the signed head CONTIGUOUSLY
+        (icv == signed_icv + 1). Returns True iff THIS invoice is durably signed AND the chain head
+        now reflects it. False means "not the next link / not yet committed" — do not submit.
 
-        Byte-safety (zatca-r2-02): the signed-head CAS runs BEFORE `save(inv)`, and the body is
-        persisted only when the CAS wins. The old order saved the signed body FIRST, so a losing
-        concurrent sign (a second sweep, or sweep-vs-resubmit) of the same ICV overwrote the winner's
-        already-stored signed_xml/hash with its own non-deterministic bytes — forking the chain and
-        mutating a signed invoice. Now the loser's CAS fails, it re-reads a head that has moved past
-        it, returns False, and NEVER touches the stored bytes. Returns False if this invoice is not
-        the next link (predecessor unsigned) — the caller must not treat it as chained or submit it."""
+        Two invariants that pull in opposite directions, both satisfied here:
+
+        Atomicity (zatca-002). The old order advanced the head CAS and only THEN called save(inv):
+        two non-atomic ops. A crash in between left the head reporting ICV N as signed with hash H
+        while row N was still status='pending', hash='' — and because ZATCA signing is
+        NON-deterministic (a fresh SigningTime each time), a re-sign could never reproduce H, so N
+        was unsignable and unsubmittable forever and every successor deferred behind it. So the body
+        is now persisted BEFORE the head advances: a crash leaves a fully-signed, self-consistent row
+        and a head merely one behind, which the next sign re-drives with NO re-signing (it adopts the
+        durable bytes and just advances the head).
+
+        Byte-safety (zatca-r2-02). A losing concurrent sign of the same ICV must never overwrite the
+        winner's already-stored signed_xml/hash with its own non-deterministic bytes. The single body
+        writer is elected write-once via an insert-if-absent claim (`signedbody::`); a loser (or a
+        retry) whose row already carries a signed body ADOPTS those durable bytes and never writes.
+        The claim is crash-reclaimable on the same staleness rule allocate_slot uses for `num::`
+        orphans, so a writer that died before persisting the body does not wedge the ICV either.
+        """
+        body_claim = f"signedbody::{inv.tenant}::{inv.icv}"
+        # ── 1) durably persist the signed body exactly once (crash-reclaimable) ──────────────────
+        while True:
+            durable = await self.get(inv.id)
+            if durable is not None and durable.signed_xml:
+                # A winner (or our own earlier, pre-crash attempt) already stored the body. Adopt the
+                # DURABLE bytes/hash so the caller submits the authoritative document and the head is
+                # advanced to the hash that actually exists — never our losing re-signed bytes.
+                inv.signed_xml, inv.hash = durable.signed_xml, durable.hash
+                inv.qr, inv.status = durable.qr, (durable.status or "signed")
+                break
+            claim = await self._store.get(_INDEX, body_claim)
+            if claim is None:
+                if await self._store.create(_INDEX, body_claim,
+                                            {"invoice_id": inv.id, "at": _time.time()}):
+                    await self.save(inv)            # sole elected writer — persist immutable bytes
+                    break
+                continue                            # lost the create race — re-read and adopt
+            if _time.time() - float(claim.get("at", 0)) < _STALE_NUM_CLAIM_S:
+                return False                        # an in-flight winner is persisting — retry later
+            # A stale claim whose body never landed = a crashed writer. Reclaim and write ours.
+            await self._store.delete(_INDEX, body_claim)
+        # ── 2) advance the signed head to this durably-signed body, contiguously + idempotently ──
         for _ in range(64):
             row = await self._store.get(_INDEX, f"signed::{inv.tenant}")
             signed_icv = int(row.get("signed_icv", 0)) if row else 0
             ver = int(row.get("version", 0)) if row else 0
+            if signed_icv >= int(inv.icv):
+                # The head already reflects this ICV — someone else won the advance and OWNS the
+                # submit for it (or a prior sweep already submitted). Returning False here is what
+                # keeps a losing concurrent sign from ALSO submitting the same invoice (zatca-r2-02):
+                # the invoice is durably signed, so a later sweep drives submission if the winner
+                # died before it. Only the caller that actually advances the head submits.
+                return False
             if int(inv.icv) != signed_icv + 1:
-                return False                        # not the next link — do not advance out of order
+                return False                        # predecessor not signed yet — do not skip ahead
             if await self._store.cas(_INDEX, f"signed::{inv.tenant}", ver,
                                      {"signed_icv": int(inv.icv), "last_hash": inv.hash}):
-                await self.save(inv)                # WON the head — now durably persist the signed body
-                return True
+                return True                         # WE advanced the head — WE own the submit
         return False
 
     async def list(self, tenant: str, *, needs_attention: bool = False, limit: int = 100) -> list[dict]:

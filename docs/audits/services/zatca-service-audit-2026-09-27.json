@@ -3,7 +3,12 @@
   "date": "2026-09-27",
   "summary": {
     "total": 26,
-    "by_severity": {"CRITICAL": 2, "HIGH": 7, "MEDIUM": 12, "LOW": 5}
+    "by_severity": {
+      "CRITICAL": 2,
+      "HIGH": 7,
+      "MEDIUM": 12,
+      "LOW": 5
+    }
   },
   "findings": [
     {
@@ -15,7 +20,10 @@
       "line": 33,
       "scenario": "A caller posts {number, lines[...], vat_rate: \"abc\"} (or \"15%\", or \"\") to /internal/zatca/finalize. _validate_invoice_input validates number, currency, issued_at, amount_minor and qty but NOT vat_rate. allocate_slot then reserves and persists a real ICV slot, and build_ubl runs Decimal(rate) / Decimal(str(rate))*100 on the bad value, raising decimal.InvalidOperation. That is a subclass of ArithmeticError, NOT ValueError, so it is not caught by the ZatcaInputError branch in the route — it surfaces as an unhandled 500 AND the reserved ICV can now never be signed, permanently gapping the PIH/ICV chain. This is exactly the zatca-r2-05 failure class (\"validate every field build_ubl coerces before allocating a slot\") but vat_rate was missed.",
       "evidence": "if \"qty\" in ln:   # build_ubl: int(lines[i].get('qty', 1))  ...  (no vat_rate check anywhere)   /  rate = str(inv.get(\"vat_rate\", \"0.15\")); vat_pct = str(int((Decimal(rate) * 100).quantize(...)))",
-      "recommendation": "Validate vat_rate in _validate_invoice_input before allocate_slot: attempt Decimal(str(vat_rate)) and reject non-numeric/negative values with ZatcaInputError (422). Also broaden the route's except to catch ArithmeticError, or convert build_ubl's Decimal failures into ZatcaInputError."
+      "recommendation": "Validate vat_rate in _validate_invoice_input before allocate_slot: attempt Decimal(str(vat_rate)) and reject non-numeric/negative values with ZatcaInputError (422). Also broaden the route's except to catch ArithmeticError, or convert build_ubl's Decimal failures into ZatcaInputError.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "_validate_invoice_input now validates a caller-supplied vat_rate BEFORE allocate_slot: Decimal(str(vat_rate)) must parse and be non-negative, else ZatcaInputError (422). A non-numeric value ('abc','15%','') previously raised decimal.InvalidOperation (ArithmeticError, not ValueError) inside build_ubl AFTER the ICV was reserved, surfacing as a 500 and permanently gapping the PIH/ICV chain. Only a caller-supplied rate is checked (the service default is config-validated). Regression tests in tests/unit/test_zatca_r2_fixes.py."
     },
     {
       "id": "zatca-002",
@@ -26,7 +34,10 @@
       "line": 87,
       "scenario": "mark_signed does the version-pinned CAS on signed::{tenant} (setting signed_icv=inv.icv, last_hash=inv.hash) and only THEN calls save(inv) to persist signed_xml/hash/status. These are two non-atomic datastore ops. If the process crashes (or save() raises) between them, the signed head now reports ICV N as signed with hash H, but the invoice row N is still status='pending' with hash=''. On recovery: verify_chain sees row N's hash='' (reason pih_mismatch / a broken chain), and _sign for row N computes signed_head()=(N, H) so int(inv.icv) != signed_icv+1 (N != N+1) and defers 'awaiting ICV N+1' forever — invoice N is unsignable and unsubmittable permanently. The reverse-order bug was fixed (zatca-r2-02) but the residual non-atomic window remains.",
       "evidence": "if await self._store.cas(_INDEX, f\"signed::{inv.tenant}\", ver, {\"signed_icv\": int(inv.icv), \"last_hash\": inv.hash}):\n    await self.save(inv)  # WON the head — now durably persist the signed body\n    return True",
-      "recommendation": "Persist the signed body and advance the head in one atomic unit (transaction), or make recovery self-healing: when signed::head.last_hash matches a row whose signed_xml is empty, treat the head as not-yet-committed and let the winner re-drive save(); alternatively write the signed body first under a body-CAS keyed by icv, then advance the head, so a crash leaves a signable row rather than a wedged head."
+      "recommendation": "Persist the signed body and advance the head in one atomic unit (transaction), or make recovery self-healing: when signed::head.last_hash matches a row whose signed_xml is empty, treat the head as not-yet-committed and let the winner re-drive save(); alternatively write the signed body first under a body-CAS keyed by icv, then advance the head, so a crash leaves a signable row rather than a wedged head.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "mark_signed now persists the signed body DURABLY FIRST, then advances the signed head (was head-CAS then save — two non-atomic ops; a crash between them wedged the ICV forever since ZATCA signing is non-deterministic and could never reproduce the head's hash). The single body writer is elected write-once via an insert-if-absent 'signedbody::' claim, crash-reclaimable on the same staleness rule allocate_slot uses for num:: orphans, so byte-safety (zatca-r2-02: a loser never overwrites the winner's bytes) is preserved. A crash after body-save leaves a fully-signed row and a head one behind, re-driven with NO re-sign (adopts durable bytes, advances head). Only the caller that advances the head returns True (owns the submit), so a losing concurrent sign never double-submits. Regression tests for both crash windows in tests/unit/test_zatca_r2_fixes.py."
     },
     {
       "id": "zatca-003",

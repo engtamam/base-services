@@ -67,6 +67,21 @@ def _validate_invoice_input(invoice_in: dict, default_currency: str) -> None:
                 int(ln["qty"])
             except (TypeError, ValueError):
                 raise ZatcaInputError(f"line {i}: qty is not an integer") from None
+    # build_ubl coerces vat_rate with Decimal(str(rate)); a non-numeric value ("abc", "15%", "")
+    # raises decimal.InvalidOperation — an ArithmeticError, NOT a ValueError, so the route's
+    # ZatcaInputError branch would miss it and it would surface as a 500 AFTER allocate_slot burned
+    # the ICV, permanently gapping the PIH/ICV chain (zatca-001, the zatca-r2-05 class again). Only a
+    # caller-supplied rate is checked; the service default is config-validated. A negative rate is a
+    # money-adjacent value on a signed document and is refused too.
+    if "vat_rate" in invoice_in:
+        from decimal import Decimal, InvalidOperation
+        try:
+            rate = Decimal(str(invoice_in["vat_rate"]))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ZatcaInputError(
+                f"vat_rate is not a valid number: {invoice_in['vat_rate']!r}") from exc
+        if rate < 0:
+            raise ZatcaInputError(f"vat_rate must not be negative: {invoice_in['vat_rate']!r}")
 
 
 class ZatcaService:

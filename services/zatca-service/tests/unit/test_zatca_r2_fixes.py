@@ -204,6 +204,91 @@ def test_bad_qty_or_issued_at_is_422_and_burns_no_icv(bad):
     assert run(z.verify_chain("t1"))["count"] == 0
 
 
+# ── zatca-001: caller-supplied vat_rate validated before a slot is burned ────────
+@pytest.mark.parametrize("bad_rate", ["abc", "15%", "", "not-a-number"])
+def test_bad_vat_rate_is_422_and_burns_no_icv(bad_rate):
+    # build_ubl runs Decimal(str(vat_rate)); a non-numeric value raises decimal.InvalidOperation — an
+    # ArithmeticError, NOT a ValueError — which would slip past the route's ZatcaInputError branch as
+    # a 500 AFTER allocate_slot reserved (and permanently gapped) an ICV. Validation now rejects it up
+    # front, before any slot is reserved.
+    st = MemoryDataStore()
+    _onboard(st, "t1")
+    z = _svc(st, DistinctSigner(), CountingFatoora())
+    with pytest.raises(ZatcaInputError):
+        run(z.finalize({**INV, "vat_rate": bad_rate}, "t1"))
+    assert run(st.get("zatca_index", "head::t1")) is None       # no ICV reserved
+    assert run(st.get("zatca_index", "num::t1::INV-1")) is None
+    assert run(z.verify_chain("t1"))["count"] == 0
+
+
+def test_negative_vat_rate_is_refused():
+    st = MemoryDataStore()
+    _onboard(st, "t1")
+    z = _svc(st, DistinctSigner(), CountingFatoora())
+    with pytest.raises(ZatcaInputError):
+        run(z.finalize({**INV, "vat_rate": "-0.15"}, "t1"))
+    assert run(st.get("zatca_index", "head::t1")) is None
+
+
+def test_a_valid_explicit_vat_rate_still_works():
+    st = MemoryDataStore()
+    _onboard(st, "t1")
+    z = _svc(st, DistinctSigner(), CountingFatoora())
+    res = run(z.finalize({**INV, "vat_rate": "0.05"}, "t1"))
+    assert res["status"] in ("submitted", "reported", "cleared", "signed")
+
+
+# ── zatca-002: signed body is durable BEFORE the head advances (crash-safe) ───────
+def test_crash_between_body_save_and_head_advance_leaves_a_signable_row():
+    """Simulate a crash AFTER the signed body is persisted but BEFORE the signed head advances (the
+    old order did the reverse and wedged the ICV forever). The row is fully signed and self-consistent
+    and the head is one behind; a re-drive must adopt the DURABLE bytes (no re-sign) and advance the
+    head to the hash that actually exists — never a fresh, non-reproducible hash."""
+    st = MemoryDataStore()
+    _onboard(st, "t1")
+    signer = DistinctSigner()
+    store = InvoiceStore(st)
+
+    # Sign ICV 1 normally, then ROLL THE HEAD BACK to simulate a crash before the head advanced.
+    z = _svc(st, signer, CountingFatoora())
+    run(z.finalize(INV, "t1"))
+    inv1 = run(store.by_number("t1", "INV-1"))
+    assert inv1.signed_xml and inv1.hash
+    durable_hash = inv1.hash
+    run(st.delete("zatca_index", "signed::t1"))                 # head crash: body durable, head gone
+
+    # A re-drive (fresh sign attempt) must NOT re-sign — it adopts the durable body and advances the
+    # head to durable_hash. If it re-signed, DistinctSigner would emit a different HASH and the head
+    # would carry a hash whose bytes were never stored.
+    ok = run(store.mark_signed(run(store.get(inv1.id))))
+    assert ok is True
+    head = run(st.get("zatca_index", "signed::t1"))
+    assert head["signed_icv"] == 1
+    assert head["last_hash"] == durable_hash                    # head == the bytes that exist
+    again = run(store.by_number("t1", "INV-1"))
+    assert again.signed_xml == inv1.signed_xml                  # bytes untouched (no re-sign)
+    assert run(z.verify_chain("t1"))["ok"]
+
+
+def test_crash_after_body_claim_before_save_is_reclaimable():
+    """A crash AFTER the write-once body claim but BEFORE the body is persisted must NOT wedge the
+    ICV: a stale claim with no durable body is reclaimed, the invoice is re-signed and completes."""
+    st = MemoryDataStore()
+    _onboard(st, "t1")
+    store = InvoiceStore(st)
+    inv, _ = run(store.allocate_slot("t1", "INV-1", "simplified"))
+    # simulate the crashed writer: a STALE body claim, invoice still unsigned (no signed_xml).
+    run(st.create("zatca_index", f"signedbody::t1::{inv.icv}",
+                  {"invoice_id": inv.id, "at": _time.time() - 3600}))
+    z = _svc(st, DistinctSigner(), CountingFatoora())
+    res = run(z.finalize(INV, "t1"))
+    assert res["status"] in ("submitted", "reported", "cleared", "signed")
+    done = run(store.by_number("t1", "INV-1"))
+    assert done.signed_xml and done.hash
+    head = run(st.get("zatca_index", "signed::t1"))
+    assert head["signed_icv"] == 1 and head["last_hash"] == done.hash
+
+
 # ── r2-06: resubmit recovers a sign-capped 'failed' invoice ─────────────────────
 def test_resubmit_re_signs_a_failed_unsigned_invoice():
     class DownSigner(DistinctSigner):
