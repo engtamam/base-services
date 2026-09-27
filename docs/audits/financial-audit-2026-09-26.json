@@ -100,7 +100,7 @@
       "verification_note": "Not reachable: tenant ids are system-assigned and '|'-free. Changing the key format is risky (would orphan existing durable *_SEEN markers -> a redelivered old credit could double-credit during transition, cf. the v0.25.6 AAD incident). Defer unless a migration ships with it.",
       "fix": {
         "status": "fixed",
-        "release": "unreleased-committed",
+        "release": "v0.25.35",
         "note": "Length-prefixed idempotency keys ({len}:{tenant}|…) in _claim/_finalize/_CREDIT_SEEN/_SPEND_SEEN, with a READ-ONLY legacy fallback so pre-upgrade markers/claims still dedupe (no double money op across deploy). Migration-safe; real tenant ids are '|'-free so the legacy fallback can't collide."
       }
     },
@@ -224,7 +224,7 @@
       "verification_note": "Base is set only via internal token AND validated https/non-private at write; redirects blocked. Consciously documented as accepted.",
       "fix": {
         "status": "fixed",
-        "release": "unreleased-committed",
+        "release": "v0.25.35",
         "note": "DNS-rebind closed: resolve+validate once, then CONNECT to the pinned IP (custom http.client HTTPS/HTTP connection) with SNI+cert+Host on the real hostname. No re-resolve at connect."
       }
     },
@@ -241,7 +241,7 @@
       "verification_note": "Tokens are 128/256-bit; enumeration infeasible; terminal states are indistinguishable from each other. Accepted.",
       "fix": {
         "status": "fixed",
-        "release": "unreleased-committed",
+        "release": "v0.25.35",
         "note": "Existence oracle closed: the payments redirector returns an IDENTICAL 404 + one generic body for unknown AND existing-but-unusable; only a live link 302s."
       }
     },
@@ -274,7 +274,7 @@
       "verification_note": "Documented intentional; a correct fix requires threading a refund amount through WebhookEvent across ALL gateway adapters (Tap/Geidea/Stripe/PayPal/...). Cross-adapter design change - surface to owner before building.",
       "fix": {
         "status": "fixed",
-        "release": "unreleased-committed",
+        "release": "v0.25.35",
         "note": "Generic across ALL gateways: WebhookEvent.refunded_minor populated by every adapter (tap/stripe/moyasar/checkout/geidea/paypal/paytabs/aps/hyperpay) from its own signed refund payload; _apply_outcome applies a cumulative-floor amount-based refund — partial keeps the invoice paid, full voids, replay no-ops, 0/absent falls back to full. Shapes verified 2026-09-26 vs provider docs."
       }
     },
@@ -475,7 +475,7 @@
       "verdict": "CONFIRMED_LATENT",
       "fix": {
         "status": "fixed",
-        "release": "unreleased-committed",
+        "release": "v0.25.35",
         "note": "Amount compare proven at a 3-dp currency (KWD) via direct apply_outcome tests (match + 1-fils mismatch)."
       }
     },
@@ -589,14 +589,14 @@
     },
     "batch-4-2026-09-26": {
       "date": "2026-09-26",
-      "release": "UNRELEASED (user: do not release after)",
+      "release": "v0.25.35",
       "FIN-015": "FIXED generically across all 9 gateway adapters + core _apply_outcome (cumulative-floor). 21 new tests (7 core partial/full/bounds/idempotency + 8 per-adapter extraction + 6 amount-verify from FIN-016).",
       "verification": "billing 1099; 55 gates + OpenAPI green.",
       "status": "All 29 audit findings now resolved except: FIN-004 (latent, needs migration) and FIN-028 (latent, unreachable) — both documented."
     },
     "batch-5-2026-09-27": {
       "date": "2026-09-27",
-      "release": "UNRELEASED (per request)",
+      "release": "v0.25.35",
       "closed": [
         "FIN-013 (oracle)",
         "FIN-028 (3dp compare test)",
