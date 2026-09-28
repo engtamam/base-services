@@ -45,6 +45,18 @@ def create_app() -> FastAPI:
     settings.assert_audit_config_ok()
     settings.assert_pii_config_ok()
     settings.assert_cors_config_ok()
+    # search-003: internal query/suggest take the tenant from the request and return that tenant's
+    # documents; default-open they let any token-holding peer read ANY tenant's data. In production the
+    # cross-tenant read routes MUST be explicitly allow-listed in INTERNAL_ROUTE_POLICY_JSON.
+    if settings.is_production:
+        from app.core.internal_caller_factory import resolve_internal_policy
+        pol = resolve_internal_policy(settings)
+        for route in ("/internal/search/query", "/internal/search/suggest"):
+            if not pol.covers(route):
+                raise ValueError(
+                    f"{route} is default-open in production: add an INTERNAL_ROUTE_POLICY_JSON "
+                    "allow-list naming the peer services that may search, or any token-holder can read "
+                    "every tenant's documents (search-003).")
     configure_logging(settings.SERVICE_NAME, settings.ENV, settings.LOG_LEVEL)
     logger = get_logger("app.main")
 

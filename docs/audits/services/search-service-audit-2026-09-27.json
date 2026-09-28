@@ -20,7 +20,10 @@
       "line": 215,
       "scenario": "A peer service indexes a document whose title field contains `<script>steal()</script> fox`. A user searches 'fox' with highlight=True (the default). _highlight() splits the field on whitespace and, for the matching word, emits `<em>fox</em>` but for every OTHER word it emits the raw word verbatim inside the joined HTML string — so `<script>steal()</script>` is returned inside the `highlights` field as live markup. Any operator panel or app that renders `highlights` as HTML (the whole point of an <em> wrapper) executes attacker-supplied script. The service manufactures the HTML, so the injection originates here.",
       "evidence": "marked.append(f\"<em>{word}</em>\")  ...  else: marked.append(word)  ...  hl[fname] = \" \".join(marked)",
-      "recommendation": "HTML-escape each word (html.escape(word)) BEFORE wrapping/joining, so only the <em> tags this code adds are ever live markup; the field content is always escaped."
+      "recommendation": "HTML-escape each word (html.escape(word)) BEFORE wrapping/joining, so only the <em> tags this code adds are ever live markup; the field content is always escaped.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "_highlight now HTML-escapes each word of the (peer-supplied) document field before wrapping/joining, so only the <em> tags this code adds are ever live markup — closing the stored/reflected XSS in highlight snippets. Regression test added."
     },
     {
       "id": "search-002",
@@ -31,7 +34,10 @@
       "line": 127,
       "scenario": "delete_doc records the audit event with actor=\"\", tenant=\"\" and a constant resource=\"search_index\", then deletes body.index/body.id for body.tenant. The action is declared critical=True precisely because 'nothing here can show what was removed afterwards' (auditable_actions.py). But the recorded row cannot say WHICH document, WHICH tenant, or WHO — so the fail-closed audit still answers nothing during an investigation. Compare index_doc (line 108) which correctly records resource=f\"{body.index}:{body.id}\" and tenant=body.tenant.",
       "evidence": "await request.app.state.auditor.record(\"search.deleted\", actor=\"\", tenant=\"\", resource=\"search_index\", ip=...)",
-      "recommendation": "Record tenant=body.tenant and resource=f\"{body.index}:{body.id}\" (and a caller actor if resolvable), matching the index path, so the irreversible delete is actually attributable."
+      "recommendation": "Record tenant=body.tenant and resource=f\"{body.index}:{body.id}\" (and a caller actor if resolvable), matching the index path, so the irreversible delete is actually attributable.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "the critical search.deleted audit now records tenant=body.tenant and resource=f'{index}:{id}' (and a service actor) instead of empty tenant + constant 'search_index', so the irreversible delete is actually attributable."
     },
     {
       "id": "search-003",
@@ -42,7 +48,10 @@
       "line": 146,
       "scenario": "internal_query and internal_suggest take `tenant` from the request BODY/query and pass it straight to SearchService with no per-caller tenant authorization. The default INTERNAL_CALLER_DRIVER=shared means every peer presents the same flat token, and INTERNAL_ROUTE_POLICY_JSON defaults to empty => 'a route absent here admits any authenticated caller (default-open)'. So any service (or anything that obtains the one shared internal token) can read every tenant's indexed documents by naming the tenant in the body. The user tier is hard-isolated to the JWT tenant, but the internal tier is a wide-open cross-tenant read by default.",
       "evidence": "tenant=body.tenant, ...  # QueryIn: tenant in the body; require_internal_token default-open when INTERNAL_ROUTE_POLICY_JSON is empty",
-      "recommendation": "Ship a default route policy that restricts /internal/search/query and /internal/search/suggest to the specific caller services that need them, or require the RS256 caller assertion (INTERNAL_CALLER_DRIVER=static/jwks) in production; do not leave cross-tenant read default-open."
+      "recommendation": "Ship a default route policy that restricts /internal/search/query and /internal/search/suggest to the specific caller services that need them, or require the RS256 caller assertion (INTERNAL_CALLER_DRIVER=static/jwks) in production; do not leave cross-tenant read default-open.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "production boot guard refuses to start when /internal/search/query or /internal/search/suggest is default-open (no INTERNAL_ROUTE_POLICY_JSON entry) — these take the tenant from the request and return that tenant's docs, so a default-open route let any token-holder read any tenant. Added InternalRoutePolicy.covers(). Regression test added."
     },
     {
       "id": "search-004",
@@ -53,7 +62,10 @@
       "line": 109,
       "scenario": "SearchIn.size / QueryIn.size are `int | None` with no ge=1 bound. A client sends size=-1. `size = min(int(size or default), max)` = min(-1, 100) = -1. Then `page = ordered[:size]` = `ordered[:-1]` returns all-but-the-last hit, and `next_cursor = ... if len(ordered) > size` (len > -1 is always True) emits a cursor into a nonsensical page. size=-5 drops the last 5 hits. No error, just wrong results.",
       "evidence": "size = min(int(size or self._cfg[\"default_size\"]), self._cfg[\"max_size\"])  ...  page = ordered[:size]",
-      "recommendation": "Constrain size in the Pydantic models (Field(ge=1, le=MAX_PAGE_SIZE)) and clamp with max(1, ...) in SearchService before slicing."
+      "recommendation": "Constrain size in the Pydantic models (Field(ge=1, le=MAX_PAGE_SIZE)) and clamp with max(1, ...) in SearchService before slicing.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "size is clamped to [1, max] in SearchService and bounded Field(ge=1, le=1000) in the SearchIn/QueryIn models; a negative size no longer slices ordered[:-1] (dropping the last hit) or breaks the len>size cursor check. Regression test added."
     },
     {
       "id": "search-005",

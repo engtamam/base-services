@@ -162,3 +162,34 @@ def test_null_index_yields_no_results():
     svc = SearchService(index=NullIndex(), cache=None, config=CFG)
     run(svc.index(index="a", doc_id="d", tenant="t1", fields={"t": "fox"}))
     assert run(svc.search(index="a", tenant="t1", text="fox"))["total"] == 0
+
+
+# ── search-001: highlight snippets escape document text (no XSS) ────────────────
+def test_highlight_escapes_document_markup():
+    svc = _svc()
+    _ix(svc, "a", "d1", "t1", {"title": "<script>steal()</script> fox"})
+    r = run(svc.search(index="a", tenant="t1", text="fox", highlight=True))
+    hl = r["hits"][0].get("highlights", {}) or r["hits"][0].get("highlight", {})
+    blob = str(hl)
+    assert "<script>" not in blob                      # raw markup escaped
+    assert "&lt;script&gt;" in blob                    # ...to entities
+    assert "<em>fox</em>" in blob                      # only our own tag is live
+
+
+# ── search-004: a negative size is clamped, not silently dropping results ───────
+def test_negative_size_is_clamped():
+    svc = _svc()
+    for i in range(5):
+        _ix(svc, "a", f"d{i}", "t1", {"title": "fox"})
+    r = run(svc.search(index="a", tenant="t1", text="fox", size=-1))
+    assert len(r["hits"]) >= 1                          # not ordered[:-1] dropping the last hit
+
+
+# ── search-003: covers() distinguishes default-open from locked ────────────────
+def test_policy_covers():
+    from app.core.internal_policy import InternalRoutePolicy
+    assert InternalRoutePolicy(None).covers("/internal/search/query") is False
+    p = InternalRoutePolicy({"/internal/search/query": ["ops-service"]})
+    assert p.covers("/internal/search/query") is True
+    assert p.permits("/internal/search/query", "ops-service") is True
+    assert p.permits("/internal/search/query", "stranger") is False

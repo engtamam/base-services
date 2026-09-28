@@ -54,7 +54,7 @@ class QueryIn(BaseModel):
     text: str = ""
     filters: dict[str, Any] = Field(default_factory=dict)
     facets: list[str] = Field(default_factory=list)
-    size: int | None = None
+    size: int | None = Field(default=None, ge=1, le=1000)
     cursor: str = ""
     highlight: bool = True
 
@@ -124,8 +124,12 @@ async def delete_doc(request: Request, body: DeleteIn) -> dict:
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
+    # Attribute the irreversible delete (search-002): record the tenant and the exact document
+    # (index:id), not a constant "search_index" with empty tenant — otherwise the critical audit that
+    # exists because "nothing here can show what was removed afterwards" shows nothing either.
     await request.app.state.auditor.record(
-        "search.deleted", actor="", tenant="", resource="search_index",
+        "search.deleted", actor="service:internal", tenant=body.tenant,
+        resource=f"{body.index}:{body.id}",
         ip=request.client.host if request.client else "")
     return await build_search(request).delete(index=body.index, doc_id=body.id, tenant=body.tenant)
 

@@ -55,7 +55,7 @@ class SearchIn(BaseModel):
     text: str = ""
     filters: dict[str, Any] = Field(default_factory=dict)
     facets: list[str] = Field(default_factory=list)
-    size: int | None = None
+    size: int | None = Field(default=None, ge=1, le=1000)
     cursor: str = ""
     highlight: bool = True
 

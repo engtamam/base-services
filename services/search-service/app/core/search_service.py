@@ -11,6 +11,7 @@ Security & correctness centre of the service:
 """
 from __future__ import annotations
 
+import html as _html
 import json
 import logging
 from typing import Any
@@ -106,7 +107,9 @@ class SearchService:
                      cursor: str = "", highlight: bool = True) -> dict:
         text = _query.validate_text(text, max_len=self._cfg["max_query_len"])   # cost limit
         norm_filters = _query.normalize_filters(filters)
-        size = min(int(size or self._cfg["default_size"]), self._cfg["max_size"])
+        # Clamp to [1, max] (search-004): a negative size made `ordered[:size]` drop the last hit and
+        # `len(ordered) > size` always true, silently breaking pagination. Floor at 1.
+        size = max(1, min(int(size or self._cfg["default_size"]), self._cfg["max_size"]))
         gen = await self._gen(tenant)
 
         cache_key = "search:" + json.dumps(
@@ -211,11 +214,15 @@ class SearchService:
                 continue
             marked, changed = [], False
             for word in value.split():
+                # HTML-escape the document text FIRST (search-001): the field is peer-supplied and a
+                # value like "<script>steal()</script> fox" would otherwise emit live markup into the
+                # snippet (stored/reflected XSS). Only the <em> tags this code adds are ever markup.
+                safe = _html.escape(word)
                 if set(self._an(word)) & tset:
-                    marked.append(f"<em>{word}</em>")
+                    marked.append(f"<em>{safe}</em>")
                     changed = True
                 else:
-                    marked.append(word)
+                    marked.append(safe)
             if changed:
                 hl[fname] = " ".join(marked)
         return hl
