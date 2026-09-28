@@ -86,8 +86,28 @@ def _internal_view(tenant, svc) -> dict:
         out["config"] = {k: v for k, v in out["config"].items() if not str(k).startswith("_")}
     out["id"] = tenant.id                       # never optional: it is what was asked for
     out["status"] = tenant.status               # never optional: it is the answer
-    out["isolation"] = svc.scope(tenant)
+    # tenant-001: the db-isolation scope carries a CREDENTIALED DSN (user:pass@host). This metadata
+    # view is read by any internal caller / platform admin, so the connection credential must never
+    # cross the boundary — redact the userinfo, keeping mode + host/db so the view stays useful.
+    out["isolation"] = _redact_isolation(svc.scope(tenant))
     return out
+
+
+def _redact_isolation(scope: dict) -> dict:
+    """Strip credentials from an isolation scope before it leaves the service (tenant-001)."""
+    dsn = scope.get("dsn")
+    if not dsn:
+        return scope
+    from urllib.parse import urlsplit, urlunsplit
+    try:
+        p = urlsplit(dsn)
+        host = p.hostname or ""
+        if p.port:
+            host = f"{host}:{p.port}"
+        redacted = urlunsplit((p.scheme, host, p.path, "", ""))   # no userinfo, no query
+    except Exception:   # noqa: BLE001 — a weird DSN string is not worth leaking; drop it
+        redacted = ""
+    return {**scope, "dsn": redacted}
 
 
 @router.get("/tenants/{tenant_id}", dependencies=[Depends(require_internal_token)])
@@ -217,13 +237,17 @@ async def internal_rename(request: Request, tenant_id: str, body: RenameTenantIn
     except InvalidName:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "INVALID_NAME")
     # Recorded AFTER a successful rename (not write-ahead): a rename is not a destructive/credential
-    # act, so logging a refused-validation attempt would be noise. The names are the tenant's own
-    # BUSINESS name shown publicly, not personal data — kept (truncated) so an audit answers "renamed
-    # from what, to what".
+    # act, so logging a refused-validation attempt would be noise. The NEW name is the tenant's public
+    # business name and is kept; the OLD name is NOT recorded raw (tenant-002): the whole reason this
+    # feature exists is that a signup autofill dropped a PASSWORD into the name, so the prior value may
+    # be a secret — writing it into the immutable, hash-chained audit log would enshrine it forever.
+    # A length + short hash lets an audit correlate/deduplicate without persisting the raw value.
+    import hashlib as _hashlib
+    old_hash = _hashlib.sha256((old_name or "").encode()).hexdigest()[:12]
     await request.app.state.auditor.record(
         "tenant.renamed", actor="", tenant=t.id, resource=f"tenant:{t.id}",
         ip=request.client.host if request.client else "",
-        metadata={"from": old_name[:120], "to": t.name[:120]})
+        metadata={"from_len": len(old_name or ""), "from_sha12": old_hash, "to": t.name[:120]})
     return t.public()
 
 

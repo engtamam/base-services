@@ -45,6 +45,19 @@ def create_app() -> FastAPI:
     settings.assert_audit_config_ok()
     settings.assert_pii_config_ok()
     settings.assert_cors_config_ok()
+    # tenant-003: the destructive/credential internal routes must not rely on the default-open policy
+    # (shared token + token-fallback). In production they MUST be explicitly allow-listed to named,
+    # assertion-proven callers, or any token-holder could delete tenants / import a backup over them.
+    if settings.is_production:
+        from app.core.internal_caller_factory import resolve_internal_policy
+        pol = resolve_internal_policy(settings)
+        for route in ("/internal/tenants/close-sweep", "/internal/backup/import",
+                      "/internal/tenants"):   # covers DELETE /internal/tenants/{id} by prefix
+            if not pol.covers(route):
+                raise ValueError(
+                    f"{route} is default-open in production: add an INTERNAL_ROUTE_POLICY_JSON "
+                    "allow-list naming the services allowed to reach the destructive tenant routes "
+                    "(tenant-003).")
     configure_logging(settings.SERVICE_NAME, settings.ENV, settings.LOG_LEVEL)
     logger = get_logger("app.main")
 

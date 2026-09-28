@@ -36,3 +36,8 @@ class InternalRoutePolicy:
         if "*" in allowed:
             return True                       # explicitly any authenticated caller (named or unnamed)
         return bool(caller) and caller in allowed
+
+    def covers(self, path: str) -> bool:
+        """Whether an explicit policy entry applies to `path` (NOT default-open). Boot guards use this
+        to require a destructive route to be deliberately allow-listed (tenant-003)."""
+        return self._match(path) is not None

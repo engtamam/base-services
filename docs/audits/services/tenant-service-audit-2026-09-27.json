@@ -3,7 +3,12 @@
   "date": "2026-09-27",
   "summary": {
     "total": 24,
-    "by_severity": {"CRITICAL": 0, "HIGH": 3, "MEDIUM": 11, "LOW": 10}
+    "by_severity": {
+      "CRITICAL": 0,
+      "HIGH": 3,
+      "MEDIUM": 11,
+      "LOW": 10
+    }
   },
   "findings": [
     {
@@ -15,7 +20,10 @@
       "line": 32,
       "scenario": "A tenant provisioned with isolation_mode=db has scope() return {\"mode\":\"db\",\"dsn\": self._tmpl.format(slug=slug)}. ISOLATION_DB_DSN_TEMPLATE realistically contains a username and password (e.g. postgresql://svc:secret@host/t_{slug}). _internal_view() sets out[\"isolation\"] = svc.scope(tenant), so GET /internal/tenants/{id} and GET /internal/tenants/resolve return the fully-rendered DSN — including the password — to ANY caller holding the shared internal token (default-open policy). The same DSN is returned to a platform admin via GET /api/v1/tenants/{id}/export (svc.export -> scope). A logo-rendering peer that only needs branding receives the database password.",
       "evidence": "def scope(self, tenant_id, slug): return {\"mode\": \"db\", \"dsn\": self._tmpl.format(slug=slug)}  ... _internal_view: out[\"isolation\"] = svc.scope(tenant)",
-      "recommendation": "Never return a credentialed DSN across the service boundary. Return only mode + a non-secret handle (schema name or a DSN alias/key), or strip the userinfo from the DSN before it leaves scope(); resolve credentials locally in the peer from its own secrets provider."
+      "recommendation": "Never return a credentialed DSN across the service boundary. Return only mode + a non-secret handle (schema name or a DSN alias/key), or strip the userinfo from the DSN before it leaves scope(); resolve credentials locally in the peer from its own secrets provider.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "internal tenant view redacts the db-isolation DSN userinfo (_redact_isolation): mode + host/db kept, credentials stripped, so a connection secret never crosses the service boundary. Regression tests added."
     },
     {
       "id": "tenant-002",
@@ -26,7 +34,10 @@
       "line": 223,
       "scenario": "The rename feature exists precisely because 'a signup autofill dropped a password into [the name] on a real pilot shop'. When that shop is corrected, internal_rename records metadata={\"from\": old_name[:120], \"to\": t.name[:120]}. old_name here is the garbage/password value. It is now written into the immutable, hash-chained audit trail forever, in the clear — the one place erasure can never remove it. Every credential accidentally captured in a name is preserved by the very endpoint meant to scrub it.",
       "evidence": "old_name = tenant.name ... await request.app.state.auditor.record(\"tenant.renamed\", ..., metadata={\"from\": old_name[:120], \"to\": t.name[:120]})",
-      "recommendation": "Do not record the raw prior name. Record only that a rename occurred (and optionally the new name, which is public), or a hash/length of the old value. A field known to sometimes hold secrets must never be copied verbatim into an immutable log."
+      "recommendation": "Do not record the raw prior name. Record only that a rename occurred (and optionally the new name, which is public), or a hash/length of the old value. A field known to sometimes hold secrets must never be copied verbatim into an immutable log.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "internal_rename no longer records the raw prior name (which may be an autofilled password); it records from_len + from_sha12 + the public new name, so the immutable audit never enshrines a secret."
     },
     {
       "id": "tenant-003",
@@ -37,7 +48,10 @@
       "line": 35,
       "scenario": "INTERNAL_CALLER_DRIVER defaults to 'shared' and INTERNAL_CALLER_ALLOW_TOKEN_FALLBACK defaults to True, so callers are never individually identified out of the box. InternalRoutePolicy.permits() returns True for any route with no explicit allow-list (INTERNAL_ROUTE_POLICY_JSON defaults to \"\"). Result: any service holding INTERNAL_SERVICE_TOKEN can call DELETE /internal/tenants/{id} (delete any tenant), POST /internal/tenants/close-sweep (erase every suspended-past-grace tenant), and POST /internal/backup/import with prune=true/overwrite=true (authoritatively rewrite or wipe the entire tenant registry). None of these destructive verbs is restricted by default.",
       "evidence": "if allowed is None: return True   # no policy for this route -> any authenticated caller",
-      "recommendation": "Ship a non-empty INTERNAL_ROUTE_POLICY_JSON for the destructive routes (delete, close-sweep, backup/import) so they require a named, assertion-proven caller, or make those specific routes fail-closed when no policy is declared. Default-open is acceptable for reads, not for registry-wide destruction."
+      "recommendation": "Ship a non-empty INTERNAL_ROUTE_POLICY_JSON for the destructive routes (delete, close-sweep, backup/import) so they require a named, assertion-proven caller, or make those specific routes fail-closed when no policy is declared. Default-open is acceptable for reads, not for registry-wide destruction.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "production boot guard (InternalRoutePolicy.covers) refuses to start unless the destructive internal routes (close-sweep, backup/import, tenants CRUD incl. delete) are explicitly allow-listed in INTERNAL_ROUTE_POLICY_JSON. Regression test added."
     },
     {
       "id": "tenant-004",
