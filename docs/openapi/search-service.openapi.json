@@ -172,6 +172,8 @@
           "size": {
             "anyOf": [
               {
+                "maximum": 1000.0,
+                "minimum": 1.0,
                 "type": "integer"
               },
               {
@@ -233,6 +235,8 @@
           "size": {
             "anyOf": [
               {
+                "maximum": 1000.0,
+                "minimum": 1.0,
                 "type": "integer"
               },
               {

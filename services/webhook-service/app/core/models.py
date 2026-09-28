@@ -116,6 +116,9 @@ class InboundEvent:
     payload: dict[str, Any] = field(default_factory=dict)
     received: str = ""
     received_ts: float = 0.0      # drives the dedupe window (INBOUND_DEDUPE_TTL_SECONDS)
+    # Outbox flag (webhook-002): False until the event is confirmed published to the bus. A bus outage
+    # leaves it False and a durable sweep re-publishes it, so an inbound event is never lost.
+    published: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

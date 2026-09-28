@@ -3,7 +3,12 @@
   "date": "2026-09-27",
   "summary": {
     "total": 22,
-    "by_severity": {"CRITICAL": 0, "HIGH": 3, "MEDIUM": 7, "LOW": 12}
+    "by_severity": {
+      "CRITICAL": 0,
+      "HIGH": 3,
+      "MEDIUM": 7,
+      "LOW": 12
+    }
   },
   "findings": [
     {
@@ -15,7 +20,10 @@
       "line": 48,
       "scenario": "deliver() calls self._validate_url(ep.url) directly (webhook_service.py:188) which calls _resolve() -> socket.getaddrinfo(). The outbound HTTP send is carefully offloaded with asyncio.to_thread (webhook_service.py:228), but the DNS lookup that precedes it is NOT. A tenant registers a URL whose authoritative nameserver is slow or hangs; getaddrinfo blocks the single-worker event loop for the full resolver timeout (often 5-30s), freezing EVERY other tenant's requests (health checks, inbound, dispatch) for that whole time. register()/update() run the same blocking resolve directly on the request path.",
       "evidence": "def _resolve(host: str, port: int) -> list[str]:\n    try:\n        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)",
-      "recommendation": "Wrap validate()/resolution in asyncio.to_thread from deliver()/register()/update(), or make an async resolve seam; DNS for tenant-supplied hosts must never run synchronously on the loop."
+      "recommendation": "Wrap validate()/resolution in asyncio.to_thread from deliver()/register()/update(), or make an async resolve seam; DNS for tenant-supplied hosts must never run synchronously on the loop.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "deliver()/register()/update() now run the SSRF validate (which does a blocking getaddrinfo on a tenant-supplied host) via asyncio.to_thread, so DNS resolution never blocks the event loop."
     },
     {
       "id": "webhook-002",
@@ -26,7 +34,10 @@
       "line": 65,
       "scenario": "ingest() first calls reserve() which durably marks (source, provider_event_id) as seen, THEN calls _publish(). _publish swallows every exception. If the bus is down, the event is stored + deduped and returns accepted:false-error-free with duplicate:false, but nothing is ever published to subscribers and nothing re-publishes it. The provider's retry hits reserve() -> duplicate:true and is dropped. The event silently never reaches any subscriber — a broken at-least-once guarantee for the inbound path, on the hot path the whole service exists for.",
       "evidence": "async def _publish(self, source: str, ev: InboundEvent) -> None:\n        if self._bus is None:\n            return\n        try:\n            await self._bus.publish(f\"inbound.{source}\", ev.to_dict())\n        except Exception:\n            pass          # the event is already durably stored; a bus outage never 500s the provider",
-      "recommendation": "Persist an outbox/pending-publish flag on the stored InboundEvent and drive publication from a durable sweep (as the outbound path does), or return a 5xx on publish failure so the provider retries. 'Durably stored' is not 'delivered' when nothing replays the store."
+      "recommendation": "Persist an outbox/pending-publish flag on the stored InboundEvent and drive publication from a durable sweep (as the outbound path does), or return a 5xx on publish failure so the provider retries. 'Durably stored' is not 'delivered' when nothing replays the store.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "inbound events are a durable outbox: an event is stored published=False, published best-effort, and marked published only on success; a bus outage leaves it pending and the new /internal/inbound/republish sweep (republish_pending) re-drives it. With no bus wired it is published-at-rest (one write, hot path preserved). Regression test added."
     },
     {
       "id": "webhook-003",
@@ -37,7 +48,10 @@
       "line": 46,
       "scenario": "The docstrings across inbound_service.py and inbound_credentials.py name GitHub as a supported source. But verify() delegates to parse(), which only extracts a 't=' timestamp and 'v*=' signatures and returns (None, []) when no 't=' is present. GitHub sends 'X-Hub-Signature-256: sha256=<hex>' — no timestamp, an HMAC of the raw body only. parse() yields ts=None, so verify() returns False on line 46 for every GitHub callback. Every genuine GitHub event is rejected as INVALID_SIGNATURE; the provider eventually stops retrying and the events are lost.",
       "evidence": "ts, sigs = parse(header)\n    if ts is None or not sigs or not secrets:\n        return False",
-      "recommendation": "Either restrict documented inbound sources to the Stripe-style t=,v1= scheme, or add a per-source verification strategy (GitHub sha256=HMAC(body), no timestamp) instead of assuming one universal header format."
+      "recommendation": "Either restrict documented inbound sources to the Stripe-style t=,v1= scheme, or add a per-source verification strategy (GitHub sha256=HMAC(body), no timestamp) instead of assuming one universal header format.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "signing.verify dispatches by header shape: a sha256=<hex> header (no t=) is verified as the GitHub scheme (HMAC of the raw body, no timestamp) via new verify_github, so GitHub inbound signatures verify instead of always failing; the t=,v1= replay-protected scheme is unchanged. Regression test added."
     },
     {
       "id": "webhook-004",

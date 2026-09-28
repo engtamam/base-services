@@ -64,7 +64,9 @@ class WebhookService:
     # ── endpoints ─────────────────────────────────────────────────────────────
     async def register(self, *, tenant: str, url: str, event_types: list[str],
                        secret: str = "", description: str = "") -> Endpoint:
-        self._validate_url(url)                  # reject an SSRF target at registration time
+        # OFFLOAD the SSRF validate — it does a blocking getaddrinfo on a tenant-supplied host
+        # (webhook-001), which must never run on the event loop.
+        await asyncio.to_thread(self._validate_url, url)
         ep = Endpoint(id=new_id("ep_"), tenant=tenant, url=url, event_types=event_types or ["*"],
                       secrets=[secret or new_id("whsec_")], description=description, created=iso())
         return await self._endpoints.save(ep)
@@ -74,7 +76,7 @@ class WebhookService:
         if ep is None:
             return None
         if kw.get("url"):
-            self._validate_url(kw["url"])
+            await asyncio.to_thread(self._validate_url, kw["url"])
         for k, v in kw.items():
             if v is not None and hasattr(ep, k):
                 setattr(ep, k, v)
@@ -185,7 +187,7 @@ class WebhookService:
 
         # SSRF: re-validate + re-pin on EVERY attempt — DNS may have changed since the last one.
         try:
-            target = self._validate_url(ep.url)
+            target = await asyncio.to_thread(self._validate_url, ep.url)   # blocking DNS off the loop (webhook-001)
         except _ssrf.SsrfBlocked as exc:
             return await self._finalize(d, DEAD, error=f"ssrf_blocked: {exc}")  # terminal
 

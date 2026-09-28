@@ -253,6 +253,21 @@ class InboundStore:
                 return True
         return False                                      # duplicate inside the window
 
+    async def mark_published(self, source: str, provider_event_id: str) -> None:
+        """Flip the outbox flag once the event is confirmed on the bus (webhook-002)."""
+        key = self._key(source, provider_event_id)
+        row = await self._store.get(_INBOUND, key)
+        if row and not row.get("published"):
+            row["published"] = True
+            await self._store.put(_INBOUND, key, row)
+
+    async def pending_publish(self, limit: int = 200) -> list[dict]:
+        """Stored inbound events not yet confirmed published — the republish sweep's work list
+        (webhook-002). Filtered on published==False so it is an indexed read, not a scan of all events."""
+        rows, _ = await self._store.find(_INBOUND, {"published": False}, limit=limit,
+                                         sort=("received_ts", "asc"))
+        return rows
+
     async def list(self, source: str | None = None, limit: int = 100,
                    after: str | None = None) -> list[dict]:
         if source:

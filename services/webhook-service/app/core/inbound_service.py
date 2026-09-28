@@ -51,21 +51,47 @@ class InboundService:
         if not provider_event_id:
             raise InboundRejected("MISSING_EVENT_ID")
 
+        # With NO bus wired there is nothing to deliver, so the event is 'published' at rest — one
+        # write, and the outbox sweep never considers it. With a bus, it is stored pending (False) so a
+        # publish failure is recoverable (webhook-002).
         ev = InboundEvent(id=new_id("in_"), source=source, provider_event_id=provider_event_id,
-                          payload=payload, received=iso(), received_ts=float(now))
+                          payload=payload, received=iso(), received_ts=float(now),
+                          published=(self._bus is None))
         # ATOMIC reserve-and-store: the old seen()->record() pair had a gap where two concurrent
         # duplicates both saw not-seen and both published. reserve() is a single insert-if-absent, so
         # exactly one caller wins and publishes; the other is reported as a duplicate.
         if not await self._store.reserve(ev, now=now, ttl_seconds=self._dedupe_ttl):
             return {"accepted": True, "duplicate": True, "provider_event_id": provider_event_id}
-        await self._publish(source, ev)
+        # Publish, then flip the durable outbox flag ONLY on success (webhook-002). A bus outage leaves
+        # published=False and republish_pending() re-drives it later — the event is never silently lost.
+        if self._bus is not None and await self._publish(source, ev):
+            await self._store.mark_published(source, provider_event_id)
         return {"accepted": True, "duplicate": False, "id": ev.id,
                 "provider_event_id": provider_event_id}
 
-    async def _publish(self, source: str, ev: InboundEvent) -> None:
+    async def _publish(self, source: str, ev: InboundEvent) -> bool:
+        """Best-effort publish. Returns True on success, False on a bus outage (the event stays stored
+        as pending for the republish sweep). Never raises — a bus blip must not 500 the provider."""
         if self._bus is None:
-            return
+            return True                   # no bus wired = nothing to deliver to; not a pending outbox
         try:
             await self._bus.publish(f"inbound.{source}", ev.to_dict())
+            return True
         except Exception:
-            pass          # the event is already durably stored; a bus outage never 500s the provider
+            return False
+
+    async def republish_pending(self, limit: int = 200) -> dict[str, Any]:
+        """Durable outbox sweep (webhook-002): re-publish stored inbound events whose bus publish never
+        confirmed, and mark them published on success. Driven by a CronJob; without it a 'pending' event
+        would just be a lost one with extra steps."""
+        republished = 0
+        for row in await self._store.pending_publish(limit=limit):
+            ev = InboundEvent.from_dict(row) if hasattr(InboundEvent, "from_dict") else InboundEvent(
+                id=row.get("id", ""), source=row.get("source", ""),
+                provider_event_id=row.get("provider_event_id", ""),
+                payload=row.get("payload", {}) or {}, received=row.get("received", ""),
+                received_ts=float(row.get("received_ts", 0) or 0))
+            if await self._publish(ev.source, ev):
+                await self._store.mark_published(ev.source, ev.provider_event_id)
+                republished += 1
+        return {"republished": republished}

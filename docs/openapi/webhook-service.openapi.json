@@ -1676,6 +1676,74 @@
         ]
       }
     },
+    "/internal/inbound/republish": {
+      "post": {
+        "description": "Outbox tick (webhook-002): re-publish stored inbound events whose bus publish never confirmed\n(e.g. a bus outage at ingest time), so an inbound event is never silently lost. CronJob-driven.",
+        "operationId": "inbound_republish_internal_inbound_republish_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Inbound Republish Internal Inbound Republish Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Inbound Republish",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/manifest": {
       "get": {
         "operationId": "internal_manifest_internal_manifest_get",

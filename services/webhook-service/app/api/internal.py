@@ -98,6 +98,14 @@ async def sweep(request: Request) -> dict:
     return result
 
 
+@router.post("/inbound/republish", dependencies=[Depends(require_internal_token)])
+async def inbound_republish(request: Request) -> dict:
+    """Outbox tick (webhook-002): re-publish stored inbound events whose bus publish never confirmed
+    (e.g. a bus outage at ingest time), so an inbound event is never silently lost. CronJob-driven."""
+    from app.api.v1.webhooks import build_inbound
+    return await (await build_inbound(request)).republish_pending()
+
+
 @router.get("/manifest", dependencies=[Depends(require_internal_token)])
 async def internal_manifest(
     request: Request, settings: Settings = Depends(get_settings)

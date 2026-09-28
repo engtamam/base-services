@@ -156,3 +156,46 @@ def test_bus_outage_never_fails_ingest():
     body = b'{"id":"e"}'
     assert run(svc.ingest(source="stripe", body=body, signature=_sign(body), provider_event_id="e",
                           payload={}, now=1000))["accepted"]
+
+
+# ── webhook-002: a bus outage leaves the event PENDING; the sweep re-publishes it ────────────────────
+class FlakyBus:
+    def __init__(self, fail=True):
+        self.fail, self.events = fail, []
+
+    async def publish(self, e, p):
+        if self.fail:
+            raise RuntimeError("bus down")
+        self.events.append((e, p))
+
+
+def test_bus_outage_marks_pending_then_sweep_republishes():
+    st = MemoryDataStore()
+    bus = FlakyBus(fail=True)
+    svc = _svc(st, bus=bus)
+    body = b'{"id":"evt_9"}'
+    out = run(svc.ingest(source="stripe", body=body, signature=_sign(body), provider_event_id="evt_9",
+                         payload={"id": "evt_9"}, now=1000))
+    assert out["accepted"] and not out["duplicate"]          # provider still gets a clean 200
+    row = run(st.get("inbound", "stripe::evt_9"))
+    assert row["published"] is False                          # stored PENDING, not lost
+    # bus recovers → the outbox sweep re-publishes it and clears the flag
+    bus.fail = False
+    res = run(svc.republish_pending())
+    assert res["republished"] == 1
+    assert bus.events[0][0] == "inbound.stripe"
+    assert run(st.get("inbound", "stripe::evt_9"))["published"] is True
+    # a second sweep does nothing (idempotent)
+    assert run(svc.republish_pending())["republished"] == 0
+
+
+# ── webhook-003: a GitHub-style sha256=HMAC(body) signature verifies ─────────────────────────────────
+def test_github_scheme_signature_verifies():
+    import hashlib
+    import hmac as _hmac
+    body = b'{"zen":"x","hook_id":1}'
+    secret = "gh-secret"
+    sig = "sha256=" + _hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    assert signing.verify(body, sig, [secret]) is True
+    assert signing.verify(body, sig, ["wrong"]) is False       # wrong secret rejected
+    assert signing.verify(b'{"tampered":1}', sig, [secret]) is False  # tampered body rejected
