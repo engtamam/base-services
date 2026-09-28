@@ -21,6 +21,24 @@ class ConnectionStore:
         await self._store.put(_CONN, c.id, c.to_dict())
         return c
 
+    async def mutate(self, connection_id: str, apply) -> Connection | None:
+        """Atomically load-mutate-save the Connection aggregate under an optimistic CAS (connector-003).
+
+        The Connection carries watermarks, pending, circuit_state, failure_count, sync_count — a blind
+        put() (last-writer-wins) let two concurrent pulls on different resources each load the row and
+        clobber the other's watermark / circuit update. `apply(conn)` mutates in place; a lost CAS
+        re-reads the freshest row and re-applies, so concurrent runs compose instead of overwriting."""
+        for _ in range(8):
+            row = await self._store.get(_CONN, connection_id)
+            if row is None:
+                return None
+            ver = int(row.get("version", 0))
+            c = Connection.from_dict(row)
+            apply(c)
+            if await self._store.cas(_CONN, connection_id, ver, c.to_dict()):
+                return c
+        raise RuntimeError("connection write contention")
+
     async def get(self, connection_id: str) -> Connection | None:
         row = await self._store.get(_CONN, connection_id)
         return Connection.from_dict(row) if row else None

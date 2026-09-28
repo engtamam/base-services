@@ -3,7 +3,12 @@
   "date": "2026-09-27",
   "summary": {
     "total": 24,
-    "by_severity": {"CRITICAL": 0, "HIGH": 4, "MEDIUM": 13, "LOW": 7}
+    "by_severity": {
+      "CRITICAL": 0,
+      "HIGH": 4,
+      "MEDIUM": 13,
+      "LOW": 7
+    }
   },
   "findings": [
     {
@@ -15,7 +20,10 @@
       "line": 81,
       "scenario": "A push maps a record and POSTs it to the provider. The provider rejects it with 400 (validation), 404 (endpoint gone) or 409 (conflict). connector_http._request returns `(exc.code, body, headers)` for any 4xx that is not 401/403/429 instead of raising. push() does `_code, body, _h = post_json(...); return body`, discarding `_code`. SyncEngine.push sees no exception, increments `sent`, and the reservation stands as committed. The record is reported pushed, is idempotency-reserved so a retry skips it, and is NEVER written to the destination system — silent, unrecoverable data loss for every push whose provider returns a non-auth 4xx.",
       "evidence": "url = f\"{spec['base_url'].rstrip('/')}{ep['path']}\"\n        headers = {\"Authorization\": bearer(access_token), \"Idempotency-Key\": idempotency_key}\n        _code, body, _h = post_json(url, record, headers)\n        return body",
-      "recommendation": "Have push() (and the generic adapter) inspect the returned status: raise ProviderUnavailable/CredentialInvalid (or a mapping-level failure that dead-letters) for any non-2xx, so a rejected record is dead-lettered and the reservation is released, never counted as sent."
+      "recommendation": "Have push() (and the generic adapter) inspect the returned status: raise ProviderUnavailable/CredentialInvalid (or a mapping-level failure that dead-letters) for any non-2xx, so a rejected record is dead-lettered and the reservation is released, never counted as sent.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "oauth2-rest push() now raises ProviderUnavailable on any non-2xx returned code, so a provider 4xx (validation/404/409) rejects the write / dead-letters instead of being reported as a phantom success. Regression test added."
     },
     {
       "id": "connector-002",
@@ -26,7 +34,10 @@
       "line": 70,
       "scenario": "fetch() does `_code, body, _h = get_json(url, ...)` and discards `_code`. A provider 400/404 returns `body == {}` (from _parse) with no exception. get_path yields `records = []` and `next_cursor = ''`. SyncEngine.pull then records `records_in=0`, status 'succeeded', and (default mode) since next_cursor is empty leaves the watermark unchanged but reports success — the run looks healthy while the provider is actually rejecting the request. A transient auth/param error is indistinguishable from a genuinely empty resource, so monitoring shows green while no data flows.",
       "evidence": "_code, body, _h = get_json(url, {\"Authorization\": bearer(access_token)})\n        records = get_path(body, ep.get(\"records_path\", \"results\")) or []",
-      "recommendation": "Check the returned status in fetch(): raise ProviderUnavailable/CredentialInvalid on non-2xx so the run is marked failed and the circuit/backoff engage, rather than silently returning an empty page."
+      "recommendation": "Check the returned status in fetch(): raise ProviderUnavailable/CredentialInvalid on non-2xx so the run is marked failed and the circuit/backoff engage, rather than silently returning an empty page.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "oauth2-rest fetch() now raises on non-2xx instead of turning a 4xx into an empty page that marked the run 'succeeded' and advanced the watermark (silent data skip). Regression test added."
     },
     {
       "id": "connector-003",
@@ -37,7 +48,10 @@
       "line": 20,
       "scenario": "ConnectionStore.save() does `store.put(_CONN, c.id, c.to_dict())`. Per-record idempotency uses atomic cas() on sync_seen, but the Connection aggregate (watermarks, pending, circuit_state, failure_count, sync_count) is a blind overwrite. Two concurrent pulls for two different resources on the same connection both load the connection, each mutates `watermarks[its_resource]`, and both save; the second save overwrites the first's watermark for the OTHER resource back to its old value, causing re-fetch or skip. The same lost-update corrupts circuit breaker counters and at-least-once `pending` bookkeeping. job-service is documented to schedule and retry internal_sync, so concurrent runs on one connection are expected.",
       "evidence": "async def save(self, c: Connection) -> Connection:\n        await self._store.put(_CONN, c.id, c.to_dict())\n        return c",
-      "recommendation": "Persist the connection with an optimistic-concurrency cas() on a version field (retry on conflict), or serialize state mutations per connection, so concurrent runs cannot clobber each other's watermarks/circuit state."
+      "recommendation": "Persist the connection with an optimistic-concurrency cas() on a version field (retry on conflict), or serialize state mutations per connection, so concurrent runs cannot clobber each other's watermarks/circuit state.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "ConnectionStore gained mutate(id, apply) — an optimistic-CAS load-mutate-save; the sync engine's failure/success circuit updates and watermark/pending advances now go through it, so two concurrent runs on different resources compose instead of clobbering each other's watermark/circuit state. Local aggregate is refreshed after an ack mutate."
     },
     {
       "id": "connector-004",
@@ -48,7 +62,10 @@
       "line": 46,
       "scenario": "token_aad() and spec_secret_aad() bind sealed blobs to (connection, field) / spec id. Blobs sealed before that binding existed were sealed with aad=None. unseal() now always passes the AAD and, on GCM tag failure, returns None (no fallback). secret_store._open() has an explicit legacy no-AAD decrypt fallback for exactly this case (documented pre-v0.25.6 incident in MEMORY 'AEAD AAD backward-compat'), but seal.py does not. Result: after the AAD upgrade, every connection whose access/refresh token was sealed pre-AAD unseals to None -> credentials() raises CredentialInvalid / NEEDS_REAUTH for all of them, and resolve_spec loses every pre-AAD client secret — a mass re-auth outage, the same class the memory note says must ship a fallback in the same release.",
       "evidence": "def unseal(token: str, seal_key: str, aad: str = \"\") -> str | None:\n    if not token:\n        return None\n    try:\n        raw = base64.b64decode(token)\n        ad = aad.encode() if aad else None\n        return AESGCM(_key(seal_key)).decrypt(raw[:12], raw[12:], ad).decode()\n    except Exception:\n        return None",
-      "recommendation": "Mirror secret_store._open: on AAD-decrypt failure, retry with ad=None (legacy) before giving up, and re-seal with the AAD on next write; or confirm/perform a one-time migration re-sealing all connection tokens and spec secrets with the AAD."
+      "recommendation": "Mirror secret_store._open: on AAD-decrypt failure, retry with ad=None (legacy) before giving up, and re-seal with the AAD on next write; or confirm/perform a one-time migration re-sealing all connection tokens and spec secrets with the AAD.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "seal.unseal now retries with ad=None on an AAD tag failure (legacy no-AAD fallback), mirroring secret_store._open, so introducing token_aad/spec_secret_aad no longer orphans blobs sealed before the binding existed. Regression tests added."
     },
     {
       "id": "connector-005",

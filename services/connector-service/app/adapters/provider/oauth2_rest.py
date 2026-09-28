@@ -22,7 +22,7 @@ from typing import Any
 
 from app.adapters.connector_http import basic_auth, bearer, get_json, post_json
 from app.core.mapping import get_path
-from app.ports.connector_provider import CredentialInvalid, Page, Tokens
+from app.ports.connector_provider import CredentialInvalid, Page, ProviderUnavailable, Tokens
 
 
 class OAuth2RestConnector:
@@ -67,7 +67,12 @@ class OAuth2RestConnector:
             params[ep.get("cursor_param", "cursor")] = cursor
         import urllib.parse
         url = f"{spec['base_url'].rstrip('/')}{ep['path']}?{urllib.parse.urlencode(params)}"
-        _code, body, _h = get_json(url, {"Authorization": bearer(access_token)})
+        code, body, _h = get_json(url, {"Authorization": bearer(access_token)})
+        # A provider 4xx (400/404/409 — the ones connector_http returns rather than raising) is NOT an
+        # empty page (connector-002): treating it as records=[]/next='' marked the run 'succeeded' and
+        # advanced/cleared the watermark, silently skipping data. Fail the run so backoff/circuit engage.
+        if not (200 <= code < 300):
+            raise ProviderUnavailable(f"provider returned {code} on fetch {resource}")
         records = get_path(body, ep.get("records_path", "results")) or []
         if not isinstance(records, list):
             records = []
@@ -78,7 +83,12 @@ class OAuth2RestConnector:
         ep = self._endpoint(spec, resource)
         url = f"{spec['base_url'].rstrip('/')}{ep['path']}"
         headers = {"Authorization": bearer(access_token), "Idempotency-Key": idempotency_key}
-        _code, body, _h = post_json(url, record, headers)
+        code, body, _h = post_json(url, record, headers)
+        # A provider 4xx (validation/404/conflict) is a REJECTED write, not a success (connector-001):
+        # returning the body regardless recorded records_out as written when nothing was. Raise so the
+        # record dead-letters / the run fails instead of a phantom success.
+        if not (200 <= code < 300):
+            raise ProviderUnavailable(f"provider returned {code} on push {resource}")
         return body
 
     def revoke(self, *, access_token, spec) -> bool:

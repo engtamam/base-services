@@ -65,20 +65,24 @@ class SyncEngine:
         return state
 
     async def _record_failure(self, conn: Connection, state: str, error: str) -> None:
-        conn.failure_count += 1
-        conn.last_error = error[:256]
-        for k, v in _circuit.on_failure(consecutive_failures=conn.consecutive_failures,
-                                        state=state, now=self._clock.now(),
-                                        threshold=self._cfg["circuit_threshold"]).items():
-            setattr(conn, k, v)
-        await self._conns.save(conn)
+        # CAS-mutate (connector-003): re-read + re-apply so a concurrent run's watermark/circuit update
+        # is not clobbered by this failure write.
+        def _apply(c: Connection) -> None:
+            c.failure_count += 1
+            c.last_error = error[:256]
+            for k, v in _circuit.on_failure(consecutive_failures=c.consecutive_failures,
+                                            state=state, now=self._clock.now(),
+                                            threshold=self._cfg["circuit_threshold"]).items():
+                setattr(c, k, v)
+        await self._conns.mutate(conn.id, _apply)
 
     async def _record_success(self, conn: Connection) -> None:
-        conn.sync_count += 1
-        conn.last_sync_at = self._clock.now()
-        for k, v in _circuit.on_success().items():
-            setattr(conn, k, v)
-        await self._conns.save(conn)
+        def _apply(c: Connection) -> None:
+            c.sync_count += 1
+            c.last_sync_at = self._clock.now()
+            for k, v in _circuit.on_success().items():
+                setattr(c, k, v)
+        await self._conns.mutate(conn.id, _apply)
 
     # ── pull ────────────────────────────────────────────────────────────────────
     async def pull(self, *, connection_id: str, resource: str, spec: dict[str, Any],
@@ -115,10 +119,18 @@ class SyncEngine:
             if pend.get("terminal"):
                 for k in pend.get("keys", []):
                     await self._seen.reserve(k)        # commit the tail: future fetches skip these
-            else:
-                conn.watermarks[resource] = pend.get("cursor", "")
-            conn.pending.pop(resource, None)
-            await self._conns.save(conn)
+
+            def _ack(c: Connection) -> None:           # CAS-mutate (connector-003)
+                p = c.pending.get(resource) if isinstance(c.pending, dict) else None
+                if not (p and p.get("token") == ack_cursor):
+                    return                             # already acked by a concurrent run
+                if not p.get("terminal"):
+                    c.watermarks[resource] = p.get("cursor", "")
+                c.pending.pop(resource, None)
+            await self._conns.mutate(connection_id, _ack)
+            # Refresh the local aggregate: the rest of this pull reads conn.watermarks to decide where
+            # to fetch from, and the CAS mutate advanced the DURABLE row, not this stale local copy.
+            conn = await self._conns.get(connection_id) or conn
 
         now = self._clock.now()
         run = SyncRun(id=new_id("run_"), tenant=conn.tenant, connection_id=conn.id,
@@ -195,15 +207,21 @@ class SyncEngine:
             # Deterministic terminal token (no run id): a re-pull of the same terminal page yields the
             # SAME token, so acking the token from any delivery of that page commits it.
             token = next_cursor if next_cursor else f"__eos__:{run.watermark_before}"
-            if isinstance(conn.pending, dict):
-                conn.pending[resource] = {"token": token, "cursor": next_cursor,
-                                          "terminal": terminal, "keys": [k for k, _ in mapped]}
+            _pending_val = {"token": token, "cursor": next_cursor,
+                            "terminal": terminal, "keys": [k for k, _ in mapped]}
+
+            def _adv(c: Connection) -> None:           # CAS-mutate (connector-003)
+                if isinstance(c.pending, dict):
+                    c.pending[resource] = _pending_val
+            await self._conns.mutate(connection_id, _adv)
         elif next_cursor:
-            conn.watermarks[resource] = next_cursor
             run.watermark_after = next_cursor
+
+            def _adv(c: Connection) -> None:           # CAS-mutate (connector-003)
+                c.watermarks[resource] = next_cursor
+            await self._conns.mutate(connection_id, _adv)
         else:
             run.watermark_after = run.watermark_before
-        await self._conns.save(conn)
 
         # The PROVIDER fetch succeeded, so the connection is healthy — a client-side field-map failure
         # is a tenant config error, not a provider outage, and must NOT trip the provider circuit
@@ -217,8 +235,9 @@ class SyncEngine:
         # non-empty value for a terminal page, so the tail is ackable — r2-01); in default mode it is the
         # provider cursor. Returned in both modes; only ack mode requires them.
         if at_least_once:
-            out["cursor"] = conn.pending.get(resource, {}).get("token", next_cursor) \
-                if isinstance(conn.pending, dict) else next_cursor
+            # Use the token we just computed + persisted via the CAS mutate — the local conn.pending is
+            # a stale copy (the mutate advanced the durable row, not this object).
+            out["cursor"] = token
         else:
             out["cursor"] = next_cursor
         out["keys"] = [k for k, _r in mapped]

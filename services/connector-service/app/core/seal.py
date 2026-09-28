@@ -46,10 +46,20 @@ def seal(plaintext: str, seal_key: str, aad: str = "") -> str:
 def unseal(token: str, seal_key: str, aad: str = "") -> str | None:
     if not token:
         return None
+    from cryptography.exceptions import InvalidTag
     try:
         raw = base64.b64decode(token)
         ad = aad.encode() if aad else None
-        return AESGCM(_key(seal_key)).decrypt(raw[:12], raw[12:], ad).decode()
+        try:
+            return AESGCM(_key(seal_key)).decrypt(raw[:12], raw[12:], ad).decode()
+        except InvalidTag:
+            if ad is None:
+                raise
+            # Backward compatibility (connector-004): a blob sealed BEFORE token_aad/spec_secret_aad
+            # existed was sealed with aad=None. Decrypt it in the legacy no-AAD format so introducing
+            # the AAD binding never orphans an existing connection's token / spec secret (the AEAD
+            # incident class the fleet fix closed elsewhere). A wrong key / tampered blob fails this too.
+            return AESGCM(_key(seal_key)).decrypt(raw[:12], raw[12:], None).decode()  # aad: ok — legacy pre-AAD blob; primary decrypt above binds the AAD
     except Exception:
         return None
 
