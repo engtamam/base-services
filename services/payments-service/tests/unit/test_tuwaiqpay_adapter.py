@@ -160,3 +160,30 @@ def test_webhook_with_absent_status_currency_does_not_verify(monkeypatch):
     # with no confirmable currency (currency_ok is False), so this never completes off the webhook. The
     # reconcile path (which passes the request's own currency) self-heals it later.
     assert out.currency == ""
+
+
+def test_verify_webhook_threads_stored_currency_into_fetch(monkeypatch):
+    # payments-003: verify_webhook has no currency of its own; it must pass the caller's stored
+    # currency into fetch_status so an unusual status-response currency shape still resolves and a real
+    # success is not refused as unverifiable.
+    seen = {}
+
+    def _fake_get(*a, **k):
+        # a currency shape _iso_currency cannot parse on its own (empty) → without a fallback it would
+        # yield '' and apply_outcome would refuse the success.
+        return 200, {"data": {"transactionStatus": "SETTLED", "transactionId": "abc123",
+                              "bill": {"amount": 150.00, "currency": {}}}}
+
+    g = _gw()
+    orig_fetch = g.fetch_status
+
+    def _spy_fetch(*, provider_ref, currency=""):
+        seen["currency"] = currency
+        return orig_fetch(provider_ref=provider_ref, currency=currency)
+
+    g.fetch_status = _spy_fetch
+    monkeypatch.setattr(tp, "get_json", _fake_get)
+    body = json.dumps({"transactionDetails": {"transactionId": "abc123", "id": 5}}).encode()
+    out = g.verify_webhook(headers={}, body=body, stored_currency="SAR")
+    assert seen["currency"] == "SAR"                    # stored currency threaded through
+    assert out.currency == "SAR" and out.verified is True   # real success resolves, not refused

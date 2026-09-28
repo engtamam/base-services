@@ -16,6 +16,7 @@ reconcile fetch — moves that request to a terminal state EXACTLY ONCE and emit
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -158,7 +159,6 @@ class PaymentService:
         """Given a claim we did NOT win, return the winner's usable request (pending-not-expired or
         completed), waiting briefly for a mint in flight. Returns None if the claim is stale (its
         request is expired/failed/cancelled) so the caller may steal it."""
-        import asyncio
         target_rid = (claim or {}).get("request_id", "")
         if not target_rid:
             return None
@@ -183,7 +183,10 @@ class PaymentService:
             await self._req.release_claim(tenant=tenant, reference=reference)
             raise PaymentNotConfigured(f"tenant {tenant!r} has no payment gateway configured")
         try:
-            session = gateway.prepare_checkout(
+            # OFFLOAD the blocking gateway HTTP off the event loop (payments-001): prepare_checkout
+            # does a synchronous http.client round trip with a 30s timeout.
+            session = await asyncio.to_thread(
+                gateway.prepare_checkout,
                 amount_minor=amount_minor, currency=currency, reference=reference,
                 return_url=return_url, metadata=metadata or {})
         except GatewayUnavailable:
@@ -307,10 +310,19 @@ class PaymentService:
         A body that does not expose a resolvable ref falls through to the full verify path unchanged, so
         verification is never weakened."""
         ref = _peek_provider_ref(body)
-        if ref and await self._req.by_provider_ref(tenant=tenant, provider_ref=ref) is None:
-            return None
+        stored_currency = ""
+        if ref:
+            known = await self._req.by_provider_ref(tenant=tenant, provider_ref=ref)
+            if known is None:
+                return None
+            # Server-authoritative currency for a verify-by-fetch gateway (payments-003): the fetch has
+            # no currency of its own, so hand it the currency WE recorded for this payment as a fallback
+            # for an unusual status-response shape — a real success is no longer refused as unverifiable.
+            stored_currency = str(known.get("currency", ""))
         gateway = await self._gw.gateway_for(tenant)
-        outcome = gateway.verify_webhook(headers=headers, body=body)
+        # OFFLOAD (payments-001): verify_webhook may itself do a blocking verify-by-fetch round trip.
+        outcome = await asyncio.to_thread(gateway.verify_webhook, headers=headers, body=body,
+                                          stored_currency=stored_currency)
         return await self.apply_outcome(tenant=tenant, outcome=outcome)
 
     async def reconcile(self, *, tenant: str, request_id: str) -> dict | None:
@@ -325,7 +337,8 @@ class PaymentService:
         if row.get("status") not in (PENDING, EXPIRED):
             return row
         gateway = await self._gw.gateway_for(tenant)
-        outcome = gateway.fetch_status(provider_ref=row.get("provider_ref", ""),
-                                       currency=row.get("currency", ""))
+        outcome = await asyncio.to_thread(                 # OFFLOAD blocking fetch (payments-001)
+            gateway.fetch_status, provider_ref=row.get("provider_ref", ""),
+            currency=row.get("currency", ""))
         outcome.provider_ref = row.get("provider_ref", "")   # anchor to our stored ref
         return await self.apply_outcome(tenant=tenant, outcome=outcome)

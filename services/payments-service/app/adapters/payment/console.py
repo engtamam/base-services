@@ -35,7 +35,7 @@ class ConsoleGateway:
             redirect_url=f"{self._base}/{provider_ref}",
             extra={"reference": reference})
 
-    def verify_webhook(self, *, headers: dict[str, str], body: bytes) -> PaymentOutcome:
+    def verify_webhook(self, *, headers: dict[str, str], body: bytes, stored_currency: str = "") -> PaymentOutcome:
         try:
             payload = json.loads(body.decode("utf-8", "replace")) if body else {}
         except Exception:   # noqa: BLE001

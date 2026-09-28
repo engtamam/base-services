@@ -73,7 +73,7 @@ class PaymentGateway(Protocol):
                          return_url: str = "", metadata: dict | None = None) -> CheckoutSession:
         ...
 
-    def verify_webhook(self, *, headers: dict[str, str], body: bytes) -> PaymentOutcome:
+    def verify_webhook(self, *, headers: dict[str, str], body: bytes, stored_currency: str = "") -> PaymentOutcome:
         ...
 
     def fetch_status(self, *, provider_ref: str, currency: str = "") -> PaymentOutcome:

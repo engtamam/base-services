@@ -20,7 +20,10 @@
       "line": 101,
       "scenario": "PaymentService.create_link/handle_webhook/reconcile call gateway.prepare_checkout / verify_webhook / fetch_status synchronously (payments.py:186, 313, 328). Those adapter methods call post_json/get_json -> _send, which does a BLOCKING http.client round trip (connect + read) with a 30s timeout. Because it is not wrapped in asyncio.to_thread, a single slow/hung shop gateway freezes the whole uvicorn event loop for up to PAYMENTS_GATEWAY_TIMEOUT_SECONDS (30s) — every other request, including /healthz, stalls. This is exactly the failure the team already fixed elsewhere (audit_sink/http.py:75 and consent_gate/http.py:49 both use asyncio.to_thread and the /healthz-froze incident is cited in memory 'blocking-sync-in-async'); the payment gateway path is the one hot money path that still blocks.",
       "evidence": "def _send(url, data, headers, method='POST', timeout=None) -> tuple[int, dict]: ... conn.request(method, path, body=data, headers=...); resp = conn.getresponse(); return resp.status, _parse(resp.read())  # called via gateway.prepare_checkout(...) at payments.py:186 with no to_thread",
-      "recommendation": "Wrap every gateway adapter call in asyncio.to_thread at the PaymentService seam (or make the adapters async), mirroring audit_sink/http.py. The reconcile sweep magnifies this: run_sweep_once awaits service.reconcile per row sequentially, so one slow gateway blocks the loop for the whole page."
+      "recommendation": "Wrap every gateway adapter call in asyncio.to_thread at the PaymentService seam (or make the adapters async), mirroring audit_sink/http.py. The reconcile sweep magnifies this: run_sweep_once awaits service.reconcile per row sequentially, so one slow gateway blocks the loop for the whole page.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "every gateway call at the PaymentService seam (prepare_checkout / verify_webhook / fetch_status) now runs via asyncio.to_thread, so the blocking http.client round trips no longer freeze the event loop (the reconcile sweep especially)."
     },
     {
       "id": "payments-002",
@@ -31,7 +34,10 @@
       "line": 55,
       "scenario": "set_credential and clear_credential on /internal/payments/merchant-credentials mutate a shop's sealed MERCHANT_* secrets — including MERCHANT_API_BASE (where money is routed) and MERCHANT_API_KEY. Neither calls request.app.state.auditor.record(), and AUDITABLE_ACTIONS declares no internal credential action. The equivalent operator-panel routes (operator.py:129/149) audit write-ahead and mark it critical=True, with a why line stating 'the previous value is gone the moment it happens'. So the SAME credential change is fully attributed through one door and leaves zero trail through the other. A compromised or misused internal token can rotate a shop's gateway credentials/base with no record, which auditable_actions.py itself calls out as 'THE MOST-MISSED CATEGORY' (source=internal).",
       "evidence": "async def set_credential(request, body): bad = _reject_unknown(body.name) ... info = await secrets.set(tenant=body.tenant, name=body.name, value=body.value, actor_ref=body.actor_ref)  # no auditor.record() anywhere; AUDITABLE_ACTIONS = [operator.secret_set, operator.secret_cleared, operator.config_changed, operator.option_changed] only",
-      "recommendation": "Record a critical, write-ahead audit event (e.g. payments.merchant_credential_set / _cleared, source=internal) before the write, add both to AUDITABLE_ACTIONS with a why, and pass the caller identity from require_internal_token as the actor."
+      "recommendation": "Record a critical, write-ahead audit event (e.g. payments.merchant_credential_set / _cleared, source=internal) before the write, add both to AUDITABLE_ACTIONS with a why, and pass the caller identity from require_internal_token as the actor.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "set_credential and clear_credential now write-ahead-record new critical audit actions payments.merchant_credential_set/_cleared (declared in AUDITABLE_ACTIONS) BEFORE mutating the sealed MERCHANT_* secrets; the value is never logged. A money-path change is now attributable and a down audit refuses it."
     },
     {
       "id": "payments-003",
@@ -42,7 +48,10 @@
       "line": 183,
       "scenario": "verify_webhook re-queries the gateway with fetch_status(provider_ref=tx_id) and NO currency argument, so fetch_status falls back to currency='' (tuwaiqpay.py:153/164). If the status response's currency shape is not one of the three _iso_currency handles (dict nameEn/code/name, ISO string, or numeric id), _iso_currency returns the '' fallback. apply_outcome then computes currency_ok = bool(outcome.currency) and ... -> '' is falsy -> mismatch=True -> a VERIFIED SUCCEEDED is downgraded to FAILED (payments.py:258-266). The reconcile path passes the stored currency (payments.py:328-329) so it would NOT mismatch — the two settlement paths disagree, and the webhook path can strand real money as 'failed'.",
       "evidence": "confirmed = self.fetch_status(provider_ref=tx_id)   # no currency= passed; def fetch_status(self, *, provider_ref, currency='' ): ... cur = _iso_currency(bill.get('currency'), currency)",
-      "recommendation": "verify_webhook cannot know the stored currency, so it should not settle on currency alone: either resolve the stored PaymentRequest currency before fetch, or have apply_outcome treat an empty confirmed-currency from a same-provider_ref match as 'trust the stored currency' rather than an automatic mismatch. At minimum, make the webhook and reconcile paths pass currency identically."
+      "recommendation": "verify_webhook cannot know the stored currency, so it should not settle on currency alone: either resolve the stored PaymentRequest currency before fetch, or have apply_outcome treat an empty confirmed-currency from a same-provider_ref match as 'trust the stored currency' rather than an automatic mismatch. At minimum, make the webhook and reconcile paths pass currency identically.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "handle_webhook resolves the server-authoritative stored currency for the payment and threads it into verify_webhook -> fetch_status (new stored_currency param on the port + adapters), so a verify-by-fetch success with an unusual currency shape is no longer refused as unverifiable. Regression test added."
     },
     {
       "id": "payments-004",
@@ -53,7 +62,10 @@
       "line": 112,
       "scenario": "PaymentService._emit publishes TOPIC_COMPLETED ('payment.completed') and TOPIC_FAILED ('payment.failed') on the event bus for every settled request (payments.py:30-31, 287-299). The manifest served at /internal/manifest declares 'events': {'emitted': [], 'consumed': []}. The manifest's own inline comment warns this exact trap: 'an empty emitted reads as this service publishes nothing, so a consumer wiring against it subscribes to nothing and fails silently.' A downstream order-fulfilment consumer built from the manifest subscribes to no topic and never fulfils paid orders.",
       "evidence": "\"events\": {\"emitted\": [], \"consumed\": []},  # e.g. {\"emitted\": [\"wallet.credited\"], ...}   vs   TOPIC_COMPLETED = \"payment.completed\"; TOPIC_FAILED = \"payment.failed\"; await self._bus.publish(topic, Event(...))",
-      "recommendation": "Populate events.emitted with 'payment.completed' and 'payment.failed' (and their payload shape) so the fan-out and consumers discover them."
+      "recommendation": "Populate events.emitted with 'payment.completed' and 'payment.failed' (and their payload shape) so the fan-out and consumers discover them.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "the manifest now declares events.emitted=['payment.completed','payment.failed'] so consumers discover the fan-out."
     },
     {
       "id": "payments-005",

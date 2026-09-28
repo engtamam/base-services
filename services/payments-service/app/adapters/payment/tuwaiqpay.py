@@ -168,9 +168,15 @@ class TuwaiqPayGateway:
             amount_minor=to_minor(bill.get("amount", 0) or 0, cur),
             currency=cur, verified=True, raw={"status": status})
 
-    def verify_webhook(self, *, headers: dict[str, str], body: bytes) -> PaymentOutcome:
+    def verify_webhook(self, *, headers: dict[str, str], body: bytes,
+                       stored_currency: str = "") -> PaymentOutcome:
         """UNSIGNED webhook → do NOT trust the body's status. Take only transactionId and RE-QUERY
-        TuwaiqPay (authenticated); the fetched status is the truth."""
+        TuwaiqPay (authenticated); the fetched status is the truth.
+
+        `stored_currency` (payments-003): the verify-by-fetch call had no currency, so an unusual
+        status-response currency shape made _iso_currency return '' and apply_outcome refused a REAL
+        success as unverifiable. The caller passes the server-authoritative stored currency so the
+        fetch has a correct fallback for THIS payment."""
         try:
             payload = json.loads(body.decode("utf-8", "replace")) if body else {}
         except Exception:   # noqa: BLE001
@@ -180,7 +186,7 @@ class TuwaiqPayGateway:
         if not tx_id:
             return PaymentOutcome(status=PENDING, provider=self.driver, verified=False)
         try:
-            confirmed = self.fetch_status(provider_ref=tx_id)
+            confirmed = self.fetch_status(provider_ref=tx_id, currency=stored_currency)
         except GatewayUnavailable:
             return PaymentOutcome(status=PENDING, provider=self.driver, provider_ref=tx_id,
                                   verified=False)

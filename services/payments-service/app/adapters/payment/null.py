@@ -19,7 +19,7 @@ class NullGateway:
                          return_url: str = "", metadata: dict | None = None) -> CheckoutSession:
         return CheckoutSession(ok=False, provider=self.driver, error=_MSG)
 
-    def verify_webhook(self, *, headers: dict[str, str], body: bytes) -> PaymentOutcome:
+    def verify_webhook(self, *, headers: dict[str, str], body: bytes, stored_currency: str = "") -> PaymentOutcome:
         return PaymentOutcome(status=PENDING, provider=self.driver, verified=False)
 
     def fetch_status(self, *, provider_ref: str, currency: str = "") -> PaymentOutcome:

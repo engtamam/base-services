@@ -234,7 +234,7 @@ class _CountingGateway:
     def __init__(self):
         self.verify_calls = 0
 
-    def verify_webhook(self, *, headers, body):
+    def verify_webhook(self, *, headers, body, stored_currency=""):
         self.verify_calls += 1
         return PaymentOutcome(status="pending", provider="console", verified=False)
 

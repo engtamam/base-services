@@ -64,6 +64,14 @@ async def set_credential(request: Request, body: _CredIn) -> dict:
         ok, reason = validate_gateway_base(body.value)
         if not ok:
             return JSONResponse({"ok": False, "reason": reason}, status_code=422)
+    # WRITE-AHEAD audit the credential mutation (payments-002): MERCHANT_* creds decide where a shop's
+    # money is routed (API_BASE) and the key that authorises it; changing one silently is exactly the
+    # supply-chain move an incident review must be able to attribute. Critical → a down log refuses the
+    # change. The value is NEVER logged (only the name).
+    await request.app.state.auditor.record(
+        "payments.merchant_credential_set", actor=body.actor_ref or "service:internal",
+        tenant=body.tenant, resource=f"merchant_credential:{body.name}",
+        ip=request.client.host if request.client else "")
     secrets = build_merchant_secrets(request)
     try:
         info = await secrets.set(tenant=body.tenant, name=body.name, value=body.value,
@@ -76,6 +84,10 @@ async def set_credential(request: Request, body: _CredIn) -> dict:
 
 @router.post("/merchant-credentials/clear", dependencies=[Depends(require_internal_token)])
 async def clear_credential(request: Request, body: _CredKey) -> dict:
+    await request.app.state.auditor.record(
+        "payments.merchant_credential_cleared", actor="service:internal", tenant=body.tenant,
+        resource=f"merchant_credential:{body.name}",
+        ip=request.client.host if request.client else "")
     secrets = build_merchant_secrets(request)
     cleared = await secrets.clear(tenant=body.tenant, name=body.name)
     return {"ok": True, "cleared": cleared}

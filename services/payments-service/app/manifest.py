@@ -109,7 +109,9 @@ def build_manifest(
         # FILL THIS too, or leave it empty deliberately. Same trap as capabilities: an empty
         # `emitted` reads as "this service publishes nothing", so a consumer wiring against it
         # subscribes to nothing and fails silently rather than at boot.
-        "events": {"emitted": [], "consumed": []},  # e.g. {"emitted": ["wallet.credited"], ...}
+        # payments-004: PaymentService._emit publishes these on every settled request, so a consumer
+        # (billing, wallet) discovers the fan-out here rather than by reading the source.
+        "events": {"emitted": ["payment.completed", "payment.failed"], "consumed": []},
         "admin_actions": _admin_actions(),
         "backup": _backup(),
         "user_actions": _user_actions(),

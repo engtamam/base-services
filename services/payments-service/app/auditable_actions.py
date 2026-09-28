@@ -152,4 +152,22 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "could not check out at a point in time. Not critical: refusing a toggle because the "
                "log is down would strand the option in its current state, which protects nothing",
     },
+    {
+        "action": "payments.merchant_credential_set",
+        "source": "internal",
+        "critical": True,
+        "resource": "merchant_credential",
+        "why": "MERCHANT_* credentials decide WHERE a shop's money is routed (API_BASE) and the key "
+               "that authorises the call. Silently repointing them is a money-redirection / supply-"
+               "chain move an incident review must attribute — who set which credential for which shop, "
+               "and when — so an unrecordable change must not proceed. The value is never logged",
+    },
+    {
+        "action": "payments.merchant_credential_cleared",
+        "source": "internal",
+        "critical": True,
+        "resource": "merchant_credential",
+        "why": "clearing a merchant credential disables or reroutes a shop's payments; like setting one "
+               "it is a money-path change that must be attributable and cannot proceed unrecorded",
+    },
 ]
