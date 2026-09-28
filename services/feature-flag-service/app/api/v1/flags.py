@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.api.auth import Principal
 from app.api.authz import require_any_capability
+from app.api.ratelimit import rate_limit
 from app.config import get_settings
 from app.core.config_service import ConfigService, MaintenanceService
 from app.core.flag_service import FlagService
@@ -118,9 +119,28 @@ async def upsert_flag(request: Request, body: FlagIn, principal: Principal = Dep
     return flag.to_dict()
 
 
-@router.get("/flags", dependencies=[Depends(_READ)])
-async def list_flags(request: Request, include_archived: bool = False) -> dict:
-    return {"flags": await build_flags(request).list(include_archived)}
+def _scope_overrides(d: dict, principal: Principal) -> dict:
+    """Strip per-subject override maps a non-platform caller must not see (feature-flag-002).
+
+    Flag.to_dict() carries tenant_overrides {tenant: bool} and user_overrides {user_id: bool} for
+    EVERY flag in the global catalogue — other tenants' data and raw user ids. A platform.flags holder
+    (support/ops) sees them; a tenant-delegated flags.read/flags.manage caller sees only its OWN
+    tenant's override (and never any user_overrides), matching what evaluate already scopes to."""
+    if "platform.flags" in principal.caps:
+        return d
+    out = dict(d)
+    own = principal.tenant or ""
+    to = d.get("tenant_overrides") or {}
+    out["tenant_overrides"] = {own: to[own]} if own in to else {}
+    out["user_overrides"] = {}          # raw user ids are never exposed to a tenant caller
+    return out
+
+
+@router.get("/flags")
+async def list_flags(request: Request, include_archived: bool = False,
+                     principal: Principal = Depends(_READ)) -> dict:
+    flags = await build_flags(request).list(include_archived)
+    return {"flags": [_scope_overrides(f, principal) for f in flags]}
 
 
 @router.get("/flags/stale", dependencies=[Depends(_READ)])
@@ -216,7 +236,7 @@ async def clear_override(request: Request, key: str, scope: str, subject: str,
     return flag.to_dict()
 
 
-@router.post("/flags/evaluate", dependencies=[Depends(_READ)])
+@router.post("/flags/evaluate", dependencies=[Depends(_READ), Depends(rate_limit)])
 async def evaluate(request: Request, body: EvalIn, principal: Principal = Depends(_READ)) -> dict:
     svc = build_flags(request)
     # Scope the evaluation to the caller's tenant unless they are a platform operator — otherwise any

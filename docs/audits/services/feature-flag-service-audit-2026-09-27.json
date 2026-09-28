@@ -20,7 +20,10 @@
       "line": 81,
       "scenario": "app/main.py calls build_policy + register_ratelimit_refund but never adds a rate-limit middleware, and NO route in app/api/v1/flags.py or app/api/internal.py declares Depends(rate_limit). A grep for rate_limit shows it is defined and referenced only inside ratelimit.py itself. Result: the hot-path POST /api/v1/flags/evaluate and POST /internal/flags/evaluate (each of which fans out to evaluate_all over the whole catalogue with per-flag entitlement/segment resolution) have zero request throttling. An unauthenticated-token or single tenant can hammer evaluate and exhaust the event loop / datastore. Every RATELIMIT_* setting (RATELIMIT_MAX, RATELIMIT_WINDOW_SECONDS, RATELIMIT_KEY_PARTS, RATELIMIT_ROUTES, RATELIMIT_DEGRADE) is a declared-but-unread knob — the panel advertises limits that nothing enforces.",
       "evidence": "async def rate_limit(request: Request, response: Response, principal: \"Principal | None\" = Depends(optional_principal)) -> None:  # never referenced by any router",
-      "recommendation": "Attach Depends(rate_limit) to the user + internal routers (at minimum the evaluate endpoints) or mount it as middleware, and add a test that asserts a 429 once RATELIMIT_MAX is exceeded."
+      "recommendation": "Attach Depends(rate_limit) to the user + internal routers (at minimum the evaluate endpoints) or mount it as middleware, and add a test that asserts a 429 once RATELIMIT_MAX is exceeded.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "rate_limit dependency wired onto the evaluate hot paths (v1 POST /flags/evaluate and internal POST /flags/evaluate), so the declared RATELIMIT_MAX is actually enforced."
     },
     {
       "id": "feature-flag-002",
@@ -31,7 +34,10 @@
       "line": 121,
       "scenario": "list_flags is guarded by _READ (platform.flags OR flags.manage OR flags.read). flags.manage/flags.read are described in this same file as tenant-delegatable caps. The returned Flag.to_dict() includes tenant_overrides {tenant: bool} and user_overrides {user_id: bool} for EVERY flag in the global catalogue. A tenant admin holding flags.read can call GET /api/v1/flags (and GET /api/v1/flags/stale) and read which other tenants and which global user ids have overrides on every flag — the exact cross-tenant leak the evaluate route (line 219-229) was carefully scoped to prevent. The evaluate path was fixed; the list/read path was not.",
       "evidence": "@router.get(\"/flags\", dependencies=[Depends(_READ)])\nasync def list_flags(request: Request, include_archived: bool = False) -> dict:\n    return {\"flags\": await build_flags(request).list(include_archived)}",
-      "recommendation": "Either restrict list/get of full definitions to platform.flags, or strip tenant_overrides/user_overrides down to the caller's own tenant for non-platform callers (as evaluate already scopes tenant)."
+      "recommendation": "Either restrict list/get of full definitions to platform.flags, or strip tenant_overrides/user_overrides down to the caller's own tenant for non-platform callers (as evaluate already scopes tenant).",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "list_flags now scopes per-subject override maps for non-platform callers via _scope_overrides: a flags.read/flags.manage (tenant-delegated) caller sees only its own tenant_override and never any user_overrides; platform.flags holders still see all. Regression test added."
     },
     {
       "id": "feature-flag-003",
@@ -42,7 +48,10 @@
       "line": 21,
       "scenario": "_json_any_map returns {} on any JSON parse error ('a mis-set map must not crash boot'). INTERNAL_ROUTE_POLICY_JSON feeds InternalRoutePolicy, which is default-open: a route with no entry admits any authenticated caller (internal_policy.py line 35). If an operator sets a policy to lock /internal/backup/import or /internal/privacy/erase to specific callers but makes a JSON typo, the whole map parses to {} and EVERY internal route reverts to default-open with no boot error and no log — the tightening the operator intended silently does not exist. Same silent-swallow applies to INTERNAL_CALLER_PUBLIC_KEYS_JSON / INTERNAL_CALLER_JWKS_JSON, where a typo leaves the static/jwks driver with no keys and it falls back to the flat shared token.",
       "evidence": "except (ValueError, TypeError):\n        return {}   # a mis-set map must not crash boot; the driver it feeds simply sees no keys",
-      "recommendation": "Fail boot (or at least emit a WARN + telemetry) when a SECURITY-relevant map env var is non-empty but does not parse as a JSON object, instead of degrading to default-open silently."
+      "recommendation": "Fail boot (or at least emit a WARN + telemetry) when a SECURITY-relevant map env var is non-empty but does not parse as a JSON object, instead of degrading to default-open silently.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "INTERNAL_ROUTE_POLICY_JSON now parses via json_object_strict, which FAILS BOOT on a present-but-malformed value instead of degrading to {} (default-open); unset stays {} (feature off). Regression test added."
     },
     {
       "id": "feature-flag-004",
@@ -53,7 +62,10 @@
       "line": 166,
       "scenario": "_definition awaits self._provider.get(key) directly. For the unleash provider that calls get_json (blocking urllib) and for launchdarkly it calls the synchronous ldclient.all_flags_state — both are declared `async def` but do blocking I/O with no offload. On a cache miss (every FLAG_CACHE_TTL_SECONDS, or after any write invalidation) this freezes the single-worker event loop for the whole HTTP round-trip, stalling every concurrent evaluation. Note the code already learned this lesson for the entitlement checker (asyncio.to_thread, line 240) and token verify (run_in_threadpool), but the flag provider fetch was left inline.",
       "evidence": "try:\n            flag = await self._provider.get(key)\n        except ProviderUnavailable:\n            return None",
-      "recommendation": "Wrap provider.get/list in asyncio.to_thread (or make the adapters truly async), matching the offload already applied to entitlement and token verification."
+      "recommendation": "Wrap provider.get/list in asyncio.to_thread (or make the adapters truly async), matching the offload already applied to entitlement and token verification.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "unleash and launchdarkly provider get/list run their blocking I/O (get_json / all_flags_state) via asyncio.to_thread, so a cache miss on the evaluate hot path no longer freezes the event loop."
     },
     {
       "id": "feature-flag-005",
@@ -64,7 +76,10 @@
       "line": 33,
       "scenario": "CACHE_DRIVER defaults to 'memory' (config.py line 204). FlagService._invalidate deletes flag:<key>/flags:all only from the LOCAL cache. In a multi-replica deployment on the memory driver, an admin flipping a flag's `enabled` to False (kill switch) or setting a tenant override on replica A does not invalidate replicas B/C, which keep serving the OLD definition for up to FLAG_CACHE_TTL_SECONDS (30s). For a kill switch used during an incident, 30s of continued exposure across most replicas is a real safety gap, and it is invisible in a single-process test.",
       "evidence": "async def delete(self, key: str) -> bool:\n        return self._data.pop(key, None) is not None   # local process dict only",
-      "recommendation": "Require the redis cache driver in production (boot guard when replicas>1), or add a pub/sub invalidation channel so writes fan out; at minimum document that memory cache is single-replica-only."
+      "recommendation": "Require the redis cache driver in production (boot guard when replicas>1), or add a pub/sub invalidation channel so writes fan out; at minimum document that memory cache is single-replica-only.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "new REPLICAS knob + assert_cache_config_ok boot guard: production with REPLICAS>1 and CACHE_DRIVER=memory is refused, since a per-process cache cannot propagate a flag flip/kill-switch across replicas (redis required)."
     },
     {
       "id": "feature-flag-006",
@@ -75,7 +90,10 @@
       "line": 109,
       "scenario": "upsert emits flag.changed with before/after = flag.to_dict(), which includes the full user_overrides {user_id: bool} and tenant_overrides maps — personal data (global user identifiers) broadcast in cleartext to every event-bus subscriber. Separately _expose publishes flag.exposed with the raw 'subject' (which is the user id when bucket_by=user) and 'tenant'. Everywhere else the service is careful to write only subject_ref pseudonyms (core/pii.py, erasure), yet the event stream carries raw identifiers.",
       "evidence": "await self._emit(\"flag.changed\", {\"key\": flag.key, \"actor\": actor, \"before\": before, \"after\": flag.to_dict()})   ...   \"subject\": subject, ... \"tenant\": ctx.get(\"tenant\", \"\")",
-      "recommendation": "Pseudonymise subject via subject_ref in flag.exposed, and omit or hash user_overrides/tenant_overrides from flag.changed payloads (emit only the changed keys/counts, not the raw per-person map)."
+      "recommendation": "Pseudonymise subject via subject_ref in flag.exposed, and omit or hash user_overrides/tenant_overrides from flag.changed payloads (emit only the changed keys/counts, not the raw per-person map).",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "flag.exposed pseudonymises the subject (subject_ref, raw id removed); flag.changed replaces user_overrides/tenant_overrides with counts via _redact_flag in _emit, so raw user ids / tenant maps are no longer broadcast to the bus. Regression tests added."
     },
     {
       "id": "feature-flag-007",

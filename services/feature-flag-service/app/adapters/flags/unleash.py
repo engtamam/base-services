@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import asyncio
+
 from app.adapters.flag_http import get_json
 from app.ports.flag_provider import ProviderUnavailable
 
@@ -31,13 +33,15 @@ class UnleashFlags:
                 "description": f.get("description", "")}
 
     async def get(self, key: str) -> dict[str, Any] | None:
-        code, resp = get_json(f"{self._base}/api/client/features/{key}", self._h)
+        # get_json is blocking urllib — offload so a cache miss on the evaluate hot path does not
+        # freeze the single-worker event loop (feature-flag-004).
+        code, resp = await asyncio.to_thread(get_json, f"{self._base}/api/client/features/{key}", self._h)
         if code == 0:
             raise ProviderUnavailable("Unleash unreachable")
         return self._map(resp) if 200 <= code < 300 and resp.get("name") else None
 
     async def list(self, limit: int = 500) -> list[dict[str, Any]]:
-        code, resp = get_json(f"{self._base}/api/client/features", self._h)
+        code, resp = await asyncio.to_thread(get_json, f"{self._base}/api/client/features", self._h)
         if code == 0:
             raise ProviderUnavailable("Unleash unreachable")
         return [self._map(f) for f in (resp.get("features") or [])][:limit]

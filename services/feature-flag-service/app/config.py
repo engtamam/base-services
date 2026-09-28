@@ -34,6 +34,24 @@ def _json_str_map(raw: str) -> dict[str, str]:
     return {str(k): str(v) for k, v in _json_any_map(raw).items() if k and v}
 
 
+def json_object_strict(raw: str, name: str) -> dict:
+    """Parse a JSON object env var, FAILING LOUDLY when a non-empty value does not parse as an object.
+
+    _json_any_map tolerates malformed input by returning {} — fine for a benign map, but for a
+    SECURITY-relevant map (e.g. INTERNAL_ROUTE_POLICY_JSON, which is default-open per missing route) a
+    silent {} degrades an operator's intended lock-down into admit-any-caller (feature-flag-003). An
+    empty/unset value is still {} (feature off); a present-but-broken one raises so boot fails closed."""
+    if not raw or not raw.strip():
+        return {}
+    try:
+        val = _json.loads(raw)
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f"{name} is set but is not valid JSON: {exc}") from exc
+    if not isinstance(val, dict):
+        raise ValueError(f"{name} must be a JSON object, got {type(val).__name__}")
+    return val
+
+
 class Settings(BaseSettings):
     """Runtime configuration. Values come from env vars (or a local .env file)."""
 
@@ -203,6 +221,11 @@ class Settings(BaseSettings):
 
     CACHE_DRIVER: str = "memory"
     CACHE_URL: str = ""  # e.g. redis://host:6379/0  (redis driver)
+    # How many replicas of this service run. The memory cache is PER-PROCESS, so a flag flip / tenant
+    # override / kill-switch invalidates only the replica that served the write — every other replica
+    # keeps serving the stale decision until its TTL expires (feature-flag-005). With >1 replica in
+    # production the cache MUST be shared (redis), enforced by assert_cache_config_ok.
+    REPLICAS: int = 1
 
     EVENTBUS_DRIVER: str = "memory"
     EVENTBUS_URL: str = ""
@@ -370,6 +393,18 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"AUDIT_SERVICE_URL {self.AUDIT_SERVICE_URL!r} must start with http:// or https://"
             )
+
+    def assert_cache_config_ok(self) -> None:
+        """Boot guard (feature-flag-005). A per-process memory cache cannot propagate a flag flip /
+        kill-switch across replicas: replica A writes and invalidates its own cache, replicas B..N keep
+        serving the stale decision until TTL. For a FEATURE-FLAG service that is the whole product —
+        a kill-switch that half the fleet ignores is worse than none. So >1 replica in production must
+        use a shared cache (redis)."""
+        if self.is_production and self.REPLICAS > 1 and self.CACHE_DRIVER == "memory":
+            raise ValueError(
+                f"CACHE_DRIVER=memory with REPLICAS={self.REPLICAS} in production: a flag flip or "
+                "kill-switch would not propagate across replicas (per-process cache). Use "
+                "CACHE_DRIVER=redis (with CACHE_URL) so invalidations are shared.")
 
     @field_validator("INTERNAL_SERVICE_TOKEN")
     @classmethod

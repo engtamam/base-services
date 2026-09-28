@@ -35,8 +35,10 @@ def _build_caller(driver: str, token: str, public_keys_json: str, jwks_json: str
 
 @lru_cache(maxsize=32)
 def _build_policy(policy_json: str) -> InternalRoutePolicy:
-    from app.config import _json_any_map
-    raw = _json_any_map(policy_json)
+    # STRICT parse (feature-flag-003): this map is default-open per missing route, so a present-but-
+    # malformed value must fail boot rather than silently degrade an intended lock-down to admit-any.
+    from app.config import json_object_strict
+    raw = json_object_strict(policy_json, "INTERNAL_ROUTE_POLICY_JSON")
     return InternalRoutePolicy(
         {k: [str(x) for x in (v if isinstance(v, list) else [v])] for k, v in raw.items()})
 

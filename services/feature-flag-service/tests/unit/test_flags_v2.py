@@ -189,7 +189,9 @@ def test_exposure_event_emitted_with_variant_and_bucket():
     exp = bus.of("flag.exposed")
     assert len(exp) == 1
     assert exp[0]["key"] == "exp" and exp[0]["variant"] == "a"
-    assert exp[0]["bucket_by"] == "tenant" and exp[0]["subject"] == "acme"
+    # feature-flag-006: the subject is PSEUDONYMISED before broadcast — the raw id never leaves.
+    assert exp[0]["bucket_by"] == "tenant"
+    assert "subject" not in exp[0] and exp[0]["subject_ref"] and exp[0]["subject_ref"] != "acme"
 
 
 def test_exposure_sampling_zero_emits_nothing():
@@ -244,3 +246,51 @@ def test_maintenance_bypass_allowlist():
     s = run(ms.status(subject="oncall"))
     assert s["active"] is False and s["bypassed"] is True             # admin can get in to fix it
     assert run(ms.status(subject="random"))["active"] is True
+
+
+# ── feature-flag-006: flag.changed omits raw per-subject override maps ──────────────────────────────
+def test_flag_changed_redacts_override_maps():
+    st, bus = MemoryDataStore(), Bus()
+    b = _svc(st, bus=bus)
+    run(b.upsert(key="f", enabled=True))
+    run(b.set_override("f", scope="user", subject="user-123", value=True, actor="op"))
+    run(b.set_override("f", scope="tenant", subject="acme", value=False, actor="op"))
+    changed = bus.of("flag.changed")
+    assert changed, "expected flag.changed events"
+    for p in changed:
+        for side in ("before", "after"):
+            d = p.get(side)
+            if not d:
+                continue
+            assert "user_overrides" not in d and "tenant_overrides" not in d
+            assert "user_overrides_count" in d and "tenant_overrides_count" in d
+    # the raw user id never appears anywhere in the emitted payloads
+    import json as _j
+    assert "user-123" not in _j.dumps(changed)
+
+
+# ── feature-flag-002: non-platform callers see only their own tenant's override ────────────────────
+def test_scope_overrides_strips_other_tenants_and_all_user_overrides():
+    from app.api.auth import Principal
+    from app.api.v1.flags import _scope_overrides
+    d = {"key": "f", "tenant_overrides": {"acme": True, "globex": False},
+         "user_overrides": {"u1": True}}
+    tenant_caller = Principal(subject="a", caps=frozenset({"flags.read"}), tenant="acme")
+    scoped = _scope_overrides(d, tenant_caller)
+    assert scoped["tenant_overrides"] == {"acme": True}     # only own tenant
+    assert scoped["user_overrides"] == {}                    # never any user overrides
+    # a platform operator sees everything
+    op = Principal(subject="o", caps=frozenset({"platform.flags"}), tenant="ops")
+    assert _scope_overrides(d, op) == d
+
+
+# ── feature-flag-003: a malformed security policy map fails loudly, never default-open ──────────────
+def test_json_object_strict_rejects_malformed_security_map():
+    from app.config import json_object_strict
+    assert json_object_strict("", "X") == {}                 # unset = feature off
+    assert json_object_strict('{"a":1}', "X") == {"a": 1}
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        json_object_strict("{not json", "INTERNAL_ROUTE_POLICY_JSON")
+    with _pytest.raises(ValueError):
+        json_object_strict("[1,2,3]", "INTERNAL_ROUTE_POLICY_JSON")   # not an object

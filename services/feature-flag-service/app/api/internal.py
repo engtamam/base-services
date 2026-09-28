@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
+from app.api.ratelimit import rate_limit
 from app.api.v1.flags import build_config, build_flags, build_maintenance
 from app.backup_manifest import BACKUP
 from app.core import backup as _backup
@@ -69,7 +70,7 @@ async def internal_health(settings: Settings = Depends(get_settings)) -> dict[st
     return {"status": "ok", "service": settings.SERVICE_NAME}
 
 
-@router.post("/flags/evaluate", dependencies=[Depends(require_internal_token)])
+@router.post("/flags/evaluate", dependencies=[Depends(require_internal_token), Depends(rate_limit)])
 async def evaluate_bulk(request: Request, body: EvaluateIn) -> dict:
     """One call answers every flag for a request context (any service calls this)."""
     svc = build_flags(request)

@@ -306,17 +306,41 @@ class FlagService:
                                        subject, self._exposure_pct):
                 return
         try:
+            # PSEUDONYMISE the subject before broadcasting (feature-flag-006): the raw subject is a
+            # user id (global personal data) and flag.exposed fans out to every bus subscriber. The
+            # ref is stable per (tenant, subject) so an experiment can still count uniques, without
+            # publishing the identity. bucket_by is kept so a consumer knows the ref's domain.
+            from app.core.pii import subject_ref
+            ref = subject_ref(self._salt, ctx.get("tenant", ""), subject)
             await self._bus.publish("flag.exposed", {
                 "key": flag.get("key", ""), "variant": result.get("variant", ""),
                 "enabled": result.get("enabled"), "reason": result.get("reason"),
-                "subject": subject, "bucket_by": bucket_by,
+                "subject_ref": ref, "bucket_by": bucket_by,
                 "tenant": ctx.get("tenant", ""), "at": iso()})
         except Exception:
             pass                                           # exposure never blocks evaluation
 
+    @staticmethod
+    def _redact_flag(d: dict | None) -> dict | None:
+        """Replace the raw per-subject override maps with COUNTS before a flag goes on the bus
+        (feature-flag-006). user_overrides {user_id: bool} and tenant_overrides {tenant: bool} are
+        personal/tenant data; a flag.changed subscriber needs to know they changed, not who is in them."""
+        if not d:
+            return d
+        out = dict(d)
+        if "user_overrides" in out:
+            out["user_overrides_count"] = len(out.pop("user_overrides") or {})
+        if "tenant_overrides" in out:
+            out["tenant_overrides_count"] = len(out.pop("tenant_overrides") or {})
+        return out
+
     async def _emit(self, event: str, payload: dict) -> None:
         if self._bus is None:
             return
+        if event == "flag.changed":
+            payload = {**payload,
+                       "before": self._redact_flag(payload.get("before")),
+                       "after": self._redact_flag(payload.get("after"))}
         try:
             await self._bus.publish(event, {**payload, "at": iso()})
         except Exception:
