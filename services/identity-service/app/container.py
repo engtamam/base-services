@@ -189,6 +189,22 @@ def _build_legal_gate(settings: Settings) -> Any:
     return _LEGAL_GATE[driver](settings)
 
 
+from app.adapters.tenant_gate.off import NoTenantGate
+from app.adapters.tenant_gate.tenant import TenantServiceGate
+
+
+def _build_tenant_gate(settings: Settings) -> Any:
+    """off enforcement => the inert gate; block => the tenant-service client. The driver follows the
+    enforcement mode so a `block` posture with no client cannot be wired by accident."""
+    if settings.IDENTITY_TENANT_STATUS_ENFORCEMENT == "off":
+        return NoTenantGate()
+    return TenantServiceGate(
+        settings.TENANT_SERVICE_URL, settings.INTERNAL_SERVICE_TOKEN, settings=settings,
+        timeout_ms=settings.IDENTITY_TENANT_GATE_TIMEOUT_MS,
+        ttl_seconds=settings.IDENTITY_TENANT_GATE_TTL_SECONDS,
+        token_header=settings.IDENTITY_TENANT_TOKEN_HEADER)
+
+
 def _pick(registry: dict[str, Builder], driver: str, port_name: str, settings: Settings) -> Any:
     builder = registry.get(driver)
     if builder is None:
@@ -218,6 +234,7 @@ class Container:
     login_identifier: LoginIdentifier = None  # type: ignore[assignment]
     caps_resolver: Any = None
     legal_gate: Any = None
+    tenant_gate: Any = None
     otp_service: Any = None
 
     def describe(self) -> list[dict[str, str]]:
@@ -235,7 +252,7 @@ class Container:
             *([{"port": "audit_sink", "driver": self.audit_sink.driver}]
               if self.audit_sink is not None else []),
         ]
-        for name in ("password_hasher", "token_issuer", "mfa", "login_identifier"):
+        for name in ("password_hasher", "token_issuer", "mfa", "login_identifier", "tenant_gate"):
             adapter = getattr(self, name)
             if adapter is not None:
                 rows.append({"port": name, "driver": adapter.driver})
@@ -295,6 +312,7 @@ def build_container(settings: Settings) -> Container:
         mfa=_pick(_MFA, settings.MFA_DRIVER, "mfa", settings),
         caps_resolver=_pick(_CAPS_RESOLVER, settings.IDENTITY_CAPS_SOURCE, "caps_resolver", settings),
         legal_gate=_build_legal_gate(settings),
+        tenant_gate=_build_tenant_gate(settings),
         login_identifier=_build_login_identifier(settings),
         otp_service=_build_otp_service(settings, cache),
     )

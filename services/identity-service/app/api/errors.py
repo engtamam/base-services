@@ -17,6 +17,7 @@ from app.core.audit import AuditUnavailable
 from app.core.auth_service import AuthService
 from app.core.caps_grant import CapsNotGrantable
 from app.ports.legal_gate import LegalGateUnavailable
+from app.ports.tenant_gate import TenantGateUnavailable
 from app.middleware.request_context import get_request_id
 from app.middleware.security import apply_security_headers, build_security_headers
 from app.observability.logging import get_logger
@@ -96,6 +97,20 @@ def register_error_handlers(app: FastAPI) -> None:
         resp = JSONResponse(body, status_code=403)
         apply_security_headers(resp, _sec_headers)
         return resp
+
+    @app.exception_handler(AuthService.TenantInactive)
+    async def _tenant_inactive(request: Request, exc: AuthService.TenantInactive):
+        # A suspended/deleted tenant mints nothing. 403 + a named code, no detail: which tenant and
+        # what status is operational, not for the error body handed to the caller.
+        _logger.warning("tenant_inactive_mint_refused",
+                        extra={"path": request.url.path, "status": exc.tenant_status})
+        return _json("TENANT_INACTIVE", 403)
+
+    @app.exception_handler(TenantGateUnavailable)
+    async def _tenant_gate_unavailable(request: Request, exc: TenantGateUnavailable):
+        # fail-closed tenant mode with tenant-service down. 503 (retryable), named, no detail.
+        _logger.error("tenant_gate_unavailable", extra={"path": request.url.path})
+        return _json("TENANT_GATE_UNAVAILABLE", 503)
 
     @app.exception_handler(LegalGateUnavailable)
     async def _legal_unavailable(request: Request, exc: LegalGateUnavailable):

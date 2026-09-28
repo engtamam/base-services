@@ -561,6 +561,41 @@ class Settings(BaseSettings):
     def legal_accept_caps(self) -> list[str]:
         return [c.strip() for c in self.IDENTITY_LEGAL_ACCEPT_CAPS.split(",") if c.strip()]
 
+    # ── tenant-status enforcement — a suspended/deleted tenant mints NO token ──
+    # Until now tenant.status was enforced only by tenant-service's own edit routes: a suspended or
+    # deleted tenant's users could still log in and use everything. This gates the MINT (login,
+    # refresh, tenant select). Opt-in (default off); `block` refuses the mint. Complements the
+    # api-gateway per-request gate — identity stops new tokens, the gateway kills live ones.
+    IDENTITY_TENANT_STATUS_ENFORCEMENT: str = "off"   # off | block
+    TENANT_SERVICE_URL: str = ""                        # e.g. http://tenant-service:8000
+    IDENTITY_TENANT_GATE_TIMEOUT_MS: int = 3000         # mint is a hot path; do not hang on tenant-service
+    IDENTITY_TENANT_GATE_TTL_SECONDS: int = 30          # cache + enforcement lag: a suspend is live within this
+    IDENTITY_TENANT_GATE_FAIL_MODE: str = "open"        # open (availability) | closed (max strength)
+    # A real active tenant never resolves to unknown (tenant-service tombstones deleted ones as a
+    # readable 200); unknown is a 404 — a purged/nonexistent tenant a valid mint should not target.
+    IDENTITY_TENANT_BLOCK_UNKNOWN: bool = True
+    IDENTITY_TENANT_TOKEN_HEADER: str = "X-Internal-Token"
+
+    def assert_tenant_status_config_ok(self) -> None:
+        """Boot guard. A declared `block` enforcement that cannot resolve a status reads as enforcement
+        while minting for suspended tenants anyway — refuse to boot unless the URL is wired."""
+        if self.IDENTITY_TENANT_STATUS_ENFORCEMENT not in ("off", "block"):
+            raise ValueError(
+                f"IDENTITY_TENANT_STATUS_ENFORCEMENT {self.IDENTITY_TENANT_STATUS_ENFORCEMENT!r} "
+                "must be 'off' or 'block'")
+        if self.IDENTITY_TENANT_GATE_FAIL_MODE not in ("open", "closed"):
+            raise ValueError(
+                f"IDENTITY_TENANT_GATE_FAIL_MODE {self.IDENTITY_TENANT_GATE_FAIL_MODE!r} "
+                "must be 'open' or 'closed'")
+        if self.IDENTITY_TENANT_STATUS_ENFORCEMENT == "block":
+            if not self.TENANT_SERVICE_URL:
+                raise ValueError(
+                    "IDENTITY_TENANT_STATUS_ENFORCEMENT=block requires TENANT_SERVICE_URL to reach "
+                    "/internal/tenants/{id}")
+            if not self.TENANT_SERVICE_URL.startswith(("http://", "https://")):
+                raise ValueError(
+                    f"TENANT_SERVICE_URL {self.TENANT_SERVICE_URL!r} must start with http:// or https://")
+
     # ── operator-managed credentials ──────────────────────────────────────────
     # The key that seals every operator-stored credential. It stays in the ENVIRONMENT and is never
     # settable through any API: a key that protects the secrets and is itself editable in the panel

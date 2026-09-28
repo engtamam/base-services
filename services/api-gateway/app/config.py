@@ -173,6 +173,27 @@ class Settings(BaseSettings):
     # always fail open — the split is per action, declared by this service, not a global switch.
     AUDIT_FAIL_CLOSED: bool = True
 
+    # ── tenant-status enforcement — a suspended/deleted tenant loses ALL access ──
+    # Until now tenant.status was enforced only by tenant-service's own 3 self-service edit routes:
+    # a suspended or deleted tenant's users kept full platform access. This gates EVERY authenticated
+    # request at the gateway. Opt-in (default off / inert driver) so existing single-tenant and
+    # default-tenant deployments are unchanged; a multi-tenant platform wires the `tenant` driver,
+    # points TENANT_SERVICE_URL at tenant-service, and sets the enforcement mode to `block`.
+    TENANT_GATE_DRIVER: str = "off"                 # off | tenant
+    TENANT_SERVICE_URL: str = ""                     # e.g. http://tenant-service:8000
+    TENANT_STATUS_ENFORCEMENT: str = "off"           # off | block
+    TENANT_STATUS_TTL_SECONDS: int = 30              # cache + enforcement lag: a suspend is live within this
+    TENANT_STATUS_TIMEOUT_MS: int = 800              # hot path — short, so a slow lookup is not a slow API
+    # Availability vs strictness on an UNRESOLVABLE status (transport error only; a definite
+    # suspended/deleted is never softened). open: a tenant-service blip must not 401 the platform.
+    TENANT_STATUS_FAIL_MODE: str = "open"            # open | closed
+    # A real active tenant never resolves to unknown (tenant-service tombstones deleted ones as a
+    # readable 200); unknown is a 404 — a purged or nonexistent tenant, which a valid token should
+    # not carry. Blocked by default.
+    TENANT_STATUS_BLOCK_UNKNOWN: bool = True
+    # The operator plane is never a customer tenant and is never gated.
+    PLATFORM_TENANT: str = "platform"
+
     # ── Ports & adapters (Phase 2) — driver selection, ZERO-INFRA defaults ──
     # Every default reaches NO external system; point at real infra by config.
     DATASTORE_DRIVER: str = "memory"
@@ -365,6 +386,29 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"AUDIT_SERVICE_URL {self.AUDIT_SERVICE_URL!r} must start with http:// or https://"
             )
+
+    def assert_tenant_status_config_ok(self) -> None:
+        """Boot guard. A declared enforcement mode that nothing can act on is worse than an absent one:
+        it reads as 'suspended tenants are blocked' while every request sails through. If enforcement is
+        `block`, the tenant driver and URL must be wired so the gate can actually resolve a status."""
+        if self.TENANT_STATUS_ENFORCEMENT not in ("off", "block"):
+            raise ValueError(
+                f"TENANT_STATUS_ENFORCEMENT {self.TENANT_STATUS_ENFORCEMENT!r} must be 'off' or 'block'")
+        if self.TENANT_STATUS_FAIL_MODE not in ("open", "closed"):
+            raise ValueError(
+                f"TENANT_STATUS_FAIL_MODE {self.TENANT_STATUS_FAIL_MODE!r} must be 'open' or 'closed'")
+        if self.TENANT_STATUS_ENFORCEMENT == "block":
+            if self.TENANT_GATE_DRIVER != "tenant":
+                raise ValueError(
+                    "TENANT_STATUS_ENFORCEMENT=block requires TENANT_GATE_DRIVER=tenant: the 'off' "
+                    "driver always answers 'active', so enforcement would block nothing while claiming to")
+            if not self.TENANT_SERVICE_URL:
+                raise ValueError(
+                    "TENANT_STATUS_ENFORCEMENT=block requires TENANT_SERVICE_URL to reach "
+                    "/internal/tenants/{id}")
+            if not self.TENANT_SERVICE_URL.startswith(("http://", "https://")):
+                raise ValueError(
+                    f"TENANT_SERVICE_URL {self.TENANT_SERVICE_URL!r} must start with http:// or https://")
 
     @field_validator("INTERNAL_SERVICE_TOKEN")
     @classmethod

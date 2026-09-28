@@ -76,6 +76,11 @@ class AuthService:
     _legal_accept_caps: tuple[str, ...] = ()
     _legal_accept_ttl = 0
     _legal_fail_mode = "open"
+    # Same SAFE defaults for the tenant-status gate: a __new__-constructed instance enforces NOTHING.
+    _tenant_gate = None
+    _tenant_enforcement = "off"
+    _tenant_fail_mode = "open"
+    _tenant_block_unknown = True
     _account_lockout = None
 
     def __init__(self, *, users: UserRepository, refresh: RefreshStore, hasher,
@@ -88,7 +93,10 @@ class AuthService:
                  legacy_email_policy: str = "grandfather",
                  legal_gate=None, legal_enforcement: str = "off",
                  legal_accept_caps=(), legal_accept_ttl: int = 0,
-                 legal_fail_mode: str = "open", auditor=None, telemetry=None) -> None:
+                 legal_fail_mode: str = "open",
+                 tenant_gate=None, tenant_enforcement: str = "off",
+                 tenant_fail_mode: str = "open", tenant_block_unknown: bool = True,
+                 auditor=None, telemetry=None) -> None:
         # auditor/telemetry (identity-004): refresh-token REUSE is the token-theft signal, and family
         # revocation is the most security-relevant token event — both must be witnessed, not silent.
         self._auditor = auditor
@@ -125,6 +133,11 @@ class AuthService:
         self._legal_accept_caps = tuple(legal_accept_caps or ())
         self._legal_accept_ttl = legal_accept_ttl
         self._legal_fail_mode = legal_fail_mode
+        # Tenant-status enforcement at the mint. `off` (or a None gate) keeps every mint path unchanged.
+        self._tenant_gate = tenant_gate
+        self._tenant_enforcement = tenant_enforcement
+        self._tenant_fail_mode = tenant_fail_mode
+        self._tenant_block_unknown = tenant_block_unknown
         # Precomputed dummy hash so a missing user costs the same as a real one.
         self._dummy_hash = hasher.hash("timing-equalizer")
 
@@ -300,6 +313,35 @@ class AuthService:
                 owed, self._issue_legal_accept_token(subject, tenant))
         return owed   # flag mode
 
+    class TenantInactive(Exception):
+        """The user's tenant is suspended or deleted, so NO token is minted. The route turns this into
+        403 TENANT_INACTIVE. Carries the tenant and the offending status for the audit trail."""
+
+        def __init__(self, tenant: str, tenant_status: str) -> None:
+            super().__init__("TENANT_INACTIVE")
+            self.tenant = tenant
+            self.tenant_status = tenant_status
+
+    async def _enforce_tenant_active(self, tenant: str) -> None:
+        """Refuse the mint for a suspended/deleted tenant. off / no gate / platform tenant => no check.
+        A transport failure fails open (availability) unless configured closed; a definite negative
+        status is never softened by the fail mode."""
+        from app.ports.tenant_gate import DELETED, SUSPENDED, UNKNOWN, TenantGateUnavailable
+        if self._tenant_gate is None or self._tenant_enforcement != "block":
+            return
+        if not tenant or tenant == self._platform_tenant:
+            return
+        try:
+            st = await self._tenant_gate.status(tenant)
+        except TenantGateUnavailable as exc:
+            if self._tenant_fail_mode == "closed":
+                raise
+            _log.warning("tenant_gate_unavailable_fail_open",
+                         extra={"tenant": tenant, "detail": exc.__class__.__name__})
+            return
+        if st in (SUSPENDED, DELETED) or (st == UNKNOWN and self._tenant_block_unknown):
+            raise self.TenantInactive(tenant, st)
+
     async def issue_tokens(self, user: User) -> dict:
         # THE GATE, at the mint rather than in the login route. tenancy.py already argues why:
         # minting is the only moment anything is verified, and every service downstream simply
@@ -308,6 +350,8 @@ class AuthService:
         # ever on renewals.
         if self._require_verified and not self.email_is_proven(user):
             raise self.EmailNotVerified(user.username)
+        # Tenant-status gate at the mint: a suspended/deleted tenant mints nothing (block raises here).
+        await self._enforce_tenant_active(user.tenant)
         # Legal gate at the mint: block raises here (no token), flag stamps legal_pending.
         pending = await self._legal_pending(user.id, user.tenant)
         claims = {"caps": self._safe_caps(user), "roles": user.roles, "tenant": user.tenant}

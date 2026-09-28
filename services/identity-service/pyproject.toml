@@ -46,6 +46,8 @@ dependencies = [
 authz = ["httpx>=0.27,<1.0"]   # BSD-3-Clause
 # IDENTITY_LEGAL_ENFORCEMENT=flag|block checks outstanding legal at compliance-service at mint time.
 legalgate = ["httpx>=0.27,<1.0"]   # BSD-3-Clause
+# IDENTITY_TENANT_STATUS_ENFORCEMENT=block checks tenant lifecycle status at tenant-service at mint time.
+tenantgate = ["httpx>=0.27,<1.0"]   # BSD-3-Clause
 
 # Infra adapter extras — install only what a service actually uses (lean base,
 # smaller attack surface). ALL PERMISSIVE.

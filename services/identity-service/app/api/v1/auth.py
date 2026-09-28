@@ -132,6 +132,11 @@ def _svc(request: Request) -> AuthService:
         legal_accept_caps=s.legal_accept_caps,
         legal_accept_ttl=s.IDENTITY_LEGAL_ACCEPT_TTL_SECONDS,
         legal_fail_mode=s.IDENTITY_LEGAL_GATE_FAIL_MODE,
+        # Tenant-status enforcement at the mint. off => the gate is inert.
+        tenant_gate=getattr(c, "tenant_gate", None),
+        tenant_enforcement=s.IDENTITY_TENANT_STATUS_ENFORCEMENT,
+        tenant_fail_mode=s.IDENTITY_TENANT_GATE_FAIL_MODE,
+        tenant_block_unknown=s.IDENTITY_TENANT_BLOCK_UNKNOWN,
         # Witness refresh-token reuse / family revocation (identity-004).
         auditor=getattr(request.app.state, "auditor", None),
         telemetry=getattr(c, "telemetry", None),

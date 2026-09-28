@@ -124,6 +124,22 @@ _FORWARDER: dict[str, Builder] = {
                                       max_response_bytes=s.MAX_RESPONSE_BYTES),
 }
 
+from app.adapters.tenant_gate.off import OffTenantGate
+from app.adapters.tenant_gate.tenant import HttpTenantGate
+
+
+def _build_tenant_gate(settings: Settings, cache) -> Any:
+    if settings.TENANT_GATE_DRIVER == "tenant":
+        return HttpTenantGate(
+            settings.TENANT_SERVICE_URL, settings.INTERNAL_SERVICE_TOKEN,
+            cache=cache, settings=settings,
+            timeout_ms=settings.TENANT_STATUS_TIMEOUT_MS,
+            ttl_seconds=settings.TENANT_STATUS_TTL_SECONDS)
+    if settings.TENANT_GATE_DRIVER == "off":
+        return OffTenantGate()
+    raise ConfigError(
+        f"unknown TENANT_GATE_DRIVER: {settings.TENANT_GATE_DRIVER!r} — allowed: off, tenant")
+
 
 def _pick(registry: dict[str, Builder], driver: str, port_name: str, settings: Settings) -> Any:
     builder = registry.get(driver)
@@ -149,6 +165,7 @@ class Container:
     audit_sink: Any = None
     route_table: Any = None
     forwarder: Any = None
+    tenant_gate: Any = None
 
     def describe(self) -> list[dict[str, str]]:
         """[{port, driver}] for the service manifest."""
@@ -165,7 +182,7 @@ class Container:
             *([{"port": "audit_sink", "driver": self.audit_sink.driver}]
               if self.audit_sink is not None else []),
         ]
-        for name in ("route_table", "forwarder"):
+        for name in ("route_table", "forwarder", "tenant_gate"):
             adapter = getattr(self, name)
             if adapter is not None:
                 rows.append({"port": name, "driver": adapter.driver})
@@ -207,9 +224,10 @@ def _build_audit_sink(settings: Settings, event_bus) -> Any:
 def build_container(settings: Settings) -> Container:
     """Resolve every port from config. Fail-fast on any unknown driver."""
     event_bus = _pick(_EVENTBUS, settings.EVENTBUS_DRIVER, "event_bus", settings)
+    cache = _pick(_CACHE, settings.CACHE_DRIVER, "cache", settings)
     return Container(
         datastore=_pick(_DATASTORE, settings.DATASTORE_DRIVER, "datastore", settings),
-        cache=_pick(_CACHE, settings.CACHE_DRIVER, "cache", settings),
+        cache=cache,
         event_bus=event_bus,
         queue=_pick(_QUEUE, settings.QUEUE_DRIVER, "queue", settings),
         object_store=_pick(_OBJECTSTORE, settings.OBJECTSTORE_DRIVER, "object_store", settings),
@@ -220,4 +238,5 @@ def build_container(settings: Settings) -> Container:
         audit_sink=_build_audit_sink(settings, event_bus),
         route_table=_pick(_ROUTE_TABLE, settings.ROUTE_TABLE_DRIVER, "route_table", settings),
         forwarder=_pick(_FORWARDER, settings.FORWARDER_DRIVER, "forwarder", settings),
+        tenant_gate=_build_tenant_gate(settings, cache),
     )

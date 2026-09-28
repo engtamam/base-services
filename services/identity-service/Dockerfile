@@ -21,7 +21,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 COPY pyproject.toml README.md ./
 RUN mkdir -p app && : > app/__init__.py   # stub package: the builder needs only DEPS in
 # the venv (the runtime stage copies the real source), so deps cache across code changes.
-RUN --mount=type=cache,target=/root/.cache/pip pip install ".[authz,legalgate,bcrypt,postgres,redis,s3,vault]"
+RUN --mount=type=cache,target=/root/.cache/pip pip install ".[authz,legalgate,tenantgate,bcrypt,postgres,redis,s3,vault]"
 
 # ── Final: slim runtime, non-root ───────────────────────────────────────────
 FROM python:3.12-slim AS runtime
