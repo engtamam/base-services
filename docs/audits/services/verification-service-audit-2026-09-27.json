@@ -48,7 +48,10 @@
       "line": 145,
       "scenario": "decide() was hardened to cas_put() precisely because a read-check-write on a PENDING record races. resolve() still does the old unsafe pattern: get(), check verdict==PENDING, _apply(), plain store.put(), _announce(). Providers retry callbacks, so two retried 'verified' callbacks for one id can both read PENDING, both pass the check, both put and both _announce. Result: two 'identity.verified' audit rows for one grant and, worse, registry.remember() runs twice for the same claim_ref so times becomes 2 on a single genuine verification — the anti-abuse counter onboarding relies on ('has this identity collected the grant') is corrupted. The docstring claims IDEMPOTENT but idempotence here is not concurrency-safe.",
       "evidence": "if record.verdict != PENDING:\n            return record\n        ...\n        self._apply(record, outcome, now)\n        record.provider_state = {}\n        await self._store.put(record)          # not cas_put; no version guard\n        await self._announce(record, outcome)",
-      "recommendation": "Settle via store.cas_put() and, on a lost race, refetch and return the now-settled record unchanged — the same atomic seam decide() already uses."
+      "recommendation": "Settle via store.cas_put() and, on a lost race, refetch and return the now-settled record unchanged — the same atomic seam decide() already uses.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "resolve() now settles via cas_put with refetch-on-conflict in a bounded loop (was get→check→plain put): two retried callbacks can no longer both read PENDING and both write; the loser refetches and returns the settled record. Regression test with an interleaving store."
     },
     {
       "id": "verification-004",
@@ -59,7 +62,10 @@
       "line": 114,
       "scenario": "decide() commits the VERIFIED/REFUSED verdict with cas_put() and breaks out of the loop, THEN calls auditor.record('review.decided', ...). review.decided is declared critical. If the audit log is down, auditor.record raises AuditUnavailable after the manual approval — the highest-privilege operation in the service — is already persisted. The reviewer gets a 503 as though the decision was refused, but the claim is already VERIFIED and cannot be re-decided (the settled-check now refuses a retry with 'already verified'). So a human grant of trust becomes permanent AND unprovable, which is exactly the condition critical/fail-closed exists to prevent.",
       "evidence": "if not await self._store.cas_put(record):\n                continue\n            break\n        ...\n        if self._auditor is not None:\n            await self._auditor.record('review.decided', ...)   # after the decision is already committed",
-      "recommendation": "Write-ahead the review.decided audit (or make commit+audit atomic with rollback). A settled-but-unaudited critical decision is the worst outcome."
+      "recommendation": "Write-ahead the review.decided audit (or make commit+audit atomic with rollback). A settled-but-unaudited critical decision is the worst outcome.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "decide() write-ahead-audits review.decided BEFORE the final cas_put (was after commit); a down critical audit log refuses the decision before it persists. The committed decision is always the one audited immediately before it."
     },
     {
       "id": "verification-005",
@@ -70,7 +76,10 @@
       "line": 178,
       "scenario": "The file's rule #2 and is_trusted() compute VERIFIED expiry on read so a stale verdict is never trusted before a sweeper runs. But status() only downgrades VERIFIED->EXPIRED; for a PENDING record whose pending_until has already passed it returns verdict='pending', trusted=False. If the sweep CronJob has not run and no callback arrives, a user polling /status sees 'pending' indefinitely for a prompt that has actually lapsed. is_trusted() also returns False for PENDING but never reflects the lapse in the reported verdict. The on-read lapse guarantee the service advertises does not cover the pending state — only the verified state.",
       "evidence": "if verdict == VERIFIED and not trusted:\n            verdict = EXPIRED\n        return {\"claim_type\": claim_type, \"verdict\": verdict, ...}   # PENDING past pending_until still returned as 'pending'",
-      "recommendation": "In status()/is_trusted(), when verdict==PENDING and pending_until and now>=pending_until, report EXPIRED — evaluate the lapse on read exactly as expiry is."
+      "recommendation": "In status()/is_trusted(), when verdict==PENDING and pending_until and now>=pending_until, report EXPIRED — evaluate the lapse on read exactly as expiry is.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "status() now downgrades a PENDING record whose pending_until has passed to EXPIRED on READ, exactly as VERIFIED expiry is evaluated — a lapsed prompt no longer reports 'pending' forever when the sweep hasn't run. Regression test added."
     },
     {
       "id": "verification-006",
@@ -81,7 +90,10 @@
       "line": 156,
       "scenario": "sweep_pending() reads the pending-before set, then for each record sets verdict=EXPIRED and calls store.put() with no version check. A provider callback (resolve) or a reviewer (decide) can settle a record to VERIFIED/REFUSED between the sweep's find() and its put(); the sweep's unconditional put() then overwrites that real decision with EXPIRED. Because put() serializes the record's current version unchanged, it silently wins the write with no CAS. A legitimately verified identity can be flipped to EXPIRED by a racing sweep near the pending_until boundary.",
       "evidence": "for record in await self._store.pending_before(now, limit=limit):\n            record.verdict = EXPIRED\n            record.updated_at = now\n            await self._store.put(record)          # no version guard, unlike decide()",
-      "recommendation": "Sweep with cas_put() and skip (do not retry into EXPIRED) any record whose verdict is no longer PENDING on refetch."
+      "recommendation": "Sweep with cas_put() and skip (do not retry into EXPIRED) any record whose verdict is no longer PENDING on refetch.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "sweep_pending() lapses via cas_put with a refetch+status recheck: a provider callback/reviewer settling a record between find() and the write is preserved (the sweep skips a no-longer-PENDING row) instead of being clobbered with EXPIRED."
     },
     {
       "id": "verification-007",
@@ -92,7 +104,10 @@
       "line": 142,
       "scenario": "PENDING records store provider_state (the correlation token from the provider callback), but resolve() ignores it entirely: it takes verification_id + verified and settles. The verification_id is returned to the end user in the submit_claim response (record.public() includes id). The only gate on POST /internal/verification/resolve is the shared internal token — there is no verification that the caller is the provider that owns this pending check, and no match of body.reference against the stored provider_state correlation token. Any component holding the internal token, or a confused-deputy bug, can turn any user's pending identity check into VERIFIED by replaying its id with verified=true.",
       "evidence": "outcome = vp.Outcome(status=vp.VERIFIED if verified else vp.REFUSED,\n                             provider=record.evidence.get(\"provider\", \"\"),\n                             reference=reference, detail=detail)\n        self._apply(record, outcome, now)   # provider_state / correlation token never checked",
-      "recommendation": "Require and verify the provider correlation token stored in provider_state against the callback before settling, so a resolve must prove it came from the provider that owns the pending prompt."
+      "recommendation": "Require and verify the provider correlation token stored in provider_state against the callback before settling, so a resolve must prove it came from the provider that owns the pending prompt.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "resolve() now verifies the callback's reference against the provider correlation token captured in provider_state (the pending outcome's reference); a mismatch raises CorrelationMismatch → 403. Records with no captured correlation are unchanged (backward compatible). Regression test added."
     },
     {
       "id": "verification-008",
@@ -103,7 +118,10 @@
       "line": 66,
       "scenario": "VerificationErasure.erase() loads the subject's records and for each sets subject='' , provider_state={} and calls store.put() with no version guard. If a reviewer decides or a provider callback resolves the same record concurrently (both use cas_put), the erasure put() can overwrite a just-committed verdict (or vice versa), producing a record whose subject link is severed but whose provider_state/verdict is inconsistent with the decision. Erasure is irreversible, so a lost write here is unrecoverable.",
       "evidence": "record.subject = \"\"\n            record.provider_state = {}\n            await self._store.put(record)          # plain put; decide()/resolve() use cas_put",
-      "recommendation": "Use cas_put with refetch-on-conflict for the erasure rewrite, or take the record through the same optimistic-lock path the decision writes use."
+      "recommendation": "Use cas_put with refetch-on-conflict for the erasure rewrite, or take the record through the same optimistic-lock path the decision writes use.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "VerificationErasure.erase() severs the subject link with cas_put+refetch, re-applying subject=''/provider_state={} onto the freshest row, so a concurrent decide()/resolve() verdict is preserved and the link always goes. Regression test added."
     },
     {
       "id": "verification-009",

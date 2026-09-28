@@ -175,8 +175,13 @@ async def resolve_verification(request: Request, body: ResolveIn) -> dict:
         clock=c.clock, registry=IdentityRegistry(c.datastore), pii_salt=s.PII_SALT,
         ttl_days=s.verify_ttl_days, pending_ttl=s.VERIFY_PENDING_TTL_SECONDS,
         auditor=request.app.state.auditor, event_bus=c.event_bus)
-    record = await svc.resolve(body.verification_id, verified=body.verified,
-                               reference=body.reference, detail=body.detail)
+    try:
+        record = await svc.resolve(body.verification_id, verified=body.verified,
+                                   reference=body.reference, detail=body.detail)
+    except VerificationService.CorrelationMismatch:
+        # verification-007: the callback did not present the provider correlation token the pending
+        # prompt captured — refuse rather than settle a prompt it cannot prove it owns.
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "CORRELATION_MISMATCH")
     if record is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
     return record.public()

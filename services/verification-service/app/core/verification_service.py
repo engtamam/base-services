@@ -115,47 +115,80 @@ class VerificationService:
         return now + days * DAY_SECONDS if days > 0 else 0.0
 
     # ── the provider answering later ─────────────────────────────────────────
+    class CorrelationMismatch(Exception):
+        """The resolve callback did not present the provider correlation token the pending prompt
+        stored (verification-007). The caller is refused rather than allowed to settle a prompt it
+        cannot prove it owns."""
+
     async def resolve(self, verification_id: str, *, verified: bool, reference: str = "",
                       detail: str = "") -> Verification | None:
-        """A provider's callback. IDEMPOTENT: a replay must not flip a settled verdict.
+        """A provider's callback. IDEMPOTENT and CONCURRENCY-SAFE: a replay or a duplicate retried
+        callback must not flip a settled verdict, double-settle, or double-audit.
 
-        Providers retry callbacks, and a retry that re-opened a decided verification would let a
-        duplicate delivery overwrite a refusal with an approval — or the reverse. So only a record
-        still PENDING can move, and anything else is returned unchanged.
+        Only a still-PENDING record can move. The settle is an optimistic compare-and-set (cas_put)
+        with refetch-on-conflict (verification-003): two retried callbacks can no longer both read
+        PENDING and both write — the loser refetches and returns the now-settled record unchanged.
+        The critical grant audit is written AHEAD of the cas commit (verification-004 pattern).
         """
-        record = await self._store.get(verification_id)
-        if record is None:
-            return None
-        if record.verdict != PENDING:
-            return record                       # already settled; a replay changes nothing
+        for _ in range(8):
+            record = await self._store.get(verification_id)
+            if record is None:
+                return None
+            if record.verdict != PENDING:
+                return record                   # already settled; a replay changes nothing
 
-        now = self._clock.now()
-        if record.pending_until and now >= record.pending_until:
-            # The prompt lapsed before the answer arrived. Not approval, not refusal — nobody
-            # answered, and a late yes cannot be trusted to have come from the right person.
-            record.verdict = EXPIRED
-            record.updated_at = now
-            await self._store.put(record)
-            return record
+            now = self._clock.now()
+            if record.pending_until and now >= record.pending_until:
+                # The prompt lapsed before the answer arrived. Not approval, not refusal — nobody
+                # answered, and a late yes cannot be trusted to have come from the right person.
+                record.verdict = EXPIRED
+                record.updated_at = now
+                if await self._store.cas_put(record):
+                    return record
+                continue                        # lost the race — refetch and re-evaluate
 
-        outcome = vp.Outcome(status=vp.VERIFIED if verified else vp.REFUSED,
-                             provider=record.evidence.get("provider", ""),
-                             reference=reference, detail=detail)
-        self._apply(record, outcome, now)
-        record.provider_state = {}              # the correlation token has done its job
-        await self._commit(record, outcome)
-        return record
+            # verification-007: prove the callback owns this pending prompt. The pending outcome stored
+            # the provider's correlation reference in provider_state; a callback that cannot present it
+            # (when one was captured) may not settle a verification whose id is returned to the user.
+            expected = str((record.provider_state or {}).get("reference", ""))
+            if expected and reference != expected:
+                raise self.CorrelationMismatch(
+                    "resolve reference does not match the pending prompt's provider correlation token")
+
+            outcome = vp.Outcome(status=vp.VERIFIED if verified else vp.REFUSED,
+                                 provider=record.evidence.get("provider", ""),
+                                 reference=reference, detail=detail)
+            self._apply(record, outcome, now)
+            record.provider_state = {}          # the correlation token has done its job
+            # Write-ahead the critical grant audit BEFORE the cas commit (verification-004): a down
+            # audit log refuses the grant before it is stored, never after.
+            await self._audit_grant(record, outcome)
+            if await self._store.cas_put(record):
+                await self._announce(record, outcome)
+                return record
+            # Lost the cas race: another writer settled it first. Loop; the next read returns settled.
+        return await self._store.get(verification_id)
 
     async def sweep_pending(self, limit: int = 500) -> int:
         """Lapse prompts nobody answered. A safety net, not the authority — `status()` already
-        refuses to trust a lapsed record, so a sweep that has not run cannot leave one trusted."""
+        refuses to trust a lapsed record, so a sweep that has not run cannot leave one trusted.
+
+        Each lapse is a compare-and-set (verification-006): a provider callback or a reviewer can
+        settle a record to VERIFIED/REFUSED between the find() and the write, and an unconditional
+        put() would clobber that real decision with EXPIRED. cas_put + refetch skips anything no
+        longer PENDING."""
         now = self._clock.now()
         lapsed = 0
-        for record in await self._store.pending_before(now, limit=limit):
+        for stale in await self._store.pending_before(now, limit=limit):
+            record = await self._store.get(stale.id)
+            if record is None or record.verdict != PENDING:
+                continue                        # settled between find() and now — leave the decision
+            if not (record.pending_until and now >= record.pending_until):
+                continue
             record.verdict = EXPIRED
             record.updated_at = now
-            await self._store.put(record)
-            lapsed += 1
+            if await self._store.cas_put(record):   # skip on conflict — a concurrent settle wins
+                lapsed += 1
         return lapsed
 
     # ── reading ──────────────────────────────────────────────────────────────
@@ -177,28 +210,35 @@ class VerificationService:
             # Stale, not refused. The caller needs to know to RE-ASK rather than to give up: a
             # lapsed registration may well still be valid, we simply have not looked recently.
             verdict = EXPIRED
+        elif verdict == PENDING and record.pending_until and now >= record.pending_until:
+            # verification-005: evaluate the lapse on READ, exactly as VERIFIED expiry is. A prompt
+            # nobody answered must not report 'pending' forever when the sweep CronJob has not yet run
+            # and no callback arrived — a caller polling /status would otherwise wait indefinitely.
+            verdict = EXPIRED
         return {"claim_type": claim_type, "verdict": verdict, "trusted": trusted,
                 "checked_at": record.evidence.get("checked_at", 0.0),
                 "expires_at": record.expires_at,
                 "reason": record.evidence.get("detail", "")}
 
-    async def _commit(self, record: Verification, outcome: vp.Outcome) -> None:
-        """Persist a settled record — write-ahead the critical grant audit BEFORE the put.
+    async def _audit_grant(self, record: Verification, outcome: vp.Outcome) -> None:
+        """Write-ahead the critical identity.verified audit (verification-001/004).
 
-        identity.verified is declared critical and AUDIT_FAIL_CLOSED defaults True, so its
-        auditor.record raises AuditUnavailable when the log is down. If we put() first (as the code
-        did — verification-001) an unprovable VERIFIED verdict would already be stored: status()/
-        latest() return VERIFIED and a downstream welcome-gift/account-open can act on it, while the
-        caller only sees a 503 implying nothing happened. Recording the grant intent FIRST means a
-        down audit log refuses the grant before it exists; the caller's retry then re-runs cleanly.
-        A refusal/error/pending verdict is not trust-granting, so it is stored first and audited
-        non-critically in _announce (refusing to refuse someone because the log is down helps nobody).
+        identity.verified is declared critical and AUDIT_FAIL_CLOSED defaults True, so this
+        auditor.record raises AuditUnavailable when the log is down — and it MUST be called BEFORE the
+        verdict is persisted. Persisting first would store an unprovable VERIFIED verdict (status()/
+        latest() return VERIFIED, downstream acts on it) while the caller sees only a 503; recording
+        the grant intent first means a down log refuses the grant before it exists.
         """
         if record.verdict == VERIFIED and self._auditor is not None:
             await self._auditor.record(
                 "identity.verified", actor=record.subject, tenant=record.tenant,
                 resource=f"{record.claim_type}:{record.id}",
                 metadata={"provider": outcome.provider, "reference": outcome.reference})
+
+    async def _commit(self, record: Verification, outcome: vp.Outcome) -> None:
+        """The FRESH-record persist path (verify()): write-ahead the grant audit, create, announce.
+        resolve()/sweep_pending()/erasure use cas_put directly for their concurrent-update paths."""
+        await self._audit_grant(record, outcome)
         await self._store.put(record)
         await self._announce(record, outcome)
 

@@ -111,20 +111,22 @@ class ReviewService:
             record.pending_until = 0.0
             record.provider_state = {}
             record.updated_at = now
+            # verification-004: WRITE-AHEAD the critical review.decided audit BEFORE the cas commit.
+            # review.decided is declared critical (fail-closed), so a down audit log raises here — and
+            # it must raise BEFORE the manual approval (the highest-privilege op in this service) is
+            # persisted, never after. Both directions are audited: a human refusing someone is an
+            # appealable decision, and the appeal needs a record of who made it. On a lost cas race the
+            # record is refetched and re-decided (or refused), so the committed decision is always the
+            # one that was audited immediately before it.
+            if self._auditor is not None:
+                await self._auditor.record(
+                    "review.decided", actor=reviewer, tenant=record.tenant,
+                    resource=f"{record.claim_type}:{record.id}",
+                    metadata={"approved": approve, "document": bool(document_id)})
             if not await self._store.cas_put(record):
                 continue                    # lost the race — refetch; the winner may have settled it
-            break
-        else:
-            raise ReviewRefused("this verification is being decided concurrently; retry")
-
-        if self._auditor is not None:
-            # Both directions are audited here, unlike automated checks: a human refusing someone
-            # is a decision that can be appealed, and the appeal needs a record of who made it.
-            await self._auditor.record(
-                "review.decided", actor=reviewer, tenant=record.tenant,
-                resource=f"{record.claim_type}:{record.id}",
-                metadata={"approved": approve, "document": bool(document_id)})
-        return record
+            return record
+        raise ReviewRefused("this verification is being decided concurrently; retry")
 
     def _expiry_for(self, claim_type: str, now: float) -> float:
         days = self._ttl.get(claim_type, 0)

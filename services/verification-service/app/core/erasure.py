@@ -61,10 +61,23 @@ class VerificationErasure:
                 except Exception:
                     pass          # a stranded blob is swept by retention; the row still goes
 
-            record.subject = ""           # the link from a decision to a human
-            record.provider_state = {}
-            await self._store.put(record)
-            unlinked += 1
+            # verification-008: sever the link with an optimistic compare-and-set + refetch, not a
+            # plain put(). A reviewer's decide() or a provider's resolve() (both cas writes) can settle
+            # this same record concurrently; an unconditional put() would clobber that just-committed
+            # verdict (or be clobbered by it, leaving the subject link re-attached). Re-apply the
+            # severing onto the freshest version so the verdict is preserved and the link always goes.
+            severed = False
+            for _ in range(8):
+                fresh = await self._store.get(record.id)
+                if fresh is None:
+                    break                     # deleted concurrently — nothing to sever
+                fresh.subject = ""            # the link from a decision to a human
+                fresh.provider_state = {}
+                if await self._store.cas_put(fresh):
+                    severed = True
+                    break                     # lost race falls through to refetch
+            if severed:
+                unlinked += 1
 
         erased = []
         if documents:

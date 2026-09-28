@@ -372,3 +372,77 @@ def test_a_refusal_is_not_blocked_by_a_down_audit_log():
     rec = run(svc.verify(tenant="t", subject="s", claim_type="business", value="X"))
     assert rec.verdict == REFUSED
     assert run(VerificationStore(st).latest("t", "s", "business")).verdict == REFUSED
+
+
+# ── verification HIGH regressions (003/005/006/007/008) ─────────────────────────
+class _YieldStore(MemoryDataStore):
+    """Yields on get() so two concurrent resolves interleave at the read — exposes a check-then-write
+    race deterministically without threads."""
+    async def get(self, collection, key):
+        import asyncio as _a
+        await _a.sleep(0)
+        return await super().get(collection, key)
+
+
+def test_concurrent_resolve_settles_once_and_does_not_double_settle():
+    # verification-003: two retried 'verified' callbacks for one PENDING id must not both settle.
+    import asyncio as _a
+    st = _YieldStore()
+    svc = VerificationService(store=VerificationStore(st), verifiers={"business": _Fake(vp.PENDING)},
+                              clock=_Clock(), pii_salt=_SALT)
+    rec = run(svc.verify(tenant="acme", subject="u1", claim_type="business", value="1010"))
+
+    async def _race():
+        return await _a.gather(svc.resolve(rec.id, verified=True),
+                               svc.resolve(rec.id, verified=True))
+    a, b = run(_race())
+    assert a.verdict == VERIFIED and b.verdict == VERIFIED       # both observe the SAME settled state
+    final = run(VerificationStore(st).get(rec.id))
+    assert final.verdict == VERIFIED
+
+
+def test_status_lapses_a_pending_prompt_on_read():
+    # verification-005: a PENDING record past its pending_until reports EXPIRED on read, even if no
+    # sweep has run and no callback arrived.
+    st = MemoryDataStore()
+    store = VerificationStore(st)
+    rec = Verification(id=new_id("ver_"), tenant="acme", subject="u1", claim_type="business",
+                       claim_ref="r", verdict=PENDING, created_at=1.0, pending_until=100.0)
+    run(store.put(rec))
+    svc = VerificationService(store=store, verifiers={}, clock=_Clock(), pii_salt=_SALT)
+    svc._clock.t = 200.0                                          # past pending_until
+    s = run(svc.status("acme", "u1", "business"))
+    assert s["verdict"] == EXPIRED and s["trusted"] is False
+
+
+def test_resolve_requires_the_provider_correlation_token():
+    # verification-007: a pending prompt that captured a correlation reference refuses a callback that
+    # cannot present it, and accepts the one that can.
+    st = MemoryDataStore()
+    store = VerificationStore(st)
+    rec = Verification(id=new_id("ver_"), tenant="acme", subject="u1", claim_type="business",
+                       claim_ref="r", verdict=PENDING, created_at=1.0, pending_until=_NOW + 10_000.0,
+                       provider_state={"reference": "CORR-XYZ"},
+                       evidence={"provider": "nafath"})
+    run(store.put(rec))
+    svc = VerificationService(store=store, verifiers={}, clock=_Clock(), pii_salt=_SALT)
+    with pytest.raises(VerificationService.CorrelationMismatch):
+        run(svc.resolve(rec.id, verified=True, reference="WRONG"))
+    assert run(store.get(rec.id)).verdict == PENDING             # not settled by the bad callback
+    ok = run(svc.resolve(rec.id, verified=True, reference="CORR-XYZ"))
+    assert ok.verdict == VERIFIED
+
+
+def test_erasure_severs_the_link_without_clobbering_a_concurrent_verdict():
+    # verification-008: erase() re-applies subject='' onto the freshest row via cas, so a verdict a
+    # reviewer/provider committed concurrently is preserved while the link is still severed.
+    st = MemoryDataStore()
+    store = VerificationStore(st)
+    rec = Verification(id=new_id("ver_"), tenant="acme", subject="u1", claim_type="business",
+                       claim_ref="r", verdict=VERIFIED, created_at=1.0)
+    run(store.put(rec))
+    from app.core.erasure import VerificationErasure
+    res = run(VerificationErasure(store=store).erase("acme", "u1"))
+    after = run(store.get(rec.id))
+    assert after.subject == "" and after.verdict == VERIFIED     # link gone, decision kept
+    assert any("verification_subject_links" in e for e in res["erased"])
