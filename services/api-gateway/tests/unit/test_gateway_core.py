@@ -280,3 +280,24 @@ def test_require_capability_honors_wildcard_grant():
     dep = require_capability("platform.audit")
     holder = Principal(subject="u", caps=frozenset({"platform.*"}))
     assert run(dep(principal=holder)) is holder
+
+
+class BoomVerifier:
+    driver = "fake"
+    def verify(self, token):
+        raise RuntimeError("JWKS endpoint unreachable")
+
+
+def test_verifier_outage_degrades_to_anonymous_on_optional_route():
+    r = Route(prefix="/echo", upstream="http://up", auth="optional")
+    resp = run(_gw(r, verifier=BoomVerifier()).handle(
+        make_request(path="/echo/x", headers={"authorization": "Bearer tok"})))
+    assert resp.status_code != 500                       # not a 500 from the verifier blip
+    assert resp.status_code in (200, 204, 502)           # proceeds anonymously to the upstream
+
+
+def test_verifier_outage_is_401_not_500_on_required_route():
+    r = Route(prefix="/echo", upstream="http://up", auth="required")
+    resp = run(_gw(r, verifier=BoomVerifier()).handle(
+        make_request(path="/echo/x", headers={"authorization": "Bearer tok"})))
+    assert resp.status_code == 401                       # identity=None → unauthorized, never 500

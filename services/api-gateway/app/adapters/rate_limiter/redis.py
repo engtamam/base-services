@@ -42,19 +42,17 @@ local interval = window / limit
 
 local tat = tonumber(redis.call('GET', key) or now)
 if tat < now then tat = now end
-local new_tat = tat + cost * interval
-local allow_at = new_tat - window
+local debt = tat - now
+local headroom = window - cost * interval
 
-if allow_at <= now then
-  -- keep the key only as long as its credit lasts, so idle keys evict themselves
+if debt <= headroom then
+  local new_tat = tat + cost * interval
   local ttl = math.ceil((new_tat - now) / 1000) + 1
   redis.call('SET', key, new_tat, 'PX', ttl * 1000)
-  local remaining = math.floor(((now + window) - new_tat) / interval)
-  return {1, remaining, 0, math.floor(new_tat - now)}
+  local remaining = math.floor((headroom - debt) / interval)
+  return {1, remaining, 0, math.floor(debt + cost * interval)}
 else
-  -- a denied request does NOT advance the TAT, or a client hammering a throttled key would extend
-  -- its own lockout forever
-  return {0, 0, math.floor(allow_at - now) + 1, math.floor(tat - now)}
+  return {0, 0, math.floor(debt - headroom) + 1, math.floor(debt)}
 end
 """
 

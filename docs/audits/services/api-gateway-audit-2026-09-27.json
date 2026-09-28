@@ -3,7 +3,12 @@
   "date": "2026-09-27",
   "summary": {
     "total": 23,
-    "by_severity": { "CRITICAL": 0, "HIGH": 3, "MEDIUM": 13, "LOW": 7 }
+    "by_severity": {
+      "CRITICAL": 0,
+      "HIGH": 3,
+      "MEDIUM": 13,
+      "LOW": 7
+    }
   },
   "findings": [
     {
@@ -15,7 +20,10 @@
       "line": 106,
       "scenario": "On the proxy hot path the JWT is verified inside a try that catches ONLY InvalidToken. The jwks/rs256 verifiers raise other exceptions (a JWKS fetch failure raises jwt.PyJWKClientError / URLError, not InvalidToken). When the JWKS endpoint is briefly unreachable, a request to an auth=optional route — which should simply proceed as anonymous — instead propagates to the catch-all and returns 500 INTERNAL_ERROR. require_user and optional_principal both catch broad Exception; the edge hot path does not, so the same token yields different outcomes on different code paths and a transient IdP blip becomes a fleet-wide 500 storm at the edge.",
       "evidence": "try:\n    claims = await run_in_threadpool(self._verifier.verify, auth_header[7:])\n    identity = self._identity_from(claims)\nexcept InvalidToken:\n    identity = None",
-      "recommendation": "Catch broad Exception here (as auth.require_user and ratelimit.optional_principal already do) so a verifier/IdP outage degrades to identity=None; let the auth==required check turn that into a clean 401, and let auth=optional proceed anonymously."
+      "recommendation": "Catch broad Exception here (as auth.require_user and ratelimit.optional_principal already do) so a verifier/IdP outage degrades to identity=None; let the auth==required check turn that into a clean 401, and let auth=optional proceed anonymously.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "the edge JWT verify now catches broad Exception (not only InvalidToken), so a JWKS/IdP outage degrades to identity=None: an auth=optional route proceeds anonymously and an auth=required route returns 401, instead of a 500. Regression tests added."
     },
     {
       "id": "api-gateway-002",
@@ -26,7 +34,10 @@
       "line": 124,
       "scenario": "The entire rate-limit stanza (policy.classify, policy.key, limiter.check) is wrapped in `except Exception: return _err('RATE_LIMITED', 429)`. Fail-closed is correct for a limiter outage, but this also swallows genuine programming errors — a KeyError in classify, an AttributeError from a mis-wired policy, a bug in key() — and reports every one as a routine 429 with no log line. A real defect that breaks routing for a whole route class is invisible: operators see '429s', assume load, and the true cause never surfaces.",
       "evidence": "except Exception:\n    return _err(\"RATE_LIMITED\", 429)  # fail-closed",
-      "recommendation": "Log the exception (type + request id) before returning 429, and/or narrow the catch to the limiter's own error/timeout types so a limiter outage fails closed but a logic bug is not disguised as throttling."
+      "recommendation": "Log the exception (type + request id) before returning 429, and/or narrow the catch to the limiter's own error/timeout types so a limiter outage fails closed but a logic bug is not disguised as throttling.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "the fail-closed rate-limit catch now logs the exception type + request id + path before returning 429, so a genuine logic bug (KeyError in classify, mis-wired policy) is visible instead of masquerading as a limiter outage."
     },
     {
       "id": "api-gateway-003",
@@ -37,7 +48,10 @@
       "line": 46,
       "scenario": "sliding_window.check documents at length that `allow_at = tat + cost*interval - window` on a LARGE clock with interval==window (the limit==1 case) can, through float64 cancellation, land an epsilon above `now` and wrongly DENY a fresh key — and was deliberately rewritten to compare small relative quantities (debt vs headroom). The Redis Lua path (which the comment claims 'mirrors sliding_window.check exactly') still uses the exact rejected absolute form `local allow_at = new_tat - window; if allow_at <= now`, on an epoch-millisecond clock (~1.7e12). The two limiters can therefore disagree on the boundary the design says they must agree on, and the redis path can re-introduce the magnitude-dependent false-deny for strict (limit=1) surfaces such as a login endpoint.",
       "evidence": "local new_tat = tat + cost * interval\nlocal allow_at = new_tat - window\n\nif allow_at <= now then",
-      "recommendation": "Rewrite the Lua to the same relative-time comparison used in sliding_window.check (debt = tat-now; headroom = window - cost*interval; allow when debt <= headroom) so both drivers are provably identical, and add a boundary test at an epoch-scale clock with limit=1."
+      "recommendation": "Rewrite the Lua to the same relative-time comparison used in sliding_window.check (debt = tat-now; headroom = window - cost*interval; allow when debt <= headroom) so both drivers are provably identical, and add a boundary test at an epoch-scale clock with limit=1.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "the Redis GCRA Lua is rewritten to the same RELATIVE-time comparison as sliding_window.check (debt=tat-now, headroom=window-cost*interval, allow when debt<=headroom), removing the absolute-time float-cancellation that could wrongly deny a fresh key at limit==1 on a large clock. Both drivers now agree."
     },
     {
       "id": "api-gateway-004",

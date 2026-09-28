@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 from urllib.parse import urlsplit
+
+_log = logging.getLogger("app.core.gateway")
 
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
@@ -103,7 +106,7 @@ class Gateway:
                 # loop it stalls every other in-flight proxy — the edge is the worst place to block.
                 claims = await run_in_threadpool(self._verifier.verify, auth_header[7:])
                 identity = self._identity_from(claims)
-            except InvalidToken:
+            except Exception:
                 identity = None
 
         # ── rate limit (policy-driven: per-route class/limit/cost, composite key, real client IP) ──
@@ -121,8 +124,10 @@ class Gateway:
             else:
                 if not await self._limiter.allow(f"ip:{client_ip}"):
                     return _err("RATE_LIMITED", 429)
-        except Exception:
-            return _err("RATE_LIMITED", 429)  # fail-closed
+        except Exception as exc:
+            _log.error("rate_limit_failed_closed", extra={"error": type(exc).__name__,
+                                                          "request_id": get_request_id(), "path": path})
+            return _err("RATE_LIMITED", 429)  # fail-closed (limiter outage) — logged so a logic bug is visible
 
         # ── auth enforcement (after the limit, so a garbage-token flood is bounded) ───────────
         if route.auth == "required":
