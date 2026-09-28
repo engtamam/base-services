@@ -204,9 +204,7 @@ class AuditService:
         for partition in await self._repo.partitions():
             events, _ = await self._repo.query(filters, limit, partition)
             out.extend(events)
-            if len(out) >= limit:
-                break
-        out.sort(key=lambda r: r["seq"], reverse=True)
+        out.sort(key=lambda r: (r.get("ts", ""), int(r.get("seq", 0))), reverse=True)
         return out[:limit], None
 
     # ── integrity verify (tamper detection) ──────────────────────────────────
@@ -227,6 +225,7 @@ class AuditService:
         # once the walk itself is clean: a REAL truncation or reorder persists across the re-read; an
         # in-flight append resolves. The prev_hash / content walk is NOT retried — a middle hole or a
         # forged hash is tamper regardless of concurrency, so it is reported on the first pass.
+        await self._resume_purge(partition)
         for attempt in range(_VERIFY_TAIL_RETRIES):
             all_events = await self._repo.iterate(partition)
             head_seq, head_hash = await self._repo.head(partition)
@@ -393,6 +392,7 @@ class AuditService:
         # point. If an append raced in during iterate(), the cas fails and NOTHING has been written to
         # the event rows yet — we simply retry against the now-larger tail (re-anchoring the new event
         # too). Only after the head is ours do we persist the deletes and re-sealed survivor rows.
+        await self._resume_purge(partition)
         for _attempt in range(64):
             head_seq, _, ver = await self._repo.head_versioned(partition)
             events = await self._repo.iterate(partition)
@@ -415,16 +415,24 @@ class AuditService:
                 e["hash"] = self._integrity.seal(prev, e)
                 prev = e["hash"]
             last_seq = kept[-1]["seq"] if kept else 0
-            # COMMIT POINT: claim the head under the observed version. A concurrent append that landed
-            # since our head_versioned() read bumped the version, so this cas fails and we retry — the
-            # append is never orphaned.
+            plan = {"before_ts": before_ts, "new_seq": last_seq, "new_hash": prev,
+                    "purged_ids": [e["id"] for e in purged],
+                    "reanchor": {e["id"]: {"prev_hash": e["prev_hash"], "hash": e["hash"]}
+                                 for e in kept}}
+            journaling = self._journaling()
+            if journaling:
+                await self._repo.journal_put(partition, plan)
             if not await self._repo.set_head_versioned(partition, ver, last_seq, prev):
+                if journaling:
+                    await self._repo.journal_clear(partition)
                 continue
-            # The head now reflects the re-anchored survivors; persist the row changes.
-            for e in purged:
-                await self._repo.delete(e["id"])
-            for e in kept:
-                await self._repo.replace(e)
+            if journaling:
+                await self._apply_purge_plan(partition, plan)
+            else:
+                for e in purged:
+                    await self._repo.delete(e["id"])
+                for e in kept:
+                    await self._repo.replace(e)
             break
         else:
             raise RuntimeError(
@@ -433,3 +441,29 @@ class AuditService:
                           metadata={"before_ts": before_ts, "purged": len(purged),
                                     "held": len(held)})
         return {"purged": len(purged), "remaining": len(kept) + 1, "held": len(held)}
+
+    def _journaling(self) -> bool:
+        return hasattr(self._repo, "journal_put") and hasattr(self._repo, "journal_get")
+
+    async def _apply_purge_plan(self, partition: str, plan: dict) -> None:
+        for eid in plan.get("purged_ids", []):
+            await self._repo.delete(eid)
+        for eid, anchor in (plan.get("reanchor") or {}).items():
+            row = await self._repo.get(eid)
+            if row is not None:
+                row["prev_hash"] = anchor["prev_hash"]
+                row["hash"] = anchor["hash"]
+                await self._repo.replace(row)
+        await self._repo.journal_clear(partition)
+
+    async def _resume_purge(self, partition: str) -> None:
+        if not self._journaling():
+            return
+        plan = await self._repo.journal_get(partition)
+        if not plan:
+            return
+        head_seq, head_hash, _ = await self._repo.head_versioned(partition)
+        if head_seq == plan.get("new_seq") and head_hash == plan.get("new_hash"):
+            await self._apply_purge_plan(partition, plan)
+        else:
+            await self._repo.journal_clear(partition)

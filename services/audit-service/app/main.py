@@ -76,11 +76,15 @@ def create_app() -> FastAPI:
             from app.core.audit_repository import AuditRepository
             from app.core.audit_service import AuditService
             from app.adapters.exporter.json_exporter import JsonExporter
+            from app.core.pii_policy import PiiPolicy, parse_fields
 
             svc = AuditService(
                 repo=AuditRepository(container.datastore), integrity=container.integrity,
                 exporters={"json": JsonExporter()}, default_format="json",
-                partition_mode=settings.AUDIT_PARTITION, query_limit=settings.AUDIT_QUERY_LIMIT)
+                partition_mode=settings.AUDIT_PARTITION, query_limit=settings.AUDIT_QUERY_LIMIT,
+                pii_policy=PiiPolicy(mode=settings.AUDIT_PII_MODE,
+                                     fields=parse_fields(settings.AUDIT_PII_FIELDS),
+                                     salt=settings.PII_SALT))
 
             def _make_handler():
                 async def handler(event):

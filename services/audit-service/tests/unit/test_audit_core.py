@@ -166,3 +166,47 @@ def test_verify_all_on_an_empty_log_is_a_clean_pass():
     svc, _ = _tenant_svc()
     out = run(svc.verify_all())
     assert out["ok"] is True
+
+
+def _svc_tenant(store=None):
+    store = store or MemoryDataStore()
+    svc = AuditService(repo=AuditRepository(store), integrity=HashChainIntegrity(),
+                       exporters={"json": JsonExporter()}, default_format="json",
+                       partition_mode="tenant", query_limit=100)
+    return svc, store
+
+
+def test_cross_partition_query_returns_global_newest_not_alphabetical(monkeypatch):
+    import itertools
+    import app.core.audit_service as m
+    counter = itertools.count(1)
+    monkeypatch.setattr(m, "now", lambda: f"2026-01-01T00:00:{next(counter):02d}Z")
+    svc, _ = _svc_tenant()
+    for _ in range(5):
+        run(svc.record(service="s", action="a", actor="x", tenant="aaa"))
+    run(svc.record(service="s", action="a", actor="x", tenant="zzz"))
+    newest, _ = run(svc.query(filters={}, limit=3))
+    assert newest[0].get("tenant") == "zzz"
+
+
+def test_purge_resumes_after_a_crash_between_head_commit_and_row_writes():
+    from app.core.audit_service import AuditService as _AS
+    svc, store = _svc()
+    for i in range(4):
+        run(svc.record(service="s", action="a", actor="x", metadata={"i": i}))
+    orig_apply = svc._apply_purge_plan
+
+    async def _boom(partition, plan):
+        raise RuntimeError("crash between head commit and row writes")
+    svc._apply_purge_plan = _boom
+    all_events = run(AuditRepository(store).iterate("global"))
+    cutoff = all_events[2]["ts"]
+    try:
+        run(svc.purge(before_ts=cutoff, partition="global"))
+    except RuntimeError:
+        pass
+    assert run(AuditRepository(store).journal_get("global")) is not None
+    svc._apply_purge_plan = orig_apply
+    v = run(svc.verify("global"))
+    assert v["ok"] is True
+    assert run(AuditRepository(store).journal_get("global")) is None

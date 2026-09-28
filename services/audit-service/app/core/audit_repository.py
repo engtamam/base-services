@@ -11,6 +11,7 @@ _META = "audit_meta"       # partition -> {partition, seq, head_hash}
 # idempotency_key -> {state: pending|done, id, seq, hash, ts}. Lets the ingest recognise a retried
 # append (returning the original receipt) instead of duplicating it in the tamper-evident chain.
 _IDEMPO = "audit_idempo"
+_PURGE_JOURNAL = "audit_purge_journal"
 
 # How many events a single find() page pulls while walking the chain. The chain is walked to
 # EXHAUSTION — this bounds memory, never the walk.
@@ -124,6 +125,15 @@ class AuditRepository:
 
     # ── idempotency ────────────────────────────────────────────────────────────────────────────
     # The row carries its own `key` so idempo_prune (which reads VALUES via scan_all) can delete it.
+    async def journal_put(self, partition: str, plan: dict[str, Any]) -> None:
+        await self._store.put(_PURGE_JOURNAL, partition, {"partition": partition, **plan})
+
+    async def journal_get(self, partition: str) -> dict[str, Any] | None:
+        return await self._store.get(_PURGE_JOURNAL, partition)
+
+    async def journal_clear(self, partition: str) -> None:
+        await self._store.delete(_PURGE_JOURNAL, partition)
+
     async def idempo_get(self, key: str) -> dict[str, Any] | None:
         return await self._store.get(_IDEMPO, key)
 

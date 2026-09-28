@@ -3,7 +3,12 @@
   "date": "2026-09-27",
   "summary": {
     "total": 24,
-    "by_severity": { "CRITICAL": 0, "HIGH": 3, "MEDIUM": 13, "LOW": 8 }
+    "by_severity": {
+      "CRITICAL": 0,
+      "HIGH": 3,
+      "MEDIUM": 13,
+      "LOW": 8
+    }
   },
   "findings": [
     {
@@ -15,7 +20,10 @@
       "line": 421,
       "scenario": "purge re-anchors survivors in memory (new prev_hash/hash), then does set_head_versioned() as the 'single serialization point', and ONLY AFTER that persists delete()s and replace()s. If the process crashes (OOM/SIGKILL/pod eviction) between the head cas and the row writes, the _META head names the new re-anchored last hash while every survivor row still holds its OLD prev_hash/hash and the purged prefix rows are still present. On restart verify() reads seq<=head_seq (including the not-yet-deleted prefix), walks with the old prev_hashes, and reports 'broken chain' forever. Unlike append() (documented row-first/crash-safe), purge() is head-first and is NOT crash-atomic.",
       "evidence": "if not await self._repo.set_head_versioned(partition, ver, last_seq, prev):\n    continue\n# The head now reflects the re-anchored survivors; persist the row changes.\nfor e in purged:\n    await self._repo.delete(e[\"id\"])\nfor e in kept:\n    await self._repo.replace(e)",
-      "recommendation": "Persist the re-anchored survivor rows and deletes FIRST (idempotently, tolerating a re-run), then move the head as the commit — or write a purge journal row so an interrupted purge can be resumed. The head must never advance to hashes no stored row yet carries."
+      "recommendation": "Persist the re-anchored survivor rows and deletes FIRST (idempotently, tolerating a re-run), then move the head as the commit — or write a purge journal row so an interrupted purge can be resumed. The head must never advance to hashes no stored row yet carries.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "purge is crash-safe: it writes a purge journal (new head + re-anchor map + purged ids), commits the head cas, then applies deletes/replaces and clears the journal. _resume_purge (called at the top of purge and verify) completes an interrupted purge idempotently if the head already committed, or discards the journal otherwise. Regression test simulates a crash between head commit and row writes; verify recovers. Falls back to old ordering for a repo without journaling (test fakes)."
     },
     {
       "id": "audit-002",
@@ -26,7 +34,10 @@
       "line": 80,
       "scenario": "The lifespan EventBus subscriber builds its own AuditService WITHOUT pii_policy (the argument is simply omitted, so it defaults to None) and records event payloads straight from the bus (actor=p.get('actor'), metadata=p). The whole design premise (pii_policy.py: 'applied at THIS boundary, where no caller can bypass it') is defeated for every event that arrives via AUDIT_SUBSCRIBE_TOPICS: an emitter that publishes actor='alice@x.com' or metadata with email/national_id gets it HMAC-sealed into the append-only chain forever, unerasable.",
       "evidence": "svc = AuditService(\n    repo=AuditRepository(container.datastore), integrity=container.integrity,\n    exporters={\"json\": JsonExporter()}, default_format=\"json\",\n    partition_mode=settings.AUDIT_PARTITION, query_limit=settings.AUDIT_QUERY_LIMIT)",
-      "recommendation": "Construct this AuditService with the same PiiPolicy(mode=..., fields=..., salt=...) the request path and in_process sink use, so bus-ingested events are folded identically."
+      "recommendation": "Construct this AuditService with the same PiiPolicy(mode=..., fields=..., salt=...) the request path and in_process sink use, so bus-ingested events are folded identically.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "the EventBus topic-ingest AuditService is now constructed with the same PiiPolicy(mode/fields/salt) as the request path, so bus-ingested events are pseudonymised identically instead of writing raw identities into the chain."
     },
     {
       "id": "audit-003",
@@ -37,7 +48,10 @@
       "line": 204,
       "scenario": "For a platform caller with no tenant filter in tenant-partition mode, the fan-out iterates partitions() (sorted alphabetically) and breaks as soon as accumulated rows reach limit, THEN sorts by seq desc. Partitions are visited alphabetically, not by recency, so if the first alphabetical partitions already yield `limit` rows the loop breaks and never inspects later partitions that may hold the actually-newest events. The docstring claims it 'returns the newest limit merged across partitions' — it does not. A platform-wide 'latest activity' view silently omits whole tenants.",
       "evidence": "for partition in await self._repo.partitions():\n    events, _ = await self._repo.query(filters, limit, partition)\n    out.extend(events)\n    if len(out) >= limit:\n        break\nout.sort(key=lambda r: r[\"seq\"], reverse=True)",
-      "recommendation": "Fetch up to `limit` newest from EVERY partition before merging/sorting/truncating (heap-merge), or document the result as 'sampled, not newest'. Do not break early when the goal is a global newest-N."
+      "recommendation": "Fetch up to `limit` newest from EVERY partition before merging/sorting/truncating (heap-merge), or document the result as 'sampled, not newest'. Do not break early when the goal is a global newest-N.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "the cross-partition (platform, no-tenant) query no longer breaks early after the first alphabetical partitions reach limit; it collects newest from EVERY partition and merges by (ts, seq) desc, so newer events in later partitions are not dropped. Regression test added."
     },
     {
       "id": "audit-004",
