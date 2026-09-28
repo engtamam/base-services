@@ -9,7 +9,8 @@ from __future__ import annotations
 from typing import Any
 
 _COLL = "backup_runs"
-_RECENT_SCAN = 10_000   # the run/restore/drill logs are bounded by retention; read the lot to sort
+_KIND = "backup_run"    # a constant discriminator so recent() is an indexed find(), not a scan+sort
+_RECENT_SCAN = 10_000   # the FULL-collection sweep bound (retention) — never a request path
 
 
 class RunStore:
@@ -17,6 +18,9 @@ class RunStore:
         self._s = store
 
     async def record(self, run: dict[str, Any]) -> None:
+        # Stamp a constant kind so recent() can be an ordered, LIMIT-bounded find() (backup-003)
+        # instead of scanning + sorting the whole collection on every hot-path call.
+        run = {**run, "kind": _KIND}
         await self._s.put(_COLL, run["id"], run)
 
     async def get(self, run_id: str) -> dict | None:
@@ -27,11 +31,20 @@ class RunStore:
         return await self._s.delete(_COLL, run_id)
 
     async def recent(self, limit: int) -> list[dict]:
-        """The most recent runs, newest first — what the staleness alert reads."""
-        # sweeper: the run log is the orchestrator's own control data, global and bounded by
-        # retention, so reading it whole IS the operation, not a shortcut around an index.
-        # Read the WHOLE (bounded) collection then sort — scan_all(_COLL, limit) returns the
-        # key-ASCENDING first `limit`, i.e. the OLDEST runs (ids are run_<timestamp>), so "latest run"
-        # (recent(1)) was actually the earliest. Sort the full set newest-first and take `limit`.
+        """The most recent runs, newest first — the hot-path read (staleness alert, tenant coverage).
+
+        A LIMIT-bounded ordered find() on a constant kind (backup-003): answering recent(1) reads one
+        row, not 10,000. Filtered on `kind` (never an empty where), so it is an indexed read, not a
+        scan. Runs written by an older build (no `kind`) are invisible here until the next run writes a
+        kinded row — a brief window that only affects reads of already-old runs; retention (all_runs)
+        still sees and protects them."""
+        rows, _ = await self._s.find(_COLL, {"kind": _KIND}, limit=max(1, limit),
+                                     sort=("started_at", "desc"))
+        return rows
+
+    async def all_runs(self) -> list[dict]:
+        """EVERY run, newest first — the retention sweeper's full view (backup-005). Uses scan_all so
+        it enumerates the WHOLE (retention-bounded) collection, including legacy rows without `kind`,
+        so no run past the retention window is ever missed and left with orphaned archives forever."""
         rows = await self._s.scan_all(_COLL, _RECENT_SCAN)
-        return sorted(rows, key=lambda r: r.get("started_at", ""), reverse=True)[:limit]
+        return sorted(rows, key=lambda r: r.get("started_at", ""), reverse=True)

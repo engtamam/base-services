@@ -176,6 +176,16 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "unreconstructable after the fact, so an unrecordable restore must not proceed",
     },
     {
+        "action": "backup.data_restored",
+        "source": "internal",
+        "critical": True,
+        "resource": "backup",
+        "why": "the TARGET side of a restore: POST /internal/backup/import actually inserts/overwrites/"
+               "prunes this service's own live rows. The orchestrator's backup.restored witnesses the "
+               "operator's intent, but the data-mutating endpoint on the target had no record of its "
+               "own — an unrecordable bulk data rewrite must not proceed",
+    },
+    {
         "action": "backup.restore_undone",
         "source": "admin",
         "critical": True,

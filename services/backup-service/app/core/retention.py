@@ -54,7 +54,11 @@ class RetentionSweeper:
         leaves an orphan archive (harmless, swept next time) rather than a run record that points at
         objects already gone.
         """
-        all_runs = await self._runs.recent(scan_limit)      # newest first
+        # Enumerate the FULL run collection, not just the newest `scan_limit` (backup-005): the old
+        # recent(scan_limit) sliced to 200, so any run older than the newest 200 was never seen and its
+        # archives never deleted — an unbounded storage leak. all_runs() enumerates the whole
+        # (retention-bounded) collection so every run past the window is actually pruned.
+        all_runs = await self._runs.all_runs()               # newest first, whole collection
         protected = _last_good_run_ids(all_runs)
         now = _epoch(self._iso()) or 0.0
 

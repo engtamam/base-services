@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     # How long to wait for a target's export before calling it MISSED for this run. A miss is
     # retried and surfaced, never a silent skip.
     BACKUP_TARGET_TIMEOUT_SECONDS: int = 120
+    # The alert/drill webhook gets its OWN short timeout (backup-001): a slow alert endpoint must not
+    # hang a request for the 120s a data-export target is allowed. Runs off the loop via to_thread.
+    BACKUP_ALERT_TIMEOUT_SECONDS: int = 10
     # The most targets one run will attempt. A ceiling an operator sets to their real service count,
     # so a run is bounded.
     BACKUP_TARGET_LIMIT: int = 500

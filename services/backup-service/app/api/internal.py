@@ -6,6 +6,7 @@
 # =============================================================================
 from __future__ import annotations
 
+import asyncio
 
 from pydantic import BaseModel, Field
 
@@ -193,6 +194,15 @@ async def backup_import(request: Request, body: BackupImportIn,
                         settings: Settings = Depends(get_settings)) -> dict:
     """Restore an archive this service produced. Idempotent; leaves newer rows alone by default."""
     _, unseal = _sealer(settings)
+    # WRITE-AHEAD audit the data-overwriting restore BEFORE it mutates live rows (backup-002). This
+    # endpoint inserts/overwrites/prunes a service's own data; orchestrator-side backup.restored does
+    # not witness the TARGET's mutation. backup.data_restored is critical, so a down audit refuses the
+    # restore rather than silently rewriting data with no record of who restored what, where.
+    await request.app.state.auditor.record(
+        "backup.data_restored", actor="service:internal", tenant=body.into_tenant or "",
+        resource="backup:import", ip=request.client.host if request.client else "",
+        metadata={"overwrite": bool(body.overwrite), "prune": bool(body.prune),
+                  "into_tenant": bool(body.into_tenant)})
     try:
         return await _backup.import_archive(
             request.app.state.container.datastore, body.archive,
@@ -371,9 +381,12 @@ async def backup_health_check(request: Request, settings: Settings = Depends(get
             metadata={"status": report["status"],
                       "critical": str(report["summary"]["critical"]),
                       "degraded": str(report["summary"]["degraded"])})
-    delivery = _alerts.push(report, webhook_url=settings.BACKUP_ALERT_WEBHOOK_URL,
-                            allowed_hosts=settings.egress_allowed_hosts,
-                            timeout_seconds=settings.BACKUP_TARGET_TIMEOUT_SECONDS)
+    # OFFLOAD the blocking webhook POST off the event loop, with the alert-specific short timeout
+    # (backup-001), so a hung alert endpoint cannot stall every other request.
+    delivery = await asyncio.to_thread(
+        _alerts.push, report, webhook_url=settings.BACKUP_ALERT_WEBHOOK_URL,
+        allowed_hosts=settings.egress_allowed_hosts,
+        timeout_seconds=settings.BACKUP_ALERT_TIMEOUT_SECONDS)
     return {**report, "delivery": delivery}
 
 
@@ -434,9 +447,10 @@ async def backup_drill(request: Request, settings: Settings = Depends(get_settin
                  "alerts": [{"service": s, "severity": "critical",
                              "reason": "restore drill FAILED — best backup no longer restores"}
                             for s in failed]}
-        _alerts.push(alert, webhook_url=settings.BACKUP_ALERT_WEBHOOK_URL,
-                     allowed_hosts=settings.egress_allowed_hosts,
-                     timeout_seconds=settings.BACKUP_TARGET_TIMEOUT_SECONDS)
+        await asyncio.to_thread(                       # off the loop, short alert timeout (backup-001)
+            _alerts.push, alert, webhook_url=settings.BACKUP_ALERT_WEBHOOK_URL,
+            allowed_hosts=settings.egress_allowed_hosts,
+            timeout_seconds=settings.BACKUP_ALERT_TIMEOUT_SECONDS)
     return report
 
 

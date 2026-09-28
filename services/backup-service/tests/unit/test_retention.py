@@ -96,3 +96,30 @@ def test_nothing_to_prune_is_a_clean_noop():
     _seed(st, objects, "r0", "2026-07-25T02:00:00Z", [_r("billing", "a.json")])
     result = run(_sweeper(st, objects).prune(keep_runs=30, max_age_seconds=0, scan_limit=100))
     assert result["pruned_count"] == 0 and objects.blobs
+
+
+def test_runs_older_than_the_scan_window_are_still_pruned():
+    # backup-005: before the fix prune() read recent(scan_limit) and sliced to scan_limit, so any run
+    # older than the newest `scan_limit` was NEVER enumerated and its archives leaked forever. With a
+    # tiny scan_limit and more runs than that, the oldest ones (past keep_runs) must still be pruned.
+    st, objects = MemoryDataStore(), _Objects()
+    for i in range(8):
+        _seed(st, objects, f"r{i}", f"2026-07-{10+i:02d}T02:00:00Z", [_r("billing", f"a{i}.json")])
+    # keep newest 2; scan_limit deliberately smaller than the run count.
+    result = run(_sweeper(st, objects).prune(keep_runs=2, max_age_seconds=0, scan_limit=3))
+    # r6, r7 are newest (kept); r7 holds billing's last-good so protection is inside keep anyway.
+    # Every older run (r0..r5) must be pruned, INCLUDING ones a scan_limit=3 window would have hidden.
+    assert set(result["pruned"]) == {"r0", "r1", "r2", "r3", "r4", "r5"}
+    for i in range(6):
+        assert f"a{i}.json" not in objects.blobs
+    assert run(RunStore(st).get("r0")) is None and run(RunStore(st).get("r5")) is None
+
+
+def test_recent_returns_newest_first_and_respects_limit():
+    # backup-003: recent(1) returns the LATEST run (not the earliest), via a limited find.
+    st, objects = MemoryDataStore(), _Objects()
+    for i in range(4):
+        _seed(st, objects, f"r{i}", f"2026-07-{10+i:02d}T02:00:00Z", [_r("billing", f"a{i}.json")])
+    latest = run(RunStore(st).recent(1))
+    assert len(latest) == 1 and latest[0]["id"] == "r3"
+    assert [r["id"] for r in run(RunStore(st).recent(2))] == ["r3", "r2"]

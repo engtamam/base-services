@@ -3,7 +3,12 @@
   "date": "2026-09-27",
   "summary": {
     "total": 23,
-    "by_severity": { "CRITICAL": 0, "HIGH": 5, "MEDIUM": 9, "LOW": 9 }
+    "by_severity": {
+      "CRITICAL": 0,
+      "HIGH": 5,
+      "MEDIUM": 9,
+      "LOW": 9
+    }
   },
   "findings": [
     {
@@ -15,7 +20,10 @@
       "line": 31,
       "scenario": "backup_health_check and backup_drill are async FastAPI handlers that call _alerts.push(...) directly (internal.py:374, 439). push() runs post_json(), which is synchronous urllib.request.open with timeout_seconds=BACKUP_TARGET_TIMEOUT_SECONDS (120s). A slow/hung alert webhook blocks the whole asyncio event loop for up to 120s, freezing every other request and the /healthz probe on that worker — the exact v0.18.3 'blocking sync in async' class of bug the orchestrator/restore paths were careful to wrap in asyncio.to_thread, but the alert path was not.",
       "evidence": "status, _ = post_json(webhook_url, payload, token=\"\", allowed_hosts=allowed_hosts, timeout_seconds=timeout_seconds)",
-      "recommendation": "Call _alerts.push via `await asyncio.to_thread(...)` like every other outbound call in orchestrator/restore/drill, and give the webhook its own short timeout knob instead of the 120s target timeout."
+      "recommendation": "Call _alerts.push via `await asyncio.to_thread(...)` like every other outbound call in orchestrator/restore/drill, and give the webhook its own short timeout knob instead of the 120s target timeout.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "alert/drill webhook push now runs via asyncio.to_thread with a dedicated short BACKUP_ALERT_TIMEOUT_SECONDS (10s) instead of blocking the event loop on the 120s target timeout."
     },
     {
       "id": "backup-002",
@@ -26,7 +34,10 @@
       "line": 191,
       "scenario": "backup.restored is audited at the orchestrator side (operator.py:275), but the endpoint that actually mutates a service's live data — POST /internal/backup/import, which inserts/overwrites/prunes rows via import_archive — writes NO audit record on the target's own side. When backup-service is restored as a target of itself, or any service is restored/undone/cloned, the bulk overwrite of its data leaves no trail on the mutated service. An incident review of 'who overwrote this service's rows' finds nothing on the service that was changed.",
       "evidence": "@router.post(\"/backup/import\", dependencies=[Depends(require_internal_token)])\nasync def backup_import(request: Request, body: BackupImportIn, ...):\n    ...\n    return await _backup.import_archive(...)",
-      "recommendation": "Emit a critical auditable action (e.g. backup.data_restored) in backup_import with inserted/overwritten/pruned counts, into_tenant and prune flags, before/around the mutation."
+      "recommendation": "Emit a critical auditable action (e.g. backup.data_restored) in backup_import with inserted/overwritten/pruned counts, into_tenant and prune flags, before/around the mutation.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "POST /internal/backup/import now write-ahead-records a new critical backup.data_restored audit (into_tenant/overwrite/prune flags) BEFORE the bulk data mutation, so the target side of a restore is witnessed and a down audit refuses the rewrite."
     },
     {
       "id": "backup-003",
@@ -37,7 +48,10 @@
       "line": 38,
       "scenario": "recent(limit) always calls scan_all(_COLL, 10_000) and sorts the full set in Python, then slices. tenant_coverage (internal.py:300) calls runs.recent(1) on a request path to get 'the latest run' — so a per-dispute coverage lookup deserializes and sorts up to 10,000 run records every call. Health, drill, retention and every restore/list path do the same. As run history grows (see backup-005, prune gap), this becomes an O(all-runs) JSON deserialize+sort on request paths.",
       "evidence": "rows = await self._s.scan_all(_COLL, _RECENT_SCAN)\nreturn sorted(rows, key=lambda r: r.get(\"started_at\", \"\"), reverse=True)[:limit]",
-      "recommendation": "Store runs with a sortable key and use find()/keyset pagination for recent(limit), or at minimum bound scan by the requested limit; do not scan 10k rows to answer recent(1)."
+      "recommendation": "Store runs with a sortable key and use find()/keyset pagination for recent(limit), or at minimum bound scan by the requested limit; do not scan 10k rows to answer recent(1).",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "RunStore.recent(limit) is now a LIMIT-bounded ordered find() on a constant kind discriminator (stamped at record time) instead of scan_all(10000)+sort; recent(1) reads one row on the hot path."
     },
     {
       "id": "backup-004",
@@ -48,7 +62,10 @@
       "line": 45,
       "scenario": "create_app() calls assert_audit_config_ok, assert_pii_config_ok and assert_cors_config_ok, but NOT assert_consent_config_ok (config.py:435). If a future revision sets CONSENT_GATED=True with CONSENT_GATE_DRIVER=null (or http with no URL), the service boots green and every consent check silently answers UNKNOWN — the precise 'control built, nothing consults it' failure the guard was written to prevent. The guard is dead code giving false assurance.",
       "evidence": "settings.assert_audit_config_ok()\nsettings.assert_pii_config_ok()\nsettings.assert_cors_config_ok()",
-      "recommendation": "Add settings.assert_consent_config_ok() to create_app() alongside the other boot guards."
+      "recommendation": "Add settings.assert_consent_config_ok() to create_app() alongside the other boot guards.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "assert_consent_config_ok() is now invoked in create_app alongside the other boot guards (it was defined+tested but never called)."
     },
     {
       "id": "backup-005",
@@ -59,7 +76,10 @@
       "line": 57,
       "scenario": "prune() reads all_runs = runs.recent(scan_limit) with scan_limit=BACKUP_RUN_HISTORY (200), and only iterates/prunes those. RunStore.recent itself caps at scan_all(10_000). Any run older than the newest 200 is never enumerated, so its record is never removed and its stored archives are never deleted — the object store grows without bound. 'index >= keep_runs' can never fire for runs beyond the 200-row window because they are not in the list at all.",
       "evidence": "all_runs = await self._runs.recent(scan_limit)      # newest first\n...\nfor index, run in enumerate(all_runs):\n    ... too_old = index >= keep_runs or ...",
-      "recommendation": "Iterate the full run collection (paged) when pruning, decoupled from BACKUP_RUN_HISTORY, so every run past the retention window and its archives are actually deleted."
+      "recommendation": "Iterate the full run collection (paged) when pruning, decoupled from BACKUP_RUN_HISTORY, so every run past the retention window and its archives are actually deleted.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "RetentionSweeper.prune enumerates the FULL run collection via new RunStore.all_runs() instead of recent(scan_limit); runs older than the newest scan_limit are now actually pruned and their archives deleted, closing the storage leak. Regression tests added."
     },
     {
       "id": "backup-006",
