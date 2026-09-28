@@ -47,8 +47,11 @@ class _Holds:
 
 
 def _row(id, age_days, **kw):
-    row = {"id": id, "tenant": "acme", "subject": "u_7",
-           "created_at": _NOW - age_days * DAY_SECONDS}
+    # A retention-eligible DSAR is TERMINAL: its clock is completed_at (compliance-001). Default to a
+    # completed row aged `age_days`; a test wanting an OPEN dsar passes status="in_progress".
+    ts = _NOW - age_days * DAY_SECONDS
+    row = {"id": id, "tenant": "acme", "subject": "u_7", "created_at": ts,
+           "status": "completed", "completed_at": ts}
     row.update(kw)
     return row
 
@@ -62,6 +65,23 @@ def test_expired_rows_are_purged_and_fresh_ones_survive():
     out = run(_mk(store, {"dsar": 365}).run())
     assert store.deleted == [("dsar", "old")]
     assert out["purged"] == {"dsar": 1}
+
+
+def test_an_open_dsar_is_never_purged_even_when_old(_holds=None):
+    # compliance-001: an in-flight DSAR (no completed_at, non-terminal status) must NOT age out by
+    # created_at — deleting it mid-flight destroys the evidence of an unfulfilled legal obligation.
+    store = _Store({"dsar": [_row("stuck_open", 400, status="in_progress", completed_at=0.0)]})
+    out = run(_mk(store, {"dsar": 365}).run())
+    assert store.deleted == []                      # retained despite being 400 days old
+    assert out.get("purged", {}) == {}
+
+
+def test_a_completed_dsar_ages_from_completion_not_filing():
+    # filed 400 days ago but only completed 10 days ago → inside a 365-day window → retained.
+    store = _Store({"dsar": [_row("recent_complete", 400,
+                                  completed_at=_NOW - 10 * DAY_SECONDS)]})
+    out = run(_mk(store, {"dsar": 365}).run())
+    assert store.deleted == []
 
 
 def test_a_legal_hold_beats_retention():

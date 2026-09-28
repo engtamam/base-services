@@ -25,6 +25,7 @@ from app.core.stores import ConsentStore, HoldStore
 
 _CONSENT = "consent"
 _PROOF = "consent_proof"
+_DSAR = "dsar"                         # this service's own DSAR rows (compliance-002)
 _HOLDS = "legal_holds"
 _PROOF_SEQ = "consent_proof_seq"      # (tenant, RAW subject) -> counter; see stores.add_proof
 
@@ -114,8 +115,32 @@ class ComplianceErasure:
                                                   limit=_PAGE, after=cursor, sort=("at", "asc"))
             for p in page:
                 p["subject"] = ref
+                # compliance-004: a guardian/delegated proof also carries consented_by (e.g. the
+                # parent's email) as a RAW identifier — pseudonymise it too (with its OWN ref), or
+                # erasing the child leaves the parent's raw id sitting in the surviving proof.
+                cb = p.get("consented_by")
+                if cb:
+                    p["consented_by"] = subject_ref(self._salt, tenant, str(cb))
                 await self._store.put(_PROOF, p["id"], p)
                 proofs += 1
+            if not cursor:
+                break
+
+        # compliance-002: this service is itself a data target (category=consent), but its OWN dsar
+        # rows persist the RAW subject id and the request payload — PII that survived every erasure. A
+        # DSAR is retained evidence like a proof, so pseudonymise the subject and scrub the payload
+        # rather than delete the row (the record that we received + actioned the request must remain).
+        dsar_scrubbed = 0
+        cursor = None
+        while True:
+            page, cursor = await self._store.find(_DSAR, {"tenant": tenant, "subject": subject},
+                                                  limit=_PAGE, after=cursor, sort=("created_at", "asc"))
+            for row in page:
+                row["subject"] = ref
+                if row.get("payload"):
+                    row["payload"] = {}          # request details can carry raw PII — drop them
+                await self._store.put(_DSAR, row["id"], row)
+                dsar_scrubbed += 1
             if not cursor:
                 break
 
@@ -130,11 +155,17 @@ class ComplianceErasure:
         if proofs:
             retained.append({"what": f"consent_proof:{proofs}", "basis": RETENTION_BASIS,
                              "why": "append-only evidence of what was agreed and when; subject pseudonymised"})
+        if dsar_scrubbed:
+            retained.append({"what": f"dsar:{dsar_scrubbed}", "basis": RETENTION_BASIS,
+                             "why": "record that the request was received and actioned; subject "
+                                    "pseudonymised and payload scrubbed"})
 
         return {
             "service": self.service,
             "subject_ref": ref,
             "erased": erased,
             "retained": retained,
-            "already_absent": not erased,
+            # "nothing here" must account for every collection touched — a pseudonymised proof or a
+            # scrubbed dsar row means the subject WAS present, so it is not already_absent.
+            "already_absent": not (erased or proofs or dsar_scrubbed),
         }

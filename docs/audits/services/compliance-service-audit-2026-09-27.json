@@ -3,7 +3,12 @@
   "date": "2026-09-27",
   "summary": {
     "total": 24,
-    "by_severity": {"CRITICAL": 0, "HIGH": 4, "MEDIUM": 15, "LOW": 5}
+    "by_severity": {
+      "CRITICAL": 0,
+      "HIGH": 4,
+      "MEDIUM": 15,
+      "LOW": 5
+    }
   },
   "findings": [
     {
@@ -15,7 +20,10 @@
       "line": 105,
       "scenario": "An operator sets RETENTION_RULES=\"dsar=365\". The docstring promises a DSAR's retention clock starts when it COMPLETED. But an open (never completed) DSAR has completed_at=0.0 (falsy) and no 'resolved_at'/'at' fields, so _clock_field falls through to created_at. A DSAR that has been stuck open for >365 days (e.g. a target that never acked, still on its statutory clock and flagged 'overdue') is therefore deleted by the nightly retention CronJob — destroying the record of an unfulfilled data-subject request, the single worst thing to lose to a regulator.",
       "evidence": "for field in (\"completed_at\", \"resolved_at\", \"at\", \"created_at\"):\n        value = row.get(field)\n        if value:\n            return float(value)",
-      "recommendation": "In _clock_field, refuse to age out a row whose collection is 'dsar' unless it is in a terminal state (completed_at/refused set). More generally, do not fall back to created_at for records whose retention clock is defined only in a terminal state; skip (KEEP) rows with no terminal timestamp."
+      "recommendation": "In _clock_field, refuse to age out a row whose collection is 'dsar' unless it is in a terminal state (completed_at/refused set). More generally, do not fall back to created_at for records whose retention clock is defined only in a terminal state; skip (KEEP) rows with no terminal timestamp.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "_clock_field(row, collection) never ages out a non-terminal DSAR: an open (no completed_at/refused, non-terminal status) dsar returns None (retain) instead of falling back to created_at, so a request stuck open past the retention window is no longer deleted mid-flight. Regression tests added."
     },
     {
       "id": "compliance-002",
@@ -26,7 +34,10 @@
       "line": 95,
       "scenario": "ComplianceErasure.erase only touches the 'consent' and 'consent_proof' collections. compliance-service is itself a registered data target (service=compliance-service, category=consent), but its own DSAR rows persist the RAW subject id plus the request payload (Dsar.subject / Dsar.payload), and are never scrubbed or pseudonymised on erasure. After a subject is 'erased' and the DSAR is marked completed, the person's raw identifier and any payload PII remain in the dsar collection (and in every sealed backup of it) indefinitely, contradicting the completeness promise the service exists to enforce.",
       "evidence": "class ComplianceErasure:\n    service = \"compliance-service\"\n    category = \"consent\"\n    ...\n    rows, cursor = await self._store.find(_CONSENT, {\"tenant\": tenant, \"subject\": subject}, ...)",
-      "recommendation": "Extend erase() to pseudonymise/scrub the subject in the service's own dsar rows (and any other own collection carrying raw subject/payload), or register a distinct category per collection so completion honestly reflects what was left behind."
+      "recommendation": "Extend erase() to pseudonymise/scrub the subject in the service's own dsar rows (and any other own collection carrying raw subject/payload), or register a distinct category per collection so completion honestly reflects what was left behind.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "ComplianceErasure.erase now scrubs the service's OWN dsar rows for the subject (subject->pseudonym, payload->{}) in addition to consent/proof; already_absent accounts for them. The DSAR record survives as evidence, without the raw id/payload. Regression test added."
     },
     {
       "id": "compliance-003",
@@ -37,7 +48,10 @@
       "line": 437,
       "scenario": "erase_subject records the critical 'subject.erased' audit event write-ahead, then calls eraser.erase(). erase() may return {\"blocked_by_legal_hold\": True, \"erased\": []} (an active hold, or an incomplete hold read → fail closed). Nothing was erased, yet the audit chain now contains a 'subject.erased' entry for that subject. The audit trail — the one artefact a regulator reads to confirm what happened — asserts an erasure that legal hold actually prevented.",
       "evidence": "await request.app.state.auditor.record(\n        \"subject.erased\", actor=\"\", tenant=body.tenant, resource=f\"subject:{subject_ref(get_settings().PII_SALT, body.tenant, body.subject)}\", ...)\n    c = request.app.state.container\n    eraser = ComplianceErasure(store=c.datastore, pii_salt=s.PII_SALT)\n    return await eraser.erase(body.tenant, body.subject)",
-      "recommendation": "Record the erasure outcome AFTER erase() returns, reflecting blocked_by_legal_hold/hold_check_incomplete (e.g. 'subject.erase_refused'), or gate the write-ahead so a hold-blocked call does not emit 'subject.erased'."
+      "recommendation": "Record the erasure outcome AFTER erase() returns, reflecting blocked_by_legal_hold/hold_check_incomplete (e.g. 'subject.erase_refused'), or gate the write-ahead so a hold-blocked call does not emit 'subject.erased'.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "erase_subject records the ACTUAL outcome after erase() returns — subject.erased on success, or a new critical subject.erase_refused when blocked_by_legal_hold/hold_check_incomplete — instead of a write-ahead subject.erased that falsely certified a deletion a hold prevented. erase is idempotent so after-the-fact recording is safe."
     },
     {
       "id": "compliance-004",
@@ -48,7 +62,10 @@
       "line": 116,
       "scenario": "The consent proof is retained but only its 'subject' field is overwritten with the pseudonym. A guardian/legal-representative consent proof also carries consented_by (e.g. the parent's email) and relation as RAW identifiers. Erasing the child leaves the parent's raw identifier sitting in the surviving proof; and erasing the PARENT as a subject never matches proofs where they appear only as consented_by, so their raw id survives regardless. Personal data of a third party remains after an erasure that reported success.",
       "evidence": "for p in page:\n                p[\"subject\"] = ref\n                await self._store.put(_PROOF, p[\"id\"], p)\n                proofs += 1",
-      "recommendation": "When pseudonymising a surviving proof, also pseudonymise consented_by (and any actor holding a raw identifier) via subject_ref; and add a data-map/erase path that scrubs consented_by occurrences when the represented party is themselves the erasure subject."
+      "recommendation": "When pseudonymising a surviving proof, also pseudonymise consented_by (and any actor holding a raw identifier) via subject_ref; and add a data-map/erase path that scrubs consented_by occurrences when the represented party is themselves the erasure subject.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "a surviving guardian/delegated consent proof now has consented_by pseudonymised (its own subject_ref) on erasure, not just subject — erasing the child no longer leaves the parent's raw identifier in the proof. Regression test added."
     },
     {
       "id": "compliance-005",

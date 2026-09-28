@@ -431,15 +431,25 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
         return {"service": s.SERVICE_NAME, "erased": [], "retained": [], "already_absent": False,
                 "unrecognized_subject_kind": True, "subject_kind": body.subject_kind,
                 "indexed_kinds": indexed}
-    # Write-ahead: a critical action the log cannot take must not happen at all, so this
-    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
-    # already succeeded, and leave it unrecorded.
-    await request.app.state.auditor.record(
-        "subject.erased", actor="", tenant=body.tenant, resource=f"subject:{subject_ref(get_settings().PII_SALT, body.tenant, body.subject)}",
-        ip=request.client.host if request.client else "")
     c = request.app.state.container
     eraser = ComplianceErasure(store=c.datastore, pii_salt=s.PII_SALT)
-    return await eraser.erase(body.tenant, body.subject)
+    result = await eraser.erase(body.tenant, body.subject)
+    # Record the ACTUAL OUTCOME (compliance-003), not a write-ahead 'subject.erased'. A legal hold (or
+    # an incomplete hold read → fail closed) returns blocked_by_legal_hold with nothing erased; logging
+    # 'subject.erased' for it would falsely certify a deletion that a regulator relies on. erase() is
+    # idempotent, so recording after is safe: a down audit 503s the caller, whose retry re-erases
+    # (already_absent) and re-records. A hold-refusal is its own auditable action.
+    sref = f"subject:{subject_ref(get_settings().PII_SALT, body.tenant, body.subject)}"
+    if result.get("blocked_by_legal_hold"):
+        await request.app.state.auditor.record(
+            "subject.erase_refused", actor="", tenant=body.tenant, resource=sref,
+            ip=request.client.host if request.client else "",
+            metadata={"hold_check_incomplete": bool(result.get("hold_check_incomplete"))})
+    else:
+        await request.app.state.auditor.record(
+            "subject.erased", actor="", tenant=body.tenant, resource=sref,
+            ip=request.client.host if request.client else "")
+    return result
 
 
 # ── Backup (backup-service orchestrates; this service produces sealed archives) ──────────────

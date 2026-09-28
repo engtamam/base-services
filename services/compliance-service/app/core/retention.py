@@ -69,7 +69,7 @@ class RetentionEnforcer:
 
         purged = held = 0
         for row in rows:
-            age_at = _clock_field(row)
+            age_at = _clock_field(row, collection)
             if age_at is None or age_at >= cutoff:
                 continue
             if await self._is_held(row):
@@ -96,12 +96,24 @@ class RetentionEnforcer:
             pass
 
 
-def _clock_field(row: dict) -> float | None:
-    """The retention clock for a row: when it was created, or when it reached its final state.
+def _clock_field(row: dict, collection: str = "") -> float | None:
+    """The retention clock for a row: when it reached its final state, or when it was created.
 
     A DSAR's clock starts when it COMPLETED, not when it was filed — a request that took 29 days
-    should not be eligible for deletion the day after it closes.
+    should not be eligible for deletion the day after it closes. Crucially, an OPEN (never-terminal)
+    DSAR must NEVER age out (compliance-001): the old fallback to created_at let a request stuck open
+    past the retention window be deleted mid-flight — destroying the evidence of an unfulfilled legal
+    obligation. Return None (retain) for a non-terminal DSAR so retention can never reach it.
     """
+    if collection == "dsar":
+        for field in ("completed_at", "resolved_at"):
+            value = row.get(field)
+            if value:
+                return float(value)
+        if row.get("status") in ("completed", "refused"):   # the DSAR terminal states
+            # terminal but no timestamp field — fall back to created so it can eventually age out
+            return float(row.get("created_at") or 0) or None
+        return None                              # open/in-flight DSAR — never eligible for deletion
     for field in ("completed_at", "resolved_at", "at", "created_at"):
         value = row.get(field)
         if value:

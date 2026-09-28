@@ -137,3 +137,33 @@ def test_consent_deletion_pages_past_the_thousand_row_cap():
     out = run(e.erase("acme", "u1"))
     assert out["erased"] == ["consent:1050"]
     assert run(st.scan_all("consent", 5000)) == []        # nothing left behind
+
+
+# ── compliance-002/004: erasure scrubs the service's own dsar rows + guardian PII ───────────────────
+def test_erasure_scrubs_the_services_own_dsar_rows():
+    from app.core.pii import subject_ref
+    st = MemoryDataStore()
+    run(st.put("dsar", "d1", {"id": "d1", "tenant": "acme", "subject": "u1", "type": "erasure",
+                              "status": "completed", "payload": {"email": "u1@x.com"},
+                              "created_at": 1.0}))
+    e = ComplianceErasure(store=st, pii_salt="pepper")
+    out = run(e.erase("acme", "u1"))
+    row = run(st.get("dsar", "d1"))
+    assert row["subject"] == subject_ref("pepper", "acme", "u1")   # raw id pseudonymised
+    assert row["payload"] == {}                                    # request payload scrubbed
+    assert row is not None                                         # the record itself survives
+    assert out["already_absent"] is False
+
+
+def test_erasure_pseudonymises_guardian_consented_by():
+    from app.core.pii import subject_ref
+    st = MemoryDataStore()
+    run(st.put("consent_proof", "p1", {"id": "p1", "tenant": "acme", "subject": "child",
+                                       "consented_by": "parent@x.com", "relation": "guardian",
+                                       "at": 1.0}))
+    e = ComplianceErasure(store=st, pii_salt="pepper")
+    run(e.erase("acme", "child"))
+    p = run(st.get("consent_proof", "p1"))
+    assert p["subject"] == subject_ref("pepper", "acme", "child")
+    assert p["consented_by"] == subject_ref("pepper", "acme", "parent@x.com")   # guardian id gone
+    assert "parent@x.com" not in str(p)

@@ -166,6 +166,15 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "show we honoured the DSAR, or prove we erased the right person",
     },
     {
+        "action": "subject.erase_refused",
+        "source": "internal",
+        "critical": True,
+        "why": "an erasure blocked by an active legal hold (or an incomplete hold read → fail closed) "
+               "erased NOTHING; recording it as 'subject.erased' would falsely certify a deletion a "
+               "regulator relies on. The refusal itself must be witnessed — why the data still exists "
+               "is exactly what a later inquiry asks — and, being critical, cannot proceed unrecorded",
+    },
+    {
         "action": "operator.secret_set",
         "source": "admin",
         "critical": True,
