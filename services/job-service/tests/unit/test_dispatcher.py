@@ -193,3 +193,23 @@ def test_a_queue_with_no_target_is_left_for_pull():
     assert poster.calls == []
     claimed = run(jobs.claim(worker="w", queue="pull_q", batch=1))
     assert claimed and claimed[0]["id"] == job.id        # still deliverable by pull
+
+
+# ── job-005: each job is heartbeated before its POST so a slow batch can't be reclaimed ──────────────
+def test_dispatch_heartbeats_each_job_before_posting():
+    disp, jobs, st, clock = _wire(poster=_Poster(200), batch=20)
+    run(disp.register(queue="q", url="http://peer/hook"))
+    run(jobs.enqueue(tenant="t", type="x", queue="q"))
+    run(jobs.enqueue(tenant="t", type="y", queue="q"))
+
+    seen = []
+    orig = jobs.heartbeat
+
+    async def _spy(job_id, lease_token):
+        seen.append(job_id)
+        return await orig(job_id, lease_token)
+
+    jobs.heartbeat = _spy
+    res = run(disp.dispatch_batch())
+    assert res["dispatched"] == 2
+    assert len(seen) == 2                 # every delivered job's lease was renewed before its POST

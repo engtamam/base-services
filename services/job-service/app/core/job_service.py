@@ -80,15 +80,20 @@ class JobService:
         return job, True
 
     # ── claim (hot path) — atomic lease with fencing token ──────────────────────
-    async def claim(self, *, worker: str, queue: str | None = None, batch: int = 1) -> list[dict]:
+    async def claim(self, *, worker: str, queue: str | None = None, batch: int = 1,
+                    tenant: str | None = None) -> list[dict]:
         batch = max(1, min(int(batch), self._cfg["claim_batch_max"]))
         now = self._clock.now()
         # BOUNDED oldest-first page off the next_run_at index — not a scan+sort of the whole due-index
         # (job-r2-03). A window a few multiples of the batch leaves room after the due/queue filter.
         window = min(self._cfg["claim_batch_max"], max(batch * 8, 100))
+        # tenant filter (job-004): a worker may restrict its leases to its own tenant, so that two
+        # tenants sharing a queue name cannot lease and receive each other's jobs. None = any tenant
+        # (the fleet worker), a value = only that tenant's jobs.
         candidates = [d for d in await self._jobs.due_page(limit=window)
                       if float(d.get("next_run_at", 0)) <= now
-                      and (queue is None or d.get("queue") == queue)]
+                      and (queue is None or d.get("queue") == queue)
+                      and (tenant is None or d.get("tenant") == tenant)]
         candidates = self._order(candidates)                  # priority + tenant fairness
 
         claimed: list[dict] = []

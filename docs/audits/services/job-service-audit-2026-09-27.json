@@ -34,7 +34,9 @@
       "scenario": "`_tenant(p)` returns `body_tenant or p.tenant or 'global'` for a platform.jobs holder. `stats` (line 164) was fixed to pass `tenant=None` for operators (fleet-wide), but `list_jobs` (line 119) and `dead_letters` (line 127) still pass `_tenant(principal)`, and there is NO tenant query param on these routes. A platform operator calling GET /api/v1/jobs or /api/v1/jobs/dead-letters therefore sees ONLY jobs whose tenant field equals the string 'global' — every real tenant's jobs and dead-letters are invisible. An operator triaging the fleet DLQ is blind to almost everything and can wrongly conclude the DLQ is empty.",
       "evidence": "jobs = await build_jobs(request)._jobs.list(tenant=_tenant(principal), status=status_filter, ...)\n... rows = await build_jobs(request)._jobs.dead_letters(_tenant(principal), ...)",
       "recommendation": "Mirror stats: pass tenant=None when 'platform.jobs' in principal.caps for list_jobs and dead_letters (optionally accept an explicit ?tenant= filter for operators).",
-      "status": "pending"
+      "status": "fixed",
+      "release": "pending",
+      "fix": "list_jobs and dead_letters now pass tenant=None for platform.jobs holders (mirroring stats), so an operator sees fleet-wide jobs/DLQ instead of the empty literal-'global' bucket."
     },
     {
       "id": "job-003",
@@ -46,7 +48,9 @@
       "scenario": "validate()/parse() accept syntactically valid expressions that can never fire, e.g. '0 0 30 2 *' (Feb 30) or '0 0 31 2 *'. create_schedule/update call self._cron.next_after() on the REQUEST path. next_after steps minute-by-minute up to _MAX_MINUTES (4*366*24*60 ≈ 2.1M) before raising CronError. That is a multi-second CPU-bound loop running synchronously inside the async handler (single-worker event loop), blocking /healthz and every other request. A caller can POST several such schedules to stall the pod. Even for normal expressions the same minute-by-minute walk runs for every schedule on every tick.",
       "evidence": "for _ in range(_MAX_MINUTES):\n    if _matches(p, t):\n        return t.timestamp()\n    t += _dt.timedelta(minutes=1)\nraise CronError(f\"expression never matches within 4 years: {expr!r}\")",
       "recommendation": "Reject impossible day/month combinations at validate() time (e.g. dom={30,31} with month={2}), and/or compute next fire by advancing per-field instead of per-minute. At minimum run next_after via run_in_threadpool on the request path.",
-      "status": "pending"
+      "status": "fixed",
+      "release": "pending",
+      "fix": "cron.parse now rejects impossible day-of-month/month combos up front (e.g. Feb 30/31) when dom is restricted and dow is not — with both restricted cron's OR rule keeps it valid. create/update also run next_after via asyncio.to_thread so a legit-but-rare expression (leap Feb 29) never CPU-spins the request path. Regression tests added."
     },
     {
       "id": "job-004",
@@ -58,7 +62,9 @@
       "scenario": "POST /internal/jobs/enqueue does `enqueue(**body.model_dump())` where body.tenant is arbitrary and never bound to the authenticated caller's identity — a holder of the shared internal token can enqueue work stamped as any tenant. claim() filters only by queue, never by tenant, so if two tenants share a queue name, a worker leases and receives jobs (payload/PII) belonging to a different tenant. This is 'internal trust' by design for enqueue, but the lack of any caller->tenant binding plus queue-only claim scoping means one compromised/buggy internal caller taints tenant attribution across the whole queue.",
       "evidence": "job, created = await build_jobs(request).enqueue(**body.model_dump())  # body.tenant is caller-controlled",
       "recommendation": "Bind tenant to the verified caller assertion where possible, or at least document the trust boundary and ensure per-tenant queues; add the tenant to the claim contract so a worker can restrict to its own tenant.",
-      "status": "pending"
+      "status": "fixed",
+      "release": "pending",
+      "fix": "claim() gained an optional tenant filter (surfaced on /internal/jobs/claim as ClaimIn.tenant): a worker restricts leases to its own tenant so a shared queue name cannot deliver another tenant's job. The enqueue trust boundary (caller-supplied tenant on the trusted internal tier) is now documented, with claim-side isolation as the delivery defense. Regression tests added."
     },
     {
       "id": "job-005",
@@ -70,7 +76,9 @@
       "scenario": "dispatch_batch claims a whole batch (PUSH_DISPATCH_BATCH default 20) then delivers them one at a time, each POST up to PUSH_DISPATCH_TIMEOUT_SECONDS (default 10s), with NO heartbeat. 20 x 10s = 200s > LEASE_SECONDS (60s). The leases of jobs late in the batch expire while still being POSTed; a concurrent reclaim() moves them back to QUEUED and another dispatch pass re-delivers them (a second charge/email), and the original ack then fails the fencing check. Default config already makes this reachable under a slow receiver.",
       "evidence": "claimed = await self._jobs.claim(worker=f\"push:{target.queue}\", queue=target.queue, batch=self._cfg[\"batch\"])\nfor job in claimed:\n    ok = await self._deliver_one(target, job)",
       "recommendation": "Either heartbeat each job before its POST, size batch so batch*timeout << lease, or deliver with bounded concurrency and per-job lease renewal. At minimum assert batch*timeout < lease at config load.",
-      "status": "pending"
+      "status": "fixed",
+      "release": "pending",
+      "fix": "dispatch _deliver_one now heartbeats each job (renewing its lease) immediately before the POST, so a slow batch (batch*timeout > lease) can no longer let reclaim re-queue and double-deliver an in-flight job. Regression test asserts a heartbeat per delivered job."
     },
     {
       "id": "job-006",

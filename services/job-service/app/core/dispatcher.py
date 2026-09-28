@@ -144,6 +144,15 @@ class Dispatcher:
         if sig:
             headers[push_signing.SIGNATURE_HEADER] = sig
             headers[push_signing.TIMESTAMP_HEADER] = str(ts)
+        # Renew the lease immediately BEFORE the POST (job-005). A whole batch is claimed at once and
+        # delivered one at a time, each POST up to the push timeout; without this the lease of a job
+        # late in the batch expires mid-POST and a concurrent reclaim re-queues it, double-delivering.
+        # A heartbeat resets the visibility window to now+lease for each job as it is sent.
+        if lease_token:
+            try:
+                await self._jobs.heartbeat(job_id, lease_token)
+            except Exception:   # noqa: BLE001 — a heartbeat failure must not abort delivery
+                pass
         try:
             status = await self._post(target.url, body, headers, float(self._cfg["timeout"]))
         except Exception as exc:  # noqa: BLE001 — any transport error is a delivery FAILURE, never a crash

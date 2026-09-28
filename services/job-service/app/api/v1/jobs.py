@@ -116,7 +116,10 @@ async def delete_schedule(request: Request, schedule_id: str,
 @router.get("", dependencies=[Depends(_READ)])
 async def list_jobs(request: Request, status_filter: str | None = None,
                     principal: Principal = Depends(_READ)) -> dict:
-    jobs = await build_jobs(request)._jobs.list(tenant=_tenant(principal), status=status_filter,
+    # A platform operator sees fleet-wide jobs; a tenant reader only its own (job-002). Was scoped to
+    # the literal tenant "global" via _tenant(), so an operator's list silently showed nothing.
+    tenant = None if "platform.jobs" in principal.caps else _tenant(principal)
+    jobs = await build_jobs(request)._jobs.list(tenant=tenant, status=status_filter,
                                                 limit=get_settings().JOB_LIST_LIMIT)
     from app.core.models import Job
     return {"jobs": [Job.from_dict(r).public() for r in jobs]}
@@ -124,7 +127,9 @@ async def list_jobs(request: Request, status_filter: str | None = None,
 
 @router.get("/dead-letters", dependencies=[Depends(_READ)])
 async def dead_letters(request: Request, principal: Principal = Depends(_READ)) -> dict:
-    rows = await build_jobs(request)._jobs.dead_letters(_tenant(principal), get_settings().JOB_LIST_LIMIT)
+    # Fleet-wide for a platform operator; own-tenant for a tenant reader (job-002).
+    tenant = None if "platform.jobs" in principal.caps else _tenant(principal)
+    rows = await build_jobs(request)._jobs.dead_letters(tenant, get_settings().JOB_LIST_LIMIT)
     from app.core.models import Job
     return {"dead_letters": [Job.from_dict(r).public() for r in rows]}
 

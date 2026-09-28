@@ -61,7 +61,29 @@ def parse(expr: str) -> dict[str, set[int]]:
         parsed[name] = _parse_field(spec, lo, hi)
     parsed["_dom_restricted"] = fields[2] != "*"
     parsed["_dow_restricted"] = fields[4] != "*"
+    _reject_impossible_dom_month(parsed)
     return parsed
+
+
+# Max day each month can have (February allows 29 for a leap year — a leap Feb 29 is reachable).
+_MAX_DAY = {1: 31, 2: 29, 3: 31, 4: 30, 5: 31, 6: 30, 7: 31, 8: 31, 9: 30, 10: 31, 11: 30, 12: 31}
+
+
+def _reject_impossible_dom_month(p: dict) -> None:
+    """Reject a syntactically-valid expression whose day-of-month can never occur in any allowed
+    month (job-003), e.g. '0 0 30 2 *' (Feb 30) or '0 0 31 2 *' (Feb 31).
+
+    Only when day-of-month is restricted AND day-of-week is NOT: with both restricted cron's rule is
+    OR, so an unreachable DOM is harmless (the DOW branch can still fire). With DOW unrestricted the
+    match needs a real (day, month) pair; if none exists, next_after would step minute-by-minute to
+    the 4-year bound (~2.1M iterations) on the request path before failing.
+    """
+    if not (p["_dom_restricted"] and not p["_dow_restricted"]):
+        return
+    if any(day <= _MAX_DAY.get(month, 31) for month in p["month"] for day in p["dom"]):
+        return
+    raise CronError("day-of-month never occurs in any selected month "
+                    f"(dom={sorted(p['dom'])}, month={sorted(p['month'])})")
 
 
 def _matches(p: dict, t: _dt.datetime) -> bool:

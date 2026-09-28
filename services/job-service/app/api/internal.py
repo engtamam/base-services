@@ -40,6 +40,9 @@ class ClaimIn(BaseModel):
     worker: str = Field(min_length=1, max_length=128)
     queue: str | None = None
     batch: int = Field(default=1, ge=1)
+    # job-004: a worker may restrict leases to its own tenant so a shared queue name cannot hand it
+    # another tenant's jobs. None (default) leases any tenant's due jobs, as before.
+    tenant: str | None = Field(default=None, max_length=128)
 
 
 class AckIn(BaseModel):
@@ -100,7 +103,15 @@ async def internal_health(settings: Settings = Depends(get_settings)) -> dict[st
 
 @router.post("/jobs/enqueue", status_code=201, dependencies=[Depends(require_internal_token)])
 async def enqueue(request: Request, body: EnqueueIn) -> dict:
-    """Any service enqueues background work. Idempotent on idempotency_key / unique_key."""
+    """Any service enqueues background work. Idempotent on idempotency_key / unique_key.
+
+    TRUST BOUNDARY (job-004): `tenant` is caller-supplied, not derived from the internal caller
+    assertion, so a holder of the internal token can stamp a job with any tenant. This is acceptable
+    only because the internal tier is a trusted service mesh gated by the internal token + per-route
+    policy. Cross-tenant job DELIVERY is defended on the claim side: a worker passes its own tenant to
+    /jobs/claim to lease only its tenant's jobs, so a shared queue name cannot leak work between
+    tenants even if a peer mis-stamps one. Prefer per-tenant queues where isolation must be absolute.
+    """
     job, created = await build_jobs(request).enqueue(**body.model_dump())
     if created:
         # Enqueued over the internal token by a peer service — actor "system". Idempotent re-enqueues
@@ -114,8 +125,10 @@ async def enqueue(request: Request, body: EnqueueIn) -> dict:
 
 @router.post("/jobs/claim", dependencies=[Depends(require_internal_token)])
 async def claim(request: Request, body: ClaimIn) -> dict:
-    """A worker leases up to `batch` due jobs (atomic; each carries a lease_token)."""
-    return {"jobs": await build_jobs(request).claim(worker=body.worker, queue=body.queue, batch=body.batch)}
+    """A worker leases up to `batch` due jobs (atomic; each carries a lease_token). A worker may pass
+    `tenant` to restrict its leases to that tenant when a queue is shared across tenants (job-004)."""
+    return {"jobs": await build_jobs(request).claim(
+        worker=body.worker, queue=body.queue, batch=body.batch, tenant=body.tenant)}
 
 
 @router.post("/jobs/ack", dependencies=[Depends(require_internal_token)])

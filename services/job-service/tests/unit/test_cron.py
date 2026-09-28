@@ -46,6 +46,22 @@ def test_impossible_date_fails_closed():
         next_after("0 0 30 2 *", _ts("2026-01-01T00:00:00"))    # Feb 30 never exists
 
 
+@pytest.mark.parametrize("bad", ["0 0 30 2 *", "0 0 31 2 *", "0 0 31 4 *", "0 0 31 4,6 *"])
+def test_impossible_dom_month_rejected_at_validate(bad):
+    # job-003: reject an unreachable day/month at PARSE time, so create/update never spin next_after
+    # minute-by-minute to the 4-year bound on the request path.
+    with pytest.raises(CronError):
+        validate(bad)
+
+
+def test_unreachable_dom_is_allowed_when_dow_is_also_restricted():
+    # cron's real rule is OR when BOTH dom and dow are restricted, so an unreachable dom is harmless —
+    # the dow branch can still fire. Must NOT be rejected.
+    validate("0 0 31 2 5")           # "31 Feb OR Friday" → fires on Fridays
+    # a reachable rare date (leap-year Feb 29) is valid too
+    validate("0 0 29 2 *")
+
+
 def test_next_after_is_strictly_after():
     # exactly on a matching minute → returns the NEXT one, not the same instant
     assert _iso(next_after("0 0 * * *", _ts("2026-01-01T00:00:00"))) == "2026-01-02T00:00"

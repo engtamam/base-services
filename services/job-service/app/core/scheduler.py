@@ -14,6 +14,7 @@ Correctness:
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from app.core.models import ACTIVE, Schedule, new_id
@@ -33,10 +34,14 @@ class Scheduler:
                      singleton: bool | None = None) -> Schedule:
         self._cron.validate(cron)                          # raises on a bad expression
         now = self._clock.now()
+        # next_after steps minute-by-minute; a legitimately-rare expression (e.g. leap-year Feb 29)
+        # can iterate a long way, so run it OFF the event loop on this request path (job-003). Truly
+        # impossible dom/month combos are already rejected by validate() above.
+        first = await asyncio.to_thread(self._cron.next_after, cron, now)
         s = Schedule(id=new_id("sch_"), name=name, cron=cron, queue=queue, tenant=tenant,
                      type=type, payload=payload or {}, priority=priority,
                      singleton=self._singleton_default if singleton is None else singleton,
-                     next_run_at=self._cron.next_after(cron, now), created=now)
+                     next_run_at=first, created=now)
         return await self._schedules.save(s)
 
     @staticmethod
@@ -50,7 +55,8 @@ class Scheduler:
             return None                                     # cross-tenant/absent: no update, no leak
         if kw.get("cron"):
             self._cron.validate(kw["cron"])
-            s.next_run_at = self._cron.next_after(kw["cron"], self._clock.now())
+            s.next_run_at = await asyncio.to_thread(          # off the event loop (job-003)
+                self._cron.next_after, kw["cron"], self._clock.now())
         for k, v in kw.items():
             if v is not None and hasattr(s, k):
                 setattr(s, k, v)

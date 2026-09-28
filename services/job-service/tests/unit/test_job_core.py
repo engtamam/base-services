@@ -284,3 +284,24 @@ def test_cancel_and_replay_reject_another_tenants_job():
     assert r["ok"] is False and r["reason"] == "not_found"
     # the owning tenant CAN
     assert run(svc.replay(job.id, tenant="shop_a", is_operator=False))["ok"] is True
+
+
+# ── job-004: a worker can restrict its claim to its own tenant ─────────────────
+def test_claim_can_be_scoped_to_a_tenant():
+    svc, _ = _svc()
+    run(svc.enqueue(tenant="tenantA", type="x", queue="shared"))
+    run(svc.enqueue(tenant="tenantB", type="x", queue="shared"))
+    # A worker for tenantA on the shared queue leases ONLY tenantA's job.
+    a = run(svc.claim(worker="wa", queue="shared", batch=10, tenant="tenantA"))
+    assert len(a) == 1 and a[0]["tenant"] == "tenantA"
+    # tenantB's job is still queued and leasable by a tenantB worker.
+    b = run(svc.claim(worker="wb", queue="shared", batch=10, tenant="tenantB"))
+    assert len(b) == 1 and b[0]["tenant"] == "tenantB"
+
+
+def test_claim_without_tenant_still_leases_any():
+    svc, _ = _svc()
+    run(svc.enqueue(tenant="tenantA", type="x", queue="q"))
+    run(svc.enqueue(tenant="tenantB", type="x", queue="q"))
+    got = run(svc.claim(worker="fleet", queue="q", batch=10))   # no tenant → fleet worker
+    assert len(got) == 2
