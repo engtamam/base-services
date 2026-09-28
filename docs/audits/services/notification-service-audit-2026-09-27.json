@@ -3,7 +3,12 @@
   "date": "2026-09-27",
   "summary": {
     "total": 26,
-    "by_severity": {"CRITICAL": 0, "HIGH": 6, "MEDIUM": 14, "LOW": 6}
+    "by_severity": {
+      "CRITICAL": 0,
+      "HIGH": 6,
+      "MEDIUM": 14,
+      "LOW": 6
+    }
   },
   "findings": [
     {
@@ -15,7 +20,10 @@
       "line": 252,
       "scenario": "A Meta Cloud API 5xx / network blip during a business-initiated template (or interactive, or carousel) send. _deliver_whatsapp/send_interactive/send_carousel record status 'failed' DIRECTLY and never call _on_failure(), so with NOTIFY_DELIVERY_MODE=queued (the default) the message is NOT queued, NOT retried, and NOT dead-lettered — it is silently lost, exactly the 'a five-minute outage destroys every message' bug the retry system was built to prevent. Email/SMS get the queue+retry treatment; the platform's flagship channel does not.",
       "evidence": "return await rec(recipient, \"whatsapp\", template_key, \"failed\", provider=provider, error=\"send failed\")",
-      "recommendation": "Route WhatsApp send failures through the same _on_failure()/RetryPolicy path as email/SMS (classify retryable vs permanent, queue with backoff), and make drain() re-send WhatsApp deliveries via the delivery's OWN tenant/number rather than the default pool."
+      "recommendation": "Route WhatsApp send failures through the same _on_failure()/RetryPolicy path as email/SMS (classify retryable vs permanent, queue with backoff), and make drain() re-send WhatsApp deliveries via the delivery's OWN tenant/number rather than the default pool.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "WhatsApp TEMPLATE send failures now route through _on_failure (classify/queue/backoff) like email/SMS instead of recording 'failed' and being destroyed; drain() re-sends queued WhatsApp deliveries via a new _wa_resend from the stored payload. A per-branch whatsapp_override send stays 'failed' (a queued retry would send from the wrong number). Pre-send validation failures remain permanent. Regression tests: outage→queued→drain→sent, and override-not-queued."
     },
     {
       "id": "notification-002",
@@ -26,7 +34,10 @@
       "line": 177,
       "scenario": "A caller sends with an idempotency_key on an email/SMS whose template is missing or whose render throws. These two branches return _record(...) directly instead of _finish(idempotency_key, ...). The reservation placed by _dedupe_reserve() (result=None) is therefore never released. A legitimate retry within NOTIFY_DEDUPE_TTL_SECONDS (default 24h) — even after the template is fixed — hits idempotent_get() (returns None because result is None), then reserve_idempotent() (cas fails, slot exists, not expired), and is handed a bogus {\"duplicate\": true, \"in_progress\": true} for up to 24h, never sending.",
       "evidence": "if tmpl is None:\n            return await self._record(recipient, channel, template_key, \"failed\", tenant=tenant or \"\", error=\"template not found\")",
-      "recommendation": "Wrap both early-return failure branches in _finish(idempotency_key, tenant or \"\", await self._record(...)) so a non-remembered outcome releases the reservation, matching the unknown-channel branch above them."
+      "recommendation": "Wrap both early-return failure branches in _finish(idempotency_key, tenant or \"\", await self._record(...)) so a non-remembered outcome releases the reservation, matching the unknown-channel branch above them.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "the missing-template and render-failure early returns in notify() now go through _finish() so the idempotency reservation is released on a non-remembered failure, matching the other branches — a legitimate retry is no longer deduped as in_progress until the TTL."
     },
     {
       "id": "notification-003",
@@ -37,7 +48,10 @@
       "line": 174,
       "scenario": "POST /internal/whatsapp/pay/refund moves money via Meta but writes NO audit record (unlike every other privileged action in the service, e.g. whatsapp.test_send, secret_set) and accepts no idempotency_key. A redelivered/duplicated internal call, or an investigation into 'who refunded this order', has no witness. The only defense is the lookup 'captured' state check, which is a two-call TOCTOU (see notification-004), not a durable audit.",
       "evidence": "@router.post(\"/refund\", dependencies=[Depends(require_internal_token)])\nasync def refund_payment(request: Request, body: _RefundIn, ...) -> dict:",
-      "recommendation": "Add a write-ahead auditor.record('whatsapp.payment_refunded', ...) naming reference_id + amount (never card data) before the refund call, and thread an idempotency_key through the refund the same way sends dedupe."
+      "recommendation": "Add a write-ahead auditor.record('whatsapp.payment_refunded', ...) naming reference_id + amount (never card data) before the refund call, and thread an idempotency_key through the refund the same way sends dedupe.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "native-pay refund now write-ahead-audits whatsapp.payment_refunded (new critical auditable action naming reference_id+amount, never card data) BEFORE the money movement; idempotency is enforced by state (a completed refund leaves the payment not 'captured', so a replay is refused at PAYMENT_NOT_REFUNDABLE)."
     },
     {
       "id": "notification-004",
@@ -48,7 +62,10 @@
       "line": 190,
       "scenario": "adapter.get_payment_status() and adapter.refund() (MetaWhatsAppPayments) call get_json/post_json, which are synchronous urllib requests. Unlike every other Graph call in the service (register, media upload, status, messaging-limit all use asyncio.to_thread), these run inline on the single-worker event loop. One slow Meta payment call stalls EVERY other request in the pod, and refund makes two such calls (lookup + refund) back-to-back.",
       "evidence": "lk = adapter.get_payment_status(configuration=body.payment_configuration, reference_id=body.reference_id)",
-      "recommendation": "Wrap get_payment_status() and refund() in await asyncio.to_thread(...) exactly as the register/status/media routes do."
+      "recommendation": "Wrap get_payment_status() and refund() in await asyncio.to_thread(...) exactly as the register/status/media routes do.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "get_payment_status (both routes) and refund now run via asyncio.to_thread, matching every other Graph call, so a slow Meta response no longer freezes the event loop."
     },
     {
       "id": "notification-005",
@@ -59,7 +76,10 @@
       "line": 21,
       "scenario": "is_unmapped_marketing() (the guard that refuses an unmapped marketing template at write and boot) is only applied to the internal email/SMS Template upsert route. A WhatsApp template registered with category MARKETING (whatsapp_templates.CATEGORIES includes MARKETING) is never cross-checked against NOTIFY_CONSENT_PURPOSES. In notify(), consent is gated only when the template_key or event is present in that map, so a marketing WhatsApp campaign whose template name a developer forgot to map goes out under only the opt-out check (contract basis), with no lawful-basis check and indistinguishable in logs from a transactional send.",
       "evidence": "return category == TEMPLATE_MARKETING and key not in (purposes or {})",
-      "recommendation": "Enforce the same unmapped-marketing refusal on WhatsApp template register/submit (registry.register when category==MARKETING and name not in NOTIFY_CONSENT_PURPOSES), and/or fail closed in _deliver_whatsapp when the resolved template category is MARKETING but no purpose maps."
+      "recommendation": "Enforce the same unmapped-marketing refusal on WhatsApp template register/submit (registry.register when category==MARKETING and name not in NOTIFY_CONSENT_PURPOSES), and/or fail closed in _deliver_whatsapp when the resolved template category is MARKETING but no purpose maps.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "WhatsAppTemplateRegistry.register now refuses a MARKETING template whose name is not in NOTIFY_CONSENT_PURPOSES (both the internal and v1 register routes pass the map), so a marketing WA template can no longer send with no consent check. Regression tests added."
     },
     {
       "id": "notification-006",
@@ -70,7 +90,10 @@
       "line": 474,
       "scenario": "GET /internal/whatsapp/inbound, /internal/notifications/receipts, and the coexistence echoes/history/contacts reads call changed_since()/*_since() with only a constant `kind` filter — no tenant scope. Any holder of X-Internal-Token (a single shared secret by default) can page the ENTIRE fleet's inbound customer message bodies, sender numbers, delivery recipients and template keys across all tenants. A single misconfigured or compromised peer service exfiltrates every shop's conversation content, defeating per-tenant isolation on the /internal tier.",
       "evidence": "rows, cursor = await store.changed_since(after=after or None, limit=max(1, min(1000, limit)))",
-      "recommendation": "Accept a required tenant parameter on these catch-up reads and push it into the find() where-clause, OR gate them behind a distinct, narrowly-allow-listed caller in INTERNAL_ROUTE_POLICY_JSON so only the reconciliation consumer (not every peer) can read cross-tenant."
+      "recommendation": "Accept a required tenant parameter on these catch-up reads and push it into the find() where-clause, OR gate them behind a distinct, narrowly-allow-listed caller in INTERNAL_ROUTE_POLICY_JSON so only the reconciliation consumer (not every peer) can read cross-tenant.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "the catch-up reads (receipts, inbound, coexistence echoes/history/contacts) accept an optional tenant query param that scopes the store find() where-clause, so a per-tenant consumer cannot page the whole fleet's inbound customer messages through the shared internal token; fleet-wide default preserved for the reconciliation consumer, which the per-route internal caller policy already gates."
     },
     {
       "id": "notification-007",

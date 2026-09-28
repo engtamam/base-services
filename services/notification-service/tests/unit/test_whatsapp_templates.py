@@ -305,3 +305,26 @@ def test_list_can_filter_by_status():
     approved, _ = run(reg.list("acme", status=APPROVED))
     pending, _ = run(reg.list("acme", status=PENDING))
     assert len(approved) == 1 and len(pending) == 0
+
+
+# ── notification-005: a MARKETING WhatsApp template must be mapped to a consent purpose ─────────────
+def test_unmapped_marketing_whatsapp_template_is_refused():
+    reg = _reg()
+    with pytest.raises(TemplateError):
+        run(reg.register(tenant="acme", name="promo_sale", language="en", category="MARKETING",
+                         body="Sale!", consent_purposes={}))          # unmapped → refused
+
+
+def test_mapped_marketing_whatsapp_template_is_allowed():
+    reg = _reg()
+    t = run(reg.register(tenant="acme", name="promo_sale", language="en", category="MARKETING",
+                         body="Sale!", consent_purposes={"promo_sale": "marketing"}))
+    assert t.category == "MARKETING"
+
+
+def test_marketing_check_is_skipped_when_no_consent_map_is_wired():
+    # consent_purposes=None (dev/raw mode) keeps prior behaviour — no enforcement.
+    reg = _reg()
+    t = run(reg.register(tenant="acme", name="promo_sale", language="en", category="MARKETING",
+                         body="Sale!"))
+    assert t.category == "MARKETING"

@@ -282,12 +282,22 @@ class WhatsAppTemplateRegistry:
                        carousel: dict[str, Any] | None = None,
                        footer: str = "",
                        header: dict[str, Any] | None = None,
-                       button: dict[str, Any] | None = None) -> WhatsAppTemplate:
+                       button: dict[str, Any] | None = None,
+                       consent_purposes: dict[str, str] | None = None) -> WhatsAppTemplate:
         if not tenant or not name or not language:
             raise TemplateError("tenant, name and language are required")
         cat = (category or "").strip().upper()
         if cat not in CATEGORIES:
             raise TemplateError(f"category must be one of {CATEGORIES}, got {category!r}")
+        # notification-005: a MARKETING WhatsApp template must be mapped to a consent purpose, exactly
+        # as marketing email/SMS templates are. Without this a marketing WA template registered by name
+        # sends with NO consent check (the send-path consent gate only fires for a mapped key), a
+        # compliance hole. Refuse an unmapped one at write time. consent_purposes=None means the caller
+        # did not wire the map (dev/raw mode) — unchanged behaviour.
+        if cat == "MARKETING" and consent_purposes is not None and name not in consent_purposes:
+            raise TemplateError(
+                f"marketing template {name!r} is not mapped to a consent purpose in "
+                f"NOTIFY_CONSENT_PURPOSES; a marketing send must be consent-gated")
         vs = [str(v) for v in (variables or [])]
         exs = [str(e) for e in (examples or [])]
         fb = dict(flow_button or {})

@@ -9,6 +9,8 @@ body alone).
 """
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse
@@ -154,8 +156,10 @@ async def lookup_payment(request: Request, body: _LookupIn,
     if denied is not None:
         return denied
     adapter = await _payments_adapter(request, settings, body.tenant or "")
-    res = adapter.get_payment_status(configuration=body.payment_configuration,
-                                     reference_id=body.reference_id)
+    # OFFLOAD the blocking Graph lookup off the event loop (notification-004).
+    res = await asyncio.to_thread(adapter.get_payment_status,
+                                  configuration=body.payment_configuration,
+                                  reference_id=body.reference_id)
     return {"ok": res.ok, "reference_id": res.reference_id, "status": res.status,
             "amount_minor": res.amount_minor, "offset": res.offset, "currency": res.currency,
             "transaction_id": res.transaction_id, "verified": res.verified, "error": res.error}
@@ -187,8 +191,9 @@ async def refund_payment(request: Request, body: _RefundIn,
     # or double-refund a redelivered request. We verify the payment is actually captured, the currency
     # matches, and the amount does not exceed what was captured. A refunded/partially-refunded payment
     # is no longer "captured", so a replay of a completed refund is refused here — once-only by state.
-    lk = adapter.get_payment_status(configuration=body.payment_configuration,
-                                    reference_id=body.reference_id)
+    lk = await asyncio.to_thread(adapter.get_payment_status,          # off the event loop (notification-004)
+                                 configuration=body.payment_configuration,
+                                 reference_id=body.reference_id)
     if not lk.ok:
         return JSONResponse(
             {"ok": False, "reason": f"cannot verify payment before refund: {lk.error}",
@@ -214,7 +219,21 @@ async def refund_payment(request: Request, body: _RefundIn,
             {"ok": False, "reason": "refund amount exceeds the captured amount",
              "code": "REFUND_EXCEEDS_CAPTURED", "captured_minor": int(lk.amount_minor),
              "captured_offset": int(lk.offset)}, status_code=422)
-    res = adapter.refund(reference_id=body.reference_id, configuration=body.payment_configuration,
-                         amount_minor=body.amount_minor, currency=body.currency.upper(),
-                         offset=body.offset, speed=body.speed)
+    # WRITE-AHEAD audit the money movement BEFORE releasing it (notification-003): a refund is a
+    # privileged financial action and must have a witness naming reference_id + amount (never card
+    # data), like every other privileged action here. Idempotency is enforced by STATE above — a
+    # completed refund leaves the payment no longer 'captured', so a redelivered call is refused at the
+    # PAYMENT_NOT_REFUNDABLE guard rather than moving money twice.
+    auditor = getattr(request.app.state, "auditor", None)
+    if auditor is not None:
+        await auditor.record(
+            "whatsapp.payment_refunded", actor="service:internal", tenant=body.tenant or "",
+            resource=f"payment:{body.reference_id}",
+            ip=request.client.host if request.client else "",
+            metadata={"amount_minor": int(body.amount_minor), "currency": body.currency.upper(),
+                      "configuration": body.payment_configuration})
+    res = await asyncio.to_thread(                     # off the event loop (notification-004)
+        adapter.refund, reference_id=body.reference_id, configuration=body.payment_configuration,
+        amount_minor=body.amount_minor, currency=body.currency.upper(),
+        offset=body.offset, speed=body.speed)
     return {"ok": res.ok, "refund_id": res.refund_id, "status": res.status, "error": res.error}

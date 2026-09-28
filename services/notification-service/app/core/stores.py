@@ -186,15 +186,22 @@ class DeliveryStore:
             "template_key": d.template_key})
         return d.id
 
-    async def changed_since(self, *, after: str | None, limit: int) -> tuple[list[dict], str | None]:
+    async def changed_since(self, *, after: str | None, limit: int,
+                            tenant: str | None = None) -> tuple[list[dict], str | None]:
         """The ordered catch-up read: receipt events forward from a cursor, oldest first, bounded.
 
         The bus is at-most-once — a pod that restarts through a receipt hears it never — so a consumer
         reconciles by reading this log forward and persisting the returned cursor as its watermark. The
         log is append-only and ordered by receipt_ts, so cursor pagination reads every receipt exactly
         once and never misses one behind the watermark. Filtered on a constant kind (not an empty
-        `where`), so it stays an indexed, ordered read and never a scan (safety:scans)."""
-        return await self._store.find(_RECEIPTS, {"kind": _RECEIPT_KIND}, limit=limit, after=after,
+        `where`), so it stays an indexed, ordered read and never a scan (safety:scans).
+
+        `tenant` (notification-006): when given, scopes the read to one tenant's receipts, so a
+        per-tenant consumer cannot page the whole fleet's data through the shared internal token."""
+        where = {"kind": _RECEIPT_KIND}
+        if tenant:
+            where["tenant"] = tenant
+        return await self._store.find(_RECEIPTS, where, limit=limit, after=after,
                                       sort=("receipt_ts", "asc"))
 
     # ── idempotency (at-least-once callers must not double-send) ───────────────
@@ -280,10 +287,17 @@ class InboundStore:
             "expires_at": self._expires_at()})
         return True
 
-    async def changed_since(self, *, after: str | None, limit: int) -> tuple[list[dict], str | None]:
+    async def changed_since(self, *, after: str | None, limit: int,
+                            tenant: str | None = None) -> tuple[list[dict], str | None]:
         """Inbound messages forward from a cursor, oldest first, bounded — the catch-up read. Filtered
-        on a constant kind (never an empty where), so it stays an indexed, ordered read, not a scan."""
-        return await self._store.find(_INBOUND, {"kind": _INBOUND_KIND}, limit=limit, after=after,
+        on a constant kind (never an empty where), so it stays an indexed, ordered read, not a scan.
+
+        `tenant` (notification-006): when given, scopes to one tenant's inbound customer messages so a
+        per-tenant consumer cannot read the whole fleet's conversations through the shared token."""
+        where = {"kind": _INBOUND_KIND}
+        if tenant:
+            where["tenant"] = tenant
+        return await self._store.find(_INBOUND, where, limit=limit, after=after,
                                       sort=("timestamp", "asc"))
 
     async def purge_expired(self, *, now: float | None = None, limit: int = 1000) -> int:
@@ -463,16 +477,30 @@ class CoexistenceStore:
             "waba_id": waba_id, "contact": contact, "expires_at": self._expires_at()})
         return True
 
-    async def echoes_since(self, *, after: str | None, limit: int) -> tuple[list[dict], str | None]:
-        return await self._store.find(_ECHOES, {"kind": _ECHO_KIND}, limit=limit, after=after,
+    # `tenant` (notification-006): optional per-tenant scope so a consumer cannot page the whole
+    # fleet's coexistence conversations through the shared internal token.
+    async def echoes_since(self, *, after: str | None, limit: int,
+                           tenant: str | None = None) -> tuple[list[dict], str | None]:
+        where = {"kind": _ECHO_KIND}
+        if tenant:
+            where["tenant"] = tenant
+        return await self._store.find(_ECHOES, where, limit=limit, after=after,
                                       sort=("timestamp", "asc"))
 
-    async def history_since(self, *, after: str | None, limit: int) -> tuple[list[dict], str | None]:
-        return await self._store.find(_HISTORY, {"kind": _HISTORY_KIND}, limit=limit, after=after,
+    async def history_since(self, *, after: str | None, limit: int,
+                            tenant: str | None = None) -> tuple[list[dict], str | None]:
+        where = {"kind": _HISTORY_KIND}
+        if tenant:
+            where["tenant"] = tenant
+        return await self._store.find(_HISTORY, where, limit=limit, after=after,
                                       sort=("timestamp", "asc"))
 
-    async def contacts_since(self, *, after: str | None, limit: int) -> tuple[list[dict], str | None]:
-        return await self._store.find(_CONTACTS, {"kind": _CONTACT_KIND}, limit=limit, after=after,
+    async def contacts_since(self, *, after: str | None, limit: int,
+                             tenant: str | None = None) -> tuple[list[dict], str | None]:
+        where = {"kind": _CONTACT_KIND}
+        if tenant:
+            where["tenant"] = tenant
+        return await self._store.find(_CONTACTS, where, limit=limit, after=after,
                                       sort=("timestamp", "asc"))
 
     async def purge_expired(self, *, now: float | None = None, limit: int = 1000) -> int:

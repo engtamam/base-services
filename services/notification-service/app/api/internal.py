@@ -458,7 +458,8 @@ async def whatsapp_platform_status(request: Request) -> dict:
 
 
 @router.get("/notifications/receipts", dependencies=[Depends(require_internal_token)])
-async def delivery_receipts(request: Request, after: str = "", limit: int = 200) -> dict:
+async def delivery_receipts(request: Request, after: str = "", limit: int = 200,
+                            tenant: str = "") -> dict:
     """The catch-up read: delivery/read receipts forward from a cursor, oldest first, bounded.
 
     The status bus is at-most-once — a pod that restarts through a receipt hears it never — so this is
@@ -467,12 +468,14 @@ async def delivery_receipts(request: Request, after: str = "", limit: int = 200)
     to with no guesswork. Ordered by receipt_ts; a receipt that only lived on the bus is still here."""
     from app.core.stores import DeliveryStore
     store = DeliveryStore(request.app.state.container.datastore)
-    rows, cursor = await store.changed_since(after=after or None, limit=max(1, min(1000, limit)))
+    rows, cursor = await store.changed_since(after=after or None, limit=max(1, min(1000, limit)),
+                                             tenant=tenant or None)
     return {"receipts": rows, "cursor": cursor}
 
 
 @router.get("/whatsapp/inbound", dependencies=[Depends(require_internal_token)])
-async def inbound_messages(request: Request, after: str = "", limit: int = 200) -> dict:
+async def inbound_messages(request: Request, after: str = "", limit: int = 200,
+                           tenant: str = "") -> dict:
     """The catch-up read for INBOUND WhatsApp messages — the same shape as /notifications/receipts.
 
     Inbound `whatsapp.message` events go on the bus best-effort (at-most-once), so a pod that restarts
@@ -483,7 +486,8 @@ async def inbound_messages(request: Request, after: str = "", limit: int = 200) 
     is still here. Idempotent by wamid, so a re-delivered webhook is one row, never a duplicate."""
     from app.core.stores import InboundStore
     store = InboundStore(request.app.state.container.datastore)
-    rows, cursor = await store.changed_since(after=after or None, limit=max(1, min(1000, limit)))
+    rows, cursor = await store.changed_since(after=after or None, limit=max(1, min(1000, limit)),
+                                             tenant=tenant or None)
     return {"messages": rows, "cursor": cursor}
 
 
@@ -514,7 +518,8 @@ async def whatsapp_config(request: Request) -> dict:
 
 
 @router.get("/whatsapp/coexistence/echoes", dependencies=[Depends(require_internal_token)])
-async def coexistence_echoes(request: Request, after: str = "", limit: int = 200) -> dict:
+async def coexistence_echoes(request: Request, after: str = "", limit: int = 200,
+                             tenant: str = "") -> dict:
     """Catch-up read for COEXISTENCE message echoes — messages the shop owner sent from the phone's own
     WhatsApp Business app on the connected number. Same shape/contract as /whatsapp/inbound: read
     forward from a cursor, persist it as the watermark, repeat. Without these the conversation an
@@ -522,29 +527,34 @@ async def coexistence_echoes(request: Request, after: str = "", limit: int = 200
     wamid; ordered by timestamp; a message that only lived on the bus is still here."""
     from app.core.stores import CoexistenceStore
     store = CoexistenceStore(request.app.state.container.datastore)
-    rows, cursor = await store.echoes_since(after=after or None, limit=max(1, min(1000, limit)))
+    rows, cursor = await store.echoes_since(after=after or None, limit=max(1, min(1000, limit)),
+                                           tenant=tenant or None)
     return {"messages": rows, "cursor": cursor}
 
 
 @router.get("/whatsapp/coexistence/history", dependencies=[Depends(require_internal_token)])
-async def coexistence_history(request: Request, after: str = "", limit: int = 200) -> dict:
+async def coexistence_history(request: Request, after: str = "", limit: int = 200,
+                              tenant: str = "") -> dict:
     """Catch-up read for the COEXISTENCE history import — up to 180 days of past messages the customer
     chose to share, once. Same shape as the others; each row carries the thread's contact + the raw Meta
     message. Idempotent by wamid; ordered by timestamp — page through with the cursor to import it all."""
     from app.core.stores import CoexistenceStore
     store = CoexistenceStore(request.app.state.container.datastore)
-    rows, cursor = await store.history_since(after=after or None, limit=max(1, min(1000, limit)))
+    rows, cursor = await store.history_since(after=after or None, limit=max(1, min(1000, limit)),
+                                            tenant=tenant or None)
     return {"messages": rows, "cursor": cursor}
 
 
 @router.get("/whatsapp/coexistence/contacts", dependencies=[Depends(require_internal_token)])
-async def coexistence_contacts(request: Request, after: str = "", limit: int = 200) -> dict:
+async def coexistence_contacts(request: Request, after: str = "", limit: int = 200,
+                               tenant: str = "") -> dict:
     """Catch-up read for the COEXISTENCE contact sync — the business's contacts at onboarding and on
     every add/remove. One row per contact number per tenant (latest state wins); each carries the
     action (add|remove) and the contact fields. Ordered by timestamp; page with the cursor."""
     from app.core.stores import CoexistenceStore
     store = CoexistenceStore(request.app.state.container.datastore)
-    rows, cursor = await store.contacts_since(after=after or None, limit=max(1, min(1000, limit)))
+    rows, cursor = await store.contacts_since(after=after or None, limit=max(1, min(1000, limit)),
+                                             tenant=tenant or None)
     return {"contacts": rows, "cursor": cursor}
 
 
@@ -772,7 +782,8 @@ async def register_whatsapp_template_internal(request: Request, body: WaTemplate
                                category=body.category, body=body.body, variables=body.variables,
                                examples=body.examples, flow_button=body.flow_button,
                                carousel=body.carousel, footer=body.footer,
-                               header=body.header, button=body.button)
+                               header=body.header, button=body.button,
+                               consent_purposes=get_settings().notify_consent_purposes)
     except TemplateError as exc:
         raise HTTPException(422, str(exc)) from exc
     return t.public()

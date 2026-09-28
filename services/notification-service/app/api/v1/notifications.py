@@ -187,7 +187,8 @@ async def register_wa_template(request: Request, body: WaTemplateIn,
             tenant=principal.tenant or "", name=body.name, language=body.language,
             category=body.category, body=body.body, variables=body.variables,
             examples=body.examples, flow_button=body.flow_button, carousel=body.carousel,
-            footer=body.footer, header=body.header, button=body.button)
+            footer=body.footer, header=body.header, button=body.button,
+            consent_purposes=get_settings().notify_consent_purposes)
     except TemplateError as exc:
         raise HTTPException(422, str(exc))
     return t.public()

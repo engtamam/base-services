@@ -142,6 +142,16 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "resource": "whatsapp",
     },
     {
+        # Native in-WhatsApp payment REFUND — a money movement. Written ahead of the Meta refund call
+        # so a redelivered/duplicated internal call, or a "who refunded this order" investigation, has
+        # a witness. Names reference_id + amount only, never card data.
+        "action": "whatsapp.payment_refunded",
+        "source": "internal",
+        "critical": True,
+        "why": "a refund releases money; an unattributable one is indistinguishable from theft, and "
+               "an investigation needs to know who refunded which order and for how much",
+    },
+    {
         "action": "preferences.updated",
         "source": "user",
         "critical": True,

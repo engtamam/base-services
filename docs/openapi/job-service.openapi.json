@@ -97,6 +97,18 @@
             ],
             "title": "Queue"
           },
+          "tenant": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant"
+          },
           "worker": {
             "maxLength": 128,
             "minLength": 1,
@@ -1414,7 +1426,7 @@
     },
     "/internal/jobs/claim": {
       "post": {
-        "description": "A worker leases up to `batch` due jobs (atomic; each carries a lease_token).",
+        "description": "A worker leases up to `batch` due jobs (atomic; each carries a lease_token). A worker may pass\n`tenant` to restrict its leases to that tenant when a queue is shared across tenants (job-004).",
         "operationId": "claim_internal_jobs_claim_post",
         "parameters": [
           {
@@ -1492,7 +1504,7 @@
     },
     "/internal/jobs/enqueue": {
       "post": {
-        "description": "Any service enqueues background work. Idempotent on idempotency_key / unique_key.",
+        "description": "Any service enqueues background work. Idempotent on idempotency_key / unique_key.\n\nTRUST BOUNDARY (job-004): `tenant` is caller-supplied, not derived from the internal caller\nassertion, so a holder of the internal token can stamp a job with any tenant. This is acceptable\nonly because the internal tier is a trusted service mesh gated by the internal token + per-route\npolicy. Cross-tenant job DELIVERY is defended on the claim side: a worker passes its own tenant to\n/jobs/claim to lease only its tenant's jobs, so a shared queue name cannot leak work between\ntenants even if a peer mis-stamps one. Prefer per-tenant queues where isolation must be absolute.",
         "operationId": "enqueue_internal_jobs_enqueue_post",
         "parameters": [
           {

@@ -175,15 +175,20 @@ class NotificationService:
         # 2) template (with locale fallback)
         tmpl = await self._templates.get(template_key, locale or self._default_locale, self._default_locale)
         if tmpl is None:
-            return await self._record(recipient, channel, template_key, "failed",
-                                      tenant=tenant or "", error="template not found")
+            # _finish (not a bare _record) so the idempotency reservation from _dedupe_reserve is
+            # RELEASED on this non-remembered failure (notification-002); otherwise a legitimate retry
+            # of a missing-template/render failure is silently deduped as in_progress until the TTL.
+            return await self._finish(idempotency_key, tenant or "", await self._record(
+                recipient, channel, template_key, "failed",
+                tenant=tenant or "", error="template not found"))
 
         # 3) render (injection-safe)
         try:
             subject, body = self._renderer.render(tmpl.subject, tmpl.body, variables or {})
         except Exception as exc:
-            return await self._record(recipient, channel, template_key, "failed",
-                                      tenant=tenant or "", error=f"render: {type(exc).__name__}")
+            return await self._finish(idempotency_key, tenant or "", await self._record(
+                recipient, channel, template_key, "failed",
+                tenant=tenant or "", error=f"render: {type(exc).__name__}"))
 
         # 4) send via the channel
         ok, provider, error = await self._deliver(channel, recipient, subject, body, user_id)
@@ -237,20 +242,77 @@ class NotificationService:
                 return await rec(recipient, "whatsapp", template_key, "failed",
                                           error=f"missing variables: {','.join(missing)}")
             ordered = [str(variables[v]) for v in tmpl.variables]
+        # A transient send failure must be QUEUED + retried like email/SMS, not recorded 'failed' and
+        # destroyed (notification-001). We can only retry on the DEFAULT provider chain, so a per-branch
+        # whatsapp_override send that fails stays 'failed' (a queued retry would send from the wrong
+        # number). The retry payload carries everything drain() needs to re-send from scratch.
+        can_retry = (whatsapp_override is None and self._retry is not None and self._mode != INLINE)
+        wa_payload = {"channel": "whatsapp", "recipient": recipient, "tenant": tenant,
+                      "template_key": template_key, "language": language, "variables": variables,
+                      "biz_opaque": biz_opaque, "flow_token": flow_token,
+                      "flow_action_data": flow_action_data, "header_media_id": header_media_id,
+                      "button_payload": button_payload, "url_button_param": url_button_param}
+
+        async def _fail(error: str, provider: str = ""):
+            if can_retry:
+                return await self._on_failure(
+                    recipient=recipient, channel="whatsapp", template_key=template_key,
+                    provider=provider, error=error, attempt=1, payload=wa_payload, tenant=tenant)
+            return await rec(recipient, "whatsapp", template_key, "failed",
+                             provider=provider, error=error)
+
         try:
             ok, provider, message_id = await asyncio.to_thread(
                 wa.send, recipient, template_key, language, ordered, biz_opaque,
                 flow_token, flow_action_data, header_media_id, button_payload, url_button_param)
         except Exception as exc:  # noqa: BLE001
-            return await rec(recipient, "whatsapp", template_key, "failed",
-                                      error=f"{type(exc).__name__}: {exc}")
+            return await _fail(f"{type(exc).__name__}: {exc}")
         if ok:
             await self._release_thread_control(wa, recipient, tenant)
             # Capture the wamid: it is the ONLY key a later receipt can be matched back to this send by.
             return await rec(recipient, "whatsapp", template_key, SENT, provider=provider,
                                       attempts=1, provider_message_id=message_id)
-        return await rec(recipient, "whatsapp", template_key, "failed", provider=provider,
-                                  error="send failed")
+        return await _fail("send failed", provider=provider)
+
+    async def _wa_resend(self, p: dict) -> tuple[bool, str, str, str]:
+        """Re-send a queued WhatsApp TEMPLATE delivery from its stored payload (notification-001).
+
+        Returns (ok, provider, message_id, error). Only the DEFAULT provider chain is used — a
+        per-branch override is never queued (see _deliver_whatsapp), so retry never sends from the
+        wrong number. A vanished/unapproved template or missing variable is a PERMANENT error the retry
+        classifier will not re-queue.
+        """
+        wa = self._whatsapp
+        if wa is None:
+            return False, "", "", "whatsapp channel not configured"
+        tenant = p.get("tenant", "")
+        template_key = p.get("template_key", "")
+        language = p.get("language") or self._default_locale
+        variables = p.get("variables") or {}
+        if self._wa_templates is None:
+            ordered = [str(v) for _, v in sorted(variables.items())]
+        else:
+            tmpl = await self._wa_templates.get(tenant, template_key, language)
+            if tmpl is None:
+                return False, "", "", "whatsapp template not found"
+            if tmpl.status != "approved":
+                return False, "", "", f"whatsapp template not approved: {tmpl.status}"
+            missing = [v for v in tmpl.variables if v not in variables]
+            if missing:
+                return False, "", "", f"missing variables: {','.join(missing)}"
+            ordered = [str(variables[v]) for v in tmpl.variables]
+        try:
+            ok, provider, mid = await asyncio.to_thread(
+                wa.send, p.get("recipient", ""), template_key, language, ordered,
+                p.get("biz_opaque", ""), p.get("flow_token", ""), p.get("flow_action_data"),
+                p.get("header_media_id", ""), p.get("button_payload", ""),
+                p.get("url_button_param", ""))
+        except Exception as exc:  # noqa: BLE001
+            return False, "", "", f"{type(exc).__name__}: {exc}"
+        if ok:
+            await self._release_thread_control(wa, p.get("recipient", ""), tenant)
+            return True, provider, mid, ""
+        return False, provider, "", "send failed"
 
     async def send_interactive(self, *, recipient: str, tenant: str, interactive: dict, kind: str,
                                biz_opaque: str = "", idempotency_key: str | None = None,
@@ -521,6 +583,29 @@ class NotificationService:
             out["drained"] += 1
             attempt = d.attempts + 1
             p = d.payload
+
+            # WhatsApp deliveries re-send through the WhatsApp path, not the email/SMS template render
+            # (notification-001). Without this branch drain would look up an internal render template
+            # that does not exist for a WA send and immediately mark it FAILED.
+            if d.channel == "whatsapp":
+                ok, provider, mid, error = await self._wa_resend(p)
+                d.attempts = attempt
+                d.provider = provider or d.provider
+                if ok:
+                    d.status, d.error, d.next_attempt_ts, d.payload = SENT, "", 0.0, {}
+                    d.provider_message_id = mid or d.provider_message_id
+                    out["sent"] += 1
+                else:
+                    d.status = self._retry.next_state(attempt, error)
+                    d.error = error
+                    if d.status == QUEUED:
+                        d.next_attempt_ts = now + self._retry.backoff_ms(attempt) / 1000.0
+                        out["requeued"] += 1
+                    else:
+                        d.next_attempt_ts, d.payload = 0.0, {}
+                        out["dead" if d.status == DEAD_LETTER else "failed"] += 1
+                await self._deliveries.save(d)
+                continue
 
             tmpl = await self._templates.get(
                 d.template_key, p.get("locale") or self._default_locale, self._default_locale)

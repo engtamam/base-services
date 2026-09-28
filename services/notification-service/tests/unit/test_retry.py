@@ -223,3 +223,53 @@ def test_a_successful_send_is_not_queued():
     res = notify(svc)
     assert res["status"] == SENT
     assert "retry_at" not in res
+
+
+# ── notification-001: WhatsApp sends inherit the same retry/queue/drain machinery ──────────────────
+class WaProvider:
+    """A WhatsApp provider that can be down then recover; send() matches the wa.send signature."""
+    def __init__(self, ok=True, error=None):
+        self.ok, self.error, self.calls = ok, error, 0
+
+    def send(self, recipient, name, language, ordered, biz_opaque, flow_token, flow_action_data,
+             header_media_id, button_payload, url_button_param):
+        self.calls += 1
+        if self.error:
+            raise self.error
+        return (self.ok, "meta", "wamid-1" if self.ok else "")
+
+
+def _wa_svc(wa, *, clock=None, retry=None):
+    st = MemoryDataStore()
+    clock = clock or Clock()
+    svc = NotificationService(
+        templates=TemplateStore(st), prefs=PreferenceStore(st), deliveries=DeliveryStore(st),
+        inapp=InAppStore(st, page_size=20, scan_limit=100), email=Provider(), sms=Provider(),
+        renderer=Renderer(), email_from="no-reply@x", default_locale="en",
+        whatsapp=wa, wa_templates=None,          # raw mode: forward name+values as-is
+        delivery_mode=QUEUED_MODE, retry=retry or policy(), clock=clock)
+    return svc, DeliveryStore(st), clock
+
+
+def test_whatsapp_outage_queues_then_drain_resends_it():
+    wa = WaProvider(ok=False)                     # provider down
+    svc, deliveries, clock = _wa_svc(wa)
+    res = run(svc.notify(recipient="+9665", channel="whatsapp", template_key="welcome",
+                         variables={"1": "Sara"}, tenant="t1"))
+    assert res["status"] == QUEUED, "a WhatsApp send lost to an outage is exactly notification-001"
+
+    wa.ok = True                                  # provider recovers
+    clock.t += 10_000                             # past the backoff
+    out = run(svc.drain())
+    assert out["sent"] == 1                        # drain re-sent the WhatsApp delivery
+    assert wa.calls == 2                           # first (failed) + drain (succeeded)
+
+
+def test_whatsapp_override_send_is_not_queued():
+    # A per-branch override cannot be safely retried on the default number, so it stays failed.
+    wa_default = WaProvider(ok=True)
+    override = WaProvider(ok=False)
+    svc, deliveries, clock = _wa_svc(wa_default)
+    res = run(svc.notify(recipient="+9665", channel="whatsapp", template_key="welcome",
+                         variables={"1": "Sara"}, tenant="t1", whatsapp_override=override))
+    assert res["status"] == FAILED                # not queued — retry would send from the wrong number

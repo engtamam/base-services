@@ -3440,6 +3440,16 @@
             }
           },
           {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
             "in": "header",
             "name": "X-Internal-Token",
             "required": false,
@@ -4394,6 +4404,16 @@
             }
           },
           {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
             "in": "header",
             "name": "X-Internal-Token",
             "required": false,
@@ -4482,6 +4502,16 @@
             }
           },
           {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
             "in": "header",
             "name": "X-Internal-Token",
             "required": false,
@@ -4567,6 +4597,16 @@
               "default": 200,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Tenant",
+              "type": "string"
             }
           },
           {
@@ -5510,6 +5550,16 @@
               "default": 200,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Tenant",
+              "type": "string"
             }
           },
           {
