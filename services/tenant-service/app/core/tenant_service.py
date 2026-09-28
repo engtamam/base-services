@@ -113,6 +113,10 @@ class TenantService:
             cur = await self._repo.get(tenant_id)
             if cur is None:
                 raise TenantNotFound(tenant_id)
+            if int(cur.version) == 0:
+                cur = await self._repo.heal_version(tenant_id)
+                if cur is None:
+                    raise TenantNotFound(tenant_id)
             expected = int(cur.version)
             mutate(cur)
             if await self._repo.cas_update(cur, expected):

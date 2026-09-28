@@ -74,6 +74,26 @@ class TenantRepository:
         await self._store.put(_TENANTS, tenant.id, tenant.to_dict())
         return tenant
 
+    async def heal_version(self, tenant_id: str) -> Tenant | None:
+        """Repair a legacy row stuck at version 0 so its version-pinned cas_update can win.
+
+        cas() reserves expected_version=0 for insert-if-absent (both adapters, by contract), so a row
+        that carries version 0 — one written by the pre-fix put() create path, before create() stamped
+        version=1 — can never be CAS-updated: every _apply reads version 0, cas(id, 0, ...) is
+        insert-if-absent against an already-present row -> DO NOTHING -> False, and all retries exhaust
+        as ConcurrentModification. Stamp such a row to version 1 with a CONTENT-PRESERVING put (no
+        mutation), after which the normal version-pinned path works. Idempotent and race-safe: a
+        version-0 row is unreachable by cas, so any concurrent writer is also in this branch writing
+        identical bytes; a row already at version>=1 is returned unchanged."""
+        row = await self._store.get(_TENANTS, tenant_id)
+        if row is None:
+            return None
+        if int(row.get("version") or 0) == 0:
+            row = {**row, "version": 1}
+            # atomic: ok — content-preserving version stamp (0->1) on a row cas structurally cannot reach; a version-0 row is unreachable by cas, so any concurrent healer writes byte-identical content, no update is lost
+            await self._store.put(_TENANTS, tenant_id, row)
+        return Tenant.from_dict(row)
+
     async def cas_update(self, tenant: Tenant, expected_version: int,
                          *, old_domains: list[str] | None = None) -> bool:
         """Version-checked tenant-row write. True if it won, False if another writer changed the row

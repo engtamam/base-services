@@ -155,3 +155,37 @@ def test_tenant_create_version_stamped_and_first_lifecycle_write_succeeds():
     assert int(run(store.get("tenants", t.id)).get("version", 0)) == 1   # cas-created (put would be 0)
     out = run(svc.suspend(t))                                            # first lifecycle write must win
     assert out.status == SUSPENDED
+
+
+# self-heal — a LEGACY row already stored at version 0 (written by the pre-fix put() create path)
+# could never be CAS-updated again: cas reserves version 0 for insert-if-absent, so every write 409'd
+# as ConcurrentModification for that tenant forever. _apply now stamps such a row to version 1 on its
+# next write so it becomes writable, and heals itself with no manual data migration.
+def test_legacy_version_zero_row_is_self_healed_and_becomes_writable():
+    store = MemoryDataStore()
+    svc = _svc(store=store)
+    t = run(svc.provision("nakheel", "Nakheel Laundry"))
+    row = run(store.get("tenants", t.id))
+    row["version"] = 0                                                   # simulate the stuck legacy row
+    run(store.put("tenants", t.id, row))
+    assert int(run(store.get("tenants", t.id)).get("version", 0)) == 0
+
+    out = run(svc.set_branding(t, {"color": "green"}))                  # used to exhaust 8 retries -> 409
+    assert out.branding.get("color") == "green"
+    healed = run(store.get("tenants", t.id))
+    assert int(healed.get("version", 0)) >= 2                            # 0 -> heal to 1 -> write to 2
+
+
+# self-heal is convergent under concurrency: two writes racing on a stuck version-0 row both land.
+def test_self_heal_under_concurrency_loses_no_update():
+    svc = _svc(store=_Interleave())
+    t = run(svc.provision("nakheel2", "Nakheel Two"))
+    row = run(svc._repo._store.get("tenants", t.id))
+    row["version"] = 0
+    run(svc._repo._store.put("tenants", t.id, row))
+
+    async def _go():
+        await asyncio.gather(svc.update_config(t, {"a": 1}), svc.update_config(t, {"b": 2}))
+    run(_go())
+    cfg = run(svc.get(t.id)).config
+    assert cfg.get("a") == 1 and cfg.get("b") == 2
