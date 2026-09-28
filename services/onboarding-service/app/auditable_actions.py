@@ -32,6 +32,17 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "an unattributable force is indistinguishable from an attacker with an operator token",
     },
     {
+        "action": "provisioning.completed",
+        "source": "user",
+        "critical": False,
+        "resource": "subject",
+        "why": "provisioning creates a tenant and its OWNER membership — the bootstrap of every "
+               "privilege in that company. A security review needs to know who was made owner of "
+               "which tenant and when; the failure path was recorded but the success path was not. "
+               "Not critical: a down audit log must not block a customer's onboarding, and the "
+               "provisioning run itself is durably recorded in provisioning_runs",
+    },
+    {
         "action": "provisioning.compensated",
         "source": "system",
         "critical": False,

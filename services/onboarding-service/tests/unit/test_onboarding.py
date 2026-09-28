@@ -482,3 +482,38 @@ def test_resume_does_not_re_run_the_forward_steps():
     tenant.undo_fail = False
     run(svc.resume("acme", "u5"))
     assert tenant.creates == creates_before
+
+
+# ── onboarding-003: grant.issued is audited BEFORE the ledger row (write-ahead) ─────────────────────
+class _FailAuditor:
+    async def record(self, *a, **k):
+        from app.core.audit import AuditUnavailable
+        raise AuditUnavailable("audit log down")
+
+
+class _OkAuditor:
+    def __init__(self):
+        self.calls = []
+
+    async def record(self, action, **k):
+        self.calls.append(action)
+
+
+def test_grant_not_ledgered_when_the_critical_audit_is_down():
+    from app.core.audit import AuditUnavailable
+    ledger, ent = _Ledger(), _Ent()
+    g = GrantService(entitlement=ent, ledger=ledger, identity_lookup=_Ident("clm_abc"),
+                     specs=_SPECS, auditor=_FailAuditor())
+    with pytest.raises(AuditUnavailable):
+        run(g.issue(kind="welcome", once_per="verified_identity", tenant="t1", subject="u1"))
+    # ledger row NOT written — so the retry (once audit recovers) can succeed; the grant is never
+    # left credited-but-unrecorded-and-unauditable.
+    assert ledger.rows == {}
+
+
+def test_grant_audit_then_ledger_on_the_happy_path():
+    ledger, ent, aud = _Ledger(), _Ent(), _OkAuditor()
+    g = GrantService(entitlement=ent, ledger=ledger, identity_lookup=_Ident("clm_abc"),
+                     specs=_SPECS, auditor=aud)
+    out = run(g.issue(kind="welcome", once_per="verified_identity", tenant="t1", subject="u1"))
+    assert out.status == "granted" and aud.calls == ["grant.issued"] and ledger.rows

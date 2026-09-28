@@ -44,6 +44,7 @@ def create_app() -> FastAPI:
     settings.assert_audit_config_ok()
     settings.assert_pii_config_ok()
     settings.assert_cors_config_ok()
+    settings.assert_egress_config_ok()
     # A flow that promises a grant nothing can issue would tell every customer they received
     # something nobody gave them.
     settings.assert_onboarding_config_ok()

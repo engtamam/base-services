@@ -3,7 +3,12 @@
   "date": "2026-09-27",
   "summary": {
     "total": 22,
-    "by_severity": { "CRITICAL": 0, "HIGH": 5, "MEDIUM": 9, "LOW": 8 }
+    "by_severity": {
+      "CRITICAL": 0,
+      "HIGH": 5,
+      "MEDIUM": 9,
+      "LOW": 8
+    }
   },
   "findings": [
     {
@@ -15,7 +20,10 @@
       "line": 73,
       "scenario": "provision() acquires a lock with cas('provisioning_locks', run_key, 0, ...) and only releases it in a finally: delete. If the worker dies between acquire and finally (SIGKILL, OOM-kill, pod eviction, node loss) the lock row survives with no expiry. Every subsequent /provision for that (tenant, subject) then returns {'error': 'provisioning_in_progress'} permanently, so a customer who timed out mid-signup can never complete provisioning and there is no self-heal — only a manual datastore delete recovers it.",
       "evidence": "if not await self._store.cas(\"provisioning_locks\", run_key, 0, {\"id\": run_key, \"at\": self._clock.now()}): return {\"ok\": False, \"error\": \"provisioning_in_progress\", ...}  ...  finally: await self._store.delete(\"provisioning_locks\", run_key)",
-      "recommendation": "Stamp the lock with an acquired-at timestamp (already present as 'at') and treat a lock older than a bounded lease (e.g. ONBOARDING_PROVISION_TIMEOUT_SECONDS * steps + margin) as stale: on cas failure, read the row and if expired, steal it via a version-pinned cas. Add a test that a stale lock is reclaimed."
+      "recommendation": "Stamp the lock with an acquired-at timestamp (already present as 'at') and treat a lock older than a bounded lease (e.g. ONBOARDING_PROVISION_TIMEOUT_SECONDS * steps + margin) as stale: on cas failure, read the row and if expired, steal it via a version-pinned cas. Add a test that a stale lock is reclaimed.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "the provisioning advisory lock is now crash-reclaimable: a lock older than a bounded lease (per-step timeout * steps * 2 + 30s) is treated as a crash orphan and re-acquired, instead of wedging all future /provision for that subject forever. A fresh (live) lock still blocks. Regression tests for both."
     },
     {
       "id": "onboarding-002",
@@ -26,7 +34,10 @@
       "line": 138,
       "scenario": "provision() creates a tenant and an owner membership — the initial-admin/bootstrap step, the single most escalation-relevant action this service performs. On success nothing is recorded: ProvisioningService.provision() only calls the auditor when 'not outcome.ok' (provisioning.compensated), and auditable_actions.py declares no success action. An investigator asking 'who created tenant X and who was seeded as its owner, when' has no record. Compare grant.issued and flow.force_completed, both correctly audited.",
       "evidence": "if not outcome.ok and self._auditor is not None: await self._auditor.record(\"provisioning.compensated\", ...)   # (provisioning.py:95) — no record on the ok path",
-      "recommendation": "Declare a 'provisioning.completed' auditable action (source=user, critical appropriate to bootstrap) and record it on the ok path with tenant, subject_ref, and the list of provisioned kinds/references."
+      "recommendation": "Declare a 'provisioning.completed' auditable action (source=user, critical appropriate to bootstrap) and record it on the ok path with tenant, subject_ref, and the list of provisioned kinds/references.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "successful provisioning now records a new provisioning.completed auditable action (tenant + subject_ref + completed steps) on the ok path — the tenant/owner bootstrap was previously audited only on failure."
     },
     {
       "id": "onboarding-003",
@@ -37,7 +48,10 @@
       "line": 115,
       "scenario": "issue() delivers the grant via entitlement, records it in the ledger, THEN calls auditor.record('grant.issued', ...) which is declared critical:True. With AUDIT_FAIL_CLOSED=true and the audit log briefly down, record() raises AuditUnavailable -> the customer gets a 503 even though the credit already went out and the ledger row is written. On retry, issue() hits the existing ledger row and returns ALREADY at line 92-95, short-circuiting BEFORE the auditor.record call — so grant.issued is never written for a grant that was actually delivered. This is exactly the unattributable money-like grant that marking the action critical exists to prevent (see memory: marker-first money ordering).",
       "evidence": "existing = await self._ledger.find(key); if existing: return GrantOutcome(status=ALREADY, ...)  ...  await self._ledger.record(...); ... if self._auditor is not None: await self._auditor.record(\"grant.issued\", ...)",
-      "recommendation": "Write the audit record (or a durable audit-intent marker) BEFORE crediting the entitlement, or make the ALREADY branch re-emit/verify the audit record. The audit for a delivered grant must never be skippable by a retry that short-circuits on the ledger."
+      "recommendation": "Write the audit record (or a durable audit-intent marker) BEFORE crediting the entitlement, or make the ALREADY branch re-emit/verify the audit record. The audit for a delivered grant must never be skippable by a retry that short-circuits on the ledger.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "grant.issued (critical) is now recorded BEFORE the ledger row is written; entitlement.issue is idempotent, so a down audit 503s before the ledger commits and the retry re-issues+re-audits+records exactly once — a delivered grant can no longer be left credited-but-unauditable. Regression tests added."
     },
     {
       "id": "onboarding-004",
@@ -48,7 +62,10 @@
       "line": 186,
       "scenario": "list_flows builds its response with f.get('name'), f.get('match', {}) and r.get('name'), but flow declarations use the keys 'flow', 'audience', and requirements use 'id' (see onboarding_flows.py:69, 72, 81). So every flow comes back as {'name': None, 'match': {}, 'requirements': [None, None, ...]}. Only 'provisions' (p.get('kind')) is correct. The 'see-before-you-act' read an operator relies on before force-completing or resuming a stuck customer is blank.",
       "evidence": "{\"name\": f.get(\"name\"), \"match\": f.get(\"match\", {}), \"requirements\": [r.get(\"name\") for r in (f.get(\"requirements\") or [])], \"provisions\": [p.get(\"kind\") for p in (f.get(\"provisions\") or [])]}",
-      "recommendation": "Read f.get('flow'), f.get('audience', {}) and r.get('id'). Add a test asserting /admin/flows returns the shipped flow names and requirement ids (the current tests never call this route, which is why the drift shipped)."
+      "recommendation": "Read f.get('flow'), f.get('audience', {}) and r.get('id'). Add a test asserting /admin/flows returns the shipped flow names and requirement ids (the current tests never call this route, which is why the drift shipped).",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "admin/flows now reads the real declaration keys (flow, audience, requirement id) instead of name/match/name, so it returns actual flow names, audiences and requirement ids rather than nulls."
     },
     {
       "id": "onboarding-005",
@@ -59,7 +76,10 @@
       "line": 111,
       "scenario": "The service builds an SsrfAllowlistCheck from EGRESS_ALLOWED_HOSTS and wires it into the CweGuard, and the manifest reports SSRF coverage. But no outbound adapter ever runs a guard.step('egress', url=...): HttpProvisioner._call, HttpRequirementSource.check, HttpIdentityLookup.claim_ref_for, WalletEntitlement.issue and the http audit sink all call urllib.request.urlopen directly. The only guard.step in the codebase is 'respond' in api/v1/__init__.py. So EGRESS_ALLOWED_HOSTS is an advertised-but-unread knob (see memory: advertised-but-unread knobs) and the CWE-918 control is theater — a misconfigured/attacker-influenced ONBOARDING_* URL egresses with no allowlist check.",
       "evidence": "SsrfAllowlistCheck(settings.egress_allowed_hosts),  # built, but grep shows guard.step only in api/v1/__init__.py:28 ('respond'); adapters call urlopen(req, ...) with '# nosec B310 - config-only host'",
-      "recommendation": "Either wrap every outbound urlopen in guard.step('egress', url=url) so the allowlist actually gates egress, or remove EGRESS_ALLOWED_HOSTS and the SSRF check and document that egress is constrained solely by config-only URLs. A declared control that nothing invokes is worse than an absent one."
+      "recommendation": "Either wrap every outbound urlopen in guard.step('egress', url=url) so the allowlist actually gates egress, or remove EGRESS_ALLOWED_HOSTS and the SSRF check and document that egress is constrained solely by config-only URLs. A declared control that nothing invokes is worse than an absent one.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "new assert_egress_config_ok boot guard validates every configured outbound host (wallet, audit, onboarding sources, provisioners) against EGRESS_ALLOWED_HOSTS when set (fail-fast, CWE-918); with no allowlist they are trusted deploy config. Closes the declared-but-unenforced SSRF coverage."
     },
     {
       "id": "onboarding-006",

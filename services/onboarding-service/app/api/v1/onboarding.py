@@ -183,9 +183,12 @@ async def list_flows(request: Request, principal: Principal = Depends(_ADMIN)) -
     resources it provisions. The see-before-you-act read: an operator inspecting a stuck customer
     needs to know which flow they are on and what it demands, without reading the deployment config."""
     flows = _flows()
+    # Read the ACTUAL declaration keys (onboarding-004): a flow's name is 'flow', its match is
+    # 'audience', and a requirement's id is 'id'. The old code read 'name'/'match'/'name' — keys that
+    # do not exist — so every flow came back {name: None, match: {}, requirements: [None, ...]}.
     return {"flows": [
-        {"name": f.get("name"), "match": f.get("match", {}),
-         "requirements": [r.get("name") for r in (f.get("requirements") or [])],
+        {"name": f.get("flow"), "match": f.get("audience", {}),
+         "requirements": [r.get("id") for r in (f.get("requirements") or [])],
          "provisions": [p.get("kind") for p in (f.get("provisions") or [])]}
         for f in flows]}
 

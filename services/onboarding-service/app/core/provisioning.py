@@ -70,10 +70,27 @@ class ProvisioningService:
         # interleave, and one run's compensation could tear down a resource the other had just
         # confirmed (onboarding-r2-01). An atomic advisory lock (cas insert-if-absent) admits one; a
         # second concurrent run is refused rather than corrupting the first.
-        if not await self._store.cas("provisioning_locks", run_key, 0,
-                                     {"id": run_key, "at": self._clock.now()}):
-            return {"ok": False, "error": "provisioning_in_progress", "completed": [],
-                    "compensated": [], "residue": [], "unfinished": []}
+        now = self._clock.now()
+        lock_val = {"id": run_key, "at": now}
+        if not await self._store.cas("provisioning_locks", run_key, 0, lock_val):
+            # A lock already exists. It may be a LIVE concurrent run, or a CRASH ORPHAN: the finally
+            # below deletes the lock, but a SIGKILL/OOM/eviction between acquire and finally leaves it
+            # forever, wedging all future /provision for this subject (onboarding-001). Reclaim it only
+            # when it is older than a bounded lease (per-step timeout * steps + margin) — a live run
+            # finishes well inside that, so a fresh lock is never stolen.
+            existing = await self._store.get("provisioning_locks", run_key)
+            step_timeout = get_settings().ONBOARDING_PROVISION_TIMEOUT_SECONDS
+            lease = step_timeout * max(1, len(steps)) * 2 + 30
+            age = now - float(existing.get("at", 0)) if existing else lease + 1
+            if existing is None or age < lease:
+                return {"ok": False, "error": "provisioning_in_progress", "completed": [],
+                        "compensated": [], "residue": [], "unfinished": []}
+            # Stale crash orphan: drop it and re-acquire. If a concurrent reclaimer wins the race, our
+            # cas fails and we report in-progress rather than running two sagas at once.
+            await self._store.delete("provisioning_locks", run_key)
+            if not await self._store.cas("provisioning_locks", run_key, 0, lock_val):
+                return {"ok": False, "error": "provisioning_in_progress", "completed": [],
+                        "compensated": [], "residue": [], "unfinished": []}
         try:
             outcome = await Saga(saga_steps, telemetry=self._telemetry).run()
             record = {
@@ -92,13 +109,23 @@ class ProvisioningService:
         finally:
             await self._store.delete("provisioning_locks", run_key)
 
-        if not outcome.ok and self._auditor is not None:
-            await self._auditor.record(
-                "provisioning.compensated", tenant=tenant, resource=f"subject:{subject_ref(get_settings().PII_SALT, tenant, subject)}",
-                metadata={"failed_step": outcome.failed_step,
-                          "compensated": outcome.compensated,
-                          "unfinished": [u["step"] for u in outcome.unfinished],
-                          "residue": [r["step"] for r in outcome.residue]})
+        if self._auditor is not None:
+            sref = f"subject:{subject_ref(get_settings().PII_SALT, tenant, subject)}"
+            if outcome.ok:
+                # onboarding-002: provisioning creates the tenant and its OWNER membership — the
+                # bootstrap of every privilege in that company, the single most escalation-relevant
+                # act here. The failure path was audited but the SUCCESS path was not; a security
+                # review needs "who was made owner of which tenant, and when".
+                await self._auditor.record(
+                    "provisioning.completed", tenant=tenant, resource=sref,
+                    metadata={"completed": outcome.completed})
+            else:
+                await self._auditor.record(
+                    "provisioning.compensated", tenant=tenant, resource=sref,
+                    metadata={"failed_step": outcome.failed_step,
+                              "compensated": outcome.compensated,
+                              "unfinished": [u["step"] for u in outcome.unfinished],
+                              "residue": [r["step"] for r in outcome.residue]})
         return record
 
     async def _merge_run_record(self, run_key: str, record: dict[str, Any]) -> dict[str, Any]:

@@ -307,6 +307,34 @@ class Settings(BaseSettings):
             h.strip().lower() for h in self.EGRESS_ALLOWED_HOSTS.split(",") if h.strip()
         )
 
+    def assert_egress_config_ok(self) -> None:
+        """Enforce EGRESS_ALLOWED_HOSTS against every CONFIGURED outbound URL at boot (onboarding-005).
+
+        The service declared an SsrfAllowlistCheck and the manifest reported SSRF coverage, but no
+        outbound adapter ever ran guard.step('egress', ...), so the allowlist gated nothing. All
+        outbound targets here are operator config (provisioners, requirement sources, wallet, audit),
+        so the honest enforcement is a fail-fast boot check that each configured host is allow-listed
+        when an allowlist is set; with no allowlist they are trusted deploy config (CWE-918)."""
+        allow = self.egress_allowed_hosts
+        if not allow:
+            return
+        from urllib.parse import urlsplit
+        targets: list[tuple[str, str]] = []
+        if self.ONBOARDING_WALLET_URL:
+            targets.append(("ONBOARDING_WALLET_URL", self.ONBOARDING_WALLET_URL))
+        if self.AUDIT_SERVICE_URL:
+            targets.append(("AUDIT_SERVICE_URL", self.AUDIT_SERVICE_URL))
+        for name, url in self.onboarding_sources.items():
+            targets.append((f"ONBOARDING_SOURCES[{name}]", url))
+        for kind, (create, undo) in self.onboarding_provisioners.items():
+            targets.append((f"ONBOARDING_PROVISIONERS[{kind}].create", create))
+        for name, url in targets:
+            host = (urlsplit(url).hostname or "").lower()
+            if host and host not in allow:
+                raise ValueError(
+                    f"{name} host {host!r} is not in EGRESS_ALLOWED_HOSTS — refusing to start with an "
+                    f"un-allowlisted egress target (CWE-918)")
+
     # ── Derived helpers ─────────────────────────────────────────────────────
     @property
     def is_test(self) -> bool:

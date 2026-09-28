@@ -112,16 +112,23 @@ class GrantService:
             # believed it had already given.
             return GrantOutcome(status=FAILED, detail=receipt.detail)
 
+        # Audit the delivered grant BEFORE writing our ledger row (onboarding-003). grant.issued is
+        # critical (fail-closed): if we recorded the ledger first and the audit then raised
+        # AuditUnavailable, the credit is out and the ledger says "done", so a retry short-circuits at
+        # the ALREADY branch above and the grant is NEVER audited. entitlement.issue is idempotent on
+        # idempotency_key, so ordering the critical audit ahead of the ledger means a down log 503s
+        # before the ledger commits; the retry re-issues (wallet returns the same receipt), re-audits,
+        # and records exactly once. Money moves at most once; the audit is guaranteed.
+        if self._auditor is not None:
+            await self._auditor.record(
+                "grant.issued", actor=subject, tenant=tenant, resource=f"grant:{kind}",
+                metadata={"once_per": once_per, "reference": receipt.reference})
         await self._ledger.record(key, kind=kind, tenant=tenant, subject=subject,
                                   reference=receipt.reference)
         if self._local is not None:
             await self._local.mark_granted(requirement=requirement or kind, tenant=tenant,
                                            subject=subject, scope=scope,
                                            reference=receipt.reference)
-        if self._auditor is not None:
-            await self._auditor.record(
-                "grant.issued", actor=subject, tenant=tenant, resource=f"grant:{kind}",
-                metadata={"once_per": once_per, "reference": receipt.reference})
         return GrantOutcome(status=GRANTED, reference=receipt.reference)
 
     async def _uniqueness_key(self, once_per: str, tenant: str, subject: str,

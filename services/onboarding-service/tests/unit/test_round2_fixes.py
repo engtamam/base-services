@@ -41,14 +41,26 @@ def test_concurrent_provision_is_serialized():
     store = MemoryDataStore()
     svc = _svc(store)
     run_key = svc._run_key("acme", "u1")
-    # simulate an in-flight run by holding the advisory lock
-    assert run(store.cas("provisioning_locks", run_key, 0, {"id": run_key})) is True
+    # simulate a LIVE in-flight run: a fresh lock carries a recent 'at' (onboarding-001).
+    assert run(store.cas("provisioning_locks", run_key, 0,
+                         {"id": run_key, "at": 1000.0})) is True
     out = run(svc.provision(tenant="acme", subject="u1", steps=[{"kind": "tenant"}]))
     assert out["ok"] is False and out["error"] == "provisioning_in_progress"
     # once the lock is released, provisioning proceeds
     run(store.delete("provisioning_locks", run_key))
     ok = run(svc.provision(tenant="acme", subject="u1", steps=[{"kind": "tenant"}]))
     assert ok["ok"] is True
+
+
+# onboarding-001 — a STALE crash-orphan lock (old 'at', no finally ran) is reclaimed, not wedged.
+def test_stale_provision_lock_is_reclaimed():
+    store = MemoryDataStore()
+    svc = _svc(store)
+    run_key = svc._run_key("acme", "u1")
+    # a crash left a lock whose 'at' is far in the past (well beyond the lease)
+    assert run(store.cas("provisioning_locks", run_key, 0, {"id": run_key, "at": 0.0})) is True
+    out = run(svc.provision(tenant="acme", subject="u1", steps=[{"kind": "tenant"}]))
+    assert out["ok"] is True                     # reclaimed the orphan and provisioned
 
 
 # r2-02 — a later clean run does NOT erase an earlier run's outstanding unfinished/residue queue.
