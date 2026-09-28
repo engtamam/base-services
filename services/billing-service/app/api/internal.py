@@ -290,7 +290,7 @@ async def get_payable_invoice_internal(request: Request, invoice_id: str, tenant
               "amount_minor": int(li.get("amount_minor", 0) or 0),
               **({"proration": li["proration"]} if li.get("proration") is not None else {})}
              for li in (inv.lines or [])]
-    settled = int(inv.settled_minor or 0)
+    settled = await (await build_billing(request, tenant)).settled_minor(inv.id)
     total = int(inv.total_minor or 0)
     return {
         "id": inv.id, "tenant": inv.tenant, "subscription_id": inv.subscription_id or "",
@@ -329,6 +329,7 @@ class SubscribeInternalIn(BaseModel):
     buyer_name: str = Field(default="", max_length=256)
     buyer_vat: str = Field(default="", max_length=64)
     buyer_cr: str = Field(default="", max_length=64)
+    idempotency_key: str = Field(default="", max_length=128)
 
 
 @router.post("/billing/subscriptions", status_code=201,
@@ -340,17 +341,23 @@ async def subscribe_internal(request: Request, body: SubscribeInternalIn) -> dic
     NOT 429 on a shared per-pod IP bucket (see list_plans_internal); the internal token is the auth
     every other cross-service call already uses."""
     try:
-        sub = await (await build_billing(request, body.tenant)).subscribe(
+        res = await (await build_billing(request, body.tenant)).subscribe_with_payment(
             tenant=body.tenant, plan_id=body.plan_id, interval=body.interval,
             quantity=body.quantity, coupon_code=body.coupon_code, payment_token=body.payment_token,
-            buyer_name=body.buyer_name, buyer_vat=body.buyer_vat, buyer_cr=body.buyer_cr)
+            buyer_name=body.buyer_name, buyer_vat=body.buyer_vat, buyer_cr=body.buyer_cr,
+            idempotency_key=body.idempotency_key or None)
     except ValueError as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+        msg = str(exc)
+        if msg == "PAYMENT_REQUIRED":
+            raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, msg) from exc
+        if msg in ("PLAN_NOT_FOUND", "PLAN_NOT_AVAILABLE"):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, msg) from exc
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, msg) from exc
     await request.app.state.auditor.record(
-        "subscription.created", actor="", tenant=sub.tenant,
-        resource=f"subscription:{sub.id}", ip=request.client.host if request.client else "",
-        metadata={"plan": body.plan_id})
-    return sub.to_dict()
+        "subscription.created", actor="", tenant=res.get("tenant") or body.tenant,
+        resource=f"subscription:{res.get('id') or '-'}", ip=request.client.host if request.client else "",
+        metadata={"plan": body.plan_id, "paid": str(res.get("paid", ""))})
+    return res
 
 
 class CheckoutInternalIn(BaseModel):

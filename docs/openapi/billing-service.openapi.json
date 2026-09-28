@@ -1482,6 +1482,12 @@
             "title": "Coupon Code",
             "type": "string"
           },
+          "idempotency_key": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
           "interval": {
             "default": "month",
             "pattern": "^(month|year|once)$",

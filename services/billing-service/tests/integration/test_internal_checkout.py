@@ -111,3 +111,19 @@ def test_internal_checkout_preview_requires_token(client):
     r = client.post("/internal/billing/subscriptions/checkout/preview",
                     json={"tenant": "x", "items": [{"plan_id": "pv_auth"}]})
     assert r.status_code in (401, 403)
+
+
+def test_internal_subscribe_refuses_a_paid_plan_without_a_token(client):
+    _seed_plan(client, "p_paid_noc", 10000)
+    r = client.post("/internal/billing/subscriptions", headers=IT,
+                    json={"tenant": "shopNoTok", "plan_id": "p_paid_noc"})
+    assert r.status_code == 402
+    assert _invoices(client, "shopNoTok") == []
+
+
+def test_internal_subscribe_charges_a_paid_plan_before_activating(client):
+    _seed_plan(client, "p_paid_ok", 10000)
+    r = client.post("/internal/billing/subscriptions", headers=IT,
+                    json={"tenant": "shopPay", "plan_id": "p_paid_ok", "payment_token": "pm"})
+    assert r.status_code == 201, r.text
+    assert len(_invoices(client, "shopPay")) == 1

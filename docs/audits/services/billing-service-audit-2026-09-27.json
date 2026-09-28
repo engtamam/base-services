@@ -3,7 +3,12 @@
   "date": "2026-09-27",
   "summary": {
     "total": 20,
-    "by_severity": {"CRITICAL": 0, "HIGH": 2, "MEDIUM": 6, "LOW": 12}
+    "by_severity": {
+      "CRITICAL": 0,
+      "HIGH": 2,
+      "MEDIUM": 6,
+      "LOW": 12
+    }
   },
   "findings": [
     {
@@ -15,7 +20,10 @@
       "line": 343,
       "scenario": "A peer service (e.g. operations) POSTs /internal/billing/subscriptions for a paid, non-trial plan with a payment_token. subscribe_internal calls the BARE subscribe() primitive, which marks the subscription 'active', stores the token, and charges NOTHING now — the first real charge is a full interval later at renewal. The user route deliberately avoids this by routing through subscribe_with_payment (charge-first). So the internal twin grants an entitled paid plan for free for a whole cycle, and the shop can cancel before the first renewal ever charges.",
       "evidence": "sub = await (await build_billing(request, body.tenant)).subscribe(tenant=body.tenant, plan_id=body.plan_id, ...)  # internal.py; vs subscribe_with_payment docstring: 'The bare subscribe() primitive marks a non-trial plan active and stores the token but charges NOTHING ... so a self-service caller could hold an entitled paid plan free until the next cycle, and cancel before it.'",
-      "recommendation": "Route the internal subscribe through subscribe_with_payment() (charge-first / PAYMENT_REQUIRED) exactly like the user POST /subscriptions, so the internal and user paths cannot diverge on the money invariant."
+      "recommendation": "Route the internal subscribe through subscribe_with_payment() (charge-first / PAYMENT_REQUIRED) exactly like the user POST /subscriptions, so the internal and user paths cannot diverge on the money invariant.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "POST /internal/billing/subscriptions now routes through subscribe_with_payment (charge-first / PAYMENT_REQUIRED) exactly like the user route, so a paid non-trial plan is charged before activation and a paid plan with no token is refused 402 — the internal path can no longer grant free paid service. Regression tests added."
     },
     {
       "id": "billing-002",
@@ -26,7 +34,10 @@
       "line": 293,
       "scenario": "An enterprise invoice for 100000 is partially settled by a first bank tranche of 40000. settle() deliberately does NOT write inv.settled_minor on a partial (only on the closing tranche) — the atomic counter is the truth. GET /internal/billing/invoices/{id} then reads settled = int(inv.settled_minor or 0) = 0 and returns amount_due_minor = total - 0 = 100000. A WhatsApp Flow / checkout screen shows the payer the FULL amount again after they already paid 40000 → double-collection.",
       "evidence": "get_payable_invoice_internal: 'settled = int(inv.settled_minor or 0); total = int(inv.total_minor or 0); ... \"amount_due_minor\": max(0, total - settled)'. settle() comment: 'The invoice row is not written for a partial payment ... the only invoice write during settlement is the single paid transition below.'",
-      "recommendation": "Compute settled/amount_due from the authoritative counter (BillingService.settled_minor / invoice_state), not from the inv.settled_minor row field, in the internal payable read (and anywhere else amount_due is shown). Same defect affects settle()'s own pre-check already_settled_minor=inv.settled_minor (line 1916), which reads the stale row rather than the counter."
+      "recommendation": "Compute settled/amount_due from the authoritative counter (BillingService.settled_minor / invoice_state), not from the inv.settled_minor row field, in the internal payable read (and anywhere else amount_due is shown). Same defect affects settle()'s own pre-check already_settled_minor=inv.settled_minor (line 1916), which reads the stale row rather than the counter.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "the internal payable-invoice read computes settled/amount_due from the authoritative atomic counter (BillingService.settled_minor), not inv.settled_minor (which is 0 on a partial), so a partially-settled invoice reports the correct remaining. Regression test updated to seed the counter."
     },
     {
       "id": "billing-003",

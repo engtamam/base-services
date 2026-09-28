@@ -146,9 +146,11 @@ def test_payable_invoice_read_returns_amount_and_lines_for_a_checkout_screen(cli
 
 def test_payable_invoice_amount_due_subtracts_a_partial_settlement(client):
     _put_invoice(client, id="pp1", tenant="tpay", status="partially_paid", total_minor=10000,
-                 settled_minor=4000)
+                 settled_minor=0)
+    ds = client.app.state.container.datastore
+    run(ds.put("invoice_settled", "pp1", {"id": "pp1", "n": 4000}))
     b = client.get("/internal/billing/invoices/pp1?tenant=tpay", headers=IT).json()
-    assert b["amount_due_minor"] == 6000
+    assert b["amount_due_minor"] == 6000 and b["settled_minor"] == 4000
 
 
 def test_payable_invoice_read_hides_a_settled_invoice(client):
