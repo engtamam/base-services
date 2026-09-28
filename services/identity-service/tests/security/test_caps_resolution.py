@@ -166,3 +166,29 @@ def test_membership_driver_needs_no_authz_and_keeps_todays_behaviour():
     # The role is carried, but it grants nothing — the documented limitation of this driver.
     assert issuer.minted[-1]["caps"] == ["dsar:read"]
     assert issuer.minted[-1]["roles"] == ["compliance-manager"]
+
+
+# ── identity-001: assigning a ROLE is governed like assigning its caps ──────────────────────────────
+def test_a_members_write_admin_cannot_assign_a_role_that_exceeds_its_caps():
+    from app.core.caps_grant import CapsNotGrantable
+    # authz maps 'owner' -> platform.admin; the granting admin holds only members:write + billing.read.
+    resolver = FakeAuthz({("acme", "owner"): ["platform.admin"],
+                          ("acme", "support"): ["billing.read"]})
+    svc, ms, _ = build(resolver)
+    granter = frozenset({"members:write", "billing.read"})
+    # Assigning 'owner' derives platform.admin, which the granter does not hold → refused.
+    with pytest.raises(CapsNotGrantable):
+        run(svc.add_member("acme", "victim", roles=["owner"], granter_caps=granter))
+    # Assigning 'support' derives only billing.read, which the granter holds → allowed.
+    m, _ = run(svc.add_member("acme", "agent", roles=["support"], granter_caps=granter,
+                       mode="password", password="correct-horse-battery"))
+    assert m is not None
+
+
+def test_internal_bootstrap_may_assign_any_role():
+    # granter_caps=None is the internal-bootstrap exemption (seed_owner / internal add-member).
+    resolver = FakeAuthz({("acme", "owner"): ["platform.admin"]})
+    svc, ms, _ = build(resolver)
+    m, _ = run(svc.add_member("acme", "founder", roles=["owner"], granter_caps=None,
+                     mode="password", password="correct-horse-battery"))
+    assert m is not None

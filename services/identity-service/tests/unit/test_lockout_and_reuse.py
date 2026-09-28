@@ -121,6 +121,58 @@ def test_reused_refresh_token_revokes_the_whole_family():
     assert run(svc.refresh(t2["refresh_token"])) is None
 
 
+def test_expired_refresh_is_not_treated_as_theft(monkeypatch):
+    # identity-002: a naturally-expired refresh token replayed is a plain invalid refresh (None),
+    # NOT theft — it must NOT revoke the family and kill the user's other live sessions.
+    from app.core import refresh_store as rs
+    st = MemoryDataStore()
+    v = Verifier()
+    svc = _svc(st, verifier=v)
+    user = run(svc.register("t1", "alice", "pw-alice"))
+    old = run(svc.issue_tokens(user))       # will be force-expired
+    live = run(svc.issue_tokens(user))      # a separate, still-valid session
+    for toks in (old, live):
+        jti = toks["refresh_token"].split(".")[-1]
+        v.tokens[toks["refresh_token"]] = {"type": "refresh", "jti": jti, "sub": user.id}
+    # force `old`'s stored row to be expired (exp in the past), not revoked
+    old_jti = old["refresh_token"].split(".")[-1]
+    row = run(st.get("refresh_tokens", old_jti))
+    row["exp"] = 1.0
+    run(st.put("refresh_tokens", old_jti, row))
+    assert run(st.get("refresh_tokens", old_jti))  # sanity
+    assert run(RefreshStore(st).status(old_jti)) == "expired"
+    # replaying the expired token is refused, but does NOT nuke the family
+    assert run(svc.refresh(old["refresh_token"])) is None
+    assert run(svc.refresh(live["refresh_token"])) is not None   # the live session survives
+
+
+def test_refresh_reuse_is_audited():
+    # identity-004: detected reuse + family revocation emits a witness (audit + telemetry).
+    class _Aud:
+        def __init__(self): self.calls = []
+        async def record(self, action, **k): self.calls.append(action)
+
+    class _Tel:
+        def __init__(self): self.counts = []
+        def counter(self, name, value=1, **labels): self.counts.append(name)
+
+    st = MemoryDataStore()
+    v = Verifier()
+    aud, tel = _Aud(), _Tel()
+    svc = AuthService(users=UserRepository(st, UsernameIdentifier()), refresh=RefreshStore(st),
+                      hasher=Hasher(), issuer=Issuer(), verifier=v, mfa=None,
+                      identifier=UsernameIdentifier(), access_ttl=900, refresh_ttl=3600,
+                      min_password_len=4, auditor=aud, telemetry=tel)
+    user = run(svc.register("t1", "alice", "pw-alice"))
+    toks = run(svc.issue_tokens(user))
+    jti = toks["refresh_token"].split(".")[-1]
+    v.tokens[toks["refresh_token"]] = {"type": "refresh", "jti": jti, "sub": user.id}
+    run(svc.refresh(toks["refresh_token"]))                 # legit rotation
+    assert run(svc.refresh(toks["refresh_token"])) is None  # replay → theft
+    assert "auth.refresh_reuse_detected" in aud.calls
+    assert "auth.refresh_reuse_detected" in tel.counts
+
+
 def test_normal_rotation_still_works():
     st = MemoryDataStore()
     v = Verifier()

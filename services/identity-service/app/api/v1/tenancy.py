@@ -309,16 +309,28 @@ def _source(request: Request) -> str:
 async def person_login(request: Request, body: PersonLoginIn) -> dict:
     """Authenticate the PERSON. Returns their doors — and no token, and no data."""
     svc = _svc(request)
+
+    async def _record_failed(reason: str):
+        # identity-003: the MT person-login is the primary login surface; a burst of failures is the
+        # credential-stuffing signal the single-tenant path already records. actor = attempted
+        # identifier (as the single-tenant login_failed does).
+        await request.app.state.auditor.record(
+            "person.login_failed", actor=body.username or "", resource="person",
+            ip=_source(request), metadata={"reason": reason})
+
     try:
         person = await svc.authenticate_person(body.username, body.password, _source(request))
     except ValidationError:
+        await _record_failed("invalid_identifier")
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "INVALID_CREDENTIALS")
     if person is None:
+        await _record_failed("bad_credentials")
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "INVALID_CREDENTIALS")
 
     c = request.app.state.container
     if c.mfa.enabled and person.mfa_secret:
         if not body.code or not c.mfa.verify(person.mfa_secret, body.code):
+            await _record_failed("mfa")
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "MFA_REQUIRED")
 
     memberships = await svc.memberships.memberships(person.id)
@@ -345,14 +357,24 @@ async def select_tenant(request: Request, body: TenantIn) -> dict:
     svc = _svc(request)
     c = request.app.state.container
 
+    async def _record_failed(reason: str):
+        # identity-003: the /tenant credential branch is a primary login path — audit its failures as
+        # the credential-stuffing signal, matching /person/login and single-tenant /auth/login.
+        await request.app.state.auditor.record(
+            "person.login_failed", actor=body.username or "", resource="person",
+            ip=_source(request), metadata={"reason": reason})
+
     person = None
     if body.username and body.password:
         try:
             person = await svc.authenticate_person(body.username, body.password, _source(request))
         except ValidationError:
             person = None
-        if person is not None and c.mfa.enabled and person.mfa_secret:
+        if person is None:
+            await _record_failed("bad_credentials")
+        elif c.mfa.enabled and person.mfa_secret:
             if not body.code or not c.mfa.verify(person.mfa_secret, body.code):
+                await _record_failed("mfa")
                 raise HTTPException(status.HTTP_401_UNAUTHORIZED, "MFA_REQUIRED")
     elif not s.IDENTITY_TENANT_SWITCH_REAUTH:
         # Switching on an existing session: the access token proves the person. It says nothing

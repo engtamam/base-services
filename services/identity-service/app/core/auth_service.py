@@ -88,7 +88,11 @@ class AuthService:
                  legacy_email_policy: str = "grandfather",
                  legal_gate=None, legal_enforcement: str = "off",
                  legal_accept_caps=(), legal_accept_ttl: int = 0,
-                 legal_fail_mode: str = "open") -> None:
+                 legal_fail_mode: str = "open", auditor=None, telemetry=None) -> None:
+        # auditor/telemetry (identity-004): refresh-token REUSE is the token-theft signal, and family
+        # revocation is the most security-relevant token event — both must be witnessed, not silent.
+        self._auditor = auditor
+        self._telemetry = telemetry
         self._platform_tenant = platform_tenant
         self._verifications = verifications
         self._require_verified = require_verified_email
@@ -416,6 +420,19 @@ class AuthService:
         # itself hold. `granter_caps is None` is the internal-bootstrap exemption (seed_owner, internal
         # add-member): platform authority, guarded separately. Refused BY NAME — never a silent drop.
         caps_grant.check(caps, granter_caps=granter_caps, policy=caps_policy, grantable=grantable_caps)
+
+        # GOVERN ROLES TOO (identity-001). With IDENTITY_CAPS_SOURCE=authz, capabilities are DERIVED
+        # from roles at mint, so assigning a high-privilege role (e.g. 'owner') is a capability grant
+        # the direct-caps check above never sees. Resolve the caps the assigned roles WOULD confer and
+        # run them through the SAME subset/allowlist gate, so a members:write admin cannot hand out a
+        # role whose caps it does not itself hold. `granter_caps is None` is the internal-bootstrap
+        # exemption (seed_owner / internal add-member). Only meaningful when caps derive from roles;
+        # in membership mode roles confer no caps (membership.caps, already governed above).
+        if roles and granter_caps is not None and self._caps is not None:
+            role_caps = await self._caps.resolve(
+                subject="__grant_check__", tenant=tenant, roles=list(roles), caps=[])
+            caps_grant.check(frozenset(role_caps or ()), granter_caps=granter_caps,
+                             policy=caps_policy, grantable=grantable_caps)
 
         self._identifier.validate(identifier)
         ident = self._identifier.normalize(identifier)   # the canonical key — one human, one account
@@ -801,6 +818,24 @@ class AuthService:
         membership = await authorize_tenant(self._memberships, person, tenant)
         return await self.issue_tenant_tokens(person, membership)
 
+    async def _note_refresh_reuse(self, sub: str, jti: str, *, reason: str) -> None:
+        """Witness a detected refresh-token reuse + family revocation (identity-004): a CRITICAL audit
+        and a telemetry counter. The single most security-relevant token event was previously silent —
+        an account-takeover investigation had nothing to find. Best-effort on telemetry; the audit is
+        recorded like any other critical action (the sink decides fail-open/closed)."""
+        if self._telemetry is not None:
+            try:
+                self._telemetry.counter("auth.refresh_reuse_detected", 1, reason=reason)
+            except Exception:   # noqa: BLE001 — telemetry never blocks a security response
+                pass
+        if self._auditor is not None:
+            try:
+                await self._auditor.record(
+                    "auth.refresh_reuse_detected", actor=sub,
+                    resource=f"refresh_family:{sub}", metadata={"reason": reason, "jti": jti})
+            except Exception:   # noqa: BLE001 — the family is ALREADY revoked; a log blip must not undo that
+                pass
+
     # ── refresh (rotation) ─────────────────────────────────────────────────────
     async def refresh(self, refresh_token: str) -> dict | None:
         try:
@@ -817,8 +852,13 @@ class AuthService:
         state = await self._refresh.status(jti)
         if state == "revoked":
             # A REUSED (already-rotated) refresh token → theft signal. Revoke the whole
-            # family so a stolen token can't keep minting sessions.
+            # family so a stolen token can't keep minting sessions, and WITNESS it (identity-004).
             await self._refresh.revoke_family(sub)
+            await self._note_refresh_reuse(sub, jti, reason="rotated_token_replayed")
+            return None
+        if state == "expired":
+            # Naturally timed out, NOT rotated (identity-002): a plain invalid refresh. Do NOT revoke
+            # the family — a client returning after its refresh TTL is not a thief.
             return None
         if state != "active":
             return None
@@ -833,6 +873,7 @@ class AuthService:
         # nothing and nukes the family, exactly as the already-revoked branch does.
         if not await self._refresh.consume(jti):
             await self._refresh.revoke_family(sub)
+            await self._note_refresh_reuse(sub, jti, reason="concurrent_double_use")
             return None
 
         if tenant:

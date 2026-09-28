@@ -132,6 +132,9 @@ def _svc(request: Request) -> AuthService:
         legal_accept_caps=s.legal_accept_caps,
         legal_accept_ttl=s.IDENTITY_LEGAL_ACCEPT_TTL_SECONDS,
         legal_fail_mode=s.IDENTITY_LEGAL_GATE_FAIL_MODE,
+        # Witness refresh-token reuse / family revocation (identity-004).
+        auditor=getattr(request.app.state, "auditor", None),
+        telemetry=getattr(c, "telemetry", None),
     )
 
 

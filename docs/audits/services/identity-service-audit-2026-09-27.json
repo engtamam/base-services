@@ -20,7 +20,10 @@
       "line": 386,
       "scenario": "IDENTITY_MEMBER_CAPS_POLICY governs only DIRECT caps (caps_grant.check is called on `caps`, never on `roles`). But with IDENTITY_CAPS_SOURCE=authz, capabilities are DERIVED from roles at mint (claims_for -> AuthzCaps.resolve). A tenant admin who holds only members:write (not 'owner', not any platform role) can call POST /api/v1/tenancy/members or PUT /members/{id} with roles=['owner'] (or any powerful role authz recognises) — on themselves via a second membership, or on a colleague they control. add_member/update_member_roles pass body.roles straight through with no subset/allowlist check, so the resulting token carries every capability that role derives. This rebuilds the exact escalation the direct-caps governance (r2) was added to close, one level of indirection away.",
       "evidence": "caps_grant.check(caps, granter_caps=granter_caps, policy=caps_policy, grantable=grantable_caps)  # only `caps` is checked; `roles` (the real authority input under the authz resolver) is never governed",
-      "recommendation": "Govern roles at the human admin routes the same way caps are governed: refuse a role the granter does not itself hold (or a configured grantable-roles allowlist), keeping the internal-bootstrap (granter_caps is None) exemption. Assigning 'owner' or any platform-shaped role must not be grantable by a non-owner."
+      "recommendation": "Govern roles at the human admin routes the same way caps are governed: refuse a role the granter does not itself hold (or a configured grantable-roles allowlist), keeping the internal-bootstrap (granter_caps is None) exemption. Assigning 'owner' or any platform-shaped role must not be grantable by a non-owner.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "add_member now governs assigned ROLES, not just direct caps: in authz-derived-caps mode it resolves the caps the assigned roles would confer and runs them through the same caps_grant subset/allowlist gate, so a members:write admin cannot assign a role ('owner', a platform role) whose caps it does not itself hold. granter_caps=None keeps the internal-bootstrap exemption. Regression tests added."
     },
     {
       "id": "identity-002",
@@ -31,7 +34,10 @@
       "line": 54,
       "scenario": "RefreshStore.status() collapses 'expired' into 'revoked' (`if row.get('revoked') or exp<=now: return 'revoked'`). AuthService.refresh() then does `if state == 'revoked': await self._refresh.revoke_family(sub); return None`. So a client that presents an old refresh token which simply timed out (not a rotated/stolen one) trips reuse-detection and nukes EVERY refresh token the user holds — including a currently-valid session established on another device. A user with a stale tab is silently logged out everywhere. It also fires revoke_family (a scan-to-exhaustion write) on a benign event, an amplification vector.",
       "evidence": "def status(self, jti): ... if row.get(\"revoked\") or float(row.get(\"exp\", 0)) <= _now_ts(): return \"revoked\"   # expiry indistinguishable from a rotated/stolen token",
-      "recommendation": "Return a distinct 'expired' state and treat it as a plain invalid-refresh (401, no family revocation). Reserve revoke_family for a jti that was actually rotated (revoked=True) — genuine reuse — not for one that merely aged out."
+      "recommendation": "Return a distinct 'expired' state and treat it as a plain invalid-refresh (401, no family revocation). Reserve revoke_family for a jti that was actually rotated (revoked=True) — genuine reuse — not for one that merely aged out.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "RefreshStore.status now returns a distinct 'expired' (timed-out) vs 'revoked' (rotated/theft); refresh() treats 'expired' as a plain 401 with NO family revocation, so a client returning after its refresh TTL no longer nukes its own other live sessions. Regression test added."
     },
     {
       "id": "identity-003",
@@ -42,7 +48,10 @@
       "line": 308,
       "scenario": "Single-tenant /auth/login records auth.login_failed on every failure (the brute-force / credential-stuffing signal the code itself argues ISO 27001 A.8.15 / NIST AU-2 / PCI 10.2 require). But the multi-tenant primary paths — POST /auth/person/login and the credential branch of POST /auth/tenant — record NOTHING on failure. person_login only records person.login_succeeded; select_tenant records neither success nor failure. auditable_actions.py declares person.login_succeeded but no person.login_failed at all. On a multi-tenant deployment (the target architecture) a distributed stuffing campaign against the person store leaves no audit trail whatsoever.",
       "evidence": "await request.app.state.auditor.record(\"person.login_succeeded\", ...)   # no corresponding failed-login record anywhere; grep shows person.login_failed is not defined",
-      "recommendation": "Add a person.login_failed auditable action and record it in person_login and the credential branch of select_tenant on every failed authenticate_person (actor=attempted identifier + source IP, per the partial-identifier rule), mirroring auth.login_failed."
+      "recommendation": "Add a person.login_failed auditable action and record it in person_login and the credential branch of select_tenant on every failed authenticate_person (actor=attempted identifier + source IP, per the partial-identifier rule), mirroring auth.login_failed.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "the multi-tenant /auth/person/login and the credential branch of /auth/tenant now record a new person.login_failed auditable action on every failure (bad identifier/credentials/MFA), the credential-stuffing signal the single-tenant path already had."
     },
     {
       "id": "identity-004",
@@ -53,7 +62,10 @@
       "line": 819,
       "scenario": "refresh() detects a reused/rotated refresh token (the canonical token-theft signal) and calls revoke_family(sub), invalidating every session for the user. This is the single most security-relevant event in the token subsystem, yet it is entirely unlogged: no auditor.record, no telemetry, no WARN. An investigation into an account takeover has no record that identity ever detected and responded to the theft, and an operator cannot alert on it.",
       "evidence": "if state == \"revoked\":\n    await self._refresh.revoke_family(sub)\n    return None   # no audit / no alert on a theft-signal that just killed every session",
-      "recommendation": "Emit a CRITICAL audit event (e.g. auth.refresh_reuse_detected, actor=sub) and a telemetry counter whenever revoke_family fires from reuse detection, both here and in the consume()-lost branch."
+      "recommendation": "Emit a CRITICAL audit event (e.g. auth.refresh_reuse_detected, actor=sub) and a telemetry counter whenever revoke_family fires from reuse detection, both here and in the consume()-lost branch.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "detected refresh-token reuse + family revocation now emits a witness: a new auth.refresh_reuse_detected audit action and a telemetry counter, from both the rotated-replay and concurrent-double-use branches (auditor/telemetry wired into AuthService). Regression test added."
     },
     {
       "id": "identity-005",
@@ -64,7 +76,10 @@
       "line": 37,
       "scenario": "decode() and the JWKS verifier only enforce aud/iss when TOKEN_AUDIENCE / TOKEN_ISSUER are configured, and both default to \"\" (config.py). When empty, `options['verify_aud'] = False` and no issuer check runs. In a fleet where multiple services verify against the SAME identity JWKS/public key (the documented model), a token minted for service A is accepted verbatim by service B — there is no audience binding to stop cross-service token replay. The defaults ship the weaker posture, so a deployment that forgets to set TOKEN_AUDIENCE silently has no audience enforcement.",
       "evidence": "if self._audience:\n    kwargs[\"audience\"] = self._audience\nelse:\n    options[\"verify_aud\"] = False   # default config => audience never checked",
-      "recommendation": "Add a boot guard that refuses to start in production with TOKEN_VERIFIER_DRIVER in {rs256,jwks} and TOKEN_AUDIENCE empty (mirror the other assert_*_ok guards). At minimum require an audience whenever a shared key/JWKS is verified across services."
+      "recommendation": "Add a boot guard that refuses to start in production with TOKEN_VERIFIER_DRIVER in {rs256,jwks} and TOKEN_AUDIENCE empty (mirror the other assert_*_ok guards). At minimum require an audience whenever a shared key/JWKS is verified across services.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "new assert_token_audience_ok boot guard refuses production with TOKEN_VERIFIER_DRIVER in {rs256,jwks} and an empty TOKEN_AUDIENCE, closing the confused-deputy hole where a token minted for one service is accepted by every service sharing the identity key."
     },
     {
       "id": "identity-006",

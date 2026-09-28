@@ -52,12 +52,20 @@ class RefreshStore:
         return await self.status(jti) == "active"
 
     async def status(self, jti: str) -> str:
-        """active | revoked | unknown — 'revoked' distinguishes a REUSED (rotated) token."""
+        """active | revoked | expired | unknown.
+
+        'revoked' means the token was ROTATED/revoked — presenting it again is the token-theft signal
+        that must revoke the whole family. 'expired' means it simply timed out (identity-002): that is
+        an ordinary invalid-refresh (401), NOT theft, so it must NOT nuke every session for the user.
+        Collapsing the two logged out any client that came back after its refresh TTL as if it had
+        been stolen."""
         row = await self._store.get(_COLL, jti)
         if not row:
             return "unknown"
-        if row.get("revoked") or float(row.get("exp", 0)) <= _now_ts():
+        if row.get("revoked"):
             return "revoked"
+        if float(row.get("exp", 0)) <= _now_ts():
+            return "expired"
         return "active"
 
     async def tenant_of(self, jti: str) -> str | None:

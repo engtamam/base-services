@@ -66,6 +66,7 @@ def create_app() -> FastAPI:
     # And a service that cannot pseudonymise must not claim it can erase anyone.
     # And a service that demands a proven address must be able to ask for proof.
     settings.assert_email_verification_ok()
+    settings.assert_token_audience_ok()
     settings.assert_operator_config_ok()
     # The platform-capability boundary must be decidable: multi-tenant membership without a
     # PLATFORM_TENANT (and without an explicit opt-out) fails the mint-time '*'/'platform.*' strip

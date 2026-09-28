@@ -262,4 +262,25 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "identities, exactly as failed logins are for humans (ISO 27001 A.8.15, NIST AU-2, "
                "PCI-DSS 10.2); declared, but not critical for the same denial-of-service reason",
     },
+    {
+        "action": "person.login_failed",
+        "source": "user",
+        "critical": False,
+        "resource": "person",
+        "why": "the multi-tenant person-login and tenant-selection credential paths are the primary "
+               "login surface; a burst of failures is the credential-stuffing signal (ISO 27001 "
+               "A.8.15, NIST AU-2, PCI-DSS 10.2) the single-tenant path already records. Not critical: "
+               "a down audit log must not lock everyone out of logging in",
+    },
+    {
+        "action": "auth.refresh_reuse_detected",
+        "source": "user",
+        "critical": False,
+        "resource": "refresh_family",
+        "why": "presenting an already-rotated refresh token is the canonical token-THEFT signal, and it "
+               "triggers revocation of the user's whole session family — the most security-relevant "
+               "event in the token subsystem, previously entirely unlogged. Not critical: the family is "
+               "revoked and the request denied regardless, so blocking on a down log would only lose "
+               "the record of a response that already happened",
+    },
 ]

@@ -619,6 +619,20 @@ class Settings(BaseSettings):
                 "config and never the request Host, or an attacker-controlled host would receive "
                 "a live credential.")
 
+    def assert_token_audience_ok(self) -> None:
+        """Boot guard (identity-005). When multiple services verify against the SAME identity
+        JWKS/public key (the documented fleet model), an unbound audience means a token minted for
+        service A is accepted by service B — a confused-deputy hole. The verifier only enforces aud
+        when TOKEN_AUDIENCE is set, and it defaults to empty. So production with an asymmetric verifier
+        (rs256/jwks) MUST bind an audience."""
+        if not self.is_production:
+            return
+        if self.TOKEN_VERIFIER_DRIVER in ("rs256", "jwks") and not self.TOKEN_AUDIENCE.strip():
+            raise ValueError(
+                f"TOKEN_VERIFIER_DRIVER={self.TOKEN_VERIFIER_DRIVER} but TOKEN_AUDIENCE is empty in "
+                "production: tokens are verified with aud unbound, so a token minted for one service is "
+                "accepted by every service sharing the key. Set TOKEN_AUDIENCE.")
+
     # assert_privacy_config_ok lived here and checked exactly one thing: PII_SALT. That check is
     # now assert_pii_config_ok, which every service runs rather than the two that remembered to
     # write it — so this method had nothing left to do and keeping an empty guard would suggest
