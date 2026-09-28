@@ -87,28 +87,69 @@ def test_the_platform_reader_can_reach_an_untenanted_file():
 
 
 # ── the internal minting endpoint ─────────────────────────────────────────────
-def test_the_internal_endpoint_requires_the_tenant_to_MATCH():
-    """The internal token is held by every service. Without this check it would be a read
-    capability over every tenant's files."""
-    import inspect
+# NB: these were once inspect.getsource() assertions, which never CALLED the endpoint — so a runtime
+# NameError in it (build_files was never imported at module scope, file-001) passed every check while
+# the endpoint 500'd in production. They are now real request-level tests through the app (file-002).
+import datetime as _dt
+import os as _os
 
-    from app.api import internal
+import jwt as _jwt
+from fastapi.testclient import TestClient as _TestClient
 
-    src = inspect.getsource(internal.internal_signed_url)
-    assert 'if not f.tenant or f.tenant != tenant:' in src
-    assert "NOT_FOUND" in src
+_SECRET = "h" * 40
+_ITOKEN = "t" * 40
 
 
-def test_the_internal_endpoint_does_not_take_a_caller_supplied_TTL():
-    """A link is a bearer credential; a caller-chosen lifetime lets a job mint one that outlives
-    the reason it was issued."""
-    import inspect
+def _internal_app() -> _TestClient:
+    from app.config import get_settings
+    _os.environ.update(ENV="test", INTERNAL_SERVICE_TOKEN=_ITOKEN,
+                       TOKEN_VERIFIER_DRIVER="hs256", TOKEN_HS256_SECRET=_SECRET,
+                       OBJECTSTORE_DRIVER="memory", SIGNED_URL_SECRET="s" * 32, RATELIMIT_MAX="1000")
+    get_settings.cache_clear()
+    from app.main import create_app
+    return _TestClient(create_app(), raise_server_exceptions=False)
 
-    from app.api import internal
 
-    sig = inspect.signature(internal.internal_signed_url)
-    assert "ttl" not in sig.parameters and "expires_in" not in sig.parameters
-    assert "SIGNED_URL_TTL_SECONDS" in inspect.getsource(internal.internal_signed_url)
+def _upload_as(client, tenant):
+    now = _dt.datetime.now(_dt.timezone.utc)
+    tok = _jwt.encode({"sub": "u", "caps": ["files.upload", "files.read"], "tenant": tenant,
+                       "exp": now + _dt.timedelta(minutes=5), "iat": now}, _SECRET, algorithm="HS256")
+    r = client.post("/api/v1/files", content=b"\x89PNG\r\n\x1a\nx",
+                    headers={"Authorization": "Bearer " + tok,
+                             "Content-Type": "image/png", "X-Filename": "p.png"})
+    assert r.status_code in (200, 201), r.text
+    return r.json()["id"]
+
+
+def test_internal_signed_url_mints_a_link_for_the_owning_tenant():
+    # file-001/002: a real POST must return 200 with a token and a config TTL — proving the endpoint
+    # actually runs (no NameError) and does not accept a caller-supplied lifetime.
+    c = _internal_app()
+    fid = _upload_as(c, "acme")
+    r = c.post(f"/internal/files/{fid}/signed-url",
+               headers={"X-Internal-Token": _ITOKEN}, params={"tenant": "acme"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["url"] and body["expires_in"] > 0
+
+
+def test_internal_signed_url_404s_on_a_tenant_mismatch():
+    c = _internal_app()
+    fid = _upload_as(c, "acme")
+    r = c.post(f"/internal/files/{fid}/signed-url",
+               headers={"X-Internal-Token": _ITOKEN}, params={"tenant": "globex"})
+    assert r.status_code == 404
+
+
+def test_internal_signed_url_ignores_a_caller_supplied_ttl():
+    # A link is a bearer credential; the lifetime is CONFIG, never caller-chosen.
+    c = _internal_app()
+    fid = _upload_as(c, "acme")
+    r = c.post(f"/internal/files/{fid}/signed-url",
+               headers={"X-Internal-Token": _ITOKEN}, params={"tenant": "acme", "ttl": 999999})
+    assert r.status_code == 200
+    from app.config import get_settings
+    assert r.json()["expires_in"] == get_settings().SIGNED_URL_TTL_SECONDS
 
 
 def test_the_signed_token_carries_an_EXPIRY_and_is_tamper_evident():

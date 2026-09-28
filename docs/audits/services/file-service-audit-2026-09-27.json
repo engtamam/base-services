@@ -20,7 +20,10 @@
       "line": 102,
       "scenario": "A background job (e.g. a notification/renewal service with no human JWT) calls POST /internal/files/{file_id}/signed-url to mint a download link. The handler executes `svc = await build_files(request)`, but `build_files` is only imported locally inside drain_scan_queue (129), sweep_uploads (151) and link_subjects (200) — never at module scope and NOT inside internal_signed_url. Python raises NameError at call time, which the error handler turns into a 500. The single documented purpose of this endpoint (let a sibling service hand a user a download without proxying bytes) is completely non-functional in production, and it is advertised in the manifest as an available internal endpoint.",
       "evidence": "svc = await build_files(request)   # line 102, with no `from app.api.v1.files import build_files` in scope",
-      "recommendation": "Add `from app.api.v1.files import build_files` inside internal_signed_url (mirroring the other three internal handlers), or hoist a single module-level import. Add an integration test that actually POSTs to /internal/files/{id}/signed-url and asserts a 200 + token — the existing test only inspects the source string."
+      "recommendation": "Add `from app.api.v1.files import build_files` inside internal_signed_url (mirroring the other three internal handlers), or hoist a single module-level import. Add an integration test that actually POSTs to /internal/files/{id}/signed-url and asserts a 200 + token — the existing test only inspects the source string.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "internal_signed_url now imports build_files locally (mirroring the other three internal handlers); the endpoint no longer raises NameError/500 on every call."
     },
     {
       "id": "file-002",
@@ -31,7 +34,10 @@
       "line": 97,
       "scenario": "test_the_internal_endpoint_requires_the_tenant_to_MATCH and test_the_internal_endpoint_does_not_take_a_caller_supplied_TTL both assert on `inspect.getsource(internal.internal_signed_url)` text and `inspect.signature(...)` rather than invoking the endpoint. Because they never call it through the app, the runtime NameError from file-001 passes CI green forever. This is a textbook 'test that measures nothing' — it verifies a substring is present in the source, not that the behaviour works.",
       "evidence": "src = inspect.getsource(internal.internal_signed_url)\\n    assert 'if not f.tenant or f.tenant != tenant:' in src",
-      "recommendation": "Replace source-string assertions with real request-level tests using the FastAPI TestClient and the internal token: assert a matching tenant returns 200 with a token, a mismatched tenant returns 404, and a caller-supplied ttl query is ignored."
+      "recommendation": "Replace source-string assertions with real request-level tests using the FastAPI TestClient and the internal token: assert a matching tenant returns 200 with a token, a mismatched tenant returns 404, and a caller-supplied ttl query is ignored.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "the two inspect.getsource() 'tests' are replaced with real request-level tests through the FastAPI app + internal token: mint-for-owning-tenant 200, tenant-mismatch 404, and a caller-supplied ttl is ignored (expires_in == SIGNED_URL_TTL_SECONDS). These would have caught file-001."
     },
     {
       "id": "file-003",
@@ -42,7 +48,10 @@
       "line": 251,
       "scenario": "FileService.upload runs `self._scanner.scan(data, ct)` directly in the async request handler. With SCANNER_DRIVER=clamav, ClamavScanner.scan performs a blocking `self._client.instream(io.BytesIO(data))` — a synchronous socket round-trip to clamd that scans up to MAX_UPLOAD_BYTES (25 MiB). On the single-worker event loop this freezes every other coroutine (including /healthz and other requests' rate-limit Redis reads) for the whole scan. The large path correctly offloads via asyncio.to_thread in scan_stream; the small path does not. This is the same class of defect recorded in memory 'blocking-sync-in-async' that previously crash-looped /healthz.",
       "evidence": "self._scanner.scan(data, ct)  # raises Rejected   (file_service.py:251)  ->  ClamavScanner.scan: result = self._client.instream(io.BytesIO(data))",
-      "recommendation": "Wrap the synchronous scan in `await run_in_threadpool(self._scanner.scan, data, ct)` (or asyncio.to_thread), matching how token verification and the streaming scan already offload blocking work."
+      "recommendation": "Wrap the synchronous scan in `await run_in_threadpool(self._scanner.scan, data, ct)` (or asyncio.to_thread), matching how token verification and the streaming scan already offload blocking work.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "FileService.upload now runs the scanner via asyncio.to_thread instead of inline, so the blocking clamd socket round-trip over up to MAX_UPLOAD_BYTES no longer freezes the event loop."
     },
     {
       "id": "file-004",
@@ -53,7 +62,10 @@
       "line": 117,
       "scenario": "_erase_sessions only aborts/rewrites sessions whose status is NOT terminal (`if sess.status not in _TERMINAL`). A subject who completed a large upload has a session in status READY (or QUARANTINED) that still stores owner=subject, filename, declared_sha256 and content_type. After erase(), that row survives untouched, so the subject's identifier and original filename remain in the datastore. The DSAR receipt reports 'all erased' while personal data (owner id + filename, which is frequently PII like 'passport-ahmed.pdf') persists in upload_sessions. This contradicts the class's own promise ('a receipt that cannot say why data survived has not really answered the person').",
       "evidence": "if sess.status not in _TERMINAL and self._objects is not None:  # terminal sessions are skipped entirely, owner/filename never cleared",
-      "recommendation": "For terminal sessions belonging to the subject, either delete the session row or scrub owner/filename/declared_sha256 to the pseudonym, and count them in the erasure receipt. The blob itself is already released via the FileObject delete path; the metadata row must not outlive it."
+      "recommendation": "For terminal sessions belonging to the subject, either delete the session row or scrub owner/filename/declared_sha256 to the pseudonym, and count them in the erasure receipt. The blob itself is already released via the FileObject delete path; the metadata row must not outlive it.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "FileErasure now scrubs TERMINAL upload_session rows (owner->pseudonym, filename/declared_sha256/content_type cleared) in addition to aborting in-flight ones, and counts them in the receipt (upload_session_records); already_absent accounts for them too."
     },
     {
       "id": "file-005",

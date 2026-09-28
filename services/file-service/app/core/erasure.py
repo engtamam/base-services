@@ -79,12 +79,13 @@ class FileErasure:
         # In-flight large uploads are the subject's data too: abort each non-terminal session so its
         # multipart + staging object are released. Without this, an erasure could leave a person's
         # half-uploaded video sitting in the bucket and the receipt would still claim "all erased".
-        aborted = await self._erase_sessions(tenant, subject)
+        aborted, scrubbed = await self._erase_sessions(tenant, subject, ref)
 
         erased = ([f"files:{deleted}"] if deleted else []) + \
                  ([f"linked_files:{linked}"] if linked else []) + \
                  ([f"subject_links:{len(linked_ids)}"] if linked_ids else []) + \
-                 ([f"upload_sessions:{aborted}"] if aborted else [])
+                 ([f"upload_sessions:{aborted}"] if aborted else []) + \
+                 ([f"upload_session_records:{scrubbed}"] if scrubbed else [])
         return {
             "service": self.service,
             "subject_ref": ref,
@@ -92,7 +93,8 @@ class FileErasure:
             "retained": [],
             # "I found nothing" must account for EVERY way this service holds a person, or it is
             # an assertion of absence based on having looked in one place.
-            "already_absent": deleted == 0 and aborted == 0 and not linked_ids,
+            "already_absent": (deleted == 0 and aborted == 0 and scrubbed == 0
+                               and not linked_ids),
         }
 
     async def _delete_file(self, row: dict[str, Any]) -> None:
@@ -114,27 +116,48 @@ class FileErasure:
             except Exception:   # noqa: BLE001 — a missing blob is already erased
                 pass
 
-    async def _erase_sessions(self, tenant: str, subject: str) -> int:
-        aborted = 0
+    async def _erase_sessions(self, tenant: str, subject: str, ref: str) -> tuple[int, int]:
+        """Erase the subject from every upload session — in-flight AND terminal.
+
+        A non-terminal session is aborted (its multipart + staging object released). A TERMINAL
+        session (READY/QUARANTINED) is not in-flight, but its row still stores owner, filename,
+        declared_sha256 and content_type — the subject's identity and what they uploaded (file-004).
+        Those are scrubbed to the pseudonym/empty so the row no longer identifies the person; the blob
+        itself is already handled by the file pass. Returns (aborted, scrubbed)."""
+        aborted = scrubbed = 0
         cursor = None
         while True:
             rows, cursor = await self._store.find(_SESSIONS, {"tenant": tenant, "owner": subject},
                                                   limit=500, after=cursor, sort=("created", "asc"))
             for r in rows:
                 sess = UploadSession.from_dict(r)
-                if sess.status not in _TERMINAL and self._objects is not None:
-                    try:
-                        await self._objects.abort_multipart(sess.staging_key, sess.upload_id)
-                    except Exception:   # noqa: BLE001
-                        pass
-                    try:
-                        await self._objects.delete(sess.staging_key)
-                    except Exception:   # noqa: BLE001
-                        pass
+                if sess.status not in _TERMINAL:
+                    if self._objects is not None:
+                        try:
+                            await self._objects.abort_multipart(sess.staging_key, sess.upload_id)
+                        except Exception:   # noqa: BLE001
+                            pass
+                        try:
+                            await self._objects.delete(sess.staging_key)
+                        except Exception:   # noqa: BLE001
+                            pass
                     sess.status = ABORTED
                     sess.reason = "erased"
+                    sess.owner = ref
+                    sess.filename = ""
+                    sess.declared_sha256 = ""
+                    sess.content_type = ""
                     await self._store.put(_SESSIONS, sess.id, sess.to_dict())
                     aborted += 1
+                else:
+                    # Terminal: scrub the identifying fields in place, keep the row (its lifecycle is
+                    # done). owner -> pseudonym severs the subject link; filename/sha/content_type go.
+                    sess.owner = ref
+                    sess.filename = ""
+                    sess.declared_sha256 = ""
+                    sess.content_type = ""
+                    await self._store.put(_SESSIONS, sess.id, sess.to_dict())
+                    scrubbed += 1
             if not cursor:
                 break
-        return aborted
+        return aborted, scrubbed

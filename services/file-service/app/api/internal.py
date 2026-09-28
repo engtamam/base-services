@@ -99,6 +99,7 @@ async def internal_signed_url(request: Request, file_id: str,
     The TTL is CONFIG. A caller-supplied lifetime would let a job mint a link that outlives the
     reason it was issued, and a link is a bearer credential: whoever holds it is the reader.
     """
+    from app.api.v1.files import build_files   # local import avoids a route<->route import cycle
     svc = await build_files(request)
     try:
         f = await svc.get(file_id)

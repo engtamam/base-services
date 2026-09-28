@@ -15,6 +15,7 @@ Two upload models live here (Phase 34):
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 from typing import Any
@@ -257,7 +258,10 @@ class FileService:
         ct = (content_type or "application/octet-stream").split(";")[0].strip().lower()
         if self._allowed and ct not in self._allowed:
             raise TypeNotAllowed(ct)
-        self._scanner.scan(data, ct)  # raises Rejected
+        # OFFLOAD the blocking scan off the event loop (file-003): the clamav driver does a synchronous
+        # socket round-trip to clamd over up to MAX_UPLOAD_BYTES, which would freeze the single-worker
+        # loop for every other request. Mirrors how token verification and the streaming scan offload.
+        await asyncio.to_thread(self._scanner.scan, data, ct)  # raises Rejected
         sha = hashlib.sha256(data).hexdigest()
         await self._store.put(sha, data, ct)          # idempotent (content-addressed)
         await self._repo.incr_ref(sha)                 # dedup ref-count
