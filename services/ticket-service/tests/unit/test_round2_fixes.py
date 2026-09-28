@@ -123,3 +123,38 @@ def test_reply_capability_enforced_in_core():
     # an operator is always allowed; a caps-less trusted path (grantee/inbound) is exempt by design
     run(svc.reply(tenant="acme", ticket_id=t.id, author="op", body="hi", is_operator=True))
     run(svc.reply(tenant="acme", ticket_id=t.id, author="cust", body="mine", by="customer"))
+
+
+def test_reply_does_not_clobber_a_concurrent_transition():
+    st, svc = _svc(_Interleave())
+    t = run(svc.open(tenant="acme", type="support", subject="hi", body="b", raiser="u"))
+
+    async def _race():
+        await asyncio.gather(
+            svc.transition(tenant="acme", ticket_id=t.id, to="open", actor="op",
+                           actor_caps={"tickets.manage"}, is_operator=True),
+            svc.reply(tenant="acme", ticket_id=t.id, author="cust", body="hello", by="customer"),
+        )
+    run(_race())
+    final = run(svc.get("acme", t.id))
+    assert final.status == "open"
+    kinds = [e["kind"] for e in run(_events(st, t.id))]
+    assert "status_changed" in kinds and "replied" in kinds
+
+
+def test_transition_event_is_appended_even_if_projection_write_is_interrupted():
+    st, svc = _svc()
+    t = run(svc.open(tenant="acme", type="support", subject="hi", body="b", raiser="u"))
+    orig = svc._tickets.cas_save
+
+    async def _boom(ticket):
+        raise RuntimeError("crash after event append, before projection commit")
+    svc._tickets.cas_save = _boom
+    try:
+        run(svc.transition(tenant="acme", ticket_id=t.id, to="open", actor="op",
+                           actor_caps={"tickets.manage"}, is_operator=True))
+    except RuntimeError:
+        pass
+    svc._tickets.cas_save = orig
+    kinds = [e["kind"] for e in run(_events(st, t.id))]
+    assert "status_changed" in kinds

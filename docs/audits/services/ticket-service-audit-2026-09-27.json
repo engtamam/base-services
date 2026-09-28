@@ -20,7 +20,10 @@
       "line": 131,
       "scenario": "A customer POSTs a reply at the same moment an operator moves the ticket new->in_progress. reply() fetched the ticket at line 110 (status=new), the operator's transition() CAS-saves status=in_progress, then reply() calls the plain `self._tickets.save(t)` which serializes its stale in-memory copy (status=new, version unchanged) and put()s it back, silently reverting the status. The class's own _mutate() docstring says assign/tag/escalate were moved off plain save() for exactly this race (ticket-r2-03), but reply() was never migrated.",
       "evidence": "t.touch()\n        await self._tickets.save(t)\n        await self._after(t, tt, \"replied\", actor_ref=actor_ref, body=body)",
-      "recommendation": "reply() mutates no ticket field except updated; either drop the row write entirely and only append the event, or route it through _mutate()/cas_save() with a refetch-on-lost-race like every other mutation."
+      "recommendation": "reply() mutates no ticket field except updated; either drop the row write entirely and only append the event, or route it through _mutate()/cas_save() with a refetch-on-lost-race like every other mutation.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "reply() no longer clobbers a concurrent status/assign transition: after appending the replied event it updates the projection row via a cas_save refetch loop (touching only `updated`) instead of a bare put() of its stale copy. Regression test with an interleaving store."
     },
     {
       "id": "ticket-002",
@@ -31,7 +34,10 @@
       "line": 159,
       "scenario": "The model header declares 'HISTORY IS THE TRUTH ... no reply can silently vanish' and the Ticket row is a rebuildable projection. But transition() does cas_save(t) (line 159) and only then events.append(status_changed) (line 164); _mutate() does the same (cas_save at 101, append at 103). If the process is killed between the row write and the append, the ticket is durably in the new status/assignee/tag with NO event recording it — the log can no longer rebuild the projection and 'who moved it and when' is unanswerable. Note reply() appends the event FIRST then saves (lines 128-131), the safe order for a log-authoritative model, so the two paths disagree.",
       "evidence": "if not await self._tickets.cas_save(t):\n                continue\n            data = {\"from\": frm, \"to\": to, \"resolved\": to in tt.terminal}\n            await self._events.append(tenant=tenant, ticket_id=t.id, kind=\"status_changed\", ...)",
-      "recommendation": "Append the event before (or atomically with) the projection write, or make the projection strictly derivable so a missing event is self-healing; at minimum make the ordering consistent with reply()."
+      "recommendation": "Append the event before (or atomically with) the projection write, or make the projection strictly derivable so a missing event is self-healing; at minimum make the ordering consistent with reply().",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "transition() and _mutate() now append the event BEFORE the projection cas_save, so a crash between the two can no longer leave the projection moved with the event lost from the tamper-evident log (history is the truth; the projection is rebuildable). Regression test simulates a crash after append."
     },
     {
       "id": "ticket-003",

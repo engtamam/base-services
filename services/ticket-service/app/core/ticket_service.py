@@ -98,9 +98,9 @@ class TicketService:
             t = await self._fetch(tenant, ticket_id)
             ev = apply(t)
             t.touch()
+            if ev:
+                await self._events.append(tenant=tenant, ticket_id=t.id, **ev)
             if await self._tickets.cas_save(t):
-                if ev:
-                    await self._events.append(tenant=tenant, ticket_id=t.id, **ev)
                 return t
         raise InvalidTransition(f"{ticket_id}: concurrent updates could not converge")
 
@@ -127,8 +127,12 @@ class TicketService:
         label = by or ("operator" if is_operator else "customer")
         await self._events.append(tenant=tenant, ticket_id=t.id, kind="replied",
                                   actor_ref=actor_ref, body=body, data={"by": label})
-        t.touch()
-        await self._tickets.save(t)
+        for _ in range(5):
+            fresh = await self._fetch(tenant, ticket_id)
+            fresh.touch()
+            if await self._tickets.cas_save(fresh):
+                t = fresh
+                break
         await self._after(t, tt, "replied", actor_ref=actor_ref, body=body)
         return t
 
@@ -156,13 +160,11 @@ class TicketService:
             frm = t.status
             t.status = to
             t.touch()
-            if not await self._tickets.cas_save(t):
-                continue                    # another writer moved first — refetch and re-validate
-            # `resolved` marks a move to a TERMINAL status, so a KPI read (kpis.ticket_kpis) can derive
-            # resolution time from the log without knowing this type's workflow — the log carries it.
             data = {"from": frm, "to": to, "resolved": to in tt.terminal}
             await self._events.append(tenant=tenant, ticket_id=t.id, kind="status_changed",
                                       actor_ref=actor_ref, data=data)
+            if not await self._tickets.cas_save(t):
+                continue                    # another writer moved first — refetch and re-validate
             await self._after(t, tt, "status_changed", actor_ref=actor_ref, data=data)
             return t
         raise InvalidTransition(f"{ticket_id}: concurrent transitions could not converge")
