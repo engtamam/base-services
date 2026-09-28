@@ -19,6 +19,7 @@ from app.core import evaluate as _eval
 from app.core import rollout as _rollout
 from app.core import rules as _rules
 from app.core.models import Flag, iso, now_ts
+from app.core.pii import subject_ref
 from app.core.stores import FlagStore, SegmentStore
 from app.ports.flag_provider import ProviderUnavailable
 
@@ -310,7 +311,6 @@ class FlagService:
             # user id (global personal data) and flag.exposed fans out to every bus subscriber. The
             # ref is stable per (tenant, subject) so an experiment can still count uniques, without
             # publishing the identity. bucket_by is kept so a consumer knows the ref's domain.
-            from app.core.pii import subject_ref
             ref = subject_ref(self._salt, ctx.get("tenant", ""), subject)
             await self._bus.publish("flag.exposed", {
                 "key": flag.get("key", ""), "variant": result.get("variant", ""),

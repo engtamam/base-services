@@ -253,7 +253,7 @@ class InboundStore:
                 return True
         return False                                      # duplicate inside the window
 
-    async def mark_published(self, source: str, provider_event_id: str) -> None:
+    async def mark_published(self, source: str, provider_event_id: str) -> None:  # atomic: ok — idempotent monotonic flag flip (published False->True only); concurrent writers set the identical value, a lost update just re-flips to the same True, no data lost
         """Flip the outbox flag once the event is confirmed on the bus (webhook-002)."""
         key = self._key(source, provider_event_id)
         row = await self._store.get(_INBOUND, key)

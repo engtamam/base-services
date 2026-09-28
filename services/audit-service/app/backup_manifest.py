@@ -37,5 +37,9 @@ BACKUP: dict[str, Any] = {
                    "state for the sink's retry window (seconds), pruned by retention. The receipt it "
                    "guards lives in audit_events; restoring stale keys would only, at worst, dedup a "
                    "post-restore retry against an event that is already present"},
+        {"name": "audit_purge_journal",
+         "reason": "transient purge-recovery state (one in-flight row per partition, cleared on "
+                   "completion) that lets an interrupted purge resume; it references audit_events/"
+                   "audit_meta which ARE backed up, so a restore rebuilds from those, never the journal"},
     ],
 }

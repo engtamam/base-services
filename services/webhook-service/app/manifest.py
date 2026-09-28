@@ -70,7 +70,8 @@ def build_manifest(
              "erasure_category": "subject"},
             {"path": "/internal/webhooks/dispatch", "tier": "internal", "method": "POST"},
             {"path": "/internal/webhooks/deliver/{id}", "tier": "internal", "method": "POST"},
-            {"path": "/internal/webhooks/sweep", "tier": "internal", "method": "POST"},            # Backup fan-out (backup-service orchestrates): export + verify + import this
+            {"path": "/internal/webhooks/sweep", "tier": "internal", "method": "POST"},
+            {"path": "/internal/inbound/republish", "tier": "internal", "method": "POST"},            # Backup fan-out (backup-service orchestrates): export + verify + import this
             # service's data. Declared so the fan-out discovers this holder — an undeclared holder
             # is one nobody backs up.
             {"path": "/internal/backup/export", "tier": "internal", "method": "POST"},

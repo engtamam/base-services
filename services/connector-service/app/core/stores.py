@@ -18,8 +18,14 @@ class ConnectionStore:
         self._store = store
 
     async def save(self, c: Connection) -> Connection:
-        await self._store.put(_CONN, c.id, c.to_dict())
-        return c
+        if await self._store.cas(_CONN, c.id, 0, c.to_dict()):
+            return c
+        for _ in range(8):
+            row = await self._store.get(_CONN, c.id)
+            ver = int((row or {}).get("version", 0))
+            if await self._store.cas(_CONN, c.id, ver, c.to_dict()):
+                return c
+        raise RuntimeError("connection save contention")
 
     async def mutate(self, connection_id: str, apply) -> Connection | None:
         """Atomically load-mutate-save the Connection aggregate under an optimistic CAS (connector-003).

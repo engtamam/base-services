@@ -42,6 +42,7 @@ _INDEXES = (
     f"CREATE INDEX IF NOT EXISTS kv_received_desc ON {_TABLE} "
     f"(collection, COALESCE(value->'received', 'null'::jsonb) DESC, key DESC)",
 )
+# sort-index: ok received_ts — pending_publish reads the small, shrinking outbox backlog (published==False rows only; a healthy bus keeps it near-empty) via a cron sweep, not a request path
 
 
 

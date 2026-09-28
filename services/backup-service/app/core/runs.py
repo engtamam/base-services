@@ -46,5 +46,7 @@ class RunStore:
         """EVERY run, newest first — the retention sweeper's full view (backup-005). Uses scan_all so
         it enumerates the WHOLE (retention-bounded) collection, including legacy rows without `kind`,
         so no run past the retention window is ever missed and left with orphaned archives forever."""
+        # sweeper: retention's full-collection pass over the tiny, retention-bounded run log — not a
+        # request path; the whole log IS the operation (see recent() for the hot-path indexed read).
         rows = await self._s.scan_all(_COLL, _RECENT_SCAN)
         return sorted(rows, key=lambda r: r.get("started_at", ""), reverse=True)

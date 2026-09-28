@@ -39,6 +39,7 @@ _INDEXES = (
     f"CREATE INDEX IF NOT EXISTS kv_created_at_desc ON {_TABLE} "
     f"(collection, COALESCE(value->'created_at', 'null'::jsonb) DESC, key DESC)",
 )
+# sort-index: ok started_at — backup_runs is retention-bounded (BACKUP_RUN_HISTORY); recent() reads a small capped log filtered on a constant kind, not an unbounded per-tenant listing
 
 
 
