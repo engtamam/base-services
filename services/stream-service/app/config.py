@@ -376,7 +376,9 @@ class Settings(BaseSettings):
     HLS_WINDOW_SEGMENTS: int = 5
     HLS_LOW_LATENCY: bool = False
     WEBRTC_ENABLED: bool = False
-    WEBRTC_MAX_VIEWERS_PER_SESSION: int = 25
+    # (WEBRTC_MAX_VIEWERS_PER_SESSION removed — stream-005: WHEP subscription is handled by the media
+    # server, not this service, so this app has no viewer accounting to enforce a per-session cap. An
+    # advertised limit nothing applies is worse than none; enforce it in the media server instead.)
     # The media server the engine WHIP-publishes to and the browser WHEP-subscribes from (e.g.
     # http://mediamtx:8889). Media flows engine → this server → browser, never through the app.
     WEBRTC_MEDIA_BASE_URL: str = ""
@@ -468,8 +470,9 @@ class Settings(BaseSettings):
     # Quotas (per-tenant fairness; fail-closed via the entitlement pattern).
     STREAM_MAX_CONCURRENT_SESSIONS_GLOBAL: int = 100
     STREAM_MAX_CONCURRENT_SESSIONS_PER_TENANT: int = 10
-    STREAM_MAX_HOURS_MONTH: int = 0              # 0 = unlimited
-    STREAM_MAX_STORAGE_BYTES: int = 0            # 0 = unlimited
+    # (STREAM_MAX_HOURS_MONTH / STREAM_MAX_STORAGE_BYTES removed — stream-004: no per-tenant monthly
+    # usage accounting exists to enforce them. Storage is bounded by RETENTION_DAYS +
+    # RETENTION_MAX_BYTES, which ARE enforced in enforce_retention. Concurrency is capped above.)
 
     # Security.
     STREAM_ALLOWED_HOSTS: str = ""              # comma list of host/CIDR; empty = any public host

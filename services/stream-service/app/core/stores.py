@@ -166,6 +166,15 @@ class RecordingStore:
                                           sort=("started", "desc"))
         return [Recording.from_dict(r) for r in rows], cursor
 
+    async def iter_unlocked_newest(self, limit: int = 200,
+                                   after: str | None = None) -> tuple[list[Recording], str | None]:
+        """Non-locked recordings NEWEST-first — the byte-budget retention pass keeps the newest bytes
+        up to RETENTION_MAX_BYTES and deletes everything older. Locked (legal-hold) rows are excluded,
+        so a hold is never counted against or evicted by the byte budget."""
+        rows, cursor = await self._s.find(_RECORDINGS, {"locked": False}, limit=limit, after=after,
+                                          sort=("started", "desc"))
+        return [Recording.from_dict(r) for r in rows], cursor
+
     async def iter_expired(self, cutoff_iso: str, limit: int = 200,
                            after: str | None = None) -> tuple[list[Recording], str | None]:
         """Recordings started before the cutoff — the retention sweeper's page (locked ones are

@@ -44,8 +44,9 @@ def build_stream_service(request: Request) -> StreamService:
         hls_segment_seconds=s.HLS_SEGMENT_SECONDS, hls_window_segments=s.HLS_WINDOW_SEGMENTS,
         record_segment_seconds=s.RECORD_SEGMENT_SECONDS, record_format=s.RECORD_FORMAT,
         connect_timeout_s=s.SESSION_START_TIMEOUT_SECONDS, reconnect_max=s.RECONNECT_MAX,
-        reconnect_backoff_ms=s.RECONNECT_BACKOFF_MS, webrtc_max_viewers=s.WEBRTC_MAX_VIEWERS_PER_SESSION)
-    shipper = RecordingShipper(sink=c.recording_sink, recordings=RecordingStore(c.datastore))
+        reconnect_backoff_ms=s.RECONNECT_BACKOFF_MS)
+    shipper = RecordingShipper(sink=c.recording_sink, recordings=RecordingStore(c.datastore),
+                               record_segment_seconds=s.RECORD_SEGMENT_SECONDS)
     return StreamService(
         sources=SourceStore(c.datastore), sessions=SessionStore(c.datastore),
         placer=c.session_placer, engine=c.stream_engine, sealer=c.sealer,

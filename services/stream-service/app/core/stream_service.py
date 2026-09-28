@@ -44,7 +44,7 @@ class StreamConfig:
                  hls_segment_seconds: int = 2, hls_window_segments: int = 5,
                  record_segment_seconds: int = 60, record_format: str = "fmp4",
                  connect_timeout_s: int = 20, reconnect_max: int = 20,
-                 reconnect_backoff_ms: int = 500, webrtc_max_viewers: int = 25) -> None:
+                 reconnect_backoff_ms: int = 500) -> None:
         self.webrtc_enabled = webrtc_enabled
         self.webrtc_media_base = webrtc_media_base.rstrip("/")
         self.hls_segment_seconds = hls_segment_seconds
@@ -54,7 +54,6 @@ class StreamConfig:
         self.connect_timeout_s = connect_timeout_s
         self.reconnect_max = reconnect_max
         self.reconnect_backoff_ms = reconnect_backoff_ms
-        self.webrtc_max_viewers = webrtc_max_viewers
         self.default_mode = default_mode
         self.default_outputs = default_outputs
         self.max_duration_s = max_duration_s
@@ -263,11 +262,14 @@ class StreamService:
         return {"stopped": stopped, "reaped_dead": dead,
                 "killed_orphans": len(res.killed_orphans)}
 
-    async def enforce_retention(self, *, days: int, recordings, sink, limit: int = 200) -> dict[str, int]:
-        """Delete recordings older than `days`, releasing each segment's bytes in the sink.
+    async def enforce_retention(self, *, days: int, recordings, sink, limit: int = 200,
+                                max_bytes: int = 0) -> dict[str, int]:
+        """Delete recordings past `days`, then (when max_bytes>0) past the RETENTION_MAX_BYTES budget.
 
-        A LOCKED recording (legal hold) is never touched — the store's iter_expired already filters
-        them. Bounded, off-request. Idempotent: a deleted recording just isn't found next time.
+        A LOCKED recording (legal hold) is never touched — the store filters them. Bounded, off-request.
+        Idempotent: a deleted recording just isn't found next time. The byte-budget pass (stream-004)
+        keeps the NEWEST recordings up to max_bytes and evicts everything older, so continuous
+        recording within RETENTION_DAYS can no longer grow storage without bound past the declared cap.
         """
         import datetime as _dt
         cutoff = (_dt.datetime.fromtimestamp(self._clock(), _dt.timezone.utc)
@@ -287,6 +289,31 @@ class StreamService:
                 deleted += 1
             if not cursor:
                 break
+
+        # ── byte-budget pass (RETENTION_MAX_BYTES) ──────────────────────────────
+        if max_bytes and max_bytes > 0:
+            kept = 0
+            over_budget = False
+            cursor = None
+            while True:
+                batch, cursor = await recordings.iter_unlocked_newest(limit=limit, after=cursor)
+                for rec in batch:
+                    rec_bytes = int(rec.total_bytes or 0)
+                    if not over_budget and kept + rec_bytes <= max_bytes:
+                        kept += rec_bytes
+                        continue
+                    # Budget filled — this recording and every OLDER one (newest-first walk) are evicted.
+                    over_budget = True
+                    for seg in rec.segments:
+                        try:
+                            await sink.delete(seg.get("ref", ""))
+                            segments += 1
+                        except Exception:   # noqa: BLE001
+                            pass
+                    await recordings.delete(rec.id)
+                    deleted += 1
+                if not cursor:
+                    break
         return {"deleted_recordings": deleted, "deleted_segments": segments}
 
     # ── helpers ──────────────────────────────────────────────────────────────────

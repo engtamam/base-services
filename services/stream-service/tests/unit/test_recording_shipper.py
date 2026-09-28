@@ -67,3 +67,29 @@ def test_empty_dir_ships_nothing(tmp_path):
     shipper, _, _ = _shipper()
     assert run(shipper.ship_session(tenant="t", session_id="s4", source_id="src",
                                     output_dir=str(tmp_path))) == 0
+
+
+def test_segments_are_stamped_with_footage_time_not_ship_time(tmp_path):
+    """stream-003: each segment's start/end must be its FOOTAGE time range (recording start +
+    seq*duration), not start==end==the ship instant — otherwise export windowing selects nothing."""
+    import datetime as _dt
+
+    d = str(tmp_path)
+    for n in range(3):
+        _seg(d, n)
+    ds = MemoryDataStore()
+    recs = RecordingStore(ds)
+    shipper = RecordingShipper(sink=MemoryRecordingSink(), recordings=recs,
+                               record_segment_seconds=60)
+    run(shipper.ship_session(tenant="t", session_id="s5", source_id="src", output_dir=d, final=True))
+    rec = run(recs.get("s5"))
+    segs = sorted(rec.segments, key=lambda s: s["seq"])
+    # every segment has a real, non-empty range and start < end
+    for s in segs:
+        assert s["start"] and s["end"] and s["start"] < s["end"]
+    # consecutive segments advance by exactly the segment duration and never overlap
+    starts = [_dt.datetime.fromisoformat(s["start"]) for s in segs]
+    assert (starts[1] - starts[0]) == _dt.timedelta(seconds=60)
+    assert (starts[2] - starts[1]) == _dt.timedelta(seconds=60)
+    # and seg[0].end == seg[1].start (contiguous half-open ranges)
+    assert segs[0]["end"] == segs[1]["start"]

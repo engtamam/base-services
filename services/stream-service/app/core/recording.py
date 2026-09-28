@@ -12,6 +12,7 @@ deleted locally, so a re-run never double-ships. Driven by the sweep CronJob.
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 import os
 import time
 
@@ -19,11 +20,26 @@ from app.core.models import Recording, new_id, now
 from app.core.stores import RecordingStore
 
 
+def _iso_at(base_iso: str, offset_seconds: float) -> str:
+    """base_iso (an ISO-8601 instant) shifted by offset_seconds, back as ISO. Falls back to base_iso
+    if it cannot be parsed, so a malformed anchor never crashes shipping."""
+    try:
+        base = _dt.datetime.fromisoformat(base_iso)
+    except (TypeError, ValueError):
+        return base_iso
+    return (base + _dt.timedelta(seconds=offset_seconds)).isoformat()
+
+
 class RecordingShipper:
-    def __init__(self, *, sink, recordings: RecordingStore, ship_lease_seconds: float = 300.0) -> None:
+    def __init__(self, *, sink, recordings: RecordingStore, ship_lease_seconds: float = 300.0,
+                 record_segment_seconds: int = 60) -> None:
         self._sink = sink
         self._recordings = recordings
         self._lease_ttl = ship_lease_seconds
+        # Segment duration, so each shipped segment can be stamped with its FOOTAGE time range
+        # (recording start + seq*duration), not the ship instant (stream-003) — export windowing and
+        # coverage measurement read exactly these start/end fields.
+        self._seg_secs = record_segment_seconds
 
     async def ship_session(self, *, tenant: str, session_id: str, source_id: str,
                            output_dir: str, record_ext: str = "mp4",
@@ -64,9 +80,15 @@ class RecordingShipper:
                 except OSError:
                     continue
                 seq = _seq_of(name)
+                # Footage time range, derived from the recording's start and this segment's sequence
+                # number — NOT the ship instant (stream-003). rec.segment[seq] covers
+                # [started + seq*seg, started + (seq+1)*seg), so a request for a real window selects
+                # the right segments and coverage is measured over real footage seconds.
+                seg_start = _iso_at(rec.started, seq * self._seg_secs)
+                seg_end = _iso_at(rec.started, (seq + 1) * self._seg_secs)
                 ref = await self._sink.put_segment(
                     tenant=tenant, session_id=session_id, seq=seq, data=data,
-                    content_type="video/mp4", start=now(), end=now())
+                    content_type="video/mp4", start=seg_start, end=seg_end)
                 rec.segments.append({"ref": ref.ref, "bytes": ref.bytes, "start": ref.start,
                                      "end": ref.end, "seq": seq})
                 rec.total_bytes += ref.bytes
@@ -93,5 +115,9 @@ class RecordingShipper:
 
 
 def _seq_of(name: str) -> int:
-    digits = "".join(c for c in name if c.isdigit())
+    # Parse the sequence from the STEM only. Scanning the whole filename swept the digit out of the
+    # extension too ("rec_00000000.mp4" -> "...0004" = 4), which was harmless while seq was just a
+    # storage-key suffix but is wrong now that seq drives each segment's footage time range (stream-003).
+    stem = name.rsplit(".", 1)[0]
+    digits = "".join(c for c in stem if c.isdigit())
     return int(digits) if digits else 0

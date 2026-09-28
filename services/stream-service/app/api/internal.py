@@ -131,7 +131,8 @@ async def enforce_retention(request: Request) -> dict:
     svc = build_stream_service(request)
     return await svc.enforce_retention(days=s.RETENTION_DAYS,
                                        recordings=RecordingStore(c.datastore),
-                                       sink=c.recording_sink)
+                                       sink=c.recording_sink,
+                                       max_bytes=s.RETENTION_MAX_BYTES)
 
 
 class EraseIn(BaseModel):

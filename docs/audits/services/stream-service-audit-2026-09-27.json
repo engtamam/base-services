@@ -49,7 +49,10 @@
       "line": 69,
       "scenario": "RecordingShipper.ship_session stores every segment with start=now() and end=now() (the moment it is shipped), not the actual recorded time range. ExportService._sources_for selects segments with _overlaps(seg.start, seg.end, exp.start, exp.end) and _uncovered_seconds measures coverage from the same fields. Because every segment has start==end==ship-instant, a request for footage over a real window (e.g. 10:00-10:05) matches only segments whose ship instant happens to fall inside the window, and _uncovered_seconds reports nearly the whole window as missing on essentially every export. An incident-review clip pulls the wrong (or no) footage and reports a false gap.",
       "evidence": "ref = await self._sink.put_segment(\n    tenant=tenant, session_id=session_id, seq=seq, data=data,\n    content_type=\"video/mp4\", start=now(), end=now())\nrec.segments.append({\"ref\": ref.ref, \"bytes\": ref.bytes, \"start\": ref.start, \"end\": ref.end, \"seq\": seq})",
-      "recommendation": "Derive each segment's start/end from the footage timeline (segment sequence * record_segment_seconds relative to the session/recording start, or the mtime/duration ffmpeg wrote), not from the ship time. Add a test that exports a window and asserts the correct segments are chosen and missing_seconds is 0 for fully-covered footage."
+      "recommendation": "Derive each segment's start/end from the footage timeline (segment sequence * record_segment_seconds relative to the session/recording start, or the mtime/duration ffmpeg wrote), not from the ship time. Add a test that exports a window and asserts the correct segments are chosen and missing_seconds is 0 for fully-covered footage.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "RecordingShipper now stamps each segment's start/end with its FOOTAGE time range (recording start + seq*record_segment_seconds), not the ship instant, so export windowing/coverage select the right segments. Also fixed _seq_of, which had been sweeping the digit out of the '.mp4' extension into the sequence number (harmless as a storage key, wrong once seq drives timing). Regression test asserts contiguous 60s ranges."
     },
     {
       "id": "stream-004",
@@ -60,7 +63,10 @@
       "line": 240,
       "scenario": "enforce_retention deletes only by age (days). RETENTION_MAX_BYTES, STREAM_MAX_STORAGE_BYTES and STREAM_MAX_HOURS_MONTH are surfaced in the manifest (manifest.py:136-140) and documented as caps, but no code reads them for enforcement (grep shows only config + manifest references). A tenant recording continuously within RETENTION_DAYS grows storage without bound; the operator sees a byte/hours ceiling in the manifest that does nothing. Per the project's advertised-but-unread-knobs rule, a knob nothing reads is worse than an absent one.",
       "evidence": "async def enforce_retention(self, *, days: int, recordings, sink, limit: int = 200) ... # age-based only; no byte/hours ceiling read\n# manifest.py: \"retention_max_bytes\": settings.RETENTION_MAX_BYTES, \"max_hours_month\": settings.STREAM_MAX_HOURS_MONTH, \"max_storage_bytes\": settings.STREAM_MAX_STORAGE_BYTES",
-      "recommendation": "Either enforce these caps (byte-budget retention pass; monthly hours/storage quota checked at session start alongside concurrency) or remove them from config and manifest. Do not advertise a limit nothing applies."
+      "recommendation": "Either enforce these caps (byte-budget retention pass; monthly hours/storage quota checked at session start alongside concurrency) or remove them from config and manifest. Do not advertise a limit nothing applies.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "RETENTION_MAX_BYTES is now ENFORCED: enforce_retention runs a byte-budget pass (iter_unlocked_newest) that keeps the newest recordings up to the cap and evicts everything older, legal holds exempt. STREAM_MAX_HOURS_MONTH and STREAM_MAX_STORAGE_BYTES were removed from config+manifest (no per-tenant monthly usage accounting exists to enforce them; storage is bounded by RETENTION_DAYS+RETENTION_MAX_BYTES). Regression test added."
     },
     {
       "id": "stream-005",
@@ -71,7 +77,10 @@
       "line": 54,
       "scenario": "WEBRTC_MAX_VIEWERS_PER_SESSION is read, passed through StreamConfig as webrtc_max_viewers, and stored on cfg — but grep shows self.webrtc_max_viewers is only ASSIGNED, never read. _playback hands out the WHEP url and ICE servers with no per-session viewer accounting or cap. The declared per-session viewer limit does nothing, so a single session can be subscribed by unlimited WebRTC viewers against the media server — the exact resource-exhaustion the knob claims to bound.",
       "evidence": "self.webrtc_max_viewers = webrtc_max_viewers   # set...\n# ...and never referenced again anywhere in the service",
-      "recommendation": "Enforce the cap where viewers are admitted (track active WHEP viewers per session, refuse or 429 beyond the cap), or delete the knob and its manifest advertisement."
+      "recommendation": "Enforce the cap where viewers are admitted (track active WHEP viewers per session, refuse or 429 beyond the cap), or delete the knob and its manifest advertisement.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "WEBRTC_MAX_VIEWERS_PER_SESSION removed from config, manifest, and StreamConfig — WHEP subscription is handled by the media server, not this service, so there is no viewer accounting here to enforce it; an advertised cap nothing applies is worse than none (enforce in the media server)."
     },
     {
       "id": "stream-006",
