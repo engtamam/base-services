@@ -297,3 +297,26 @@ def test_csv_export_neutralises_formula_injection():
 def test_csv_export_of_an_empty_result_is_safe():
     out = CsvWarehouse().export([])
     assert out is None or out[1] == b"" or out[1].strip() == b""
+
+
+def test_filters_without_dimensions_are_refused():
+    from app.core.query import QueryError
+    ing, q, _ = _env()
+    run(ing.ingest(event_id="e1", tenant="t1", name="orders", event_time=BASE + 60,
+                   props={"status": "ok"}))
+    with pytest.raises(QueryError):
+        run(q.query(tenant="t1", metric="orders", agg="count", granularity="hour",
+                    start_ts=BASE, end_ts=BASE + 3600, filters={"status": "failed"}))
+
+
+def test_filters_with_a_dimension_are_applied():
+    ing, q, _ = _env()
+    run(ing.ingest(event_id="e1", tenant="t1", name="orders", event_time=BASE + 60,
+                   props={"status": "ok"}))
+    run(ing.ingest(event_id="e2", tenant="t1", name="orders", event_time=BASE + 60,
+                   props={"status": "failed"}))
+    r = run(q.query(tenant="t1", metric="orders", agg="count", granularity="hour",
+                    start_ts=BASE, end_ts=BASE + 3600, dimensions=["status"],
+                    filters={"status": "failed"}))
+    assert r["group_count"] == 1
+    assert sum(r["groups"].values()) == 1

@@ -66,6 +66,9 @@ class QueryService:
                     end_ts=end_ts, dimensions=dimensions, percentile=percentile,
                     max_range_days=self._cfg["max_range_days"], max_groups=self._cfg["max_groups"])
         norm_filters = _q.normalize_filters(filters)
+        if norm_filters and not dimensions:
+            raise _q.QueryError("filters require at least one dimension; the no-dimension rollup is a "
+                                "grand total and cannot be filtered")
         tz = self._cfg["tz_offset"] if tz_offset_minutes is None else int(tz_offset_minutes)
 
         gen = await self._gen(tenant)

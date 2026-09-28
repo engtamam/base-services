@@ -3,7 +3,12 @@
   "date": "2026-09-27",
   "summary": {
     "total": 23,
-    "by_severity": {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 11, "LOW": 11}
+    "by_severity": {
+      "CRITICAL": 0,
+      "HIGH": 1,
+      "MEDIUM": 11,
+      "LOW": 11
+    }
   },
   "findings": [
     {
@@ -15,7 +20,10 @@
       "line": 83,
       "scenario": "A user POSTs /api/v1/analytics/query with metric='orders', filters={'status':'failed'} and NO dimensions. `normalize_filters` accepts the filter, but the non-grouped branch reads the no-dims rollup total and never applies `norm_filters`. The response is the tenant's TOTAL order count, not failed orders — a silently wrong (over-counting) answer the caller believes is filtered. Filters are only honoured in the `if dimensions:` branch.",
       "evidence": "norm_filters = _q.normalize_filters(filters)\n...\n        else:\n            keys = [rollup_key(tenant, metric, granularity, b, {}) for b in bucket_keys]\n            rollups = await self._rollups.get_many(keys)      # keyed reads — no scan\n            result = {\"series\": self._series(rollups, agg, percentile, tz, granularity),\n                      \"total\": self._aggregate([r for r in rollups], agg, percentile)}",
-      "recommendation": "If filters are present but no dimensions are requested, either refuse with a QueryError (filters require the dimensioned cells) or route through the grouped/range_cells path so `_matches` is applied. Never accept a filter and silently ignore it."
+      "recommendation": "If filters are present but no dimensions are requested, either refuse with a QueryError (filters require the dimensioned cells) or route through the grouped/range_cells path so `_matches` is applied. Never accept a filter and silently ignore it.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "query() now refuses (QueryError) a request that carries filters but no dimensions, instead of silently returning the unfiltered no-dimension rollup grand total; filters require the dimensioned cells. Regression tests added."
     },
     {
       "id": "analytics-002",
