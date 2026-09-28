@@ -134,10 +134,11 @@ async def internal_triage(request: Request, body: TriageIn) -> dict:
     from app.adapters.model.http_provider import current_tenant
     tok = current_tenant.set(body.tenant or "")   # so a tenant's own model key is used, if configured
     try:
+        _s = get_settings()
         return await support.triage(
             request.app.state.container.model, current_type=body.current_type, subject=body.subject,
             body=body.body, candidate_types=tuple(body.candidate_types),
-            lang=get_settings().DEFAULT_LANGUAGE)
+            lang=_s.DEFAULT_LANGUAGE, redact_pii=_s.REDACT_PII, redact_max_chars=_s.REDACT_MAX_CHARS)
     finally:
         current_tenant.reset(tok)
 
@@ -149,9 +150,10 @@ async def internal_draft(request: Request, body: DraftIn) -> dict:
     from app.adapters.model.http_provider import current_tenant
     tok = current_tenant.set(body.tenant or "")
     try:
+        _s = get_settings()
         return await support.draft(
             request.app.state.container.model, subject=body.subject, thread=body.thread,
-            lang=get_settings().DEFAULT_LANGUAGE)
+            lang=_s.DEFAULT_LANGUAGE, redact_pii=_s.REDACT_PII, redact_max_chars=_s.REDACT_MAX_CHARS)
     finally:
         current_tenant.reset(tok)
 
@@ -407,6 +409,26 @@ async def invoke_connection(request: Request, cid: str, body: ConnInvokeIn) -> d
     from app.core.connections import invoke as _invoke
     from app.core.connections import invoke_conversation as _invoke_conv
     from app.ports.model import ModelError
+    from app.core.redaction import redact
+    _s = get_settings()
+
+    def _clean(text: str) -> str:
+        return redact(text or "", enabled=_s.REDACT_PII, max_chars=_s.REDACT_MAX_CHARS).text
+
+    def _clean_messages(msgs):
+        # Redact the free-text `content` of user turns before it leaves for a third-party model
+        # (assistant-005), WITHOUT touching tool_call structure / non-string content (which would
+        # corrupt a tool-calling transcript).
+        if not isinstance(msgs, list):
+            return _clean(msgs) if isinstance(msgs, str) else msgs
+        out = []
+        for m in msgs:
+            if isinstance(m, dict) and m.get("role") == "user" and isinstance(m.get("content"), str):
+                out.append({**m, "content": _clean(m["content"])})
+            else:
+                out.append(m)
+        return out
+
     cstore = _connections(request)
     conn = await cstore.get(body.tenant, cid)
     if conn is None:
@@ -417,11 +439,13 @@ async def invoke_connection(request: Request, cid: str, body: ConnInvokeIn) -> d
             messages = body.messages if body.messages is not None else body.prompt
             if not messages:
                 raise HTTPException(422, "prompt or messages is required")
+            messages = _clean_messages(messages)
             return await _invoke_conv(conn, messages=messages, converse=model.converse,
                                       store=cstore, max_tokens=body.max_tokens)
         if not body.prompt:
             raise HTTPException(422, "prompt or messages is required")
-        result = await _invoke(conn, prompt=body.prompt, caller=_conn_caller(request, conn, body.priority),
+        result = await _invoke(conn, prompt=_clean(body.prompt),
+                               caller=_conn_caller(request, conn, body.priority),
                                store=cstore, max_tokens=body.max_tokens)
         return {"kind": "text", **result}      # uniform shape: kind alongside the existing text field
     except ModelError as exc:

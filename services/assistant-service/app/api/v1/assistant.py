@@ -116,9 +116,12 @@ async def ask(request: Request, body: AskIn,
         )
     finally:
         current_tenant.reset(_tok)
-    if answer.abstained:
-        # Refunded: an abstention did no work worth paying for, and charging for one would mean a
-        # user burns their day discovering a gap in the knowledge base.
+    # Refund ONLY the pre-model NO_EVIDENCE gate (assistant-002): that abstention short-circuits
+    # BEFORE any provider call, so it cost nothing to serve. UNSUPPORTED and MODEL_FAILED both already
+    # called the model (real provider compute — the bill the daily quota exists to bound), so they must
+    # count against the ceiling; refunding them let a user burn unlimited paid model calls for free.
+    from app.core.answering import NO_EVIDENCE
+    if answer.abstained and answer.abstained_because == NO_EVIDENCE:
         await quota.refund(tenant=principal.tenant or "", subject_ref=spender)
 
     if answer.abstained:

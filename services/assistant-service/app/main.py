@@ -47,6 +47,17 @@ def create_app() -> FastAPI:
     settings.assert_pii_config_ok()
     settings.assert_cors_config_ok()
     settings.assert_secrets_config_ok()
+    # assistant-003: the AI-connection routes (CRUD/invoke, tenant taken from the body) are too
+    # sensitive to rely on the default-open internal policy. In production they MUST be explicitly
+    # allow-listed in INTERNAL_ROUTE_POLICY_JSON so only the intended service(s) can reach them.
+    if settings.is_production:
+        from app.core.internal_caller_factory import resolve_internal_policy
+        if not resolve_internal_policy(settings).covers("/internal/assistant/connections"):
+            raise ValueError(
+                "/internal/assistant/connections* is default-open in production: add an explicit "
+                "INTERNAL_ROUTE_POLICY_JSON allow-list naming the services that may manage/invoke "
+                "AI connections. A default-open route lets any internal caller CRUD/invoke any "
+                "tenant's connections (assistant-003).")
     configure_logging(settings.SERVICE_NAME, settings.ENV, settings.LOG_LEVEL)
     logger = get_logger("app.main")
 

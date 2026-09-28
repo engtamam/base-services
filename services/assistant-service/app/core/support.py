@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from app.core.redaction import redact
 from app.ports.model import ModelError, Passage
 
 
@@ -41,7 +42,8 @@ def _json_object(text: str) -> dict:
 
 
 async def triage(model: Any, *, current_type: str, subject: str, body: str,
-                 candidate_types: tuple[str, ...], lang: str = "en") -> dict:
+                 candidate_types: tuple[str, ...], lang: str = "en",
+                 redact_pii: bool = True, redact_max_chars: int = 20_000) -> dict:
     """Suggest {type, priority, tags, confidence, summary} for a new ticket. {} means no suggestion."""
     if not _generative(model):
         return {}
@@ -52,6 +54,10 @@ async def triage(model: Any, *, current_type: str, subject: str, body: str,
         '"tags": [up to 5 short lowercase tags], "confidence": 0.0-1.0, '
         '"summary": "one sentence"}. '
         f"Candidate types: {types}.")
+    # REDACT PII before the ticket reaches the third-party model (assistant-004), mirroring the /ask
+    # path — a support ticket routinely carries cards/IBAN/national-id/phone the LLM must never see.
+    subject = redact(subject or "", enabled=redact_pii, max_chars=redact_max_chars).text
+    body = redact(body or "", enabled=redact_pii, max_chars=redact_max_chars).text
     passage = Passage(ref="ticket", title=subject or "ticket",
                       text=f"Subject: {subject}\n\n{body}")
     try:
@@ -70,7 +76,8 @@ async def triage(model: Any, *, current_type: str, subject: str, body: str,
     }
 
 
-async def draft(model: Any, *, subject: str, thread: list[dict], lang: str = "en") -> dict:
+async def draft(model: Any, *, subject: str, thread: list[dict], lang: str = "en",
+                redact_pii: bool = True, redact_max_chars: int = 20_000) -> dict:
     """Draft a reply for an agent to review. {} means no draft (no generative model, or nothing back)."""
     if not _generative(model):
         return {}
@@ -78,6 +85,9 @@ async def draft(model: Any, *, subject: str, thread: list[dict], lang: str = "en
                       for m in (thread or []) if isinstance(m, dict))
     question = ("Draft a concise, professional reply a support agent will review before sending. "
                 "Reply with ONLY the message text — no preamble, no signature placeholder.")
+    # REDACT the whole thread + subject before it reaches the external model (assistant-004).
+    subject = redact(subject or "", enabled=redact_pii, max_chars=redact_max_chars).text
+    convo = redact(convo, enabled=redact_pii, max_chars=redact_max_chars).text
     passage = Passage(ref="thread", title=subject or "ticket",
                       text=f"Subject: {subject}\n\n{convo}")
     try:

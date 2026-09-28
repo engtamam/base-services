@@ -23,11 +23,46 @@ the API layer discards.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, Awaitable, Callable
 
 from app.ports.errors import ConfigError
 from app.ports.model import ModelAnswer, ModelError, Passage
+
+
+def _pinned_post(target, url, headers, payload, timeout):   # pragma: no cover - live provider
+    """POST to the exact validated IP `target.ip`, with TLS SNI + certificate verified against the
+    ORIGINAL hostname and a Host header of the hostname — so a DNS rebind between validation and
+    connect cannot redirect the request (assistant-001). Mirrors the fleet's pinned-connection SSRF
+    pattern; run inside asyncio.to_thread since http.client is blocking."""
+    import http.client
+    import ssl as _ssl
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url)
+    path = parts.path or "/"
+    if parts.query:
+        path = f"{path}?{parts.query}"
+    body = json.dumps(payload).encode("utf-8")
+    out_headers = {**(headers or {}), "Host": target.host, "Content-Type": "application/json"}
+    if parts.scheme == "https":
+        ctx = _ssl.create_default_context()
+        conn = http.client.HTTPSConnection(
+            target.ip, target.port, timeout=timeout, context=ctx,
+            server_hostname=target.host)          # SNI + cert checked against the hostname, not the IP
+    else:
+        conn = http.client.HTTPConnection(target.ip, target.port, timeout=timeout)
+    try:
+        conn.request("POST", path, body=body, headers=out_headers)
+        resp = conn.getresponse()
+        raw = resp.read()
+        try:
+            return resp.status, json.loads(raw) if raw else None
+        except (json.JSONDecodeError, ValueError):
+            return resp.status, None
+    finally:
+        conn.close()
 
 # transport(url, headers, payload, timeout) -> (status, json)
 Transport = Callable[[str, dict, dict, float], Awaitable[tuple[int, Any]]]
@@ -531,16 +566,21 @@ class HttpModel:
         return None
 
     async def _httpx_transport(self, url, headers, payload, timeout):   # pragma: no cover - live provider
-        import httpx
-
         if self._ssrf_revalidate is not None:
-            # Re-resolve + re-validate at delivery so a DNS rebind to an internal/blocked IP after
-            # write-time validation is refused before the credential leaves (assistant-r2-01).
+            # Re-resolve + re-validate at delivery AND connect to the exact IP validate() pinned
+            # (assistant-001). The old path validated then let httpx re-resolve, reopening the
+            # DNS-rebinding TOCTOU the pinning exists to close. Now we connect to the pinned IP with
+            # the original host as SNI/Host/cert-name, so a rebind between validate and connect cannot
+            # redirect the credential to an internal address.
             from app.core import ssrf
             try:
-                ssrf.validate(url, **self._ssrf_revalidate)
+                target = ssrf.validate(url, **self._ssrf_revalidate)
             except ssrf.SsrfBlocked as exc:
                 raise ModelError(f"connection URL blocked at delivery: {exc}") from exc
+            return await asyncio.to_thread(_pinned_post, target, url, headers, payload, timeout)
+
+        # No SSRF revalidation configured (e.g. the platform's own trusted model URL): plain httpx.
+        import httpx
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(url, headers=headers, json=payload)
         try:

@@ -3,7 +3,12 @@
   "date": "2026-09-27",
   "summary": {
     "total": 24,
-    "by_severity": { "CRITICAL": 0, "HIGH": 5, "MEDIUM": 11, "LOW": 8 }
+    "by_severity": {
+      "CRITICAL": 0,
+      "HIGH": 5,
+      "MEDIUM": 11,
+      "LOW": 8
+    }
   },
   "findings": [
     {
@@ -15,7 +20,10 @@
       "line": 536,
       "scenario": "ssrf.py goes to great lengths to return a Target whose validated IP the transport must connect to, precisely to close the DNS-rebinding window. But _httpx_transport calls ssrf.validate(url, ...) and THROWS AWAY the returned Target, then does client.post(url, ...) which makes httpx re-resolve the hostname independently. A tenant registers a connection at https://evil.example (resolving to a public IP at write and at the validate() call), then flips DNS to 169.254.169.254 / 127.0.0.1 in the microseconds before httpx resolves. The credential-bearing POST then hits the internal target the validate() call was supposed to prevent.",
       "evidence": "if self._ssrf_revalidate is not None:\n    ...\n    ssrf.validate(url, **self._ssrf_revalidate)\n    ...\nasync with httpx.AsyncClient(timeout=timeout) as client:\n    resp = await client.post(url, headers=headers, json=payload)",
-      "recommendation": "Use the Target.ip returned by validate(): connect to the pinned IP with the original host in the Host/SNI header (httpx transport with a resolved-IP connection), never let httpx re-resolve. Otherwise the pin in ssrf.py is dead code."
+      "recommendation": "Use the Target.ip returned by validate(): connect to the pinned IP with the original host in the Host/SNI header (httpx transport with a resolved-IP connection), never let httpx re-resolve. Otherwise the pin in ssrf.py is dead code.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "the connection model transport now connects to the exact IP ssrf.validate() pinned (via _pinned_post: http.client to target.ip with TLS SNI + cert + Host on the hostname), instead of validating then letting httpx re-resolve — closing the DNS-rebinding TOCTOU. Non-SSRF-revalidated (platform-own) URLs keep plain httpx."
     },
     {
       "id": "assistant-002",
@@ -26,7 +34,10 @@
       "line": 119,
       "scenario": "The daily quota exists specifically to bound the model bill (its own docstring: 'the one that reaches an invoice'). /ask refunds the quota unit whenever answer.abstained is true. But two of the three abstention reasons — UNSUPPORTED (model returned text but no honest citation) and MODEL_FAILED (provider called then errored) — happen AFTER a real, paid model round trip. An attacker crafts questions that retrieve KB hits (so hits is non-empty and the model IS called) but that reliably yield no surviving citation; every such call is refunded, so the daily ceiling never decrements while real provider tokens are consumed. Only NO_EVIDENCE (empty hits, no model call) is a genuine no-work case.",
       "evidence": "if answer.abstained:\n    # Refunded: an abstention did no work worth paying for\n    await quota.refund(tenant=principal.tenant or \"\", subject_ref=spender)",
-      "recommendation": "Refund only answer.abstained_because == NO_EVIDENCE (the pre-model gate). UNSUPPORTED and MODEL_FAILED consumed provider compute and must count against the daily spend ceiling."
+      "recommendation": "Refund only answer.abstained_because == NO_EVIDENCE (the pre-model gate). UNSUPPORTED and MODEL_FAILED consumed provider compute and must count against the daily spend ceiling.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "/ask now refunds the daily spend quota ONLY for the pre-model NO_EVIDENCE abstention; UNSUPPORTED and MODEL_FAILED both called the model (real provider cost) and now count against the ceiling, closing the free-unlimited-model-calls bypass."
     },
     {
       "id": "assistant-003",
@@ -37,7 +48,10 @@
       "line": 300,
       "scenario": "require_internal_token authorises per-route via a policy that is DEFAULT-OPEN (a route with no allow-list admits any authenticated internal caller). The connection routes (create/get/list/update/delete/invoke/usage) declare no policy, and tenant is taken from the request body/query, never verified against the caller. Any service holding the shared internal token (or the flat-token peer) can create a connection for tenant B, read tenant B's usage/billing, invoke tenant B's LLM line on B's credential, or delete B's connections. These routes handle stored provider credentials and per-tenant billing — exactly the surface that should be locked, not default-open.",
       "evidence": "@router.post(\"/assistant/connections\", dependencies=[Depends(require_internal_token)])\nasync def create_connection(request: Request, body: ConnIn) -> dict:",
-      "recommendation": "Add an explicit InternalRoutePolicy allow-list for /internal/assistant/connections* naming only the services that legitimately manage connections; do not rely on default-open for a credential+billing surface."
+      "recommendation": "Add an explicit InternalRoutePolicy allow-list for /internal/assistant/connections* naming only the services that legitimately manage connections; do not rely on default-open for a credential+billing surface.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "production boot guard refuses to start when /internal/assistant/connections* is default-open (no INTERNAL_ROUTE_POLICY_JSON entry) — the sensitive CRUD/invoke routes must be explicitly allow-listed to named callers. Added InternalRoutePolicy.covers(). Regression test added."
     },
     {
       "id": "assistant-004",
@@ -48,7 +62,10 @@
       "line": 55,
       "scenario": "The /ask path redacts the question (cards, IBAN, national ID, phone, secrets) BEFORE it reaches a third-party model. The internal triage/draft path builds a Passage straight from the ticket subject+body (and the whole reply thread) and posts it to the same external provider with no redaction. Support tickets are the single richest source of card numbers, national IDs and phone numbers on the platform, and they leave the process in cleartext to an external endpoint — the exact exposure the redactor was written to prevent.",
       "evidence": "passage = Passage(ref=\"ticket\", title=subject or \"ticket\",\n                  text=f\"Subject: {subject}\\n\\n{body}\")\n...\nans = await model.answer(question=question, passages=(passage,), lang=lang)",
-      "recommendation": "Run redact() on subject/body/thread in triage() and draft() before constructing the Passage, mirroring the /ask path, gated by REDACT_PII."
+      "recommendation": "Run redact() on subject/body/thread in triage() and draft() before constructing the Passage, mirroring the /ask path, gated by REDACT_PII.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "support.triage and support.draft now redact() the ticket subject/body/thread before building the Passage sent to the third-party LLM (gated by REDACT_PII/REDACT_MAX_CHARS), mirroring the /ask path. Regression tests added."
     },
     {
       "id": "assistant-005",
@@ -59,7 +76,10 @@
       "line": 399,
       "scenario": "invoke_connection forwards body.prompt (up to 100000 chars) or body.messages verbatim to the connection endpoint with no PII redaction and no server-side accounting of how many round trips a tool-calling loop performs. While the connection endpoint is tenant-configured, the content and transcript often originate from end users, and combined with finding assistant-003 (any internal caller, any tenant) this is an unbounded, unredacted egress of user content to an arbitrary (SSRF-revalidated but see assistant-001) URL. Each round trip meters, but nothing caps the loop or the content leaving.",
       "evidence": "messages = body.messages if body.messages is not None else body.prompt\n...\nreturn await _invoke_conv(conn, messages=messages, converse=model.converse,\n                          store=cstore, max_tokens=body.max_tokens)",
-      "recommendation": "Apply redaction to outbound content per policy, and consider a per-connection max round-trip / max transcript-size ceiling enforced server-side rather than trusting the caller."
+      "recommendation": "Apply redaction to outbound content per policy, and consider a per-connection max round-trip / max transcript-size ceiling enforced server-side rather than trusting the caller.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "connection invoke redacts outbound free-text content before the tenant-configured LLM: the bare prompt is redacted, and user-turn string content in messages is redacted without touching tool_call structure. (Per-connection round-trip ceiling noted as a follow-up; per-round-trip metering already exists.)"
     },
     {
       "id": "assistant-006",
