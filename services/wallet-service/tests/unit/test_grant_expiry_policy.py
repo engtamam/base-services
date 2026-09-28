@@ -115,15 +115,17 @@ def test_notice_fires_once_before_expiry():
     assert run(svc.notice_grants())["noticed"] == 0           # once only
 
 
-def test_no_policy_keeps_the_historical_forfeit_default():
+def test_no_policy_expiry_is_dormant_not_forfeit():
+    # wallet-002: a caller-supplied expires_at on a fund with NO policy must NOT silently FORFEIT the
+    # stored value. It freezes the safe 'dormant' default (expired-but-reclaimable), so nothing is
+    # clawed back and the customer can reclaim the remainder.
     clk = Clock()
     svc = _svc(clk, {})                                        # no policies at all
-    # a grant only exists if credited with an explicit expiry (the legacy welcome-gift path)
     run(svc.credit(tenant="t1", fund="promo", amount=1000, source="c1", expires_at=clk.t + 10))
     clk.t += 20
     out = run(svc.sweep_grants())
-    assert out["expired"] == 1 and out["clawed"] == 1000       # unchanged: forfeit
-    assert CLAWBACK in run(_ledger_types(svc, "t1"))
+    assert out["expired"] == 1 and out["clawed"] == 0          # NOT forfeited
+    assert CLAWBACK not in run(_ledger_types(svc, "t1"))       # no clawback ledger entry
 
 
 def test_policy_change_never_touches_an_already_issued_grant():

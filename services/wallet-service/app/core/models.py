@@ -26,6 +26,10 @@ WITHDRAW_REVERSAL = "withdraw_reversal"
 # grant, so it credits.
 CREDIT_TYPES = (CREDIT, REFUND, WITHDRAW_REVERSAL, RECLAIM)
 
+# Written BEFORE the debit CAS lands (wallet-001). A withdrawal in this state is NOT payable: the
+# payout/settle path only ever acts on PENDING, so a crash between the row write and the debit can
+# never leave a payable-but-un-debited withdrawal. Promoted to PENDING only after the debit succeeds.
+WITHDRAW_UNCONFIRMED = "unconfirmed"
 WITHDRAW_PENDING = "pending"        # debited, awaiting the external transfer
 WITHDRAW_PAID = "paid"              # the transfer settled
 WITHDRAW_FAILED = "failed"          # the transfer failed; the debit was reversed

@@ -381,7 +381,9 @@ def test_crediting_an_unknown_fund_is_refused():
 
 def test_an_expired_grant_is_clawed_back_but_the_customer_keeps_what_they_spent():
     clock = Clock()
-    w = _svc(clock=clock)
+    # promo carries an explicit FORFEIT policy — clawback is the point of this test. (A fund with NO
+    # policy now freezes 'dormant' instead of forfeiting; see test_grant_expiry_policy — wallet-002.)
+    w = _svc(clock=clock, fund_expiry_policies={"promo": {"idle_behavior": "forfeit"}})
     run(w.credit(tenant="t", fund="promo", amount=500, source="g", expires_at=2000.0))
     run(w.credit(tenant="t", fund="cash", amount=5000, source="c"))
     run(w.spend(tenant="t", net=200, source="op"))          # spends 200 of the promo

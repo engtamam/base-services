@@ -34,7 +34,8 @@ from app.core import funds as _funds
 from app.core.events import Emitter
 from app.core.models import (CLAWBACK, CREDIT, CREDIT_TYPES, EXPIRE, RECLAIM, HOLD_ACTIVE, HOLD_CONFIRMED,
                              HOLD_EXPIRED, HOLD_RELEASED, REFUND, SPEND, WITHDRAW, WITHDRAW_FAILED,
-                             WITHDRAW_PAID, WITHDRAW_PENDING, WITHDRAW_REVERSAL, Grant, Hold,
+                             WITHDRAW_PAID, WITHDRAW_PENDING, WITHDRAW_REVERSAL, WITHDRAW_UNCONFIRMED,
+                             Grant, Hold,
                              LedgerEntry, Wallet, Withdrawal, new_id)
 from app.core.money import MoneyError, require_non_negative
 
@@ -435,7 +436,11 @@ class WalletService:
         if expires_at:
             grant = Grant(id=new_id("grt_"), tenant=tenant, fund=fund, amount=int(amount),
                           expires_at=float(expires_at),
-                          idle_behavior=str(pol.get("idle_behavior", "")),
+                          # wallet-002: a caller-supplied expires_at on a fund with NO policy would
+                          # freeze idle_behavior='' → the sweep defaults an empty behaviour to forfeit
+                          # (clawback), silently destroying stored value. Freeze the config validator's
+                          # own safe default 'dormant' (expired-but-reclaimable) when no policy sets one.
+                          idle_behavior=str(pol.get("idle_behavior", "")) or "dormant",
                           ttl_days=int(pol.get("ttl_days", 0)),
                           notice_days=int(pol.get("notice_days", 0)),
                           created=self._clock.now())
@@ -616,8 +621,12 @@ class WalletService:
             if take > 0:
                 applied[f.name] = take
                 remaining -= take
+        # Marker-first (wallet-001): write the withdrawal UNCONFIRMED (not payable) BEFORE the debit,
+        # then promote to PENDING only after the debit CAS lands. A hard crash between the row write and
+        # the debit therefore leaves an UNCONFIRMED row the payout/settle path ignores — never a
+        # payable withdrawal with no backing debit. Mirrors reserve()'s Hold discipline.
         wd = Withdrawal(id=new_id("wd_"), tenant=tenant, amount=amount, applied=dict(applied),
-                        destination=destination, state=WITHDRAW_PENDING, source=source,
+                        destination=destination, state=WITHDRAW_UNCONFIRMED, source=source,
                         reason=reason, created=self._clock.now())
         await self._store.put(_WITHDRAWALS, wd.id, wd.to_dict())
         entry = self._entry(tenant, WITHDRAW, applied, -1, source=source, reason=reason, ref=wd.id)
@@ -627,6 +636,9 @@ class WalletService:
         except Exception:
             await self._store.delete(_WITHDRAWALS, wd.id)     # the debit never landed
             raise
+        # Debit committed → the withdrawal is now backed and payable.
+        wd.state = WITHDRAW_PENDING
+        await self._store.put(_WITHDRAWALS, wd.id, wd.to_dict())
         result = {"withdrawal_id": wd.id, "amount": amount, "applied": dict(applied),
                   "state": WITHDRAW_PENDING, **out}
         await self._finalize(tenant, WITHDRAW, source, result)
@@ -913,18 +925,24 @@ class WalletService:
         return result
 
     # ── sweepers (cron, not the hot path - but still not a full-table read) ─────
-    async def _active(self, collection: str, state: str, limit: int) -> list[dict[str, Any]]:
-        """The rows a sweeper can act on: those still in `state`.
+    async def _active(self, collection: str, state: str, limit: int,
+                      extra: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        """The rows a sweeper can act on: those still in `state` (and matching `extra`).
 
         A sweeper is allowed to be slow. It is not allowed to be O(every hold ever placed) when
         the ones it can act on are the small, shrinking set of ACTIVE ones - the rest were
         settled long ago and will never match again. `state` is pushed into the datastore; the
         expiry comparison is a time range and stays in the caller.
+
+        `extra` pushes a further DISCRIMINATING equality into the query (wallet-003): the notice sweep
+        passes {"noticed": 0} so already-noticed grants — which stay `active` until they expire — do not
+        refill the front of every page and starve the un-noticed ones that actually need a warning.
         """
+        where = {"state": state, **(extra or {})}
         out: list[dict[str, Any]] = []
         cursor = None
         while len(out) < limit:
-            rows, cursor = await self._store.find(collection, {"state": state},
+            rows, cursor = await self._store.find(collection, where,
                                                   limit=_SWEEP_PAGE, after=cursor,
                                                   sort=("expires_at", "asc"))
             out.extend(rows)
@@ -1001,7 +1019,10 @@ class WalletService:
           dormant — `expire` ledger + state="dormant" (PRESERVED, reclaimable via reclaim()). [SAMA-safe]
           extend  — push expiry forward by ttl_days, grant stays active (no money moves).
 
-        A fund with NO policy defaults to `forfeit` (the historical behaviour, unchanged)."""
+        A new grant credited with an explicit expires_at on a fund with NO policy freezes
+        idle_behavior='dormant' at credit time (wallet-002) — a caller-supplied expiry no longer
+        silently FORFEITS stored value. The `forfeit` fallback below applies only to a LEGACY grant
+        that froze idle_behavior='' before that fix."""
         now = self._clock.now()
         limit = int(self._cfg["grant_sweep_limit"])
         expired = clawed = dormant_total = extended = 0
@@ -1124,7 +1145,10 @@ class WalletService:
         now = self._clock.now()
         limit = int(self._cfg["grant_sweep_limit"])
         noticed = 0
-        for row in await self._active(_GRANTS, "active", limit):
+        # Only UN-noticed active grants (wallet-003): a persisted noticed==0 filter keeps already-warned
+        # grants (still `active` until they expire) from filling every page ahead of the ones needing a
+        # warning. The in-loop guard stays as belt-and-suspenders for a legacy row missing the field.
+        for row in await self._active(_GRANTS, "active", limit, extra={"noticed": 0}):
             if noticed >= limit:
                 break
             if int(row.get("noticed", 0)) or not row.get("expires_at"):

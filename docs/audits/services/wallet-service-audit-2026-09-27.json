@@ -3,7 +3,12 @@
   "date": "2026-09-27",
   "summary": {
     "total": 23,
-    "by_severity": { "CRITICAL": 0, "HIGH": 3, "MEDIUM": 10, "LOW": 10 }
+    "by_severity": {
+      "CRITICAL": 0,
+      "HIGH": 3,
+      "MEDIUM": 10,
+      "LOW": 10
+    }
   },
   "findings": [
     {
@@ -15,7 +20,10 @@
       "line": 619,
       "scenario": "withdraw() writes the PENDING Withdrawal row (put(_WITHDRAWALS, ...)) and THEN debits via _mutate. The rollback (delete on exception) only fires for an in-process exception. On a hard process crash between the put and the _mutate CAS, the PENDING Withdrawal survives with NO corresponding debit ledger entry and the wallet still holds the funds. Unlike reserve()/Hold, a Withdrawal has no 'counted'/'debited' flag and nothing reconciles a PENDING withdrawal against a matching WITHDRAW ledger row before the payout sidecar executes it. The sidecar pays out money that was never debited: the customer keeps the balance AND receives the payout.",
       "evidence": "await self._store.put(_WITHDRAWALS, wd.id, wd.to_dict())\n        entry = self._entry(tenant, WITHDRAW, applied, -1, source=source, reason=reason, ref=wd.id)\n        try:\n            out = await self._mutate(tenant, funds_delta={k: -v for k, v in applied.items()}, entry=entry)\n        except Exception:\n            await self._store.delete(_WITHDRAWALS, wd.id)     # the debit never landed",
-      "recommendation": "Give Withdrawal the same crash-safe marker discipline reserve() gives Hold: write it uncounted/unconfirmed, only mark it payable after the debit CAS lands, and have the payout sidecar (or a settle guard) refuse to pay a withdrawal that has no matching WITHDRAW ledger row for its seq. A withdrawal reconcile pass should assert every non-failed withdrawal has its debit."
+      "recommendation": "Give Withdrawal the same crash-safe marker discipline reserve() gives Hold: write it uncounted/unconfirmed, only mark it payable after the debit CAS lands, and have the payout sidecar (or a settle guard) refuse to pay a withdrawal that has no matching WITHDRAW ledger row for its seq. A withdrawal reconcile pass should assert every non-failed withdrawal has its debit.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "withdraw() now writes the Withdrawal UNCONFIRMED (a new non-payable state) BEFORE the debit and promotes it to PENDING only after the debit CAS lands, so a crash between the row write and the debit can never leave a payable withdrawal with no backing debit; the settle path only acts on PENDING. Regression tests added."
     },
     {
       "id": "wallet-002",
@@ -26,7 +34,10 @@
       "line": 434,
       "scenario": "CreditIn.expires_at is caller-controlled. credit() builds the grant with idle_behavior=str(pol.get('idle_behavior','')) — for a fund with NO configured policy this freezes idle_behavior='' on the grant. At sweep time sweep_grants sees the empty idle_behavior, falls back to the live policy (still {}), and defaults behavior='forfeit'. So crediting a WITHDRAWABLE/cashable fund with an explicit expires_at and no policy causes the unspent remainder to be CLAWED BACK (irreversible forfeiture) rather than preserved as dormant — exactly the SAMA stored-value forfeiture the whole dormant/forfeit design exists to prevent. The safe default per WALLET_FUND_EXPIRY_POLICIES parsing is 'dormant', but the ad-hoc expires_at path bypasses that and lands on forfeit.",
       "evidence": "grant = Grant(... idle_behavior=str(pol.get(\"idle_behavior\", \"\")), ttl_days=int(pol.get(\"ttl_days\", 0)), ...)   # pol={} when no policy\n... sweep_grants: else: pol = self._policy(grant.fund) or {}; behavior, ttl_days = str(pol.get(\"idle_behavior\", \"forfeit\")), int(pol.get(\"ttl_days\", 0))",
-      "recommendation": "When credit() gets an explicit expires_at but no policy, freeze idle_behavior='dormant' (the config validator's own safe default), or refuse an expires_at on a fund with no policy, or refuse forfeit on a withdrawable fund. Never let the fallback default (forfeit) apply to a grant created via the raw expires_at path on a cashable fund."
+      "recommendation": "When credit() gets an explicit expires_at but no policy, freeze idle_behavior='dormant' (the config validator's own safe default), or refuse an expires_at on a fund with no policy, or refuse forfeit on a withdrawable fund. Never let the fallback default (forfeit) apply to a grant created via the raw expires_at path on a cashable fund.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "credit() freezes idle_behavior='dormant' (expired-but-reclaimable, the config validator's safe default) when an explicit expires_at is given on a fund with NO policy, instead of freezing '' which the sweep defaulted to forfeit — a caller-supplied expiry no longer silently claws back stored value. Tests updated to the corrected safe behavior."
     },
     {
       "id": "wallet-003",
@@ -37,7 +48,10 @@
       "line": 916,
       "scenario": "_active() pages rows WHERE state=='active' sorted by expires_at asc. notice_grants() then skips rows already noticed (noticed==1) but those rows remain state=='active' and are re-fetched at the front of every run. A tenant/fleet with many long-lived, already-noticed active grants fills the entire page (limit rows) with rows that are skipped after fetch, so grants that just entered their notice window but sort later are NEVER reached and never warned. The same starvation hits sweep_grants for extend grants and for any active grant not yet expired. The 'sweeper acts on the small shrinking set' assumption is false because active+noticed and active+not-yet-expired grants live in the same state bucket indefinitely.",
       "evidence": "rows, cursor = await self._store.find(collection, {\"state\": state}, limit=_SWEEP_PAGE, after=cursor, sort=(\"expires_at\", \"asc\"))\n... notice_grants: if int(row.get(\"noticed\", 0)) or not row.get(\"expires_at\"): continue",
-      "recommendation": "Push the discriminating predicate into the query: for notice, filter on a persisted 'notice_pending' state or index (noticed==0); for expiry, query grants whose expires_at<=now. Do not rely on the state bucket alone when rows legitimately stay 'active' for their whole life."
+      "recommendation": "Push the discriminating predicate into the query: for notice, filter on a persisted 'notice_pending' state or index (noticed==0); for expiry, query grants whose expires_at<=now. Do not rely on the state bucket alone when rows legitimately stay 'active' for their whole life.",
+      "status": "fixed",
+      "release": "pending",
+      "fix": "the notice sweep pushes {\"noticed\": 0} into the _active query so already-noticed active grants (which stay active until expiry) no longer refill the front of every page and starve the un-noticed grants that need a warning."
     },
     {
       "id": "wallet-004",
