@@ -100,7 +100,8 @@
       "line": 105,
       "scenario": "run_query records 'analytics.queried'. funnel, retention, and run_report execute equivalent (often heavier, raw-event) reads over tenant data — including a platform operator reading another tenant via body.tenant — with no audit record. An investigator cannot tell that an operator ran a funnel/retention over a customer's raw events.",
       "evidence": "async def run_funnel(body: FunnelIn, request: Request, p: Principal = Depends(_READ)) -> dict:\n    \"\"\"Sequence question — reads raw events, bounded by the range. Not the hot path.\"\"\"\n    try:\n        return await build_query(request).funnel(...)   # no auditor.record(...)",
-      "recommendation": "Record an audit event for funnel/retention/run_report consistent with /query (at least for platform cross-tenant reads)."
+      "recommendation": "Record an audit event for funnel/retention/run_report consistent with /query (at least for platform cross-tenant reads).",
+      "status": "fixed"
     },
     {
       "id": "analytics-009",
@@ -122,7 +123,8 @@
       "line": 35,
       "scenario": "With the default INTERNAL_ROUTE_POLICY_JSON='' and the default 'shared' caller driver, ANY service holding the fleet-wide INTERNAL_SERVICE_TOKEN can call POST /internal/privacy/erase (irreversible subject deletion), /internal/backup/import (overwrite/prune restore), and /internal/analytics/prune-raw. permits() returns True whenever no policy entry matches, so least-privilege on these high-impact routes is opt-in and ships off.",
       "evidence": "allowed = self._match(path)\n        if allowed is None:\n            return True                       # no policy for this route → any authenticated caller",
-      "recommendation": "Ship a default allow-list for the destructive internal routes (erase/backup-import/prune) so they require a named caller, or document a required production INTERNAL_ROUTE_POLICY_JSON and guard it at boot."
+      "recommendation": "Ship a default allow-list for the destructive internal routes (erase/backup-import/prune) so they require a named caller, or document a required production INTERNAL_ROUTE_POLICY_JSON and guard it at boot.",
+      "status": "fixed"
     },
     {
       "id": "analytics-011",

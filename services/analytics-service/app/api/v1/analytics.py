@@ -105,23 +105,33 @@ async def run_query(body: QueryIn, request: Request, p: Principal = Depends(_REA
 @router.post("/funnel", dependencies=[Depends(rate_limit)])
 async def run_funnel(body: FunnelIn, request: Request, p: Principal = Depends(_READ)) -> dict:
     """Sequence question — reads raw events, bounded by the range. Not the hot path."""
+    tenant = _tenant(p, body.tenant)
     try:
-        return await build_query(request).funnel(
-            tenant=_tenant(p, body.tenant), steps=body.steps, start_ts=body.start_ts,
+        result = await build_query(request).funnel(
+            tenant=tenant, steps=body.steps, start_ts=body.start_ts,
             end_ts=body.end_ts, window_seconds=body.window_seconds)
     except QueryError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    await request.app.state.auditor.record(
+        "analytics.queried", actor=p.subject, tenant=tenant, resource="funnel",
+        ip=request.client.host if request.client else "", metadata={"kind": "funnel"})
+    return result
 
 
 @router.post("/retention", dependencies=[Depends(rate_limit)])
 async def run_retention(body: RetentionIn, request: Request, p: Principal = Depends(_READ)) -> dict:
+    tenant = _tenant(p, body.tenant)
     try:
-        return await build_query(request).retention(
-            tenant=_tenant(p, body.tenant), event_name=body.event_name,
+        result = await build_query(request).retention(
+            tenant=tenant, event_name=body.event_name,
             cohort_start=body.cohort_start, cohort_end=body.cohort_end,
             periods=body.periods, period_seconds=body.period_seconds)
     except QueryError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    await request.app.state.auditor.record(
+        "analytics.queried", actor=p.subject, tenant=tenant, resource="retention",
+        ip=request.client.host if request.client else "", metadata={"kind": "retention"})
+    return result
 
 
 # ── saved reports ───────────────────────────────────────────────────────────
@@ -163,9 +173,13 @@ async def run_report(report_id: str, request: Request, p: Principal = Depends(_R
     q = dict(r.query)
     q.pop("tenant", None)
     try:
-        return await build_query(request).query(tenant=r.tenant, **q)
+        result = await build_query(request).query(tenant=r.tenant, **q)
     except (QueryError, TypeError) as e:
         raise HTTPException(status_code=400, detail="BAD_REPORT_QUERY") from e
+    await request.app.state.auditor.record(
+        "analytics.queried", actor=p.subject, tenant=r.tenant, resource=f"report:{report_id}",
+        ip=request.client.host if request.client else "", metadata={"kind": "report_run"})
+    return result
 
 
 @router.put("/reports/{report_id}", dependencies=[Depends(rate_limit)])

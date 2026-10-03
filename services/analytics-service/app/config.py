@@ -312,6 +312,36 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         return self.ENV == "production"
 
+    # The /internal routes that MUTATE or DESTROY data — a caller reaching one erases a person, imports
+    # a backup over live data, or prunes raw events. Default-open is fine for reads; for these it means
+    # any holder of the internal token can destroy data. In production each must have a declared
+    # INTERNAL_ROUTE_POLICY_JSON entry (a named caller list, or ["*"] to accept any caller deliberately).
+    _DESTRUCTIVE_INTERNAL_ROUTES = (
+        "/internal/privacy/erase",
+        "/internal/backup/import",
+        "/internal/analytics/prune-raw",
+    )
+
+    def assert_internal_policy_ok(self) -> None:
+        """Boot guard. Refuse to start production with a destructive /internal route left default-open —
+        otherwise any authenticated internal caller can erase/import/prune, and the gap is invisible
+        until someone walks through it. Fail-closed on the declared list."""
+        if not self.is_production:
+            return
+        import json as _json
+        try:
+            policy = _json.loads(self.INTERNAL_ROUTE_POLICY_JSON or "{}")
+        except Exception as exc:
+            raise ValueError(f"INTERNAL_ROUTE_POLICY_JSON is not valid JSON: {exc}") from exc
+        covered = {str(k).rstrip("/") for k in policy}
+        missing = [r for r in self._DESTRUCTIVE_INTERNAL_ROUTES
+                   if not any(r == k or r.startswith(k + "/") for k in covered)]
+        if missing:
+            raise ValueError(
+                "destructive /internal routes are default-open in production (any authenticated caller "
+                f"may reach them): {', '.join(missing)}. Add each to INTERNAL_ROUTE_POLICY_JSON with a "
+                'named caller list, or ["*"] to accept any authenticated caller deliberately.')
+
     @property
     def audit_ingest_url(self) -> str:
         """Where audit events go. Empty when unconfigured — never a guessed default, because a
