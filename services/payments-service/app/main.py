@@ -47,6 +47,7 @@ def create_app() -> FastAPI:
     settings.assert_audit_config_ok()
     settings.assert_pii_config_ok()
     settings.assert_cors_config_ok()
+    settings.assert_internal_policy_ok()
     # A misconfigured sealing key must refuse to START, not fail deep on the first credential op.
     settings.assert_secrets_config_ok()
     configure_logging(settings.SERVICE_NAME, settings.ENV, settings.LOG_LEVEL)

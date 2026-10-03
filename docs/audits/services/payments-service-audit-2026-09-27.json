@@ -109,7 +109,8 @@
       "line": 57,
       "scenario": "require_internal_token authorises a route only if INTERNAL_ROUTE_POLICY_JSON names it; a route with no policy 'admits any authenticated caller (default-open)' (config.py:200-203). INTERNAL_ROUTE_POLICY_JSON defaults to '' (empty), so out of the box every /internal/payments/* route — including merchant-credentials set/clear and create-request for ANY tenant (tenant is a body field, never checked against the caller) — is reachable by any holder of the shared internal token. Together with the missing audit (payments-002), one over-broad or leaked internal token can repoint any shop's gateway credentials with no attribution.",
       "evidence": "if not resolve_internal_policy(settings).permits(request.url.path, identity.caller): raise HTTPException(403)  # but INTERNAL_ROUTE_POLICY_JSON: str = '' => default-open, and INTERNAL_CALLER_ALLOW_TOKEN_FALLBACK: bool = True",
-      "recommendation": "Ship a default policy that restricts /internal/payments/merchant-credentials* to the specific product service(s) that legitimately manage a shop's gateway, rather than leaving the highest-privilege money-routing route default-open."
+      "recommendation": "Ship a default policy that restricts /internal/payments/merchant-credentials* to the specific product service(s) that legitimately manage a shop's gateway, rather than leaving the highest-privilege money-routing route default-open.",
+      "status": "fixed"
     },
     {
       "id": "payments-009",
