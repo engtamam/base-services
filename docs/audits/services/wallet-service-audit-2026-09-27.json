@@ -62,7 +62,8 @@
       "line": 424,
       "scenario": "fund_expiry_policies accepts idle_behavior='extend' with ttl_days=0 (the validator allows ttl>=0 for any behavior). At sweep time the extend branch guards the money (if ttl_days>0) but then `continue`s without advancing the grant's expiry or state. The grant stays active+expired, sorts first by expires_at asc, and is re-fetched by _active on EVERY sweep run permanently, consuming page budget and never doing anything. A misconfiguration therefore silently degrades the whole grant sweep.",
       "evidence": "if behavior == \"extend\":\n    if ttl_days > 0:  # a 0-ttl extend would busy-loop the sweep\n        grant.expires_at = now + ttl_days * 86400 ...\n    continue",
-      "recommendation": "Reject idle_behavior=='extend' with ttl_days==0 in the config validator (an extend that cannot extend is a config error), or transition such a grant to a terminal state so it leaves the active bucket."
+      "recommendation": "Reject idle_behavior=='extend' with ttl_days==0 in the config validator (an extend that cannot extend is a config error), or transition such a grant to a terminal state so it leaves the active bucket.",
+      "status": "fixed"
     },
     {
       "id": "wallet-005",
@@ -85,7 +86,8 @@
       "line": 127,
       "scenario": "GET /internal/wallet/{tenant} (balance) and GET /internal/wallet/{tenant}/reconcile perform cross-tenant reads of a customer's money for any internal caller but record NO audit event. The sibling GET /internal/wallet/{tenant}/ledger deliberately records wallet.inspected 'because an internal caller reading a customer's money is exactly the access a review asks about'. The same justification applies to balance and reconcile, yet they leave no trail — an internal caller can enumerate every tenant's balance invisibly.",
       "evidence": "@router.get(\"/wallet/{tenant}\", dependencies=[Depends(require_internal_token)])\nasync def get_balance(tenant: str, request: Request) -> dict:\n    return await build_wallet(request).balance(tenant)",
-      "recommendation": "Record wallet.inspected (view=balance / view=reconcile) on the internal balance and reconcile routes, matching the internal ledger route."
+      "recommendation": "Record wallet.inspected (view=balance / view=reconcile) on the internal balance and reconcile routes, matching the internal ledger route.",
+      "status": "fixed"
     },
     {
       "id": "wallet-007",
@@ -96,7 +98,8 @@
       "line": 254,
       "scenario": "reconcile() derives per-fund totals from the ledger and compares them to w.funds only. It ignores w.held and w.permanent entirely. A corrupted held map (e.g. from the release/sweep double-decrement class the claims were added to prevent, or a clamp-masked underflow) or a wrong permanent floor still reports consistent==True. Since available=funds-held and grant clawback is bounded by the permanent floor, a broken held/permanent value is a real money-safety defect that this integrity check — the one support uses to answer 'the numbers look wrong' — cannot detect.",
       "evidence": "stored = {k: int(v) for k, v in w.funds.items() if int(v)}\nderived = {k: v for k, v in derived.items() if v}\nreturn {\"tenant\": tenant, \"consistent\": stored == derived, ...}",
-      "recommendation": "Extend reconcile to verify held == sum of applied over ACTIVE holds for the tenant, and that permanent floor <= funds per fund, reporting each dimension. A reconcile that only checks funds gives false assurance about the invariant (funds>=held) money safety depends on."
+      "recommendation": "Extend reconcile to verify held == sum of applied over ACTIVE holds for the tenant, and that permanent floor <= funds per fund, reporting each dimension. A reconcile that only checks funds gives false assurance about the invariant (funds>=held) money safety depends on.",
+      "status": "fixed"
     },
     {
       "id": "wallet-008",
@@ -141,7 +144,8 @@
       "line": 1232,
       "scenario": "_measured() returns funds.get(fund) or total(funds) — the raw balance, ignoring held. A wallet whose entire balance is reserved by in-flight holds has available==0 but reports low_balance=False (funds still high). The next spend fails with 402 even though the customer was never warned — precisely the 'a 402 at spend time is not a warning, it is an outage' failure the low-balance feature exists to prevent.",
       "evidence": "def _measured(self, funds: dict[str, int]) -> int:\n    return int(funds.get(self._low_fund, 0)) if self._low_fund else _funds.total(funds)",
-      "recommendation": "Measure against available (funds minus held), or at least document and test the choice; the warning should reflect what is actually spendable."
+      "recommendation": "Measure against available (funds minus held), or at least document and test the choice; the warning should reflect what is actually spendable.",
+      "status": "fixed"
     },
     {
       "id": "wallet-012",
@@ -207,7 +211,8 @@
       "line": 26,
       "scenario": "Only cas() takes self._lock. The service performs many get-then-put sequences that are NOT under the wallet CAS: seen-marker writes, grant state writes, hold writes, withdrawal writes, _finalize's get+put on _IDEMPO. In the in-memory adapter each individual method is sync (no internal await) so a single call is atomic, but a get in one task and the put in another task interleave across awaits, so these read-modify-write pairs can race in the single-process test/dev harness. This means the memory-backed test suite can pass while masking a race that the claim serialization is assumed to cover — the tests-that-stop-testing risk for the concurrency guarantees.",
       "evidence": "async def put(self, collection, key, value): self._data.setdefault(collection, {})[key] = copy.deepcopy(value)   # no self._lock",
-      "recommendation": "Either document that only cas() is the atomicity primitive (and ensure every multi-writer path uses cas, not put), or take self._lock in put/delete/find as well so the reference adapter models the same atomicity as Postgres row locks. Add a concurrency test that fails if a claimed path relied on put atomicity it does not have."
+      "recommendation": "Either document that only cas() is the atomicity primitive (and ensure every multi-writer path uses cas, not put), or take self._lock in put/delete/find as well so the reference adapter models the same atomicity as Postgres row locks. Add a concurrency test that fails if a claimed path relied on put atomicity it does not have.",
+      "status": "fixed"
     },
     {
       "id": "wallet-018",
@@ -262,7 +267,8 @@
       "line": 1,
       "scenario": "The grant expiry tests exercise policy-driven forfeit/dormant/extend, but there is no test that a credit with a raw expires_at (no policy) on a withdrawable fund ends up forfeited rather than dormant (wallet-002), nor that a withdrawable fund is protected from forfeiture. Because the defect only manifests via the frozen empty idle_behavior + sweep default, the current tests pass while the SAMA-safety invariant ('a withdrawable/cashable fund is never silently forfeited') is unenforced by any assertion.",
       "evidence": "tests/unit/test_grant_expiry_policy.py exercises WALLET_FUND_EXPIRY_POLICIES paths only; no test asserts behaviour for an explicit expires_at on a fund with no policy.",
-      "recommendation": "Add a test: credit a withdrawable fund with an explicit expires_at and no policy, run sweep_grants, and assert the remainder is preserved (dormant/reclaimable), not clawed. This test should fail today and lock in the wallet-002 fix."
+      "recommendation": "Add a test: credit a withdrawable fund with an explicit expires_at and no policy, run sweep_grants, and assert the remainder is preserved (dormant/reclaimable), not clawed. This test should fail today and lock in the wallet-002 fix.",
+      "status": "fixed"
     },
     {
       "id": "wallet-023",

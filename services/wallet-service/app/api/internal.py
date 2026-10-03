@@ -126,6 +126,11 @@ def _handle(exc: Exception) -> HTTPException:
 
 @router.get("/wallet/{tenant}", dependencies=[Depends(require_internal_token)])
 async def get_balance(tenant: str, request: Request) -> dict:
+    # wallet-006: an internal caller reading a customer's money is the access a review asks about —
+    # audited like the internal ledger twin (view=balance).
+    await request.app.state.auditor.record(
+        "wallet.inspected", actor="", tenant=tenant, resource="wallet",
+        ip=request.client.host if request.client else "", metadata={"view": "balance"})
     return await build_wallet(request).balance(tenant)
 
 
@@ -148,6 +153,10 @@ async def get_ledger(tenant: str, request: Request,
 @router.get("/wallet/{tenant}/reconcile", dependencies=[Depends(require_internal_token)])
 async def reconcile(tenant: str, request: Request) -> dict:
     """Prove the materialized balance equals sum(ledger). Two writes, one truth."""
+    # wallet-006: reconcile reads the full ledger + balances of a customer — audited (view=reconcile).
+    await request.app.state.auditor.record(
+        "wallet.inspected", actor="", tenant=tenant, resource="wallet",
+        ip=request.client.host if request.client else "", metadata={"view": "reconcile"})
     return await build_wallet(request).reconcile(tenant)
 
 

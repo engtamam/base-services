@@ -237,7 +237,7 @@ class WalletService:
                 "available_total": _funds.total(avail),
                 # READABLE, not only emitted. The bus is at-most-once with no replay, so a consumer
                 # that missed `wallet.balance_low` would otherwise never learn it — for ever.
-                **self.low_balance_state(w.funds)}
+                **self.low_balance_state(w.funds, w.held)}
 
     async def ledger(self, tenant: str, limit: int = 100, before_seq: int | None = None) -> list[dict]:
         """Bounded. A statement endpoint that returns the whole ledger is a denial of service."""
@@ -275,8 +275,42 @@ class WalletService:
                 derived[name] = derived.get(name, 0) + sign * int(amount)
         stored = {k: int(v) for k, v in w.funds.items() if int(v)}
         derived = {k: v for k, v in derived.items() if v}
-        return {"tenant": tenant, "consistent": stored == derived, "stored": stored,
-                "derived": derived, "entries": w.seq}
+        funds_ok = stored == derived
+
+        # wallet-007: funds==sum(ledger) alone gives FALSE confidence. Also verify the two other money
+        # invariants a review turns on:
+        #   held == sum(applied) over the tenant's ACTIVE, COUNTED holds (a drifted held locks or frees
+        #     money that the holds do not justify), and
+        #   permanent floor <= funds per fund (the non-forfeitable floor must never exceed the balance).
+        held_derived: dict[str, int] = {}
+        after = None
+        while True:
+            holds, after = await self._store.find(
+                _HOLDS, {"tenant": tenant, "state": HOLD_ACTIVE}, limit=500, after=after,
+                sort=("id", "asc"))
+            for h in holds:
+                if not h.get("counted"):
+                    continue
+                for name, amount in (h.get("applied") or {}).items():
+                    held_derived[name] = held_derived.get(name, 0) + int(amount)
+            if not after:
+                break
+        held_stored = {k: int(v) for k, v in (w.held or {}).items() if int(v)}
+        held_derived = {k: v for k, v in held_derived.items() if v}
+        held_ok = held_stored == held_derived
+
+        # wallet-007: the `permanent` floor is MONOTONIC BY DESIGN (not decremented on spend — see the
+        # Wallet model), so it may legitimately exceed current funds after a spend and `permanent <= funds`
+        # is NOT an invariant. What IS meaningful is that the floor is non-negative; it is reported for
+        # visibility but does not gate consistency (gating on it would flag healthy, spent-down wallets).
+        permanent = {k: int(v) for k, v in (w.permanent or {}).items() if int(v)}
+        permanent_nonneg = all(v >= 0 for v in permanent.values())
+
+        return {"tenant": tenant, "consistent": funds_ok and held_ok and permanent_nonneg,
+                "funds_consistent": funds_ok, "held_consistent": held_ok,
+                "permanent_nonneg": permanent_nonneg, "stored": stored, "derived": derived,
+                "held_stored": held_stored, "held_derived": held_derived,
+                "permanent": permanent, "entries": w.seq}
 
     # ── idempotency (keyed, ATOMIC; never a ledger scan) ────────────────────────
     # A get-then-put idempotency check has a TOCTOU race: two requests carrying the SAME source (a
@@ -478,7 +512,7 @@ class WalletService:
         await self._finalize(tenant, CREDIT, source, result)
         await self._emit(_events.WALLET_CREDITED,
                          {"tenant": tenant, "fund": fund, "amount": int(amount)})
-        await self._check_low_balance(tenant, out["funds"], debit=False)
+        await self._check_low_balance(tenant, out["funds"], out.get("held"), debit=False)
         return result
 
     # ── spend ───────────────────────────────────────────────────────────────────
@@ -556,7 +590,7 @@ class WalletService:
         await self._emit(_events.WALLET_SPENT,
                          {"tenant": tenant, "net": plan.net, "vat": plan.vat,
                           "currency": self._currency, "source": source})
-        await self._check_low_balance(tenant, out["funds"], debit=True)
+        await self._check_low_balance(tenant, out["funds"], out.get("held"), debit=True)
         return result
 
     # ── withdraw / payout ─────────────────────────────────────────────────────────
@@ -824,7 +858,7 @@ class WalletService:
                          {"tenant": hold.tenant, "net": plan_dict.get("net", 0),
                           "vat": plan_dict.get("vat", 0),
                           "currency": self._currency, "source": hold.source})
-        await self._check_low_balance(hold.tenant, out["funds"], debit=True)
+        await self._check_low_balance(hold.tenant, out["funds"], out.get("held"), debit=True)
         return result
 
     async def release(self, *, hold_id: str) -> dict[str, Any]:
@@ -921,7 +955,7 @@ class WalletService:
         await self._finalize(tenant, REFUND, claim_key, result)
         # A refund can lift a wallet back over the line, and a customer never told they recovered
         # is one whose alerting is stuck low for ever.
-        await self._check_low_balance(tenant, out["funds"], debit=False)
+        await self._check_low_balance(tenant, out["funds"], out.get("held"), debit=False)
         return result
 
     # ── sweepers (cron, not the hot path - but still not a full-table read) ─────
@@ -1125,7 +1159,7 @@ class WalletService:
                     dormant_total += remaining
                 else:
                     clawed += remaining
-                await self._check_low_balance(grant.tenant, out["funds"], debit=True)
+                await self._check_low_balance(grant.tenant, out["funds"], out.get("held"), debit=True)
             else:
                 # atomic: ok — serialized by the _claim("sweep", grant.id) above (single writer).
                 await self._store.put(_GRANTS, grant.id, grant.to_dict())
@@ -1253,11 +1287,17 @@ class WalletService:
         await self._events.emit(topic, payload)
 
     # ── low balance: warn BEFORE the money runs out ─────────────────────────────
-    def _measured(self, funds: dict[str, int]) -> int:
-        """What the threshold is compared against: one fund, or the whole balance."""
-        return int(funds.get(self._low_fund, 0)) if self._low_fund else _funds.total(funds)
+    def _measured(self, funds: dict[str, int], held: dict[str, int] | None = None) -> int:
+        """What the threshold is compared against: one fund, or the whole balance — measured as AVAILABLE
+        (funds minus held), not raw funds (wallet-011). A warning about 'low balance' must reflect what is
+        actually spendable: a wallet whose funds are all reserved by live holds is at zero available, and
+        the operator wants to hear that. `held` omitted = raw (back-compat for callers without it)."""
+        held = held or {}
+        if self._low_fund:
+            return int(funds.get(self._low_fund, 0)) - int(held.get(self._low_fund, 0))
+        return _funds.total(funds) - _funds.total(held)
 
-    def low_balance_state(self, funds: dict[str, int]) -> dict[str, Any]:
+    def low_balance_state(self, funds: dict[str, int], held: dict[str, int] | None = None) -> dict[str, Any]:
         """The low-balance facts, derived from the CURRENT balance, for the balance read.
 
         Derived and not read from the stored alert row on purpose. Events may be lost — the bus is
@@ -1268,11 +1308,12 @@ class WalletService:
         """
         if self._low_threshold <= 0:
             return {"low_balance": False, "low_balance_threshold": 0, "low_balance_fund": ""}
-        return {"low_balance": self._measured(funds) < self._low_threshold,
+        return {"low_balance": self._measured(funds, held) < self._low_threshold,
                 "low_balance_threshold": self._low_threshold,
                 "low_balance_fund": self._low_fund}
 
-    async def _check_low_balance(self, tenant: str, funds: dict[str, int], *,
+    async def _check_low_balance(self, tenant: str, funds: dict[str, int],
+                                 held: dict[str, int] | None = None, *,
                                  debit: bool) -> None:
         """Emit the warning on the CROSSING, and re-arm on recovery.
 
@@ -1287,7 +1328,7 @@ class WalletService:
         if self._low_threshold <= 0:      # opted out: no state written, no event, nothing to mute
             return
         try:
-            low = self._measured(funds) < self._low_threshold
+            low = self._measured(funds, held) < self._low_threshold
             row = await self._store.get(_ALERTS, tenant) or {}
             # A threshold changed under a live wallet describes a DIFFERENT question, so the old
             # answer is not evidence about the new one. Re-arm: a customer already below the
@@ -1305,16 +1346,17 @@ class WalletService:
                 if not await self._store.cas(_ALERTS, tenant, int(row.get("version", 0)), nxt):
                     return
             if low:
-                await self._emit(_events.BALANCE_LOW, self._low_payload(tenant, funds))
+                await self._emit(_events.BALANCE_LOW, self._low_payload(tenant, funds, held))
             else:
-                await self._emit(_events.BALANCE_RECOVERED, self._low_payload(tenant, funds))
+                await self._emit(_events.BALANCE_RECOVERED, self._low_payload(tenant, funds, held))
         except Exception:      # noqa: BLE001 — see the docstring: never break the money movement
             pass
 
-    def _low_payload(self, tenant: str, funds: dict[str, int]) -> dict[str, Any]:
+    def _low_payload(self, tenant: str, funds: dict[str, int],
+                     held: dict[str, int] | None = None) -> dict[str, Any]:
         """No person, no reason text: a payload lands in every subscriber's store, and the tenant
         is enough to look up anything more from a service that is allowed to hold it."""
-        return {"tenant": tenant, "balance": self._measured(funds),
+        return {"tenant": tenant, "balance": self._measured(funds, held),
                 "threshold": self._low_threshold, "fund": self._low_fund,
                 "currency": self._currency}
 

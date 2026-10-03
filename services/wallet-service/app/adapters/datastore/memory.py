@@ -1,4 +1,13 @@
-"""In-memory DataStore — zero infra. Deep-copies values to avoid aliasing."""
+"""In-memory DataStore — zero infra. Deep-copies values to avoid aliasing.
+
+wallet-017 — ATOMICITY CONTRACT: cas() is the ONLY atomicity primitive. get/put/delete/find each run to
+completion without an internal await, so each is individually atomic, but a get()+put() PAIR in caller
+code is NOT a transaction — another coroutine runs at the await between them. Taking a lock inside put()
+would not change that (the caller still releases between the two calls), so it is deliberately not done;
+it would only create a false impression of transactional safety. EVERY multi-writer read-modify-write
+path (balances, holds, the ledger head) MUST go through cas(expected_version), never get()+put(). The
+postgres adapter enforces the same: its cas is an UPDATE … WHERE version=expected. This mirrors it.
+"""
 from __future__ import annotations
 
 import asyncio

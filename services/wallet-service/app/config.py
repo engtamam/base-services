@@ -432,6 +432,13 @@ class Settings(BaseSettings):
                     f"WALLET_FUND_EXPIRY_POLICIES[{fund!r}]: ttl_days/notice_days must be ints") from exc
             if ttl < 0 or notice < 0:
                 raise ConfigError(f"WALLET_FUND_EXPIRY_POLICIES[{fund!r}]: days must be >= 0")
+            # wallet-004: an 'extend' policy with ttl_days==0 can never push the expiry forward, so the
+            # grant is re-scanned by the sweep forever and never resolves. An extend that cannot extend is
+            # a configuration error — refuse it at boot rather than ship a grant stuck in the active bucket.
+            if behavior == "extend" and ttl == 0:
+                raise ConfigError(
+                    f"WALLET_FUND_EXPIRY_POLICIES[{fund!r}]: idle_behavior='extend' requires ttl_days>0 "
+                    "— an extend with ttl_days=0 cannot move the expiry and the grant never resolves")
             out[fund] = {"ttl_days": ttl, "idle_behavior": behavior, "notice_days": notice}
         return out
 
