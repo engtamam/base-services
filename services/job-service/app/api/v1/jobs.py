@@ -143,8 +143,11 @@ async def replay(request: Request, job_id: str,
     result = await build_jobs(request).replay(
         job_id, tenant=principal.tenant, is_operator="platform.jobs" in principal.caps)
     if result.get("ok"):
+        # Audit the AFFECTED job's tenant, not the operator's own (job-016): a cross-tenant operator
+        # replay otherwise files the row under the wrong tenant.
         await request.app.state.auditor.record(
-            "job.replayed", actor=principal.subject, tenant=principal.tenant, resource=f"job:{job_id}",
+            "job.replayed", actor=principal.subject,
+            tenant=result.get("tenant") or principal.tenant or "", resource=f"job:{job_id}",
             ip=request.client.host if request.client else "")
     return result
 
@@ -158,7 +161,8 @@ async def cancel(request: Request, job_id: str,
         job_id, tenant=principal.tenant, is_operator="platform.jobs" in principal.caps)
     if result.get("ok"):
         await request.app.state.auditor.record(
-            "job.cancelled", actor=principal.subject, tenant=principal.tenant, resource=f"job:{job_id}",
+            "job.cancelled", actor=principal.subject,
+            tenant=result.get("tenant") or principal.tenant or "", resource=f"job:{job_id}",
             ip=request.client.host if request.client else "")
     return result
 

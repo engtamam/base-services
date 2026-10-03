@@ -210,7 +210,7 @@
       "scenario": "replay() and cancel() pass tenant=principal.tenant to JobService (operator bypasses the tenant check via is_operator), then record the audit event with tenant=principal.tenant — which for a platform operator is the operator's own tenant or None, NOT the job's tenant. An investigator reading the audit trail cannot tell which tenant's job was replayed/cancelled, defeating the stated purpose ('an unattributable replay is indistinguishable from a duplicate someone caused deliberately').",
       "evidence": "await request.app.state.auditor.record(\"job.replayed\", actor=principal.subject, tenant=principal.tenant, resource=f\"job:{job_id}\", ...)",
       "recommendation": "Fetch the job (already done in replay/cancel) and record tenant=job.tenant so the audit row names the affected tenant.",
-      "status": "pending"
+      "status": "fixed"
     },
     {
       "id": "job-017",

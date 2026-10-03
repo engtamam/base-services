@@ -244,7 +244,7 @@ class JobService:
         await self._jobs.unindex_due(job.id)
         await self._jobs.unindex_leased(job.id)
         await self._jobs.unique_clear(self._scoped(job.tenant, job.unique_key))
-        return {"ok": True, "status": CANCELED}
+        return {"ok": True, "status": CANCELED, "tenant": job.tenant}
 
     async def replay(self, job_id: str, *, tenant: str | None = None,
                      is_operator: bool = True) -> dict:
@@ -257,7 +257,7 @@ class JobService:
         job.status, job.attempt, job.error, job.next_run_at, job.updated = QUEUED, 0, "", now, now
         await self._jobs.save(job)
         await self._jobs.index_due(job)
-        return {"ok": True, "status": QUEUED}
+        return {"ok": True, "status": QUEUED, "tenant": job.tenant}
 
     async def get(self, job_id: str) -> Job | None:
         return await self._jobs.get(job_id)
