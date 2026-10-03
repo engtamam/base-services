@@ -89,16 +89,26 @@ class SearchService:
         # could not tell from a clean failure, and unsafe to blindly retry (search-r2-11). Now every
         # doc is attempted and failures are reported by id, so a retry of only the failed ids is safe.
         indexed = 0
-        errors: list[dict[str, str]] = []
+        errors: list[dict[str, Any]] = []
         for d in docs:
             doc_id = str(d.get("id", ""))
+            # search-017: validate the doc SHAPE up front — a missing index/id is a PERMANENT, non-retryable
+            # error, reported distinctly rather than surfacing as a KeyError the caller cannot classify.
+            if not d.get("index") or not doc_id:
+                errors.append({"id": doc_id, "error": "MalformedDoc", "retryable": False,
+                               "detail": "each doc needs a non-empty 'index' and 'id'"})
+                continue
             try:
                 await self.index(index=d["index"], doc_id=doc_id, tenant=tenant,
                                  fields=d.get("fields") or {}, owner=d.get("owner", ""),
                                  boosts=d.get("boosts"), created=d.get("created", 0.0))
                 indexed += 1
             except Exception as exc:  # noqa: BLE001 — report the failure, do not abort the batch
-                errors.append({"id": doc_id, "error": type(exc).__name__})
+                # search-017: classify so a caller can safely retry ONLY the transient ones. A gateway/index
+                # outage is retryable; a malformed/cross-tenant/validation error is permanent (retrying it
+                # just burns the same answer).
+                retryable = isinstance(exc, IndexUnavailable)
+                errors.append({"id": doc_id, "error": type(exc).__name__, "retryable": retryable})
         return {"indexed": indexed, "failed": errors}
 
     # ── search (HOT PATH) ────────────────────────────────────────────────────────
@@ -124,7 +134,10 @@ class SearchService:
             result = await self._run(index, tenant, text, norm_filters, facets or [],
                                      size, cursor, highlight)
         except IndexUnavailable:
-            return {"unavailable": True, "hits": [], "total": 0}   # degraded, never a 500
+            # search-013: degraded response SAME shape as a normal one (next_cursor/facets/total_is_estimate
+            # present), so a client never has to special-case the field set — just check `unavailable`.
+            return {"unavailable": True, "hits": [], "total": 0, "total_is_estimate": False,
+                    "next_cursor": "", "facets": {}}   # degraded, never a 500
         await self._cache_set(cache_key, result)
         return {**result, "cached": False}
 
@@ -132,6 +145,11 @@ class SearchService:
         terms = self._an(text)
         _query.check_terms(terms, max_terms=self._cfg["max_query_terms"])
         stats = await self._index.stats(index=index)
+        # search-011: n_docs/avgdl (and the doc_freq below) are INDEX-GLOBAL in this shared-index engine —
+        # ranking stats are computed across every tenant sharing the index, not per-(index, tenant). This
+        # is acceptable for a SINGLE-TENANT index (the common case) and for relative ranking within a
+        # tenant's result set; a deployment that co-locates many tenants in one index and needs
+        # tenant-isolated IDF must maintain per-(index, tenant) meta counters. Documented, not silent.
         n_docs = int(stats.get("n_docs", 0)) or 1
         avgdl = (float(stats.get("total_len", 0)) / n_docs) if n_docs else 1.0
 
@@ -147,7 +165,13 @@ class SearchService:
         doc_freq: dict[str, int] = {}
         for term in set(terms):
             postings = await self._index.postings(index=index, term=term)
+            # search-012: set doc_freq for EVERY query term BEFORE/independently of the candidate cap.
+            # The old code broke out of this loop when the cap was hit, leaving later terms' doc_freq
+            # unset — so IDF for those terms was wrong and ranking was corrupted exactly when the cap
+            # mattered. doc_freq is a cheap posting-list length; only candidate MATERIALISATION is capped.
             doc_freq[term] = len(postings)
+            if len(candidate_tf) >= cap:
+                continue
             for doc_id, tf in postings.items():
                 candidate_tf.setdefault(doc_id, {})[term] = tf
                 # Check the cap INSIDE the inner loop: a single high-frequency term's posting list can
@@ -155,8 +179,7 @@ class SearchService:
                 # get per candidate below) before the cap was consulted — an unbounded fan-out DoS.
                 if len(candidate_tf) >= cap:
                     break
-            if len(candidate_tf) >= cap:
-                break
+        capped = len(candidate_tf) >= cap
 
         pos = _cursor.decode(cursor)
         hits: list[tuple[float, str]] = []
@@ -192,7 +215,10 @@ class SearchService:
         # More pages iff the REMAINING (post-cursor) set has more than this page — not `total > size`,
         # which (now that total is the full count) would emit a cursor to an empty page on the last one.
         next_cursor = _cursor.encode(page[-1][0], page[-1][1]) if len(ordered) > size else ""
-        return {"hits": out_hits, "total": total, "next_cursor": next_cursor, "facets": facet_counts}
+        # search-013: `total` is the match count AMONG the materialised candidates, which is capped at
+        # max_candidates. When the cap was hit, total is a floor, not the true count — say so explicitly.
+        return {"hits": out_hits, "total": total, "total_is_estimate": capped,
+                "next_cursor": next_cursor, "facets": facet_counts}
 
     def _facets(self, facets: list[str], docs: list[dict]) -> dict[str, dict[str, int]]:
         out: dict[str, dict[str, int]] = {f: {} for f in facets}

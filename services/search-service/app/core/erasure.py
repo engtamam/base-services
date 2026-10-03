@@ -53,17 +53,34 @@ class SearchErasure:
     async def erase(self, tenant: str, subject: str) -> dict[str, Any]:
         ref = subject_ref(self._salt, tenant, subject)
         deleted = 0
+        stuck = False
         # Re-query from the start each pass: we delete what we read, so the next find returns the next
         # undeleted rows. A cursor would skip rows as the collection shrinks underneath it.
-        while True:
+        # search-014: GUARD against an infinite spin. If a delete silently fails to remove a matching row,
+        # the same page returns for ever. Detect no-progress (the same page signature twice in a row) and a
+        # hard max-pass bound; stop and report rather than loop endlessly.
+        prev_sig = None
+        max_passes = 100_000
+        for _ in range(max_passes):
             rows, _ = await self._store.find(_DOCS, {"tenant": tenant, "owner": subject},
                                              limit=500, sort=("created", "asc"))
             if not rows:
                 break
+            sig = (len(rows), rows[0].get("id"))
+            if sig == prev_sig:
+                stuck = True        # a pass deleted nothing — rows remain undeleted; do not spin
+                break
+            prev_sig = sig
             for r in rows:
                 # tenant is passed so a cross-tenant record under a shared (index, id) is never touched.
                 await self._index.delete(index=r["index"], doc_id=r["id"], tenant=tenant)
                 deleted += 1
+        else:
+            stuck = True            # hit the hard pass bound with rows still matching
+        if stuck:
+            raise RuntimeError(
+                f"search erasure for tenant {tenant!r} did not converge — {deleted} deleted but rows "
+                f"remain; refusing to spin (search-014)")
         if deleted:
             await self._bump_generation(tenant)
 

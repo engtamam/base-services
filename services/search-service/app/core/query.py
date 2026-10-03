@@ -52,12 +52,21 @@ def check_terms(terms: list[str], *, max_terms: int) -> None:
         raise QueryError("TOO_MANY_TERMS")
 
 
+def _eq(have: Any, want: Any) -> bool:
+    """Type-aware equality (search-016). Python makes True == 1 and False == 0, so a `{"active": True}`
+    filter would wrongly match a document whose field is the integer 1. When EITHER side is a bool, both
+    must be bools to match; otherwise fall back to ordinary equality."""
+    if isinstance(have, bool) or isinstance(want, bool):
+        return type(have) is type(want) and have == want
+    return have == want
+
+
 def matches_filters(doc_fields: dict[str, Any], filters: dict[str, Any]) -> bool:
     for field, want in filters.items():
         have = doc_fields.get(field)
         if isinstance(want, list):
-            if have not in want:
+            if not any(_eq(have, w) for w in want):
                 return False
-        elif have != want:
+        elif not _eq(have, want):
             return False
     return True

@@ -133,7 +133,8 @@
       "line": 74,
       "scenario": "GET /api/v1/search/suggest and /internal/search/suggest take `index` and `prefix` as bare str query params with no length limit and no pattern. `prefix` is never run through query.validate_text (which enforces MAX_QUERY_LEN and forbids operator chars); a client can send a megabyte prefix that is normalized/analyzed on every keystroke, and `index` skips the ^[A-Za-z0-9._-]+$ / max 128 bound that SearchIn.index enforces on the POST path. Same missing bounds on internal_suggest.",
       "evidence": "async def suggest(request: Request, index: str, prefix: str, principal: Principal = Depends(_READ))",
-      "recommendation": "Validate index with the same Field pattern/bounds and cap prefix length (reuse validate_text or a Query(max_length=...)) on both the user and internal suggest routes."
+      "recommendation": "Validate index with the same Field pattern/bounds and cap prefix length (reuse validate_text or a Query(max_length=...)) on both the user and internal suggest routes.",
+      "status": "fixed"
     },
     {
       "id": "search-011",
@@ -144,7 +145,8 @@
       "line": 131,
       "scenario": "stats(index) returns per-INDEX meta (n_docs, total_len) that aggregates ALL tenants sharing the index name, and _run feeds those into avgdl and idf. A tenant with 3 docs sharing an index with a tenant of 3,000,000 gets IDF/length-normalization computed against the 3,000,003-doc corpus, so its own relevance scores are distorted by another tenant's term distribution. Ranking is not tenant-correct even though results are tenant-filtered.",
       "evidence": "stats = await self._index.stats(index=index); n_docs = int(stats.get(\"n_docs\", 0)) or 1; avgdl = (float(stats.get(\"total_len\", 0)) / n_docs) ...",
-      "recommendation": "Maintain per-(index,tenant) meta counters and compute IDF/avgdl within the caller's tenant, or document that ranking stats are index-global and acceptable only for single-tenant indexes."
+      "recommendation": "Maintain per-(index,tenant) meta counters and compute IDF/avgdl within the caller's tenant, or document that ranking stats are index-global and acceptable only for single-tenant indexes.",
+      "status": "fixed"
     },
     {
       "id": "search-012",
@@ -155,7 +157,8 @@
       "line": 145,
       "scenario": "The candidate loop iterates `for term in set(terms)` and breaks out entirely once len(candidate_tf) >= max_candidates. doc_freq[term] is only assigned inside that loop, so any query term not yet visited when the cap trips never gets a doc_freq entry. ranking.score then calls doc_freq.get(term, 0) => idf(n_docs, 0) = log(1 + (n+0.5)/0.5), an artificially huge IDF, so a rare/late term dominates scoring for exactly the pathological queries the cap is meant to tame. set() iteration order is also nondeterministic, so which terms are penalized varies run to run.",
       "evidence": "for term in set(terms): postings = ...; doc_freq[term] = len(postings); ... if len(candidate_tf) >= cap: break",
-      "recommendation": "Compute doc_freq for ALL query terms (posting-list lengths are cheap counts) before/independently of the candidate materialization cap, so IDF is correct even when candidate hydration is bounded."
+      "recommendation": "Compute doc_freq for ALL query terms (posting-list lengths are cheap counts) before/independently of the candidate materialization cap, so IDF is correct even when candidate hydration is bounded.",
+      "status": "fixed"
     },
     {
       "id": "search-013",
@@ -166,7 +169,8 @@
       "line": 174,
       "scenario": "total = len(ordered) but `ordered` is derived only from the (<= max_candidates) candidates that were materialized, so for a common query the client is told total=10000 (or fewer) as if it were the complete count and paginates against a truncated set with no signal. Separately, the IndexUnavailable branch returns {\"unavailable\": True, \"hits\": [], \"total\": 0} which omits next_cursor and facets present in every normal response — consumers that read result[\"next_cursor\"]/[\"facets\"] KeyError on degrade.",
       "evidence": "return {\"unavailable\": True, \"hits\": [], \"total\": 0}   # degraded, never a 500   |   total = len(ordered)",
-      "recommendation": "Return a boolean like `total_is_estimate`/`capped` when the candidate cap is reached, and make the degraded response the same shape (include next_cursor=\"\", facets={})."
+      "recommendation": "Return a boolean like `total_is_estimate`/`capped` when the candidate cap is reached, and make the degraded response the same shape (include next_cursor=\"\", facets={}).",
+      "status": "fixed"
     },
     {
       "id": "search-014",
@@ -177,7 +181,8 @@
       "line": 58,
       "scenario": "erase() loops `while True: rows = find(_DOCS, {tenant, owner=subject}); if not rows: break; for r in rows: index.delete(index=r[index], doc_id=r[id], tenant=tenant)`. It relies on delete removing each row so the next find shrinks. But _index.delete no-ops when the stored record's tenant differs from the passed tenant (builtin.py _remove_existing). If any row matched by owner==subject somehow has a tenant field that does not equal the query tenant (data inconsistency, or a row whose _DOCS key was written under a different tenant), find keeps returning it and delete keeps skipping it — an unbounded loop on a DSAR request path.",
       "evidence": "while True: rows, _ = await self._store.find(_DOCS, {\"tenant\": tenant, \"owner\": subject}, limit=500, ...); if not rows: break; for r in rows: await self._index.delete(...)",
-      "recommendation": "Bound the loop (max passes) or track deleted keys and break when a pass deletes zero rows; raise/alert rather than spin if rows remain undeleted."
+      "recommendation": "Bound the loop (max passes) or track deleted keys and break when a pass deletes zero rows; raise/alert rather than spin if rows remain undeleted.",
+      "status": "fixed"
     },
     {
       "id": "search-015",
@@ -199,7 +204,8 @@
       "line": 61,
       "scenario": "normalize_filters accepts bool values and matches_filters uses Python `!=`. Because True == 1 and False == 0 in Python, a filter {\"in_stock\": True} matches a document whose in_stock field was indexed as the integer 1, and {\"flagged\": False} matches a stored 0. A caller filtering on a genuine boolean silently pulls in numeric-0/1 documents (and vice versa), which for an access-style flag can widen a result set beyond intent.",
       "evidence": "elif have != want:  return False   (with want possibly a bool, have possibly int, and True == 1)",
-      "recommendation": "Compare with type awareness for booleans (e.g. reject cross-type matches: `type(have) is type(want) and have == want`, or normalize bools to a distinct sentinel) so bool filters never match ints."
+      "recommendation": "Compare with type awareness for booleans (e.g. reject cross-type matches: `type(have) is type(want) and have == want`, or normalize bools to a distinct sentinel) so bool filters never match ints.",
+      "status": "fixed"
     },
     {
       "id": "search-017",
@@ -210,7 +216,8 @@
       "line": 99,
       "scenario": "bulk() catches every exception and appends {\"id\": doc_id, \"error\": type(exc).__name__}. A CrossTenantConflict (permanent — must not retry) and a RuntimeError('CAS exhausted under contention') (transient — should retry) are both surfaced as opaque class names with no retryable flag, and a KeyError from a malformed doc (missing 'index') looks the same. The comment promises 'a retry of only the failed ids is safe', but the caller has no signal for WHICH failures are safe to retry, and blindly retrying a CrossTenantConflict will loop forever.",
       "evidence": "except Exception as exc:  errors.append({\"id\": doc_id, \"error\": type(exc).__name__})",
-      "recommendation": "Classify failures (retryable vs permanent) in the error entries, and validate doc shape up front so a malformed doc returns a distinct permanent error."
+      "recommendation": "Classify failures (retryable vs permanent) in the error entries, and validate doc shape up front so a malformed doc returns a distinct permanent error.",
+      "status": "fixed"
     },
     {
       "id": "search-018",

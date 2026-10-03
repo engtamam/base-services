@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app.api.auth import Principal
@@ -71,7 +71,13 @@ async def search(request: Request, body: SearchIn, principal: Principal = Depend
 
 
 @router.get("/suggest", dependencies=[Depends(_READ), Depends(rate_limit)])
-async def suggest(request: Request, index: str, prefix: str, principal: Principal = Depends(_READ)) -> dict:
+async def suggest(
+    request: Request,
+    # search-010: validate index (same shape as the POST path) and bound prefix length — an unvalidated,
+    # unbounded prefix is a cost/key-shape drift and an abuse vector on the suggest hot path.
+    index: str = Query(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._-]+$"),
+    prefix: str = Query(min_length=1, max_length=256),
+    principal: Principal = Depends(_READ)) -> dict:
     return await build_search(request).suggest(index=index, tenant=_tenant(principal), prefix=prefix)
 
 

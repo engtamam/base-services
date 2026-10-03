@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from app.api.v1.search import build_search
@@ -147,7 +147,11 @@ async def delete_doc(request: Request, body: DeleteIn) -> dict:
 
 
 @router.get("/search/suggest", dependencies=[Depends(require_internal_token)])
-async def internal_suggest(request: Request, index: str, prefix: str, tenant: str) -> dict:
+async def internal_suggest(
+    request: Request,
+    index: str = Query(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._-]+$"),  # search-010
+    prefix: str = Query(min_length=1, max_length=256),
+    tenant: str = Query(min_length=1, max_length=128)) -> dict:
     """Prefix suggest for a PEER service calling on its own caller's behalf.
 
     The user route (/api/v1/search/suggest) takes the tenant from the caller's JWT — which a peer
