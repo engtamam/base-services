@@ -11,8 +11,11 @@ GENESIS_PIH = (
     "NWZlY2ViNjZmZmM4NmYzOGQ5NTI3ODZjNmQ2OTZjNzljMmRiYzIzOWRkNGU5MWI0NjcyOWQ3M2EyN2ZiNTdlOQ=="
 )
 
-# Statuses that count as "not yet finalized" — allowed only as the chain TAIL.
-_UNSIGNED = frozenset({"none", "pending"})
+# Statuses that count as "not yet finalized" — allowed only as the chain TAIL. zatca-011: 'failed' and
+# 'submitted' are also not-yet-finalized (no signed hash), so a mid-chain row in either state must be
+# reported as unsigned_link AT ITS OWN ICV — not as a pih_mismatch at the successor (which points the
+# diagnosis one link too far and at the wrong cause).
+_UNSIGNED = frozenset({"none", "pending", "failed", "submitted"})
 
 
 def verify_chain(links: list[dict], *, genesis_pih: str = GENESIS_PIH) -> dict:

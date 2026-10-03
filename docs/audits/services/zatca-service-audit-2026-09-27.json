@@ -158,7 +158,8 @@
       "line": 15,
       "scenario": "_UNSIGNED = {'none','pending'} only. A capped-while-unsigned invoice is moved to status='failed' with hash='' (see _schedule_retry). If such a row sits mid-chain (not the tail), verify_chain does not classify it as unsigned_link; instead its empty hash becomes prev_hash and the NEXT link fails with reason='pih_mismatch'. The operator is told 'pih_mismatch' at ICV N+1 when the real defect is an unsigned/failed predecessor at ICV N — a misdiagnosis that sends recovery to the wrong invoice.",
       "evidence": "_UNSIGNED = frozenset({\"none\", \"pending\"})  ...  if not is_tail and str(link.get(\"status\") or \"\") in _UNSIGNED: return _break(icv, \"unsigned_link\")",
-      "recommendation": "Include every not-yet-finalized status ('failed','submitted') in the unsigned set, or detect an empty hash on a non-tail link and report unsigned_link at that ICV rather than pih_mismatch at the successor."
+      "recommendation": "Include every not-yet-finalized status ('failed','submitted') in the unsigned set, or detect an empty hash on a non-tail link and report unsigned_link at that ICV rather than pih_mismatch at the successor.",
+      "status": "fixed"
     },
     {
       "id": "zatca-012",
@@ -214,7 +215,8 @@
       "line": 11,
       "scenario": "_TRANSIENT includes 401. A 401 from ZATCA means the CSID/credentials are invalid or expired — a configuration/onboarding problem, not a transient network blip. Because it is classified 'pending', the invoice is retried up to ZATCA_RETRY_MAX_ATTEMPTS (12) over up to 6h before being marked 'failed', with no distinct signal that authentication is the cause. Combined with zatca-008 (double-encoded token) an operator sees invoices quietly pile up in pending with a generic 'HTTP 401' message and no alert that the credential is the problem.",
       "evidence": "_TRANSIENT = frozenset({401, 408, 425, 429, 500, 502, 503, 504})",
-      "recommendation": "Split 401 from the network-transient set: surface it as an auth/credential error (distinct message, and ideally a head-lag-style alert or a bounded retry with a loud warning) so a bad CSID is diagnosed as such rather than hidden behind the generic retry."
+      "recommendation": "Split 401 from the network-transient set: surface it as an auth/credential error (distinct message, and ideally a head-lag-style alert or a bounded retry with a loud warning) so a bad CSID is diagnosed as such rather than hidden behind the generic retry.",
+      "status": "fixed"
     },
     {
       "id": "zatca-017",
@@ -225,7 +227,8 @@
       "line": 105,
       "scenario": "Idempotency is keyed solely on (tenant, number). If a caller re-POSTs the SAME number with a DIFFERENT payload (corrected amounts, different buyer) while the first invoice is still 'pending' with a draft already built, allocate_slot returns the existing invoice and finalize skips _validate_invoice_input (guarded by `if not by_number(...)`) and reuses the already-built draft — the new payload is silently ignored, and the caller gets back the OLD invoice's totals with status pending as if accepted-in-progress. There is no detection that the resubmitted body differs from the one on file.",
       "evidence": "if not (await self._inv.by_number(tenant, number)):\n            _validate_invoice_input(invoice_in, self._currency)  ...  if not inv.draft:   # build the unsigned UBL once",
-      "recommendation": "Either reject a re-finalize whose payload hash differs from the stored draft (409/conflict, pointing the caller to correct-and-resign) or document that (tenant, number) is the immutable idempotency key and the body after first submission is ignored; add a test for the differing-payload replay."
+      "recommendation": "Either reject a re-finalize whose payload hash differs from the stored draft (409/conflict, pointing the caller to correct-and-resign) or document that (tenant, number) is the immutable idempotency key and the body after first submission is ignored; add a test for the differing-payload replay.",
+      "status": "fixed"
     },
     {
       "id": "zatca-018",
@@ -270,7 +273,8 @@
       "line": 196,
       "scenario": "test_bad_qty_or_issued_at_is_422_and_burns_no_icv parametrizes bad qty and bad issued_at but NOT bad vat_rate, so the un-validated vat_rate path (zatca-001) has no regression coverage and shipped unnoticed. Likewise there is no test simulating a save() failure after the signed-head CAS wins (zatca-002), so the wedged-ICV window is unguarded by tests. The suite asserts the fixes it was written for and stops at the boundary of the same class of bug.",
       "evidence": "@pytest.mark.parametrize(\"bad\", [ {**INV, \"issued_at\": \"not-epoch\"}, ...])  # no vat_rate case",
-      "recommendation": "Add cases for vat_rate in {'abc','15%','',None,'-0.1'} asserting a 422 and zero ICV burned, and a fault-injection test that fails save() after mark_signed's CAS and asserts the invoice remains recoverable (signable/submittable)."
+      "recommendation": "Add cases for vat_rate in {'abc','15%','',None,'-0.1'} asserting a 422 and zero ICV burned, and a fault-injection test that fails save() after mark_signed's CAS and asserts the invoice remains recoverable (signable/submittable).",
+      "status": "fixed"
     },
     {
       "id": "zatca-022",

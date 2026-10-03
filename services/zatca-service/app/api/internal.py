@@ -73,10 +73,13 @@ async def finalize(request: Request, body: FinalizeIn) -> dict:
     caller — a transient error leaves the invoice retryable ('pending')."""
     if not body.invoice.get("number"):
         raise HTTPException(422, "MISSING_NUMBER")
-    from app.core.zatca_service import ZatcaInputError
+    from app.core.zatca_service import ZatcaConflict, ZatcaInputError
     try:
         # Pass the invoice's tenant so signing resolves THIS tenant's signer credential (audit-02).
         result = await (await build_zatca(request, body.tenant)).finalize(body.invoice, body.tenant)
+    except ZatcaConflict as exc:
+        # zatca-017: a changed payload for an already-finalized number — a conflict, not a replay.
+        raise HTTPException(409, f"INVOICE_PAYLOAD_CONFLICT: {exc}") from exc
     except ZatcaInputError as exc:
         # A malformed payload is a permanent caller error, not the transient kind the 'never fails'
         # guarantee covers — a clean 422, and no ICV was burned (validated before slot allocation).

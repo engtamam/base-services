@@ -25,6 +25,19 @@ from app.ports.fatoora_client import FatooraUnavailable
 from app.ports.zatca_signer import SignerUnavailable
 
 
+class ZatcaConflict(Exception):
+    """zatca-017: a re-finalize of an already-ACCEPTED (tenant, number) arrived with a DIFFERENT payload.
+    (tenant, number) is the immutable idempotency key once submitted — a changed body is a conflict, not a
+    silent no-op that returns the old result as if the new body had been accepted. Correct-and-resign is
+    the explicit path to change a submitted invoice."""
+
+
+def _payload_fingerprint(invoice_in: dict) -> str:
+    import hashlib
+    import json as _json
+    return hashlib.sha256(_json.dumps(invoice_in, sort_keys=True, default=str).encode()).hexdigest()
+
+
 class ZatcaInputError(ValueError):
     """The invoice payload is malformed (a bad line amount or currency). A PERMANENT caller error the
     route maps to 422 — distinct from a transient signer/gateway failure, which stays retryable. It is
@@ -127,7 +140,17 @@ class ZatcaService:
         simplified = not (invoice_in.get("buyer") or {}).get("vat_number")
         itype = "simplified" if simplified else "standard"
         inv, _created = await self._inv.allocate_slot(tenant, number, itype)
+        incoming_fp = _payload_fingerprint(invoice_in)
         if inv.status in ACCEPTED:
+            # zatca-017: idempotent replay only when the payload MATCHES. A stored fingerprint that differs
+            # means the caller changed the invoice body after it was submitted — refuse (409) and point
+            # them at correct-and-resign, rather than return the OLD stamped result as if the new body had
+            # been accepted. Legacy rows with no stored fingerprint replay as before (documented).
+            stored_fp = (inv.draft or {}).get("payload_fp", "")
+            if stored_fp and stored_fp != incoming_fp:
+                raise ZatcaConflict(
+                    f"invoice {number} is already finalized with a different payload; "
+                    "use correct-and-resign to change a submitted invoice")
             return self._result(inv)                      # idempotent — already done
 
         if not inv.draft:                                  # build the unsigned UBL once
@@ -139,7 +162,8 @@ class ZatcaService:
                          "seller_name": (invoice_in.get("seller") or {}).get("name", ""),
                          "vat_number": (invoice_in.get("seller") or {}).get("vat_number", ""),
                          "invoice_total": built["tax_inclusive"], "vat_total": built["vat"],
-                         "simplified": simplified}
+                         "simplified": simplified,
+                         "payload_fp": incoming_fp}      # zatca-017: the idempotency fingerprint
             await self._inv.save(inv)
 
         secrets = await self._set.load_secrets(tenant)

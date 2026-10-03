@@ -7,8 +7,12 @@ from __future__ import annotations
 
 from typing import Any
 
-# HTTP codes that mean "retry later" (renew CSID / throttled / server / transient).
-_TRANSIENT = frozenset({401, 408, 425, 429, 500, 502, 503, 504})
+# HTTP codes that mean "retry later" (throttled / server / transient).
+# zatca-016: 401 is NOT a plain network transient — it is an AUTH failure (expired/wrong PCSID). It is
+# still retryable (a CSID renewal recovers it), but it must be DIAGNOSED distinctly (auth_error flag +
+# a credential-specific message) rather than hidden among the generic transients, so a bad CSID is seen.
+_TRANSIENT = frozenset({408, 425, 429, 500, 502, 503, 504})
+_AUTH = 401
 
 
 def messages(vr: dict, key: str) -> list[str]:
@@ -46,16 +50,25 @@ def classify(code: int, resp: dict, *, success_status: str) -> dict[str, Any]:
             200 <= code < 300 and status_val != "" and "NOT_" not in status_val and not errors)
         # A body-less 2xx (no reportingStatus at all) is ambiguous, not success — retry it.
         incomplete_2xx = 200 <= code < 300 and not accepted and status_val == "" and not errors
+    auth_error = code == _AUTH
     if accepted:
         outcome = success_status
-    elif code in _TRANSIENT or code == 0 or incomplete_2xx:   # transient / ambiguous 2xx → retry
+    elif auth_error or code in _TRANSIENT or code == 0 or incomplete_2xx:  # transient/auth/ambiguous → retry
         outcome = "pending"
     else:                                       # 400 / 413 / NOT_* / 2xx-with-errors → hard reject
         outcome = "rejected"
+    if outcome == success_status:
+        message = None
+    elif auth_error:
+        # Distinct, diagnosable: a bad/expired PCSID, not a generic network blip.
+        message = ("; ".join(errors)
+                   or "HTTP 401 — ZATCA rejected the CSID/credential (expired or wrong PCSID); "
+                      "renew the CSID. Retrying until then.")
+    else:
+        message = "; ".join(errors) or f"HTTP {code} {status_val}".strip()
     return {
-        "outcome": outcome, "code": int(code),
+        "outcome": outcome, "code": int(code), "auth_error": auth_error,
         "cleared_xml": resp.get("clearedInvoice"),
         "warnings": warnings, "errors": errors,
-        "message": None if outcome == success_status
-        else ("; ".join(errors) or f"HTTP {code} {status_val}".strip()),
+        "message": message,
     }
