@@ -86,6 +86,18 @@
             "minLength": 1,
             "title": "Requirement",
             "type": "string"
+          },
+          "ttl_seconds": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttl Seconds"
           }
         },
         "required": [
@@ -217,6 +229,59 @@
       }
     },
     "/api/v1/onboarding/admin/force/{subject}": {
+      "delete": {
+        "description": "Remove a hand-force so the live check resumes immediately (onboarding-008). Audited like the\nforce it reverses \u2014 un-forcing is also a change to who is satisfying a requirement by hand.",
+        "operationId": "unforce_complete_api_v1_onboarding_admin_force__subject__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "subject",
+            "required": true,
+            "schema": {
+              "title": "Subject",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "requirement",
+            "required": true,
+            "schema": {
+              "title": "Requirement",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Unforce Complete Api V1 Onboarding Admin Force  Subject  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Unforce Complete",
+        "tags": [
+          "v1",
+          "onboarding"
+        ]
+      },
       "post": {
         "description": "Mark a requirement satisfied by hand.\n\nThis is granting by hand exactly what the requirement exists to verify, so it is critical and\naudited, and the reason is REQUIRED \u2014 an override with no stated reason is indistinguishable\nfrom an attacker with an operator token.",
         "operationId": "force_complete_api_v1_onboarding_admin_force__subject__post",
