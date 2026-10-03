@@ -48,7 +48,8 @@
       "line": 3126,
       "scenario": "In PAYMENT_RENEWAL_GATEWAY_MODE=pinned the platform switches its active driver from tap to stripe. A tap-charged payment's webhook was missed, so an operator calls POST /payments/{id}/reconcile. reconcile_payment uses self._gw (stripe, the active gateway) to fetch_status(provider_id=<a tap id>) — the recovery path hits the wrong provider and either errors or returns 'unknown', so the invoice stays unpaid though the money moved. handle_webhook routes correctly via _gw_for_webhook(provider, tenant); reconcile does not.",
       "evidence": "fetch = getattr(self._gw, \"fetch_status\", None) ... charge = fetch(provider_id=pay.provider_id, currency=pay.currency)  # self._gw, never _gw_for_refund(pay)/the pinned gateway",
-      "recommendation": "Resolve the gateway from the payment's own provider (mirror _gw_for_refund) before fetch_status in reconcile_payment, so recovery reaches the gateway that actually charged."
+      "recommendation": "Resolve the gateway from the payment's own provider (mirror _gw_for_refund) before fetch_status in reconcile_payment, so recovery reaches the gateway that actually charged.",
+      "status": "fixed"
     },
     {
       "id": "billing-004",
@@ -59,7 +60,8 @@
       "line": 860,
       "scenario": "A shop upgrades to new_plan with interval='year' but new_plan only defines a 'month' price. change_plan calls _price_for(new_plan, 'year'), which falls back to prices[0] (the month price) and prices the upgrade — and the post-change price_snapshot — off the wrong interval. checkout()/_validate_cart guard this with PLAN_INTERVAL_UNAVAILABLE; change_plan has no such check.",
       "evidence": "new_price = pricing.line_amount(self._price_for(new_plan, new_interval), quantity=new_qty)  # _price_for: 'return plan.prices[0] if plan.prices else {...}'",
-      "recommendation": "Refuse a change to an interval the target plan does not offer (raise PLAN_INTERVAL_UNAVAILABLE), exactly as _validate_cart does, before pricing the upgrade."
+      "recommendation": "Refuse a change to an interval the target plan does not offer (raise PLAN_INTERVAL_UNAVAILABLE), exactly as _validate_cart does, before pricing the upgrade.",
+      "status": "fixed"
     },
     {
       "id": "billing-005",
@@ -70,7 +72,8 @@
       "line": 40,
       "scenario": "A coupon of type='fixed', value=5000, currency='USD' is attached to a SAR subscription. coupon_discount subtracts 5000 minor units from the SAR subtotal (i.e. 50 SAR off, not $50). subscribe(), attach_coupon(), and _validate_cart validate the coupon's status/plan scope but never compare coupon.currency to the price currency, so a fixed coupon silently discounts in the wrong currency.",
       "evidence": "elif ctype == \"fixed\": disc = value   # pricing.coupon_discount ignores coupon.get('currency'); CouponIn carries a currency field that nothing compares",
-      "recommendation": "When a fixed coupon carries a currency, refuse (or ignore) it if it differs from the subscription/price currency; validate this in _validate_cart, subscribe() and attach_coupon() alongside the plan-scope check."
+      "recommendation": "When a fixed coupon carries a currency, refuse (or ignore) it if it differs from the subscription/price currency; validate this in _validate_cart, subscribe() and attach_coupon() alongside the plan-scope check.",
+      "status": "fixed"
     },
     {
       "id": "billing-006",
@@ -92,7 +95,8 @@
       "line": 1010,
       "scenario": "A shop tops up 50 SAR to the 'topup' fund with a saved token, then genuinely tops up another identical 50 SAR to the same fund with the same token within USAGE_IDEMPOTENCY_TTL. The claim key topup:{tenant}:{token}:{total}:{fund} matches the first, so wallet_topup returns {..., 'duplicate': True} WITHOUT charging or crediting — the second real top-up is lost. refund() solved exactly this class by adding a caller refund_id to distinguish two equal partial refunds; wallet_topup exposes no such parameter (WalletTopupIn has none).",
       "evidence": "topup_key = f\"topup:{tenant}:{payment_token}:{total}:{fund}\" ... if prior is not None: return {**prior, \"duplicate\": True}",
-      "recommendation": "Accept an optional idempotency_key on the top-up routes/method and fold it into the claim key (fall back to the amount+token+fund key only when absent), mirroring refund_id, so distinct legitimate top-ups are not deduped."
+      "recommendation": "Accept an optional idempotency_key on the top-up routes/method and fold it into the claim key (fall back to the amount+token+fund key only when absent), mirroring refund_id, so distinct legitimate top-ups are not deduped.",
+      "status": "fixed"
     },
     {
       "id": "billing-008",

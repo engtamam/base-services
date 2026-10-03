@@ -919,6 +919,7 @@ class WalletTopupIn(BaseModel):
     payment_token: str = Field(min_length=1, max_length=512)
     fund: str = Field(default="", max_length=64)          # "" → the configured default fund
     currency: str = Field(default="", max_length=8)
+    idempotency_key: str = Field(default="", max_length=128)   # billing-007: distinguish deliberate repeats
     tenant: str | None = None
 
 
@@ -935,7 +936,7 @@ async def wallet_topup(request: Request, body: WalletTopupIn,
     try:
         result = await (await build_billing(request, tenant)).wallet_topup(
             tenant=tenant, amount_minor=body.amount_minor, payment_token=body.payment_token,
-            fund=body.fund, currency=body.currency)
+            fund=body.fund, currency=body.currency, idempotency_key=body.idempotency_key)
     except UpgradeChargeUnavailable as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "GATEWAY_UNAVAILABLE") from exc
     except UpgradeChargeFailed as exc:

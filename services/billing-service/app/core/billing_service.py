@@ -374,6 +374,10 @@ class BillingService:
         # plan-scoped coupon refused for a different plan — loud, BEFORE any redeem (mirror subscribe()).
         if coupon is not None and coupon.plan_id and coupon.plan_id != sub.plan_id:
             raise ValueError("COUPON_PLAN_MISMATCH")
+        # billing-005: a fixed coupon's currency must match the subscription currency (mirror subscribe()).
+        _sub_ccy = str(sub.price_snapshot.get("currency") or self._cfg["currency"])
+        if coupon is not None and coupon.type == "fixed" and str(coupon.currency or _sub_ccy) != _sub_ccy:
+            raise ValueError("COUPON_CURRENCY_MISMATCH")
         reason = _coupons.status(coupon.to_dict() if coupon else None, now)
         if reason != _coupons.ACTIVE:
             raise ValueError(f"COUPON_{reason.upper()}")   # fail closed: unknown/expired/exhausted/…
@@ -717,6 +721,10 @@ class BillingService:
             # redemption. Empty plan_id = applies to any plan (unchanged behaviour).
             if coupon is not None and coupon.plan_id and coupon.plan_id != plan_id:
                 raise ValueError("COUPON_PLAN_MISMATCH")
+            # billing-005: a fixed coupon's currency must match the charged currency (mirror _validate_cart).
+            _sub_ccy = str(self._price_for(plan, interval).get("currency") or self._cfg["currency"])
+            if coupon is not None and coupon.type == "fixed" and str(coupon.currency or _sub_ccy) != _sub_ccy:
+                raise ValueError("COUPON_CURRENCY_MISMATCH")
             reason = _coupons.status(coupon.to_dict() if coupon else None, now)
             if reason != _coupons.ACTIVE:
                 raise ValueError(f"COUPON_{reason.upper()}")
@@ -856,6 +864,11 @@ class BillingService:
             raise ValueError("PLAN_NOT_FOUND")
         new_interval = interval or sub.interval
         new_qty = quantity or sub.quantity
+        # billing-004: refuse a change to an interval the target plan does not offer, exactly as
+        # _validate_cart does, before pricing — _price_for falls back to prices[0] for a missing
+        # interval, which would silently mischarge at the wrong cadence.
+        if not any(p.get("interval") == new_interval for p in new_plan.prices):
+            raise ValueError("PLAN_INTERVAL_UNAVAILABLE")
         old_price = pricing.line_amount(self._effective_price(sub, old_plan), quantity=sub.quantity)
         new_price = pricing.line_amount(self._price_for(new_plan, new_interval), quantity=new_qty)
 
@@ -949,7 +962,8 @@ class BillingService:
 
     # ── one-off wallet top-up ────────────────────────────────────────────────────
     async def wallet_topup(self, *, tenant: str, amount_minor: int, payment_token: str,
-                           fund: str = "", currency: str = "") -> dict[str, Any]:
+                           fund: str = "", currency: str = "",
+                           idempotency_key: str = "") -> dict[str, Any]:
         """Charge an arbitrary one-off amount and credit it to a wallet fund — a manual top-up of a
         tenant's prepaid balance (e.g. AI-usage credit), NOT a subscription.
 
@@ -992,7 +1006,12 @@ class BillingService:
         # (topup_key, below) — `fund` included. Without it, a same-token+amount top-up to fund A then
         # fund B is ONE charge at the gateway (deduped) but TWO app claims (different fund) → a second
         # invoice mints and credits fund B: charged once, two funds credited (free stored value).
-        idem = f"topup:{tenant}:{payment_token}:{total}:{fund}"
+        # billing-007: a caller-supplied idempotency_key, when present, IS the operation identity — so a
+        # customer who deliberately tops up the same amount/fund twice is two charges, while a retry of
+        # one request is deduped. Absent, fall back to the amount+token+fund key (the old behaviour).
+        op = (idempotency_key or "").strip()
+        idem = (f"topup:{tenant}:idem:{op}" if op
+                else f"topup:{tenant}:{payment_token}:{total}:{fund}")
         gw = self._gw                       # a top-up is a fresh charge; no per-sub gateway pinning
         try:
             charge = gw.charge(amount_minor=total, currency=currency, token=payment_token,
@@ -1007,7 +1026,7 @@ class BillingService:
         # invoice_id, so two invoice ids = two credits for one payment. Claiming AFTER a successful
         # charge (so a decline never poisons the key) makes the whole top-up credit exactly once: a
         # duplicate replays the first invoice; a concurrent duplicate is told it is in progress.
-        topup_key = f"topup:{tenant}:{payment_token}:{total}:{fund}"
+        topup_key = idem
         proceed, prior = await self._idempo.claim(topup_key)
         if prior is not None:
             return {**prior, "duplicate": True}
@@ -2435,6 +2454,10 @@ class BillingService:
                 c = await self._coupons.fetch(coup)
                 if c is not None and c.plan_id and c.plan_id != pid:
                     raise ValueError(f"COUPON_PLAN_MISMATCH:{pid}")
+                # billing-005: a fixed-value coupon is denominated — SAR 50 off cannot discount a USD
+                # charge. Refuse a currency mismatch, loud, before redeem (mirror the plan-scope check).
+                if c is not None and c.type == "fixed" and str(c.currency or ccy) != ccy:
+                    raise ValueError(f"COUPON_CURRENCY_MISMATCH:{pid}")
                 reason = _coupons.status(c.to_dict() if c else None, now)
                 if reason != _coupons.ACTIVE:
                     raise ValueError(f"COUPON_{reason.upper()}:{pid}")
@@ -3123,10 +3146,14 @@ class BillingService:
         pay = await self._payments.fetch(payment_id)
         if pay is None:
             return {"ok": False, "reason": "NOT_FOUND"}
-        fetch = getattr(self._gw, "fetch_status", None)
+        # Resolve the gateway that CHARGED this payment, not the currently-active one (billing-003):
+        # in pinned mode the recovery fetch must reach the same gateway the money went to, exactly as
+        # refunds and webhooks route by the payment's own provider (mirrors _gw_for_refund).
+        gw = await self._gw_for_refund(pay)
+        fetch = getattr(gw, "fetch_status", None)
         if fetch is None:
             return {"ok": False, "reason": "UNSUPPORTED",
-                    "provider": getattr(self._gw, "driver", "")}
+                    "provider": getattr(gw, "driver", "")}
         if not pay.provider_id:
             return {"ok": False, "reason": "NO_PROVIDER_ID", "payment_status": pay.status}
         try:
