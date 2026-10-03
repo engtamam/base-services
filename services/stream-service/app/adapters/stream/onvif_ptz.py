@@ -19,8 +19,12 @@ def _default_factory(source: dict[str, Any]):   # pragma: no cover - needs a cam
     from onvif import ONVIFCamera
 
     onvif = source.get("onvif") or {}
-    cam = ONVIFCamera(onvif.get("host"), int(onvif.get("port", 80)),
-                      source.get("user", ""), source.get("password", ""))
+    # Credentials live in the onvif dict (unsealed from onvif_sealed), not at the top level of source —
+    # reading source.get("user"/"password") authenticated PTZ with EMPTY creds (stream-009). Accept
+    # both "user" and "username" spellings.
+    user = onvif.get("user") or onvif.get("username") or ""
+    password = onvif.get("password") or ""
+    cam = ONVIFCamera(onvif.get("host"), int(onvif.get("port", 80)), user, password)
     return cam
 
 

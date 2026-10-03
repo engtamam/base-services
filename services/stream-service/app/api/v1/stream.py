@@ -289,7 +289,7 @@ async def _ptz_source(request: Request, source_id: str, tenant: str) -> dict:
             "url": svc._sealer.unseal(src.url_sealed, aad=source_aad(src.id))}
 
 
-@router.post("/sources/{source_id}/ptz/move", dependencies=[Depends(_MANAGE)])
+@router.post("/sources/{source_id}/ptz/move", dependencies=[Depends(_MANAGE), Depends(rate_limit)])
 async def ptz_move(request: Request, source_id: str, body: PtzMove,
                    p: Principal = Depends(require_tenant)) -> dict:
     src = await _ptz_source(request, source_id, p.tenant)
@@ -305,7 +305,7 @@ async def ptz_move(request: Request, source_id: str, body: PtzMove,
     return {"moving": True}
 
 
-@router.post("/sources/{source_id}/ptz/stop", dependencies=[Depends(_MANAGE)])
+@router.post("/sources/{source_id}/ptz/stop", dependencies=[Depends(_MANAGE), Depends(rate_limit)])
 async def ptz_stop(request: Request, source_id: str, p: Principal = Depends(require_tenant)) -> dict:
     src = await _ptz_source(request, source_id, p.tenant)
     try:
@@ -315,14 +315,14 @@ async def ptz_stop(request: Request, source_id: str, p: Principal = Depends(requ
     return {"stopped": True}
 
 
-@router.get("/sources/{source_id}/ptz/presets", dependencies=[Depends(_READ)])
+@router.get("/sources/{source_id}/ptz/presets", dependencies=[Depends(_READ), Depends(rate_limit)])
 async def ptz_presets(request: Request, source_id: str,
                       p: Principal = Depends(require_tenant)) -> dict:
     src = await _ptz_source(request, source_id, p.tenant)
     return {"presets": await request.app.state.container.ptz.presets(src)}
 
 
-@router.post("/sources/{source_id}/ptz/goto/{preset_token}", dependencies=[Depends(_MANAGE)])
+@router.post("/sources/{source_id}/ptz/goto/{preset_token}", dependencies=[Depends(_MANAGE), Depends(rate_limit)])
 async def ptz_goto(request: Request, source_id: str, preset_token: str,
                    p: Principal = Depends(require_tenant)) -> dict:
     src = await _ptz_source(request, source_id, p.tenant)
@@ -456,6 +456,13 @@ async def request_export(request: Request, body: ExportIn,
     if not s.EXPORT_ENABLED:
         # Said plainly rather than accepting a request this platform will never fulfil.
         raise HTTPException(501, "EXPORT_DISABLED")
+    # Confirm the source exists and belongs to THIS tenant before creating the export (stream-012):
+    # without this a caller could request an export against another tenant's source id (IDOR), matching
+    # the ownership check every other source route makes.
+    try:
+        await build_stream_service(request).get_source(body.source_id, tenant=p.tenant)
+    except SourceNotFound:
+        raise HTTPException(404, "SOURCE_NOT_FOUND")
     await request.app.state.auditor.record(
         "export.requested", actor=p.subject, tenant=p.tenant,
         resource=f"source:{body.source_id}", ip=request.client.host if request.client else "",

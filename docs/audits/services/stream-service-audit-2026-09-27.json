@@ -124,7 +124,8 @@
       "line": 22,
       "scenario": "_default_factory builds ONVIFCamera(host, port, source.get('user',''), source.get('password','')) — it reads top-level `user`/`password`. But _ptz_source (stream.py) passes {\"onvif\": <onvif dict>, \"url\": ...}, and register_source stores credentials inside the onvif dict, not at top level. So on a real (non-fake) camera the controller authenticates with empty username/password and PTZ move/goto/presets fail on any camera that requires auth. It is never caught because all PTZ tests inject a client_factory over an empty {} source.",
       "evidence": "cam = ONVIFCamera(onvif.get(\"host\"), int(onvif.get(\"port\", 80)),\n                  source.get(\"user\", \"\"), source.get(\"password\", \"\"))",
-      "recommendation": "Read credentials from the onvif dict (onvif.get('user'/'username'), onvif.get('password')) consistently with how they are stored, and add a test that asserts the factory is passed the registered credentials."
+      "recommendation": "Read credentials from the onvif dict (onvif.get('user'/'username'), onvif.get('password')) consistently with how they are stored, and add a test that asserts the factory is passed the registered credentials.",
+      "status": "fixed"
     },
     {
       "id": "stream-010",
@@ -135,7 +136,8 @@
       "line": 291,
       "scenario": "POST /sources/{id}/ptz/move, /ptz/stop, /ptz/goto/{token} and GET /ptz/presets carry only capability deps (_MANAGE/_READ), no Depends(rate_limit) (unlike sources/sessions/exports). A holder of stream.manage can loop PTZ commands, hammering the physical camera's ONVIF service and motor and the service's outbound connections, with no throttle. Playback and per-source reads are similarly unlimited but PTZ drives real hardware.",
       "evidence": "@router.post(\"/sources/{source_id}/ptz/move\", dependencies=[Depends(_MANAGE)])\nasync def ptz_move(... )  # no Depends(rate_limit)",
-      "recommendation": "Add Depends(rate_limit) to the PTZ routes (and ideally a per-source cooldown for continuous moves), consistent with the write routes that already carry it."
+      "recommendation": "Add Depends(rate_limit) to the PTZ routes (and ideally a per-source cooldown for continuous moves), consistent with the write routes that already carry it.",
+      "status": "fixed"
     },
     {
       "id": "stream-011",
@@ -157,7 +159,8 @@
       "line": 55,
       "scenario": "ExportService.request (POST /exports) validates the time range and format but never checks that source_id names a real source owned by the tenant. A caller can submit exports for arbitrary/garbage source_ids; each creates a PENDING Export row and enqueues a worker job. The worker later finds no overlapping recordings and marks it FAILED, but the tenant can spray unlimited junk export rows + queue jobs (audited as export.requested) with no upfront rejection.",
       "evidence": "exp = Export(id=f\"exp_{new_id()}\", tenant=tenant, source_id=source_id, start=start, end=end, status=PENDING, fmt=fmt)\nawait self._exports.create(exp)  # source_id never verified",
-      "recommendation": "Resolve the source via SourceStore.get and confirm src.tenant == tenant before creating the export; 404 otherwise, matching the other source-scoped routes."
+      "recommendation": "Resolve the source via SourceStore.get and confirm src.tenant == tenant before creating the export; 404 otherwise, matching the other source-scoped routes.",
+      "status": "fixed"
     },
     {
       "id": "stream-013",
