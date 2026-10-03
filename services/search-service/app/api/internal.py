@@ -32,9 +32,21 @@ class IndexIn(BaseModel):
     created: float = 0.0
 
 
+class BulkDoc(BaseModel):
+    # A bulk doc must pass the SAME bounds as a single IndexIn (search-005): typing docs as raw dicts
+    # bypassed the index-pattern / id bounds that index() enforces, so a bulk call could inject an
+    # unbounded id or an index name the single path rejects. Tenant rides on BulkIn, not per doc.
+    index: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._-]+$")
+    id: str = Field(min_length=1, max_length=256)
+    fields: dict[str, Any] = Field(default_factory=dict)
+    owner: str = ""
+    boosts: dict[str, float] = Field(default_factory=dict)
+    created: float = 0.0
+
+
 class BulkIn(BaseModel):
     tenant: str = Field(min_length=1, max_length=128)
-    docs: list[dict[str, Any]] = Field(default_factory=list)
+    docs: list[BulkDoc] = Field(default_factory=list)
 
 
 class DeleteIn(BaseModel):
@@ -112,7 +124,7 @@ async def index_doc(request: Request, body: IndexIn) -> dict:
 
 @router.post("/search/bulk", dependencies=[Depends(require_internal_token)])
 async def bulk(request: Request, body: BulkIn) -> dict:
-    result = await build_search(request).bulk(body.tenant, body.docs)
+    result = await build_search(request).bulk(body.tenant, [d.model_dump() for d in body.docs])
     await request.app.state.auditor.record(
         "search.bulk_indexed", actor="system", tenant=body.tenant, resource=body.tenant,
         ip=request.client.host if request.client else "", metadata={"count": str(len(body.docs))})

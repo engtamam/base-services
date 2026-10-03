@@ -60,9 +60,14 @@ def test_index_and_search(client):
 
 
 def test_cross_tenant_isolation(client):
+    # search-009: index a t1 doc matching the SAME query, so an empty result cannot pass this test by
+    # accident — it must return t1's own doc AND never the other tenant's "secret".
     _index(client, "art", "secret", "other-tenant", {"title": "fox secret"})
+    _index(client, "art", "mine", "t1", {"title": "fox mine"})
     hits = client.post("/api/v1/search", json={"index": "art", "text": "fox"}, headers=_tok("t1")).json()["hits"]
-    assert all(h["id"] != "secret" for h in hits)
+    ids = {h["id"] for h in hits}
+    assert "mine" in ids                       # the query really matched (isolation is being exercised)
+    assert "secret" not in ids                 # and the other tenant's doc never leaks
 
 
 def test_tenant_comes_from_token_not_body(client):

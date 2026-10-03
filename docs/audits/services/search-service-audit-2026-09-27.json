@@ -76,7 +76,8 @@
       "line": 36,
       "scenario": "BulkIn.docs is `list[dict[str, Any]]` with no schema, and SearchService.bulk reads d[\"index\"], d.get(\"id\",\"\"), d.get(\"fields\"). IndexIn/DeleteIn were hardened (r2-12) to bound index (pattern ^[A-Za-z0-9._-]+$, max 128), id (max 256) and tenant (max 128) — but bulk accepts an index name with arbitrary characters, an unbounded id, and (worse) an empty id. Every bulk doc with a missing id upserts under storage key \"<index>:\" so multiple docs collide on one key and silently overwrite each other (data loss), and arbitrary index strings become datastore keys.",
       "evidence": "class BulkIn(BaseModel): tenant: str = ...; docs: list[dict[str, Any]] = Field(default_factory=list)   |   doc_id = str(d.get(\"id\", \"\"))",
-      "recommendation": "Type BulkIn.docs as list[IndexIn-equivalent] (or validate each doc with the same bounds/pattern before indexing) and reject an empty id."
+      "recommendation": "Type BulkIn.docs as list[IndexIn-equivalent] (or validate each doc with the same bounds/pattern before indexing) and reject an empty id.",
+      "status": "fixed"
     },
     {
       "id": "search-006",
@@ -120,7 +121,8 @@
       "line": 62,
       "scenario": "test_cross_tenant_isolation indexes 'secret' for other-tenant, then searches as t1 and asserts `all(h[\"id\"] != \"secret\")`. That assertion is vacuously true if hits is empty — which it would be even if the tenant filter were removed AND t1 simply had no 'fox' doc, or if search were entirely broken. The test never indexes a t1 'fox' doc and never asserts t1 sees its own hit while excluding the other tenant's, so a regression that leaks OR one that returns nothing both pass. This is the service's only cross-tenant-leak test and it is a test-that-stops-testing.",
       "evidence": "hits = client.post(...headers=_tok(\"t1\")).json()[\"hits\"]  assert all(h[\"id\"] != \"secret\" for h in hits)",
-      "recommendation": "Index a t1 doc containing 'fox' too, then assert the t1 search returns the t1 doc AND does not contain 'secret' (assert the result is non-empty and equals exactly the t1 id)."
+      "recommendation": "Index a t1 doc containing 'fox' too, then assert the t1 search returns the t1 doc AND does not contain 'secret' (assert the result is non-empty and equals exactly the t1 id).",
+      "status": "fixed"
     },
     {
       "id": "search-010",
