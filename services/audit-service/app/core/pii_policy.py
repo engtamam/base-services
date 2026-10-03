@@ -105,14 +105,36 @@ class PiiPolicy:
             ip = ""
 
         # ── free-form metadata: where PII actually sneaks in ────────────────
-        leaked = [k for k in meta if k.lower() in self.fields]
+        # Walk RECURSIVELY (dicts and lists at every depth): a personal field nested one level down —
+        # metadata={"owner": {"email": ...}} — used to sail straight into the permanent chain because
+        # only the top-level keys were checked (audit-010).
+        leaked, redacted = self._scan(meta)
         if leaked:
             if self.mode == ENFORCE:
                 raise PiiPolicyError(
-                    f"audit metadata carries personal fields {sorted(leaked)} — permanent and "
-                    f"unerasable once hashed. Store a subject_ref instead."
+                    f"audit metadata carries personal fields {sorted(leaked)} (at any depth) — "
+                    f"permanent and unerasable once hashed. Store a subject_ref instead."
                 )
-            for k in leaked:
-                meta[k] = _REDACTED
+            meta = redacted
 
         return actor, ip, meta
+
+    def _scan(self, obj: Any) -> tuple[set[str], Any]:
+        """Return (set of personal field-keys found at any depth, a redacted deep copy)."""
+        leaked: set[str] = set()
+
+        def walk(o: Any) -> Any:
+            if isinstance(o, dict):
+                out = {}
+                for k, v in o.items():
+                    if str(k).lower() in self.fields:
+                        leaked.add(k)
+                        out[k] = _REDACTED
+                    else:
+                        out[k] = walk(v)
+                return out
+            if isinstance(o, list):
+                return [walk(v) for v in o]
+            return o
+
+        return leaked, walk(obj)

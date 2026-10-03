@@ -73,7 +73,8 @@
       "line": 89,
       "scenario": "HOLD_REFS_DRIVER defaults to 'null'. enforce-retention only wires holds when the driver is non-null, so with the default configuration the nightly purge deletes every expired event unconditionally, including events belonging to a subject under legal hold. The response says hold_protected:false, but an operator who set RETENTION_DAYS and never noticed the driver default has spoliated evidence. Fail-open on a compliance control that should be opt-OUT, not opt-in.",
       "evidence": "gate = request.app.state.container.hold_refs\nholds = gate.for_tenant if gate is not None and gate.driver != \"null\" else None",
-      "recommendation": "Refuse to run destructive retention in production when RETENTION_DAYS>0 and HOLD_REFS_DRIVER=='null' (or require an explicit ACK flag), so an unprotected purge is a deliberate decision."
+      "recommendation": "Refuse to run destructive retention in production when RETENTION_DAYS>0 and HOLD_REFS_DRIVER=='null' (or require an explicit ACK flag), so an unprotected purge is a deliberate decision.",
+      "status": "fixed"
     },
     {
       "id": "audit-006",
@@ -84,7 +85,8 @@
       "line": 432,
       "scenario": "After purging partition X (a tenant partition in AUDIT_PARTITION=tenant mode), purge() calls self.record(service='audit-service', action='audit.purged', ...) with no tenant, so _partition('') resolves to 'global'. The evidence that tenant X's partition was purged lands in a DIFFERENT partition. A tenant-scoped investigator reading tenant X's trail never sees that a purge touched their data, and per-tenant verify()/coverage of the purge action is misfiled.",
       "evidence": "await self.record(service=\"audit-service\", action=\"audit.purged\",\n                  metadata={\"before_ts\": before_ts, \"purged\": len(purged),\n                            \"held\": len(held)})",
-      "recommendation": "Pass tenant=partition (or the originating tenant) so the purge self-record is written into the same partition it acted on."
+      "recommendation": "Pass tenant=partition (or the originating tenant) so the purge self-record is written into the same partition it acted on.",
+      "status": "fixed"
     },
     {
       "id": "audit-007",
@@ -128,7 +130,8 @@
       "line": 108,
       "scenario": "The metadata leak check is `[k for k in meta if k.lower() in self.fields]` — a flat scan of top-level keys only. A caller sending metadata={'user': {'email': 'a@b.com'}} or metadata={'contacts': [{'phone': '...'}]} passes the check untouched and the raw email/phone is HMAC-sealed into the append-only chain forever. Values are never inspected either (an email under key 'note' is not caught). The 'no caller can bypass' guarantee holds only for flat metadata.",
       "evidence": "leaked = [k for k in meta if k.lower() in self.fields]",
-      "recommendation": "Walk metadata recursively (dicts and lists) redacting matching keys at every depth, and consider value-pattern detection for the highest-risk fields."
+      "recommendation": "Walk metadata recursively (dicts and lists) redacting matching keys at every depth, and consider value-pattern detection for the highest-risk fields.",
+      "status": "fixed"
     },
     {
       "id": "audit-011",
@@ -172,7 +175,8 @@
       "line": 394,
       "scenario": "assert_audit_config_ok() guards the sink driver and integrity driver in production, and assert_pii_config_ok() only checks that PII_SALT is present. Nothing refuses AUDIT_PII_MODE='off' in production. With mode=off, apply() is a passthrough and every raw identity a caller sends is HMAC-sealed into the append-only chain permanently — the exact irreversible outcome the whole pseudonymization design exists to prevent — with no loud failure.",
       "evidence": "def assert_audit_config_ok(self) -> None:\n    ...\n    if self.AUDIT_SINK_DRIVER == \"null\": ...",
-      "recommendation": "Refuse AUDIT_PII_MODE='off' in production (or require an explicit acknowledged opt-out flag, as done for INTEGRITY_ALLOW_UNKEYED)."
+      "recommendation": "Refuse AUDIT_PII_MODE='off' in production (or require an explicit acknowledged opt-out flag, as done for INTEGRITY_ALLOW_UNKEYED).",
+      "status": "fixed"
     },
     {
       "id": "audit-015",

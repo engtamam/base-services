@@ -189,6 +189,10 @@ class Settings(BaseSettings):
     # intersects locally. `null` provides no protection and reports it; when protection is on and
     # the list cannot be obtained, the purge is SKIPPED rather than run blind.
     HOLD_REFS_DRIVER: str = "null"           # null | http
+    # Running destructive retention (RETENTION_DAYS>0) with HOLD_REFS_DRIVER=null deletes expired
+    # events with NO legal-hold protection — it can erase held evidence while reporting
+    # hold_protected:false. In production that must be a deliberate, acknowledged choice (audit-005).
+    AUDIT_ALLOW_RETENTION_WITHOUT_HOLDS: bool = False
     COMPLIANCE_SERVICE_URL: str = ""
     HELD_REFS_PATH: str = "/internal/compliance/held-refs"
     # Longer than a hot-path timeout on purpose: this is one call per partition on a nightly job,
@@ -325,6 +329,10 @@ class Settings(BaseSettings):
     # fold (default): audit pseudonymises for you, so PII cannot land no matter what a caller
     # forgets. enforce: refuse the write. off: legacy passthrough (unsafe, never the default).
     AUDIT_PII_MODE: str = "fold"          # fold | enforce | off
+    # off is legacy passthrough: raw identities become PERMANENT in the hash chain, unerasable. A
+    # production deploy must not land there by a stray env var — it is only allowed with a deliberate,
+    # acknowledged opt-out (mirrors INTEGRITY_ALLOW_UNKEYED). See assert_pii_mode_ok (audit-014).
+    AUDIT_ALLOW_PII_OFF: bool = False
 
     # WHICH fields are personal is a PLATFORM decision, not ours. A Saudi platform needs
     # national_id/iqama; a health platform needs mrn. Hardcoding one culture's idea of PII into a
@@ -348,6 +356,28 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.ENV == "production"
+
+    def assert_retention_hold_ok(self) -> None:
+        """Boot guard (audit-005). Destructive retention with no legal-hold driver can delete evidence
+        under hold. In production, refuse it unless explicitly acknowledged."""
+        if (self.is_production and self.RETENTION_DAYS > 0 and self.HOLD_REFS_DRIVER == "null"
+                and not self.AUDIT_ALLOW_RETENTION_WITHOUT_HOLDS):
+            raise ValueError(
+                "RETENTION_DAYS>0 with HOLD_REFS_DRIVER=null in production deletes expired events with "
+                "NO legal-hold protection — it can purge evidence under hold. Configure "
+                "HOLD_REFS_DRIVER=http (COMPLIANCE_SERVICE_URL), or set "
+                "AUDIT_ALLOW_RETENTION_WITHOUT_HOLDS=true to accept unprotected purges deliberately.")
+
+    def assert_pii_mode_ok(self) -> None:
+        """Boot guard (audit-014). AUDIT_PII_MODE=off lets raw identities into the permanent, unerasable
+        chain — a deploy must not reach it by accident. In production it is allowed only with an explicit
+        acknowledged opt-out, exactly like INTEGRITY_ALLOW_UNKEYED."""
+        if self.is_production and self.AUDIT_PII_MODE == "off" and not self.AUDIT_ALLOW_PII_OFF:
+            raise ValueError(
+                "AUDIT_PII_MODE=off in production writes raw identities permanently into the hash "
+                "chain (they can never be erased). Use 'fold' (audit pseudonymises for you) or "
+                "'enforce'; if you truly intend legacy passthrough, set AUDIT_ALLOW_PII_OFF=true to "
+                "acknowledge it deliberately.")
 
     @property
     def audit_ingest_url(self) -> str:

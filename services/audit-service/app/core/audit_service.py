@@ -437,7 +437,10 @@ class AuditService:
         else:
             raise RuntimeError(
                 f"audit purge could not converge on partition {partition!r} under append contention")
-        await self.record(service="audit-service", action="audit.purged",
+        # The self-record belongs in the SAME partition the purge acted on (audit-006): in tenant mode
+        # the partition IS the tenant, so tenant=partition routes it there instead of defaulting to
+        # global and scattering a tenant's purge receipt into a chain it did not touch.
+        await self.record(service="audit-service", action="audit.purged", tenant=partition,
                           metadata={"before_ts": before_ts, "purged": len(purged),
                                     "held": len(held)})
         return {"purged": len(purged), "remaining": len(kept) + 1, "held": len(held)}
