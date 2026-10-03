@@ -117,10 +117,15 @@ async def upsert_flag(request: Request, body: FlagIn, principal: Principal = Dep
         flag = await svc.upsert(actor=principal.subject, **body.model_dump())
     except ValueError as e:
         raise HTTPException(422, str(e))            # e.g. variant weights don't sum to 100
-    await request.app.state.auditor.record(
-        "flag.updated" if existed else "flag.created", actor=principal.subject,
-        tenant=principal.tenant or "",
-        resource=f"flag:{flag.key}", ip=request.client.host if request.client else "")
+    ip = request.client.host if request.client else ""
+    if existed:
+        await request.app.state.auditor.record(
+            "flag.updated", actor=principal.subject, tenant=principal.tenant or "",
+            resource=f"flag:{flag.key}", ip=ip)
+    else:
+        await request.app.state.auditor.record(
+            "flag.created", actor=principal.subject, tenant=principal.tenant or "",
+            resource=f"flag:{flag.key}", ip=ip)
     return flag.to_dict()
 
 
