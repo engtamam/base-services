@@ -7,7 +7,9 @@ destination a decision an operator made rather than whatever the registry happen
 """
 from __future__ import annotations
 
+import ipaddress
 import json as _json
+import socket
 from app.core.internal_client import assertion_headers_for_url
 import urllib.error
 import urllib.parse
@@ -28,6 +30,28 @@ class TargetUnreachable(RuntimeError):
 # Cloud instance-metadata endpoints — the classic exfil prize; blocked unconditionally.
 _METADATA_HOSTS = frozenset({"169.254.169.254", "fd00:ec2::254", "100.100.100.200", "192.0.0.192",
                              "metadata.google.internal"})
+_METADATA_IPS = frozenset({"169.254.169.254", "fd00:ec2::254", "100.100.100.200", "192.0.0.192"})
+
+
+def _resolution_is_blocked(host: str) -> str | None:
+    """Resolve `host` and return a reason if ANY address is a metadata/link-local/loopback target
+    (backup-007). A literal-IP metadata check is bypassed by an allow-listed DNS name — or DNS
+    rebinding — that resolves to 169.254.169.254. NOTE: ordinary PRIVATE ranges are NOT blocked here:
+    this service's whole job is calling internal services on private ClusterIPs. Only the
+    metadata/link-local/loopback classes, which no legitimate target ever uses, are refused."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return None   # a name that won't resolve is a plain TargetUnreachable later, not an SSRF signal
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(addr.split("%")[0])
+        except ValueError:
+            continue
+        if str(ip) in _METADATA_IPS or ip.is_link_local or ip.is_loopback or ip.is_multicast:
+            return f"{host!r} resolves to a blocked address {ip} (metadata/link-local/loopback)"
+    return None
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -66,6 +90,9 @@ def _check_host(url: str, allowed_hosts: frozenset[str]) -> str:
         raise TargetUnreachable(
             f"target host {host!r} is not in EGRESS_ALLOWED_HOSTS — this call carries an internal "
             f"token and must not reach an unlisted host")
+    blocked = _resolution_is_blocked(host)
+    if blocked is not None:
+        raise TargetUnreachable(f"egress refused: {blocked}")
     return host
 
 

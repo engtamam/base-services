@@ -16,6 +16,11 @@ BACKUP: dict[str, Any] = {
         {"name": "backup_runs", "tenant_scoped": False},      # the history that raises the alarm
         {"name": "backup_restores", "tenant_scoped": False},  # every restore/undo, for the record
         {"name": "backup_drills", "tenant_scoped": False},    # the DR-works evidence, every drill
+        # The operator credentials (target internal tokens). Without these, restoring backup-service
+        # brings back WHAT to protect but not the tokens to reach any target — every backup then 401s
+        # until each secret is re-provisioned by hand (backup-012). Rows are sealed under SECRETS_KEK
+        # and re-sealed under BACKUP_KEK in the archive, and carry id==key, so they round-trip safely.
+        {"name": "operator_secrets", "tenant_scoped": False},
     ],
     "excluded": [],
 }

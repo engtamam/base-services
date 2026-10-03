@@ -101,7 +101,8 @@
       "line": 59,
       "scenario": "_check_host compares the URL hostname string against _METADATA_HOSTS (literal IPs / metadata.google.internal) and against EGRESS_ALLOWED_HOSTS, but never resolves DNS. A target base_url whose allow-listed hostname resolves to 169.254.169.254 (or a DNS-rebinding host that resolves differently at connect time than at check time) sends the internal token and the resolved operator secret (assertion header) to the metadata service. The literal-IP metadata block is bypassed by any name that resolves there.",
       "evidence": "host = (parts.hostname or \"\").lower()\n...\nif host in _METADATA_HOSTS:\n    raise TargetUnreachable(\"egress to a cloud metadata endpoint is refused\")",
-      "recommendation": "Resolve the host, reject any resolution to link-local/loopback/metadata/private ranges, and pin the connection to the resolved-and-checked address (or enforce this at NetworkPolicy) to close the check-then-connect gap."
+      "recommendation": "Resolve the host, reject any resolution to link-local/loopback/metadata/private ranges, and pin the connection to the resolved-and-checked address (or enforce this at NetworkPolicy) to close the check-then-connect gap.",
+      "status": "fixed"
     },
     {
       "id": "backup-008",
@@ -156,7 +157,8 @@
       "line": 13,
       "scenario": "BACKUP declares backup_targets, backup_runs, backup_restores, backup_drills — but NOT operator_secrets, where the sealed internal tokens for every target (referenced by Target.token_ref) live. If backup-service is restored from its own backup, the target registry returns but the secrets it points at do not, so make_token_resolver returns '' for every token_ref and no target can be reached — the orchestrator that 'knows what to back up' comes back unable to authenticate to anything.",
       "evidence": "\"collections\": [\n    {\"name\": \"backup_targets\", \"tenant_scoped\": False},\n    {\"name\": \"backup_runs\", \"tenant_scoped\": False},\n    {\"name\": \"backup_restores\", \"tenant_scoped\": False},\n    {\"name\": \"backup_drills\", \"tenant_scoped\": False},\n]",
-      "recommendation": "Either include operator_secrets in the manifest (its rows are already sealed under SECRETS_KEK, and re-sealed under BACKUP_KEK in the archive) or document explicitly that target credentials must be re-provisioned after a self-restore."
+      "recommendation": "Either include operator_secrets in the manifest (its rows are already sealed under SECRETS_KEK, and re-sealed under BACKUP_KEK in the archive) or document explicitly that target credentials must be re-provisioned after a self-restore.",
+      "status": "fixed"
     },
     {
       "id": "backup-013",
