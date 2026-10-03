@@ -109,12 +109,17 @@ class MaintenanceIn(BaseModel):
 # ── flags (admin) ─────────────────────────────────────────────────────────────
 @router.post("/flags", status_code=201)
 async def upsert_flag(request: Request, body: FlagIn, principal: Principal = Depends(_PLATFORM)) -> dict:
+    svc = build_flags(request)
+    # Distinguish create from update (feature-flag-007): an update may be a kill-switch flip or a rollout
+    # change — recorded as the CRITICAL flag.updated, not a non-critical flag.created.
+    existed = await svc.get(body.key) is not None
     try:
-        flag = await build_flags(request).upsert(actor=principal.subject, **body.model_dump())
+        flag = await svc.upsert(actor=principal.subject, **body.model_dump())
     except ValueError as e:
         raise HTTPException(422, str(e))            # e.g. variant weights don't sum to 100
     await request.app.state.auditor.record(
-        "flag.created", actor=principal.subject, tenant=principal.tenant or "",
+        "flag.updated" if existed else "flag.created", actor=principal.subject,
+        tenant=principal.tenant or "",
         resource=f"flag:{flag.key}", ip=request.client.host if request.client else "")
     return flag.to_dict()
 

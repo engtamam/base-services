@@ -22,14 +22,24 @@ from typing import Any
 
 from app.core import rollout as _rollout
 from app.core import rules as _rules
+from app.core.models import now_ts
 
 
 def decision(enabled: bool, reason: str, variant: str = "") -> dict[str, Any]:
     return {"enabled": bool(enabled), "reason": reason, "variant": variant}
 
 
+def _num(v: Any) -> float:
+    """Coerce defensively (feature-flag-013): a non-numeric start/end from a provider must degrade to 0
+    (treated as 'unset'), not throw ValueError on the evaluation hot path."""
+    try:
+        return float(v or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def in_schedule(flag: dict, now: float) -> bool:
-    start, end = float(flag.get("start", 0) or 0), float(flag.get("end", 0) or 0)
+    start, end = _num(flag.get("start")), _num(flag.get("end"))
     if start and now < start:
         return False
     if end and now >= end:
@@ -38,9 +48,13 @@ def in_schedule(flag: dict, now: float) -> bool:
 
 
 def evaluate(flag: dict[str, Any] | None, ctx: dict[str, Any], *, salt: str,
-             entitled: bool | None = None, now: float = 0.0,
+             entitled: bool | None = None, now: float | None = None,
              prereqs_ok: bool = True, in_segment: bool = False) -> dict[str, Any]:
     """ctx: {tenant, user, attrs{...}}."""
+    # Default `now` to the real clock (feature-flag-014): a default of 0.0 made every SCHEDULED flag read
+    # as before-start (now < start) whenever a caller forgot to pass the time.
+    if now is None:
+        now = now_ts()
     if not flag:
         return decision(False, "unknown_flag")                       # fail-safe
 
@@ -78,7 +92,7 @@ def evaluate(flag: dict[str, Any] | None, ctx: dict[str, Any], *, salt: str,
 
     # what the rollout hashes: per-user (UI tests) vs per-tenant (schema rollouts)
     subject = _rollout.subject_for(str(flag.get("bucket_by") or "user"), ctx)
-    pct = float(flag.get("rollout_pct", 100) or 0)
+    pct = _num(flag.get("rollout_pct", 100)) if flag.get("rollout_pct") is not None else 100.0
 
     if not _rollout.in_rollout(salt, key, subject, pct):
         return decision(bool(flag.get("default", False)), "default")

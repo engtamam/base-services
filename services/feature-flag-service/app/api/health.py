@@ -22,8 +22,6 @@ router = APIRouter(tags=["health"])
 ReadinessCheck = Callable[[], Awaitable[bool]]
 _readiness_checks: dict[str, ReadinessCheck] = {}
 
-# Fallback per-check timeout when the service's Settings does not set READYZ_TIMEOUT_SECONDS.
-_DEFAULT_READYZ_TIMEOUT = 5.0
 
 
 def register_readiness_check(name: str, check: ReadinessCheck) -> None:
@@ -62,7 +60,7 @@ async def readyz() -> JSONResponse:
     # dependency is actually fine, only slow. Concurrent, the worst case is the SLOWEST SINGLE check.
     # A bounded per-check wait still turns a blackholed dependency into `{"<dep>": "timeout"}` (a named
     # reason) rather than a silent hang with no response body.
-    timeout = getattr(get_settings(), "READYZ_TIMEOUT_SECONDS", _DEFAULT_READYZ_TIMEOUT)
+    timeout = get_settings().READYZ_TIMEOUT_SECONDS
     checks = list(_readiness_checks.items())
     gathered = await asyncio.gather(*(_run_check(n, c, timeout) for n, c in checks))
     results = {name: state for name, state, _ in gathered}

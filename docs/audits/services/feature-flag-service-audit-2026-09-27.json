@@ -104,7 +104,8 @@
       "line": 109,
       "scenario": "upsert_flag records 'flag.created' for BOTH create and update (upsert re-applies over an existing flag). Changing `enabled` (kill switch), rollout_pct, rules, segments or prerequisites is a production change with no deployment, yet it is logged as flag.created, which auditable_actions.py marks critical:False. So flipping a kill switch or retargeting rollout via POST /flags fails OPEN if the audit log is down (only flag.deleted/override/config are critical). There is no distinct flag.updated action to mark critical.",
       "evidence": "await request.app.state.auditor.record(\"flag.created\", actor=principal.subject, ...)   # upsert path records created even on update",
-      "recommendation": "Distinguish create vs update in FlagService.upsert (before is None vs not) and record a 'flag.updated' action marked critical for enabled/rollout/rules changes."
+      "recommendation": "Distinguish create vs update in FlagService.upsert (before is None vs not) and record a 'flag.updated' action marked critical for enabled/rollout/rules changes.",
+      "status": "fixed"
     },
     {
       "id": "feature-flag-008",
@@ -148,7 +149,8 @@
       "line": 274,
       "scenario": "ROLLOUT_SALT defaults to the literal 'base-services'. The rollout bucket is sha256(salt:key:subject); with a known salt an outsider can compute exactly which subjects land in any percentage bucket for any flag key, and predict/forge which users a rollout will hit. Unlike PII_SALT and INTERNAL_SERVICE_TOKEN there is no boot guard forcing it to be set, so most deployments run on the shared public default.",
       "evidence": "ROLLOUT_SALT: str = \"base-services\"       # salts the rollout hash (change -> re-buckets)",
-      "recommendation": "Either require ROLLOUT_SALT in production (boot guard) or default it to a per-deployment random value; do not ship a well-known constant salt."
+      "recommendation": "Either require ROLLOUT_SALT in production (boot guard) or default it to a per-deployment random value; do not ship a well-known constant salt.",
+      "status": "fixed"
     },
     {
       "id": "feature-flag-012",
@@ -159,7 +161,8 @@
       "line": 65,
       "scenario": "readyz reads getattr(get_settings(), \"READYZ_TIMEOUT_SECONDS\", _DEFAULT_READYZ_TIMEOUT). Settings (config.py) never defines READYZ_TIMEOUT_SECONDS, so the getattr always falls to the 5.0 default and the env var (if an operator sets it) is silently ignored — a declared-but-unread/unsettable knob. An operator tuning the readiness timeout for a slow dependency has no working lever.",
       "evidence": "timeout = getattr(get_settings(), \"READYZ_TIMEOUT_SECONDS\", _DEFAULT_READYZ_TIMEOUT)",
-      "recommendation": "Add READYZ_TIMEOUT_SECONDS to Settings so the env var is honoured, or remove the getattr and use the constant so it is not implied to be configurable."
+      "recommendation": "Add READYZ_TIMEOUT_SECONDS to Settings so the env var is honoured, or remove the getattr and use the constant so it is not implied to be configurable.",
+      "status": "fixed"
     },
     {
       "id": "feature-flag-013",
@@ -170,7 +173,8 @@
       "line": 32,
       "scenario": "in_schedule does float(flag.get(\"start\", 0) or 0). Flags authored through FlagIn are validated as float, but definitions coming from an external provider (unleash/launchdarkly) or a corrupted/hand-edited datastore row are not validated by this service. A start/end that is a non-numeric string raises ValueError inside evaluate, which is NOT caught in FlagService.evaluate — turning one bad definition into a 500 on the evaluation hot path (and, via evaluate_all, breaking the whole bulk response).",
       "evidence": "start, end = float(flag.get(\"start\", 0) or 0), float(flag.get(\"end\", 0) or 0)",
-      "recommendation": "Coerce defensively (helper returning 0.0 on non-numeric) or wrap per-flag evaluation in try/except so one malformed definition degrades to its default rather than 500ing the request."
+      "recommendation": "Coerce defensively (helper returning 0.0 on non-numeric) or wrap per-flag evaluation in try/except so one malformed definition degrades to its default rather than 500ing the request.",
+      "status": "fixed"
     },
     {
       "id": "feature-flag-014",
@@ -181,7 +185,8 @@
       "line": 40,
       "scenario": "evaluate() defaults now=0.0. FlagService always passes now=now_ts(), but the pure function is a reusable primitive and the unknown-flag call site (flag_service.py line 260) and tests call it without now. With now=0.0, in_schedule sees `if start and now < start` -> 0 < start -> True -> returns default for ANY flag that has a start set, silently bypassing overrides/rules. Any future reuse of evaluate() that forgets to pass now disables all scheduled flags with no error.",
       "evidence": "def evaluate(flag, ctx, *, salt, entitled=None, now: float = 0.0, prereqs_ok=True, in_segment=False):",
-      "recommendation": "Default now to now_ts() inside evaluate (or make it required) so the scheduled window is correct regardless of call site."
+      "recommendation": "Default now to now_ts() inside evaluate (or make it required) so the scheduled window is correct regardless of call site.",
+      "status": "fixed"
     },
     {
       "id": "feature-flag-015",

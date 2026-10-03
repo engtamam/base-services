@@ -296,6 +296,9 @@ class Settings(BaseSettings):
     BILLING_SERVICE_TOKEN: str = ""           # X-Internal-Token for billing-service
     ROLLOUT_SALT: str = "base-services"       # salts the rollout hash (change → re-buckets)
     FLAG_CACHE_TTL_SECONDS: int = 30          # definitions cached this long (hot path)
+    # Per-check /readyz probe timeout — a REAL declared setting (feature-flag-012), not a getattr default
+    # against a phantom attribute an operator could not actually tune.
+    READYZ_TIMEOUT_SECONDS: float = 5.0
     LAST_SEEN_WRITE_THRESHOLD_SECONDS: int = 3600   # only persist last_evaluated this often
     EXPOSURE_SAMPLE_PCT: float = 100.0        # % of evaluations that emit a flag.exposed event
     PREREQUISITE_MAX_DEPTH: int = 5           # cycle/depth cap for flag prerequisites
@@ -327,6 +330,15 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.ENV == "production"
+
+    def assert_rollout_salt_ok(self) -> None:
+        """Boot guard (feature-flag-011). The rollout hash buckets users by HMAC(ROLLOUT_SALT, ...); a
+        well-known default salt lets anyone predict (and game) which bucket a user lands in. Production
+        must set a non-default salt."""
+        if self.is_production and (not self.ROLLOUT_SALT or self.ROLLOUT_SALT == "base-services"):
+            raise ValueError(
+                "ROLLOUT_SALT is empty or the shipped default in production: the rollout bucket of every "
+                "user becomes predictable (and gameable). Set a per-deployment ROLLOUT_SALT.")
 
     @property
     def audit_ingest_url(self) -> str:

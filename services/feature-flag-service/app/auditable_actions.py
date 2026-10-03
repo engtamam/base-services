@@ -20,6 +20,15 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "critical": False,
     },
     {
+        "action": "flag.updated",
+        "source": "admin",
+        "critical": True,
+        "resource": "flag",
+        "why": "a flag UPDATE includes a kill-switch flip or a rollout change — the operation most likely "
+               "to be disputed after an incident; who flipped it and when must be provable, so unlike the "
+               "initial create it is recorded critically",
+    },
+    {
         "action": "segment.created",
         "source": "admin",
         "critical": False,

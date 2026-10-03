@@ -46,6 +46,7 @@ def create_app() -> FastAPI:
     settings.assert_pii_config_ok()
     settings.assert_cors_config_ok()
     settings.assert_cache_config_ok()
+    settings.assert_rollout_salt_ok()
     configure_logging(settings.SERVICE_NAME, settings.ENV, settings.LOG_LEVEL)
     logger = get_logger("app.main")
 

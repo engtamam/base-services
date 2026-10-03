@@ -127,7 +127,8 @@ def test_readyz_names_a_hanging_dependency_as_timeout_not_a_hang(probe_app, monk
     Unbounded, /readyz then never answers: the pod sits Running 0/1 with no body and nothing names
     the cause. The probe must bound each check and report the stuck one distinctly."""
     _, client, health_mod = probe_app
-    monkeypatch.setattr(health_mod, "_DEFAULT_READYZ_TIMEOUT", 0.2)
+    from app.config import get_settings
+    monkeypatch.setattr(get_settings(), "READYZ_TIMEOUT_SECONDS", 0.2)   # now a real declared setting (feature-flag-012)
 
     async def hangs() -> bool:
         await asyncio.sleep(30)                 # never answers within the budget
