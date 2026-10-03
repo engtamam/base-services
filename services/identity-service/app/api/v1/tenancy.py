@@ -400,7 +400,7 @@ async def select_tenant(request: Request, body: TenantIn) -> dict:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "INVALID_CREDENTIALS")
 
     try:
-        return await svc.select_tenant(person, body.tenant)
+        tokens = await svc.select_tenant(person, body.tenant)
     except CapsUnavailable:
         # The capability authority is down. We refuse the login rather than mint a token with no
         # capabilities: a zero-cap token looks exactly like a permissions bug, and support "fixes"
@@ -412,4 +412,13 @@ async def select_tenant(request: Request, body: TenantIn) -> dict:
     except TenantAccessDenied:
         # ONE answer (T6). "No such tenant" and "you are not a member" are the same 403, because
         # telling them apart tells a competitor which of their rivals your consultant works for.
+        await request.app.state.auditor.record(                        # identity-009: audit the denial
+            "person.login_failed", actor=person.id, resource="person",
+            ip=_source(request), metadata={"reason": "tenant_access_denied", "path": "tenant_select"})
         raise HTTPException(status.HTTP_403_FORBIDDEN, "TENANT_ACCESS_DENIED")
+    # A successful tenant-select IS a mint — the only door between every company on the platform — so it
+    # is audited like /person/login's success (identity-009), which was previously unrecorded.
+    await request.app.state.auditor.record(
+        "person.login_succeeded", actor=person.id, tenant=body.tenant, resource="person",
+        ip=_source(request), metadata={"path": "tenant_select"})
+    return tokens

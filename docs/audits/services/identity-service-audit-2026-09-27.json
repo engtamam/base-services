@@ -90,7 +90,8 @@
       "line": 82,
       "scenario": "verify() tracks attempts in a SEPARATE key `<key>:attempts` (an atomic incr). issue() writes a fresh record under `<key>` but never deletes `<key>:attempts`. So: user requests a code, makes 3 wrong guesses (attempts=3, ttl bound to the old code), then requests a resend after the cooldown. The new code's first verify does incr on the surviving `:attempts` key -> 4, giving the user only 2 attempts instead of max_attempts=5 (and the counter's TTL is still tied to the OLD code's expiry, not the new one). A legitimate user can be denied their fresh code; the invariant 'each issued code gets max_attempts tries' does not hold across a resend.",
       "evidence": "await self._cache.set(self._key(purpose, identifier), json.dumps(record), self._ttl)   # issue() never deletes self._key(...)+\":attempts\"",
-      "recommendation": "In issue(), delete `<key>:attempts` (and any stale record) before writing the new code, so every freshly-issued code starts with a clean attempt budget and a TTL aligned to that code."
+      "recommendation": "In issue(), delete `<key>:attempts` (and any stale record) before writing the new code, so every freshly-issued code starts with a clean attempt budget and a TTL aligned to that code.",
+      "status": "fixed"
     },
     {
       "id": "identity-007",
@@ -101,7 +102,8 @@
       "line": 501,
       "scenario": "reset_password() verifies+CONSUMES the OTP using _canonical() (which falls back to identifier.strip() on a ValidationError), then calls svc.resolve_for_reset(body.identifier), which internally does self._identifier.normalize(identifier) with NO try/except. For an identifier that _canonical accepted via the strip fallback but that normalize() rejects strictly (e.g. a phone/composite deployment and a slightly-off input), normalize raises ValidationError, which is not caught in reset_password -> unhandled 500. The single-use OTP has already been spent, so a locked-out admin has burned their only recovery code AND gets a 500 — the exact failure the 'strength-check-before-consume' ordering was designed to avoid.",
       "evidence": "person = await svc.resolve_for_reset(body.identifier)   # resolve_for_reset -> self._identifier.normalize(identifier) can raise ValidationError, uncaught",
-      "recommendation": "Wrap resolve_for_reset (or its normalize) so a normalization failure collapses to the same INVALID_RESET as an unknown identifier, and/or resolve the account with the SAME _canonical value the OTP was verified under so the two never disagree."
+      "recommendation": "Wrap resolve_for_reset (or its normalize) so a normalization failure collapses to the same INVALID_RESET as an unknown identifier, and/or resolve the account with the SAME _canonical value the OTP was verified under so the two never disagree.",
+      "status": "fixed"
     },
     {
       "id": "identity-008",
@@ -123,7 +125,8 @@
       "line": 336,
       "scenario": "select_tenant() is described in-file as 'THE mint, the only door between every company on the platform', yet it emits no audit record at all — not on a successful token mint for a tenant, not on a TenantAccessDenied, not on a failed authenticate_person in its credential branch. Every token that actually grants cross-company access on a multi-tenant deployment is minted with no trail of who obtained access to which tenant when, and a probing attacker trying tenant ids leaves nothing behind.",
       "evidence": "return await svc.select_tenant(person, body.tenant)   # no auditor.record for the mint, the denial, or the failed credential path",
-      "recommendation": "Record an audit event on a successful mint (actor=person.id, tenant=membership.tenant) and on TenantAccessDenied / failed authenticate_person, consistent with the single-tenant login route."
+      "recommendation": "Record an audit event on a successful mint (actor=person.id, tenant=membership.tenant) and on TenantAccessDenied / failed authenticate_person, consistent with the single-tenant login route.",
+      "status": "fixed"
     },
     {
       "id": "identity-010",
@@ -134,7 +137,8 @@
       "line": 307,
       "scenario": "_build_otp_service uses `salt=settings.OTP_SALT or settings.PII_SALT`. The OTP module docstring and config comment both state OTP must have its 'own salt so a leaked OTP store can't be correlated with any other digest table', and 'production should set it explicitly' — but nothing enforces it. With OTP_SALT unset (the default), OTP HMAC keys reuse PII_SALT, the platform-wide FROZEN pseudonym salt, defeating the isolation property. There is no assert_otp_config_ok() analogous to the other boot guards.",
       "evidence": "salt=settings.OTP_SALT or settings.PII_SALT,      # own salt; PII_SALT only to avoid empty",
-      "recommendation": "Add a production boot guard that requires OTP_SALT to be set and distinct from PII_SALT (or at least warns loudly at boot), matching the fail-fast posture used for PII_SALT, AUDIT, and signing rotation."
+      "recommendation": "Add a production boot guard that requires OTP_SALT to be set and distinct from PII_SALT (or at least warns loudly at boot), matching the fail-fast posture used for PII_SALT, AUDIT, and signing rotation.",
+      "status": "fixed"
     },
     {
       "id": "identity-011",
@@ -189,7 +193,8 @@
       "line": 505,
       "scenario": "change_password, mfa_enroll, delete_me all audit with resource=f\"user:{subject_ref(PII_SALT, tenant, subject)}\" and the real tenant. reset_password instead records actor=person.id, tenant=\"\", resource=f\"user:{person.id}\". A password reset is exactly the high-value event an investigation correlates by subject_ref across the immutable chain; recording it under a different key shape (raw id, no tenant) means it will not join the subject's other events, and account-recovery abuse is harder to trace. It also drops the tenant dimension the rest of the trail carries.",
       "evidence": "await request.app.state.auditor.record(\"auth.password_reset\", actor=person.id, tenant=\"\", resource=f\"user:{person.id}\", ...)",
-      "recommendation": "Record the reset with the same subject_ref-based resource and a real tenant (or the person's canonical tenant) so it correlates with change_password / self_deleted on the audit chain."
+      "recommendation": "Record the reset with the same subject_ref-based resource and a real tenant (or the person's canonical tenant) so it correlates with change_password / self_deleted on the audit chain.",
+      "status": "fixed"
     },
     {
       "id": "identity-016",

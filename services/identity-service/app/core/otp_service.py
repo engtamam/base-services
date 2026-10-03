@@ -83,6 +83,10 @@ class OtpService:
         record = {"hash": self._hash(code), "expires_at": now + self._ttl,
                   "attempts": 0, "issued_at": now}
         await self._cache.set(self._key(purpose, identifier), json.dumps(record), self._ttl)
+        # Reset the attempt counter for the new code (identity-006): the counter is a SEPARATE cache key
+        # from the code record, so a re-issued code otherwise inherits the spent attempts of the old one
+        # and can start already locked out.
+        await self._cache.delete(self._key(purpose, identifier) + ":attempts")
         rl = {"count": int(rl.get("count", 0)) + 1, "window_start": rl.get("window_start", now),
               "last": now}
         await self._cache.set(self._rl_key(purpose, identifier), json.dumps(rl), 3600)

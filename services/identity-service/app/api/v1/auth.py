@@ -506,12 +506,18 @@ async def reset_password(request: Request, body: ResetPwIn) -> dict:
     except OtpError:
         return _err("INVALID_RESET")
     # 3) resolve the account — a valid code for an unknown/inactive identifier gives the SAME error.
-    person = await svc.resolve_for_reset(body.identifier)
+    # Wrapped (identity-007): the reset code was already CONSUMED in step 2, so a normalization/lookup
+    # failure here must collapse to the same INVALID_RESET, never a 500 that leaves the caller unable to
+    # retry with a code they can no longer use.
+    try:
+        person = await svc.resolve_for_reset(body.identifier)
+    except Exception:  # noqa: BLE001 — any resolve/normalize failure is INVALID_RESET, not a 500
+        person = None
     if person is None:
         return _err("INVALID_RESET")
     # 4) write-ahead audit (the id, never the raw identifier — no PII in the log), then set.
     await request.app.state.auditor.record(
-        "auth.password_reset", actor=person.id, tenant="",
+        "auth.password_reset", actor=person.id, tenant=getattr(person, "tenant", "") or "",
         resource=f"user:{person.id}", ip=request.client.host if request.client else "")
     await svc.set_password(person, body.new_password)
     return {"status": "ok"}

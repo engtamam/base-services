@@ -706,6 +706,23 @@ class Settings(BaseSettings):
                 "every service or one person becomes two."
             )
 
+    def assert_otp_salt_ok(self) -> None:
+        """Boot guard (identity-010). OTP_SALT falls back to PII_SALT so dev never runs unsalted, but in
+        production the OTP-digest salt must be SET and DISTINCT from PII_SALT — otherwise a leaked OTP
+        store correlates one-to-one with every other PII_SALT digest table, which is the exact
+        cross-table linkage the separate salt exists to prevent."""
+        if not self.is_production:
+            return
+        if not self.OTP_SALT:
+            raise ValueError(
+                "OTP_SALT is empty in production: it silently falls back to PII_SALT, so OTP digests "
+                "share a salt with every other pseudonym table and a leaked OTP store becomes a "
+                "correlation key. Set a dedicated OTP_SALT.")
+        if self.OTP_SALT == self.PII_SALT:
+            raise ValueError(
+                "OTP_SALT must be DISTINCT from PII_SALT in production — sharing it defeats the "
+                "separate-salt isolation (a leaked OTP store would correlate with subject pseudonyms).")
+
     def assert_audit_config_ok(self) -> None:
         """Boot guard. Refuse to start production without somewhere to witness privileged actions.
 
