@@ -346,7 +346,7 @@ async def signed_download(request: Request, token: str):
     # A signed-URL redemption spends a BEARER credential that left the platform (file-007): record a
     # low-cardinality access event (one per redemption) so a leaked link's use is not invisible.
     await request.app.state.auditor.record(
-        "file.signed_downloaded", actor="", tenant=f.tenant or "", resource=f"file:{f.id}",
+        "file.signed_downloaded", actor="signed-url", tenant=f.tenant or "", resource=f"file:{f.id}",
         ip=request.client.host if request.client else "")
     # On a presign-capable store, hand the client a short-lived bucket URL rather than proxying the
     # bytes — a large shared file is served by the bucket, not by us.
