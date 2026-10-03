@@ -35,6 +35,19 @@ from app.core.redaction import redact
 router = APIRouter(prefix="/api/v1/assistant", tags=["assistant"])
 
 
+def _audit_gap(request: Request, action: str, exc: Exception) -> None:
+    """assistant-017: a swallowed audit-write failure is INVISIBLE otherwise — a persistently broken
+    attribution/abstention chain would never surface. Emit a telemetry metric (best-effort) so it is
+    observable, while the request itself still succeeds (these records are non-critical)."""
+    tel = getattr(getattr(request.app.state, "container", None), "telemetry", None)
+    if tel is None:
+        return
+    try:
+        tel.event("assistant.audit_write_failed", {"action": action, "error": type(exc).__name__})
+    except Exception:   # noqa: BLE001
+        pass
+
+
 def build_kb(request: Request) -> KbService:
     c = request.app.state.container
     s = get_settings()
@@ -146,8 +159,8 @@ async def ask(request: Request, body: AskIn,
                 resource=f"surface:{body.surface or 'default'}",
                 ip=request.client.host if request.client else "",
                 metadata={"reason": answer.abstained_because, "searched": len(hits)})
-        except Exception:   # noqa: BLE001 — see above: the answer outranks the record here
-            pass
+        except Exception as exc:   # noqa: BLE001 — the answer outranks the record, but the gap is observed
+            _audit_gap(request, "assistant.abstained", exc)
 
     # ATTRIBUTION — written for EVERY processed turn (grounded or abstained), pseudonymous and
     # content-free, so that "this subject spoke with this tenant at this time" survives independently
@@ -162,8 +175,8 @@ async def ask(request: Request, body: AskIn,
             "assistant.message_attributed", actor=actor, tenant=principal.tenant or "",
             resource=f"message:{message_id}", ip=request.client.host if request.client else "",
             metadata={"surface": body.surface or "default", "grounded": str(answer.grounded)})
-    except Exception:   # noqa: BLE001 — attribution is non-critical; the answer outranks the record
-        pass
+    except Exception as exc:   # noqa: BLE001 — attribution is non-critical, but a broken chain is observed
+        _audit_gap(request, "assistant.message_attributed", exc)
 
     return {
         "answer": answer.text,

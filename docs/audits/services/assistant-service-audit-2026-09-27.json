@@ -125,7 +125,8 @@
       "line": 238,
       "scenario": "When a provider omits usage (common on tool-call responses), _extract/_extract_converse estimate approx = len(json.dumps(body))//4 and set tin = tout = approx. Input tokens are estimated from the RESPONSE size (which excludes the prompt/transcript that is the real input cost), so input is drastically under-counted, while output is set to the whole-body size (over-counted). For a tool-calling connection that routinely returns usage-less tool_call rounds, every such round is billed on a fabricated symmetric estimate that tracks neither the true prompt nor the true completion.",
       "evidence": "if tin == 0 and tout == 0 and body:\n    approx = max(1, len(json.dumps(body)) // 4)\n    tin = tout = approx",
-      "recommendation": "Estimate input tokens from the serialized REQUEST payload (prompt+transcript+tools) and output from the response text/tool_use blocks separately, rather than assigning both sides the response-body size."
+      "recommendation": "Estimate input tokens from the serialized REQUEST payload (prompt+transcript+tools) and output from the response text/tool_use blocks separately, rather than assigning both sides the response-body size.",
+      "status": "fixed"
     },
     {
       "id": "assistant-010",
@@ -171,7 +172,8 @@
       "line": 470,
       "scenario": "converse() treats result kind 'text' with blank text as an error. That is correct, but _extract_converse only classifies as tool_call when it finds tool_use/tool_calls/functionCall blocks. If a provider returns a stop with empty content and omits the tool structure the adapter expects (schema drift or a provider variant), the round trip 502s as MODEL_CALL_FAILED and the metered usage for that round is lost — while the caller cannot distinguish a real outage from an unrecognised-but-valid response shape.",
       "evidence": "result = self._extract_converse(self._shape, body)\nif result[\"kind\"] == \"text\" and not result[\"text\"].strip():\n    raise ModelError(\"model returned no text\")",
-      "recommendation": "Record usage before raising, and/or return a distinct 'empty' discriminant so a blank completion is not conflated with a transport failure."
+      "recommendation": "Record usage before raising, and/or return a distinct 'empty' discriminant so a blank completion is not conflated with a transport failure.",
+      "status": "fixed"
     },
     {
       "id": "assistant-014",
@@ -205,7 +207,8 @@
       "line": 253,
       "scenario": "invoke_connection routes to the conversation path when conn.tools OR body.messages is present, else to invoke() (single-shot complete()). invoke() never passes tools. This is correct only because the route guards on conn.tools; however the plain invoke() in connections.py is a public core function that silently drops tools if a future caller uses it directly for a tools-bearing connection, sending the model no tool declarations and producing a text answer that looks valid but ignored the connection's contract. The isolation/contract lives in the route, not in the core function.",
       "evidence": "async def invoke(conn, *, prompt, caller, store, max_tokens=0):\n    text, tin, tout = await caller(conn.system_prompt, prompt, max_tokens)   # tools never consulted",
-      "recommendation": "Make invoke() refuse (or route to converse) when conn.tools is non-empty, so the tool contract cannot be dropped by a direct caller."
+      "recommendation": "Make invoke() refuse (or route to converse) when conn.tools is non-empty, so the tool contract cannot be dropped by a direct caller.",
+      "status": "fixed"
     },
     {
       "id": "assistant-017",
@@ -216,7 +219,8 @@
       "line": 162,
       "scenario": "Both the abstained and message_attributed audit writes are wrapped in bare `except Exception: pass`. The stated intent (never 500 a help answer over the audit log) is reasonable, but there is no counter, no rate-limited WARN, and no telemetry emitted on failure. If the audit sink is down for hours, every attribution and abstention record is silently lost with zero operational signal — the opposite of the write-ahead/critical posture the operator and internal routes take for their own audits.",
       "evidence": "except Exception:   # noqa: BLE001 — see above: the answer outranks the record here\n    pass",
-      "recommendation": "Emit a telemetry metric / rate-limited WARN log on audit-write failure so a broken chain is observable, even though the request itself still succeeds."
+      "recommendation": "Emit a telemetry metric / rate-limited WARN log on audit-write failure so a broken chain is observable, even though the request itself still succeeds.",
+      "status": "fixed"
     },
     {
       "id": "assistant-018",

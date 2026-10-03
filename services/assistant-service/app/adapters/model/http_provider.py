@@ -263,7 +263,7 @@ class HttpModel:
         return body
 
     @staticmethod
-    def _extract(shape: str, body: dict) -> tuple[str, int, int]:
+    def _extract(shape: str, body: dict, request_payload: Any = None) -> tuple[str, int, int]:
         """(text, tokens_in, tokens_out) from any response shape."""
         usage = body.get("usage") or body.get("usageMetadata") or {}
         tin = int(usage.get("prompt_tokens") or usage.get("promptTokenCount")
@@ -272,10 +272,12 @@ class HttpModel:
                    or usage.get("output_tokens") or 0)
         if tin == 0 and tout == 0 and body:
             # Some providers OMIT usage (notably on tool-call responses). A real round trip must never
-            # meter to ZERO (free, unbilled compute — assistant-r2-02): estimate a floor from the
-            # serialized response (~4 chars/token). Under-counts the true prompt, but is never zero.
-            approx = max(1, len(json.dumps(body)) // 4)
-            tin = tout = approx
+            # meter to ZERO (free, unbilled compute — assistant-r2-02). assistant-009: estimate the two
+            # sides SEPARATELY (~4 chars/token) — INPUT from the serialized REQUEST (prompt+transcript+
+            # tools), OUTPUT from the response — instead of assigning BOTH the response-body size (which
+            # mis-bills: it under-counts a large prompt and double-counts the response as input too).
+            tout = max(1, len(json.dumps(body)) // 4)
+            tin = max(1, len(json.dumps(request_payload)) // 4) if request_payload else 1
 
         if shape == ANTHROPIC:
             for block in body.get("content") or []:
@@ -428,7 +430,7 @@ class HttpModel:
         return body
 
     @staticmethod
-    def _extract_converse(shape: str, body: dict) -> dict:
+    def _extract_converse(shape: str, body: dict, request_payload: Any = None) -> dict:
         """Discriminated result: {"kind":"text","text",...} or
         {"kind":"tool_call","calls":[{id,name,arguments}], ...}, plus token counts."""
         usage = body.get("usage") or body.get("usageMetadata") or {}
@@ -437,11 +439,10 @@ class HttpModel:
         tout = int(usage.get("completion_tokens") or usage.get("candidatesTokenCount")
                    or usage.get("output_tokens") or 0)
         if tin == 0 and tout == 0 and body:
-            # Some providers OMIT usage (notably on tool-call responses). A real round trip must never
-            # meter to ZERO (free, unbilled compute — assistant-r2-02): estimate a floor from the
-            # serialized response (~4 chars/token). Under-counts the true prompt, but is never zero.
-            approx = max(1, len(json.dumps(body)) // 4)
-            tin = tout = approx
+            # assistant-009: estimate the two sides SEPARATELY (~4 chars/token) — INPUT from the REQUEST,
+            # OUTPUT from the response — never both from the response body (which mis-bills).
+            tout = max(1, len(json.dumps(body)) // 4)
+            tin = max(1, len(json.dumps(request_payload)) // 4) if request_payload else 1
 
         if shape == ANTHROPIC:
             calls, text = [], ""
@@ -501,9 +502,13 @@ class HttpModel:
             raise ModelError(f"model transport failed: {exc}") from exc
         if status != 200 or not isinstance(body, dict):
             raise ModelError(f"model endpoint returned HTTP {status}")
-        result = self._extract_converse(self._shape, body)
+        result = self._extract_converse(self._shape, body, payload)
         if result["kind"] == "text" and not result["text"].strip():
-            raise ModelError("model returned no text")
+            # assistant-013: a blank completion is NOT a transport failure — and a tool_call legitimately
+            # carries no text. Return a distinct 'empty' discriminant (keeping the token counts) so the
+            # caller still METERS the round trip instead of losing the usage to a raised ModelError.
+            return {"kind": "empty", "text": "", "tokens_in": result.get("tokens_in", 0),
+                    "tokens_out": result.get("tokens_out", 0)}
         return result
 
     # ── raw completion (for an isolated AI connection with its OWN prompt) ────────
@@ -515,15 +520,14 @@ class HttpModel:
         key = await self._credential()
         headers.update(self._auth_headers(key))
         headers.update(self._extra_headers)      # e.g. Vertex priority tier; empty unless opted in
+        payload = self._payload(system, user, max_tokens)
         try:
-            status, body = await self._transport(self._url, headers,
-                                                 self._payload(system, user, max_tokens),
-                                                 self._timeout)
+            status, body = await self._transport(self._url, headers, payload, self._timeout)
         except Exception as exc:   # noqa: BLE001
             raise ModelError(f"model transport failed: {exc}") from exc
         if status != 200 or not isinstance(body, dict):
             raise ModelError(f"model endpoint returned HTTP {status}")
-        text, tin, tout = self._extract(self._shape, body)
+        text, tin, tout = self._extract(self._shape, body, payload)
         if not text.strip():
             raise ModelError("model returned no text")
         return text, tin, tout
@@ -537,10 +541,9 @@ class HttpModel:
         headers.update(self._auth_headers(key))
         headers.update(self._extra_headers)      # e.g. Vertex priority tier; empty unless opted in
 
+        payload = self._payload(system, user, max_tokens)
         try:
-            status, body = await self._transport(self._url, headers,
-                                                 self._payload(system, user, max_tokens),
-                                                 self._timeout)
+            status, body = await self._transport(self._url, headers, payload, self._timeout)
         except Exception as exc:   # noqa: BLE001 — timeouts, DNS, TLS: all one condition here
             raise ModelError(f"model transport failed: {exc}") from exc
 
@@ -549,7 +552,7 @@ class HttpModel:
             # details, and the API layer would have to strip what we chose to attach.
             raise ModelError(f"model endpoint returned HTTP {status}")
 
-        text, tin, tout = self._extract(self._shape, body)
+        text, tin, tout = self._extract(self._shape, body, payload)
         if not text.strip():
             # A 200 with no text is a failure, not an empty answer. Returning it as an answer would
             # surface as a blank reply that the honesty gate then reports as unsupported — true,

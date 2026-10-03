@@ -255,6 +255,13 @@ async def invoke(conn: AiConnection, *, prompt: str, caller: Caller, store: Conn
     """Run ONE connection: its own prompt + the caller's message, meter its usage, return the answer
     and the cost. `caller` is a model bound to THIS connection's endpoint/credential — isolation is
     that the route builds a caller per connection and never shares it."""
+    # assistant-016: the single-shot `caller` is a plain completion — it does NOT send the connection's
+    # tool declarations. A tools-declaring connection invoked here would silently DROP its tool contract
+    # (the model never learns it may call them). Refuse and point the caller at the conversation path.
+    if conn.tools:
+        raise ConnectionError(
+            "this connection declares tools; use the conversation endpoint (converse) which sends them — "
+            "the single-shot invoke path does not carry tool declarations")
     text, tin, tout = await caller(conn.system_prompt, prompt, max_tokens)
     cost = cost_micros(tin, tout, conn.input_price_micros, conn.output_price_micros)
     await store.record_usage(tenant=conn.tenant, cid=conn.id, tokens_in=tin, tokens_out=tout, cost=cost)
