@@ -34,6 +34,11 @@ from app.core.models import _now, new_id
 
 ACTIVE, SUSPENDED, PENDING = "active", "suspended", "pending"
 
+
+class MembershipWalkIncomplete(RuntimeError):
+    """A paged owner walk hit its max_pages bound with rows still unread, so a False/None answer would
+    be a guess on a decision path (identity-011). Callers must treat this as 'unknown', not 'no'."""
+
 # A person an admin created but who has not set a password yet. No password hashes to this, so no
 # password authenticates as them — the sentinel is checked BEFORE the hasher, because a hasher
 # handed a non-hash may raise, and a 500 on the login path is an oracle that says "this identifier
@@ -207,8 +212,12 @@ class MembershipStore:
                 if m.person_id != person_id and "owner" in m.roles and m.active:
                     return True
             if not after:
-                break
-        return False
+                return False
+        # identity-011: we hit the page bound with rows still unread. A False here would be a GUESS on a
+        # decision path (it is what refuses to strand a tenant / decides a sole-owner removal). Refuse to
+        # answer rather than return a possibly-wrong False.
+        raise MembershipWalkIncomplete(
+            f"has_other_active_owner exceeded {max_pages} pages for tenant {tenant!r}")
 
     async def founding_owner(self, tenant: str, *, page: int = 200,
                              max_pages: int = 50) -> Membership | None:
@@ -234,8 +243,11 @@ class MembershipStore:
                 if "owner" in m.roles and m.status != SUSPENDED:
                     return m
             if not after:
-                break
-        return None
+                return None
+        # identity-011: page bound hit with rows unread — a None here could wrongly report "no owner"
+        # (used by the owner-phone contact read). Refuse rather than return a possibly-wrong None.
+        raise MembershipWalkIncomplete(
+            f"founding_owner exceeded {max_pages} pages for tenant {tenant!r}")
 
     async def members(self, tenant: str, *, limit: int,
                       after: str | None = None) -> tuple[list[Membership], str | None]:

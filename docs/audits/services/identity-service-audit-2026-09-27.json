@@ -114,7 +114,8 @@
       "line": 48,
       "scenario": "_signing_key() calls self._client.get_jwk_set(refresh=True) whenever a token's kid is not in the cache. The docstring claims this 'cannot turn into a fetch amplifier beyond one refresh per verify' — but one refetch PER verify across many crafted requests is precisely an amplification: an unauthenticated attacker posts N refresh/switch requests each with a syntactically-valid JWT header carrying a random, never-seen kid, and each drives a fresh outbound GET to the JWKS URL. That is N upstream fetches against the JWKS host from N cheap requests, a DoS lever on the key-serving endpoint and the event loop's threadpool.",
       "evidence": "except jwt.PyJWKClientError:\n    self._client.get_jwk_set(refresh=True)   # forced network fetch on any unknown kid, once per verify",
-      "recommendation": "Rate-limit / debounce forced JWKS refreshes (e.g. at most one refresh per cache_lifespan regardless of unknown-kid volume, or a short negative-cache of recently-missed kids) so a flood of bogus kids cannot each trigger an upstream fetch."
+      "recommendation": "Rate-limit / debounce forced JWKS refreshes (e.g. at most one refresh per cache_lifespan regardless of unknown-kid volume, or a short negative-cache of recently-missed kids) so a flood of bogus kids cannot each trigger an upstream fetch.",
+      "status": "fixed"
     },
     {
       "id": "identity-009",
@@ -149,7 +150,8 @@
       "line": 189,
       "scenario": "Both helpers page with max_pages=50 * page=200 = 10,000 memberships then stop. For a large tenant, has_other_active_owner() can return False when another active owner exists past the bound, causing _owner_safe_write to raise SoleOwnerError and REFUSE a legitimate owner removal/de-own (availability). founding_owner() can return None when a real owner sits past the bound, making /internal/tenancy/owner-phone answer 404 (a renewal notification never reaches the shop). The bound is a silent correctness ceiling, not a documented limit callers can detect.",
       "evidence": "async def has_other_active_owner(self, tenant, person_id, *, page=200, max_pages=50): ... for _ in range(max_pages): ...   # after 50 pages it returns its running answer, which may be wrong",
-      "recommendation": "Either push the predicate fully into the datastore (a keyed query for 'active owner in tenant != person') so no page bound is needed, or make exceeding max_pages raise rather than return a possibly-wrong False/None on a decision path."
+      "recommendation": "Either push the predicate fully into the datastore (a keyed query for 'active owner in tenant != person') so no page bound is needed, or make exceeding max_pages raise rather than return a possibly-wrong False/None on a decision path.",
+      "status": "fixed"
     },
     {
       "id": "identity-012",
@@ -160,7 +162,8 @@
       "line": 88,
       "scenario": "verify_otp is a public route (only rate_limit dependency) that, on a correct code, deletes it (single-use) and returns {verified:true} while recording nothing. reset_password explicitly warns callers 'must NOT pre-call /otp/verify (that would spend the single-use code)'. The service still exposes the footgun: any client (a buggy SPA, or a malicious one that has the code, e.g. over a shared device / shoulder-surf / a leaked SMS preview) can burn the reset/login code via /otp/verify so the legitimate reset then fails with INVALID_RESET, and nothing is audited. The 'record nothing' verify is the class of endpoint the team's own incident note says to keep off the gateway.",
       "evidence": "result = await otp.verify(identifier=key, code=body.code, purpose=purpose)   # consumes the code; the route records nothing",
-      "recommendation": "Do not expose a standalone consuming /otp/verify for purposes (reset/login) that have a combined verify-and-act endpoint; scope /otp/verify to 'verify'-purpose only, or make it non-consuming (peek) for those flows, and audit consumption."
+      "recommendation": "Do not expose a standalone consuming /otp/verify for purposes (reset/login) that have a combined verify-and-act endpoint; scope /otp/verify to 'verify'-purpose only, or make it non-consuming (peek) for those flows, and audit consumption.",
+      "status": "fixed"
     },
     {
       "id": "identity-013",
@@ -282,7 +285,8 @@
       "line": 1,
       "scenario": "The suite has extensive membership/caps tests (test_caps_grant, test_caps_resolution, test_registration_privilege) but they exercise DIRECT-caps governance only. There is no test that a members:write-but-not-owner caller is refused when assigning roles=['owner'] under the authz caps source (identity-001), and no test asserting a person.login_failed / select_tenant failure is recorded (identity-003/009) — because the audit action does not exist, a test cannot be measuring it. This is the 'tests that stop testing' pattern: deny/audit paths on the multi-tenant login and role-grant surfaces have no red-on-regression coverage, so both escalation and the observability gap could regress silently.",
       "evidence": "grep of tests/ shows caps-only governance assertions; no assertion on role-grant subset enforcement and no person.login_failed assertion (the action is undefined in auditable_actions.py)",
-      "recommendation": "Add tests: (a) a non-owner members:write caller assigning a privileged role is refused; (b) a failed authenticate_person on /auth/person/login and /auth/tenant produces the (new) person.login_failed audit record; (c) select_tenant success emits a mint audit."
+      "recommendation": "Add tests: (a) a non-owner members:write caller assigning a privileged role is refused; (b) a failed authenticate_person on /auth/person/login and /auth/tenant produces the (new) person.login_failed audit record; (c) select_tenant success emits a mint audit.",
+      "status": "fixed"
     }
   ]
 }

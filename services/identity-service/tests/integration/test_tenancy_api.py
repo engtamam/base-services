@@ -624,3 +624,62 @@ def test_t10_reauth_on_switch_refuses_a_bare_session_when_enabled(env):
 
     # Re-proving the person still works — the door is closed, not walled up.
     assert c.post("/api/v1/auth/tenant", json={**creds, "tenant": "bank"}).status_code == 200
+
+
+# ── identity-023 — the two highest-severity gaps, now under test ──────────────
+class _CapturingAuditor:
+    """Wraps the real auditor, recording every action so a test can assert it was emitted."""
+    def __init__(self, inner):
+        self._inner = inner
+        self.actions: list[tuple[str, dict]] = []
+
+    async def record(self, action, **kw):
+        self.actions.append((action, kw))
+        return await self._inner.record(action, **kw)
+
+
+def _capture(client):
+    cap = _CapturingAuditor(client.app.state.auditor)
+    client.app.state.auditor = cap
+    return cap
+
+
+def test_non_owner_cannot_grant_caps_it_does_not_hold(mt):
+    """Role/cap escalation via add-member is refused: a caller with members:write but only a narrow
+    cap set may not grant a capability it does not itself hold (subset policy, the default)."""
+    seed(mt, {"shop": ["members:write"]})
+    creds = {"username": "consultant", "password": "correct-horse-battery"}
+    tok = mt.post("/api/v1/auth/tenant", json={**creds, "tenant": "shop"}).json()["access_token"]
+
+    r = mt.post("/api/v1/tenancy/members",
+                json={"identifier": "newbie", "roles": ["staff"], "caps": ["billing:admin"],
+                      "password": "another-strong-pass-9"},
+                headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 403 and r.json()["error"] == "CAPS_NOT_GRANTABLE"
+
+
+def test_failed_person_login_is_audited(mt):
+    seed(mt, {"bank": []})
+    cap = _capture(mt)
+    r = mt.post("/api/v1/auth/person/login",
+                json={"username": "consultant", "password": "wrong"})
+    assert r.status_code == 401
+    assert any(a == "person.login_failed" for a, _ in cap.actions)
+
+
+def test_failed_tenant_select_is_audited(mt):
+    seed(mt, {"own-shop": []})
+    cap = _capture(mt)
+    creds = {"username": "consultant", "password": "correct-horse-battery"}
+    r = mt.post("/api/v1/auth/tenant", json={**creds, "tenant": "not-your-company"})
+    assert r.status_code == 403
+    assert any(a == "person.login_failed" for a, _ in cap.actions)
+
+
+def test_successful_tenant_select_emits_a_mint_audit(mt):
+    seed(mt, {"own-shop": ["admin"]})
+    cap = _capture(mt)
+    creds = {"username": "consultant", "password": "correct-horse-battery"}
+    r = mt.post("/api/v1/auth/tenant", json={**creds, "tenant": "own-shop"})
+    assert r.status_code == 200
+    assert any(a == "person.login_succeeded" for a, _ in cap.actions)

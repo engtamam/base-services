@@ -14,6 +14,7 @@ refresh per verify.
 """
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import jwt
@@ -37,9 +38,16 @@ class JWKSVerifier:
         self._audience = audience
         # PyJWKClient (from base pyjwt dep) caches the key set and fetches on demand.
         self._client = jwt.PyJWKClient(jwks_url, lifespan=cache_lifespan_s)
+        # identity-008: bound forced refreshes. A flood of DISTINCT bogus kids must not turn each verify
+        # into an upstream JWKS fetch (an amplifier). We allow at most one forced refresh per
+        # `cache_lifespan`, and negative-cache recently-missed kids so a repeat of the same bogus kid is
+        # rejected without any refetch. A real rotation is still picked up within one lifespan.
+        self._refresh_interval = float(cache_lifespan_s)
+        self._last_refresh = 0.0
+        self._missed_kids: dict[str, float] = {}
 
     def _signing_key(self, token: str):
-        """The signing key for this token's kid, forcing a single JWKS refresh if it is unknown —
+        """The signing key for this token's kid, forcing a bounded JWKS refresh if it is unknown —
         the new key from a rotation the cached set predates."""
         kid = jwt.get_unverified_header(token).get("kid")
         if not kid:
@@ -48,8 +56,29 @@ class JWKSVerifier:
         try:
             return self._client.get_signing_key(kid).key
         except jwt.PyJWKClientError:
+            now = time.monotonic()
+            # Recently proven missing → reject without touching the network (negative cache).
+            miss_at = self._missed_kids.get(kid)
+            if miss_at is not None and now - miss_at < self._refresh_interval:
+                raise InvalidToken("unknown key id") from None
+            # Only force a refetch if we have not refreshed within the last lifespan — this is the
+            # debounce that caps the whole fleet of bogus kids at one upstream fetch per interval.
+            if now - self._last_refresh < self._refresh_interval:
+                self._missed_kids[kid] = now
+                raise InvalidToken("unknown key id") from None
+            self._last_refresh = now
+            self._prune_missed(now)
             self._client.get_jwk_set(refresh=True)   # a rotation may have added this kid
-            return self._client.get_signing_key(kid).key
+            try:
+                return self._client.get_signing_key(kid).key
+            except jwt.PyJWKClientError:
+                self._missed_kids[kid] = now         # still absent after a fresh fetch → negative-cache
+                raise InvalidToken("unknown key id") from None
+
+    def _prune_missed(self, now: float) -> None:
+        expired = [k for k, t in self._missed_kids.items() if now - t >= self._refresh_interval]
+        for k in expired:
+            self._missed_kids.pop(k, None)
 
     def verify(self, token: str) -> dict[str, Any]:
         try:

@@ -88,8 +88,15 @@ async def request_otp(body: OtpRequestIn, request: Request) -> dict:
 @router.post("/verify", dependencies=[Depends(rate_limit)])
 async def verify_otp(body: OtpVerifyIn, request: Request) -> dict:
     """Consume a code. Every failure — never issued, expired, wrong, exhausted — collapses to ONE
-    generic 400 so a caller cannot distinguish 'wrong code' from 'no code for this identifier'."""
+    generic 400 so a caller cannot distinguish 'wrong code' from 'no code for this identifier'.
+
+    identity-012: this standalone consuming endpoint is scoped to the 'verify' purpose ONLY. A login or
+    reset code is single-use and has a COMBINED verify-and-act endpoint (/auth/*); exposing a bare
+    consuming verify for those purposes let a caller SPEND a code the user still needed for the real
+    action. Those purposes are refused here — verify-and-act is the only place they are consumed."""
     purpose = _purpose(body.purpose)
+    if purpose != "verify":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid or expired code")
     otp = request.app.state.container.otp_service
     key = _canonical(request, body.identifier)
     try:
