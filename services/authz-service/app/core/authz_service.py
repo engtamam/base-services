@@ -73,8 +73,20 @@ class AuthzService:
         try:
             gen = await self._cache.get(f"authzgen:{tenant}")
             await self._cache.set(f"authzgen:{tenant}", str(int(gen or 0) + 1), None)
-        except Exception:
-            pass
+        except Exception as exc:
+            # Do NOT swallow silently (authz-008): a failed generation bump can leave revoked caps served
+            # from cache. _gen() fails-safe (returns None → bypass cache) when the cache is DOWN, so this
+            # is loud rather than fatal; a dedicated atomic INCR primitive is the follow-up for the
+            # get-ok/set-fail partial window.
+            import logging
+            logging.getLogger("authz.cache").error(
+                "authz_generation_bump_failed", extra={"tenant": tenant, "detail": exc.__class__.__name__})
+
+    async def invalidate_tenant(self, tenant: str) -> None:
+        """Public cache invalidation for a tenant's decisions (authz-009): an erasure deletes assignment
+        rows directly in the store, bypassing the PAP writes that normally bump the generation, so the
+        revoked caps would live in cache until TTL. The erase path calls this to bump the generation."""
+        await self._bump(tenant)
 
     async def _cache_get(self, key: str):
         if self._cache is None:
@@ -173,8 +185,10 @@ class AuthzService:
                 return set(cached)
         a = await self._assign.get(subject, tenant)
         caps = set(a.capabilities)
-        for role_id in a.roles:
-            role = await self._roles.get(role_id)
+        for role_ref in a.roles:
+            # Resolve via _resolve_role (authz-012), which honours AUTHZ_ROLE_LOOKUP (id OR name) exactly
+            # like _role_caps — a get-by-id-only lookup silently dropped assignments stored by role name.
+            role = await self._resolve_role(tenant, role_ref)
             if role and role.tenant == tenant:
                 caps |= set(role.capabilities)
         if gen is not None:

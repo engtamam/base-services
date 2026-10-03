@@ -233,7 +233,12 @@ async def erase_subject(request: Request, body: EraseIn,
     c = request.app.state.container
     s = get_settings()
     eraser = AuthzErasure(store=c.datastore, pii_salt=s.PII_SALT)
-    return await eraser.erase(body.tenant, body.subject)
+    result = await eraser.erase(body.tenant, body.subject)
+    # Invalidate the tenant's decision cache (authz-009): erase deletes assignment rows directly, so
+    # without this bump the revoked caps would be served from cache until the TTL elapses.
+    if not result.get("already_absent"):
+        await build_authz(request).invalidate_tenant(body.tenant)
+    return result
 
 
 # ── Backup (backup-service orchestrates; this service produces sealed archives) ──────────────

@@ -73,7 +73,7 @@
       "scenario": "require_capability/require_any_capability test membership with exact `c in held`, unlike RbacEngine.cap_matches and cap_policy._granter_holds which honor '*' and 'x.*'. A principal whose token caps are ['*'] (or ['platform.*']) satisfies the RBAC engine as holding everything but is 403'd by _ADMIN = require_any_capability('platform.authz','authz.manage') because neither literal string is present. The admin surface is unreachable for a legitimately-scoped superadmin; semantics are inconsistent across the codebase.",
       "evidence": "if not any(c in held for c in caps):\n            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=\"FORBIDDEN\")",
       "recommendation": "Route the dependency check through the same cap_matches wildcard logic the RBAC engine uses, so '*'/'x.*' are honored consistently.",
-      "status": "pending"
+      "status": "fixed"
     },
     {
       "id": "authz-006",
@@ -109,7 +109,7 @@
       "scenario": "_bump reads the generation then writes gen+1 with no atomic INCR; two concurrent PAP writes can both read 5 and both write 6, and any exception is swallowed. If the bump write fails after a revoke, that tenant's cached subject-caps and policy set remain valid for up to AUTHZ_CACHE_TTL_SECONDS (default 30s), so a just-revoked capability keeps authorizing requests. There is no signal that invalidation was missed.",
       "evidence": "gen = await self._cache.get(f\"authzgen:{tenant}\")\n            await self._cache.set(f\"authzgen:{tenant}\", str(int(gen or 0) + 1), None)\n        except Exception:\n            pass",
       "recommendation": "Use an atomic INCR primitive for the generation counter; on bump failure, fail the PAP write (or force a synchronous cache purge) rather than silently returning success with stale caches live.",
-      "status": "pending"
+      "status": "fixed"
     },
     {
       "id": "authz-009",
@@ -121,7 +121,7 @@
       "scenario": "POST /internal/privacy/erase runs AuthzErasure.erase directly against the datastore, deleting the subject's assignment rows, but never calls AuthzService._bump for the tenant. The subject's cached effective capabilities (authz:sc:{gen}:...) remain until TTL, so for up to AUTHZ_CACHE_TTL_SECONDS an 'erased' subject continues to be authorized by the PDP. A DSAR erase is expected to take effect immediately.",
       "evidence": "await self._store.delete(_ASSIGN, r.get(\"id\") or f\"{tenant}::{subject}\")\n                deleted += 1",
       "recommendation": "Invalidate the tenant generation (or the specific subject-caps key) after erase, e.g. by routing the delete through AuthzService or bumping the generation in the erase path.",
-      "status": "pending"
+      "status": "fixed"
     },
     {
       "id": "authz-010",
@@ -157,7 +157,7 @@
       "scenario": "set_subject_roles stores body.roles verbatim (the PUT /subjects/{s}/roles route accepts arbitrary role strings). But _subject_caps resolves them with self._roles.get(role_id) — BY ID ONLY, with no by_name fallback — whereas caller-supplied roles in _role_caps go through _resolve_role (id OR name). An admin who assigns a subject a role by its NAME (the identifier humans naturally hold, and which AUTHZ_ROLE_LOOKUP='both' encourages) gets a stored assignment that silently resolves to zero capabilities, with no error. Inconsistent resolution between the two paths.",
       "evidence": "for role_id in a.roles:\n            role = await self._roles.get(role_id)\n            if role and role.tenant == tenant:\n                caps |= set(role.capabilities)",
       "recommendation": "Resolve stored assignment roles through _resolve_role (honoring AUTHZ_ROLE_LOOKUP) too, or validate/normalize body.roles to IDs at assignment time and reject unknown references.",
-      "status": "pending"
+      "status": "fixed"
     },
     {
       "id": "authz-013",
