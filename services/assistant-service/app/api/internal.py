@@ -284,9 +284,10 @@ class ConnIn(BaseModel):
     credential: str = Field(default="", max_length=16000)
 
 
-def _validate_conn_url(url: str) -> None:
+def _validate_conn_url(url: str, *, carries_credentials: bool = False) -> None:
     """SSRF guard (CWE-918): the service POSTs the connection's credential to this URL, so a
-    tenant-supplied http://169.254.169.254/ or an internal host must be refused at write time."""
+    tenant-supplied http://169.254.169.254/ or an internal host must be refused at write time.
+    carries_credentials forces https (no API key over cleartext even when require_https is relaxed)."""
     from app.core import ssrf
     s = get_settings()
     try:
@@ -294,7 +295,8 @@ def _validate_conn_url(url: str) -> None:
             url, require_https=s.ASSISTANT_CONN_REQUIRE_HTTPS,
             allow_private=s.ASSISTANT_CONN_ALLOW_PRIVATE_IPS,
             allowed_hosts=frozenset(h.strip() for h in s.ASSISTANT_CONN_ALLOWED_HOSTS.split(",") if h.strip()),
-            denied_hosts=frozenset(h.strip() for h in s.ASSISTANT_CONN_DENIED_HOSTS.split(",") if h.strip()))
+            denied_hosts=frozenset(h.strip() for h in s.ASSISTANT_CONN_DENIED_HOSTS.split(",") if h.strip()),
+            carries_credentials=carries_credentials)
     except ssrf.SsrfBlocked as exc:
         raise HTTPException(422, f"URL_NOT_ALLOWED: {exc}") from exc
 
@@ -303,7 +305,14 @@ def _validate_conn_url(url: str) -> None:
 async def create_connection(request: Request, body: ConnIn) -> dict:
     """Declare a new isolated AI line for a tenant. Its credential is sealed in the secret store."""
     from app.core.connections import ConnectionError
-    _validate_conn_url(body.url)
+    _validate_conn_url(body.url, carries_credentials=bool(body.credential))
+    # FAIL FAST (assistant-007): a credential with no secret store would create a keyless orphan
+    # connection and THEN 503. Refuse before the row exists.
+    store = None
+    if body.credential:
+        store = getattr(request.app.state, "secret_store", None)
+        if store is None:
+            raise HTTPException(503, "SECRETS_UNAVAILABLE — a credential needs SECRETS_KEK set")
     try:
         conn = await _connections(request).create(
             tenant=body.tenant, name=body.name, url=body.url, shape=body.shape, model=body.model,
@@ -313,10 +322,19 @@ async def create_connection(request: Request, body: ConnIn) -> dict:
     except ConnectionError as exc:
         raise HTTPException(422, str(exc)) from exc
     if body.credential:
-        store = getattr(request.app.state, "secret_store", None)
-        if store is None:
-            raise HTTPException(503, "SECRETS_UNAVAILABLE — a credential needs SECRETS_KEK set")
-        await store.set(tenant=body.tenant, name=_conn_secret_name(conn.id), value=body.credential)
+        name = _conn_secret_name(conn.id)
+        ip = request.client.host if request.client else ""
+        # Write-ahead secret audit (assistant-008): name only, never the value. CRITICAL — if it cannot
+        # be recorded, abort and roll the row back rather than seal an unprovable credential.
+        try:
+            await request.app.state.auditor.record(
+                "assistant.connection_secret_set", actor="", tenant=body.tenant,
+                resource=f"secret:{name}", ip=ip, metadata={"name": name})
+            await store.set(tenant=body.tenant, name=name, value=body.credential)
+        except Exception:
+            # all-or-nothing (assistant-007): a failed credential seal leaves no keyless connection.
+            await _connections(request).delete(tenant=body.tenant, cid=conn.id)
+            raise
     await request.app.state.auditor.record(
         "assistant.connection_created", actor="", tenant=body.tenant,
         resource=f"ai_connection:{conn.id}", ip=request.client.host if request.client else "",

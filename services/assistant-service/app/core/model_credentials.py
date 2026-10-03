@@ -26,6 +26,7 @@ row into a 500 on every question.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -47,6 +48,13 @@ class ModelCredentials:
         self._ttl = ttl_s
         self._now = now
         self._cache: dict[str, tuple[float, str]] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    def _lock(self, tenant: str) -> asyncio.Lock:
+        lk = self._locks.get(tenant)
+        if lk is None:
+            lk = self._locks.setdefault(tenant, asyncio.Lock())
+        return lk
 
     async def get(self, tenant: str = "") -> str:
         """The credential to authenticate with, resolved at most once per TTL."""
@@ -55,15 +63,23 @@ class ModelCredentials:
         if hit and now < hit[0]:
             return hit[1]
 
-        fallback = getattr(self._s, self._name, "") or ""
-        value = fallback
-        if self._secrets is not None:
-            try:
-                value = await self._secrets.get(tenant=tenant, name=self._name, fallback=fallback)
-            except Exception:  # noqa: BLE001 — an unreadable row must not fail every question
-                _log.warning("credential_unreadable", extra={"credential": self._name})
-        self._cache[tenant] = (now + self._ttl, value)
-        return value
+        # Single-flight (assistant-012): without the lock, every concurrent question that arrives at
+        # expiry mints a fresh credential read in parallel. One per tenant resolves; the rest wait and
+        # read the cache it fills.
+        async with self._lock(tenant):
+            hit = self._cache.get(tenant)
+            now = self._now()
+            if hit and now < hit[0]:
+                return hit[1]
+            fallback = getattr(self._s, self._name, "") or ""
+            value = fallback
+            if self._secrets is not None:
+                try:
+                    value = await self._secrets.get(tenant=tenant, name=self._name, fallback=fallback)
+                except Exception:  # noqa: BLE001 — an unreadable row must not fail every question
+                    _log.warning("credential_unreadable", extra={"credential": self._name})
+            self._cache[tenant] = (now + self._ttl, value)
+            return value
 
     def invalidate(self, tenant: str | None = None) -> None:
         """Drop the cached value so the next question resolves fresh.

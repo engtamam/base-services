@@ -24,6 +24,7 @@ google/models/{MODEL}:generateContent` (v1 is the stable version); scope
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 
@@ -49,6 +50,7 @@ class VertexTokenSource:
         self._transport = transport or self._httpx_transport
         self._token = ""
         self._exp = 0.0
+        self._lock = asyncio.Lock()
         self._sa: dict | None = None
         if sa_json.strip():
             try:
@@ -67,12 +69,18 @@ class VertexTokenSource:
         now = self._now()
         if self._token and now < self._exp:
             return self._token
-        token, ttl = await (self._from_service_account() if self._sa else self._from_metadata())
-        if not token:
-            raise ConfigError("could not obtain a Vertex access token")
-        self._token = token
-        self._exp = now + max(30, int(ttl) - _SKEW)
-        return token
+        # Single-flight (assistant-012): concurrent questions at expiry would each mint a token. One
+        # waits on the lock and the rest read the token it fills.
+        async with self._lock:
+            now = self._now()
+            if self._token and now < self._exp:
+                return self._token
+            token, ttl = await (self._from_service_account() if self._sa else self._from_metadata())
+            if not token:
+                raise ConfigError("could not obtain a Vertex access token")
+            self._token = token
+            self._exp = now + max(30, int(ttl) - _SKEW)
+            return token
 
     # ── service-account: self-signed JWT -> token endpoint ───────────────────────
     async def _from_service_account(self) -> tuple[str, int]:

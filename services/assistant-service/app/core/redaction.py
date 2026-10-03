@@ -27,9 +27,17 @@ from dataclasses import dataclass
 _PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
     # IBAN — country code, check digits, then up to 30 alphanumerics. Bounded.
     ("iban", re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b"), "[iban]"),
+    # American Express: 15 digits grouped 4-6-5. The 4-4-4 card rule below matches only 4-digit groups,
+    # so a 15-digit Amex slipped through (assistant-014). Placed first so it wins the overlap. Bounded.
+    ("amex", re.compile(r"\b3[47]\d{2}[ -]?\d{6}[ -]?\d{5}\b"), "[card]"),
     # Card-like digit runs, allowing single separators. `\d{4}(?:[ -]?\d{4}){2,4}` is bounded at
     # every step: no quantifier nests over another unbounded quantifier.
     ("card", re.compile(r"\b\d{4}(?:[ -]?\d{4}){2,4}\b"), "[card]"),
+    # A JWT (eyJ header.payload.signature) — bearer tokens users paste from a failed call. Each segment
+    # is bounded (no unbounded run), so it cannot backtrack catastrophically (assistant-014). Raw
+    # prefix-less provider keys stay OUT OF SCOPE by design — they are indistinguishable from ordinary
+    # high-entropy text, so matching them would over-redact normal content.
+    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{10,2048}\.[A-Za-z0-9_-]{10,2048}\.[A-Za-z0-9_-]{10,2048}\b"), "[secret]"),
     ("email", re.compile(r"\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,24}\b"), "[email]"),
     # Saudi national ID / Iqama: exactly 10 digits, 1 = citizen, 2 = resident. Bounded, and placed
     # BEFORE the phone rule so a bare 10-digit id is labelled national_id rather than swept up as a

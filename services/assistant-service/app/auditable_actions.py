@@ -201,6 +201,15 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "one is indistinguishable from an attacker wiring the platform's spend to their own key",
     },
     {
+        "action": "assistant.connection_secret_set",
+        "source": "admin",
+        "critical": True,
+        "resource": "secret",
+        "why": "sealing a connection's provider credential is a secret WRITE; without a record (name "
+               "only, never the value) there is no trail that a tenant-billed key was stored or "
+               "rotated, so a credential swap to an attacker's key would be invisible",
+    },
+    {
         "action": "assistant.connection_deleted",
         "source": "admin",
         "critical": False,

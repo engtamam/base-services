@@ -53,9 +53,14 @@ def _resolve(host: str, port: int) -> list[str]:
     return [i[4][0] for i in infos]
 
 
+_STANDARD_PORTS = frozenset({80, 443})
+
+
 def validate(url: str, *, require_https: bool = True, allow_private: bool = False,
              allowed_hosts: frozenset[str] = frozenset(),
-             denied_hosts: frozenset[str] = frozenset()) -> Target:
+             denied_hosts: frozenset[str] = frozenset(),
+             allowed_ports: frozenset[int] = frozenset(),
+             carries_credentials: bool = False) -> Target:
     """Validate + resolve + pin. Raises SsrfBlocked; returns the IP to connect to."""
     parts = urlsplit(url)
     scheme, host, port = parts.scheme.lower(), (parts.hostname or "").lower(), parts.port
@@ -64,11 +69,19 @@ def validate(url: str, *, require_https: bool = True, allow_private: bool = Fals
         raise SsrfBlocked(f"scheme not allowed: {scheme or '(none)'}")
     if require_https and scheme != "https":
         raise SsrfBlocked("https is required")
+    # Credentials must never travel in cleartext, even when require_https is relaxed for testing: a
+    # relaxed transport flag is not consent to post an API key over http (assistant-011).
+    if carries_credentials and scheme != "https":
+        raise SsrfBlocked("credentials must not be sent over http")
     if not host:
         raise SsrfBlocked("missing host")
     if parts.username or parts.password:
         raise SsrfBlocked("credentials in URL are not allowed")
     port = port or (443 if scheme == "https" else 80)
+    # The promised non-standard-port restriction (assistant-011): a port other than 80/443 is a signal
+    # of an internal service (6379 redis, 8080 admin, …). Allowed only when explicitly listed.
+    if port not in _STANDARD_PORTS and port not in allowed_ports:
+        raise SsrfBlocked(f"non-standard port not allowed: {port}")
 
     if denied_hosts and host in denied_hosts:
         raise SsrfBlocked(f"host is denied: {host}")

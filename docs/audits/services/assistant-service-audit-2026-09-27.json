@@ -101,7 +101,8 @@
       "line": 306,
       "scenario": "create() writes the connection row first; only afterward, if body.credential is set and the secret store is None (no SECRETS_KEK), the handler raises 503. The connection row is already persisted with no credential and no audit line (the connection_created audit is emitted even later, line 318, and never runs on this path). The caller sees a 503 but a half-created, uninvokable connection now exists and will 401/502 forever until manually cleaned up.",
       "evidence": "conn = await _connections(request).create(...)\n...\nif body.credential:\n    store = getattr(request.app.state, \"secret_store\", None)\n    if store is None:\n        raise HTTPException(503, \"SECRETS_UNAVAILABLE — a credential needs SECRETS_KEK set\")",
-      "recommendation": "Check secret-store availability BEFORE creating the row (fail fast), or delete the row on credential-store failure so create is all-or-nothing."
+      "recommendation": "Check secret-store availability BEFORE creating the row (fail fast), or delete the row on credential-store failure so create is all-or-nothing.",
+      "status": "fixed"
     },
     {
       "id": "assistant-008",
@@ -112,7 +113,8 @@
       "line": 317,
       "scenario": "The operator /secrets route audits every secret_set write-ahead and critical (the module docstring calls this the guarantee). But create_connection stores a provider credential directly via store.set() with NO secret-set audit record — only a connection_created line carrying auth/shape. A provider key is written to the secret store with no auditable trail of the credential write, defeating the 'every credential change is auditable' property for this path.",
       "evidence": "await store.set(tenant=body.tenant, name=_conn_secret_name(conn.id), value=body.credential)\nawait request.app.state.auditor.record(\n    \"assistant.connection_created\", ...)",
-      "recommendation": "Emit a write-ahead secret_set audit (name only, never value) for the connection credential, consistent with the operator secrets route."
+      "recommendation": "Emit a write-ahead secret_set audit (name only, never value) for the connection credential, consistent with the operator secrets route.",
+      "status": "fixed"
     },
     {
       "id": "assistant-009",
@@ -145,7 +147,8 @@
       "line": 56,
       "scenario": "validate() permits scheme 'http' whenever require_https is False, and never restricts the port to a standard set (the docstring promises 'no non-standard ports unless explicitly allowed' but no port allow-list is implemented). An operator who sets ASSISTANT_CONN_REQUIRE_HTTPS=false (a single boolean) causes the service to POST a tenant's provider API key over cleartext HTTP to any public port. The safeguard the comment claims (port restriction) does not exist in code.",
       "evidence": "if require_https and scheme != \"https\":\n    raise SsrfBlocked(\"https is required\")\n...\nport = port or (443 if scheme == \"https\" else 80)   # no port allow-list anywhere",
-      "recommendation": "Implement the promised non-standard-port restriction, and warn/deny credential POSTs over http even when require_https is relaxed for testing."
+      "recommendation": "Implement the promised non-standard-port restriction, and warn/deny credential POSTs over http even when require_https is relaxed for testing.",
+      "status": "fixed"
     },
     {
       "id": "assistant-012",
@@ -156,7 +159,8 @@
       "line": 65,
       "scenario": "Under a single-worker event loop, several concurrent /ask requests for the same tenant that arrive after the TTL expires each miss the cache, each await the secret-store decrypt (and, for Vertex, each sign a JWT + do a token-exchange network round trip), then all overwrite self._cache. There is no in-flight de-dup, so a cache-expiry moment under load produces a thundering herd of scrypt-backed decrypts / JWT signings on the hot path — the exact cost the cache exists to avoid.",
       "evidence": "hit = self._cache.get(tenant)\nnow = self._now()\nif hit and now < hit[0]:\n    return hit[1]\n... await self._secrets.get(...) ...\nself._cache[tenant] = (now + self._ttl, value)",
-      "recommendation": "Add a per-key asyncio.Lock (single-flight) around the refresh, as the KB index rebuild already does, so only one refresh runs per tenant at expiry."
+      "recommendation": "Add a per-key asyncio.Lock (single-flight) around the refresh, as the KB index rebuild already does, so only one refresh runs per tenant at expiry.",
+      "status": "fixed"
     },
     {
       "id": "assistant-013",
@@ -178,7 +182,8 @@
       "line": 42,
       "scenario": "The secret pattern only matches prefixed tokens (sk-/pk-/ghp-/api_key-). A user pasting a bare Anthropic/Google API key without a recognised prefix, a Bearer JWT (eyJ...), or a Google service-account private key block passes through unredacted into the model call. The card rule \\d{4}(?:[ -]?\\d{4}){2,4} requires groups of exactly 4, so a 15-digit Amex written 4-6-5 (e.g. 3782 822463 10005) is not matched. Users paste exactly these when a payment fails.",
       "evidence": "(\"card\", re.compile(r\"\\b\\d{4}(?:[ -]?\\d{4}){2,4}\\b\"), \"[card]\"),\n...\n(\"secret\", re.compile(r\"\\b(?:sk|pk|ghp|gho|api[_-]?key)[-_][A-Za-z0-9]{16,64}\\b\", re.I), \"[secret]\"),",
-      "recommendation": "Add an Amex-shaped card pattern and a JWT/high-entropy-token pattern (bounded), and document that prefix-less keys are out of scope so operators aren't falsely reassured."
+      "recommendation": "Add an Amex-shaped card pattern and a JWT/high-entropy-token pattern (bounded), and document that prefix-less keys are out of scope so operators aren't falsely reassured.",
+      "status": "fixed"
     },
     {
       "id": "assistant-015",

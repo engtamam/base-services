@@ -45,9 +45,9 @@ def create_app_noenv():
 
 def test_create_list_get_delete_roundtrip(client):
     r = client.post("/internal/assistant/connections", headers=_tok(), json={
-        "tenant": "t1", "name": "support", "url": "http://127.0.0.1/v1", "shape": "chat", "model": "gpt",
+        "tenant": "t1", "name": "support", "url": "https://127.0.0.1/v1", "shape": "chat", "model": "gpt",
         "auth": "api_key", "system_prompt": "be helpful", "input_price_micros": 100,
-        "output_price_micros": 300, "credential": "sk-secret-key"})
+        "output_price_micros": 300, "credential": "sk-secret-key"})  # https: a credential never goes over http (assistant-011)
     assert r.status_code == 200, r.text
     cid = r.json()["id"]
     assert r.json()["name"] == "support" and "credential" not in r.json()   # never echoed
