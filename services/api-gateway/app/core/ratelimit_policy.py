@@ -63,7 +63,10 @@ class RateLimitPolicy:
 
     def classify(self, path: str) -> RouteClass:
         for r in self._routes:
-            if path.startswith(r.prefix):
+            # Segment-boundary match (api-gateway-006): a prefix /api/v1/auth must not also classify
+            # /api/v1/authz or /api/v1/authENTICATEXYZ — match the exact path or a '/'-delimited child,
+            # consistent with Route.matches_path.
+            if path == r.prefix or path.startswith(r.prefix.rstrip("/") + "/"):
                 return r
         return self._default
 

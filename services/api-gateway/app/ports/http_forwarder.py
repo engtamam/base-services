@@ -19,4 +19,9 @@ class HttpForwarder(Protocol):
 
 
 class UpstreamError(Exception):
-    """Upstream unreachable / timed out."""
+    """Upstream unreachable / timed out. `timeout` distinguishes an actual upstream TIMEOUT (→ 504)
+    from a generic connect/transport failure (→ 502) so the two are not conflated (api-gateway-012)."""
+
+    def __init__(self, message: str = "", *, timeout: bool = False) -> None:
+        super().__init__(message)
+        self.timeout = timeout

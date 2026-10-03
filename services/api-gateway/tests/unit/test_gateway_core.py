@@ -189,10 +189,11 @@ def test_auth_required_ok_forwards_with_identity():
     assert fwd.last["url"] == "http://up/hi"  # prefix /echo stripped
 
 
-def test_upstream_error_504():
+def test_upstream_generic_error_502():
+    # api-gateway-012: a generic upstream failure is 502; 504 is reserved for an actual timeout.
     r = Route(prefix="/echo", upstream="http://up")
     gw = _gw(r, forwarder=FakeForwarder(raise_error=True))
-    assert run(gw.handle(make_request())).status_code == 504
+    assert run(gw.handle(make_request())).status_code == 502
 
 
 def test_cache_hit_second_call():

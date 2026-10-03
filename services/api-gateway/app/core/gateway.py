@@ -154,7 +154,13 @@ class Gateway:
         if cacheable:
             hit = await self._cache.get(cache_key)
             if hit:
-                return _decode_cached(hit)
+                try:
+                    return _decode_cached(hit)
+                except Exception:   # noqa: BLE001 — a corrupt entry is a cache MISS, not a 500 (api-gateway-015)
+                    try:
+                        await self._cache.delete(cache_key)
+                    except Exception:  # noqa: BLE001
+                        pass
 
         # ── forward ──────────────────────────────────────────────────────────
         headers = self._forward_headers(request, identity)
@@ -166,14 +172,27 @@ class Gateway:
             return _err("NOT_FOUND", 404)
         body = await request.body()
         params = list(request.query_params.multi_items())
+        import time as _time
+        _t0 = _time.perf_counter()
         try:
             status, resp_headers, resp_body = await self._forwarder.forward(
                 request.method, url, headers, body, params)
-        except UpstreamError:
-            return _err("BAD_GATEWAY", 504)
+        except UpstreamError as exc:
+            # 504 only for an actual upstream TIMEOUT; a generic connect/transport failure is 502
+            # (api-gateway-012) — the two are different diagnoses for whoever is paged.
+            if getattr(exc, "timeout", False):
+                return _err("GATEWAY_TIMEOUT", 504)
+            return _err("BAD_GATEWAY", 502)
 
         if cacheable and 200 <= status < 300 and _is_storable(resp_headers):
             await self._cache.set(cache_key, _encode_cached(status, resp_headers, resp_body), ttl)
+        # Structured access log per proxied request (api-gateway-011): the edge forwarded state-changing
+        # traffic with no record. request id + route prefix + status + upstream latency, no bodies.
+        _log.info("gateway_proxied",
+                  extra={"request_id": get_request_id(), "method": request.method,
+                         "route": route.prefix, "status": status,
+                         "upstream_ms": round((_time.perf_counter() - _t0) * 1000, 1),
+                         "authed": identity is not None})
         return Response(content=resp_body, status_code=status, headers=resp_headers)
 
     # ── helpers ──────────────────────────────────────────────────────────────

@@ -27,7 +27,7 @@ class HttpxForwarder:
             req = self._client.build_request(method, url, headers=headers, content=body, params=params)
             resp = await self._client.send(req, stream=True)
         except (httpx.TimeoutException, httpx.TransportError) as exc:
-            raise UpstreamError(str(exc)) from exc
+            raise UpstreamError(str(exc), timeout=isinstance(exc, httpx.TimeoutException)) from exc
         try:
             cl = resp.headers.get("content-length")
             if self._max and cl and cl.isdigit() and int(cl) > self._max:
@@ -41,7 +41,7 @@ class HttpxForwarder:
                 chunks.append(chunk)
             content = b"".join(chunks)
         except (httpx.TimeoutException, httpx.TransportError) as exc:
-            raise UpstreamError(str(exc)) from exc
+            raise UpstreamError(str(exc), timeout=isinstance(exc, httpx.TimeoutException)) from exc
         finally:
             await resp.aclose()
         out = {k: v for k, v in resp.headers.items() if k.lower() not in _HOP_BY_HOP}

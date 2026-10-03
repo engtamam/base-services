@@ -85,7 +85,8 @@
       "line": 66,
       "scenario": "classify() matches with `path.startswith(r.prefix)`, unlike Route.matches_path which requires `== prefix or startswith(prefix + '/')`. A class configured for prefix '/api/v1/auth' therefore also captures '/api/v1/authors', '/api/v1/authentication-status', etc., applying the strict auth budget (e.g. limit 10/min) to unrelated endpoints — or, with a loosely written prefix, applying a loose budget to a stricter sibling. Rate-limit class assignment silently diverges from routing.",
       "evidence": "for r in self._routes:\n    if path.startswith(r.prefix):\n        return r",
-      "recommendation": "Match with a segment boundary: `path == r.prefix or path.startswith(r.prefix.rstrip('/') + '/')`, matching Route.matches_path."
+      "recommendation": "Match with a segment boundary: `path == r.prefix or path.startswith(r.prefix.rstrip('/') + '/')`, matching Route.matches_path.",
+      "status": "fixed"
     },
     {
       "id": "api-gateway-007",
@@ -141,7 +142,8 @@
       "line": 74,
       "scenario": "Gateway.handle imports no logger and logs nothing — not the matched route, not a 401/403/404/429 decision, not an upstream 5xx/UpstreamError. Every proxied POST/PUT/DELETE to an upstream passes through the edge with zero record at the gateway. When an upstream is attacked or a caller is throttled/forbidden, there is no edge-side trail to correlate; investigations depend entirely on each upstream's own logs and the Prometheus RED counters (which are aggregate, not per-request).",
       "evidence": "async def handle(self, request: Request) -> Response:\n    ... (no logger referenced anywhere in the module)",
-      "recommendation": "Emit a structured log line per proxied request (request id, method, matched route prefix, status, upstream latency, auth/limit decision) at the edge, redacting tokens."
+      "recommendation": "Emit a structured log line per proxied request (request id, method, matched route prefix, status, upstream latency, auth/limit decision) at the edge, redacting tokens.",
+      "status": "fixed"
     },
     {
       "id": "api-gateway-012",
@@ -152,7 +154,8 @@
       "line": 168,
       "scenario": "An UpstreamError (which includes plain connection failures / transport errors, not only timeouts) returns status 504 with body {'error': 'BAD_GATEWAY'}. 504 is 'Gateway Timeout' and 'Bad Gateway' is 502; the status code and the error string contradict each other. Clients and dashboards keying off either signal get an inconsistent contract, and a non-timeout upstream refusal is mislabeled as a timeout (misdirecting on-call).",
       "evidence": "except UpstreamError:\n    return _err(\"BAD_GATEWAY\", 504)",
-      "recommendation": "Use 502 for a generic upstream failure (code 'BAD_GATEWAY') and reserve 504 for an actual upstream timeout, distinguishing the two UpstreamError causes."
+      "recommendation": "Use 502 for a generic upstream failure (code 'BAD_GATEWAY') and reserve 504 for an actual upstream timeout, distinguishing the two UpstreamError causes.",
+      "status": "fixed"
     },
     {
       "id": "api-gateway-013",
@@ -175,7 +178,8 @@
       "line": 25,
       "scenario": "holds() treats any held cap ending in '*' as matching by raw string prefix: `h.endswith('*') and needed.startswith(h[:-1])`. A held cap 'p*' therefore satisfies 'platform.admin', 'payments.write', etc., and 'platform.a*' satisfies 'platform.admin' AND 'platform.anything'. Because this is the single source of truth for both what the catalog shows and what the edge allows, an over-broad or malformed wildcard grant issued in a token silently authorizes far more than intended, with no boundary requiring the wildcard to align to a '.' segment.",
       "evidence": "for h in held:\n    if h.endswith(\"*\") and needed.startswith(h[:-1]):\n        return True",
-      "recommendation": "Require the wildcard to align to a namespace boundary (e.g. only honor `a.b.*` where the prefix ends in '.', and treat bare '*' as the sole full grant), rejecting sub-token prefixes like 'p*'."
+      "recommendation": "Require the wildcard to align to a namespace boundary (e.g. only honor `a.b.*` where the prefix ends in '.', and treat bare '*' as the sole full grant), rejecting sub-token prefixes like 'p*'.",
+      "status": "fixed"
     },
     {
       "id": "api-gateway-015",
@@ -186,7 +190,8 @@
       "line": 234,
       "scenario": "A cache hit is decoded with json.loads + base64.b64decode with no guard. If a stored entry is truncated/corrupted (Redis eviction mid-write, a schema change between versions, a poisoned value), _decode_cached raises and the request 500s instead of falling through to a fresh upstream fetch. A cache is supposed to be best-effort; a bad entry should degrade to a miss, not fail the request.",
       "evidence": "def _decode_cached(raw: str) -> Response:\n    d = json.loads(raw)\n    return Response(content=base64.b64decode(d[\"body\"]), ...)",
-      "recommendation": "Wrap the decode in try/except and treat a decode failure as a cache miss (optionally deleting the bad key), so a corrupt entry never fails the request."
+      "recommendation": "Wrap the decode in try/except and treat a decode failure as a cache miss (optionally deleting the bad key), so a corrupt entry never fails the request.",
+      "status": "fixed"
     },
     {
       "id": "api-gateway-016",
@@ -241,7 +246,8 @@
       "line": 1,
       "scenario": "Tests cover spoof-stripping, SSRF-safe URL build and prefix stripping, but there is no test that a limiter raising an exception yields 429 (the fail-closed branch at gateway.py:124), nor that a verifier raising a non-InvalidToken error is handled (finding 001). Both are load-bearing security/availability branches; the untested 500-on-verifier-error path (001) would have been caught by a test that makes the verifier raise a generic exception on an auth=optional route.",
       "evidence": "\"\"\"Security: identity/internal-token spoof stripping, SSRF-safe URL build.\"\"\"",
-      "recommendation": "Add tests: (a) limiter.check raising → 429; (b) verifier.verify raising a non-InvalidToken exception on auth=optional → request proceeds anonymously (currently 500); (c) auth=required with same → clean 401."
+      "recommendation": "Add tests: (a) limiter.check raising → 429; (b) verifier.verify raising a non-InvalidToken exception on auth=optional → request proceeds anonymously (currently 500); (c) auth=required with same → clean 401.",
+      "status": "fixed"
     },
     {
       "id": "api-gateway-021",

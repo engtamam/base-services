@@ -22,7 +22,10 @@ def holds(held: Iterable[str], needed: str) -> bool:
     if needed in held or "*" in held:
         return True
     for h in held:                       # a held `a.b.*` grants `a.b.anything`
-        if h.endswith("*") and needed.startswith(h[:-1]):
+        # Require a NAMESPACE boundary (api-gateway-014): only `a.b.*` (prefix ending in '.') is a
+        # wildcard grant. A bare `*` is the sole full grant (handled above); a non-dot form like
+        # `plat*` is NOT honoured, so it cannot over-grant `platform.secrets`.
+        if h.endswith(".*") and needed.startswith(h[:-1]):
             return True
     return False
 
