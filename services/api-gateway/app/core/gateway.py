@@ -196,7 +196,7 @@ class Gateway:
         caps = claims.get("caps")
         return {
             "sub": str(claims.get("sub", "")),
-            "tenant": str(claims.get("tenant") or claims.get("org") or ""),
+            "tenant": str(claims.get("tenant") or claims.get("org") or claims.get("tid") or ""),
             "caps": ",".join(caps) if isinstance(caps, (list, tuple)) else "",
         }
 

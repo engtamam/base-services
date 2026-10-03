@@ -62,7 +62,8 @@
       "line": 194,
       "scenario": "The edge derives the tenant it injects as X-Tenant-Id from `claims.get('tenant') or claims.get('org')`, but auth._extract_principal (used by the gateway's own routes and the rate limiter) reads `tenant or org or tid`. A token that carries the tenant only in `tid` is bucketed correctly by the rate limiter but forwarded upstream with a BLANK X-Tenant-Id. Upstreams that trust the gateway's injected tenant header then see no tenant — a tenant-isolation gap (requests attributed to the empty/default tenant) for any issuer using `tid`.",
       "evidence": "\"tenant\": str(claims.get(\"tenant\") or claims.get(\"org\") or \"\"),",
-      "recommendation": "Use one shared claim-extraction helper (include `tid`) for both _identity_from and _extract_principal so the forwarded identity headers and the rate-limit key can never derive tenant differently."
+      "recommendation": "Use one shared claim-extraction helper (include `tid`) for both _identity_from and _extract_principal so the forwarded identity headers and the rate-limit key can never derive tenant differently.",
+      "status": "fixed"
     },
     {
       "id": "api-gateway-005",
@@ -95,7 +96,8 @@
       "line": 28,
       "scenario": "_json_any_map swallows ValueError/TypeError and returns {} for any malformed JSON. It backs INTERNAL_ROUTE_POLICY_JSON, INTERNAL_CALLER_PUBLIC_KEYS_JSON and INTERNAL_CALLER_JWKS_JSON. A typo in INTERNAL_ROUTE_POLICY_JSON yields an EMPTY policy — and InternalRoutePolicy is default-OPEN, so every /internal route silently admits any authenticated caller instead of the intended named allow-list. A typo in the public-keys/JWKS map yields no keys, so (with token fallback on) callers silently fall back to the flat shared token. A misconfiguration that weakens an access control must fail boot, not degrade quietly.",
       "evidence": "try:\n    val = _json.loads(raw)\nexcept (ValueError, TypeError):\n    return {}",
-      "recommendation": "For access-control maps, parse strictly and raise a ConfigError at boot on malformed JSON (fail-fast), rather than returning {} which fails open."
+      "recommendation": "For access-control maps, parse strictly and raise a ConfigError at boot on malformed JSON (fail-fast), rather than returning {} which fails open.",
+      "status": "fixed"
     },
     {
       "id": "api-gateway-008",
@@ -161,7 +163,8 @@
       "line": 26,
       "scenario": "internal.py authenticates the internal tier through resolve_internal_caller (shared|static|jwks) + per-route policy, and is designed so a deployment can flip INTERNAL_CALLER_ALLOW_TOKEN_FALLBACK off to REQUIRE signed assertions. /metrics instead hard-codes a raw hmac.compare_digest against INTERNAL_SERVICE_TOKEN. After a fleet cuts over to assertion-only internal auth, /metrics still accepts the bare flat token — an inconsistent, weaker auth tier for an endpoint that leaks route surface + traffic shape.",
       "evidence": "if not (x_internal_token and hmac.compare_digest(x_internal_token, expected)):\n    raise HTTPException(status.HTTP_401_UNAUTHORIZED, \"UNAUTHORIZED\")",
-      "recommendation": "Guard /metrics with the same require_internal_token (resolve_internal_caller + policy) used by the /internal tier so its auth strength tracks the fleet's configuration."
+      "recommendation": "Guard /metrics with the same require_internal_token (resolve_internal_caller + policy) used by the /internal tier so its auth strength tracks the fleet's configuration.",
+      "status": "fixed"
     },
     {
       "id": "api-gateway-014",

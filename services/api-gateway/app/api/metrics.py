@@ -7,26 +7,18 @@
 # =============================================================================
 from __future__ import annotations
 
-import hmac
-
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response
 
-from app.config import Settings, get_settings
+# Guard /metrics with the SAME internal-caller resolution + route policy as the /internal tier, not a
+# bespoke flat-token compare — so its auth strength tracks the fleet's configuration (assertion identity
+# and per-route policy when enabled), while the flat shared token keeps working (api-gateway-013).
+from app.api.internal import require_internal_token
 
 router = APIRouter(tags=["metrics"])
 
 
-async def _require_internal_token(
-    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token"),
-    settings: Settings = Depends(get_settings),
-) -> None:
-    expected = settings.INTERNAL_SERVICE_TOKEN
-    if not (x_internal_token and hmac.compare_digest(x_internal_token, expected)):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "UNAUTHORIZED")
-
-
-@router.get("/metrics", dependencies=[Depends(_require_internal_token)])
+@router.get("/metrics", dependencies=[Depends(require_internal_token)])
 async def metrics() -> Response:
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
