@@ -264,7 +264,8 @@ def _build_verifiers(settings: Settings, secrets) -> dict:
             except Exception:
                 token = ""
         out[claim] = HttpVerifier(provider, profiles.get(provider, {}), token=token,
-                                  timeout=settings.VERIFY_TIMEOUT_SECONDS)
+                                  timeout=settings.VERIFY_TIMEOUT_SECONDS,
+                                  allowed_hosts=settings.egress_allowed_hosts)
     return out
 
 

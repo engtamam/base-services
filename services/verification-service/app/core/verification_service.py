@@ -215,10 +215,16 @@ class VerificationService:
             # nobody answered must not report 'pending' forever when the sweep CronJob has not yet run
             # and no callback arrived — a caller polling /status would otherwise wait indefinitely.
             verdict = EXPIRED
+        # User-safe reason code (verification-012): map the verdict to a small fixed set rather than
+        # echoing record.evidence["detail"], which is the RAW provider refusal/error text (an internal
+        # message, sometimes leaking provider internals). The raw detail stays in evidence for the
+        # operator/review/audit surface — it is simply not handed to the end user.
+        _SAFE_REASON = {VERIFIED: "verified", REFUSED: "refused", PENDING: "pending",
+                        EXPIRED: "expired", ERROR: "unavailable"}
         return {"claim_type": claim_type, "verdict": verdict, "trusted": trusted,
                 "checked_at": record.evidence.get("checked_at", 0.0),
                 "expires_at": record.expires_at,
-                "reason": record.evidence.get("detail", "")}
+                "reason": _SAFE_REASON.get(verdict, "")}
 
     async def _audit_grant(self, record: Verification, outcome: vp.Outcome) -> None:
         """Write-ahead the critical identity.verified audit (verification-001/004).

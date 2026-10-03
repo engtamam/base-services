@@ -37,6 +37,14 @@ from typing import Any
 from app.ports.verifier import ERROR, PENDING, REFUSED, VERIFIED, Claim, Outcome
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse 3xx. The initial URL is config-validated and allow-listed; a transparent redirect to a
+    new host would carry the provider token (verification-010). Fail closed."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401,A002
+        raise urllib.error.URLError(f"refused a {code} redirect to an unvalidated host")
+
+
 class HttpVerifier:
     """Config-mapped provider client.
 
@@ -54,23 +62,35 @@ class HttpVerifier:
     driver = "http"
 
     def __init__(self, name: str, profile: dict[str, str], token: str = "",
-                 timeout: int = 15) -> None:
+                 timeout: int = 15, allowed_hosts: frozenset[str] = frozenset()) -> None:
         self._name = name
         self._p = profile
         self._token = token
         self._timeout = timeout
+        self._allowed_hosts = allowed_hosts
 
     async def verify(self, claim: Claim) -> Outcome:
         url = self._p.get("url", "")
         if not url:
             return self._error("no url configured for this provider")
 
+        # Bind provider egress to EGRESS_ALLOWED_HOSTS when configured (verification-010): the url is
+        # config, not request-derived, but a mis-set profile (or a typo'd host) could still send the
+        # provider token somewhere unintended. Empty list = unconfigured = unchanged behaviour.
+        import urllib.parse as _urlparse
+        host = (_urlparse.urlsplit(url).hostname or "").lower()
+        if self._allowed_hosts and host not in self._allowed_hosts:
+            return self._error(f"provider host {host!r} is not in EGRESS_ALLOWED_HOSTS")
+
         body = self._render_request(claim)
         req = urllib.request.Request(url, data=body, method="POST",
                                      headers=self._headers())
 
         def _fetch():                                        # blocking urllib OFF the event loop
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # nosec B310 - config-only host
+            # Refuse redirects (verification-010): a 3xx to a new host would otherwise carry the
+            # provider token to an unchecked destination. Only the config-validated URL is contacted.
+            opener = urllib.request.build_opener(_NoRedirect)
+            with opener.open(req, timeout=self._timeout) as resp:  # nosec B310 - config + allowlisted host, redirects refused
                 return resp.status, resp.read()
         try:
             status, raw = await asyncio.to_thread(_fetch)

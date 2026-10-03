@@ -143,7 +143,8 @@
       "line": 72,
       "scenario": "config.py declares EGRESS_ALLOWED_HOSTS / egress_allowed_hosts (CWE-918 SSRF allowlist) and the CWE guard exists, but HttpVerifier._fetch() calls urllib.request.urlopen(url) directly on the profile url with no host allowlist check. The url is config-supplied (lower risk than a request-supplied one), and an operator can now repoint VERIFY_PROVIDERS at runtime; combined with a redirect-following urlopen, a mis- or maliciously-configured profile url can reach internal metadata endpoints. The declared control simply does not cover this egress path.",
       "evidence": "def _fetch():                                        # blocking urllib OFF the event loop\n            with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # nosec B310 - config-only host\n                return resp.status, resp.read()",
-      "recommendation": "Validate the profile url host against settings.egress_allowed_hosts before the call (and disable redirects), so provider egress is bound by the same allowlist the platform declares."
+      "recommendation": "Validate the profile url host against settings.egress_allowed_hosts before the call (and disable redirects), so provider egress is bound by the same allowlist the platform declares.",
+      "status": "fixed"
     },
     {
       "id": "verification-011",
@@ -165,7 +166,8 @@
       "line": 184,
       "scenario": "status() returns reason=record.evidence.get('detail',''). For an HTTP verifier error/refusal, detail is provider-derived text such as 'provider returned HTTP 500', 'provider answered \\'MISMATCH\\'', or 'verifier raised: <exception>' (set in _ask). This is returned verbatim on a user-facing GET /status, potentially leaking provider internals, exception fragments, or backend hints — a milder cousin of the CWE-209 stripping the global error handler applies everywhere else.",
       "evidence": "\"reason\": record.evidence.get(\"detail\", \"\")",
-      "recommendation": "Return a small, mapped set of user-safe reason codes to the user tier; keep the raw provider detail in evidence for the audit/review surfaces only."
+      "recommendation": "Return a small, mapped set of user-safe reason codes to the user tier; keep the raw provider detail in evidence for the audit/review surfaces only.",
+      "status": "fixed"
     },
     {
       "id": "verification-013",
