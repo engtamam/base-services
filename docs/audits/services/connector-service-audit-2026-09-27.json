@@ -76,7 +76,8 @@
       "line": 312,
       "scenario": "CORS has assert_cors_config_ok() refusing '*' in production, and audit/PII have boot guards, but the SSRF-relevant knobs do not. The comment says 'dev/test only — NEVER true in production' yet nothing enforces it. An operator who flips INSTANCE_ALLOW_PRIVATE_IPS=true (e.g. copied from a dev .env) turns off the private-IP block fleet-wide: connector_http.configure() binds it and every outbound token/api/revoke fetch will then happily hit 10.x/127.x/192.168.x internal services. Likewise INSTANCE_REQUIRE_HTTPS=false allows plaintext credential exchange in production.",
       "evidence": "INSTANCE_REQUIRE_HTTPS: bool = True\n    INSTANCE_ALLOW_PRIVATE_IPS: bool = False  # dev/test only — NEVER true in production\n    INSTANCE_ALLOWED_HOSTS: str = \"\"",
-      "recommendation": "Add a boot guard: raise if is_production and (INSTANCE_ALLOW_PRIVATE_IPS or not INSTANCE_REQUIRE_HTTPS), matching the existing assert_cors_config_ok / assert_audit_config_ok pattern."
+      "recommendation": "Add a boot guard: raise if is_production and (INSTANCE_ALLOW_PRIVATE_IPS or not INSTANCE_REQUIRE_HTTPS), matching the existing assert_cors_config_ok / assert_audit_config_ok pattern.",
+      "status": "fixed"
     },
     {
       "id": "connector-006",
@@ -131,7 +132,8 @@
       "line": 167,
       "scenario": "The audit record for connector.connected is emitted at the very top of connect(), before instance_url SSRF validation, before the spec-ownership IDOR check, and before the OAuth code exchange. Every failed attempt — a rejected internal instance_url, another tenant's spec_id, a bad OAuth code — produces a 'connected' audit row for a connection that never actually connected. The resource is the literal string 'connection' (the id is not yet minted), so the row cannot even be tied to a specific connection. This pollutes the tamper-evident chain investigators rely on with connections that do not exist.",
       "evidence": "await request.app.state.auditor.record(\n        \"connector.connected\", actor=principal.subject, tenant=principal.tenant, resource=\"connection\",\n        ip=request.client.host if request.client else \"\")\n    s = get_settings()",
-      "recommendation": "Mint the connection id and run the SSRF + spec-ownership checks first, then record write-ahead with resource=connection:<id> right before the state mutation (store_tokens), matching the disconnect route which already includes the id."
+      "recommendation": "Mint the connection id and run the SSRF + spec-ownership checks first, then record write-ahead with resource=connection:<id> right before the state mutation (store_tokens), matching the disconnect route which already includes the id.",
+      "status": "fixed"
     },
     {
       "id": "connector-011",
@@ -164,7 +166,8 @@
       "line": 323,
       "scenario": "When CREDENTIAL_SEAL_KEY is empty, seal_key returns INTERNAL_SERVICE_TOKEN. All connection access/refresh tokens and spec client secrets are then sealed under the internal token. INTERNAL_SERVICE_TOKEN is a rotate-able shared secret (gen-secrets mints it). If an operator rotates the internal token in production without having set CREDENTIAL_SEAL_KEY, the seal key changes underneath every stored blob: unseal returns None for all of them, every connection goes NEEDS_REAUTH and every spec loses its client secret — a fleet-wide credential outage triggered by a routine token rotation, with no warning at config time.",
       "evidence": "@property\n    def seal_key(self) -> str:\n        \"\"\"Fall back to the internal token so a dev boot never stores creds in the clear.\"\"\"\n        return self.CREDENTIAL_SEAL_KEY or self.INTERNAL_SERVICE_TOKEN",
-      "recommendation": "Require an explicit CREDENTIAL_SEAL_KEY in production (boot guard) so the seal key is never coupled to a rotate-able transport secret; keep the fallback for dev only."
+      "recommendation": "Require an explicit CREDENTIAL_SEAL_KEY in production (boot guard) so the seal key is never coupled to a rotate-able transport secret; keep the fallback for dev only.",
+      "status": "fixed"
     },
     {
       "id": "connector-014",
@@ -175,7 +178,8 @@
       "line": 189,
       "scenario": "connect() calls ConnectionStore.save(conn) and only afterwards runs c.provider.exchange(...). Connection defaults to status=ACTIVE (models.py). If exchange raises (bad code, provider down) the route returns 400 but the connection row already persisted with status ACTIVE and empty access_sealed. It shows up in list_connections as connected=false, and any sync against it calls credentials() -> unseal('') -> CredentialInvalid, tripping failure counters/circuit on a connection that was never really established. These orphans accumulate with no cleanup path.",
       "evidence": "conn = Connection(id=new_id(\"cn_\"), tenant=caller_tenant, provider=body.provider,\n                      spec_id=body.spec_id, instance_url=body.instance_url, created=c.clock.now())\n    await ConnectionStore(c.datastore).save(conn)\n    spec = await _spec_for(request, conn)\n    try:\n        tokens = c.provider.exchange(code=body.code, redirect_uri=body.redirect_uri, spec=spec)",
-      "recommendation": "Perform the exchange first (or create the connection in a 'connecting' status and only promote to ACTIVE after store_tokens succeeds; delete/roll back the row if exchange fails)."
+      "recommendation": "Perform the exchange first (or create the connection in a 'connecting' status and only promote to ACTIVE after store_tokens succeeds; delete/roll back the row if exchange fails).",
+      "status": "fixed"
     },
     {
       "id": "connector-015",

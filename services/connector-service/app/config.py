@@ -345,6 +345,30 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         return self.ENV == "production"
 
+    def assert_instance_ssrf_ok(self) -> None:
+        """Boot guard (connector-005). The SSRF relaxations exist for dev/test only; in production they
+        turn the instance-URL guard off — a self-hosted instance URL could then reach a private/internal
+        host or go over cleartext. Refuse to boot with them relaxed in production."""
+        if self.is_production and self.INSTANCE_ALLOW_PRIVATE_IPS:
+            raise ValueError(
+                "INSTANCE_ALLOW_PRIVATE_IPS=true in production disables SSRF protection on tenant-"
+                "supplied instance URLs (an internal host could be reached). It is a dev/test-only knob.")
+        if self.is_production and not self.INSTANCE_REQUIRE_HTTPS:
+            raise ValueError(
+                "INSTANCE_REQUIRE_HTTPS=false in production allows cleartext instance URLs — "
+                "credentials and data would travel unencrypted. Require https in production.")
+
+    def assert_seal_key_ok(self) -> None:
+        """Boot guard (connector-013). seal_key falls back to INTERNAL_SERVICE_TOKEN for dev convenience,
+        but that couples credential-at-rest encryption to a ROTATABLE transport secret: rotate the
+        internal token and every sealed credential becomes undecryptable. Require an explicit, stable
+        CREDENTIAL_SEAL_KEY in production."""
+        if self.is_production and not self.CREDENTIAL_SEAL_KEY:
+            raise ValueError(
+                "CREDENTIAL_SEAL_KEY is empty in production: credential-at-rest encryption would fall "
+                "back to INTERNAL_SERVICE_TOKEN, so rotating the internal token would make every sealed "
+                "credential undecryptable. Set a dedicated, stable CREDENTIAL_SEAL_KEY.")
+
     @property
     def audit_ingest_url(self) -> str:
         """Where audit events go. Empty when unconfigured — never a guessed default, because a

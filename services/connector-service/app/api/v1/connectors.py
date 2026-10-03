@@ -161,14 +161,10 @@ async def list_specs(request: Request, principal: Principal = Depends(_READ)) ->
 # ── connections ────────────────────────────────────────────────────────────────
 @router.post("/connect", status_code=201)
 async def connect(request: Request, body: ConnectIn, principal: Principal = Depends(_ADMIN)) -> dict:
-    # Write-ahead: a critical action the log cannot take must not happen at all, so this
-    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
-    # already succeeded, and leave it unrecorded.
-    await request.app.state.auditor.record(
-        "connector.connected", actor=principal.subject, tenant=principal.tenant, resource="connection",
-        ip=request.client.host if request.client else "")
     s = get_settings()
     c = request.app.state.container
+    # Validate BEFORE anything is recorded or mutated (connector-010): an SSRF/spec refusal is not a
+    # connect that happened, so it must not be audited as one.
     if body.instance_url:
         try:
             _ssrf.validate(body.instance_url, require_https=s.INSTANCE_REQUIRE_HTTPS,
@@ -184,16 +180,28 @@ async def connect(request: Request, body: ConnectIn, principal: Principal = Depe
         spec_row = await SpecStore(c.datastore).get(body.spec_id)
         if spec_row is None or spec_row.tenant != caller_tenant:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "SPEC_NOT_FOUND")
+
     conn = Connection(id=new_id("cn_"), tenant=caller_tenant, provider=body.provider,
                       spec_id=body.spec_id, instance_url=body.instance_url, created=c.clock.now())
-    await ConnectionStore(c.datastore).save(conn)
+    # Write-ahead NOW, with the real connection id, right before the mutation (connector-010).
+    await request.app.state.auditor.record(
+        "connector.connected", actor=principal.subject, tenant=caller_tenant,
+        resource=f"connection:{conn.id}", ip=request.client.host if request.client else "")
+
     spec = await _spec_for(request, conn)
+    # Exchange BEFORE persisting the ACTIVE row (connector-014): a failed OAuth exchange must not leave
+    # a connection that looks live but can never authenticate. On a later store failure, roll the row back.
     try:
         tokens = c.provider.exchange(code=body.code, redirect_uri=body.redirect_uri, spec=spec)
     except (CredentialInvalid, ProviderUnavailable) as e:
         raise HTTPException(400, f"CONNECT_FAILED: {type(e).__name__}")
+    await ConnectionStore(c.datastore).save(conn)
     tm = build_tokens(request)
-    await tm.store_tokens(conn, tokens, invalidate=True)
+    try:
+        await tm.store_tokens(conn, tokens, invalidate=True)
+    except Exception:
+        await ConnectionStore(c.datastore).delete(conn.id)   # all-or-nothing: no keyless ACTIVE row
+        raise
     return conn.public()          # credentials are never returned
 
 
