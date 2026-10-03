@@ -247,6 +247,15 @@ class DsarStore:
                                          sort=("created_at", "desc"))
         return rows
 
+    async def for_subject(self, tenant: str, subject: str, limit: int = 100,
+                          after: str | None = None) -> tuple[list[dict], str | None]:
+        """compliance-008: one subject's DSARs, pushed down as {tenant, subject} to the store — NOT a
+        tenant-wide list() filtered in Python, which silently drops a subject's older requests past the
+        page cap. Paginated so a long history is complete across pages."""
+        rows, cursor = await self._store.find(_DSAR, {"tenant": tenant, "subject": subject},
+                                              limit=limit, after=after, sort=("created_at", "desc"))
+        return rows, cursor
+
 
 class HoldStore:
     def __init__(self, store: DataStore) -> None:

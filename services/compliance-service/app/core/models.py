@@ -207,6 +207,15 @@ class Dsar:
         d.pop("verification_token", None)      # never expose the token in listings
         return d
 
+    def triage(self, now: float, *, subject_ref: str) -> dict[str, Any]:
+        """compliance-014: the MINIMAL cross-tenant triage projection — never the raw subject, the
+        payload (correction data / export bundle), or the verification material. A platform officer
+        sees that a request exists and is overdue; the person and their data stay pseudonymised until
+        a per-tenant, per-DSAR drill-down."""
+        return {"id": self.id, "tenant": self.tenant, "type": self.type, "status": self.status,
+                "subject_ref": subject_ref, "deadline_at": self.deadline_at,
+                "created_at": self.created_at, "overdue": self.overdue(now)}
+
     @classmethod
     def from_dict(cls, d: dict) -> "Dsar":
         return cls(**{k: d.get(k, getattr(cls, k, None)) for k in cls.__dataclass_fields__})

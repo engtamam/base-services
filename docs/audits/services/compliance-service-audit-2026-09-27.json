@@ -99,7 +99,8 @@
       "line": 150,
       "scenario": "_announce and the derived-lapse write-back store the row under the normalised canonical key (_key) but never DELETE the legacy raw-purpose key it was read from. A consent granted under a pre-normalisation key (purpose with uppercase/whitespace) therefore gets a NEW canonical duplicate carrying the announced flag, while the original legacy row survives unflagged. scan_all returns the legacy row again next run → the guardian is re-emailed 'consent lapsing' every night (the exact outcome the docstring calls 'worse than late'), and the tenant now has two consent rows for one consent.",
       "evidence": "await self._store.put(\"consent\", self._key(row), row)\n        if self._bus is None:\n            return",
-      "recommendation": "Mirror ConsentStore.put: after writing under the canonical key, delete the legacy key when it differs; or run migrate_purpose_keys before enabling the sweeper. Assert no duplicate (tenant,subject,purpose) rows remain."
+      "recommendation": "Mirror ConsentStore.put: after writing under the canonical key, delete the legacy key when it differs; or run migrate_purpose_keys before enabling the sweeper. Assert no duplicate (tenant,subject,purpose) rows remain.",
+      "status": "fixed"
     },
     {
       "id": "compliance-008",
@@ -110,7 +111,8 @@
       "line": 93,
       "scenario": "internal_dsar calls build_dsar().list(tenant) — which reads at most COMPLIANCE_LIST_LIMIT (100) newest DSARs — then filters r['subject']==subject in Python. A subject whose DSARs are not among the tenant's 100 most-recent requests returns {\"dsars\": [], \"count\": 0}: the case-timeline tool reports the subject has filed nothing, when they may have several older requests. The subject filter is not pushed down and the fetch is unbounded-by-intent but capped-in-fact.",
       "evidence": "rows = await build_dsar(request).list(tenant)\n    subject_rows = [r for r in rows if r.get(\"subject\") == subject]\n    return {\"dsars\": subject_rows, \"count\": len(subject_rows)}",
-      "recommendation": "Add a DsarStore.for_subject(tenant, subject) that pushes {tenant, subject} into find() (paginated), and have this route use it instead of filtering a truncated tenant-wide list."
+      "recommendation": "Add a DsarStore.for_subject(tenant, subject) that pushes {tenant, subject} into find() (paginated), and have this route use it instead of filtering a truncated tenant-wide list.",
+      "status": "fixed"
     },
     {
       "id": "compliance-009",
@@ -155,7 +157,8 @@
       "line": 82,
       "scenario": "_is_held(row) calls holds.active_for(tenant, row['subject']). After erasure, a retained consent_proof row's subject is a pseudonym (sub_...), while legal holds are stored under the RAW subject. active_for(tenant, 'sub_...') matches nothing, so a consent proof that is under an active legal hold is treated as unheld and purged by retention once past its configured period — deleting evidence the hold was placed to preserve. A hold does NOT beat retention for pseudonymised rows, contradicting the module's stated invariant.",
       "evidence": "tenant, subject = row.get(\"tenant\"), row.get(\"subject\")\n        if not tenant or not subject:\n            return False\n        return bool(await self._holds.active_for(tenant, subject))",
-      "recommendation": "Intersect a pseudonymised row's subject_ref against held_refs (subject_ref of held subjects) as well as the raw active_for check, so a hold on the underlying person protects the pseudonymised evidence."
+      "recommendation": "Intersect a pseudonymised row's subject_ref against held_refs (subject_ref of held subjects) as well as the raw active_for check, so a hold on the underlying person protects the pseudonymised evidence.",
+      "status": "fixed"
     },
     {
       "id": "compliance-013",
@@ -178,7 +181,8 @@
       "line": 224,
       "scenario": "list_all_open returns d.public() for every tenant's open DSARs; public() drops only verification_token, so it still exposes the RAW subject id and the full request payload (which may hold correction/export PII) across all tenants. A single platform.compliance token thus yields a bulk cross-tenant harvest of raw subject identifiers. The read is audited and capability-gated, but it hands back raw PII where pseudonyms or a minimal projection would suffice for a triage list.",
       "evidence": "dsars, cursor = await self._dsars.open_dsars(limit=limit, after=after)\n        out = []\n        for d in dsars:\n            item = d.public()\n            item[\"overdue\"] = d.overdue(now)",
-      "recommendation": "For the cross-tenant triage view, project a minimal shape (id, tenant, type, status, deadline, overdue) and pseudonymise the subject; omit payload. Fetch full detail only on a per-DSAR, per-tenant drill-down."
+      "recommendation": "For the cross-tenant triage view, project a minimal shape (id, tenant, type, status, deadline, overdue) and pseudonymise the subject; omit payload. Fetch full detail only on a per-DSAR, per-tenant drill-down.",
+      "status": "fixed"
     },
     {
       "id": "compliance-015",
@@ -189,7 +193,8 @@
       "line": 156,
       "scenario": "check() caches the full result (including allowed:true and notice_version) for CONSENT_CACHE_TTL_SECONDS. The generation counter is bumped only on grant/withdraw, never by the passage of time. A delegated (guardian) consent that lapses at the subject's majority instant (a time event) continues to be served as allowed:true from cache until the TTL expires — a window (default 30s, but configurable higher) of processing personal data on consent that is no longer lawful.",
       "evidence": "result[\"purpose\"] = purpose\n        await self._cache_set(key, result)\n        return {**result, \"cached\": False}",
-      "recommendation": "Do not cache a granted result for a delegated consent whose majority_at is within the TTL window (or cache with an expiry clamped to majority_at), so a lapse takes effect at the instant it occurs rather than up to a TTL later."
+      "recommendation": "Do not cache a granted result for a delegated consent whose majority_at is within the TTL window (or cache with an expiry clamped to majority_at), so a lapse takes effect at the instant it occurs rather than up to a TTL later.",
+      "status": "fixed"
     },
     {
       "id": "compliance-016",
@@ -200,7 +205,8 @@
       "line": 379,
       "scenario": "verify_dsar and process_dsar accept a `tenant` query so a platform.compliance officer can act on a hold/DSAR they discovered cross-tenant. release_hold does not: it scopes with _tenant(principal) (no body/query), so a platform officer with tenant=None resolves to 'global' and cannot release a hold discovered in any real shop — the very holds surfaced by the cross-tenant list_open_holds view are unreleasable. Separately, the write-ahead audit uses tenant=principal.tenant while the release uses _tenant(principal), so the recorded tenant can differ from the tenant actually acted on.",
       "evidence": "await request.app.state.auditor.record(\n        \"legal_hold.released\", actor=principal.subject, tenant=principal.tenant, resource=f\"hold:{hold_id}\", ...)\n    h = await build_compliance(request).release_hold(hold_id, tenant=_tenant(principal))",
-      "recommendation": "Add a `tenant` query param honoured for platform.compliance (as verify/process do), and record the audit tenant using the same _tenant(principal, tenant) value used for the release."
+      "recommendation": "Add a `tenant` query param honoured for platform.compliance (as verify/process do), and record the audit tenant using the same _tenant(principal, tenant) value used for the release.",
+      "status": "fixed"
     },
     {
       "id": "compliance-017",

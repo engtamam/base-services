@@ -50,6 +50,7 @@ def _cfg() -> dict[str, Any]:
             # two halves of one fact and nothing used to compare them, so a target could be
             # registered for a service that was never deployed.
             "known_targets": tuple(s.privacy_targets),
+            "pii_salt": s.PII_SALT,          # compliance-014: pseudonymise the cross-tenant triage view
             "hold_cache_ttl": s.HOLD_CACHE_TTL_SECONDS}
 
 
@@ -116,7 +117,7 @@ def build_retention(request: Request) -> RetentionEnforcer:
     return RetentionEnforcer(store=c.datastore, holds=HoldStore(c.datastore),
                              rules=s.retention_rules, clock=c.clock,
                              max_per_run=s.RETENTION_MAX_PER_RUN,
-                             telemetry=c.telemetry)
+                             telemetry=c.telemetry, pii_salt=s.PII_SALT)
 
 
 def build_compliance(request: Request) -> ComplianceService:
@@ -384,15 +385,20 @@ async def place_hold(request: Request, body: HoldIn, principal: Principal = Depe
 
 @router.post("/legal-holds/{hold_id}/release")
 async def release_hold(request: Request, hold_id: str,
-                       principal: Principal = Depends(_ADMIN)) -> dict:
+                       principal: Principal = Depends(_ADMIN),
+                       tenant: str | None = Query(default=None, max_length=128)) -> dict:
+    # compliance-016: honour the cross-tenant `tenant` param for platform.compliance (as verify/process
+    # do), and record the audit against the SAME scope the release targets — not principal.tenant, which
+    # would attribute a platform op's release of a shop's hold to the platform tenant.
+    scoped = _tenant(principal, tenant)
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
-        "legal_hold.released", actor=principal.subject, tenant=principal.tenant,
+        "legal_hold.released", actor=principal.subject, tenant=scoped,
         resource=f"hold:{hold_id}",
         ip=request.client.host if request.client else "")
-    h = await build_compliance(request).release_hold(hold_id, tenant=_tenant(principal))
+    h = await build_compliance(request).release_hold(hold_id, tenant=scoped)
     if h is None:
         raise HTTPException(404, "NOT_FOUND")
     return h.to_dict()

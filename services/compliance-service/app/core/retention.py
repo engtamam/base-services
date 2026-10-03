@@ -27,20 +27,25 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.core.pii import is_subject_ref, subject_ref
+
 DAY_SECONDS = 86400
 
 
 class RetentionEnforcer:
     def __init__(self, *, store, holds, rules: dict[str, int], clock,
-                 max_per_run: int = 5000, telemetry=None) -> None:
+                 max_per_run: int = 5000, telemetry=None, pii_salt: str = "") -> None:
         self._store = store
         self._holds = holds
         self._rules = rules              # collection -> days (0/absent = keep, never purge)
         self._clock = clock
         self._max = max_per_run
         self._telemetry = telemetry
+        self._salt = pii_salt
+        self._held_refs: dict[str, set[str]] = {}   # per-run cache: tenant -> {subject_ref of held}
 
     async def run(self) -> dict[str, Any]:
+        self._held_refs = {}
         now = self._clock.now()
         purged: dict[str, int] = {}
         held: dict[str, int] = {}
@@ -81,11 +86,28 @@ class RetentionEnforcer:
 
     async def _is_held(self, row: dict) -> bool:
         """A hold beats retention. Rows with no subject (a RoPA entry, a config row) cannot be
-        held by a subject hold, so they age out normally."""
+        held by a subject hold, so they age out normally.
+
+        compliance-012: an ERASURE-survivor proof row carries the subject's PSEUDONYM (subject_ref),
+        not the raw subject a hold is keyed by — active_for(tenant, '<sub_…>') would match zero holds
+        and the evidence would age out despite a hold on the underlying person. For a pseudonymised
+        row, intersect its subject_ref against the subject_refs of the tenant's active holds instead."""
         tenant, subject = row.get("tenant"), row.get("subject")
         if not tenant or not subject:
             return False
+        if is_subject_ref(subject):
+            return subject in await self._held_refs_for(tenant)
         return bool(await self._holds.active_for(tenant, subject))
+
+    async def _held_refs_for(self, tenant: str) -> set[str]:
+        if tenant in self._held_refs:
+            return self._held_refs[tenant]
+        refs: set[str] = set()
+        if self._salt:
+            holds, _ = await self._holds.active_in_tenant(tenant, self._max)
+            refs = {subject_ref(self._salt, tenant, h.subject) for h in holds if h.subject}
+        self._held_refs[tenant] = refs
+        return refs
 
     def _emit(self, event: str, payload: dict) -> None:
         if self._telemetry is None:

@@ -25,6 +25,7 @@ from typing import Any
 
 from app.core.models import (ACCESS, COMPLETED, CORRECTION, ERASURE, EXPORT, IN_PROGRESS,
                              PENDING, REFUSED, SCHEDULED, VERIFIED, Dsar, new_id)
+from app.core.pii import subject_ref
 from app.core.stores import DsarStore, HoldStore, TargetStore
 
 
@@ -215,6 +216,20 @@ class DsarService:
             out.append(item)
         return out
 
+    async def list_for_subject(self, tenant: str, subject: str, limit: int = 100,
+                               after: str | None = None) -> tuple[list[dict], str | None]:
+        """compliance-008: one subject's DSARs via a pushed-down {tenant, subject} find, paginated —
+        never a truncated tenant-wide list filtered in Python."""
+        now = self._clock.now()
+        rows, cursor = await self._dsars.for_subject(tenant, subject, limit=limit, after=after)
+        out = []
+        for row in rows:
+            d = Dsar.from_dict(row)
+            item = d.public()
+            item["overdue"] = d.overdue(now)
+            out.append(item)
+        return out, cursor
+
     async def list_all_open(self, limit: int = 100,
                             after: str | None = None) -> tuple[list[dict], str | None]:
         """Every tenant's still-OPEN DSAR, oldest-first — the platform compliance-officer view (a
@@ -223,11 +238,8 @@ class DsarService:
         raw scan), paginated. Platform-scoped: gated to platform.compliance at the route + audited."""
         now = self._clock.now()
         dsars, cursor = await self._dsars.open_dsars(limit=limit, after=after)
-        out = []
-        for d in dsars:
-            item = d.public()
-            item["overdue"] = d.overdue(now)
-            out.append(item)
+        salt = self._cfg.get("pii_salt", "")
+        out = [d.triage(now, subject_ref=subject_ref(salt, d.tenant, d.subject)) for d in dsars]
         return out, cursor
 
     async def _emit(self, event: str, payload: dict) -> None:

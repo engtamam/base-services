@@ -86,13 +86,14 @@ async def internal_consent_history(
 async def internal_dsar(
         request: Request,
         tenant: str = Query(..., min_length=1, max_length=128),
-        subject: str = Query(..., min_length=1, max_length=256)) -> dict:
+        subject: str = Query(..., min_length=1, max_length=256),
+        limit: int = Query(default=100, ge=1, le=500),
+        after: str | None = Query(default=None, max_length=256)) -> dict:
     """Internal-token twin of GET /api/v1/compliance/dsar, FILTERED to one subject — the DSARs a
-    customer has opened, for the case-timeline tool. Reads the same DsarStore the user route lists;
-    tenant is REQUIRED and scopes the read; the subject filter keeps it to the one person investigated."""
-    rows = await build_dsar(request).list(tenant)
-    subject_rows = [r for r in rows if r.get("subject") == subject]
-    return {"dsars": subject_rows, "count": len(subject_rows)}
+    customer has opened, for the case-timeline tool. compliance-008: pushes {tenant, subject} into the
+    store and paginates, so a subject's older requests are never lost behind a tenant-wide page cap."""
+    rows, cursor = await build_dsar(request).list_for_subject(tenant, subject, limit=limit, after=after)
+    return {"dsars": rows, "count": len(rows), "cursor": cursor}
 
 
 @router.get("/compliance/legal/outstanding", dependencies=[Depends(require_internal_token)])

@@ -75,7 +75,7 @@ class ConsentSweeper:
                 if not expires_at:
                     continue                      # genuinely no lapse: self-consent, or age unknown
                 row["expires_at"] = expires_at
-                await self._store.put("consent", self._key(row), row)
+                await self._write_back(row)
             if row.get("basis", "self") not in _DELEGATED:
                 # An expiry set by the granting party is that party's business — this sweeper is
                 # only about the one date the SUBJECT did not choose and cannot see coming.
@@ -133,6 +133,19 @@ class ConsentSweeper:
         return ConsentStore._key(row.get("tenant", ""), row.get("subject", ""),
                                  row.get("purpose", ""))
 
+    async def _write_back(self, row: dict) -> None:
+        """compliance-007: mirror ConsentStore.put — write under the CANONICAL key AND delete the legacy
+        (raw-purpose) twin when it differs. Writing the canonical row alone left the original legacy-keyed
+        row in place as an unflagged duplicate, so the next run re-announced the same lapse every night."""
+        from app.core.stores import ConsentStore
+        tenant, subject, purpose = row.get("tenant", ""), row.get("subject", ""), row.get("purpose", "")
+        key = ConsentStore._key(tenant, subject, purpose)
+        legacy = ConsentStore._legacy_key(tenant, subject, purpose)
+        row["id"] = key
+        await self._store.put("consent", key, row)
+        if legacy != key:
+            await self._store.delete("consent", legacy)
+
     async def _announce(self, event: str, payload: dict, row: dict) -> None:
         """Mark first, publish second.
 
@@ -143,11 +156,10 @@ class ConsentSweeper:
         """
         flag = "lapsed_announced" if event == "consent.lapsed" else "lapsing_announced"
         row[flag] = True
-        # Write back under the CANONICAL (normalised) key, like _derive_lapse does. The raw-purpose key
-        # misses for any purpose with uppercase/whitespace, so the flag landed on a NEW legacy-key
-        # duplicate while the canonical row stayed unflagged — and the next run re-announced the lapse,
-        # re-emailing the guardian every night (the very outcome the docstring calls worse than late).
-        await self._store.put("consent", self._key(row), row)
+        # Write back under the CANONICAL key and retire the legacy twin (compliance-007) — otherwise the
+        # flag lands on a NEW legacy-key duplicate while the canonical row stays unflagged, and the next
+        # run re-announces the lapse, re-emailing the guardian every night.
+        await self._write_back(row)
         if self._bus is None:
             return
         try:

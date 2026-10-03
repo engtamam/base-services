@@ -68,11 +68,15 @@ class ConsentService:
         except Exception:
             return None
 
-    async def _cache_set(self, key: str, value) -> None:
+    async def _cache_set(self, key: str, value, ttl: int | None = None) -> None:
+        if ttl is None:
+            ttl = self._ttl
+        if ttl <= 0:          # compliance-015: a result that would expire immediately is not cached at all
+            return
         if self._cache is None:
             return
         try:
-            await self._cache.set(key, json.dumps(value), self._ttl)
+            await self._cache.set(key, json.dumps(value), ttl)
         except Exception:
             pass
 
@@ -135,6 +139,7 @@ class ConsentService:
             return {**cached, "cached": True}
 
         now = self._clock.now()
+        ttl = self._ttl
         c = await self._store.get(tenant, subject, purpose)
         if c is None:
             result = {"allowed": False, "reason": "no_consent_record"}      # DEFAULT DENY
@@ -150,10 +155,15 @@ class ConsentService:
             if status == "granted":
                 result = {"allowed": True, "reason": "granted",
                           "notice_version": c.notice_version}
+                # compliance-015: a delegated consent LAPSES at majority_at. If that instant falls inside
+                # the TTL, caching "granted" for the full TTL would keep answering allowed past the lapse.
+                # Clamp the cache lifetime to the lapse (0 ⇒ not cached), so it takes effect on the second.
+                if majority is not None and now < majority < now + ttl:
+                    ttl = int(majority - now)
             else:
                 result = {"allowed": False, "reason": status}
         result["purpose"] = purpose
-        await self._cache_set(key, result)
+        await self._cache_set(key, result, ttl)
         return {**result, "cached": False}
 
     def _majority_for(self, c) -> float | None:
