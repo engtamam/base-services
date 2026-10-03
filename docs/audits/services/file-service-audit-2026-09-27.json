@@ -98,7 +98,8 @@
       "line": 243,
       "scenario": "The download handler audits only when _crosses_tenant is true; a normal owner GET /{file_id} and every public GET /files/signed/{token} record nothing. For a file service this means 'who downloaded this document and when' is unanswerable for the common case. A leaked or over-shared signed URL that is used by an attacker leaves no access record at all (the public route emits no audit event whatsoever). The code comments call routine reads 'too noisy', which is a defensible product choice, but the absence of any sampled or aggregate access log is a real gap for an evidence/compliance posture aiming at ISO 27001.",
       "evidence": "signed_download (public_router) returns bytes/redirect with no auditor.record call anywhere in the function body (files.py:335-351)",
-      "recommendation": "Emit at least a low-cardinality access event for signed-URL redemptions (the token IS a bearer credential leaving the platform), even if owner self-reads stay unlogged. Consider a config knob FILE_AUDIT_DOWNLOADS."
+      "recommendation": "Emit at least a low-cardinality access event for signed-URL redemptions (the token IS a bearer credential leaving the platform), even if owner self-reads stay unlogged. Consider a config knob FILE_AUDIT_DOWNLOADS.",
+      "status": "fixed"
     },
     {
       "id": "file-008",
@@ -175,7 +176,8 @@
       "line": 277,
       "scenario": "signed_url (POST /{id}/signed-url) records `tenant=principal.tenant` and delete records `tenant=principal.tenant`, whereas upload/complete/abort all use `principal.tenant or \"\"`. A token with no tenant claim yields tenant=None in these two critical audit events (issuing a bearer download link, deleting a file). Depending on the audit sink's serialization this either stores a null tenant (breaking per-tenant audit queries) or, on a strict subject_ref/pseudonym path, risks an inconsistent record for exactly the two highest-value actions.",
       "evidence": "\"file.signed_url_issued\", actor=principal.subject, tenant=principal.tenant, resource=f\"file:{file_id}\"  (no `or \"\"`)",
-      "recommendation": "Use `principal.tenant or \"\"` in the signed_url and delete audit calls to match every other handler and keep the tenant field a stable string."
+      "recommendation": "Use `principal.tenant or \"\"` in the signed_url and delete audit calls to match every other handler and keep the tenant field a stable string.",
+      "status": "fixed"
     },
     {
       "id": "file-015",
@@ -299,7 +301,8 @@
       "line": 82,
       "scenario": "_load_scoped returns any file to a 'platform.files' holder unconditionally. Files can legitimately be stored with tenant='' (a token with no tenant claim uploads; upload passes `principal.tenant or ''`). For a normal caller these are correctly hidden (the `not principal.tenant or f.tenant != principal.tenant` fail-closed branch). But a platform.files operator reads them, and _crosses_tenant compares f.tenant ('') to principal.tenant or '' — so an operator whose own tenant is also '' does NOT trip the cross-tenant audit, and the access to an ownerless file goes unlogged. Untenanted files are thus a small blind spot in the cross-tenant audit control.",
       "evidence": "return \"platform.files\" in principal.caps and f.tenant != (principal.tenant or \"\")  # both '' => not audited",
-      "recommendation": "Treat an untenanted file accessed by an operator as always-auditable (record when f.tenant == '' regardless of operator tenant), and add a boot/ingest invariant that files are never persisted with an empty tenant in production."
+      "recommendation": "Treat an untenanted file accessed by an operator as always-auditable (record when f.tenant == '' regardless of operator tenant), and add a boot/ingest invariant that files are never persisted with an empty tenant in production.",
+      "status": "fixed"
     }
   ]
 }

@@ -64,6 +64,14 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "show who removed a customer's data",
     },
     {
+        "action": "file.signed_downloaded",
+        "source": "user",
+        "critical": False,
+        "why": "a signed-URL redemption is a BEARER credential leaving the platform being spent; a "
+               "low-cardinality access event (one per redemption) is the only trail that a shared link "
+               "was actually used, and a leaked link's abuse would otherwise be invisible",
+    },
+    {
         "action": "file.cross_tenant_downloaded",
         "source": "user",
         "critical": True,

@@ -88,8 +88,13 @@ async def _load_scoped(svc: FileService, file_id: str, principal: Principal) -> 
 
 def _crosses_tenant(f: FileObject, principal: Principal) -> bool:
     """True when a platform.files holder reads a file OUTSIDE its own tenant — a privileged access
-    that must be audited (file-r2-02). A normal owner read is not audited (too noisy)."""
-    return "platform.files" in principal.caps and f.tenant != (principal.tenant or "")
+    that must be audited (file-r2-02). A normal owner read is not audited (too noisy). An UNTENANTED
+    file (tenant=='') is always treated as cross-tenant for an operator (file-025): otherwise, when the
+    operator's own tenant is also '', the equality check misses it and a platform-wide-readable file is
+    accessed with no trail."""
+    if "platform.files" not in principal.caps:
+        return False
+    return f.tenant == "" or f.tenant != (principal.tenant or "")
 
 
 @router.post("", status_code=201, dependencies=[Depends(_UPLOAD), Depends(rate_limit)])
@@ -274,8 +279,8 @@ async def signed_url(request: Request, file_id: str, principal: Principal = Depe
             resource=f"file:{f.id}", ip=request.client.host if request.client else "",
             metadata={"cross_tenant": "true", "operator_tenant": principal.tenant or ""})
     await request.app.state.auditor.record(
-        "file.signed_url_issued", actor=principal.subject, tenant=principal.tenant, resource=f"file:{file_id}",
-        ip=request.client.host if request.client else "")
+        "file.signed_url_issued", actor=principal.subject, tenant=principal.tenant or "",
+        resource=f"file:{file_id}", ip=request.client.host if request.client else "")
     token = svc.signed_token(file_id)
     return {"url": f"/files/signed/{token}", "expires_in": get_settings().SIGNED_URL_TTL_SECONDS}
 
@@ -290,8 +295,8 @@ async def delete(request: Request, file_id: str, principal: Principal = Depends(
     # Write-ahead: a critical action the log cannot take must not happen at all, so this runs BEFORE
     # the mutation. Recording afterwards would 503 a caller whose action had already succeeded.
     await request.app.state.auditor.record(
-        "file.deleted", actor=principal.subject, tenant=principal.tenant, resource=f"file:{file_id}",
-        ip=request.client.host if request.client else "")
+        "file.deleted", actor=principal.subject, tenant=principal.tenant or "",
+        resource=f"file:{file_id}", ip=request.client.host if request.client else "")
     return await svc.delete(file_id)
 
 
@@ -338,6 +343,11 @@ async def signed_download(request: Request, token: str):
     f = await svc.resolve_signed_file(token)
     if f is None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "FORBIDDEN")
+    # A signed-URL redemption spends a BEARER credential that left the platform (file-007): record a
+    # low-cardinality access event (one per redemption) so a leaked link's use is not invisible.
+    await request.app.state.auditor.record(
+        "file.signed_downloaded", actor="", tenant=f.tenant or "", resource=f"file:{f.id}",
+        ip=request.client.host if request.client else "")
     # On a presign-capable store, hand the client a short-lived bucket URL rather than proxying the
     # bytes — a large shared file is served by the bucket, not by us.
     redirect = await svc.download_redirect(f)
