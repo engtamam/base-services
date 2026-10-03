@@ -334,6 +334,35 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         return self.ENV == "production"
 
+    # Destructive/state-changing /internal routes — a caller reaching one imports a backup over live
+    # ZATCA state, erases a person, or forces a finalize/sweep of the signed-invoice chain (zatca-018).
+    _DESTRUCTIVE_INTERNAL_ROUTES = (
+        "/internal/backup/import",
+        "/internal/privacy/erase",
+        "/internal/zatca/sweep",
+        "/internal/zatca/finalize",
+    )
+
+    def assert_internal_policy_ok(self) -> None:
+        """Boot guard (zatca-018). Refuse to start production with a destructive /internal route left
+        default-open — the signed-invoice chain and tenant CSIDs are too sensitive to let any holder of
+        the internal token drive them. Fail-closed on the declared list."""
+        if not self.is_production:
+            return
+        import json as _json
+        try:
+            policy = _json.loads(self.INTERNAL_ROUTE_POLICY_JSON or "{}")
+        except Exception as exc:
+            raise ValueError(f"INTERNAL_ROUTE_POLICY_JSON is not valid JSON: {exc}") from exc
+        covered = {str(k).rstrip("/") for k in policy}
+        missing = [r for r in self._DESTRUCTIVE_INTERNAL_ROUTES
+                   if not any(r == k or r.startswith(k + "/") for k in covered)]
+        if missing:
+            raise ValueError(
+                "destructive /internal routes are default-open in production (any authenticated caller "
+                f"may reach them): {', '.join(missing)}. Add each to INTERNAL_ROUTE_POLICY_JSON with a "
+                'named caller list, or ["*"] to accept any authenticated caller deliberately.')
+
     @property
     def audit_ingest_url(self) -> str:
         """Where audit events go. Empty when unconfigured — never a guessed default, because a

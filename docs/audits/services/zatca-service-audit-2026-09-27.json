@@ -146,7 +146,8 @@
       "line": 124,
       "scenario": "onboard_production computes the target with op_tenant(principal, tenant) (which honors a platform operator's ?tenant=X) for the actual mutation, but the write-ahead audit record uses tenant=principal.tenant. So when a platform.zatca operator onboards tenant X's production CSID, the audit row is filed under the operator's own tenant (or none), not X. onboard_compliance right above it correctly uses op_tenant(principal, body.tenant) for the audit tenant AND resource — this one diverges, so a production-CSID exchange (a high-value credential action) is recorded against the wrong tenant.",
       "evidence": "await request.app.state.auditor.record(\n        \"zatca.onboarded_production\", actor=principal.subject, tenant=principal.tenant, resource=\"csid\", ...)\n    return await (await build_zatca(request, op_tenant(principal, tenant))).onboard_production(op_tenant(principal, tenant))",
-      "recommendation": "Compute t = op_tenant(principal, tenant) once and use it for both the audit record (tenant=t) and the service call, matching onboard_compliance."
+      "recommendation": "Compute t = op_tenant(principal, tenant) once and use it for both the audit record (tenant=t) and the service call, matching onboard_compliance.",
+      "status": "fixed"
     },
     {
       "id": "zatca-011",
@@ -190,7 +191,8 @@
       "line": 195,
       "scenario": "When ZATCA_VALIDATE_BEFORE_SUBMIT is on, _submit → _validate_ok calls self._signer.validate(...). self._signer is the signer resolved for the REQUEST tenant in build_zatca (or the default for a sweep, tenant=''); the per-tenant signer_provider is used only in _sign. So during a multi-tenant sweep the pre-submit validation is performed against a signer/sidecar that may not correspond to the invoice's tenant (and for a plain sweep is the boot/default signer). Since _validate_ok fails OPEN on SignerUnavailable, a misrouted validator quietly returns True and the pre-submit check becomes a no-op for most sweep invoices — the control silently does nothing.",
       "evidence": "def _validate_ok(self, inv): ... result = self._signer.validate(inv.signed_xml)",
-      "recommendation": "Resolve the validator via signer_provider(inv.tenant) inside _validate_ok, consistent with _sign, so validation runs against the invoice's own tenant signer."
+      "recommendation": "Resolve the validator via signer_provider(inv.tenant) inside _validate_ok, consistent with _sign, so validation runs against the invoice's own tenant signer.",
+      "status": "fixed"
     },
     {
       "id": "zatca-015",
@@ -234,7 +236,8 @@
       "line": 61,
       "scenario": "INTERNAL_ROUTE_POLICY_JSON defaults to '' (empty), so resolve_internal_policy.permits() admits any authenticated caller to every /internal route (default-open, documented). With INTERNAL_CALLER_ALLOW_TOKEN_FALLBACK defaulting True and INTERNAL_CALLER_DRIVER='shared', identity reduces to possession of the single INTERNAL_SERVICE_TOKEN. Any service that holds that token can therefore POST /internal/zatca/finalize for an arbitrary tenant, POST /internal/privacy/erase for any subject, and POST /internal/backup/export to pull a sealed archive of ALL tenants' invoices. There is no per-route caller restriction shipped, so the least-privilege story exists in config but is off by default.",
       "evidence": "if not resolve_internal_policy(settings).permits(request.url.path, identity.caller): raise HTTPException(403)   # policy JSON empty => permits everything",
-      "recommendation": "Ship a non-empty INTERNAL_ROUTE_POLICY_JSON default (or a production boot guard) restricting backup/export, privacy/erase and sweep to the specific caller services that need them, and plan to flip INTERNAL_CALLER_ALLOW_TOKEN_FALLBACK off once callers sign assertions."
+      "recommendation": "Ship a non-empty INTERNAL_ROUTE_POLICY_JSON default (or a production boot guard) restricting backup/export, privacy/erase and sweep to the specific caller services that need them, and plan to flip INTERNAL_CALLER_ALLOW_TOKEN_FALLBACK off once callers sign assertions.",
+      "status": "fixed"
     },
     {
       "id": "zatca-019",
@@ -278,7 +281,8 @@
       "line": 19,
       "scenario": "The operator.py routes attach Depends(rate_limit), but api/v1/zatca.py (settings, onboarding, invoice list/detail/qr/resubmit, chain verify, sweep) and internal.py finalize attach none. GET /chain/verify and GET /invoices are O(history) reads (see zatca-012) and POST /sweep triggers a fleet-wide submission pass; without a limiter an authenticated caller can hammer these to exhaust the DB pool or drive repeated ZATCA submissions. The rate-limit machinery exists and is wired for one router only.",
       "evidence": "router = APIRouter(prefix=\"/api/v1/zatca\", ...)   # no Depends(rate_limit) on any route here",
-      "recommendation": "Apply rate_limit to the expensive/mutating admin routes (chain/verify, invoices list, sweep, resubmit, correct-and-resign) and to internal finalize, consistent with the operator surface."
+      "recommendation": "Apply rate_limit to the expensive/mutating admin routes (chain/verify, invoices list, sweep, resubmit, correct-and-resign) and to internal finalize, consistent with the operator surface.",
+      "status": "fixed"
     },
     {
       "id": "zatca-023",

@@ -11,6 +11,7 @@ from starlette.responses import Response
 
 from app.api.auth import Principal
 from app.api.authz import require_any_capability, require_capability
+from app.api.ratelimit import rate_limit
 from app.config import get_settings
 from app.core.stores import InvoiceStore, SettingsStore
 from app.core.zatca_service import ZatcaService
@@ -120,15 +121,15 @@ async def onboard_production(request: Request, principal: Principal = Depends(_A
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
+    t = op_tenant(principal, tenant)   # resolve ONCE — audit and the call must name the same tenant (zatca-010)
     await request.app.state.auditor.record(
-        "zatca.onboarded_production", actor=principal.subject, tenant=principal.tenant, resource="csid",
+        "zatca.onboarded_production", actor=principal.subject, tenant=t, resource="csid",
         ip=request.client.host if request.client else "")
-    return await (await build_zatca(request, op_tenant(principal, tenant))).onboard_production(
-        op_tenant(principal, tenant))
+    return await (await build_zatca(request, t)).onboard_production(t)
 
 
 # ── invoices ──────────────────────────────────────────────────────────────────
-@router.get("/invoices")
+@router.get("/invoices", dependencies=[Depends(rate_limit)])
 async def list_invoices(request: Request, needs_attention: bool = False,
                         status_: str = Query(default="", alias="status", max_length=32),
                         limit: int | None = Query(default=None, ge=1, le=1000),
@@ -166,7 +167,7 @@ async def invoice_detail(request: Request, invoice_id: str,
     return inv.public()
 
 
-@router.post("/invoices/{invoice_id}/resubmit")
+@router.post("/invoices/{invoice_id}/resubmit", dependencies=[Depends(rate_limit)])
 async def resubmit(request: Request, invoice_id: str, principal: Principal = Depends(_ADMIN)) -> dict:
     svc = (await build_zatca(request))
     inv = await svc._inv.get(invoice_id)
@@ -228,7 +229,7 @@ async def release_tail(request: Request, invoice_id: str,
     return res
 
 
-@router.post("/invoices/{invoice_id}/correct-and-resign")
+@router.post("/invoices/{invoice_id}/correct-and-resign", dependencies=[Depends(rate_limit)])
 async def correct_and_resign(request: Request, invoice_id: str, body: CorrectIn,
                              principal: Principal = Depends(_ADMIN)) -> dict:
     """Rebuild a stuck/unsigned reserved ICV's draft from corrected data (SAME ICV) and sign it —
@@ -258,12 +259,12 @@ async def chain_head_lag(request: Request, principal: Principal = Depends(_ADMIN
     return await (await build_zatca(request)).head_lag(op_tenant(principal))
 
 
-@router.get("/chain/verify")
+@router.get("/chain/verify", dependencies=[Depends(rate_limit)])
 async def chain_verify(request: Request, principal: Principal = Depends(_ADMIN)) -> dict:
     return await (await build_zatca(request)).verify_chain(op_tenant(principal))
 
 
-@router.post("/sweep")
+@router.post("/sweep", dependencies=[Depends(rate_limit)])
 async def sweep(request: Request, principal: Principal = Depends(_PLATFORM)) -> dict:
     result = await (await build_zatca(request)).sweep()
     await request.app.state.auditor.record(

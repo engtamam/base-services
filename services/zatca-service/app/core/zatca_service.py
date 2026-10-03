@@ -206,19 +206,28 @@ class ZatcaService:
         # The caller (finalize/sweep/resubmit) treats False as "defer, do not submit".
         return await self._inv.mark_signed(inv)
 
-    def _validate_ok(self, inv: ZatcaInvoice) -> bool:
+    async def _validate_ok(self, inv: ZatcaInvoice) -> bool:
         """Optional pre-submit check with the official SDK validator. Fail-OPEN if the
-        validator is unavailable (don't block a valid invoice); fail-CLOSED on 'invalid'."""
+        validator is unavailable (don't block a valid invoice); fail-CLOSED on 'invalid'.
+
+        Resolves the PER-TENANT signer (zatca-014), consistent with _sign — validating against the
+        request-wide signer could check an invoice against the wrong tenant's certificate/config."""
         if not self._validate:
             return True
+        signer = self._signer
+        if self._signer_provider is not None:
+            try:
+                signer = await self._signer_provider(inv.tenant)
+            except Exception:  # noqa: BLE001 — a credential resolution failure must not block a valid invoice
+                return True
         try:
-            result = self._signer.validate(inv.signed_xml)
+            result = await asyncio.to_thread(signer.validate, inv.signed_xml)
         except SignerUnavailable:
             return True
         return str(result.get("status", "")).lower() not in ("invalid", "validator_error")
 
     async def _submit(self, inv: ZatcaInvoice, secrets: dict) -> dict[str, Any]:
-        if not self._validate_ok(inv):                     # SDK says the signed XML is invalid
+        if not await self._validate_ok(inv):               # SDK says the signed XML is invalid
             inv.status = "rejected"
             inv.message = "pre-submit SDK validation failed"
             inv.next_retry_at = None
