@@ -42,6 +42,10 @@ _INDEXES = (
     # oldest-first window off the index instead of scanning the whole due-index (job-r2-02/03).
     f"CREATE INDEX IF NOT EXISTS kv_next_run_at_asc ON {_TABLE} "
     f"(collection, COALESCE(value->'next_run_at', 'null'::jsonb) ASC, key ASC)",
+    # job_id ASC serves the paged leased-index keyset (jobs_leased), so reclaim walks EVERY in-flight job
+    # off the index across pages instead of a single capped scan that dropped leases past the cap (job-015).
+    f"CREATE INDEX IF NOT EXISTS kv_job_id_asc ON {_TABLE} "
+    f"(collection, COALESCE(value->'job_id', 'null'::jsonb) ASC, key ASC)",
 )
 
 

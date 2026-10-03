@@ -128,7 +128,7 @@
       "scenario": "apply_receipt() reads the delivery via by_provider_message_id() then put()s the mutated copy. Two receipts for the same wamid processed concurrently (Meta batches + retries, multiple pods) both read the pre-update row and both write, so a later 'read' can be lost under a concurrently-written 'delivered'. No CAS/compare-and-set is used, unlike the idempotency reservation which correctly uses cas().",
       "evidence": "d = await self.by_provider_message_id(wamid)\n        if d is None:\n            return None\n        if ts >= d.receipt_ts:\n            ... await self._store.put(_DELIVERIES, d.id, d.to_dict())",
       "recommendation": "Use a CAS/optimistic-version update for the receipt fields, or make the receipt event log (which is already append-only) the source of truth and derive the delivery's latest receipt_status from it.",
-      "status": "fixed"
+      "status": "open"
     },
     {
       "id": "notification-010",

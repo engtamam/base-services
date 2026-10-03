@@ -189,30 +189,19 @@ class DeliveryStore:
         and the receipt axis stays separate from the send-state machine, so recording a receipt never
         disturbs `sent`/`queued`/`failed`. The event log is APPEND-ONLY (every state is its own row),
         so a consumer reading the log forward sees `delivered` then `read`, each exactly once."""
-        # notification-008 + 009: advance the delivery's receipt field with an atomic CAS loop (a plain
-        # read-modify-write let a concurrent receipt clobber a newer one), and break the SAME-SECOND tie
-        # by STATUS RANK — Meta timestamps are whole seconds, so a `delivered` arriving same-second after
-        # a `read` must not overwrite it. ts>cur, OR equal ts with a strictly higher rank, advances.
-        for _ in range(8):
-            d = await self.by_provider_message_id(wamid)
-            if d is None:
-                return None
-            raw = await self._store.get(_DELIVERIES, d.id) or {}
-            ver = int(raw.get("version", 0))
-            advance = ts > d.receipt_ts or (
-                ts == d.receipt_ts
-                and _receipt_rank(receipt_status) > _receipt_rank(d.receipt_status))
-            if not advance:
-                break
+        # notification-008: break the SAME-SECOND tie by STATUS RANK — Meta timestamps are whole seconds,
+        # so a `delivered` arriving same-second after a `read` must not overwrite it. A later ts, OR an
+        # equal ts with a strictly higher rank, advances. (notification-009, an atomic CAS on this row,
+        # is deferred: deliveries are created/updated via put(), and introducing a version-pinned cas()
+        # here alone trips safety:cas-create — it needs a DeliveryStore-wide create-via-cas refactor.)
+        d = await self.by_provider_message_id(wamid)
+        if d is None:
+            return None
+        advance = ts > d.receipt_ts or (
+            ts == d.receipt_ts and _receipt_rank(receipt_status) > _receipt_rank(d.receipt_status))
+        if advance:
             d.receipt_status, d.receipt_ts = receipt_status, ts
-            value = {**raw, **d.to_dict(), "_log": "all"}
-            if await self._store.cas(_DELIVERIES, d.id, ver, value):
-                break
-            # lost the race — another receipt landed first; re-read and re-evaluate the rank/ts guard.
-        else:
-            d = await self.by_provider_message_id(wamid)
-            if d is None:
-                return None
+            await self._store.put(_DELIVERIES, d.id, {**d.to_dict(), "_log": "all"})
         # Append-only event, keyed by a monotonic seq so the ordered forward read is stable and every
         # state change is a distinct row (id would collapse delivered+read into one).
         eid = seq or f"{d.id}:{receipt_status}:{ts}"
