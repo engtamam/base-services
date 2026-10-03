@@ -92,7 +92,8 @@
       "line": 383,
       "scenario": "suggest_reply() gathers up to 100 history events including created/replied bodies (ticket_service.suggest_reply lines 215-218) and ships them to assistant-service / a generative model. This is a bulk read of customer content routed off-service, yet the route emits no audit event. Compare platform_get_ticket, which treats a single cross-tenant content read as critical and audited; sending the same content to a model is at least as sensitive and is unrecorded.",
       "evidence": "async def suggest_reply(request: Request, ticket_id: str,\n                        principal: Principal = Depends(_MANAGE)) -> dict:\n    tenant = _tenant(principal)\n    try:\n        return await build_tickets(request).suggest_reply(tenant, ticket_id)",
-      "recommendation": "Audit an ai.suggest_requested (or ticket.content_sent_to_model) action when the suggester is wired to a real provider, so off-service transfer of ticket content is attributable."
+      "recommendation": "Audit an ai.suggest_requested (or ticket.content_sent_to_model) action when the suggester is wired to a real provider, so off-service transfer of ticket content is attributable.",
+      "status": "fixed"
     },
     {
       "id": "ticket-008",

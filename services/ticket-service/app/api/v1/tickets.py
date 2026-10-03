@@ -387,9 +387,17 @@ async def suggest_reply(request: Request, ticket_id: str,
     {"supported": False} when no AI is wired, so the UI hides the control rather than showing a lie."""
     tenant = _tenant(principal)
     try:
-        return await build_tickets(request).suggest_reply(tenant, ticket_id)
+        result = await build_tickets(request).suggest_reply(tenant, ticket_id)
     except TicketNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    # Audit the OFF-SERVICE transfer of customer PII (ticket-007): a real suggestion means the ticket's
+    # subject/body + reply thread were shipped to a third-party model. Only when supported (a provider
+    # actually received it) — the "no AI wired" path sends nothing.
+    if result.get("supported"):
+        await request.app.state.auditor.record(
+            "ticket.content_sent_to_model", actor=principal.subject, tenant=tenant,
+            resource=f"ticket:{ticket_id}", ip=request.client.host if request.client else "")
+    return result
 
 
 @router.post("/tickets/{ticket_id}/tags", dependencies=[Depends(rate_limit)])

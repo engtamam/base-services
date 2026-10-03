@@ -158,6 +158,15 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "resource": "ticket",
     },
     {
+        "action": "ticket.content_sent_to_model",
+        "source": "user",
+        "critical": False,
+        "resource": "ticket",
+        "why": "suggest-reply ships the ticket subject/body and the reply thread (customer PII) to a "
+               "third-party model; an off-service transfer of personal data must leave a record of "
+               "which ticket was sent and by whom, even though the draft itself is advisory",
+    },
+    {
         "action": "ticket.status_changed",
         "source": "admin",
         "critical": False,
