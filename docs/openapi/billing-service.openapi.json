@@ -1824,6 +1824,12 @@
             "title": "Fund",
             "type": "string"
           },
+          "idempotency_key": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
           "payment_token": {
             "maxLength": 512,
             "minLength": 1,
