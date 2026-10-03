@@ -469,6 +469,9 @@
             "name": "index",
             "required": true,
             "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._-]+$",
               "title": "Index",
               "type": "string"
             }
@@ -478,6 +481,8 @@
             "name": "prefix",
             "required": true,
             "schema": {
+              "maxLength": 256,
+              "minLength": 1,
               "title": "Prefix",
               "type": "string"
             }
@@ -1072,6 +1077,9 @@
             "name": "index",
             "required": true,
             "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._-]+$",
               "title": "Index",
               "type": "string"
             }
@@ -1081,6 +1089,8 @@
             "name": "prefix",
             "required": true,
             "schema": {
+              "maxLength": 256,
+              "minLength": 1,
               "title": "Prefix",
               "type": "string"
             }
@@ -1090,6 +1100,8 @@
             "name": "tenant",
             "required": true,
             "schema": {
+              "maxLength": 128,
+              "minLength": 1,
               "title": "Tenant",
               "type": "string"
             }
