@@ -162,6 +162,24 @@ def test_a_password_for_an_existing_person_is_refused(client):
     assert r.status_code == 403                  # CANNOT_SET_EXISTING_PERSON_CREDENTIAL
 
 
+# ── the phone/identifier race: a clear 409, not a 500, and no identifier leak ──
+def test_seed_owner_identifier_race_is_409_not_500_and_hides_the_identifier(client, monkeypatch):
+    # Two tenants race to claim the same phone: both read no existing person, both reach create_person,
+    # the loser raises PersonExists. That used to fall through to the generic 500; it must be a clear
+    # 409, and must NOT echo the raw identifier (this route is unauthenticated, mid-signup).
+    from app.core.membership import MembershipStore, PersonExists
+    raw = "+966500007777"
+
+    async def _boom(self, p):
+        raise PersonExists(f"identifier already registered: {p.identifier}")
+
+    monkeypatch.setattr(MembershipStore, "create_person", _boom)
+    r = _seed(client, tenant="racetenant", identifier=raw, caps=["members:write"])
+    assert r.status_code == 409, r.text           # a clear conflict, not the generic 500 it used to be
+    assert raw not in r.text                      # the raw identifier never reaches the caller
+    assert r.json()["error"] == "CONFLICT"        # detail is discarded by design; status carries it
+
+
 # ── the two bootstrap guards ──────────────────────────────────────────────────
 def test_an_owner_without_members_write_is_refused(client):
     r = _seed(client, tenant="d", identifier="weak@d", caps=["members:read"])

@@ -258,6 +258,7 @@ async def seed_owner(request: Request, body: SeedOwnerIn) -> dict:
     """
     from app.api.v1.auth import _svc
     from app.core.auth_service import CredentialNotYours, SeedError, WeakPassword
+    from app.core.membership import PersonExists
     from app.core.pii import subject_ref
     from app.core.tenancy import TenantAccessDenied
 
@@ -309,6 +310,12 @@ async def seed_owner(request: Request, body: SeedOwnerIn) -> dict:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "WEAK_PASSWORD")
     except TenantAccessDenied:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "TENANT_ACCESS_DENIED")
+    except PersonExists as exc:
+        # Two tenants racing to claim the same identifier: both see no existing person, both reach
+        # create_person, the loser raises PersonExists. A clear 409, never the generic 500. FIXED code,
+        # never str(exc): that message embeds the raw identifier and this route is reached by an
+        # unauthenticated caller mid-signup.
+        raise HTTPException(status.HTTP_409_CONFLICT, "IDENTIFIER_ALREADY_REGISTERED") from exc
 
 
 class InternalMemberIn(BaseModel):
