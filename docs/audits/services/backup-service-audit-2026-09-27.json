@@ -113,7 +113,8 @@
       "line": 115,
       "scenario": "delete() does head_object then 'except Exception: return False' — a timeout, 403, or throttling on head_object makes delete() report False ('never existed') for an object that is present. exists() does the same. An erasure receipt built on delete() (the very bug the docstring says it fixed for the True case) then confidently claims a person's file was absent/deleted when the store was merely unreachable — a compliance answer that is wrong in the opposite direction.",
       "evidence": "try:\n    await s3.head_object(Bucket=self._bucket, Key=k)\nexcept Exception:\n    return False",
-      "recommendation": "Catch only NoSuchKey/404 as 'absent'; let transport/permission errors propagate (or return a distinct error) so callers do not treat an outage as a confirmed absence."
+      "recommendation": "Catch only NoSuchKey/404 as 'absent'; let transport/permission errors propagate (or return a distinct error) so callers do not treat an outage as a confirmed absence.",
+      "status": "fixed"
     },
     {
       "id": "backup-009",
@@ -135,7 +136,8 @@
       "line": 78,
       "scenario": "SECRETS_KEK: str = \"\" appears at line 78 (inside the backup-orchestration block, documented as sealing target tokens) and again at line 151 (documented as the operator-credential KEK). The second class attribute silently shadows the first. Both currently default to \"\", so behaviour is unaffected today, but the duplication is a latent trap: a reader editing the first declaration's default or validator would have it silently overridden by the second, and the two conflicting docstrings misdescribe one field.",
       "evidence": "    SECRETS_KEK: str = \"\"\n    ENV: Literal[...] = \"production\"\n    ...\n    SECRETS_KEK: str = \"\"",
-      "recommendation": "Remove the duplicate declaration; keep a single SECRETS_KEK field with one authoritative docstring."
+      "recommendation": "Remove the duplicate declaration; keep a single SECRETS_KEK field with one authoritative docstring.",
+      "status": "fixed"
     },
     {
       "id": "backup-011",
@@ -146,7 +148,8 @@
       "line": 256,
       "scenario": "remove_target on the internal tier deletes a target — meaning that service is no longer backed up — with no auditor.record call, while the operator-tier equivalent (operator.py:393) audits backup.target_removed. A service-to-service caller (or anyone holding the internal token) can stop a service being protected and leave no record of who or when.",
       "evidence": "@router.delete(\"/backup/targets/{service}\", dependencies=[Depends(require_internal_token)])\nasync def remove_target(request: Request, service: str) -> dict:\n    return {\"removed\": await TargetStore(request.app.state.container.datastore).remove(service)}",
-      "recommendation": "Emit backup.target_removed in the internal remove_target handler as the operator route does."
+      "recommendation": "Emit backup.target_removed in the internal remove_target handler as the operator route does.",
+      "status": "fixed"
     },
     {
       "id": "backup-012",
@@ -169,7 +172,8 @@
       "line": 76,
       "scenario": "PostgresDataStore.scan_all orders by key (deterministic), but MemoryDataStore.scan_all returns dict insertion order. export() and prune's current-key read rely on scan_all(scan_cap+1) both for content and for truncation detection. On the memory driver the FIRST scan_cap rows sealed (when a collection exceeds the cap) are insertion-ordered, not key-ordered, so which rows land in a (near-cap) archive differs from postgres, and tests exercising truncation on memory do not reflect production ordering.",
       "evidence": "rows = list(self._data.get(collection, {}).values())\nreturn copy.deepcopy(rows[: max(0, int(limit))])",
-      "recommendation": "Order MemoryDataStore.scan_all by key to match the postgres contract, so export content and truncation behaviour are identical across drivers."
+      "recommendation": "Order MemoryDataStore.scan_all by key to match the postgres contract, so export content and truncation behaviour are identical across drivers.",
+      "status": "fixed"
     },
     {
       "id": "backup-014",

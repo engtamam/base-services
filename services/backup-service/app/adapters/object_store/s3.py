@@ -9,6 +9,20 @@ from app.adapters.object_store.keys import validate_key
 from app.ports.errors import ConfigError, NotFound
 
 
+def _is_not_found(exc: Exception) -> bool:
+    """True only for a genuine 'object does not exist' (backup-008). A permission (403) or transport
+    error must NOT be read as absent — those propagate so a caller never treats a transient failure as a
+    confirmed deletion / non-existence."""
+    resp = getattr(exc, "response", None)
+    if isinstance(resp, dict):
+        err = resp.get("Error", {}) or {}
+        if str(err.get("Code", "")) in ("404", "NoSuchKey", "NotFound"):
+            return True
+        if str((resp.get("ResponseMetadata", {}) or {}).get("HTTPStatusCode", "")) == "404":
+            return True
+    return type(exc).__name__ in ("NoSuchKey", "NotFound", "404")
+
+
 class S3ObjectStore:
     """Any S3-compatible store: AWS S3, MinIO, or a Saudi/Alibaba cloud's object storage.
 
@@ -112,8 +126,10 @@ class S3ObjectStore:
         async with self._client() as s3:
             try:
                 await s3.head_object(Bucket=self._bucket, Key=k)
-            except Exception:
-                return False
+            except Exception as exc:
+                if _is_not_found(exc):
+                    return False            # genuinely absent
+                raise                       # transport/permission error — NOT "absent" (backup-008)
             await s3.delete_object(Bucket=self._bucket, Key=k)
         return True
 
@@ -123,8 +139,10 @@ class S3ObjectStore:
             try:
                 await s3.head_object(Bucket=self._bucket, Key=k)
                 return True
-            except Exception:
-                return False
+            except Exception as exc:
+                if _is_not_found(exc):
+                    return False
+                raise                       # a transient/permission error must not read as 'object absent'
 
     async def health(self) -> bool:
         try:

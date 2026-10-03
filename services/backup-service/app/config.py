@@ -77,8 +77,8 @@ class Settings(BaseSettings):
     # recorded (audit) and readable (health endpoint), just not pushed. Deploy-time: it is an egress
     # destination, and must be on EGRESS_ALLOWED_HOSTS to be called.
     BACKUP_ALERT_WEBHOOK_URL: str = ""
-    # Seals the internal tokens backup-service holds for its targets — separate from any live key.
-    SECRETS_KEK: str = ""
+    # NOTE (backup-010): SECRETS_KEK is declared once, in the KEK section below (next to BACKUP_KEK) —
+    # the duplicate that used to sit here was removed; pydantic kept only the later one anyway.
     ENV: Literal["development", "production", "test"] = "production"
 
     # ── HTTP server ─────────────────────────────────────────────────────────

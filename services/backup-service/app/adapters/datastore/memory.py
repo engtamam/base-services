@@ -71,8 +71,10 @@ class MemoryDataStore:
         return copy.deepcopy(page), next_cursor
 
     async def scan_all(self, collection: str, limit: int) -> list[dict[str, Any]]:
-        """Every row. Sweepers and migrations only - see the port."""
-        rows = list(self._data.get(collection, {}).values())
+        """Every row, ORDERED BY KEY to match the postgres adapter (backup-013) — so an export's content
+        and its truncation behaviour are identical across drivers, not dependent on insertion order."""
+        bucket = self._data.get(collection, {})
+        rows = [bucket[k] for k in sorted(bucket)]
         return copy.deepcopy(rows[: max(0, int(limit))])
 
     async def list(self, collection: str, limit: int = 100) -> list[dict[str, Any]]:

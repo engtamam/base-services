@@ -265,6 +265,11 @@ async def list_targets(request: Request, settings: Settings = Depends(get_settin
 
 @router.delete("/backup/targets/{service}", dependencies=[Depends(require_internal_token)])
 async def remove_target(request: Request, service: str) -> dict:
+    # Audit the removal (backup-011): dropping a target stops it being backed up — as consequential as
+    # registering one, which IS audited. backup.target_removed was declared but never emitted.
+    await request.app.state.auditor.record(
+        "backup.target_removed", actor="", resource=f"backup_target:{service}",
+        ip=request.client.host if request.client else "")
     return {"removed": await TargetStore(request.app.state.container.datastore).remove(service)}
 
 
