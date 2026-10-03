@@ -44,7 +44,8 @@ def build_stream_service(request: Request) -> StreamService:
         hls_segment_seconds=s.HLS_SEGMENT_SECONDS, hls_window_segments=s.HLS_WINDOW_SEGMENTS,
         record_segment_seconds=s.RECORD_SEGMENT_SECONDS, record_format=s.RECORD_FORMAT,
         connect_timeout_s=s.SESSION_START_TIMEOUT_SECONDS, reconnect_max=s.RECONNECT_MAX,
-        reconnect_backoff_ms=s.RECONNECT_BACKOFF_MS)
+        reconnect_backoff_ms=s.RECONNECT_BACKOFF_MS,
+        viewer_mark_debounce_s=s.VIEWER_MARK_DEBOUNCE_SECONDS)
     shipper = RecordingShipper(sink=c.recording_sink, recordings=RecordingStore(c.datastore),
                                record_segment_seconds=s.RECORD_SEGMENT_SECONDS)
     return StreamService(
@@ -259,7 +260,7 @@ async def kill_session(request: Request, session_id: str,
     return sess.public_dict()
 
 
-@router.get("/sessions/{session_id}/playback", dependencies=[Depends(_READ)])
+@router.get("/sessions/{session_id}/playback", dependencies=[Depends(_READ), Depends(rate_limit)])
 async def get_playback(request: Request, session_id: str,
                        p: Principal = Depends(require_tenant)) -> dict:
     try:
@@ -415,13 +416,25 @@ async def delete_recording(request: Request, recording_id: str,
     if rec.locked:
         raise HTTPException(409, "RECORDING_LOCKED")   # legal hold
     c = request.app.state.container
+    # stream-006: track per-segment delete outcomes. If ANY blob delete fails, KEEP the recording row
+    # (its segment list is the work-list for a retry) and report PARTIAL — deleting the row while footage
+    # remained in the bucket orphaned it (unreferenced, undeletable, still billed/retained).
+    deleted_segs = failed_segs = 0
     for seg in rec.segments:
         try:
             await c.recording_sink.delete(seg.get("ref", ""))
+            deleted_segs += 1
         except Exception:   # noqa: BLE001
-            pass
+            failed_segs += 1
+    if failed_segs:
+        import logging
+        logging.getLogger("app.stream").warning(
+            "recording_delete_partial", extra={"recording": recording_id,
+                                               "deleted": deleted_segs, "failed": failed_segs})
+        return {"deleted": False, "partial": True,
+                "segments_deleted": deleted_segs, "segments_failed": failed_segs}
     await _recordings(request).delete(recording_id)
-    return {"deleted": True}
+    return {"deleted": True, "segments_deleted": deleted_segs}
 
 
 # ── clip export ───────────────────────────────────────────────────────────────

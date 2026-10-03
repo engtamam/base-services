@@ -49,11 +49,20 @@ _CONFIG = require_capability("platform.config")
 
 def _actor(principal: Principal) -> str:
     """A pseudonym. An audit row naming the operator is still personal data, and this one lands in
-    an append-only chain."""
+    an append-only chain.
+
+    stream-016: when no PII_SALT is configured, do NOT record a privileged action with an EMPTY actor
+    (an unattributable mutation is indistinguishable from an attacker with an operator token). Fall back
+    to a non-empty, non-reversible token keyed off the internal token (always present) — attribution is
+    still stable and consistent, just not reversible to the person without the salt."""
     s = get_settings()
-    if not s.PII_SALT:
-        return ""
-    return subject_ref(s.PII_SALT, principal.tenant or "", principal.subject)
+    if s.PII_SALT:
+        return subject_ref(s.PII_SALT, principal.tenant or "", principal.subject)
+    import hashlib
+    import hmac
+    mac = hmac.new(s.INTERNAL_SERVICE_TOKEN.encode("utf-8"),
+                   f"{principal.tenant or ''}|{principal.subject}".encode("utf-8"), hashlib.sha256)
+    return "op_unsalted_" + mac.hexdigest()[:32]
 
 
 def _invalidate(request: Request, tenant: str) -> None:

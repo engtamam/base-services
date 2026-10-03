@@ -44,7 +44,8 @@ class StreamConfig:
                  hls_segment_seconds: int = 2, hls_window_segments: int = 5,
                  record_segment_seconds: int = 60, record_format: str = "fmp4",
                  connect_timeout_s: int = 20, reconnect_max: int = 20,
-                 reconnect_backoff_ms: int = 500) -> None:
+                 reconnect_backoff_ms: int = 500, viewer_mark_debounce_s: int = 10) -> None:
+        self.viewer_mark_debounce_s = viewer_mark_debounce_s
         self.webrtc_enabled = webrtc_enabled
         self.webrtc_media_base = webrtc_media_base.rstrip("/")
         self.hls_segment_seconds = hls_segment_seconds
@@ -217,8 +218,11 @@ class StreamService:
 
     async def playback(self, session_id: str, *, tenant: str) -> dict[str, Any]:
         sess = await self.get_session(session_id, tenant=tenant)
-        self._note_viewer(sess)
-        await self._sessions.save(sess)
+        # stream-013: a playback GET is read-shaped, but viewers poll it constantly. DEBOUNCE the viewer
+        # mark — only persist when last_viewer_at is older than the debounce window — so a polling client
+        # does not rewrite the whole session doc on every request (write amplification on a read path).
+        if self._note_viewer(sess):
+            await self._sessions.save(sess)
         return self._playback(sess)
 
     async def heartbeat(self, session_id: str, stats: dict | None = None) -> Session | None:
@@ -423,9 +427,16 @@ class StreamService:
         await self._emit("stream.session.stopped", sess)
         return sess
 
-    def _note_viewer(self, sess: Session) -> None:
+    def _note_viewer(self, sess: Session) -> bool:
+        """Mark a viewer, DEBOUNCED (stream-013). Returns True when the session row materially changed and
+        should be persisted; False when a recent mark already covers this poll (skip the write)."""
+        now = self._clock()
+        last = _epoch(sess.last_viewer_at)
+        if sess.viewers >= 1 and last and (now - last) < self._cfg.viewer_mark_debounce_s:
+            return False                       # a recent mark stands — no write needed
         sess.last_viewer_at = self._now_iso()
         sess.viewers = max(1, sess.viewers)
+        return True
 
     def _now_iso(self) -> str:
         # Derived from the injected clock so guard math is consistent and deterministically testable.

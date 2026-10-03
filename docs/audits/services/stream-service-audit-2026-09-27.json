@@ -91,7 +91,8 @@
       "line": 418,
       "scenario": "delete_recording loops segments calling recording_sink.delete(seg.ref) inside try/except Exception: pass, then deletes the recording row and returns {deleted: True}. If the sink is unreachable or the ref is wrong, every blob delete silently fails, the index row is removed, and the caller/DSAR receipt says the footage is gone while the actual video persists in file-service/S3 — the false-erasure-receipt failure the erasure module explicitly warns about, reintroduced on the ordinary delete path.",
       "evidence": "for seg in rec.segments:\n    try:\n        await c.recording_sink.delete(seg.get(\"ref\", \"\"))\n    except Exception:   # noqa: BLE001\n        pass\nawait _recordings(request).delete(recording_id)\nreturn {\"deleted\": True}",
-      "recommendation": "Track per-segment delete outcomes; if any blob delete failed, keep the row (or mark it pending-purge) and report partial deletion rather than an unconditional deleted:true. Log the failure at WARN."
+      "recommendation": "Track per-segment delete outcomes; if any blob delete failed, keep the row (or mark it pending-purge) and report partial deletion rather than an unconditional deleted:true. Log the failure at WARN.",
+      "status": "fixed"
     },
     {
       "id": "stream-007",
@@ -102,7 +103,8 @@
       "line": 204,
       "scenario": "_seal_key() returns SEAL_KEY or INTERNAL_SERVICE_TOKEN and _playback_secret() returns PLAYBACK_SIGNING_SECRET or INTERNAL_SERVICE_TOKEN. In any deployment that leaves either empty (all of dev/test, and production leaves PLAYBACK_SIGNING_SECRET optional — only SEAL_KEY is boot-guarded), one secret does three jobs: internal service-to-service auth, at-rest credential sealing, and playback URL signing. A leak of the internal token then also forges playback tokens and unseals stored camera credentials, and rotating it breaks all three at once.",
       "evidence": "def _seal_key(s: Settings) -> str:\n    return s.SEAL_KEY or s.INTERNAL_SERVICE_TOKEN\ndef _playback_secret(s: Settings) -> str:\n    return s.PLAYBACK_SIGNING_SECRET or s.INTERNAL_SERVICE_TOKEN",
-      "recommendation": "Require a distinct PLAYBACK_SIGNING_SECRET in production (boot guard, as SEAL_KEY already is). Keep the internal-token fallback only for dev, and document that these must be independent keys."
+      "recommendation": "Require a distinct PLAYBACK_SIGNING_SECRET in production (boot guard, as SEAL_KEY already is). Keep the internal-token fallback only for dev, and document that these must be independent keys.",
+      "status": "fixed"
     },
     {
       "id": "stream-008",
@@ -148,7 +150,8 @@
       "line": 173,
       "scenario": "RecordingStore.iter_expired queries find(_RECORDINGS, {\"locked\": False}). On a datastore backend that matches by exact equality, any recording row written without a `locked` key (legacy rows, or rows imported/restored from an archive predating the field) will not equal False and will be excluded — so it is never aged out and its storage grows forever, while looking fine. The retention sweep silently under-collects.",
       "evidence": "rows, cursor = await self._s.find(_RECORDINGS, {\"locked\": False}, limit=limit, after=after, sort=(\"started\", \"asc\"))",
-      "recommendation": "Do not key retention on locked==False in the query; fetch by age and skip rec.locked in Python (Recording.from_dict already defaults locked to False), or normalize the field on read/migration."
+      "recommendation": "Do not key retention on locked==False in the query; fetch by age and skip rec.locked in Python (Recording.from_dict already defaults locked to False), or normalize the field on read/migration.",
+      "status": "fixed"
     },
     {
       "id": "stream-012",
@@ -171,7 +174,8 @@
       "line": 193,
       "scenario": "playback() calls _note_viewer(sess) then _sessions.save(sess) on every GET /sessions/{id}/playback, and that route has no Depends(rate_limit). An HLS player polling for a fresh signed URL (or many viewers of one session) turns each poll into a datastore write of the full session document — write amplification and lock contention on a hot row, unthrottled. save() also bumps updated and (via put) is last-writer-wins against concurrent heartbeats.",
       "evidence": "async def playback(self, session_id: str, *, tenant: str):\n    sess = await self.get_session(session_id, tenant=tenant)\n    self._note_viewer(sess)\n    await self._sessions.save(sess)\n    return self._playback(sess)",
-      "recommendation": "Debounce viewer marking (only write if last_viewer_at is older than N seconds), add Depends(rate_limit) to the playback route, and avoid rewriting the whole session doc on a read-shaped call."
+      "recommendation": "Debounce viewer marking (only write if last_viewer_at is older than N seconds), add Depends(rate_limit) to the playback route, and avoid rewriting the whole session doc on a read-shaped call.",
+      "status": "fixed"
     },
     {
       "id": "stream-014",
@@ -204,7 +208,8 @@
       "line": 50,
       "scenario": "_actor returns '' when PII_SALT is empty, and every operator mutation (secret set/clear, config change) is then recorded with actor='' — an unattributable privileged action in the append-only chain. /internal/privacy/erase similarly records actor=''. In production PII_SALT is boot-guarded, but in staging/dev (and any environment that skips the guard) privileged credential and policy changes are witnessed with no actor, defeating the write-ahead audit the module is built around.",
       "evidence": "def _actor(principal: Principal) -> str:\n    s = get_settings()\n    if not s.PII_SALT:\n        return \"\"\n    return subject_ref(s.PII_SALT, principal.tenant or \"\", principal.subject)",
-      "recommendation": "Refuse the mutation (or fall back to a non-reversible but non-empty actor token) when no salt is configured, rather than recording a privileged action with an empty actor."
+      "recommendation": "Refuse the mutation (or fall back to a non-reversible but non-empty actor token) when no salt is configured, rather than recording a privileged action with an empty actor.",
+      "status": "fixed"
     },
     {
       "id": "stream-017",

@@ -177,14 +177,23 @@ class RecordingStore:
 
     async def iter_expired(self, cutoff_iso: str, limit: int = 200,
                            after: str | None = None) -> tuple[list[Recording], str | None]:
-        """Recordings started before the cutoff — the retention sweeper's page (locked ones are
-        filtered by the caller, so a legal hold is never auto-deleted)."""
-        rows, cursor = await self._s.find(_RECORDINGS, {"locked": False}, limit=limit, after=after,
-                                          sort=("started", "asc"))
-        expired = [Recording.from_dict(r) for r in rows if r.get("started", "") < cutoff_iso]
-        # Rows are oldest-first, so once a page contains a NON-expired row (started >= cutoff) every
-        # remaining row is also non-expired — stop paging instead of scanning the whole table each run.
-        if len(expired) < len(rows):
+        """Recordings started before the cutoff — the retention sweeper's page (locked ones are skipped
+        in Python, so a legal hold is never auto-deleted).
+
+        stream-011: do NOT key the query on locked==False. A legacy row written before the `locked` field
+        existed has no `locked` key, so {"locked": False} never matched it and it was NEVER retention-
+        deleted (kept forever). Query on `trigger` (always present, closed value set) to fetch EVERY
+        recording by age, and skip locked ones in Python (from_dict defaults locked to False)."""
+        rows, cursor = await self._s.find(
+            _RECORDINGS, {"trigger": ["continuous", "motion", "manual"]}, limit=limit, after=after,
+            sort=("started", "asc"))
+        recs = [Recording.from_dict(r) for r in rows]
+        # Return the expired-and-unlocked ones; locked expired rows are skipped (legal hold), not stopped on.
+        expired = [r for r in recs if r.started < cutoff_iso and not r.locked]
+        # Rows are oldest-first, so once a page contains an AGE-non-expired row (started >= cutoff) every
+        # remaining row is also non-expired — stop paging. The stop is keyed on AGE only (not on the
+        # locked filter), so a page full of locked-expired rows does not falsely end the sweep.
+        if any(r.started >= cutoff_iso for r in recs):
             cursor = None
         return expired, cursor
 

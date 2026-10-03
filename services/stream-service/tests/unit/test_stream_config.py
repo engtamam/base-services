@@ -5,7 +5,7 @@ import pytest
 
 from app.config import Settings
 
-_OK = {"INTERNAL_SERVICE_TOKEN": "x" * 40}
+_OK = {"INTERNAL_SERVICE_TOKEN": "x" * 40, "PLAYBACK_SIGNING_SECRET": "p" * 40}
 
 
 def test_list_helpers_parse():
@@ -31,6 +31,10 @@ def test_dev_defaults_boot_with_zero_infra():
     ({"STREAM_ENGINE_DRIVER": "ffmpeg", "SEAL_KEY": "k" * 32,
       "RECORDING_SINK_DRIVER": "s3", "WEBRTC_ENABLED": True,
       "MEDIA_EGRESS_DRIVER": "turn", "TURN_URLS": ""}, "requires TURN_URLS"),
+    # stream-007: the hmac playback signer must have its own secret in production.
+    ({"STREAM_ENGINE_DRIVER": "ffmpeg", "SEAL_KEY": "k" * 32, "RECORDING_SINK_DRIVER": "s3",
+      "SIGNED_PLAYBACK_DRIVER": "hmac", "PLAYBACK_SIGNING_SECRET": ""},
+     "PLAYBACK_SIGNING_SECRET is required"),
 ])
 def test_production_boot_guards_fail_closed(over, msg):
     s = Settings(ENV="production", **{**_OK, **over})

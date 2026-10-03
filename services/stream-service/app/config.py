@@ -368,6 +368,9 @@ class Settings(BaseSettings):
     SESSION_LEASE_SECONDS: int = 30               # heartbeat deadline; missed -> reaped as a zombie
     SESSION_START_TIMEOUT_SECONDS: int = 20       # no first frame within this -> error, kill process
     VIEWER_GRACE_SECONDS: int = 30                # last viewer left -> wait this long before stopping
+    # stream-013: debounce the per-poll viewer mark so a polling player does not rewrite the session row
+    # on every playback GET; only persist a mark older than this.
+    VIEWER_MARK_DEBOUNCE_SECONDS: int = 10
     ONE_SESSION_PER_SOURCE: bool = False
     SCHEDULE_TIMEZONE_DEFAULT: str = "UTC"
 
@@ -545,6 +548,14 @@ class Settings(BaseSettings):
                 raise ValueError("RECORDING_FILE_SERVICE_URL is required when recording to file-service")
             if self.WEBRTC_ENABLED and self.MEDIA_EGRESS_DRIVER == "turn" and not self.TURN_URLS:
                 raise ValueError("MEDIA_EGRESS_DRIVER=turn requires TURN_URLS")
+            # stream-007: the playback signer must have its OWN secret in production, distinct from the
+            # internal token. Falling back to INTERNAL_SERVICE_TOKEN let anyone holding that shared token
+            # forge playback URLs for any recording — exactly the SEAL_KEY footgun, one door over.
+            if self.SIGNED_PLAYBACK_DRIVER == "hmac" and not self.PLAYBACK_SIGNING_SECRET:
+                raise ValueError(
+                    "PLAYBACK_SIGNING_SECRET is required in production for the hmac playback signer — it "
+                    "must be a distinct key, not the internal service token (which would let that shared "
+                    "token forge playback URLs for any recording)")
 
         if self.SECRETS_KEK and (
                 self.RECORDING_CREDENTIAL_REFRESH_SECONDS > self.SECRETS_ROTATION_WINDOW_SECONDS):
