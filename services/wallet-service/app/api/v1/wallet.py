@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from app.api.auth import Principal
 from app.api.authz import require_any_capability, require_capability
@@ -52,8 +52,13 @@ def build_wallet(request: Request) -> WalletService:
 
 
 def _tenant(p: Principal) -> str:
-    """Pinned to the token. A tenant id is never taken from the request."""
-    return p.tenant or "__none__"
+    """Pinned to the token. A tenant id is never taken from the request. A user-tier caller with NO
+    tenant is REFUSED (wallet-005): collapsing it to a shared "__none__" bucket would let every
+    tenant-less token read and move the same funds — a cross-tenant money hole. A missing tenant is a
+    malformed principal, not a bucket."""
+    if not p.tenant:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="NO_TENANT")
+    return p.tenant
 
 
 @router.get("", dependencies=[Depends(rate_limit)])

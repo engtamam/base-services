@@ -655,7 +655,7 @@ class WalletService:
             raise WalletError("WITHDRAWAL_NOT_FOUND")
         wd = Withdrawal.from_dict(row)
         if wd.state != WITHDRAW_PENDING:
-            return {"withdrawal_id": wd.id, "state": wd.state, "idempotent": True}
+            return {"withdrawal_id": wd.id, "state": wd.state, "tenant": wd.tenant, "idempotent": True}
         # ATOMIC dedup keyed by the withdrawal: the state read above is not enough — two concurrent
         # paid=false callbacks both see PENDING and each REVERSE the debit (double credit). The claim
         # lets exactly one proceed; a duplicate replays or retries.
@@ -666,7 +666,7 @@ class WalletService:
             raise Conflict("WALLET_OP_IN_PROGRESS")
         wd = Withdrawal.from_dict(await self._store.get(_WITHDRAWALS, withdrawal_id))  # re-read
         if wd.state != WITHDRAW_PENDING:
-            return {"withdrawal_id": wd.id, "state": wd.state, "idempotent": True}
+            return {"withdrawal_id": wd.id, "state": wd.state, "tenant": wd.tenant, "idempotent": True}
         if paid:
             wd.state = WITHDRAW_PAID
             wd.settled_at = self._clock.now()
@@ -693,7 +693,7 @@ class WalletService:
             except Exception:
                 await self._store.put(_WITHDRAWALS, wd.id, orig)   # nothing reversed — restore PENDING
                 raise
-        result = {"withdrawal_id": wd.id, "state": wd.state}
+        result = {"withdrawal_id": wd.id, "state": wd.state, "tenant": wd.tenant}
         await self._finalize(wd.tenant, "settle", withdrawal_id, result)
         return result
 

@@ -222,7 +222,8 @@ async def settle_withdrawal(body: SettleWithdrawalIn, request: Request) -> dict:
     except Exception as exc:  # noqa: BLE001
         raise _handle(exc) from exc
     await request.app.state.auditor.record(
-        "wallet.withdrawal_settled", actor="", tenant="", resource=f"withdrawal:{body.withdrawal_id}",
+        "wallet.withdrawal_settled", actor="", tenant=result.get("tenant", "") or "",
+        resource=f"withdrawal:{body.withdrawal_id}",
         ip=request.client.host if request.client else "",
         metadata={"paid": str(body.paid), "state": str(result.get("state", ""))})
     return result

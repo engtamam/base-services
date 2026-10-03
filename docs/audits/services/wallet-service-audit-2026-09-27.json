@@ -73,7 +73,8 @@
       "line": 54,
       "scenario": "_tenant() returns `p.tenant or \"__none__\"`. require_user accepts a token whose claims contain no tenant/org/tid. Every such principal (a mis-issued token, a platform-service token used as a user, a token from an issuer that omits tenant) reads and shares ONE wallet keyed '__none__'. balance()/ledger() auto-create that wallet on read, so distinct tenant-less subjects see each other's projected balance/statement — a cross-principal data exposure that never raises.",
       "evidence": "def _tenant(p: Principal) -> str:\n    \"\"\"Pinned to the token. A tenant id is never taken from the request.\"\"\"\n    return p.tenant or \"__none__\"",
-      "recommendation": "Reject a user-tier wallet request whose principal has no tenant (401/403), rather than routing it to a shared sentinel bucket. A missing tenant claim on a wallet read is a misconfiguration, not a valid tenant."
+      "recommendation": "Reject a user-tier wallet request whose principal has no tenant (401/403), rather than routing it to a shared sentinel bucket. A missing tenant claim on a wallet read is a misconfiguration, not a valid tenant.",
+      "status": "fixed"
     },
     {
       "id": "wallet-006",
@@ -106,7 +107,8 @@
       "line": 224,
       "scenario": "settle_withdrawal (paid or reversal) is declared critical/auditable, but the audit call passes tenant=\"\" because settle_withdrawal()'s result dict has no tenant field. When paid=False this REVERSES a debit (credits the customer back); the durable record of who got money back carries no tenant, so a fraud/review query 'which tenant's withdrawals were reversed' returns nothing usable.",
       "evidence": "await request.app.state.auditor.record(\"wallet.withdrawal_settled\", actor=\"\", tenant=\"\", resource=f\"withdrawal:{body.withdrawal_id}\", ...)",
-      "recommendation": "Return wd.tenant in settle_withdrawal()'s result and pass it as tenant= in the audit record, so the settlement/reversal is attributable like every other money move."
+      "recommendation": "Return wd.tenant in settle_withdrawal()'s result and pass it as tenant= in the audit record, so the settlement/reversal is attributable like every other money move.",
+      "status": "fixed"
     },
     {
       "id": "wallet-009",
