@@ -62,7 +62,8 @@
       "line": 243,
       "scenario": "close_my_tenant() records 'tenant.close_requested' (critical, fail-closed) write-ahead, THEN calls _own(), which 403s when principal.tenant is empty. A caller holding tenant.manage but no tenant claim thus produces a permanent 'close_requested' audit entry (with tenant=\"\") for a close that never happened and could never happen — a probe-able false record. This is exactly the anti-pattern the suspend() route explicitly fixed by moving _load ahead of the audit ('Authorize existence BEFORE recording'), but the fix was not applied here.",
       "evidence": "await request.app.state.auditor.record(\"tenant.close_requested\", ...)\n    svc, tenant = await _own(request, principal)   # 403 happens AFTER the record",
-      "recommendation": "Resolve and authorize the tenant via _own() BEFORE recording the audit, matching suspend/reactivate/delete."
+      "recommendation": "Resolve and authorize the tenant via _own() BEFORE recording the audit, matching suspend/reactivate/delete.",
+      "status": "fixed"
     },
     {
       "id": "tenant-005",
@@ -73,7 +74,8 @@
       "line": 184,
       "scenario": "Per the platform-admin-cross-tenant-reads memory rule, platform.* cross-tenant reads are legitimate but must be AUDITED. GET /api/v1/tenants (list), GET /api/v1/tenants/{id}, and GET /api/v1/tenants/{id}/export record no audit event. export in particular returns the entire tenant document (config, branding) plus scope() (which for db-isolation includes the DSN — see tenant-001). An operator can enumerate and dump every tenant's configuration with no trace of who read what.",
       "evidence": "@admin_router.get(\"/{tenant_id}/export\", dependencies=[Depends(_PLATFORM)])\nasync def export(request, tenant_id): svc, tenant = await _load(...); return await svc.export(tenant)",
-      "recommendation": "Declare and record a read/export auditable action (e.g. tenant.exported) for these cross-tenant platform reads, binding the principal, matching the established pattern."
+      "recommendation": "Declare and record a read/export auditable action (e.g. tenant.exported) for these cross-tenant platform reads, binding the principal, matching the established pattern.",
+      "status": "fixed"
     },
     {
       "id": "tenant-006",
@@ -139,7 +141,8 @@
       "line": 149,
       "scenario": "suspend/reactivate/delete/config/branding record tenant=principal.tenant. A platform operator's token carries no tenant claim, so principal.tenant is None -> tenant=\"\". The affected tenant id lives only inside resource=f\"tenant:{tenant_id}\". An investigator querying the audit log by the tenant dimension ('everything that happened to tenant X') will find none of the suspend/delete events for X, because the tenant column is blank. provision has the same issue (tenant=principal.tenant while the created tenant is t.id).",
       "evidence": "await request.app.state.auditor.record(\"tenant.suspended\", actor=principal.subject, tenant=principal.tenant, resource=f\"tenant:{tenant_id}\", ...)",
-      "recommendation": "Set the audit tenant field to the AFFECTED tenant id (tenant_id / t.id) for cross-tenant admin actions, so the log is queryable by the organisation the action was performed on."
+      "recommendation": "Set the audit tenant field to the AFFECTED tenant id (tenant_id / t.id) for cross-tenant admin actions, so the log is queryable by the organisation the action was performed on.",
+      "status": "fixed"
     },
     {
       "id": "tenant-012",
@@ -161,7 +164,8 @@
       "line": 306,
       "scenario": "In close_sweep, a delete() that raises is swallowed with `except Exception: failed += 1` and no logging. The scheduler sees {\"failed\": 3} but nothing records WHICH three tenants could not be erased or the exception. A tenant whose owner requested closure/erasure can be stuck failing every sweep indefinitely, silently, and an operator has no thread to pull — an erasure obligation (DSAR/close) is quietly not being met.",
       "evidence": "except Exception:   # noqa: BLE001 — one stuck tenant must not block the rest (r2-06)\n    failed += 1",
-      "recommendation": "Log the tenant id and exception (and/or emit a telemetry event) on each failed erasure so stuck closures are visible and actionable, while still continuing the sweep."
+      "recommendation": "Log the tenant id and exception (and/or emit a telemetry event) on each failed erasure so stuck closures are visible and actionable, while still continuing the sweep.",
+      "status": "fixed"
     },
     {
       "id": "tenant-014",

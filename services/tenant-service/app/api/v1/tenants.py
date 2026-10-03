@@ -111,7 +111,7 @@ async def update_config(request: Request, tenant_id: str, body: ConfigIn,
     except TenantInactive as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, f"TENANT_NOT_ACTIVE:{exc}") from exc
     await request.app.state.auditor.record(
-        "tenant.config_updated", actor=principal.subject, tenant=principal.tenant,
+        "tenant.config_updated", actor=principal.subject, tenant=tenant_id,   # affected tenant, not the operator's (tenant-011)
         resource=f"tenant:{tenant_id}", ip=request.client.host if request.client else "")
     return updated.public()
 
@@ -125,7 +125,7 @@ async def set_branding(request: Request, tenant_id: str, body: BrandingIn,
     except TenantInactive as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, f"TENANT_NOT_ACTIVE:{exc}") from exc
     await request.app.state.auditor.record(
-        "tenant.branding_updated", actor=principal.subject, tenant=principal.tenant,
+        "tenant.branding_updated", actor=principal.subject, tenant=tenant_id,   # affected tenant, not the operator's (tenant-011)
         resource=f"tenant:{tenant_id}", ip=request.client.host if request.client else "")
     return updated.public()
 
@@ -147,7 +147,7 @@ async def suspend(request: Request, tenant_id: str,
     # audit). Still write-ahead of the mutation, which is what the invariant requires.
     svc, tenant = await _load(request, tenant_id)
     await request.app.state.auditor.record(
-        "tenant.suspended", actor=principal.subject, tenant=principal.tenant,
+        "tenant.suspended", actor=principal.subject, tenant=tenant_id,   # affected tenant, not the operator's (tenant-011)
         resource=f"tenant:{tenant_id}",
         ip=request.client.host if request.client else "")
     return (await svc.suspend(tenant)).public()
@@ -161,7 +161,7 @@ async def reactivate(request: Request, tenant_id: str,
     # already succeeded, and leave it unrecorded.
     svc, tenant = await _load(request, tenant_id)   # 404 before any audit — see suspend()
     await request.app.state.auditor.record(
-        "tenant.reactivated", actor=principal.subject, tenant=principal.tenant,
+        "tenant.reactivated", actor=principal.subject, tenant=tenant_id,   # affected tenant, not the operator's (tenant-011)
         resource=f"tenant:{tenant_id}",
         ip=request.client.host if request.client else "")
     return (await svc.reactivate(tenant)).public()
@@ -175,15 +175,21 @@ async def delete(request: Request, tenant_id: str,
     # already succeeded, and leave it unrecorded.
     svc, tenant = await _load(request, tenant_id)   # 404 before any audit — see suspend()
     await request.app.state.auditor.record(
-        "tenant.deleted", actor=principal.subject, tenant=principal.tenant,
+        "tenant.deleted", actor=principal.subject, tenant=tenant_id,   # affected tenant, not the operator's (tenant-011)
         resource=f"tenant:{tenant_id}",
         ip=request.client.host if request.client else "")
     return await svc.delete(tenant)
 
 
-@admin_router.get("/{tenant_id}/export", dependencies=[Depends(_PLATFORM)])
-async def export(request: Request, tenant_id: str) -> dict:
+@admin_router.get("/{tenant_id}/export")
+async def export(request: Request, tenant_id: str,
+                 principal: Principal = Depends(_PLATFORM)) -> dict:
     svc, tenant = await _load(request, tenant_id)
+    # A cross-tenant platform export is a READ of everything a tenant holds — audit it, bound to the
+    # operator and the affected tenant (tenant-005).
+    await request.app.state.auditor.record(
+        "tenant.exported", actor=principal.subject, tenant=tenant_id,
+        resource=f"tenant:{tenant_id}", ip=request.client.host if request.client else "")
     return await svc.export(tenant)
 
 
@@ -215,7 +221,7 @@ async def my_config(request: Request, body: ConfigIn,
     # The same declared action, witnessed whoever makes the change — a tenant editing its own config
     # is as auditable as the platform doing it, and the actor is what tells the two apart.
     await request.app.state.auditor.record(
-        "tenant.config_updated", actor=principal.subject, tenant=principal.tenant,
+        "tenant.config_updated", actor=principal.subject, tenant=principal.tenant,   # self route: own tenant
         resource=f"tenant:{principal.tenant}", ip=request.client.host if request.client else "")
     return updated.public()
 
@@ -229,7 +235,7 @@ async def my_branding(request: Request, body: BrandingIn,
     except TenantInactive as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, f"TENANT_NOT_ACTIVE:{exc}") from exc
     await request.app.state.auditor.record(
-        "tenant.branding_updated", actor=principal.subject, tenant=principal.tenant,
+        "tenant.branding_updated", actor=principal.subject, tenant=principal.tenant,   # self route: own tenant
         resource=f"tenant:{principal.tenant}", ip=request.client.host if request.client else "")
     return updated.public()
 
@@ -239,11 +245,13 @@ async def close_my_tenant(request: Request,
                           principal: Principal = Depends(require_user)) -> dict:
     """An owner closes their OWN tenant. Scoped to the caller's tenant (never a body id), suspended
     now and erased after a grace window it can be reactivated within. Idempotent."""
-    # Write-ahead: a critical action the log cannot take must not happen at all.
+    # Authorize existence/ownership BEFORE recording (tenant-004), matching suspend/reactivate/delete:
+    # _own 403s/404s a caller with no tenant or an unknown one, so a probe can't spray false
+    # close_requested entries. Still write-ahead of the mutation, which is what the invariant requires.
+    svc, tenant = await _own(request, principal)
     await request.app.state.auditor.record(
         "tenant.close_requested", actor=principal.subject, tenant=principal.tenant,
         resource=f"tenant:{principal.tenant}",
         ip=request.client.host if request.client else "")
-    svc, tenant = await _own(request, principal)
     grace = get_settings().TENANT_CLOSE_GRACE_DAYS
     return await svc.close(tenant, grace_days=grace, actor=principal.subject)

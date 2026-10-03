@@ -7,8 +7,11 @@ DomainResolver, EventBus). Lifecycle changes emit domain events so peers can rea
 from __future__ import annotations
 
 import datetime as _dt
+import logging
 import re
 from typing import Any
+
+_log = logging.getLogger("tenant.close_sweep")
 
 from app.core.models import ACTIVE, DELETED, SUSPENDED, Tenant, new_id
 from app.ports.errors import ConfigError
@@ -307,8 +310,12 @@ class TenantService:
                 try:
                     await self.delete(fresh)
                     erased += 1
-                except Exception:   # noqa: BLE001 — one stuck tenant must not block the rest (r2-06)
+                except Exception as exc:   # noqa: BLE001 — one stuck tenant must not block the rest (r2-06)
                     failed += 1
+                    # Name the stuck tenant and why (tenant-013): a bare failed counter makes a stuck
+                    # closure invisible and unactionable.
+                    _log.error("close_sweep_erase_failed",
+                               extra={"tenant": fresh.id, "detail": exc.__class__.__name__})
             if not cursor:
                 break
         return {"scanned": scanned, "erased": erased, "failed": failed}

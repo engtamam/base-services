@@ -47,7 +47,15 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "why": "reactivating restores access for a whole organisation, including one suspended "
                "for abuse",
     },
-    {
+        {
+        "action": "tenant.exported",
+        "source": "admin",
+        "critical": False,
+        "resource": "tenant",
+        "why": "a platform operator exporting a tenant's full record is a cross-tenant READ of "
+               "everything that tenant holds; which operator exported which tenant must be provable",
+    },
+{
         "action": "tenant.deleted",
         "source": "admin",
         "critical": True,
