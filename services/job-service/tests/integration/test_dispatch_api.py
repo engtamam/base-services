@@ -69,4 +69,4 @@ def test_dispatch_run_is_callable_and_reports_counts(client):
     # No targets registered → a clean zero pass (enabled True from env).
     r = client.post("/internal/dispatch/run", headers=IT)
     assert r.status_code == 200
-    assert r.json() == {"enabled": True, "dispatched": 0, "failed": 0}
+    assert r.json() == {"enabled": True, "dispatched": 0, "failed": 0, "skipped_targets": 0}

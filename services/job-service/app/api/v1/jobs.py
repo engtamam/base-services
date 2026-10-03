@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.api.auth import Principal
 from app.api.authz import require_any_capability
+from app.api.ratelimit import rate_limit
 from app.config import get_settings
 from app.core.cron import CronError
 from app.core.dispatcher import Dispatcher
@@ -34,13 +35,16 @@ def _cfg() -> dict[str, Any]:
 
 def build_jobs(request: Request) -> JobService:
     c = request.app.state.container
-    return JobService(jobs=JobStore(c.datastore), clock=c.clock, config=_cfg(), event_bus=c.event_bus)
+    return JobService(jobs=JobStore(c.datastore), clock=c.clock, config=_cfg(), event_bus=c.event_bus,
+                      telemetry=getattr(c, "telemetry", None))
 
 
 def build_scheduler(request: Request) -> Scheduler:
     c = request.app.state.container
+    s = get_settings()
     return Scheduler(schedules=ScheduleStore(c.datastore), jobs=build_jobs(request),
-                     clock=c.clock, cron=c.cron, singleton_default=get_settings().SCHEDULER_SINGLETON)
+                     clock=c.clock, cron=c.cron, singleton_default=s.SCHEDULER_SINGLETON,
+                     catch_up_limit=s.SCHEDULER_CATCH_UP_LIMIT)
 
 
 def _dispatch_cfg() -> dict[str, Any]:
@@ -51,7 +55,10 @@ def _dispatch_cfg() -> dict[str, Any]:
             # Sign with the dedicated push secret when set, else the shared internal token so a push is
             # signed out of the box (the receiver holds the same token to verify).
             "signing_secret": s.PUSH_SIGNING_SECRET or s.INTERNAL_SERVICE_TOKEN,
-            "max_skew_seconds": s.PUSH_SIGNATURE_MAX_SKEW_SECONDS}
+            "concurrency": s.PUSH_DISPATCH_CONCURRENCY}
+    # job-013: PUSH_SIGNATURE_MAX_SKEW_SECONDS is a RECEIVER concern (its verify() rejects a stale/early
+    # signature) — the sender never reads it. It is intentionally NOT in the dispatcher config; the
+    # setting remains for receivers that verify this service's pushes.
 
 
 def build_dispatcher(request: Request) -> Dispatcher:
@@ -167,8 +174,11 @@ async def cancel(request: Request, job_id: str,
     return result
 
 
-@router.get("/stats", dependencies=[Depends(_READ)])
+@router.get("/stats", dependencies=[Depends(_READ), Depends(rate_limit)])
 async def stats(request: Request, principal: Principal = Depends(_READ)) -> dict:
+    # job-011: the fleet-wide operator path runs a capped whole-table count, so the route IS rate-limited
+    # (the previous "rate-limited at the route" comment was not backed by any dependency). Configure a
+    # dedicated RATELIMIT_ROUTES class for /api/v1/jobs/stats to tighten it below the default if needed.
     # a platform operator sees fleet-wide stats; a tenant reader sees only its own.
     tenant = None if "platform.jobs" in principal.caps else _tenant(principal)
     return await build_jobs(request).stats(tenant=tenant)

@@ -15,19 +15,28 @@ Correctness:
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 from app.core.models import ACTIVE, Schedule, new_id
 from app.core.stores import ScheduleStore
 
+_log = logging.getLogger(__name__)
+
 
 class Scheduler:
-    def __init__(self, *, schedules: ScheduleStore, jobs, clock, cron, singleton_default: bool = True) -> None:
+    def __init__(self, *, schedules: ScheduleStore, jobs, clock, cron, singleton_default: bool = True,
+                 catch_up_limit: int = 100) -> None:
         self._schedules = schedules
         self._jobs = jobs                 # JobService
         self._clock = clock
         self._cron = cron
         self._singleton_default = singleton_default
+        # job-008: how many MISSED occurrences a single tick will catch up per schedule. A paused/delayed
+        # ticker used to drop every missed run (it advanced next_run_at from `now`, skipping the gap);
+        # now it advances from each fire-time and fires the backlog, bounded so a long outage cannot
+        # burst-enqueue unboundedly in one tick (the rest catch up over subsequent ticks).
+        self._catch_up_limit = max(1, int(catch_up_limit))
 
     async def create(self, *, name: str, cron: str, queue: str = "default", tenant: str = "",
                      type: str = "", payload: dict | None = None, priority: int = 0,
@@ -84,7 +93,6 @@ class Scheduler:
         for s in await self._schedules.enabled():
             if s.next_run_at > now:
                 continue
-            fire_time = int(s.next_run_at)
             if s.singleton and s.last_job_id:
                 prev = await self._jobs.get(s.last_job_id)
                 if prev is not None and prev.status in ACTIVE:
@@ -92,12 +100,23 @@ class Scheduler:
                     s.next_run_at = self._cron.next_after(s.cron, now)   # advance, don't tight-loop
                     await self._schedules.save(s)
                     continue
-            job, created = await self._jobs.enqueue(
-                queue=s.queue, tenant=s.tenant, type=s.type, payload=s.payload, priority=s.priority,
-                schedule_id=s.id, unique_key=f"sched:{s.id}:{fire_time}")
-            if created:
-                fired += 1
-            s.last_job_id, s.last_run_at = job.id, now
-            s.next_run_at = self._cron.next_after(s.cron, now)
+            # job-008: fire EVERY missed occurrence (bounded), advancing from each fire-time rather than
+            # from `now`, so a delayed ticker catches up its backlog instead of silently dropping it. Each
+            # fire carries its own per-fire-time unique_key, so this is idempotent and never double-fires.
+            caught = 0
+            while s.next_run_at <= now and caught < self._catch_up_limit:
+                fire_time = int(s.next_run_at)
+                job, created = await self._jobs.enqueue(
+                    queue=s.queue, tenant=s.tenant, type=s.type, payload=s.payload, priority=s.priority,
+                    schedule_id=s.id, unique_key=f"sched:{s.id}:{fire_time}")
+                if created:
+                    fired += 1
+                s.last_job_id, s.last_run_at = job.id, now
+                s.next_run_at = self._cron.next_after(s.cron, s.next_run_at)   # advance from fire-time
+                caught += 1
             await self._schedules.save(s)
+            if s.next_run_at <= now:
+                # Still behind after the per-tick cap — observable, and the next tick continues the catch-up.
+                _log.warning("scheduler_behind", extra={"schedule": s.id,
+                             "behind_seconds": now - s.next_run_at})
         return {"fired": fired, "skipped": skipped}

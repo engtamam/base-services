@@ -287,6 +287,7 @@ class Settings(BaseSettings):
     UNIQUE_DEDUPE_TTL_SECONDS: int = 86_400  # idempotency / unique-key window
     FAIRNESS_ENABLED: bool = True           # round-robin across tenants within a priority
     SCHEDULER_SINGLETON: bool = True        # skip a cron run if the prior one is still active
+    SCHEDULER_CATCH_UP_LIMIT: int = 100     # job-008: max missed occurrences a single tick catches up
     JOB_LIST_LIMIT: int = 100
 
     # ── push dispatch (opt-in; a queue is PULL unless a webhook is registered for it) ──────────
@@ -295,6 +296,9 @@ class Settings(BaseSettings):
     PUSH_DISPATCH_ENABLED: bool = False
     PUSH_DISPATCH_BATCH: int = 20           # jobs claimed+delivered per queue per dispatch pass
     PUSH_DISPATCH_TIMEOUT_SECONDS: float = 10.0
+    # job-006: max concurrent push deliveries per dispatch pass, so one slow receiver cannot
+    # head-of-line-block the whole fleet's push queues.
+    PUSH_DISPATCH_CONCURRENCY: int = 8
     # The HMAC key the receiver verifies (integrity + replay). Empty → fall back to the shared
     # INTERNAL_SERVICE_TOKEN so a push is signed out of the box; set a DEDICATED secret to make the
     # push signature independent of the internal token. See core/push_signing.

@@ -118,17 +118,37 @@ class Dispatcher:
         when push is disabled, so enabling it is purely additive."""
         if not self._cfg.get("enabled"):
             return {"enabled": False, "dispatched": 0, "failed": 0}
-        dispatched = failed = 0
+        # job-006: deliver with BOUNDED CONCURRENCY. Strictly sequential delivery let one slow receiver
+        # head-of-line-block every other push queue for the whole pass. A semaphore caps the in-flight
+        # POSTs (so a stuck receiver cannot exhaust the loop) while letting healthy targets proceed.
+        sem = asyncio.Semaphore(max(1, int(self._cfg.get("concurrency", 8))))
+        skipped = 0
+
+        async def _deliver(target, job):
+            async with sem:
+                return await self._deliver_one(target, job)
+
+        tasks: list[Awaitable[bool]] = []
         for target in await self._targets.active():
+            # job-014: re-validate the target host against the allowlist AT DELIVERY, not only at register
+            # time — EGRESS_ALLOWED_HOSTS may have tightened since, and a now-forbidden host must not be
+            # POSTed to. Skip it (leaving its jobs for a re-registered/clean target) rather than deliver.
+            try:
+                self._validate_url(target.url)
+            except DispatchError:
+                _log.warning("push_target_not_allowlisted",
+                             extra={"queue": target.queue,
+                                    "host": (urlsplit(target.url).hostname or "").lower()})
+                skipped += 1
+                continue
             claimed = await self._jobs.claim(
                 worker=f"push:{target.queue}", queue=target.queue, batch=self._cfg["batch"])
-            for job in claimed:
-                ok = await self._deliver_one(target, job)
-                if ok:
-                    dispatched += 1
-                else:
-                    failed += 1
-        return {"enabled": True, "dispatched": dispatched, "failed": failed}
+            tasks.extend(_deliver(target, job) for job in claimed)
+        results = await asyncio.gather(*tasks) if tasks else []
+        dispatched = sum(1 for r in results if r)
+        failed = sum(1 for r in results if not r)
+        return {"enabled": True, "dispatched": dispatched, "failed": failed,
+                "skipped_targets": skipped}
 
     async def _deliver_one(self, target: DispatchTarget, job: dict[str, Any]) -> bool:
         job_id = job.get("id", "")

@@ -30,6 +30,8 @@ from app.core.pii import subject_ref
 
 _JOBS = "jobs"
 _SCHEDULES = "schedules"
+_DUE = "jobs_due"          # the claimable index — must not outlive a job canceled by erasure (job-007)
+_LEASED = "jobs_leased"    # the in-flight index — same
 _PAGE = 500
 
 
@@ -101,6 +103,12 @@ class JobErasure:
                     canceled += 1
                     if collection == _SCHEDULES:
                         row["enabled"] = False
+                    elif collection == _JOBS:
+                        # job-007: a blind status=CANCELED put left the due/leased INDEX rows behind, so a
+                        # claim/reclaim could still pick the job up (running erased work) and stats still
+                        # counted it. Drop both index entries, as JobService.cancel does.
+                        await self._store.delete(_DUE, row["id"])
+                        await self._store.delete(_LEASED, row["id"])
                 await self._store.put(collection, row["id"], row)
                 redacted += hits
             if not cursor:

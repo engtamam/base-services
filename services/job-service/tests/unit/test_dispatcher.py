@@ -85,7 +85,7 @@ def test_dispatch_delivers_and_acks_on_2xx():
     run(disp.register(queue="push_q", url="http://peer/internal/jobs/run"))
     job, _ = run(jobs.enqueue(queue="push_q", tenant="t1", type="notify", payload={"x": 1}))
     res = run(disp.dispatch_batch())
-    assert res == {"enabled": True, "dispatched": 1, "failed": 0}
+    assert res == {"enabled": True, "dispatched": 1, "failed": 0, "skipped_targets": 0}
     assert run(jobs.get(job.id)).status == DONE          # acked
     call = poster.calls[0]
     sent = json.loads(call["body"])["job"]
@@ -117,7 +117,7 @@ def test_a_non_2xx_nacks_into_retry_then_dead_letters():
     run(disp.register(queue="push_q", url="http://peer/hook"))
     job, _ = run(jobs.enqueue(queue="push_q", tenant="t1", type="notify"))
     # attempt 1: delivered, 503 → nacked → back to queued with a backoff delay
-    assert run(disp.dispatch_batch()) == {"enabled": True, "dispatched": 0, "failed": 1}
+    assert run(disp.dispatch_batch()) == {"enabled": True, "dispatched": 0, "failed": 1, "skipped_targets": 0}
     assert run(jobs.get(job.id)).status == QUEUED
     # drive the backoff + retries to exhaustion → DLQ, never dropped
     for _ in range(CFG_JOBS["retry_max_attempts"] + 2):
@@ -131,7 +131,7 @@ def test_a_transport_error_nacks_not_crashes():
     disp, jobs, _, _ = _wire(poster=poster)
     run(disp.register(queue="push_q", url="http://peer/hook"))
     job, _ = run(jobs.enqueue(queue="push_q", tenant="t1", type="notify"))
-    assert run(disp.dispatch_batch()) == {"enabled": True, "dispatched": 0, "failed": 1}
+    assert run(disp.dispatch_batch()) == {"enabled": True, "dispatched": 0, "failed": 1, "skipped_targets": 0}
     assert run(jobs.get(job.id)).status == QUEUED        # survived, will retry — not lost
 
 
@@ -189,7 +189,7 @@ def test_a_queue_with_no_target_is_left_for_pull():
     disp, jobs, _, _ = _wire(poster=poster)
     # a job on an UNREGISTERED queue — push must not touch it; a normal worker still claims it
     job, _ = run(jobs.enqueue(queue="pull_q", tenant="t", type="n"))
-    assert run(disp.dispatch_batch()) == {"enabled": True, "dispatched": 0, "failed": 0}
+    assert run(disp.dispatch_batch()) == {"enabled": True, "dispatched": 0, "failed": 0, "skipped_targets": 0}
     assert poster.calls == []
     claimed = run(jobs.claim(worker="w", queue="pull_q", batch=1))
     assert claimed and claimed[0]["id"] == job.id        # still deliverable by pull

@@ -90,7 +90,7 @@
       "scenario": "The nested `for target ... for job` loop awaits each POST before the next. A single unresponsive receiver (up to timeout seconds per job) blocks delivery for every other job on that queue AND every other push-enabled queue in the pass. Throughput is capped at 1/timeout deliveries/sec regardless of how many queues are ready.",
       "evidence": "for target in await self._targets.active():\n    claimed = await self._jobs.claim(...)\n    for job in claimed:\n        ok = await self._deliver_one(target, job)",
       "recommendation": "Deliver with bounded concurrency (asyncio.gather over a semaphore) per target and/or across targets; a stuck receiver should not head-of-line-block the fleet.",
-      "status": "pending"
+      "status": "fixed"
     },
     {
       "id": "job-007",
@@ -102,7 +102,7 @@
       "scenario": "When erase() finds a QUEUED job mentioning the subject it sets status=CANCELED and writes with self._store.put(collection, id, row) — a blind write that (a) does NOT remove the jobs_due index row, so the job stays in the claimable index until a later claim happens to notice it is not QUEUED and self-heals, and (b) for a LEASED job races the worker's ack/heartbeat with no version check (only the fencing token later saves correctness). Between erasure and the next claim pass, a stale due-index row exists; the erasure endpoint also does not touch jobs_leased.",
       "evidence": "if _is_pending(row, collection):\n    row[\"status\"] = CANCELED ...\nawait self._store.put(collection, row[\"id\"], row)",
       "recommendation": "Route cancellation through JobService.cancel (which unindexes due+leased and clears the unique slot) or explicitly delete the jobs_due/jobs_leased rows during erasure.",
-      "status": "pending"
+      "status": "fixed"
     },
     {
       "id": "job-008",
@@ -114,7 +114,7 @@
       "scenario": "tick() advances s.next_run_at = self._cron.next_after(s.cron, now) using the wall-clock time of the tick, not the fire_time it just processed. If the deployment cron that calls /internal/scheduler/tick is delayed or paused for an hour, every '*/5' occurrence in that hour is skipped — only one job fires and next_run jumps forward from `now`. For a billing-dunning or retention sweep this is a silent lost run with no DLQ, no alert.",
       "evidence": "s.last_job_id, s.last_run_at = job.id, now\ns.next_run_at = self._cron.next_after(s.cron, now)",
       "recommendation": "Advance from the fire_time (next_after(cron, s.next_run_at)) and optionally loop to fire each missed occurrence, or emit a metric/log when now - next_run_at exceeds one interval so dropped runs are observable.",
-      "status": "pending"
+      "status": "fixed"
     },
     {
       "id": "job-009",
@@ -126,7 +126,7 @@
       "scenario": "The tenant path does find(..., limit=cap+1) per status and reports out[st] = len(rows). A tenant with more than cap (default 10_000) jobs in a status reports exactly 10001, understating the true count with no truncation flag — stats()/by_status and dead_letters silently misreport. Statuses with zero rows are omitted entirely, so the tenant by_status shape differs from the operator aggregate (which counts every status seen).",
       "evidence": "rows, _ = await self._store.find(_JOBS, {\"tenant\": tenant, \"status\": st}, limit=cap + 1, ...)\nif rows:\n    out[st] = len(rows)",
       "recommendation": "Use a real COUNT (or a bounded count with an explicit `truncated`/`>=` marker) and always populate all statuses with 0 so the shape is stable and the cap is visible.",
-      "status": "pending"
+      "status": "fixed"
     },
     {
       "id": "job-010",
@@ -138,7 +138,7 @@
       "scenario": "Every lifecycle event (job.enqueued/claimed/done/dead_lettered) is published inside a bare try/except that discards the exception with `pass` and no counter/log. If the event bus is down or misconfigured, every downstream consumer that reacts to job.dead_lettered (alerting, retries) stops receiving events and nothing anywhere records the gap — the exact 'log-and-continue hiding errors' pattern.",
       "evidence": "try:\n    payload = {...}\n    await self._bus.publish(...)\nexcept Exception:\n    pass",
       "recommendation": "Emit a telemetry counter (e.g. event.publish_failed) on the except branch, matching the Auditor._count_gap discipline used elsewhere in this service.",
-      "status": "pending"
+      "status": "fixed"
     },
     {
       "id": "job-011",
@@ -150,7 +150,7 @@
       "scenario": "counts(tenant=None) (operator stats) does `for r in await self._store.scan_all(_JOBS, _INDEX_MAX)` — a capped full-table scan of up to 50_000 rows on the request path each call, plus a due_page. The docstring claims it is 'rate-limited at the route', but RATELIMIT_ROUTES defaults to only an /api/v1/auth entry (core/ratelimit_policy.py) and no /api/v1/jobs/stats class exists, so only the global default limit applies. Repeated operator /stats calls are an easy way to load the datastore.",
       "evidence": "for r in await self._store.scan_all(_JOBS, _INDEX_MAX):\n    out[r.get(\"status\", \"?\")] = out.get(r.get(\"status\", \"?\"), 0) + 1",
       "recommendation": "Add a dedicated rate-limit class for the operator stats route, cache the fleet counts, or maintain per-status counters incrementally instead of scanning.",
-      "status": "pending"
+      "status": "fixed"
     },
     {
       "id": "job-012",
@@ -174,7 +174,7 @@
       "scenario": "_dispatch_cfg() sets 'max_skew_seconds': s.PUSH_SIGNATURE_MAX_SKEW_SECONDS, but Dispatcher only ever reads enabled/batch/timeout/allowed_hosts/signing_secret. The skew is a RECEIVER-side parameter; on the sender it is a dead knob. An operator tuning PUSH_SIGNATURE_MAX_SKEW_SECONDS on job-service changes nothing, contradicting the zero-unread-knob rule (memory: advertised-but-unread knobs).",
       "evidence": "\"max_skew_seconds\": s.PUSH_SIGNATURE_MAX_SKEW_SECONDS}  # consumed by nobody in Dispatcher",
       "recommendation": "Drop max_skew_seconds from the sender config (it belongs only to the receiver's verify()), or document that this service exposes it solely for receivers and remove it from _dispatch_cfg.",
-      "status": "pending"
+      "status": "fixed"
     },
     {
       "id": "job-014",
@@ -186,7 +186,7 @@
       "scenario": "_validate_url runs in register(). _deliver_one recomputes the host only to build headers and POSTs to the stored target.url without re-checking EGRESS_ALLOWED_HOSTS. If an operator tightens EGRESS_ALLOWED_HOSTS to remove a host, previously-registered targets keep delivering to the now-disallowed host until manually unregistered. Allowlisting is also by hostname string, so it does not defend against DNS re-binding of an allow-listed name to an internal IP.",
       "evidence": "status = await self._post(target.url, body, headers, float(self._cfg[\"timeout\"]))  # no re-validation",
       "recommendation": "Re-run _validate_url(target.url) in dispatch_batch/_deliver_one and skip (or deactivate) a target whose host is no longer allow-listed; consider resolving+pinning to allow-listed IP ranges.",
-      "status": "pending"
+      "status": "fixed"
     },
     {
       "id": "job-015",
@@ -198,7 +198,7 @@
       "scenario": "leased_index() = scan_all(_LEASED, _INDEX_MAX=50_000). If more than 50_000 jobs are simultaneously in-flight (a fleet-wide worker crash after a big claim burst), reclaim only ever sees the first 50k rows the store returns; leases past the cap silently never expire back to the queue. The docstring frames the cap as a 'blast radius', but nothing surfaces the truncation, so those jobs are effectively lost until manual intervention — contradicting the 'no lost jobs' guarantee.",
       "evidence": "return await self._store.scan_all(_LEASED, _INDEX_MAX)",
       "recommendation": "Page the leased index (find with a cursor, like ScheduleStore.enabled) so reclaim covers all in-flight jobs, and/or emit a metric when the cap is hit.",
-      "status": "pending"
+      "status": "fixed"
     },
     {
       "id": "job-016",

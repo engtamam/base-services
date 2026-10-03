@@ -86,23 +86,34 @@ class JobStore:
 
     _STATUSES = ("queued", "leased", "done", "dead", "canceled")
 
-    async def counts(self, *, tenant: str | None = None, cap: int = 10_000) -> dict[str, int]:
+    async def counts(self, *, tenant: str | None = None, cap: int = 10_000) -> dict[str, Any]:
         """How many jobs in each status. A tenant value counts ONLY that tenant's jobs via bounded,
         INDEXED per-status finds (O(that tenant's jobs), capped) — not a scan of every tenant's jobs
         (job-r2-02). tenant=None is the operator fleet aggregate: a capped whole-table scan, gated to
         platform.jobs and rate-limited at the route."""
         if tenant is not None:
-            out: dict[str, int] = {}
+            # job-009: ALWAYS populate every status with 0 so the shape is stable (a zero-count status is
+            # data, not an omission), and mark truncation explicitly: a status that returns cap+1 rows is
+            # reported as cap with its name listed under "_truncated", instead of a silent exact-looking
+            # number that is really ">= cap".
+            out: dict[str, int] = {st: 0 for st in self._STATUSES}
+            truncated: list[str] = []
             for st in self._STATUSES:
                 rows, _ = await self._store.find(_JOBS, {"tenant": tenant, "status": st},
                                                  limit=cap + 1, sort=("created", "desc"))
-                if rows:
+                if len(rows) > cap:
+                    out[st] = cap
+                    truncated.append(st)
+                else:
                     out[st] = len(rows)
+            if truncated:
+                out["_truncated"] = truncated          # the cap is visible, not silently applied
             return out
-        out = {}
+        out = {st: 0 for st in self._STATUSES}
         # sweeper: the fleet-wide operator aggregate — a capped whole-collection count.
         for r in await self._store.scan_all(_JOBS, _INDEX_MAX):
-            out[r.get("status", "?")] = out.get(r.get("status", "?"), 0) + 1
+            st = r.get("status", "?")
+            out[st] = out.get(st, 0) + 1
         return out
 
     # ── due-index (the claim hot path) ──────────────────────────────────────────
@@ -129,16 +140,26 @@ class JobStore:
         return rows
 
     async def index_leased(self, job: Job) -> None:
-        await self._store.put(_LEASED, job.id, {"job_id": job.id, "lease_expires": job.lease_expires})
+        # `leased: True` is the constant filter that lets leased_index() PAGE this index with an indexed
+        # WHERE (find needs a non-empty where), the same shape index_due uses — so reclaim covers every
+        # in-flight job instead of a single capped scan that silently drops leases past the cap (job-015).
+        await self._store.put(_LEASED, job.id, {"job_id": job.id, "leased": True,
+                                                "lease_expires": job.lease_expires})
 
     async def unindex_leased(self, job_id: str) -> None:
         await self._store.delete(_LEASED, job_id)
 
     async def leased_index(self) -> list[dict]:
-        """In-flight jobs, for lease-expiry reclaim — indexed, never a job-table scan."""
-        # sweeper: `jobs_leased` holds one row per IN-FLIGHT job. The reclaimer's whole job is
-        # to look at all of them and expire the dead leases.
-        return await self._store.scan_all(_LEASED, _INDEX_MAX)
+        """In-flight jobs, for lease-expiry reclaim — indexed and PAGED to completion, so reclaim covers
+        EVERY in-flight job (job-015: a single capped scan dropped leases past the cap → lost jobs)."""
+        rows, cursor = [], None
+        while True:
+            page, cursor = await self._store.find(_LEASED, {"leased": True}, limit=1000,
+                                                  after=cursor, sort=("job_id", "asc"))
+            rows.extend(page)
+            if not cursor:
+                break
+        return rows
 
     # ── idempotency / uniqueness ────────────────────────────────────────────────
     async def unique_get(self, key: str, *, now: float, ttl: int) -> str | None:

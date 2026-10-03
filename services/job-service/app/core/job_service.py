@@ -23,11 +23,13 @@ from app.core.stores import JobStore
 
 
 class JobService:
-    def __init__(self, *, jobs: JobStore, clock, config: dict[str, Any], event_bus=None) -> None:
+    def __init__(self, *, jobs: JobStore, clock, config: dict[str, Any], event_bus=None,
+                 telemetry=None) -> None:
         self._jobs = jobs
         self._clock = clock
         self._cfg = config
         self._bus = event_bus
+        self._telemetry = telemetry
 
     @staticmethod
     def _scoped(tenant: str, key: str) -> str:
@@ -280,5 +282,12 @@ class JobService:
         try:
             payload = {"job_id": job.id, "type": job.type, "queue": job.queue} if job else {}
             await self._bus.publish(event, {**payload, **(extra or {}), "at": self._clock.now()})
-        except Exception:
-            pass
+        except Exception as exc:
+            # job-010: a dropped event is INVISIBLE otherwise — the stream just has a hole nobody can
+            # see, exactly the gap the Auditor._count_gap discipline exists to surface. Count it.
+            if self._telemetry is not None:
+                try:
+                    self._telemetry.event("event.publish_failed",
+                                          {"event": event, "error": type(exc).__name__})
+                except Exception:
+                    pass

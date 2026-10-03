@@ -34,6 +34,12 @@ class _Store:
     async def put(self, collection, key, value):
         self.data[collection] = [value if r["id"] == key else r for r in self.data[collection]]
 
+    async def delete(self, collection, key):
+        # job-007: erasure drops the due/leased index rows of a canceled job.
+        self.deleted = getattr(self, "deleted", [])
+        self.deleted.append((collection, key))
+        self.data[collection] = [r for r in self.data.get(collection, []) if r.get("id") != key]
+
 
 def _job(id, status=QUEUED, payload=None, result=None):
     return {"id": id, "tenant": "acme", "created": 1.0, "status": status,
